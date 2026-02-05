@@ -6,6 +6,10 @@
 
 use smithay::{
     backend::{
+        input::{
+            AbsolutePositionEvent, Axis, ButtonState, Event, InputEvent,
+            KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        },
         renderer::{
             damage::OutputDamageTracker,
             element::surface::WaylandSurfaceRenderElement,
@@ -16,22 +20,28 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
     delegate_xdg_shell,
     desktop::{space::render_output, Space, Window},
-    input::{Seat, SeatHandler, SeatState},
+    input::{
+        keyboard::FilterResult,
+        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        Seat, SeatHandler, SeatState,
+    },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
             generic::Generic, EventLoop, Interest, LoopHandle, Mode as CalloopMode, PostAction,
         },
+        wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState,
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
             Display, DisplayHandle, Resource,
         },
     },
-    utils::Transform,
+    utils::{Transform, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorHandler, CompositorState},
+        seat::WaylandFocus,
         selection::{
             data_device::{
                 set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
@@ -42,6 +52,7 @@ use smithay::{
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
+            decoration::{XdgDecorationHandler, XdgDecorationState},
         },
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
@@ -61,7 +72,7 @@ const IPC_SOCKET: &str = "/tmp/ewm.sock";
 /// Events sent to Emacs
 #[derive(Serialize)]
 #[serde(tag = "event")]
-enum Event {
+enum IpcEvent {
     #[serde(rename = "new")]
     New { id: u32, app: String },
     #[serde(rename = "close")]
@@ -85,21 +96,30 @@ struct Ewm {
 
     compositor_state: CompositorState,
     xdg_shell_state: XdgShellState,
+    xdg_decoration_state: XdgDecorationState,
     shm_state: ShmState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
+    seat: Seat<Self>,
 
     // IPC
     next_surface_id: u32,
     window_ids: HashMap<Window, u32>,
     id_windows: HashMap<u32, Window>,
-    pending_events: Vec<Event>,
+    pending_events: Vec<IpcEvent>,
+
+    // Output
+    output_size: (i32, i32),
+
+    // Input
+    pointer_location: (f64, f64),
 }
 
 impl Ewm {
     fn new(display_handle: DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
@@ -114,13 +134,17 @@ impl Ewm {
             display_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             seat_state,
             data_device_state,
+            seat,
             next_surface_id: 1,
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
             pending_events: Vec::new(),
+            output_size: (800, 600), // Default, updated when output is created
+            pointer_location: (0.0, 0.0),
         }
     }
 
@@ -263,7 +287,7 @@ impl XdgShellHandler for Ewm {
         let id = self.next_surface_id;
         self.next_surface_id += 1;
 
-        // Get app_id for the surface
+        // Get app_id for the surface (may be empty initially)
         let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
@@ -272,18 +296,29 @@ impl XdgShellHandler for Ewm {
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-        // Send initial configure
+        // Send initial configure - maximized to fill the output
+        // This is how Wayland compositors tell clients to be fullscreen
         surface.with_pending_state(|state| {
-            state.size = Some((800, 600).into());
+            state.size = Some(self.output_size.into());
+            state.states.set(XdgToplevelState::Maximized);
+            state.states.set(XdgToplevelState::Activated);
         });
         surface.send_configure();
 
         let window = Window::new_wayland_window(surface);
         self.window_ids.insert(window.clone(), id);
         self.id_windows.insert(id, window.clone());
-        self.space.map_element(window, (0, 0), false);
 
-        self.pending_events.push(Event::New { id, app: app.clone() });
+        // First surface (id=1) is assumed to be Emacs - keep it fullscreen
+        // Other surfaces are hidden until Emacs positions them via layout commands
+        // This mimics EXWM's behavior of unmapping windows until displayed
+        let position = if id == 1 { (0, 0) } else { (-10000, -10000) };
+        self.space.map_element(window, position, false);
+
+        // Don't notify Emacs about its own surface (id=1) to avoid feedback loop
+        if id != 1 {
+            self.pending_events.push(IpcEvent::New { id, app: app.clone() });
+        }
         info!("New toplevel {} ({})", id, app);
     }
 
@@ -296,7 +331,7 @@ impl XdgShellHandler for Ewm {
         if let Some(window) = window {
             if let Some(id) = self.window_ids.remove(&window) {
                 self.id_windows.remove(&id);
-                self.pending_events.push(Event::Close { id });
+                self.pending_events.push(IpcEvent::Close { id });
                 info!("Toplevel {} destroyed", id);
             }
             self.space.unmap_elem(&window);
@@ -323,6 +358,32 @@ impl XdgShellHandler for Ewm {
 }
 delegate_xdg_shell!(Ewm);
 
+// XDG Decoration - tell clients to not use CSD
+impl XdgDecorationHandler for Ewm {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+
+        // Request server-side decorations (which we don't draw, so no decorations)
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+
+        // Always use server-side (no decorations)
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn unset_mode(&mut self, _toplevel: ToplevelSurface) {}
+}
+smithay::delegate_xdg_decoration!(Ewm);
+
 struct LoopData {
     state: Ewm,
     display: Display<Ewm>,
@@ -330,7 +391,7 @@ struct LoopData {
 }
 
 impl LoopData {
-    fn send_event(&mut self, event: &Event) {
+    fn send_event(&mut self, event: &IpcEvent) {
         if let Some(ref mut stream) = self.emacs {
             if let Ok(json) = serde_json::to_string(event) {
                 if writeln!(stream, "{}", json).is_err() {
@@ -404,10 +465,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         size: backend.window_size(),
         refresh: 60_000,
     };
+    // Transform::Flipped180 is required for winit backend because OpenGL has Y=0 at
+    // bottom while window systems have Y=0 at top. This flip corrects the rendering.
+    // Note: Surface positions are compensated in the layout command handler.
     output.change_current_state(Some(mode), Some(Transform::Flipped180), None, None);
     output.set_preferred(mode);
     output.create_global::<Ewm>(&display_handle);
     data.state.space.map_output(&output, (0, 0));
+    data.state.output_size = (mode.size.w, mode.size.h);
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
@@ -417,7 +482,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Main loop
+    // Set initial keyboard focus to first surface (Emacs)
+    let mut keyboard_focus: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> = None;
+
     while data.state.running {
+        // Collect input events
+        let mut input_events = Vec::new();
+
         // Winit events
         let _ = winit_evt.dispatch_new_events(|event| match event {
             WinitEvent::Resized { size, .. } => {
@@ -426,13 +497,130 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     refresh: 60_000,
                 };
                 output.change_current_state(Some(mode), None, None, None);
+                data.state.output_size = (size.w, size.h);
             }
             WinitEvent::CloseRequested => {
                 data.state.running = false;
             }
-            WinitEvent::Input(_event) => {}
+            WinitEvent::Input(event) => {
+                input_events.push(event);
+            }
             _ => {}
         });
+
+        // Process input events
+        for event in input_events {
+            match event {
+                InputEvent::Keyboard { event } => {
+                    // Set focus to first surface if not set
+                    if keyboard_focus.is_none() {
+                        if let Some(window) = data.state.space.elements().next() {
+                            if let Some(surface) = window.wl_surface() {
+                                keyboard_focus = Some(surface.into_owned());
+                            }
+                        }
+                    }
+
+                    let serial = SERIAL_COUNTER.next_serial();
+                    let time = Event::time_msec(&event);
+                    let keyboard = data.state.seat.get_keyboard().unwrap();
+
+                    // Set keyboard focus
+                    if let Some(ref focus) = keyboard_focus {
+                        keyboard.set_focus(&mut data.state, Some(focus.clone()), serial);
+                    }
+
+                    // Process key
+                    keyboard.input::<(), _>(
+                        &mut data.state,
+                        event.key_code(),
+                        event.state(),
+                        serial,
+                        time,
+                        |_, _, _| FilterResult::Forward,
+                    );
+                }
+                InputEvent::PointerMotionAbsolute { event } => {
+                    let output_geo = data.state.space.output_geometry(&output).unwrap();
+                    let pos = event.position_transformed(output_geo.size);
+                    data.state.pointer_location = (pos.x, pos.y);
+
+                    let pointer = data.state.seat.get_pointer().unwrap();
+                    let serial = SERIAL_COUNTER.next_serial();
+
+                    // Find surface under pointer
+                    let under = data.state.space.element_under((pos.x, pos.y))
+                        .and_then(|(window, loc)| {
+                            window.wl_surface().map(|s| (s.into_owned(), (loc.x as f64, loc.y as f64).into()))
+                        });
+
+                    pointer.motion(
+                        &mut data.state,
+                        under,
+                        &MotionEvent {
+                            location: pos.into(),
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(&mut data.state);
+                }
+                InputEvent::PointerButton { event } => {
+                    let pointer = data.state.seat.get_pointer().unwrap();
+                    let serial = SERIAL_COUNTER.next_serial();
+
+                    let button_state = match event.state() {
+                        ButtonState::Pressed => {
+                            // Focus window under pointer on click
+                            if let Some((window, _)) = data.state.space.element_under(data.state.pointer_location) {
+                                if let Some(surface) = window.wl_surface() {
+                                    let owned_surface = surface.into_owned();
+                                    keyboard_focus = Some(owned_surface.clone());
+                                    let keyboard = data.state.seat.get_keyboard().unwrap();
+                                    keyboard.set_focus(&mut data.state, Some(owned_surface), serial);
+                                }
+                            }
+                            smithay::backend::input::ButtonState::Pressed
+                        }
+                        ButtonState::Released => smithay::backend::input::ButtonState::Released,
+                    };
+
+                    pointer.button(
+                        &mut data.state,
+                        &ButtonEvent {
+                            button: event.button_code(),
+                            state: button_state,
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(&mut data.state);
+                }
+                InputEvent::PointerAxis { event } => {
+                    let pointer = data.state.seat.get_pointer().unwrap();
+
+                    let source = event.source();
+                    let horizontal = event.amount(Axis::Horizontal)
+                        .or_else(|| event.amount_v120(Axis::Horizontal).map(|v| v * 3.0 / 120.0))
+                        .unwrap_or(0.0);
+                    let vertical = event.amount(Axis::Vertical)
+                        .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v * 3.0 / 120.0))
+                        .unwrap_or(0.0);
+
+                    let mut frame = AxisFrame::new(event.time_msec()).source(source);
+                    if horizontal != 0.0 {
+                        frame = frame.value(Axis::Horizontal, horizontal);
+                    }
+                    if vertical != 0.0 {
+                        frame = frame.value(Axis::Vertical, vertical);
+                    }
+
+                    pointer.axis(&mut data.state, frame);
+                    pointer.frame(&mut data.state);
+                }
+                _ => {}
+            }
+        }
 
         // Render
         {
@@ -484,14 +672,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     match cmd {
                         Command::Layout { id, x, y, w, h } => {
                             if let Some(window) = data.state.id_windows.get(&id) {
-                                data.state.space.map_element(window.clone(), (x, y), false);
+                                // The output uses Transform::Flipped180 to correct OpenGL's
+                                // inverted Y axis. We must compensate when positioning surfaces:
+                                //   compositor_y = output_height - visual_y - surface_height
+                                let output_h = data.state.output_size.1;
+                                let adjusted_y = output_h - y - (h as i32);
+
+                                data.state.space.map_element(window.clone(), (x, adjusted_y), true);
+                                data.state.space.raise_element(window, true);
                                 window.toplevel().map(|t| {
                                     t.with_pending_state(|state| {
                                         state.size = Some((w as i32, h as i32).into());
                                     });
                                     t.send_configure();
                                 });
-                                info!("Layout surface {} to ({}, {}) {}x{}", id, x, y, w, h);
+                                info!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
                             }
                         }
                         Command::Focus { id } => {
