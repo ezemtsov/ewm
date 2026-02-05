@@ -1,7 +1,8 @@
-//! EWM Compositor - Phase 2: Minimal Smithay compositor with winit backend
+//! EWM Compositor - Phase 3: Compositor with Emacs IPC
 //!
 //! Run with: cargo run
-//! Then in another terminal: WAYLAND_DISPLAY=wayland-ewm foot
+//! Then in Emacs: (ewm-connect)
+//! Then: WAYLAND_DISPLAY=wayland-ewm foot
 
 use smithay::{
     backend::{
@@ -40,14 +41,42 @@ use smithay::{
         },
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+            XdgToplevelSurfaceData,
         },
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
     },
 };
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsFd;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::Arc;
 use tracing::{error, info, warn};
+
+const IPC_SOCKET: &str = "/tmp/ewm.sock";
+
+/// Events sent to Emacs
+#[derive(Serialize)]
+#[serde(tag = "event")]
+enum Event {
+    #[serde(rename = "new")]
+    New { id: u32, app: String },
+    #[serde(rename = "close")]
+    Close { id: u32 },
+}
+
+/// Commands received from Emacs
+#[derive(Deserialize)]
+#[serde(tag = "cmd")]
+enum Command {
+    #[serde(rename = "layout")]
+    Layout { id: u32, x: i32, y: i32, w: u32, h: u32 },
+    #[serde(rename = "focus")]
+    Focus { id: u32 },
+}
 
 struct Ewm {
     running: bool,
@@ -59,6 +88,12 @@ struct Ewm {
     shm_state: ShmState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
+
+    // IPC
+    next_surface_id: u32,
+    window_ids: HashMap<Window, u32>,
+    id_windows: HashMap<u32, Window>,
+    pending_events: Vec<Event>,
 }
 
 impl Ewm {
@@ -82,6 +117,10 @@ impl Ewm {
             shm_state,
             seat_state,
             data_device_state,
+            next_surface_id: 1,
+            window_ids: HashMap::new(),
+            id_windows: HashMap::new(),
+            pending_events: Vec::new(),
         }
     }
 
@@ -221,19 +260,47 @@ impl XdgShellHandler for Ewm {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Send initial configure to let the client know it can draw
+        let id = self.next_surface_id;
+        self.next_surface_id += 1;
+
+        // Get app_id for the surface
+        let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().unwrap().app_id.clone())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+        // Send initial configure
         surface.with_pending_state(|state| {
             state.size = Some((800, 600).into());
         });
         surface.send_configure();
 
         let window = Window::new_wayland_window(surface);
+        self.window_ids.insert(window.clone(), id);
+        self.id_windows.insert(id, window.clone());
         self.space.map_element(window, (0, 0), false);
-        info!("New toplevel window mapped");
+
+        self.pending_events.push(Event::New { id, app: app.clone() });
+        info!("New toplevel {} ({})", id, app);
     }
 
-    fn toplevel_destroyed(&mut self, _surface: ToplevelSurface) {
-        info!("Toplevel destroyed");
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // Find and remove the window
+        let window = self.space.elements().find(|w| {
+            w.toplevel().map(|t| t == &surface).unwrap_or(false)
+        }).cloned();
+
+        if let Some(window) = window {
+            if let Some(id) = self.window_ids.remove(&window) {
+                self.id_windows.remove(&id);
+                self.pending_events.push(Event::Close { id });
+                info!("Toplevel {} destroyed", id);
+            }
+            self.space.unmap_elem(&window);
+        }
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
@@ -259,6 +326,20 @@ delegate_xdg_shell!(Ewm);
 struct LoopData {
     state: Ewm,
     display: Display<Ewm>,
+    emacs: Option<UnixStream>,
+}
+
+impl LoopData {
+    fn send_event(&mut self, event: &Event) {
+        if let Some(ref mut stream) = self.emacs {
+            if let Ok(json) = serde_json::to_string(event) {
+                if writeln!(stream, "{}", json).is_err() {
+                    warn!("Failed to send event to Emacs, disconnecting");
+                    self.emacs = None;
+                }
+            }
+        }
+    }
 }
 
 fn main() {
@@ -279,7 +360,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("Wayland socket: {:?}", socket_name);
 
     let state = Ewm::new(display_handle.clone());
-    let mut data = LoopData { state, display };
+    let mut data = LoopData { state, display, emacs: None };
+
+    // IPC socket for Emacs
+    let ipc_path = Path::new(IPC_SOCKET);
+    if ipc_path.exists() {
+        std::fs::remove_file(ipc_path)?;
+    }
+    let ipc_listener = UnixListener::bind(ipc_path)?;
+    ipc_listener.set_nonblocking(true)?;
+    info!("IPC socket: {}", IPC_SOCKET);
+
+    event_loop
+        .handle()
+        .insert_source(
+            Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
+            |_, listener, data| {
+                if let Ok((stream, _)) = listener.accept() {
+                    info!("Emacs connected");
+                    stream.set_nonblocking(true).ok();
+                    data.emacs = Some(stream);
+                }
+                Ok(PostAction::Continue)
+            },
+        )
+        .expect("Failed to init IPC listener");
 
     // Winit backend
     let (mut backend, mut winit_evt): (WinitGraphicsBackend<GlesRenderer>, _) =
@@ -363,6 +468,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         data.state.space.refresh();
         data.display.flush_clients().unwrap();
+
+        // Flush pending events to Emacs
+        let events: Vec<_> = data.state.pending_events.drain(..).collect();
+        for event in events {
+            data.send_event(&event);
+        }
+
+        // Read commands from Emacs (non-blocking)
+        if let Some(ref mut stream) = data.emacs {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
+                    match cmd {
+                        Command::Layout { id, x, y, w, h } => {
+                            if let Some(window) = data.state.id_windows.get(&id) {
+                                data.state.space.map_element(window.clone(), (x, y), false);
+                                window.toplevel().map(|t| {
+                                    t.with_pending_state(|state| {
+                                        state.size = Some((w as i32, h as i32).into());
+                                    });
+                                    t.send_configure();
+                                });
+                                info!("Layout surface {} to ({}, {}) {}x{}", id, x, y, w, h);
+                            }
+                        }
+                        Command::Focus { id } => {
+                            info!("Focus surface {} (not implemented)", id);
+                        }
+                    }
+                }
+                line.clear();
+            }
+        }
+
         event_loop.dispatch(Some(std::time::Duration::from_millis(16)), &mut data)?;
     }
 
