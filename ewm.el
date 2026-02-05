@@ -8,7 +8,14 @@
 ;; EWM integrates Emacs with a Wayland compositor, providing an EXWM-like
 ;; experience without the single-threaded limitations.
 ;;
-;; Phase 1: Prove IPC works between Rust compositor and Emacs.
+;; Usage:
+;;   1. Start compositor: cargo run (in ewm-compositor/)
+;;   2. Start Emacs inside: WAYLAND_DISPLAY=wayland-ewm emacs -Q -l ewm.el
+;;   3. Connect: M-x ewm-connect
+;;   4. Start apps: WAYLAND_DISPLAY=wayland-ewm foot
+;;   5. Switch to surface buffer: C-x b *ewm:...*
+;;
+;; Surfaces automatically align with the Emacs window displaying their buffer.
 
 ;;; Code:
 
@@ -116,11 +123,13 @@
            :service path
            :filter #'ewm--filter
            :sentinel #'ewm--sentinel))
+    (ewm--enable-layout-sync)
     (message "EWM: connected to %s" path)))
 
 (defun ewm-disconnect ()
   "Disconnect from compositor."
   (interactive)
+  (ewm--disable-layout-sync)
   (when ewm--process
     (delete-process ewm--process)
     (setq ewm--process nil)
@@ -137,6 +146,115 @@
 (define-derived-mode ewm-surface-mode special-mode "EWM Surface"
   "Major mode for EWM surface buffers."
   (setq buffer-read-only t))
+
+;;; Debug
+
+(defun ewm-debug-layout ()
+  "Show layout debug info for current window.
+Also writes to /tmp/ewm-debug.txt for easy access."
+  (interactive)
+  (let* ((window (selected-window))
+         (frame (selected-frame))
+         (geometry (frame-geometry frame))
+         (abs-edges (window-inside-absolute-pixel-edges window))
+         (rel-edges (window-inside-pixel-edges window))
+         (y-offset (ewm--frame-y-offset frame))
+         (info (format "Window edges (absolute): %S
+Window edges (relative): %S
+Calculated Y offset: %d
+  - ewm-csd-height: %d
+  - menu-bar: %S
+  - tool-bar: %S
+  - tab-bar: %S
+Frame undecorated: %S
+"
+                       abs-edges
+                       rel-edges
+                       y-offset
+                       ewm-csd-height
+                       (alist-get 'menu-bar-size geometry)
+                       (alist-get 'tool-bar-size geometry)
+                       (alist-get 'tab-bar-size geometry)
+                       (frame-parameter frame 'undecorated))))
+    (write-region info nil "/tmp/ewm-debug.txt")
+    (message "Debug saved to /tmp/ewm-debug.txt")))
+
+;;; Layout (adapted from EXWM's exwm-layout.el and exwm-core.el)
+
+(require 'cl-lib)
+
+;; Compatibility wrapper for window-inside-absolute-pixel-edges
+;; Fixes tab-line handling for Emacs < 31 (from exwm-core.el)
+(defalias 'ewm--window-inside-absolute-pixel-edges
+  (if (< emacs-major-version 31)
+      (lambda (&optional window)
+        "Return absolute pixel edges of WINDOW's text area.
+This version correctly handles tab-lines on Emacs prior to v31."
+        (let* ((window (window-normalize-window window t))
+               (edges (window-inside-absolute-pixel-edges window))
+               (tab-line-height (window-tab-line-height window)))
+          (cl-incf (elt edges 1) tab-line-height)
+          (cl-incf (elt edges 3) tab-line-height)
+          edges))
+    #'window-inside-absolute-pixel-edges)
+  "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
+
+(defcustom ewm-csd-height 0
+  "Height of client-side decorations in pixels.
+Set this if surfaces appear shifted vertically.
+GTK CSD headers are typically 35-45 pixels."
+  :type 'integer
+  :group 'ewm)
+
+(defun ewm--frame-y-offset (&optional frame)
+  "Calculate Y offset for FRAME to account for CSD, menu bar, and tool bar."
+  (let* ((frame (or frame (selected-frame)))
+         (geometry (frame-geometry frame))
+         (menu-bar-height (or (cdr (alist-get 'menu-bar-size geometry)) 0))
+         (tool-bar-height (or (cdr (alist-get 'tool-bar-size geometry)) 0))
+         (tab-bar-height (or (cdr (alist-get 'tab-bar-size geometry)) 0)))
+    ;; Add: CSD height + all bars
+    (+ ewm-csd-height menu-bar-height tool-bar-height tab-bar-height)))
+
+(defun ewm-layout--show (id &optional window)
+  "Show surface ID exactly fit in the Emacs window WINDOW.
+Adapted from exwm-layout--show."
+  (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
+         (x (pop edges))
+         (y (pop edges))
+         (width (- (pop edges) x))
+         (height (- (pop edges) y))
+         ;; On PGTK, absolute edges are relative to content area.
+         ;; Add frame bars offset to get compositor coordinates.
+         (y-offset (ewm--frame-y-offset (window-frame window))))
+    (ewm-layout id x (+ y y-offset) width height)))
+
+(defun ewm-layout--refresh ()
+  "Refresh layout for all visible surface buffers.
+Only sends layout for the first window displaying each surface.
+Adapted from exwm-layout--refresh."
+  (when (and ewm--process (process-live-p ewm--process))
+    (let ((seen-surfaces (make-hash-table :test 'eql)))
+      (dolist (frame (frame-list))
+        (dolist (window (window-list frame 'no-minibuf))
+          (let* ((buf (window-buffer window))
+                 (id (buffer-local-value 'ewm-surface-id buf)))
+            ;; Only process each surface once (first window wins)
+            (when (and id (not (gethash id seen-surfaces)))
+              (puthash id t seen-surfaces)
+              (ewm-layout--show id window))))))))
+
+(defun ewm--window-config-change ()
+  "Hook called when window configuration changes."
+  (ewm-layout--refresh))
+
+(defun ewm--enable-layout-sync ()
+  "Enable automatic layout sync."
+  (add-hook 'window-configuration-change-hook #'ewm--window-config-change))
+
+(defun ewm--disable-layout-sync ()
+  "Disable automatic layout sync."
+  (remove-hook 'window-configuration-change-hook #'ewm--window-config-change))
 
 (provide 'ewm)
 ;;; ewm.el ends here
