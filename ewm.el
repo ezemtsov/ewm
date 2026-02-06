@@ -19,7 +19,7 @@
 ;;
 ;; Input handling (like EXWM):
 ;;   When viewing a surface buffer, typing goes directly to the surface.
-;;   Switch to a non-surface buffer (C-x b) to use Emacs commands.
+;;   Prefix keys (C-x, M-x, etc.) are intercepted and go to Emacs.
 
 ;;; Code:
 
@@ -189,15 +189,13 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
 ;; each key goes to Emacs or the X window.  Keys without Emacs bindings
 ;; are replayed to the X window, so regular typing works immediately.
 ;;
-;; In Wayland, there's no equivalent to XGrabKey.  EWM achieves similar
-;; behavior by:
+;; EWM achieves similar behavior by:
 ;; - Always keeping keyboard focus on the viewed surface
 ;; - Regular typing goes directly to the surface (like EXWM)
-;; - Global/prefix keys need compositor-side interception (TODO)
+;; - Prefix keys (C-x, M-x, etc.) are intercepted by the compositor and
+;;   redirected to Emacs, enabling Emacs commands while viewing a surface
 ;;
-;; Current limitation: Emacs keybindings (C-x, M-x, etc.) don't work while
-;; viewing a surface because the surface has keyboard focus.  Workaround:
-;; switch to a non-surface buffer to use Emacs commands.
+;; Customize `ewm-input-prefix-keys' to add more keys that should go to Emacs.
 
 (defgroup ewm-input nil
   "EWM input handling."
@@ -211,7 +209,7 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
   "Keys that always go to Emacs, even in char-mode.
 These keys switch keyboard focus back to Emacs.
 Adapted from `exwm-input-prefix-keys'."
-  :type '(repeat key-sequence)
+  :type '(repeat character)
   :group 'ewm-input)
 
 (defcustom ewm-input-simulation-keys nil
@@ -306,20 +304,44 @@ Emacs (surface 1) has focus."
         (setq ewm-input--last-focused-id target-id)
         (ewm-focus target-id)))))
 
+(defun ewm-input--on-post-command ()
+  "Hook called after each command.
+Re-focuses the surface if we're in a surface buffer.
+This handles the case where the compositor intercepted a prefix key
+and temporarily redirected focus to Emacs."
+  (when (and ewm--process
+             (process-live-p ewm--process)
+             (not (minibufferp)))
+    (let ((id (buffer-local-value 'ewm-surface-id (current-buffer))))
+      (when id
+        ;; We're in a surface buffer - ensure focus is on the surface
+        ;; Reset last-focused-id to force the focus command
+        (setq ewm-input--last-focused-id id)
+        (ewm-focus id)))))
+
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm-input--last-focused-id 1)  ; Start with Emacs focused
-  (add-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update))
+  (add-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
+  (add-hook 'post-command-hook #'ewm-input--on-post-command))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm-input--last-focused-id nil)
-  (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update))
+  (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
+  (remove-hook 'post-command-hook #'ewm-input--on-post-command))
 
 (defun ewm--send-prefix-keys ()
   "Send prefix keys configuration to compositor.
 Compositor uses these to switch focus back to Emacs in char-mode."
-  (let ((keys (mapcar #'key-description ewm-input-prefix-keys)))
+  ;; Convert prefix keys to string descriptions for the compositor.
+  ;; Handle both character codes (integers) and string formats.
+  ;; Use vconcat to create a vector, which json-serialize treats as an array.
+  (let ((keys (vconcat (mapcar (lambda (key)
+                                 (if (stringp key)
+                                     key  ; Already a string description
+                                   (single-key-description key)))
+                               ewm-input-prefix-keys))))
     (ewm--send `(:cmd "prefix-keys" :keys ,keys))))
 
 ;;; Surface mode

@@ -23,7 +23,7 @@ use smithay::{
     delegate_xdg_shell,
     desktop::{space::render_output, Space, Window},
     input::{
-        keyboard::FilterResult,
+        keyboard::{FilterResult, xkb::keysyms, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
         Seat, SeatHandler, SeatState,
     },
@@ -99,6 +99,125 @@ enum Command {
     PrefixKeys { keys: Vec<String> },
 }
 
+/// Parsed prefix key: keysym + required modifiers
+#[derive(Debug, Clone)]
+struct PrefixKey {
+    keysym: u32,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    logo: bool,  // Super/Windows key
+}
+
+impl PrefixKey {
+    /// Parse an Emacs-style key description like "C-x", "M-x", "C-M-c"
+    fn parse(key_desc: &str) -> Option<Self> {
+        let mut ctrl = false;
+        let mut alt = false;
+        let mut shift = false;
+        let mut logo = false;
+        let mut remaining = key_desc;
+
+        // Parse modifiers (C- for Ctrl, M- for Meta/Alt, S- for Shift, s- for Super)
+        loop {
+            if remaining.starts_with("C-") {
+                ctrl = true;
+                remaining = &remaining[2..];
+            } else if remaining.starts_with("M-") {
+                alt = true;
+                remaining = &remaining[2..];
+            } else if remaining.starts_with("S-") {
+                shift = true;
+                remaining = &remaining[2..];
+            } else if remaining.starts_with("s-") {
+                logo = true;
+                remaining = &remaining[2..];
+            } else {
+                break;
+            }
+        }
+
+        // Parse the base key
+        let keysym = match remaining {
+            "SPC" | "space" => keysyms::KEY_space,
+            "RET" | "return" => keysyms::KEY_Return,
+            "TAB" | "tab" => keysyms::KEY_Tab,
+            "ESC" | "escape" => keysyms::KEY_Escape,
+            "DEL" | "delete" => keysyms::KEY_Delete,
+            "backspace" => keysyms::KEY_BackSpace,
+            // Special characters
+            "`" => keysyms::KEY_grave,
+            ":" => keysyms::KEY_colon,
+            ";" => keysyms::KEY_semicolon,
+            "&" => keysyms::KEY_ampersand,
+            "!" => keysyms::KEY_exclam,
+            "@" => keysyms::KEY_at,
+            "#" => keysyms::KEY_numbersign,
+            "$" => keysyms::KEY_dollar,
+            "%" => keysyms::KEY_percent,
+            "^" => keysyms::KEY_asciicircum,
+            "*" => keysyms::KEY_asterisk,
+            "(" => keysyms::KEY_parenleft,
+            ")" => keysyms::KEY_parenright,
+            "-" => keysyms::KEY_minus,
+            "_" => keysyms::KEY_underscore,
+            "=" => keysyms::KEY_equal,
+            "+" => keysyms::KEY_plus,
+            "[" => keysyms::KEY_bracketleft,
+            "]" => keysyms::KEY_bracketright,
+            "{" => keysyms::KEY_braceleft,
+            "}" => keysyms::KEY_braceright,
+            "\\" => keysyms::KEY_backslash,
+            "|" => keysyms::KEY_bar,
+            "'" => keysyms::KEY_apostrophe,
+            "\"" => keysyms::KEY_quotedbl,
+            "," => keysyms::KEY_comma,
+            "." => keysyms::KEY_period,
+            "/" => keysyms::KEY_slash,
+            "<" => keysyms::KEY_less,
+            ">" => keysyms::KEY_greater,
+            "?" => keysyms::KEY_question,
+            "~" => keysyms::KEY_asciitilde,
+            s if s.len() == 1 => {
+                let c = s.chars().next().unwrap();
+                if c.is_ascii_lowercase() {
+                    // a-z
+                    keysyms::KEY_a + (c as u32 - 'a' as u32)
+                } else if c.is_ascii_uppercase() {
+                    // A-Z (shifted)
+                    shift = true;
+                    keysyms::KEY_a + (c.to_ascii_lowercase() as u32 - 'a' as u32)
+                } else if c.is_ascii_digit() {
+                    // 0-9
+                    keysyms::KEY_0 + (c as u32 - '0' as u32)
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+
+        Some(PrefixKey { keysym, ctrl, alt, shift, logo })
+    }
+
+    /// Check if this prefix key matches the given keysym and modifiers
+    fn matches(&self, keysym: u32, mods: &ModifiersState) -> bool {
+        // For prefix keys, we check exact modifier match
+        // Note: keysym should be the unshifted version for letters
+        let keysym_match = self.keysym == keysym ||
+            // Also match shifted keysyms (A-Z map to a-z with shift)
+            (keysym >= keysyms::KEY_A && keysym <= keysyms::KEY_Z &&
+             self.keysym == keysym - keysyms::KEY_A + keysyms::KEY_a);
+
+        keysym_match &&
+            self.ctrl == mods.ctrl &&
+            self.alt == mods.alt &&
+            // For shift, we're lenient - shifted letters are handled above
+            (self.shift == mods.shift || (keysym >= keysyms::KEY_A && keysym <= keysyms::KEY_Z)) &&
+            self.logo == mods.logo
+    }
+}
+
 struct Ewm {
     running: bool,
     space: Space<Window>,
@@ -124,7 +243,7 @@ struct Ewm {
     // Input
     pointer_location: (f64, f64),
     focused_surface_id: u32,  // Which surface has keyboard focus (1 = Emacs)
-    prefix_keys: Vec<String>, // Keys that switch focus back to Emacs in char-mode
+    prefix_keys: Vec<PrefixKey>, // Parsed prefix keys that redirect to Emacs
 }
 
 impl Ewm {
@@ -540,37 +659,103 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for event in input_events {
             match event {
                 InputEvent::Keyboard { event } => {
-                    // Use focused_surface_id (controlled by Emacs) to determine focus
-                    // This implements line-mode (focus on Emacs=1) vs char-mode (focus on surface)
-                    let target_id = data.state.focused_surface_id;
-                    if let Some(window) = data.state.id_windows.get(&target_id) {
-                        if let Some(surface) = window.wl_surface() {
-                            let new_focus = surface.into_owned();
-                            // Only update if focus changed
-                            if keyboard_focus.as_ref() != Some(&new_focus) {
-                                keyboard_focus = Some(new_focus);
-                            }
-                        }
-                    }
-
                     let serial = SERIAL_COUNTER.next_serial();
                     let time = Event::time_msec(&event);
                     let keyboard = data.state.seat.get_keyboard().unwrap();
 
-                    // Set keyboard focus
-                    if let Some(ref focus) = keyboard_focus {
-                        keyboard.set_focus(&mut data.state, Some(focus.clone()), serial);
-                    }
+                    // Clone prefix_keys to use in filter closure
+                    let prefix_keys = data.state.prefix_keys.clone();
+                    let current_focus_id = data.state.focused_surface_id;
 
-                    // Process key
-                    keyboard.input::<(), _>(
+                    // Check if this is a prefix key (only on key press, not release)
+                    let is_press = event.state() == smithay::backend::input::KeyState::Pressed;
+
+                    // Process key with filter to detect prefix keys
+                    let redirect_to_emacs = keyboard.input::<bool, _>(
                         &mut data.state,
                         event.key_code(),
                         event.state(),
                         serial,
                         time,
-                        |_, _, _| FilterResult::Forward,
+                        |_, mods, handle| {
+                            if !is_press {
+                                return FilterResult::Forward;
+                            }
+
+                            // Get the keysym for this key
+                            let keysym = handle.modified_sym();
+                            let raw_keysym = keysym.raw();
+
+                            // Log key press details
+                            info!("Key press: keysym=0x{:x} ({:?}), mods: ctrl={} alt={} shift={} logo={}, focus_id={}, prefix_keys_count={}",
+                                  raw_keysym,
+                                  keysym,
+                                  mods.ctrl, mods.alt, mods.shift, mods.logo,
+                                  current_focus_id,
+                                  prefix_keys.len());
+
+                            // Check if this matches any prefix key
+                            for pk in &prefix_keys {
+                                let matches = pk.matches(raw_keysym, mods);
+                                if matches || (mods.ctrl && raw_keysym == pk.keysym) {
+                                    info!("  Checking prefix {:?}: keysym=0x{:x}, ctrl={} alt={} shift={} logo={} -> matches={}",
+                                          pk, pk.keysym, pk.ctrl, pk.alt, pk.shift, pk.logo, matches);
+                                }
+                            }
+
+                            let is_prefix = prefix_keys.iter().any(|pk| pk.matches(raw_keysym, mods));
+
+                            if is_prefix && current_focus_id != 1 {
+                                // This is a prefix key and focus is not on Emacs
+                                // Signal that we need to redirect focus
+                                info!("  -> INTERCEPTING prefix key, will redirect to Emacs");
+                                FilterResult::Intercept(true)
+                            } else {
+                                if is_prefix {
+                                    info!("  -> Prefix key but already focused on Emacs");
+                                }
+                                FilterResult::Forward
+                            }
+                        },
                     );
+
+                    // If we intercepted a prefix key, redirect focus to Emacs
+                    if redirect_to_emacs == Some(true) {
+                        // Switch focus to Emacs (surface 1)
+                        // Update focused_surface_id so subsequent keys also go to Emacs
+                        // (Emacs will send a focus command when it's done with the key sequence)
+                        data.state.focused_surface_id = 1;
+                        if let Some(window) = data.state.id_windows.get(&1) {
+                            if let Some(surface) = window.wl_surface() {
+                                let emacs_surface = surface.into_owned();
+                                keyboard_focus = Some(emacs_surface.clone());
+                                keyboard.set_focus(&mut data.state, Some(emacs_surface.clone()), serial);
+                                info!("Prefix key detected, redirecting focus to Emacs (focused_surface_id=1)");
+
+                                // Re-send the key to Emacs
+                                keyboard.input::<(), _>(
+                                    &mut data.state,
+                                    event.key_code(),
+                                    event.state(),
+                                    serial,
+                                    time,
+                                    |_, _, _| FilterResult::Forward,
+                                );
+                            }
+                        }
+                    } else {
+                        // Normal key handling - use current focused surface
+                        let target_id = data.state.focused_surface_id;
+                        if let Some(window) = data.state.id_windows.get(&target_id) {
+                            if let Some(surface) = window.wl_surface() {
+                                let new_focus = surface.into_owned();
+                                if keyboard_focus.as_ref() != Some(&new_focus) {
+                                    keyboard_focus = Some(new_focus.clone());
+                                    keyboard.set_focus(&mut data.state, Some(new_focus), serial);
+                                }
+                            }
+                        }
+                    }
                 }
                 InputEvent::PointerMotionAbsolute { event } => {
                     let output_geo = data.state.space.output_geometry(&output).unwrap();
@@ -805,8 +990,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             info!("Screenshot requested: {}", target);
                         }
                         Command::PrefixKeys { keys } => {
-                            data.state.prefix_keys = keys.clone();
-                            info!("Prefix keys set: {:?}", keys);
+                            // Parse Emacs-style key descriptions into PrefixKey structs
+                            data.state.prefix_keys = keys.iter()
+                                .filter_map(|k| {
+                                    let parsed = PrefixKey::parse(k);
+                                    if parsed.is_none() {
+                                        warn!("Failed to parse prefix key: {}", k);
+                                    }
+                                    parsed
+                                })
+                                .collect();
+                            info!("Prefix keys set: {:?}", data.state.prefix_keys);
                         }
                     }
                 }
