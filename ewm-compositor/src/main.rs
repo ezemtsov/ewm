@@ -538,6 +538,9 @@ impl LoopData {
                 if writeln!(stream, "{}", json).is_err() {
                     warn!("Failed to send event to Emacs, disconnecting");
                     self.emacs = None;
+                } else {
+                    // Flush to ensure event is sent immediately
+                    let _ = stream.flush();
                 }
             }
         }

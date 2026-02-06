@@ -95,13 +95,13 @@ Adapted from `exwm-manage--unmanage-window'."
     (when info
       (let ((buf (plist-get info :buffer)))
         (when (buffer-live-p buf)
-          ;; Use kill-buffer-query-functions bypass since we're handling
-          ;; a close event from compositor (surface already closed)
-          (let ((kill-buffer-query-functions nil))
-            (kill-buffer buf))))
+          ;; Remove the buffer-local kill query function that would block the kill,
+          ;; since we're handling a close event from compositor (surface already closed)
+          (with-current-buffer buf
+            (remove-hook 'kill-buffer-query-functions
+                         #'ewm--kill-buffer-query-function t))
+          (kill-buffer buf)))
       (remhash id ewm--surfaces))
-    ;; Focus returns to Emacs via buffer-list-update-hook
-    ;; when the buffer is killed and another is selected
     (message "EWM: closed surface %d" id)))
 
 ;;; Commands
