@@ -53,8 +53,17 @@
 
 ;;; Event handlers
 
+(defcustom ewm-manage-focus-new-surface t
+  "Whether to automatically focus new surfaces.
+When non-nil, new surface buffers are displayed and selected.
+Adapted from EXWM's behavior."
+  :type 'boolean
+  :group 'ewm)
+
 (defun ewm--handle-new-surface (event)
-  "Handle new surface EVENT."
+  "Handle new surface EVENT.
+Creates a buffer for the surface and optionally displays it.
+Adapted from `exwm-manage--manage-window'."
   (let* ((id (gethash "id" event))
          (app (gethash "app" event))
          (buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
@@ -63,17 +72,28 @@
       (ewm-surface-mode)
       (setq-local ewm-surface-id id)
       (setq-local ewm-surface-app app))
+    ;; Display the new surface buffer (like EXWM's pop-to-buffer-same-window)
+    ;; This triggers buffer-list-update-hook which handles focus
+    (when ewm-manage-focus-new-surface
+      (pop-to-buffer-same-window buf))
     (message "EWM: new surface %d (%s)" id app)))
 
 (defun ewm--handle-close-surface (event)
-  "Handle close surface EVENT."
+  "Handle close surface EVENT.
+Kills the surface buffer and focuses Emacs.
+Adapted from `exwm-manage--unmanage-window'."
   (let* ((id (gethash "id" event))
          (info (gethash id ewm--surfaces)))
     (when info
       (let ((buf (plist-get info :buffer)))
         (when (buffer-live-p buf)
-          (kill-buffer buf)))
+          ;; Use kill-buffer-query-functions bypass since we're handling
+          ;; a close event from compositor (surface already closed)
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buf))))
       (remhash id ewm--surfaces))
+    ;; Focus returns to Emacs via buffer-list-update-hook
+    ;; when the buffer is killed and another is selected
     (message "EWM: closed surface %d" id)))
 
 ;;; Commands
@@ -217,11 +237,10 @@ Effectively makes line-mode behave like char-mode."
 MODE is either `line-mode' or `char-mode'."
   (when ewm-surface-id
     (setq ewm-input--mode mode)
-    (if (eq mode 'char-mode)
-        ;; Char-mode: focus the surface
-        (ewm-focus ewm-surface-id)
-      ;; Line-mode: focus Emacs (surface 1)
-      (ewm-focus 1))
+    (let ((target-id (if (eq mode 'char-mode) ewm-surface-id 1)))
+      ;; Update tracking and send focus command
+      (setq ewm-input--last-focused-id target-id)
+      (ewm-focus target-id))
     (force-mode-line-update)))
 
 (defun ewm-input-char-mode ()
@@ -251,32 +270,49 @@ KEY should be a key sequence."
   (when ewm-surface-id
     (ewm--send `(:cmd "key" :id ,ewm-surface-id :key ,(key-description key)))))
 
+;; Internal variables for focus tracking
+(defvar ewm-input--skip-buffer-list-update nil
+  "Non-nil to skip `ewm-input--on-buffer-list-update'.
+Used when buffer changes are expected and focus should not change.")
+
+(defvar ewm-input--last-focused-id nil
+  "Last surface ID that was focused.
+Used to avoid sending redundant focus commands.")
+
 (defun ewm-input--on-buffer-list-update ()
   "Hook called when buffer list changes.
 Updates keyboard focus based on current buffer.
 Adapted from `exwm-input--on-buffer-list-update'."
-  (when (and ewm--process (process-live-p ewm--process))
+  (when (and ewm--process
+             (process-live-p ewm--process)
+             (not ewm-input--skip-buffer-list-update)
+             ;; Don't process during minibuffer operations
+             (not (minibufferp)))
     (let* ((buf (current-buffer))
-           (id (buffer-local-value 'ewm-surface-id buf)))
-      (cond
-       ;; Switching to a surface buffer
-       (id
-        (let ((mode (buffer-local-value 'ewm-input--mode buf)))
-          (if (eq mode 'char-mode)
-              ;; In char-mode: focus the surface
-              (ewm-focus id)
-            ;; In line-mode: focus Emacs
-            (ewm-focus 1))))
-       ;; Switching to a non-surface buffer: focus Emacs
-       (t
-        (ewm-focus 1))))))
+           (id (buffer-local-value 'ewm-surface-id buf))
+           (target-id
+            (cond
+             ;; Switching to a surface buffer
+             (id
+              (let ((mode (buffer-local-value 'ewm-input--mode buf)))
+                (if (eq mode 'char-mode)
+                    id    ; Char-mode: focus the surface
+                  1)))    ; Line-mode: focus Emacs
+             ;; Switching to a non-surface buffer: focus Emacs
+             (t 1))))
+      ;; Only send focus command if target changed
+      (unless (eq target-id ewm-input--last-focused-id)
+        (setq ewm-input--last-focused-id target-id)
+        (ewm-focus target-id)))))
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
+  (setq ewm-input--last-focused-id 1)  ; Start with Emacs focused
   (add-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
+  (setq ewm-input--last-focused-id nil)
   (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update))
 
 (defun ewm--send-prefix-keys ()
