@@ -29,8 +29,8 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             element::{
-                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-                Kind,
+                surface::WaylandSurfaceRenderElement,
+                AsRenderElements,
             },
             gles::GlesRenderer,
             multigpu::{gbm::GbmGlesBackend, GpuManager},
@@ -39,13 +39,12 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::primary_gpu,
     },
-    desktop::Window,
     input::keyboard::FilterResult,
     output::{Mode, Output, OutputModeSource, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
             generic::Generic, timer::{TimeoutAction, Timer}, EventLoop, Interest,
-            Mode as CalloopMode, PostAction,
+            LoopHandle, Mode as CalloopMode, PostAction, RegistrationToken,
             channel::{Sender, channel},
         },
         drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
@@ -75,10 +74,44 @@ type GbmDrmCompositor = DrmCompositor<
     DrmDeviceFd,
 >;
 
+/// Redraw state machine for proper VBlank synchronization
+/// Based on niri's approach to avoid the timing bug where the redraw flag
+/// is cleared too early (after queue_frame instead of after VBlank).
+#[derive(Debug, Default)]
+pub enum RedrawState {
+    /// No redraw pending, output is idle
+    #[default]
+    Idle,
+    /// A redraw has been requested but not yet started
+    Queued,
+    /// Frame has been queued to DRM, waiting for VBlank
+    /// redraw_needed tracks if another redraw was requested while waiting
+    WaitingForVBlank { redraw_needed: bool },
+    /// No damage, using estimated VBlank timer instead of real one
+    WaitingForEstimatedVBlank(RegistrationToken),
+    /// Estimated VBlank timer active AND a new redraw was queued
+    WaitingForEstimatedVBlankAndQueued(RegistrationToken),
+}
+
+impl RedrawState {
+    /// Transition to request a redraw
+    fn queue_redraw(self) -> Self {
+        match self {
+            RedrawState::Idle => RedrawState::Queued,
+            RedrawState::WaitingForVBlank { .. } => RedrawState::WaitingForVBlank { redraw_needed: true },
+            RedrawState::WaitingForEstimatedVBlank(token) => RedrawState::WaitingForEstimatedVBlankAndQueued(token),
+            other => other, // Already queued, no-op
+        }
+    }
+}
+
 /// Per-output surface state
 struct OutputSurface {
     output: Output,
     compositor: GbmDrmCompositor,
+    redraw_state: RedrawState,
+    /// Refresh interval in microseconds (for estimated VBlank timer)
+    refresh_interval_us: u64,
 }
 
 /// Message to trigger deferred DRM initialization
@@ -115,9 +148,8 @@ pub struct DrmBackendState {
     paused: bool,
     /// Channel to trigger deferred initialization
     init_sender: Option<Sender<DrmMessage>>,
-    /// Flag indicating a redraw is needed (set by client commits)
-    /// This is how client buffer commits trigger renders
-    needs_redraw: bool,
+    /// Event loop handle for scheduling timers
+    loop_handle: Option<LoopHandle<'static, LoopData>>,
 }
 
 impl DrmBackendState {
@@ -131,15 +163,24 @@ impl DrmBackendState {
         self.device.as_ref().map(|d| d.render_node)
     }
 
-    /// Mark that a redraw is needed (called from client commit handler)
-    /// This is how client buffer commits trigger the render loop
+    /// Mark that a redraw is needed for all outputs (called from client commit handler)
+    /// This transitions each output's RedrawState appropriately
     pub fn queue_redraw(&mut self) {
-        self.needs_redraw = true;
+        let Some(device) = &mut self.device else {
+            return;
+        };
+        for surface in device.surfaces.values_mut() {
+            let old_state = std::mem::take(&mut surface.redraw_state);
+            surface.redraw_state = old_state.queue_redraw();
+        }
     }
 
-    /// Check if a redraw is needed
+    /// Check if any output has a redraw queued
     pub fn needs_redraw(&self) -> bool {
-        self.needs_redraw
+        let Some(device) = &self.device else {
+            return false;
+        };
+        device.surfaces.values().any(|s| matches!(s.redraw_state, RedrawState::Queued))
     }
 
     /// Perform early buffer import for a surface
@@ -161,6 +202,15 @@ impl DrmBackendState {
         self.libinput.suspend();
         if let Some(device) = &mut self.device {
             device.drm.pause();
+            // Cancel any pending estimated VBlank timers and reset states to Idle
+            for surface in device.surfaces.values_mut() {
+                if let RedrawState::WaitingForEstimatedVBlank(token) | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = surface.redraw_state {
+                    if let Some(ref handle) = self.loop_handle {
+                        handle.remove(token);
+                    }
+                }
+                surface.redraw_state = RedrawState::Idle;
+            }
         }
         self.paused = true;
     }
@@ -180,6 +230,10 @@ impl DrmBackendState {
             } else {
                 info!("DRM device activated successfully (DRM master acquired)");
             }
+            // Queue redraws for all outputs to resume rendering
+            for surface in device.surfaces.values_mut() {
+                surface.redraw_state = RedrawState::Queued;
+            }
         }
     }
 
@@ -193,7 +247,7 @@ impl DrmBackendState {
     }
 
     /// Render a frame to the given output
-    fn render_output(&mut self, crtc: crtc::Handle, space: &smithay::desktop::Space<Window>) {
+    fn render_output(&mut self, crtc: crtc::Handle, ewm: &crate::Ewm) {
         let Some(device) = &mut self.device else {
             return;
         };
@@ -202,12 +256,24 @@ impl DrmBackendState {
             return;
         };
 
+        // Only render if we're in a queued state
+        let should_render = matches!(
+            surface.redraw_state,
+            RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+        );
+        if !should_render {
+            debug!("Skipping render: state={:?}", surface.redraw_state);
+            return;
+        }
+
         if self.paused || !device.drm.is_active() {
             debug!("Skipping render: paused={} drm_active={}", self.paused, device.drm.is_active());
             return;
         }
 
-        let output = &surface.output;
+        // Extract refresh_interval_us before we start borrowing surface mutably
+        let refresh_interval_us = surface.refresh_interval_us;
+        let output = surface.output.clone();
         let output_scale = Scale::from(output.current_scale().fractional_scale());
 
         // Get a renderer from the GPU manager
@@ -216,24 +282,33 @@ impl DrmBackendState {
             return;
         };
 
-        // Create render elements from window surface trees
+        // Create render elements (matching winit backend approach)
         let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
-        let space_element_count = space.elements().count();
-        for window in space.elements() {
-            if let Some(wl_surface) = window.wl_surface() {
-                let loc = space.element_location(window).unwrap_or_default();
-                let window_geo = window.geometry();
-                let window_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = render_elements_from_surface_tree(
-                    renderer.as_mut(),
-                    &wl_surface,
-                    loc.to_physical_precise_round(output_scale),
-                    output_scale,
-                    1.0,
-                    Kind::Unspecified,
-                );
-                debug!("Window at {:?}, geometry {:?}: {} render elements", loc, window_geo, window_elements.len());
-                elements.extend(window_elements);
+
+        // First, render secondary views (non-active views for multi-view surfaces)
+        // This must come before primary surfaces so they appear underneath
+        for (&id, views) in &ewm.surface_views {
+            if let Some(window) = ewm.id_windows.get(&id) {
+                for view in views.iter().filter(|v| !v.active) {
+                    let location = smithay::utils::Point::from((view.x, view.y));
+                    let loc_physical = location.to_physical_precise_round(output_scale);
+                    let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                        window.render_elements(renderer.as_mut(), loc_physical, output_scale, 1.0);
+                    elements.extend(view_elements);
+                }
             }
+        }
+
+        // Then render primary surfaces from the space
+        let space_element_count = ewm.space.elements().count();
+        for window in ewm.space.elements() {
+            let loc = ewm.space.element_location(window).unwrap_or_default();
+            let loc_physical = loc.to_physical_precise_round(output_scale);
+            // Use window.render_elements() which properly handles window geometry and subsurfaces
+            let window_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                window.render_elements(renderer.as_mut(), loc_physical, output_scale, 1.0);
+            debug!("Window at {:?}: {} render elements", loc, window_elements.len());
+            elements.extend(window_elements);
         }
 
         debug!("Rendering {} elements from {} windows", elements.len(), space_element_count);
@@ -253,29 +328,140 @@ impl DrmBackendState {
             Ok(result) => {
                 debug!("Render result: is_empty={}", result.is_empty);
 
-                // Only queue frame if there's actual damage to display
-                // This matches niri's behavior - queueing empty frames can cause issues
                 if !result.is_empty {
+                    // There's damage to display - queue frame and wait for VBlank
                     match compositor.queue_frame(()) {
                         Ok(()) => {
-                            // Successfully queued frame - clear the redraw flag
-                            // VBlank will fire and continue the render cycle
-                            self.needs_redraw = false;
+                            // Transition to WaitingForVBlank
+                            // Do NOT clear the flag here - wait for actual VBlank
+                            surface.redraw_state = RedrawState::WaitingForVBlank { redraw_needed: false };
                         }
                         Err(err) => {
                             warn!("Error queueing frame: {:?}", err);
+                            // On error, go back to Idle so we can try again
+                            surface.redraw_state = RedrawState::Idle;
                         }
                     }
+                } else {
+                    // No damage - use estimated VBlank timer
+                    // This avoids busy-looping when there's nothing to render
+                    self.queue_estimated_vblank_timer(crtc, refresh_interval_us);
                 }
 
                 // Send frame callbacks to clients so they can commit new buffers
-                for window in space.elements() {
-                    window.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
+                for window in ewm.space.elements() {
+                    window.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
                 }
             }
             Err(err) => {
                 warn!("Error rendering frame: {:?}", err);
+                // On error, reset to Idle
+                if let Some(device) = &mut self.device {
+                    if let Some(surface) = device.surfaces.get_mut(&crtc) {
+                        surface.redraw_state = RedrawState::Idle;
+                    }
+                }
             }
+        }
+    }
+
+    /// Queue an estimated VBlank timer when there's no damage
+    /// This replaces the real VBlank for frame pacing when we don't submit a frame
+    fn queue_estimated_vblank_timer(&mut self, crtc: crtc::Handle, refresh_interval_us: u64) {
+        let Some(handle) = self.loop_handle.clone() else {
+            warn!("No loop handle available for estimated VBlank timer");
+            return;
+        };
+
+        let Some(device) = &mut self.device else {
+            return;
+        };
+        let Some(surface) = device.surfaces.get_mut(&crtc) else {
+            return;
+        };
+
+        // Calculate timer duration (use refresh interval, minimum 1ms)
+        let duration = Duration::from_micros(refresh_interval_us.max(1000));
+
+        // Create a one-shot timer
+        // We need to store the token so we can cancel it on pause
+        match handle.insert_source(
+            Timer::from_duration(duration),
+            move |_, _, data| {
+                // Timer fired - this is our estimated VBlank
+                if let Some(drm_backend) = data.state.drm_backend.as_ref() {
+                    drm_backend.borrow_mut().on_estimated_vblank_timer(crtc, &data.state);
+                }
+                TimeoutAction::Drop // One-shot
+            },
+        ) {
+            Ok(token) => {
+                surface.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
+            }
+            Err(err) => {
+                warn!("Failed to insert estimated VBlank timer: {:?}", err);
+                surface.redraw_state = RedrawState::Idle;
+            }
+        }
+    }
+
+    /// Handle estimated VBlank timer firing
+    fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &crate::Ewm) {
+        // First, check what state we're in and prepare for action
+        let action = {
+            let Some(device) = &mut self.device else {
+                return;
+            };
+            let Some(surface) = device.surfaces.get_mut(&crtc) else {
+                return;
+            };
+
+            match &surface.redraw_state {
+                RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
+                    // A redraw was queued while waiting - transition to Queued
+                    surface.redraw_state = RedrawState::Queued;
+                    Some(true) // needs render
+                }
+                RedrawState::WaitingForEstimatedVBlank(_) => {
+                    // No redraw queued - go idle
+                    // Send frame callbacks to maintain the callback chain
+                    let output = surface.output.clone();
+                    for window in ewm.space.elements() {
+                        window.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
+                    }
+                    surface.redraw_state = RedrawState::Idle;
+                    Some(false) // no render needed
+                }
+                other => {
+                    debug!("Unexpected state in on_estimated_vblank_timer: {:?}", other);
+                    None
+                }
+            }
+        };
+
+        // Now render if needed (after releasing the borrow)
+        if action == Some(true) {
+            self.render_output(crtc, ewm);
+        }
+    }
+
+    /// Process all outputs that have queued redraws
+    /// Called from the main loop after event dispatch
+    pub(crate) fn redraw_queued_outputs(&mut self, ewm: &crate::Ewm) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        // Collect CRTCs that need rendering
+        let queued_crtcs: Vec<crtc::Handle> = device
+            .surfaces
+            .iter()
+            .filter(|(_, s)| matches!(s.redraw_state, RedrawState::Queued))
+            .map(|(crtc, _)| *crtc)
+            .collect();
+
+        // Render each queued output
+        for crtc in queued_crtcs {
+            self.render_output(crtc, ewm);
         }
     }
 }
@@ -476,7 +662,20 @@ fn initialize_drm(
 
         info!("DrmCompositor created for {}", connector_name);
 
-        surfaces.insert(crtc, OutputSurface { output: output.clone(), compositor });
+        // Calculate refresh interval in microseconds from the mode's refresh rate
+        // mode.vrefresh() returns Hz, so interval = 1_000_000 / Hz
+        let refresh_interval_us = if mode.vrefresh() > 0 {
+            1_000_000 / mode.vrefresh() as u64
+        } else {
+            16_667 // Default to ~60Hz if unknown
+        };
+
+        surfaces.insert(crtc, OutputSurface {
+            output: output.clone(),
+            compositor,
+            redraw_state: RedrawState::Queued, // Start with a queued redraw
+            refresh_interval_us,
+        });
         ewm_state.space.map_output(&output, (0, 0));
         ewm_state.output_size = (mode.size().0 as i32, mode.size().1 as i32);
 
@@ -503,6 +702,7 @@ fn initialize_drm(
 
             // Mark the frame as submitted - this is crucial!
             // Without this, the compositor thinks there's still a pending frame
+            let mut should_render = false;
             if let Some(device) = &mut backend.device {
                 if let Some(surface) = device.surfaces.get_mut(&crtc) {
                     match surface.compositor.frame_submitted() {
@@ -511,12 +711,31 @@ fn initialize_drm(
                             warn!("Error marking frame as submitted: {:?}", err);
                         }
                     }
+
+                    // Handle RedrawState transition on VBlank
+                    match surface.redraw_state {
+                        RedrawState::WaitingForVBlank { redraw_needed } => {
+                            if redraw_needed {
+                                // Another redraw was requested while waiting - queue it
+                                surface.redraw_state = RedrawState::Queued;
+                                should_render = true;
+                            } else {
+                                // No pending redraw - go idle
+                                surface.redraw_state = RedrawState::Idle;
+                            }
+                        }
+                        _ => {
+                            debug!("VBlank received in unexpected state: {:?}", surface.redraw_state);
+                        }
+                    }
                 }
             }
 
-            // Now render the next frame
-            drop(backend);
-            backend_for_vblank.borrow_mut().render_output(crtc, &data.state.space);
+            // Render if we transitioned to Queued
+            if should_render {
+                drop(backend);
+                backend_for_vblank.borrow_mut().render_output(crtc, &data.state);
+            }
         }
     })?;
 
@@ -529,7 +748,7 @@ fn initialize_drm(
             let crtcs: Vec<_> = device.surfaces.keys().copied().collect();
             drop(backend);
             for crtc in crtcs {
-                backend_state.borrow_mut().render_output(crtc, &ewm_state.space);
+                backend_state.borrow_mut().render_output(crtc, ewm_state);
             }
         }
     }
@@ -582,6 +801,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     let (init_sender, init_receiver) = channel::<DrmMessage>();
 
     // 7. Create backend state (DRM device will be initialized later)
+    // Note: loop_handle will be set after we have access to it
     let backend_state = std::rc::Rc::new(std::cell::RefCell::new(DrmBackendState {
         session,
         libinput: libinput.clone(),
@@ -592,8 +812,11 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         }),
         paused: false,
         init_sender: Some(init_sender),
-        needs_redraw: true, // Start with redraw needed to render initial frame
+        loop_handle: None, // Will be set below
     }));
+
+    // Store the loop handle for timer scheduling
+    backend_state.borrow_mut().loop_handle = Some(event_loop.handle());
 
     // Set the DRM backend on Ewm for early_import support
     data.state.set_drm_backend(backend_state.clone());
@@ -718,31 +941,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         }
     })?;
 
-    // 11. Fallback render timer
-    // VBlanks drive normal rendering, but if they stop (e.g., no damage queued),
-    // this timer restarts the render loop when new content arrives.
-    // Key insight from niri: client commits set needs_redraw, timer checks it.
-    let backend_for_timer = backend_state.clone();
-    event_loop.handle().insert_source(
-        Timer::from_duration(Duration::from_millis(16)),
-        move |_, _, data| {
-            let backend = backend_for_timer.borrow();
-            let should_render = backend.is_initialized() && !backend.paused && backend.needs_redraw;
-            let crtcs: Vec<_> = backend.device.as_ref()
-                .map(|d| d.surfaces.keys().copied().collect())
-                .unwrap_or_default();
-            drop(backend);
-
-            if should_render {
-                for crtc in crtcs {
-                    backend_for_timer.borrow_mut().render_output(crtc, &data.state.space);
-                }
-            }
-            TimeoutAction::ToDuration(Duration::from_millis(16))
-        },
-    )?;
-
-    // 12. Set up IPC socket
+    // 11. Set up IPC socket
     let ipc_path = Path::new(IPC_SOCKET);
     if ipc_path.exists() {
         std::fs::remove_file(ipc_path)?;
@@ -802,6 +1001,9 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         },
     )?;
 
+    // Track keyboard focus for IPC commands
+    let mut keyboard_focus: Option<WlSurface> = None;
+
     // Main loop
     while data.state.running {
         if let Some(ref mut child) = *client_process.borrow_mut() {
@@ -813,6 +1015,18 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
 
         event_loop.dispatch(Some(Duration::from_millis(16)), &mut data)?;
         data.display.flush_clients().unwrap();
+
+        // Process any queued redraws after event dispatch
+        // This is how client commits trigger rendering
+        backend_state.borrow_mut().redraw_queued_outputs(&data.state);
+
+        // Flush pending events to Emacs (shared IPC handling)
+        data.flush_events();
+
+        // Process commands from Emacs (shared IPC handling)
+        // Note: Screenshot command result is ignored for now in DRM backend
+        // (would need framebuffer capture implementation)
+        let _ = data.process_commands(&mut keyboard_focus);
     }
 
     info!("EWM DRM backend shutting down");

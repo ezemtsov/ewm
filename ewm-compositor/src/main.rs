@@ -346,7 +346,9 @@ impl Ewm {
         display: &mut Display<Ewm>,
         event_loop: &LoopHandle<LoopData>,
     ) -> Result<std::ffi::OsString, Box<dyn std::error::Error>> {
-        let socket = ListeningSocketSource::with_name("wayland-ewm")?;
+        let socket_name_env = std::env::var("EWM_SOCKET").unwrap_or_else(|_| "wayland-ewm".to_string());
+        info!("Creating Wayland socket with name: {}", socket_name_env);
+        let socket = ListeningSocketSource::with_name(&socket_name_env)?;
         let socket_name = socket.socket_name().to_os_string();
 
         event_loop
@@ -687,14 +689,16 @@ impl XdgDecorationHandler for Ewm {
 }
 smithay::delegate_xdg_decoration!(Ewm);
 
-struct LoopData {
-    state: Ewm,
-    display: Display<Ewm>,
-    emacs: Option<UnixStream>,
+/// Shared loop data for both winit and DRM backends
+pub(crate) struct LoopData {
+    pub state: Ewm,
+    pub display: Display<Ewm>,
+    pub emacs: Option<UnixStream>,
 }
 
 impl LoopData {
-    fn send_event(&mut self, event: &IpcEvent) {
+    /// Send an IPC event to Emacs
+    pub fn send_event(&mut self, event: &IpcEvent) {
         if let Some(ref mut stream) = self.emacs {
             if let Ok(json) = serde_json::to_string(event) {
                 if writeln!(stream, "{}", json).is_err() {
@@ -707,6 +711,135 @@ impl LoopData {
             }
         }
     }
+
+    /// Flush all pending events to Emacs
+    pub fn flush_events(&mut self) {
+        let events: Vec<_> = self.state.pending_events.drain(..).collect();
+        for event in events {
+            self.send_event(&event);
+        }
+    }
+
+    /// Process IPC commands from Emacs (non-blocking)
+    /// Returns true if a command was processed that requires special handling
+    pub fn process_commands(&mut self, keyboard_focus: &mut Option<WlSurface>) -> Option<CommandResult> {
+        if let Some(ref mut stream) = self.emacs {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
+                    if let Some(result) = self.handle_command(cmd, keyboard_focus) {
+                        line.clear();
+                        return Some(result);
+                    }
+                }
+                line.clear();
+            }
+        }
+        None
+    }
+
+    /// Handle a single IPC command
+    fn handle_command(&mut self, cmd: Command, keyboard_focus: &mut Option<WlSurface>) -> Option<CommandResult> {
+        match cmd {
+            Command::Layout { id, x, y, w, h } => {
+                if let Some(window) = self.state.id_windows.get(&id) {
+                    self.state.space.map_element(window.clone(), (x, y), true);
+                    self.state.space.raise_element(window, true);
+                    window.toplevel().map(|t| {
+                        t.with_pending_state(|state| {
+                            state.size = Some((w as i32, h as i32).into());
+                        });
+                        t.send_configure();
+                    });
+                    // Trigger redraw for DRM backend
+                    if let Some(ref backend) = self.state.drm_backend {
+                        backend.borrow_mut().queue_redraw();
+                    }
+                    info!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
+                }
+            }
+            Command::Views { id, views } => {
+                if let Some(window) = self.state.id_windows.get(&id) {
+                    let primary_view = views.iter().find(|v| v.active)
+                        .or_else(|| views.first());
+
+                    if let Some(view) = primary_view {
+                        self.state.space.map_element(window.clone(), (view.x, view.y), true);
+                        self.state.space.raise_element(window, true);
+                        window.toplevel().map(|t| {
+                            t.with_pending_state(|state| {
+                                state.size = Some((view.w as i32, view.h as i32).into());
+                            });
+                            t.send_configure();
+                        });
+                    }
+                    self.state.surface_views.insert(id, views.clone());
+                    // Trigger redraw for DRM backend
+                    if let Some(ref backend) = self.state.drm_backend {
+                        backend.borrow_mut().queue_redraw();
+                    }
+                }
+            }
+            Command::Hide { id } => {
+                if let Some(window) = self.state.id_windows.get(&id) {
+                    self.state.space.map_element(window.clone(), (-10000, -10000), false);
+                    self.state.surface_views.remove(&id);
+                    // Trigger redraw for DRM backend
+                    if let Some(ref backend) = self.state.drm_backend {
+                        backend.borrow_mut().queue_redraw();
+                    }
+                    info!("Hide surface {}", id);
+                }
+            }
+            Command::Close { id } => {
+                if let Some(window) = self.state.id_windows.get(&id) {
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.send_close();
+                        info!("Close surface {} (sent close request)", id);
+                    }
+                }
+            }
+            Command::Focus { id } => {
+                self.state.focused_surface_id = id;
+                if let Some(window) = self.state.id_windows.get(&id) {
+                    if let Some(surface) = window.wl_surface() {
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let keyboard = self.state.seat.get_keyboard().unwrap();
+                        *keyboard_focus = Some(surface.into_owned());
+                        keyboard.set_focus(&mut self.state, keyboard_focus.clone(), serial);
+                        info!("Focus surface {}", id);
+                    }
+                } else {
+                    info!("Focus surface {} (surface not found)", id);
+                }
+            }
+            Command::Screenshot { path } => {
+                let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
+                info!("Screenshot requested: {}", target);
+                return Some(CommandResult::Screenshot(target));
+            }
+            Command::PrefixKeys { keys } => {
+                self.state.prefix_keys = keys.iter()
+                    .filter_map(|k| {
+                        let parsed = PrefixKey::parse(k);
+                        if parsed.is_none() {
+                            warn!("Failed to parse prefix key: {}", k);
+                        }
+                        parsed
+                    })
+                    .collect();
+                info!("Prefix keys set: {:?}", self.state.prefix_keys);
+            }
+        }
+        None
+    }
+}
+
+/// Result from command processing that requires special handling by the backend
+#[derive(Debug)]
+pub(crate) enum CommandResult {
+    Screenshot(String),
 }
 
 fn main() {
@@ -1213,116 +1346,12 @@ fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<dyn s
         data.state.space.refresh();
         data.display.flush_clients().unwrap();
 
-        // Flush pending events to Emacs
-        let events: Vec<_> = data.state.pending_events.drain(..).collect();
-        for event in events {
-            data.send_event(&event);
-        }
+        // Flush pending events to Emacs (shared IPC handling)
+        data.flush_events();
 
-        // Read commands from Emacs (non-blocking)
-        if let Some(ref mut stream) = data.emacs {
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
-                    match cmd {
-                        Command::Layout { id, x, y, w, h } => {
-                            if let Some(window) = data.state.id_windows.get(&id) {
-                                // Use coordinates directly from Emacs.
-                                // Transform::Flipped180 only affects content rendering (OpenGL fix),
-                                // not the positioning coordinate system.
-                                data.state.space.map_element(window.clone(), (x, y), true);
-                                data.state.space.raise_element(window, true);
-                                window.toplevel().map(|t| {
-                                    t.with_pending_state(|state| {
-                                        state.size = Some((w as i32, h as i32).into());
-                                    });
-                                    t.send_configure();
-                                });
-                                info!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
-                            }
-                        }
-                        Command::Views { id, views } => {
-                            if let Some(window) = data.state.id_windows.get(&id) {
-                                // Find the active view (for input routing), or use first view
-                                let primary_view = views.iter().find(|v| v.active)
-                                    .or_else(|| views.first());
-
-                                if let Some(view) = primary_view {
-
-                                    // Map element to view position
-                                    data.state.space.map_element(window.clone(), (view.x, view.y), true);
-                                    data.state.space.raise_element(window, true);
-
-                                    // Configure surface size
-                                    window.toplevel().map(|t| {
-                                        t.with_pending_state(|state| {
-                                            state.size = Some((view.w as i32, view.h as i32).into());
-                                        });
-                                        t.send_configure();
-                                    });
-                                }
-
-                                // Store all views for multi-view rendering
-                                data.state.surface_views.insert(id, views.clone());
-                            }
-                        }
-                        Command::Hide { id } => {
-                            if let Some(window) = data.state.id_windows.get(&id) {
-                                // Move offscreen to hide (like EXWM's approach)
-                                data.state.space.map_element(window.clone(), (-10000, -10000), false);
-                                // Clear any multi-view positions
-                                data.state.surface_views.remove(&id);
-                                info!("Hide surface {}", id);
-                            }
-                        }
-                        Command::Close { id } => {
-                            if let Some(window) = data.state.id_windows.get(&id) {
-                                // Send xdg_toplevel.close to request graceful close
-                                if let Some(toplevel) = window.toplevel() {
-                                    toplevel.send_close();
-                                    info!("Close surface {} (sent close request)", id);
-                                }
-                            }
-                        }
-                        Command::Focus { id } => {
-                            // Update which surface should receive keyboard input
-                            data.state.focused_surface_id = id;
-                            // Also update actual keyboard focus immediately
-                            if let Some(window) = data.state.id_windows.get(&id) {
-                                if let Some(surface) = window.wl_surface() {
-                                    let serial = SERIAL_COUNTER.next_serial();
-                                    let keyboard = data.state.seat.get_keyboard().unwrap();
-                                    keyboard_focus = Some(surface.into_owned());
-                                    keyboard.set_focus(&mut data.state, keyboard_focus.clone(), serial);
-                                    info!("Focus surface {}", id);
-                                }
-                            } else {
-                                info!("Focus surface {} (surface not found)", id);
-                            }
-                        }
-                        Command::Screenshot { path } => {
-                            let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
-                            screenshot_path = Some(target.clone());
-                            info!("Screenshot requested: {}", target);
-                        }
-                        Command::PrefixKeys { keys } => {
-                            // Parse Emacs-style key descriptions into PrefixKey structs
-                            data.state.prefix_keys = keys.iter()
-                                .filter_map(|k| {
-                                    let parsed = PrefixKey::parse(k);
-                                    if parsed.is_none() {
-                                        warn!("Failed to parse prefix key: {}", k);
-                                    }
-                                    parsed
-                                })
-                                .collect();
-                            info!("Prefix keys set: {:?}", data.state.prefix_keys);
-                        }
-                    }
-                }
-                line.clear();
-            }
+        // Read commands from Emacs (shared IPC handling)
+        if let Some(CommandResult::Screenshot(path)) = data.process_commands(&mut keyboard_focus) {
+            screenshot_path = Some(path);
         }
 
         event_loop.dispatch(Some(std::time::Duration::from_millis(16)), &mut data)?;
