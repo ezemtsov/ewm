@@ -8,18 +8,28 @@
 ;; EWM integrates Emacs with a Wayland compositor, providing an EXWM-like
 ;; experience without the single-threaded limitations.
 ;;
-;; Usage:
-;;   1. Start compositor: cargo run (in ewm-compositor/)
-;;   2. Start Emacs inside: WAYLAND_DISPLAY=wayland-ewm emacs -Q -l ewm.el
-;;   3. Connect: M-x ewm-connect
-;;   4. Start apps: WAYLAND_DISPLAY=wayland-ewm foot
-;;   5. Switch to surface buffer: C-x b *ewm:...*
+;; Quick start (compositor spawns Emacs automatically):
+;;   EWM_INIT=/path/to/ewm.el ewm
+;;
+;; Or with custom Emacs args:
+;;   EWM_INIT=/path/to/ewm.el ewm -Q --eval "(load-theme 'modus-vivendi)"
+;;
+;; Manual startup:
+;;   1. Start compositor: ewm --no-auto-emacs
+;;   2. Start Emacs inside: WAYLAND_DISPLAY=wayland-ewm emacs -l ewm.el -f ewm-connect
+;;
+;; Start apps inside the compositor:
+;;   WAYLAND_DISPLAY=wayland-ewm foot
 ;;
 ;; Surfaces automatically align with the Emacs window displaying their buffer.
 ;;
 ;; Input handling (like EXWM):
 ;;   When viewing a surface buffer, typing goes directly to the surface.
 ;;   Prefix keys (C-x, M-x, etc.) are intercepted and go to Emacs.
+;;
+;; Environment variables:
+;;   EWM_EMACS - Path to Emacs binary (default: "emacs")
+;;   EWM_INIT  - Path to ewm.el (auto-loads and connects)
 
 ;;; Code:
 

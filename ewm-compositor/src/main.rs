@@ -1,8 +1,15 @@
-//! EWM Compositor - Phase 3: Compositor with Emacs IPC
+//! EWM - Emacs Wayland Manager
 //!
-//! Run with: cargo run
-//! Then in Emacs: (ewm-connect)
-//! Then: WAYLAND_DISPLAY=wayland-ewm foot
+//! A Wayland compositor designed to be used as an Emacs replacement command.
+//! It automatically spawns Emacs inside the compositor and forwards all CLI args.
+//!
+//! Usage:
+//!   ewm [EMACS_ARGS...]
+//!
+//! Examples:
+//!   ewm                         # Start with default Emacs
+//!   ewm -Q -l ~/.emacs.d/init.el
+//!   ewm --file myfile.txt
 
 use smithay::{
     backend::{
@@ -66,6 +73,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::process::Child;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -543,14 +551,46 @@ fn main() {
     }
 }
 
+/// Spawn Emacs with the given Wayland display and CLI arguments
+fn spawn_emacs(wayland_display: &str, args: &[String]) -> std::io::Result<Child> {
+    let emacs_bin = std::env::var("EWM_EMACS").unwrap_or_else(|_| "emacs".to_string());
+
+    // Build the final argument list
+    let mut final_args: Vec<String> = Vec::new();
+
+    // If EWM_INIT is set, inject -l <path> -f ewm-connect before user args
+    if let Ok(ewm_init) = std::env::var("EWM_INIT") {
+        info!("Auto-loading EWM from: {}", ewm_init);
+        final_args.push("-l".to_string());
+        final_args.push(ewm_init);
+        final_args.push("-f".to_string());
+        final_args.push("ewm-connect".to_string());
+    }
+
+    // Add user-provided args
+    final_args.extend(args.iter().cloned());
+
+    info!("Spawning Emacs: {} {:?}", emacs_bin, final_args);
+    info!("  WAYLAND_DISPLAY={}", wayland_display);
+
+    std::process::Command::new(&emacs_bin)
+        .args(&final_args)
+        .env("WAYLAND_DISPLAY", wayland_display)
+        .spawn()
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
+
+    // Collect CLI args to forward to Emacs (skip program name)
+    let emacs_args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Ewm> = Display::new()?;
     let display_handle = display.handle();
 
     let socket_name = Ewm::init_wayland_listener(&mut display, &event_loop.handle())?;
+    let socket_name_str = socket_name.to_string_lossy().to_string();
     info!("Wayland socket: {:?}", socket_name);
 
     let state = Ewm::new(display_handle.clone());
@@ -609,10 +649,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
-    info!(
-        "EWM compositor started. Run: WAYLAND_DISPLAY={:?} foot",
-        socket_name
-    );
+    // Spawn Emacs inside the compositor
+    let mut emacs_process = spawn_emacs(&socket_name_str, &emacs_args)?;
+    info!("Emacs spawned with PID {}", emacs_process.id());
+
+    info!("EWM compositor started");
 
     // Main loop
     // Set initial keyboard focus to first surface (Emacs)
@@ -620,6 +661,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut screenshot_path: Option<String> = None;
 
     while data.state.running {
+        // Check if Emacs has exited
+        match emacs_process.try_wait() {
+            Ok(Some(status)) => {
+                info!("Emacs exited with status: {}", status);
+                data.state.running = false;
+                break;
+            }
+            Ok(None) => {} // Still running
+            Err(e) => {
+                error!("Error checking Emacs process: {}", e);
+            }
+        }
+
         // Collect input events
         let mut input_events = Vec::new();
 

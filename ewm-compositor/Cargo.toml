@@ -1,9 +1,9 @@
 [package]
-name = "ewm-compositor"
+name = "ewm"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0"
-description = "Wayland compositor with Emacs integration"
+description = "Emacs Wayland Manager - Wayland compositor with Emacs integration"
 
 [dependencies]
 anyhow = "1"

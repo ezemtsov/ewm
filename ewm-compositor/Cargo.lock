@@ -565,7 +565,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ewm-compositor"
+name = "ewm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
