@@ -17,11 +17,9 @@
 ;;
 ;; Surfaces automatically align with the Emacs window displaying their buffer.
 ;;
-;; Input modes (like EXWM):
-;;   - Line-mode (default): Keys go to Emacs. Mode-line shows [L].
-;;   - Char-mode: Keys go to surface. Mode-line shows [C].
-;;   - C-c C-k: Switch to char-mode
-;;   - C-c C-t: Toggle between modes
+;; Input handling (like EXWM):
+;;   When viewing a surface buffer, typing goes directly to the surface.
+;;   Switch to a non-surface buffer (C-x b) to use Emacs commands.
 
 ;;; Code:
 
@@ -187,20 +185,19 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
 
 ;;; Input handling (adapted from exwm-input.el)
 ;;
-;; Two input modes:
-;; - Line-mode (default): All keys go to Emacs. Surface receives no direct input.
-;;   Use simulation keys or switch to char-mode to send keys to surface.
-;; - Char-mode: Keys go directly to the surface.
+;; In EXWM, line-mode intercepts all keys via XGrabKey and decides whether
+;; each key goes to Emacs or the X window.  Keys without Emacs bindings
+;; are replayed to the X window, so regular typing works immediately.
 ;;
-;; Unlike EXWM, prefix key interception in char-mode is not yet implemented
-;; (would require key parsing on compositor side). Use a global keybinding
-;; to switch back to line-mode:
-;;   (global-set-key (kbd "s-l") #'ewm-input-line-mode)
+;; In Wayland, there's no equivalent to XGrabKey.  EWM achieves similar
+;; behavior by:
+;; - Always keeping keyboard focus on the viewed surface
+;; - Regular typing goes directly to the surface (like EXWM)
+;; - Global/prefix keys need compositor-side interception (TODO)
 ;;
-;; Suggested keybindings for init.el:
-;;   (with-eval-after-load 'ewm
-;;     (global-set-key (kbd "s-k") #'ewm-input-char-mode)
-;;     (global-set-key (kbd "s-l") #'ewm-input-line-mode))
+;; Current limitation: Emacs keybindings (C-x, M-x, etc.) don't work while
+;; viewing a surface because the surface has keyboard focus.  Workaround:
+;; switch to a non-surface buffer to use Emacs commands.
 
 (defgroup ewm-input nil
   "EWM input handling."
@@ -234,13 +231,20 @@ Effectively makes line-mode behave like char-mode."
 
 (defun ewm-input--update-mode (mode)
   "Update input mode to MODE for current buffer.
-MODE is either `line-mode' or `char-mode'."
+MODE is either `line-mode' or `char-mode'.
+
+In EXWM, line-mode still gives the X window keyboard focus but intercepts
+keys via XGrabKey.  In EWM/Wayland, we achieve similar behavior by:
+- Line-mode: surface has focus, compositor intercepts prefix keys
+- Char-mode: surface has focus, no interception (same as line-mode for now)
+
+Both modes keep focus on the surface so typing works immediately."
   (when ewm-surface-id
     (setq ewm-input--mode mode)
-    (let ((target-id (if (eq mode 'char-mode) ewm-surface-id 1)))
-      ;; Update tracking and send focus command
-      (setq ewm-input--last-focused-id target-id)
-      (ewm-focus target-id))
+    ;; Always focus the surface - this matches EXWM behavior where the X window
+    ;; has focus even in line-mode (EXWM intercepts via XGrabKey)
+    (setq ewm-input--last-focused-id ewm-surface-id)
+    (ewm-focus ewm-surface-id)
     (force-mode-line-update)))
 
 (defun ewm-input-char-mode ()
@@ -282,7 +286,11 @@ Used to avoid sending redundant focus commands.")
 (defun ewm-input--on-buffer-list-update ()
   "Hook called when buffer list changes.
 Updates keyboard focus based on current buffer.
-Adapted from `exwm-input--on-buffer-list-update'."
+Adapted from `exwm-input--on-buffer-list-update'.
+
+Like EXWM, when viewing a surface buffer, the surface has keyboard focus
+so that typing works immediately.  When viewing a non-surface buffer,
+Emacs (surface 1) has focus."
   (when (and ewm--process
              (process-live-p ewm--process)
              (not ewm-input--skip-buffer-list-update)
@@ -290,16 +298,9 @@ Adapted from `exwm-input--on-buffer-list-update'."
              (not (minibufferp)))
     (let* ((buf (current-buffer))
            (id (buffer-local-value 'ewm-surface-id buf))
-           (target-id
-            (cond
-             ;; Switching to a surface buffer
-             (id
-              (let ((mode (buffer-local-value 'ewm-input--mode buf)))
-                (if (eq mode 'char-mode)
-                    id    ; Char-mode: focus the surface
-                  1)))    ; Line-mode: focus Emacs
-             ;; Switching to a non-surface buffer: focus Emacs
-             (t 1))))
+           ;; Surface buffer: focus the surface (like EXWM)
+           ;; Non-surface buffer: focus Emacs
+           (target-id (or id 1)))
       ;; Only send focus command if target changed
       (unless (eq target-id ewm-input--last-focused-id)
         (setq ewm-input--last-focused-id target-id)
