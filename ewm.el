@@ -89,6 +89,14 @@ Sends xdg_toplevel.close to the client."
   "Focus surface ID."
   (ewm--send `(:cmd "focus" :id ,id)))
 
+(defun ewm-screenshot (&optional path)
+  "Take a screenshot of the compositor.
+Saves to PATH, or /tmp/ewm-screenshot.png by default."
+  (interactive)
+  (let ((target (or path "/tmp/ewm-screenshot.png")))
+    (ewm--send `(:cmd "screenshot" :path ,target))
+    (message "EWM: screenshot requested -> %s" target)))
+
 ;;; Process handling
 
 (defun ewm--filter (proc string)
@@ -124,6 +132,9 @@ Sends xdg_toplevel.close to the client."
   (when (and ewm--process (process-live-p ewm--process))
     (delete-process ewm--process))
   (let ((path (or socket-path "/tmp/ewm.sock")))
+    ;; Always detect CSD height on connect
+    (setq ewm-csd-height (ewm--detect-csd-height))
+    (message "EWM: detected CSD height: %d" ewm-csd-height)
     (setq ewm--process
           (make-network-process
            :name "ewm"
@@ -185,6 +196,9 @@ Also writes to /tmp/ewm-debug.txt for easy access."
          (abs-edges (window-inside-absolute-pixel-edges window))
          (rel-edges (window-inside-pixel-edges window))
          (y-offset (ewm--frame-y-offset frame))
+         (frame-pos (frame-position frame))
+         (frame-outer (alist-get 'outer-edges geometry))
+         (frame-inner (alist-get 'inner-edges geometry))
          (info (format "Window edges (absolute): %S
 Window edges (relative): %S
 Calculated Y offset: %d
@@ -192,6 +206,9 @@ Calculated Y offset: %d
   - menu-bar: %S
   - tool-bar: %S
   - tab-bar: %S
+Frame position: %S
+Frame outer-edges: %S
+Frame inner-edges: %S
 Frame undecorated: %S
 "
                        abs-edges
@@ -201,9 +218,44 @@ Frame undecorated: %S
                        (alist-get 'menu-bar-size geometry)
                        (alist-get 'tool-bar-size geometry)
                        (alist-get 'tab-bar-size geometry)
+                       frame-pos
+                       frame-outer
+                       frame-inner
                        (frame-parameter frame 'undecorated))))
     (write-region info nil "/tmp/ewm-debug.txt")
     (message "Debug saved to /tmp/ewm-debug.txt")))
+
+(defun ewm-debug-surfaces ()
+  "Show which window each surface is mapped to.
+Writes to /tmp/ewm-surfaces.txt for debugging."
+  (interactive)
+  (let ((info "=== Surface Layout Debug ===\n\n")
+        (selected (selected-window)))
+    ;; Show selected window
+    (setq info (concat info (format "Selected window: %s\n\n" selected)))
+    ;; Show all windows and their buffers
+    (setq info (concat info "Windows:\n"))
+    (dolist (window (window-list nil 'no-minibuf))
+      (let* ((buf (window-buffer window))
+             (id (buffer-local-value 'ewm-surface-id buf))
+             (edges (window-inside-absolute-pixel-edges window)))
+        (setq info (concat info (format "  %s%s: %s%s\n    edges: %S\n"
+                                        window
+                                        (if (eq window selected) " *SELECTED*" "")
+                                        (buffer-name buf)
+                                        (if id (format " [surface %d]" id) "")
+                                        edges)))))
+    ;; Show registered surfaces
+    (setq info (concat info "\nRegistered surfaces:\n"))
+    (maphash (lambda (id surface-info)
+               (let ((buf (plist-get surface-info :buffer)))
+                 (setq info (concat info (format "  ID %d: %s (live: %s)\n"
+                                                 id
+                                                 (buffer-name buf)
+                                                 (buffer-live-p buf))))))
+             ewm--surfaces)
+    (write-region info nil "/tmp/ewm-surfaces.txt")
+    (message "Debug written to /tmp/ewm-surfaces.txt")))
 
 ;;; Layout (adapted from EXWM's exwm-layout.el and exwm-core.el)
 
@@ -225,22 +277,49 @@ This version correctly handles tab-lines on Emacs prior to v31."
     #'window-inside-absolute-pixel-edges)
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
-(defcustom ewm-csd-height 0
+(defvar ewm-csd-height nil
   "Height of client-side decorations in pixels.
-Set this if surfaces appear shifted vertically.
-GTK CSD headers are typically 35-45 pixels."
-  :type 'integer
-  :group 'ewm)
+Auto-detected on connect, or set manually before connecting.")
+
+(defun ewm--detect-csd-height ()
+  "Detect the CSD (title bar) height for the current frame.
+Returns the height in pixels."
+  (let* ((frame (selected-frame))
+         (geometry (frame-geometry frame)))
+    ;; If frame is undecorated, no CSD
+    (if (frame-parameter frame 'undecorated)
+        0
+      ;; Try to get the title bar size from frame geometry
+      (let ((title-bar-size (alist-get 'title-bar-size geometry)))
+        (if (and title-bar-size (> (cdr title-bar-size) 0))
+            (cdr title-bar-size)
+          ;; Fallback: try to detect from frame edges
+          (let ((outer (alist-get 'outer-edges geometry))
+                (inner (alist-get 'inner-edges geometry)))
+            (if (and outer inner)
+                (- (cadr inner) (cadr outer))
+              ;; Last resort: assume standard GTK title bar
+              37)))))))
 
 (defun ewm--frame-y-offset (&optional frame)
   "Calculate Y offset for FRAME to account for CSD, menu bar, and tool bar."
   (let* ((frame (or frame (selected-frame)))
          (geometry (frame-geometry frame))
-         (menu-bar-height (or (cdr (alist-get 'menu-bar-size geometry)) 0))
+         (csd-height (or ewm-csd-height 0))
+         ;; Menu bar: use frame-geometry, but fall back to checking menu-bar-mode
+         (menu-bar-from-geom (or (cdr (alist-get 'menu-bar-size geometry)) 0))
+         (menu-bar-height (if (> menu-bar-from-geom 0)
+                              menu-bar-from-geom
+                            ;; PGTK may not report menu bar in geometry
+                            ;; Check if menu-bar-mode is enabled and estimate height
+                            (if (and (frame-parameter frame 'menu-bar-lines)
+                                     (> (frame-parameter frame 'menu-bar-lines) 0))
+                                30  ; Typical GTK menu bar height
+                              0)))
          (tool-bar-height (or (cdr (alist-get 'tool-bar-size geometry)) 0))
          (tab-bar-height (or (cdr (alist-get 'tab-bar-size geometry)) 0)))
     ;; Add: CSD height + all bars
-    (+ ewm-csd-height menu-bar-height tool-bar-height tab-bar-height)))
+    (+ csd-height menu-bar-height tool-bar-height tab-bar-height)))
 
 (defun ewm-layout--show (id &optional window)
   "Show surface ID exactly fit in the Emacs window WINDOW.
@@ -250,24 +329,48 @@ Adapted from exwm-layout--show."
          (y (pop edges))
          (width (- (pop edges) x))
          (height (- (pop edges) y))
-         ;; On PGTK, absolute edges are relative to content area.
-         ;; Add frame bars offset to get compositor coordinates.
-         (y-offset (ewm--frame-y-offset (window-frame window))))
-    (ewm-layout id x (+ y y-offset) width height)))
+         (y-offset (ewm--frame-y-offset (window-frame window)))
+         ;; Final coordinates: add bar offset since absolute edges are
+         ;; relative to content area, not the compositor output
+         (final-y (+ y y-offset)))
+    ;; Log debug info
+    (let* ((frame (window-frame window))
+           (geometry (frame-geometry frame)))
+      (with-temp-buffer
+        (insert (format "=== Layout Debug ===\n"))
+        (insert (format "Surface ID: %d\n" id))
+        (insert (format "Window: %s\n" window))
+        (insert (format "Absolute edges: (%d %d %d %d)\n" x y (+ x width) (+ y height)))
+        (insert (format "Calculated: x=%d y=%d w=%d h=%d\n" x y width height))
+        (insert (format "CSD height: %s\n" (or ewm-csd-height 0)))
+        (insert (format "menu-bar-lines: %s\n" (frame-parameter frame 'menu-bar-lines)))
+        (insert (format "menu-bar-size from geometry: %s\n" (alist-get 'menu-bar-size geometry)))
+        (insert (format "tool-bar-size from geometry: %s\n" (alist-get 'tool-bar-size geometry)))
+        (insert (format "Y-offset (total): %d\n" y-offset))
+        (insert (format "Sending: (%d, %d) %dx%d\n" x final-y width height))
+        (write-region (point-min) (point-max) "/tmp/ewm-layout.txt")))
+    (ewm-layout id x final-y width height)))
 
 (defun ewm-layout--refresh ()
   "Refresh layout for all surface buffers.
 Shows surfaces that are displayed in windows, hides others.
-Only sends layout for the first window displaying each surface.
+Prioritizes selected window, then uses first window found.
 Adapted from exwm-layout--refresh-workspace."
   (when (and ewm--process (process-live-p ewm--process))
     ;; First pass: find which surfaces are visible and where
     (let ((visible-surfaces (make-hash-table :test 'eql)))
+      ;; Check selected window first (priority for focused surface)
+      (let* ((sel-window (selected-window))
+             (sel-buf (window-buffer sel-window))
+             (sel-id (buffer-local-value 'ewm-surface-id sel-buf)))
+        (when sel-id
+          (puthash sel-id sel-window visible-surfaces)))
+      ;; Then check all other windows
       (dolist (frame (frame-list))
         (dolist (window (window-list frame 'no-minibuf))
           (let* ((buf (window-buffer window))
                  (id (buffer-local-value 'ewm-surface-id buf)))
-            ;; Only process each surface once (first window wins)
+            ;; Only process each surface once (selected window already handled)
             (when (and id (not (gethash id visible-surfaces)))
               (puthash id window visible-surfaces)))))
       ;; Second pass: show visible surfaces, hide others
