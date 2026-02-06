@@ -706,6 +706,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             WinitEvent::CloseRequested => {
                 data.state.running = false;
             }
+            WinitEvent::Focus(focused) => {
+                let keyboard = data.state.seat.get_keyboard().unwrap();
+
+                if !focused {
+                    // Window lost focus - release all currently pressed keys to prevent
+                    // stuck modifiers (e.g., Super key held when invoking external launcher)
+                    let pressed = keyboard.pressed_keys();
+                    if !pressed.is_empty() {
+                        info!("Window lost focus, releasing {} pressed keys", pressed.len());
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let time = 0u32;
+                        for keycode in pressed {
+                            keyboard.input::<(), _>(
+                                &mut data.state,
+                                keycode,
+                                smithay::backend::input::KeyState::Released,
+                                serial,
+                                time,
+                                |_, _, _| FilterResult::Forward,
+                            );
+                        }
+                    }
+
+                    // Clear focus
+                    let serial = SERIAL_COUNTER.next_serial();
+                    keyboard.set_focus(&mut data.state, None, serial);
+                    keyboard_focus = None;
+                } else {
+                    // Restore focus to the previously focused surface
+                    let target_id = data.state.focused_surface_id;
+                    if let Some(window) = data.state.id_windows.get(&target_id) {
+                        if let Some(surface) = window.wl_surface() {
+                            let serial = SERIAL_COUNTER.next_serial();
+                            keyboard_focus = Some(surface.into_owned());
+                            keyboard.set_focus(&mut data.state, keyboard_focus.clone(), serial);
+                        }
+                    }
+                }
+            }
             WinitEvent::Input(event) => {
                 input_events.push(event);
             }
@@ -739,38 +778,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 return FilterResult::Forward;
                             }
 
-                            // Get the keysym for this key
+                            // Get the keysym for this key and check if it matches any prefix key
                             let keysym = handle.modified_sym();
-                            let raw_keysym = keysym.raw();
-
-                            // Log key press details
-                            info!("Key press: keysym=0x{:x} ({:?}), mods: ctrl={} alt={} shift={} logo={}, focus_id={}, prefix_keys_count={}",
-                                  raw_keysym,
-                                  keysym,
-                                  mods.ctrl, mods.alt, mods.shift, mods.logo,
-                                  current_focus_id,
-                                  prefix_keys.len());
-
-                            // Check if this matches any prefix key
-                            for pk in &prefix_keys {
-                                let matches = pk.matches(raw_keysym, mods);
-                                if matches || (mods.ctrl && raw_keysym == pk.keysym) {
-                                    info!("  Checking prefix {:?}: keysym=0x{:x}, ctrl={} alt={} shift={} logo={} -> matches={}",
-                                          pk, pk.keysym, pk.ctrl, pk.alt, pk.shift, pk.logo, matches);
-                                }
-                            }
-
-                            let is_prefix = prefix_keys.iter().any(|pk| pk.matches(raw_keysym, mods));
+                            let is_prefix = prefix_keys.iter().any(|pk| pk.matches(keysym.raw(), mods));
 
                             if is_prefix && current_focus_id != 1 {
                                 // This is a prefix key and focus is not on Emacs
                                 // Signal that we need to redirect focus
-                                info!("  -> INTERCEPTING prefix key, will redirect to Emacs");
                                 FilterResult::Intercept(true)
                             } else {
-                                if is_prefix {
-                                    info!("  -> Prefix key but already focused on Emacs");
-                                }
                                 FilterResult::Forward
                             }
                         },
