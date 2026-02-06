@@ -507,6 +507,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 output.change_current_state(Some(mode), None, None, None);
                 data.state.output_size = (size.w, size.h);
+
+                // Notify all surfaces of new size so they can resize
+                // (especially Emacs which should fill the compositor window)
+                for window in data.state.space.elements() {
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.with_pending_state(|state| {
+                            state.size = Some((size.w, size.h).into());
+                        });
+                        toplevel.send_configure();
+                    }
+                }
+                info!("Output resized to {}x{}, notified {} surfaces",
+                      size.w, size.h, data.state.space.elements().count());
             }
             WinitEvent::CloseRequested => {
                 data.state.running = false;
