@@ -57,6 +57,7 @@
     (pcase type
       ("new" (ewm--handle-new-surface event))
       ("close" (ewm--handle-close-surface event))
+      ("title" (ewm--handle-title-update event))
       (_ (message "EWM: unknown event type: %s" type)))))
 
 ;;; Event handlers
@@ -103,6 +104,52 @@ Adapted from `exwm-manage--unmanage-window'."
           (kill-buffer buf)))
       (remhash id ewm--surfaces))
     (message "EWM: closed surface %d" id)))
+
+(defcustom ewm-update-title-hook nil
+  "Normal hook run when a surface's title is updated.
+Similar to `exwm-update-title-hook'.
+The current buffer is the surface buffer when this runs."
+  :type 'hook
+  :group 'ewm)
+
+(defun ewm--handle-title-update (event)
+  "Handle title update EVENT.
+Updates buffer-local variables and renames the buffer.
+Adapted from EXWM's title update mechanism."
+  (let* ((id (gethash "id" event))
+         (app (gethash "app" event))
+         (title (gethash "title" event))
+         (info (gethash id ewm--surfaces)))
+    (when info
+      (let ((buf (plist-get info :buffer)))
+        (when (buffer-live-p buf)
+          (with-current-buffer buf
+            ;; Update buffer-local variables
+            (setq-local ewm-surface-app app)
+            (setq-local ewm-surface-title title)
+            ;; Rename buffer based on app and title
+            (ewm--rename-buffer)
+            ;; Run user hooks for customization
+            (run-hooks 'ewm-update-title-hook))
+          ;; Update cached info
+          (puthash id `(:buffer ,buf :app ,app :title ,title) ewm--surfaces))))))
+
+(defun ewm--rename-buffer ()
+  "Rename the current surface buffer based on app and title.
+Similar to `exwm-workspace-rename-buffer'."
+  (let* ((app (or ewm-surface-app "unknown"))
+         (title (or ewm-surface-title ""))
+         ;; Use title if available, otherwise just app
+         (basename (if (string-empty-p title)
+                       (format "ewm:%s" app)
+                     (format "ewm:%s" title)))
+         (name (format "*%s*" basename))
+         (counter 1))
+    ;; Handle name conflicts by adding <N> suffix
+    (while (and (get-buffer name)
+                (not (eq (get-buffer name) (current-buffer))))
+      (setq name (format "*%s<%d>*" basename (cl-incf counter))))
+    (rename-buffer name)))
 
 ;;; Commands
 
@@ -378,7 +425,12 @@ Compositor uses these to switch focus back to Emacs in char-mode."
   "Surface ID for this buffer.")
 
 (defvar-local ewm-surface-app nil
-  "Application name for this buffer.")
+  "Application name (app_id) for this buffer.
+Similar to `exwm-class-name'.")
+
+(defvar-local ewm-surface-title nil
+  "Window title for this buffer.
+Similar to `exwm-title'.")
 
 (defun ewm--kill-buffer-query-function ()
   "Run in `kill-buffer-query-functions' for surface buffers.
@@ -537,10 +589,11 @@ Returns the height in pixels."
               ;; Last resort: assume standard GTK title bar
               37)))))))
 
-(defun ewm--frame-y-offset (&optional frame)
-  "Calculate Y offset for FRAME to account for CSD only.
+(defun ewm--frame-y-offset (&optional _frame)
+  "Calculate Y offset to account for CSD only.
 Internal bars (menu-bar, tool-bar, tab-bar) are already reflected in
-`window-inside-absolute-pixel-edges', so we only add CSD height here."
+`window-inside-absolute-pixel-edges', so we only add CSD height here.
+The FRAME argument is kept for API compatibility but not used."
   (or ewm-csd-height 0))
 
 (defun ewm-layout--show (id &optional window)
@@ -590,7 +643,7 @@ Adapted from exwm-layout--refresh-workspace."
               (puthash id window visible-surfaces)))))
       ;; Second pass: show visible surfaces, hide others
       (maphash
-       (lambda (id info)
+       (lambda (id _info)
          (let ((window (gethash id visible-surfaces)))
            (if window
                (ewm-layout--show id window)

@@ -87,6 +87,15 @@ enum IpcEvent {
     New { id: u32, app: String },
     #[serde(rename = "close")]
     Close { id: u32 },
+    #[serde(rename = "title")]
+    Title { id: u32, app: String, title: String },
+}
+
+/// Cached surface info for change detection
+#[derive(Clone, Default)]
+struct SurfaceInfo {
+    app_id: String,
+    title: String,
 }
 
 /// Commands received from Emacs
@@ -243,6 +252,7 @@ struct Ewm {
     next_surface_id: u32,
     window_ids: HashMap<Window, u32>,
     id_windows: HashMap<u32, Window>,
+    surface_info: HashMap<u32, SurfaceInfo>,  // Cached app_id/title for change detection
     pending_events: Vec<IpcEvent>,
 
     // Output
@@ -281,6 +291,7 @@ impl Ewm {
             next_surface_id: 1,
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
+            surface_info: HashMap::new(),
             pending_events: Vec::new(),
             output_size: (800, 600), // Default, updated when output is created
             pointer_location: (0.0, 0.0),
@@ -319,6 +330,67 @@ impl Ewm {
             .expect("Failed to init wayland source");
 
         Ok(socket_name)
+    }
+
+    fn get_client_process_name(&self, surface: &WlSurface) -> Option<String> {
+        // Get the client for this surface
+        let client = self.display_handle.get_client(surface.id()).ok()?;
+
+        // Get client credentials (PID, UID, GID)
+        let creds = client.get_credentials(&self.display_handle).ok()?;
+
+        // Read process name from /proc/PID/comm
+        let comm_path = format!("/proc/{}/comm", creds.pid);
+        std::fs::read_to_string(&comm_path)
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
+    fn check_surface_info_changes(&mut self, surface: &WlSurface) {
+        // Find the window for this surface
+        let window = self.space.elements().find(|w| {
+            w.wl_surface().map(|s| s.as_ref() == surface).unwrap_or(false)
+        }).cloned();
+
+        if let Some(window) = window {
+            if let Some(&id) = self.window_ids.get(&window) {
+                // Skip Emacs surface (id=1)
+                if id == 1 {
+                    return;
+                }
+
+                // Get current app_id and title from the surface
+                let (app_id, title) = smithay::wayland::compositor::with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .map(|d| {
+                            let data = d.lock().unwrap();
+                            (
+                                data.app_id.clone().unwrap_or_default(),
+                                data.title.clone().unwrap_or_default(),
+                            )
+                        })
+                        .unwrap_or_default()
+                });
+
+                // Check if changed from cached values
+                let cached = self.surface_info.get(&id);
+                let changed = match cached {
+                    Some(info) => info.app_id != app_id || info.title != title,
+                    None => true, // First time seeing this surface's info
+                };
+
+                if changed && (!app_id.is_empty() || !title.is_empty()) {
+                    info!("Surface {} info changed: app='{}' title='{}'", id, app_id, title);
+                    self.surface_info.insert(id, SurfaceInfo {
+                        app_id: app_id.clone(),
+                        title: title.clone(),
+                    });
+                    self.pending_events.push(IpcEvent::Title { id, app: app_id, title });
+                }
+            }
+        }
     }
 }
 
@@ -365,6 +437,9 @@ impl CompositorHandler for Ewm {
         for window in self.space.elements() {
             window.on_commit();
         }
+
+        // Check for title/app_id changes on toplevel surfaces
+        self.check_surface_info_changes(surface);
     }
 }
 delegate_compositor!(Ewm);
@@ -429,13 +504,18 @@ impl XdgShellHandler for Ewm {
         self.next_surface_id += 1;
 
         // Get app_id for the surface (may be empty initially)
+        // Fall back to process name from /proc if app_id not set
         let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
                 .and_then(|d| d.lock().unwrap().app_id.clone())
         })
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| {
+            // Try to get process name from client credentials
+            self.get_client_process_name(surface.wl_surface())
+                .unwrap_or_else(|| "unknown".to_string())
+        });
 
         // Send initial configure - maximized to fill the output
         // This is how Wayland compositors tell clients to be fullscreen
@@ -472,6 +552,7 @@ impl XdgShellHandler for Ewm {
         if let Some(window) = window {
             if let Some(id) = self.window_ids.remove(&window) {
                 self.id_windows.remove(&id);
+                self.surface_info.remove(&id);
                 self.pending_events.push(IpcEvent::Close { id });
                 info!("Toplevel {} destroyed", id);
             }
