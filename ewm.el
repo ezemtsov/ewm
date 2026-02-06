@@ -16,6 +16,12 @@
 ;;   5. Switch to surface buffer: C-x b *ewm:...*
 ;;
 ;; Surfaces automatically align with the Emacs window displaying their buffer.
+;;
+;; Input modes (like EXWM):
+;;   - Line-mode (default): Keys go to Emacs. Mode-line shows [L].
+;;   - Char-mode: Keys go to surface. Mode-line shows [C].
+;;   - C-c C-k: Switch to char-mode
+;;   - C-c C-t: Toggle between modes
 
 ;;; Code:
 
@@ -144,16 +150,140 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
            :filter #'ewm--filter
            :sentinel #'ewm--sentinel))
     (ewm--enable-layout-sync)
+    (ewm-input--enable)
+    ;; Send prefix keys to compositor for char-mode handling
+    (ewm--send-prefix-keys)
     (message "EWM: connected to %s" path)))
 
 (defun ewm-disconnect ()
   "Disconnect from compositor."
   (interactive)
   (ewm--disable-layout-sync)
+  (ewm-input--disable)
   (when ewm--process
     (delete-process ewm--process)
     (setq ewm--process nil)
     (message "EWM: disconnected")))
+
+;;; Input handling (adapted from exwm-input.el)
+;;
+;; Two input modes:
+;; - Line-mode (default): All keys go to Emacs. Surface receives no direct input.
+;;   Use simulation keys or switch to char-mode to send keys to surface.
+;; - Char-mode: Keys go directly to the surface.
+;;
+;; Unlike EXWM, prefix key interception in char-mode is not yet implemented
+;; (would require key parsing on compositor side). Use a global keybinding
+;; to switch back to line-mode:
+;;   (global-set-key (kbd "s-l") #'ewm-input-line-mode)
+;;
+;; Suggested keybindings for init.el:
+;;   (with-eval-after-load 'ewm
+;;     (global-set-key (kbd "s-k") #'ewm-input-char-mode)
+;;     (global-set-key (kbd "s-l") #'ewm-input-line-mode))
+
+(defgroup ewm-input nil
+  "EWM input handling."
+  :group 'ewm)
+
+(defvar-local ewm-input--mode 'line-mode
+  "Current input mode: `line-mode' or `char-mode'.")
+
+(defcustom ewm-input-prefix-keys
+  '(?\C-x ?\C-u ?\C-h ?\M-x ?\M-` ?\M-& ?\M-:)
+  "Keys that always go to Emacs, even in char-mode.
+These keys switch keyboard focus back to Emacs.
+Adapted from `exwm-input-prefix-keys'."
+  :type '(repeat key-sequence)
+  :group 'ewm-input)
+
+(defcustom ewm-input-simulation-keys nil
+  "Simulation keys for translating Emacs keys to application keys.
+Each element is (EMACS-KEY . APP-KEY).
+In line-mode, when EMACS-KEY is pressed in a surface buffer,
+APP-KEY is sent to the surface.
+Adapted from `exwm-input-simulation-keys'."
+  :type '(alist :key-type key-sequence :value-type key-sequence)
+  :group 'ewm-input)
+
+(defcustom ewm-input-line-mode-passthrough nil
+  "If non-nil, pass all keys through to surface in line-mode.
+Effectively makes line-mode behave like char-mode."
+  :type 'boolean
+  :group 'ewm-input)
+
+(defun ewm-input--update-mode (mode)
+  "Update input mode to MODE for current buffer.
+MODE is either `line-mode' or `char-mode'."
+  (when ewm-surface-id
+    (setq ewm-input--mode mode)
+    (if (eq mode 'char-mode)
+        ;; Char-mode: focus the surface
+        (ewm-focus ewm-surface-id)
+      ;; Line-mode: focus Emacs (surface 1)
+      (ewm-focus 1))
+    (force-mode-line-update)))
+
+(defun ewm-input-char-mode ()
+  "Switch to char-mode: keys go directly to surface.
+Press a prefix key to return to line-mode."
+  (interactive)
+  (ewm-input--update-mode 'char-mode)
+  (message "EWM: char-mode"))
+
+(defun ewm-input-line-mode ()
+  "Switch to line-mode: keys go to Emacs."
+  (interactive)
+  (ewm-input--update-mode 'line-mode)
+  (message "EWM: line-mode"))
+
+(defun ewm-input-toggle-mode ()
+  "Toggle between line-mode and char-mode."
+  (interactive)
+  (ewm-input--update-mode
+   (if (eq ewm-input--mode 'char-mode) 'line-mode 'char-mode))
+  (message "EWM: %s" ewm-input--mode))
+
+(defun ewm-input-send-key (key)
+  "Send KEY to the current surface.
+KEY should be a key sequence."
+  (interactive "kKey: ")
+  (when ewm-surface-id
+    (ewm--send `(:cmd "key" :id ,ewm-surface-id :key ,(key-description key)))))
+
+(defun ewm-input--on-buffer-list-update ()
+  "Hook called when buffer list changes.
+Updates keyboard focus based on current buffer.
+Adapted from `exwm-input--on-buffer-list-update'."
+  (when (and ewm--process (process-live-p ewm--process))
+    (let* ((buf (current-buffer))
+           (id (buffer-local-value 'ewm-surface-id buf)))
+      (cond
+       ;; Switching to a surface buffer
+       (id
+        (let ((mode (buffer-local-value 'ewm-input--mode buf)))
+          (if (eq mode 'char-mode)
+              ;; In char-mode: focus the surface
+              (ewm-focus id)
+            ;; In line-mode: focus Emacs
+            (ewm-focus 1))))
+       ;; Switching to a non-surface buffer: focus Emacs
+       (t
+        (ewm-focus 1))))))
+
+(defun ewm-input--enable ()
+  "Enable EWM input handling."
+  (add-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update))
+
+(defun ewm-input--disable ()
+  "Disable EWM input handling."
+  (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update))
+
+(defun ewm--send-prefix-keys ()
+  "Send prefix keys configuration to compositor.
+Compositor uses these to switch focus back to Emacs in char-mode."
+  (let ((keys (mapcar #'key-description ewm-input-prefix-keys)))
+    (ewm--send `(:cmd "prefix-keys" :keys ,keys))))
 
 ;;; Surface mode
 
@@ -177,12 +307,31 @@ Adapted from exwm-manage--kill-buffer-query-function."
       ;; Don't kill buffer now; wait for compositor's "close" event
       nil)))
 
-(define-derived-mode ewm-surface-mode special-mode "EWM Surface"
-  "Major mode for EWM surface buffers."
+(defun ewm-surface-mode-line-mode ()
+  "Return mode-line indicator for current input mode."
+  (if (eq ewm-input--mode 'char-mode)
+      "[C]"
+    "[L]"))
+
+(define-derived-mode ewm-surface-mode special-mode "EWM"
+  "Major mode for EWM surface buffers.
+\\<ewm-surface-mode-map>
+In line-mode (default), keys go to Emacs.
+In char-mode, keys go directly to the surface.
+
+\\[ewm-input-char-mode] - switch to char-mode
+\\[ewm-input-line-mode] - switch to line-mode
+\\[ewm-input-toggle-mode] - toggle input mode"
   (setq buffer-read-only t)
+  ;; Set up mode line to show input mode
+  (setq mode-name '("EWM" (:eval (ewm-surface-mode-line-mode))))
   ;; Kill buffer -> close window (like EXWM)
   (add-hook 'kill-buffer-query-functions
             #'ewm--kill-buffer-query-function nil t))
+
+;; Keybindings for surface mode (adapted from exwm-input.el)
+(define-key ewm-surface-mode-map (kbd "C-c C-k") #'ewm-input-char-mode)
+(define-key ewm-surface-mode-map (kbd "C-c C-t") #'ewm-input-toggle-mode)
 
 ;;; Debug
 

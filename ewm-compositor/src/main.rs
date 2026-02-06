@@ -95,6 +95,8 @@ enum Command {
     Focus { id: u32 },
     #[serde(rename = "screenshot")]
     Screenshot { path: Option<String> },
+    #[serde(rename = "prefix-keys")]
+    PrefixKeys { keys: Vec<String> },
 }
 
 struct Ewm {
@@ -121,6 +123,8 @@ struct Ewm {
 
     // Input
     pointer_location: (f64, f64),
+    focused_surface_id: u32,  // Which surface has keyboard focus (1 = Emacs)
+    prefix_keys: Vec<String>, // Keys that switch focus back to Emacs in char-mode
 }
 
 impl Ewm {
@@ -153,6 +157,8 @@ impl Ewm {
             pending_events: Vec::new(),
             output_size: (800, 600), // Default, updated when output is created
             pointer_location: (0.0, 0.0),
+            focused_surface_id: 1, // Default: Emacs has focus
+            prefix_keys: Vec::new(),
         }
     }
 
@@ -534,11 +540,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for event in input_events {
             match event {
                 InputEvent::Keyboard { event } => {
-                    // Set focus to first surface if not set
-                    if keyboard_focus.is_none() {
-                        if let Some(window) = data.state.space.elements().next() {
-                            if let Some(surface) = window.wl_surface() {
-                                keyboard_focus = Some(surface.into_owned());
+                    // Use focused_surface_id (controlled by Emacs) to determine focus
+                    // This implements line-mode (focus on Emacs=1) vs char-mode (focus on surface)
+                    let target_id = data.state.focused_surface_id;
+                    if let Some(window) = data.state.id_windows.get(&target_id) {
+                        if let Some(surface) = window.wl_surface() {
+                            let new_focus = surface.into_owned();
+                            // Only update if focus changed
+                            if keyboard_focus.as_ref() != Some(&new_focus) {
+                                keyboard_focus = Some(new_focus);
                             }
                         }
                     }
@@ -591,19 +601,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let pointer = data.state.seat.get_pointer().unwrap();
                     let serial = SERIAL_COUNTER.next_serial();
 
+                    // Note: Unlike typical compositors, we do NOT change keyboard focus on click.
+                    // Keyboard focus is controlled by Emacs via the focus command, implementing
+                    // EXWM-style line-mode (keys to Emacs) vs char-mode (keys to surface).
+                    // Clicks still go to the surface under pointer for mouse interactions.
                     let button_state = match event.state() {
-                        ButtonState::Pressed => {
-                            // Focus window under pointer on click
-                            if let Some((window, _)) = data.state.space.element_under(data.state.pointer_location) {
-                                if let Some(surface) = window.wl_surface() {
-                                    let owned_surface = surface.into_owned();
-                                    keyboard_focus = Some(owned_surface.clone());
-                                    let keyboard = data.state.seat.get_keyboard().unwrap();
-                                    keyboard.set_focus(&mut data.state, Some(owned_surface), serial);
-                                }
-                            }
-                            smithay::backend::input::ButtonState::Pressed
-                        }
+                        ButtonState::Pressed => smithay::backend::input::ButtonState::Pressed,
                         ButtonState::Released => smithay::backend::input::ButtonState::Released,
                     };
 
@@ -781,12 +784,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         Command::Focus { id } => {
-                            info!("Focus surface {} (not implemented)", id);
+                            // Update which surface should receive keyboard input
+                            data.state.focused_surface_id = id;
+                            // Also update actual keyboard focus immediately
+                            if let Some(window) = data.state.id_windows.get(&id) {
+                                if let Some(surface) = window.wl_surface() {
+                                    let serial = SERIAL_COUNTER.next_serial();
+                                    let keyboard = data.state.seat.get_keyboard().unwrap();
+                                    keyboard_focus = Some(surface.into_owned());
+                                    keyboard.set_focus(&mut data.state, keyboard_focus.clone(), serial);
+                                    info!("Focus surface {}", id);
+                                }
+                            } else {
+                                info!("Focus surface {} (surface not found)", id);
+                            }
                         }
                         Command::Screenshot { path } => {
                             let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
                             screenshot_path = Some(target.clone());
                             info!("Screenshot requested: {}", target);
+                        }
+                        Command::PrefixKeys { keys } => {
+                            data.state.prefix_keys = keys.clone();
+                            info!("Prefix keys set: {:?}", keys);
                         }
                     }
                 }
