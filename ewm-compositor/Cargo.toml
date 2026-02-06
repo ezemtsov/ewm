@@ -14,7 +14,8 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [dependencies.smithay]
-version = "0.7"
+git = "https://github.com/Smithay/smithay.git"
+rev = "0c2230f858580b52d628087d6dae1795278b8756"
 default-features = false
 features = [
     "backend_winit",

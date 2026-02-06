@@ -1,17 +1,19 @@
 //! EWM - Emacs Wayland Manager
 //!
-//! A Wayland compositor designed to be used as an Emacs replacement command.
-//! It automatically spawns Emacs inside the compositor and forwards all CLI args.
+//! A Wayland compositor that spawns a client application inside it.
 //!
 //! Usage:
-//!   ewm [EMACS_ARGS...]
+//!   ewm <PROGRAM> [ARGS...]
 //!
 //! Examples:
-//!   ewm                         # Start with default Emacs
-//!   ewm -Q -l ~/.emacs.d/init.el
-//!   ewm --file myfile.txt
+//!   ewm emacs                   # Start Emacs
+//!   ewm emacs -Q -l init.el     # Start Emacs with arguments
+//!   ewm foot                    # Start foot terminal
+//!   ewm weston-simple-shm       # Test with minimal Wayland client
 
 mod drm_backend;
+
+pub use drm_backend::DrmBackendState;
 
 use smithay::{
     backend::{
@@ -24,13 +26,14 @@ use smithay::{
             damage::OutputDamageTracker,
             element::{surface::WaylandSurfaceRenderElement, AsRenderElements},
             gles::GlesRenderer,
+            utils::with_renderer_surface_state,
             ExportMem,
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
-    delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output, delegate_seat, delegate_shm,
     delegate_xdg_shell,
-    desktop::{space::render_output, Space, Window},
+    desktop::{Space, Window},
     input::{
         keyboard::{FilterResult, xkb::keysyms, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
@@ -52,6 +55,7 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorHandler, CompositorState},
+        dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         seat::WaylandFocus,
         selection::{
             data_device::{
@@ -70,16 +74,25 @@ use smithay::{
     },
 };
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::Child;
+use std::rc::Rc;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const IPC_SOCKET: &str = "/tmp/ewm.sock";
+
+/// Kill combo: Super+Ctrl+Backspace
+/// Returns true if this key event is the kill combo
+/// Note: keycode 22 (X11/xkb) or 14 (evdev) for Backspace
+pub fn is_kill_combo(keycode: u32, ctrl: bool, logo: bool) -> bool {
+    (keycode == 14 || keycode == 22) && ctrl && logo
+}
 
 /// Events sent to Emacs
 #[derive(Serialize)]
@@ -256,8 +269,10 @@ struct Ewm {
 
     compositor_state: CompositorState,
     xdg_shell_state: XdgShellState,
+    #[allow(dead_code)] // Kept for protocol state
     xdg_decoration_state: XdgDecorationState,
     shm_state: ShmState,
+    dmabuf_state: DmabufState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
     seat: Seat<Self>,
@@ -277,6 +292,9 @@ struct Ewm {
     pointer_location: (f64, f64),
     focused_surface_id: u32,  // Which surface has keyboard focus (1 = Emacs)
     prefix_keys: Vec<PrefixKey>, // Parsed prefix keys that redirect to Emacs
+
+    // DRM backend (for early_import)
+    drm_backend: Option<Rc<RefCell<DrmBackendState>>>,
 }
 
 impl Ewm {
@@ -285,6 +303,7 @@ impl Ewm {
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
+        let dmabuf_state = DmabufState::new();
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
 
@@ -300,6 +319,7 @@ impl Ewm {
             xdg_shell_state,
             xdg_decoration_state,
             shm_state,
+            dmabuf_state,
             seat_state,
             data_device_state,
             seat,
@@ -313,7 +333,13 @@ impl Ewm {
             pointer_location: (0.0, 0.0),
             focused_surface_id: 1, // Default: Emacs has focus
             prefix_keys: Vec::new(),
+            drm_backend: None,
         }
+    }
+
+    /// Set the DRM backend reference for early_import support
+    pub fn set_drm_backend(&mut self, backend: Rc<RefCell<DrmBackendState>>) {
+        self.drm_backend = Some(backend);
     }
 
     fn init_wayland_listener(
@@ -450,6 +476,25 @@ impl CompositorHandler for Ewm {
         // Must be called first to populate renderer surface state for bbox calculation
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
+        // Early import for DRM backend (crucial for proper buffer import)
+        if let Some(ref backend) = self.drm_backend {
+            backend.borrow_mut().early_import(surface);
+        }
+
+        // Check if surface now has a buffer
+        let has_buffer = with_renderer_surface_state(surface, |state| {
+            state.buffer().is_some()
+        }).unwrap_or(false);
+
+        if has_buffer {
+            debug!("Surface {:?} committed with buffer", surface.id());
+            // Trigger a redraw - this is the critical connection between
+            // client buffer commits and the render loop (like niri's queue_redraw)
+            if let Some(ref backend) = self.drm_backend {
+                backend.borrow_mut().queue_redraw();
+            }
+        }
+
         for window in self.space.elements() {
             window.on_commit();
         }
@@ -467,6 +512,25 @@ impl ShmHandler for Ewm {
     }
 }
 delegate_shm!(Ewm);
+
+// DMA-BUF for efficient GPU buffer sharing
+impl DmabufHandler for Ewm {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        _dmabuf: smithay::backend::allocator::dmabuf::Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        // Accept all dmabufs - the renderer will validate and import them lazily
+        // In a more complete implementation, we'd validate the format here
+        let _ = notifier.successful::<Ewm>();
+    }
+}
+delegate_dmabuf!(Ewm);
 
 // Seat / input
 impl SeatHandler for Ewm {
@@ -496,13 +560,13 @@ delegate_seat!(Ewm);
 impl SelectionHandler for Ewm {
     type SelectionUserData = ();
 }
+impl ClientDndGrabHandler for Ewm {}
+impl ServerDndGrabHandler for Ewm {}
 impl DataDeviceHandler for Ewm {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
     }
 }
-impl ClientDndGrabHandler for Ewm {}
-impl ServerDndGrabHandler for Ewm {}
 delegate_data_device!(Ewm);
 
 // Output
@@ -648,16 +712,30 @@ impl LoopData {
 fn main() {
     tracing_subscriber::fmt::init();
 
-    // Collect CLI args to forward to Emacs (skip program name)
-    let emacs_args: Vec<String> = std::env::args().skip(1).collect();
+    // Parse CLI: first arg is the program to spawn, rest are its arguments
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    if args.is_empty() {
+        eprintln!("Usage: ewm <PROGRAM> [ARGS...]");
+        eprintln!("Examples:");
+        eprintln!("  ewm emacs              # Start Emacs");
+        eprintln!("  ewm foot               # Start foot terminal");
+        eprintln!("  ewm weston-simple-shm  # Test with minimal client");
+        std::process::exit(1);
+    }
+
+    let program = args[0].clone();
+    let program_args: Vec<String> = args[1..].to_vec();
+
+    info!("Will spawn: {} {:?}", program, program_args);
 
     // Choose backend based on environment
     let result = if drm_backend::is_nested() {
         info!("Running nested (WAYLAND_DISPLAY or DISPLAY set), using winit backend");
-        run_winit(emacs_args)
+        run_winit(program, program_args)
     } else {
         info!("Running standalone (no display server), using DRM backend");
-        drm_backend::run_drm(emacs_args)
+        drm_backend::run_drm(program, program_args)
     };
 
     if let Err(e) = result {
@@ -666,35 +744,35 @@ fn main() {
     }
 }
 
-/// Spawn Emacs with the given Wayland display and CLI arguments
-fn spawn_emacs(wayland_display: &str, args: &[String]) -> std::io::Result<Child> {
-    let emacs_bin = std::env::var("EWM_EMACS").unwrap_or_else(|_| "emacs".to_string());
+/// Spawn a client application with the given Wayland display
+pub fn spawn_client(program: &str, args: &[String], wayland_display: &str) -> std::io::Result<Child> {
+    let mut final_args = args.to_vec();
 
-    // Build the final argument list
-    let mut final_args: Vec<String> = Vec::new();
-
-    // If EWM_INIT is set, inject -l <path> -f ewm-connect before user args
-    if let Ok(ewm_init) = std::env::var("EWM_INIT") {
-        info!("Auto-loading EWM from: {}", ewm_init);
-        final_args.push("-l".to_string());
-        final_args.push(ewm_init);
-        final_args.push("-f".to_string());
-        final_args.push("ewm-connect".to_string());
+    // If spawning Emacs and EWM_INIT is set, inject -l <path> -f ewm-connect before user args
+    if program == "emacs" || program.ends_with("/emacs") {
+        if let Ok(ewm_init) = std::env::var("EWM_INIT") {
+            info!("Auto-loading EWM from: {}", ewm_init);
+            let mut emacs_args = vec![
+                "-l".to_string(),
+                ewm_init,
+                "-f".to_string(),
+                "ewm-connect".to_string(),
+            ];
+            emacs_args.extend(final_args);
+            final_args = emacs_args;
+        }
     }
 
-    // Add user-provided args
-    final_args.extend(args.iter().cloned());
-
-    info!("Spawning Emacs: {} {:?}", emacs_bin, final_args);
+    info!("Spawning: {} {:?}", program, final_args);
     info!("  WAYLAND_DISPLAY={}", wayland_display);
 
-    std::process::Command::new(&emacs_bin)
+    std::process::Command::new(program)
         .args(&final_args)
         .env("WAYLAND_DISPLAY", wayland_display)
         .spawn()
 }
 
-fn run_winit(emacs_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Ewm> = Display::new()?;
     let display_handle = display.handle();
@@ -759,9 +837,9 @@ fn run_winit(emacs_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
-    // Spawn Emacs inside the compositor
-    let mut emacs_process = spawn_emacs(&socket_name_str, &emacs_args)?;
-    info!("Emacs spawned with PID {}", emacs_process.id());
+    // Spawn client inside the compositor
+    let mut client_process = spawn_client(&program, &program_args, &socket_name_str)?;
+    info!("Client spawned with PID {}", client_process.id());
 
     info!("EWM compositor started");
 
@@ -771,16 +849,16 @@ fn run_winit(emacs_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
     let mut screenshot_path: Option<String> = None;
 
     while data.state.running {
-        // Check if Emacs has exited
-        match emacs_process.try_wait() {
+        // Check if client has exited
+        match client_process.try_wait() {
             Ok(Some(status)) => {
-                info!("Emacs exited with status: {}", status);
+                info!("Client exited with status: {}", status);
                 data.state.running = false;
                 break;
             }
             Ok(None) => {} // Still running
             Err(e) => {
-                error!("Error checking Emacs process: {}", e);
+                error!("Error checking client process: {}", e);
             }
         }
 
@@ -866,23 +944,29 @@ fn run_winit(emacs_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
                     let time = Event::time_msec(&event);
                     let keyboard = data.state.seat.get_keyboard().unwrap();
 
+                    // Check if this is a prefix key (only on key press, not release)
+                    let is_press = event.state() == smithay::backend::input::KeyState::Pressed;
+                    let keycode = event.key_code();
+
                     // Clone prefix_keys to use in filter closure
                     let prefix_keys = data.state.prefix_keys.clone();
                     let current_focus_id = data.state.focused_surface_id;
 
-                    // Check if this is a prefix key (only on key press, not release)
-                    let is_press = event.state() == smithay::backend::input::KeyState::Pressed;
-
-                    // Process key with filter to detect prefix keys
-                    let redirect_to_emacs = keyboard.input::<bool, _>(
+                    // Process key with filter to detect prefix keys and kill combo
+                    let filter_result = keyboard.input::<u8, _>(
                         &mut data.state,
-                        event.key_code(),
+                        keycode,
                         event.state(),
                         serial,
                         time,
                         |_, mods, handle| {
                             if !is_press {
                                 return FilterResult::Forward;
+                            }
+
+                            // Check for kill combo first (Super+Ctrl+Backspace)
+                            if is_kill_combo(keycode.raw(), mods.ctrl, mods.logo) {
+                                return FilterResult::Intercept(2); // 2 = kill
                             }
 
                             // Get the keysym for this key and check if it matches any prefix key
@@ -892,15 +976,24 @@ fn run_winit(emacs_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
                             if is_prefix && current_focus_id != 1 {
                                 // This is a prefix key and focus is not on Emacs
                                 // Signal that we need to redirect focus
-                                FilterResult::Intercept(true)
+                                FilterResult::Intercept(1) // 1 = redirect to emacs
                             } else {
                                 FilterResult::Forward
                             }
                         },
                     );
 
+                    // Handle filter results
+                    if filter_result == Some(2) {
+                        info!("Kill combo pressed (Super+Ctrl+Backspace), shutting down");
+                        data.state.running = false;
+                        continue;
+                    }
+
+                    let redirect_to_emacs = filter_result == Some(1);
+
                     // If we intercepted a prefix key, redirect focus to Emacs
-                    if redirect_to_emacs == Some(true) {
+                    if redirect_to_emacs {
                         // Switch focus to Emacs (surface 1)
                         // Update focused_surface_id so subsequent keys also go to Emacs
                         // (Emacs will send a focus command when it's done with the key sequence)
@@ -1015,46 +1108,51 @@ fn run_winit(emacs_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
         // Render
         let taking_screenshot = screenshot_path.is_some();
         {
-            let (renderer, mut framebuffer) = backend.bind()?;
+            backend.bind()?;
+            let age = backend.buffer_age().unwrap_or(0);
+            let renderer = backend.renderer();
 
             // Create render elements for secondary views (non-active views)
-            let mut secondary_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+            let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
             for (&id, views) in &data.state.surface_views {
                 if let Some(window) = data.state.id_windows.get(&id) {
                     for view in views.iter().filter(|v| !v.active) {
                         let location = smithay::utils::Point::from((view.x, view.y));
-                        let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                        let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                             window.render_elements(renderer, location, 1.0.into(), 1.0);
-                        secondary_elements.extend(elements);
+                        elements.extend(view_elements);
                     }
                 }
             }
 
-            let result = render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
-                &output,
+            // Add elements from space (primary surfaces)
+            for window in data.state.space.elements() {
+                let loc = data.state.space.element_location(window).unwrap_or_default();
+                let loc_physical = loc.to_physical_precise_round(1.0);
+                let window_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                    window.render_elements(renderer, loc_physical, 1.0.into(), 1.0);
+                elements.extend(window_elements);
+            }
+
+            let result = damage_tracker.render_output(
                 renderer,
-                &mut framebuffer,
-                1.0,
-                0, // age - disabling damage tracking for now
-                [&data.state.space],
-                &secondary_elements,
-                &mut damage_tracker,
+                age,
+                &elements,
                 [0.1, 0.1, 0.1, 1.0],
             );
 
-            if let Err(e) = result {
-                error!("Render error: {:?}", e);
-            }
+            match result {
+                Ok(render_output_result) => {
+                    // Screenshot capture
+                    if let Some(ref path) = screenshot_path {
+                        let size = data.state.output_size;
+                        let mapping = renderer.copy_framebuffer(
+                            smithay::utils::Rectangle::from_size((size.0, size.1).into()),
+                            Fourcc::Xrgb8888,
+                        );
 
-            // Screenshot capture - this invalidates the framebuffer, so we skip submit after
-            if let Some(ref path) = screenshot_path {
-                let size = data.state.output_size;
-                let rect = smithay::utils::Rectangle::from_size((size.0, size.1).into());
-
-                match renderer.copy_framebuffer(&framebuffer, rect, Fourcc::Xrgb8888) {
-                    Ok(mapping) => {
-                        match renderer.map_texture(&mapping) {
-                            Ok(pixel_data) => {
+                        if let Ok(mapping) = mapping {
+                            if let Ok(pixel_data) = renderer.map_texture(&mapping) {
                                 let width = size.0 as usize;
                                 let height = size.1 as usize;
                                 let stride = width * 4;
@@ -1075,32 +1173,31 @@ fn run_winit(emacs_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
                                     }
                                 }
 
-                                match image::RgbImage::from_raw(width as u32, height as u32, rgb_data) {
-                                    Some(img) => {
-                                        if let Err(e) = img.save(path) {
-                                            error!("Failed to save screenshot: {}", e);
-                                        } else {
-                                            info!("Screenshot saved to {}", path);
-                                        }
+                                if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, rgb_data) {
+                                    if let Err(e) = img.save(path) {
+                                        error!("Failed to save screenshot: {}", e);
+                                    } else {
+                                        info!("Screenshot saved to {}", path);
                                     }
-                                    None => error!("Failed to create image buffer"),
+                                } else {
+                                    error!("Failed to create image buffer");
                                 }
                             }
-                            Err(e) => error!("Failed to map texture: {:?}", e),
+                        }
+                        screenshot_path = None;
+                    }
+
+                    // Submit if there was damage (and not taking screenshot)
+                    if !taking_screenshot {
+                        if let Some(ref damage) = render_output_result.damage {
+                            backend.submit(Some(damage.as_slice()))?;
                         }
                     }
-                    Err(e) => error!("Failed to copy framebuffer: {:?}", e),
                 }
-                screenshot_path = None;
+                Err(e) => {
+                    error!("Render error: {:?}", e);
+                }
             }
-        }
-
-        // TODO: copy_framebuffer corrupts the EGL surface, so we skip submit after screenshots.
-        // This drops one frame. A proper fix would render to an offscreen texture first
-        // (like niri does), then copy from that without affecting the display framebuffer.
-        // See: niri/src/render_helpers/mod.rs render_to_texture() and render_and_download()
-        if !taking_screenshot {
-            backend.submit(None)?;
         }
 
         // Frame callbacks
