@@ -166,9 +166,9 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
   (when (and ewm--process (process-live-p ewm--process))
     (delete-process ewm--process))
   (let ((path (or socket-path "/tmp/ewm.sock")))
-    ;; Always detect CSD height on connect
-    (setq ewm-csd-height (ewm--detect-csd-height))
-    (message "EWM: detected CSD height: %d" ewm-csd-height)
+    ;; Disable CSD (client-side decorations) for all frames
+    ;; EWM manages windows directly, no need for title bars
+    (ewm--disable-csd)
     (setq ewm--process
           (make-network-process
            :name "ewm"
@@ -182,6 +182,24 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
     ;; Send prefix keys to compositor for char-mode handling
     (ewm--send-prefix-keys)
     (message "EWM: connected to %s" path)))
+
+(defun ewm--disable-csd ()
+  "Disable client-side decorations and bars for all frames.
+Sets frames to undecorated mode and removes bars since EWM manages windows directly."
+  ;; Set current frame to undecorated
+  (set-frame-parameter nil 'undecorated t)
+  ;; Ensure future frames are also undecorated
+  (add-to-list 'default-frame-alist '(undecorated . t))
+  ;; Disable menu-bar, tool-bar, and tab-bar if enabled
+  ;; These add to the Y-offset and must be accounted for
+  (when (bound-and-true-p menu-bar-mode)
+    (menu-bar-mode -1))
+  (when (bound-and-true-p tool-bar-mode)
+    (tool-bar-mode -1))
+  (when (bound-and-true-p tab-bar-mode)
+    (tab-bar-mode -1))
+  ;; With no decorations and no bars, CSD height is 0
+  (setq ewm-csd-height 0))
 
 (defun ewm-disconnect ()
   "Disconnect from compositor."
@@ -520,24 +538,10 @@ Returns the height in pixels."
               37)))))))
 
 (defun ewm--frame-y-offset (&optional frame)
-  "Calculate Y offset for FRAME to account for CSD, menu bar, and tool bar."
-  (let* ((frame (or frame (selected-frame)))
-         (geometry (frame-geometry frame))
-         (csd-height (or ewm-csd-height 0))
-         ;; Menu bar: use frame-geometry, but fall back to checking menu-bar-mode
-         (menu-bar-from-geom (or (cdr (alist-get 'menu-bar-size geometry)) 0))
-         (menu-bar-height (if (> menu-bar-from-geom 0)
-                              menu-bar-from-geom
-                            ;; PGTK may not report menu bar in geometry
-                            ;; Check if menu-bar-mode is enabled and estimate height
-                            (if (and (frame-parameter frame 'menu-bar-lines)
-                                     (> (frame-parameter frame 'menu-bar-lines) 0))
-                                30  ; Typical GTK menu bar height
-                              0)))
-         (tool-bar-height (or (cdr (alist-get 'tool-bar-size geometry)) 0))
-         (tab-bar-height (or (cdr (alist-get 'tab-bar-size geometry)) 0)))
-    ;; Add: CSD height + all bars
-    (+ csd-height menu-bar-height tool-bar-height tab-bar-height)))
+  "Calculate Y offset for FRAME to account for CSD only.
+Internal bars (menu-bar, tool-bar, tab-bar) are already reflected in
+`window-inside-absolute-pixel-edges', so we only add CSD height here."
+  (or ewm-csd-height 0))
 
 (defun ewm-layout--show (id &optional window)
   "Show surface ID exactly fit in the Emacs window WINDOW.
@@ -547,26 +551,19 @@ Adapted from exwm-layout--show."
          (y (pop edges))
          (width (- (pop edges) x))
          (height (- (pop edges) y))
-         (y-offset (ewm--frame-y-offset (window-frame window)))
-         ;; Final coordinates: add bar offset since absolute edges are
-         ;; relative to content area, not the compositor output
-         (final-y (+ y y-offset)))
+         (csd-offset (ewm--frame-y-offset (window-frame window)))
+         ;; Add CSD offset only - internal bars (menu, tool, tab) are already
+         ;; reflected in absolute pixel edges
+         (final-y (+ y csd-offset)))
     ;; Log debug info
-    (let* ((frame (window-frame window))
-           (geometry (frame-geometry frame)))
-      (with-temp-buffer
-        (insert (format "=== Layout Debug ===\n"))
-        (insert (format "Surface ID: %d\n" id))
-        (insert (format "Window: %s\n" window))
-        (insert (format "Absolute edges: (%d %d %d %d)\n" x y (+ x width) (+ y height)))
-        (insert (format "Calculated: x=%d y=%d w=%d h=%d\n" x y width height))
-        (insert (format "CSD height: %s\n" (or ewm-csd-height 0)))
-        (insert (format "menu-bar-lines: %s\n" (frame-parameter frame 'menu-bar-lines)))
-        (insert (format "menu-bar-size from geometry: %s\n" (alist-get 'menu-bar-size geometry)))
-        (insert (format "tool-bar-size from geometry: %s\n" (alist-get 'tool-bar-size geometry)))
-        (insert (format "Y-offset (total): %d\n" y-offset))
-        (insert (format "Sending: (%d, %d) %dx%d\n" x final-y width height))
-        (write-region (point-min) (point-max) "/tmp/ewm-layout.txt")))
+    (with-temp-buffer
+      (insert (format "=== Layout Debug ===\n"))
+      (insert (format "Surface ID: %d\n" id))
+      (insert (format "Window: %s\n" window))
+      (insert (format "Absolute edges: (%d %d %d %d)\n" x y (+ x width) (+ y height)))
+      (insert (format "CSD offset: %d\n" csd-offset))
+      (insert (format "Sending: (%d, %d) %dx%d\n" x final-y width height))
+      (write-region (point-min) (point-max) "/tmp/ewm-layout.txt"))
     (ewm-layout id x final-y width height)))
 
 (defun ewm-layout--refresh ()
