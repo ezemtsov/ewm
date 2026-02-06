@@ -76,6 +76,15 @@
   "Set surface ID position to X Y and size to W H."
   (ewm--send `(:cmd "layout" :id ,id :x ,x :y ,y :w ,w :h ,h)))
 
+(defun ewm-hide (id)
+  "Hide surface ID (move offscreen)."
+  (ewm--send `(:cmd "hide" :id ,id)))
+
+(defun ewm-close (id)
+  "Request surface ID to close gracefully.
+Sends xdg_toplevel.close to the client."
+  (ewm--send `(:cmd "close" :id ,id)))
+
 (defun ewm-focus (id)
   "Focus surface ID."
   (ewm--send `(:cmd "focus" :id ,id)))
@@ -143,9 +152,26 @@
 (defvar-local ewm-surface-app nil
   "Application name for this buffer.")
 
+(defun ewm--kill-buffer-query-function ()
+  "Run in `kill-buffer-query-functions' for surface buffers.
+Sends close request to compositor and prevents immediate buffer kill.
+Buffer will be killed when compositor confirms surface closed.
+Adapted from exwm-manage--kill-buffer-query-function."
+  (if (not ewm-surface-id)
+      t  ; Not a surface buffer, allow kill
+    (if (not (and ewm--process (process-live-p ewm--process)))
+        t  ; No connection, allow kill
+      ;; Request graceful close via xdg_toplevel.close
+      (ewm-close ewm-surface-id)
+      ;; Don't kill buffer now; wait for compositor's "close" event
+      nil)))
+
 (define-derived-mode ewm-surface-mode special-mode "EWM Surface"
   "Major mode for EWM surface buffers."
-  (setq buffer-read-only t))
+  (setq buffer-read-only t)
+  ;; Kill buffer -> close window (like EXWM)
+  (add-hook 'kill-buffer-query-functions
+            #'ewm--kill-buffer-query-function nil t))
 
 ;;; Debug
 
@@ -230,19 +256,28 @@ Adapted from exwm-layout--show."
     (ewm-layout id x (+ y y-offset) width height)))
 
 (defun ewm-layout--refresh ()
-  "Refresh layout for all visible surface buffers.
+  "Refresh layout for all surface buffers.
+Shows surfaces that are displayed in windows, hides others.
 Only sends layout for the first window displaying each surface.
-Adapted from exwm-layout--refresh."
+Adapted from exwm-layout--refresh-workspace."
   (when (and ewm--process (process-live-p ewm--process))
-    (let ((seen-surfaces (make-hash-table :test 'eql)))
+    ;; First pass: find which surfaces are visible and where
+    (let ((visible-surfaces (make-hash-table :test 'eql)))
       (dolist (frame (frame-list))
         (dolist (window (window-list frame 'no-minibuf))
           (let* ((buf (window-buffer window))
                  (id (buffer-local-value 'ewm-surface-id buf)))
             ;; Only process each surface once (first window wins)
-            (when (and id (not (gethash id seen-surfaces)))
-              (puthash id t seen-surfaces)
-              (ewm-layout--show id window))))))))
+            (when (and id (not (gethash id visible-surfaces)))
+              (puthash id window visible-surfaces)))))
+      ;; Second pass: show visible surfaces, hide others
+      (maphash
+       (lambda (id info)
+         (let ((window (gethash id visible-surfaces)))
+           (if window
+               (ewm-layout--show id window)
+             (ewm-hide id))))
+       ewm--surfaces))))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes."

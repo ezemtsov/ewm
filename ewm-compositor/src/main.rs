@@ -85,6 +85,10 @@ enum IpcEvent {
 enum Command {
     #[serde(rename = "layout")]
     Layout { id: u32, x: i32, y: i32, w: u32, h: u32 },
+    #[serde(rename = "hide")]
+    Hide { id: u32 },
+    #[serde(rename = "close")]
+    Close { id: u32 },
     #[serde(rename = "focus")]
     Focus { id: u32 },
 }
@@ -687,6 +691,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     t.send_configure();
                                 });
                                 info!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
+                            }
+                        }
+                        Command::Hide { id } => {
+                            if let Some(window) = data.state.id_windows.get(&id) {
+                                // Move offscreen to hide (like EXWM's approach)
+                                data.state.space.map_element(window.clone(), (-10000, -10000), false);
+                                info!("Hide surface {}", id);
+                            }
+                        }
+                        Command::Close { id } => {
+                            if let Some(window) = data.state.id_windows.get(&id) {
+                                // Send xdg_toplevel.close to request graceful close
+                                if let Some(toplevel) = window.toplevel() {
+                                    toplevel.send_close();
+                                    info!("Close surface {} (sent close request)", id);
+                                }
                             }
                         }
                         Command::Focus { id } => {
