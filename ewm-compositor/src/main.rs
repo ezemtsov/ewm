@@ -6,6 +6,7 @@
 
 use smithay::{
     backend::{
+        allocator::Fourcc,
         input::{
             AbsolutePositionEvent, Axis, ButtonState, Event, InputEvent,
             KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
@@ -14,6 +15,7 @@ use smithay::{
             damage::OutputDamageTracker,
             element::surface::WaylandSurfaceRenderElement,
             gles::GlesRenderer,
+            ExportMem,
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
@@ -91,6 +93,8 @@ enum Command {
     Close { id: u32 },
     #[serde(rename = "focus")]
     Focus { id: u32 },
+    #[serde(rename = "screenshot")]
+    Screenshot { path: Option<String> },
 }
 
 struct Ewm {
@@ -488,6 +492,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Main loop
     // Set initial keyboard focus to first surface (Emacs)
     let mut keyboard_focus: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> = None;
+    let mut screenshot_path: Option<String> = None;
 
     while data.state.running {
         // Collect input events
@@ -627,6 +632,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Render
+        let taking_screenshot = screenshot_path.is_some();
         {
             let (renderer, mut framebuffer) = backend.bind()?;
 
@@ -645,8 +651,63 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = result {
                 error!("Render error: {:?}", e);
             }
+
+            // Screenshot capture - this invalidates the framebuffer, so we skip submit after
+            if let Some(ref path) = screenshot_path {
+                let size = data.state.output_size;
+                let rect = smithay::utils::Rectangle::from_size((size.0, size.1).into());
+
+                match renderer.copy_framebuffer(&framebuffer, rect, Fourcc::Xrgb8888) {
+                    Ok(mapping) => {
+                        match renderer.map_texture(&mapping) {
+                            Ok(pixel_data) => {
+                                let width = size.0 as usize;
+                                let height = size.1 as usize;
+                                let stride = width * 4;
+
+                                // Convert and flip vertically
+                                let mut rgb_data: Vec<u8> = Vec::with_capacity(width * height * 3);
+                                for y in (0..height).rev() {
+                                    let row_start = y * stride;
+                                    for x in 0..width {
+                                        let pixel_start = row_start + x * 4;
+                                        if pixel_start + 4 <= pixel_data.len() {
+                                            // BGRX layout in memory
+                                            let b = pixel_data[pixel_start];
+                                            let g = pixel_data[pixel_start + 1];
+                                            let r = pixel_data[pixel_start + 2];
+                                            rgb_data.extend_from_slice(&[r, g, b]);
+                                        }
+                                    }
+                                }
+
+                                match image::RgbImage::from_raw(width as u32, height as u32, rgb_data) {
+                                    Some(img) => {
+                                        if let Err(e) = img.save(path) {
+                                            error!("Failed to save screenshot: {}", e);
+                                        } else {
+                                            info!("Screenshot saved to {}", path);
+                                        }
+                                    }
+                                    None => error!("Failed to create image buffer"),
+                                }
+                            }
+                            Err(e) => error!("Failed to map texture: {:?}", e),
+                        }
+                    }
+                    Err(e) => error!("Failed to copy framebuffer: {:?}", e),
+                }
+                screenshot_path = None;
+            }
         }
-        backend.submit(None)?;
+
+        // TODO: copy_framebuffer corrupts the EGL surface, so we skip submit after screenshots.
+        // This drops one frame. A proper fix would render to an offscreen texture first
+        // (like niri does), then copy from that without affecting the display framebuffer.
+        // See: niri/src/render_helpers/mod.rs render_to_texture() and render_and_download()
+        if !taking_screenshot {
+            backend.submit(None)?;
+        }
 
         // Frame callbacks
         data.state.space.elements().for_each(|window| {
@@ -676,13 +737,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     match cmd {
                         Command::Layout { id, x, y, w, h } => {
                             if let Some(window) = data.state.id_windows.get(&id) {
-                                // The output uses Transform::Flipped180 to correct OpenGL's
-                                // inverted Y axis. We must compensate when positioning surfaces:
-                                //   compositor_y = output_height - visual_y - surface_height
-                                let output_h = data.state.output_size.1;
-                                let adjusted_y = output_h - y - (h as i32);
-
-                                data.state.space.map_element(window.clone(), (x, adjusted_y), true);
+                                // Use coordinates directly from Emacs.
+                                // Transform::Flipped180 only affects content rendering (OpenGL fix),
+                                // not the positioning coordinate system.
+                                data.state.space.map_element(window.clone(), (x, y), true);
                                 data.state.space.raise_element(window, true);
                                 window.toplevel().map(|t| {
                                     t.with_pending_state(|state| {
@@ -711,6 +769,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Command::Focus { id } => {
                             info!("Focus surface {} (not implemented)", id);
+                        }
+                        Command::Screenshot { path } => {
+                            let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
+                            screenshot_path = Some(target.clone());
+                            info!("Screenshot requested: {}", target);
                         }
                     }
                 }
