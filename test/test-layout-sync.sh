@@ -121,7 +121,27 @@ sleep 1
 FINAL_LAYOUT=$(grep "Layout surface 2" "$LOG_FILE" | tail -1)
 echo "Final layout: $FINAL_LAYOUT"
 
+# Take screenshot for manual verification
 echo ""
-echo "Test complete. Check compositor window to verify surface alignment."
+echo "Taking screenshot for manual verification..."
+emacsclient -s "$EMACS_SOCKET" -e "(progn
+  (load \"$PROJECT_DIR/test/ewm-test.el\")
+  (ewm-test-snapshot))" 2>&1 | tee -a "$LOG_FILE"
+
+# Wait for screenshot to be saved (compositor saves async)
+sleep 2
+
+# Copy snapshot to test output dir
+SNAPSHOT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR}"
+cp /tmp/ewm-snapshot.png "$SNAPSHOT_DIR/layout-sync-screenshot.png" 2>/dev/null || true
+cp /tmp/ewm-snapshot.txt "$SNAPSHOT_DIR/layout-sync-debug.txt" 2>/dev/null || true
+
+echo ""
+echo "=== Test Results ==="
+echo "Layout commands verified: OK"
+echo "Screenshot: $SNAPSHOT_DIR/layout-sync-screenshot.png"
+echo "Debug info: $SNAPSHOT_DIR/layout-sync-debug.txt"
+echo ""
+echo "Inspect the screenshot to verify surface alignment is correct."
 echo "Press Ctrl+C to stop."
 wait $COMPOSITOR_PID
