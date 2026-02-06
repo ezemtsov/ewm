@@ -11,6 +11,8 @@
 //!   ewm -Q -l ~/.emacs.d/init.el
 //!   ewm --file myfile.txt
 
+mod drm_backend;
+
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -644,7 +646,21 @@ impl LoopData {
 }
 
 fn main() {
-    if let Err(e) = run() {
+    tracing_subscriber::fmt::init();
+
+    // Collect CLI args to forward to Emacs (skip program name)
+    let emacs_args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Choose backend based on environment
+    let result = if drm_backend::is_nested() {
+        info!("Running nested (WAYLAND_DISPLAY or DISPLAY set), using winit backend");
+        run_winit(emacs_args)
+    } else {
+        info!("Running standalone (no display server), using DRM backend");
+        drm_backend::run_drm(emacs_args)
+    };
+
+    if let Err(e) = result {
         error!("Fatal error: {}", e);
         std::process::exit(1);
     }
@@ -678,12 +694,7 @@ fn spawn_emacs(wayland_display: &str, args: &[String]) -> std::io::Result<Child>
         .spawn()
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
-    // Collect CLI args to forward to Emacs (skip program name)
-    let emacs_args: Vec<String> = std::env::args().skip(1).collect();
-
+fn run_winit(emacs_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Ewm> = Display::new()?;
     let display_handle = display.handle();

@@ -18,7 +18,14 @@ version = "0.7"
 default-features = false
 features = [
     "backend_winit",
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
     "desktop",
     "renderer_glow",
+    "renderer_multi",
+    "use_system_lib",
     "wayland_frontend",
 ]
