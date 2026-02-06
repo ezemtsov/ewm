@@ -641,6 +641,8 @@ Collects all windows showing each surface and sends multi-view commands.
 Supports displaying the same surface in multiple windows (true multi-view).
 Adapted from exwm-layout--refresh-workspace."
   (when (and ewm--process (process-live-p ewm--process))
+    ;; Force redisplay to ensure window sizes are current
+    (redisplay t)
     ;; Build a hash table: surface-id -> list of (window . active-p)
     (let ((surface-windows (make-hash-table :test 'eql))
           (sel-window (selected-window)))
@@ -685,13 +687,39 @@ Adapted from exwm-layout--refresh-workspace."
   "Hook called when window configuration changes."
   (ewm-layout--refresh))
 
+(defun ewm--on-minibuffer-setup ()
+  "Refresh layout when minibuffer activates.
+Defers refresh to allow minibuffer to settle."
+  (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay))
+
+(defun ewm--on-minibuffer-exit ()
+  "Refresh layout when minibuffer exits."
+  (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay))
+
+(defun ewm--refresh-with-redisplay ()
+  "Force redisplay then refresh layout.
+Ensures window edges are current before calculating positions."
+  (redisplay t)
+  (ewm-layout--refresh))
+
+(defun ewm--on-window-size-change (_frame)
+  "Refresh layout when window sizes change.
+Catches minibuffer height changes that window-configuration-change misses."
+  (ewm-layout--refresh))
+
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."
-  (add-hook 'window-configuration-change-hook #'ewm--window-config-change))
+  (add-hook 'window-configuration-change-hook #'ewm--window-config-change)
+  (add-hook 'window-size-change-functions #'ewm--on-window-size-change)
+  (add-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
+  (add-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
 
 (defun ewm--disable-layout-sync ()
   "Disable automatic layout sync."
-  (remove-hook 'window-configuration-change-hook #'ewm--window-config-change))
+  (remove-hook 'window-configuration-change-hook #'ewm--window-config-change)
+  (remove-hook 'window-size-change-functions #'ewm--on-window-size-change)
+  (remove-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
+  (remove-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
 
 (provide 'ewm)
 ;;; ewm.el ends here

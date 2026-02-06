@@ -1136,18 +1136,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Command::Views { id, views } => {
                             if let Some(window) = data.state.id_windows.get(&id) {
-                                // Find the active view (for input routing)
-                                let active_view = views.iter().find(|v| v.active);
+                                // Find the active view (for input routing), or use first view
+                                let primary_view = views.iter().find(|v| v.active)
+                                    .or_else(|| views.first());
 
-                                if let Some(active) = active_view {
-                                    // Map element to active view position (for input)
-                                    data.state.space.map_element(window.clone(), (active.x, active.y), true);
+                                if let Some(view) = primary_view {
+
+                                    // Map element to view position
+                                    data.state.space.map_element(window.clone(), (view.x, view.y), true);
                                     data.state.space.raise_element(window, true);
 
-                                    // Configure surface size based on active view
+                                    // Configure surface size
                                     window.toplevel().map(|t| {
                                         t.with_pending_state(|state| {
-                                            state.size = Some((active.w as i32, active.h as i32).into());
+                                            state.size = Some((view.w as i32, view.h as i32).into());
                                         });
                                         t.send_configure();
                                     });
@@ -1155,7 +1157,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
                                 // Store all views for multi-view rendering
                                 data.state.surface_views.insert(id, views.clone());
-                                info!("Views for surface {}: {} view(s)", id, views.len());
                             }
                         }
                         Command::Hide { id } => {
