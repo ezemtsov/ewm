@@ -362,6 +362,10 @@ Used when buffer changes are expected and focus should not change.")
   "Last surface ID that was focused.
 Used to avoid sending redundant focus commands.")
 
+(defvar ewm-input--last-selected-window nil
+  "Last selected window.
+Used to detect window switches for multi-view input routing.")
+
 (defun ewm-input--on-buffer-list-update ()
   "Hook called when buffer list changes.
 Updates keyboard focus based on current buffer.
@@ -388,27 +392,33 @@ Emacs (surface 1) has focus."
 (defun ewm-input--on-post-command ()
   "Hook called after each command.
 Re-focuses the surface if we're in a surface buffer.
-This handles the case where the compositor intercepted a prefix key
-and temporarily redirected focus to Emacs."
+Also updates multi-view layout when selected window changes."
   (when (and ewm--process
              (process-live-p ewm--process)
              (not (minibufferp)))
-    (let ((id (buffer-local-value 'ewm-surface-id (current-buffer))))
+    (let ((id (buffer-local-value 'ewm-surface-id (current-buffer)))
+          (current-window (selected-window)))
+      ;; Check if selected window changed (important for multi-view input routing)
+      (unless (eq current-window ewm-input--last-selected-window)
+        (setq ewm-input--last-selected-window current-window)
+        ;; Refresh layout so the new window's view becomes active for input
+        (ewm-layout--refresh))
+      ;; Focus the surface for keyboard input
       (when id
-        ;; We're in a surface buffer - ensure focus is on the surface
-        ;; Reset last-focused-id to force the focus command
         (setq ewm-input--last-focused-id id)
         (ewm-focus id)))))
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm-input--last-focused-id 1)  ; Start with Emacs focused
+  (setq ewm-input--last-selected-window (selected-window))
   (add-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
   (add-hook 'post-command-hook #'ewm-input--on-post-command))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm-input--last-focused-id nil)
+  (setq ewm-input--last-selected-window nil)
   (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
   (remove-hook 'post-command-hook #'ewm-input--on-post-command))
 
