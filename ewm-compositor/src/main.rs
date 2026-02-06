@@ -20,7 +20,7 @@ use smithay::{
         },
         renderer::{
             damage::OutputDamageTracker,
-            element::surface::WaylandSurfaceRenderElement,
+            element::{surface::WaylandSurfaceRenderElement, AsRenderElements},
             gles::GlesRenderer,
             ExportMem,
         },
@@ -98,12 +98,24 @@ struct SurfaceInfo {
     title: String,
 }
 
+/// A single view of a surface (position in an Emacs window)
+#[derive(Deserialize, Clone, Debug)]
+struct SurfaceView {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    active: bool,  // True for the view in the selected Emacs window
+}
+
 /// Commands received from Emacs
 #[derive(Deserialize)]
 #[serde(tag = "cmd")]
 enum Command {
     #[serde(rename = "layout")]
     Layout { id: u32, x: i32, y: i32, w: u32, h: u32 },
+    #[serde(rename = "views")]
+    Views { id: u32, views: Vec<SurfaceView> },
     #[serde(rename = "hide")]
     Hide { id: u32 },
     #[serde(rename = "close")]
@@ -253,6 +265,7 @@ struct Ewm {
     window_ids: HashMap<Window, u32>,
     id_windows: HashMap<u32, Window>,
     surface_info: HashMap<u32, SurfaceInfo>,  // Cached app_id/title for change detection
+    surface_views: HashMap<u32, Vec<SurfaceView>>,  // Multi-view positions per surface
     pending_events: Vec<IpcEvent>,
 
     // Output
@@ -292,6 +305,7 @@ impl Ewm {
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
+            surface_views: HashMap::new(),
             pending_events: Vec::new(),
             output_size: (800, 600), // Default, updated when output is created
             pointer_location: (0.0, 0.0),
@@ -553,6 +567,7 @@ impl XdgShellHandler for Ewm {
             if let Some(id) = self.window_ids.remove(&window) {
                 self.id_windows.remove(&id);
                 self.surface_info.remove(&id);
+                self.surface_views.remove(&id);
                 self.pending_events.push(IpcEvent::Close { id });
                 info!("Toplevel {} destroyed", id);
             }
@@ -991,6 +1006,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         {
             let (renderer, mut framebuffer) = backend.bind()?;
 
+            // Create render elements for secondary views (non-active views)
+            let mut secondary_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+            for (&id, views) in &data.state.surface_views {
+                if let Some(window) = data.state.id_windows.get(&id) {
+                    for view in views.iter().filter(|v| !v.active) {
+                        let location = smithay::utils::Point::from((view.x, view.y));
+                        let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                            window.render_elements(renderer, location, 1.0.into(), 1.0);
+                        secondary_elements.extend(elements);
+                    }
+                }
+            }
+
             let result = render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
                 &output,
                 renderer,
@@ -998,7 +1026,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 1.0,
                 0, // age - disabling damage tracking for now
                 [&data.state.space],
-                &[],
+                &secondary_elements,
                 &mut damage_tracker,
                 [0.1, 0.1, 0.1, 1.0],
             );
@@ -1106,10 +1134,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 info!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
                             }
                         }
+                        Command::Views { id, views } => {
+                            if let Some(window) = data.state.id_windows.get(&id) {
+                                // Find the active view (for input routing)
+                                let active_view = views.iter().find(|v| v.active);
+
+                                if let Some(active) = active_view {
+                                    // Map element to active view position (for input)
+                                    data.state.space.map_element(window.clone(), (active.x, active.y), true);
+                                    data.state.space.raise_element(window, true);
+
+                                    // Configure surface size based on active view
+                                    window.toplevel().map(|t| {
+                                        t.with_pending_state(|state| {
+                                            state.size = Some((active.w as i32, active.h as i32).into());
+                                        });
+                                        t.send_configure();
+                                    });
+                                }
+
+                                // Store all views for multi-view rendering
+                                data.state.surface_views.insert(id, views.clone());
+                                info!("Views for surface {}: {} view(s)", id, views.len());
+                            }
+                        }
                         Command::Hide { id } => {
                             if let Some(window) = data.state.id_windows.get(&id) {
                                 // Move offscreen to hide (like EXWM's approach)
                                 data.state.space.map_element(window.clone(), (-10000, -10000), false);
+                                // Clear any multi-view positions
+                                data.state.surface_views.remove(&id);
                                 info!("Hide surface {}", id);
                             }
                         }

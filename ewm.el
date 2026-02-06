@@ -157,6 +157,12 @@ Similar to `exwm-workspace-rename-buffer'."
   "Set surface ID position to X Y and size to W H."
   (ewm--send `(:cmd "layout" :id ,id :x ,x :y ,y :w ,w :h ,h)))
 
+(defun ewm-views (id views)
+  "Set surface ID to display at multiple VIEWS.
+VIEWS is a vector of plists with :x :y :w :h :active keys.
+The :active view receives input, others are visual copies."
+  (ewm--send `(:cmd "views" :id ,id :views ,views)))
+
 (defun ewm-hide (id)
   "Hide surface ID (move offscreen)."
   (ewm--send `(:cmd "hide" :id ,id)))
@@ -621,34 +627,49 @@ Adapted from exwm-layout--show."
 
 (defun ewm-layout--refresh ()
   "Refresh layout for all surface buffers.
-Shows surfaces that are displayed in windows, hides others.
-Prioritizes selected window, then uses first window found.
+Collects all windows showing each surface and sends multi-view commands.
+Supports displaying the same surface in multiple windows (true multi-view).
 Adapted from exwm-layout--refresh-workspace."
   (when (and ewm--process (process-live-p ewm--process))
-    ;; First pass: find which surfaces are visible and where
-    (let ((visible-surfaces (make-hash-table :test 'eql)))
-      ;; Check selected window first (priority for focused surface)
-      (let* ((sel-window (selected-window))
-             (sel-buf (window-buffer sel-window))
-             (sel-id (buffer-local-value 'ewm-surface-id sel-buf)))
-        (when sel-id
-          (puthash sel-id sel-window visible-surfaces)))
-      ;; Then check all other windows
+    ;; Build a hash table: surface-id -> list of (window . active-p)
+    (let ((surface-windows (make-hash-table :test 'eql))
+          (sel-window (selected-window)))
+      ;; Collect all windows showing each surface
       (dolist (frame (frame-list))
         (dolist (window (window-list frame 'no-minibuf))
           (let* ((buf (window-buffer window))
                  (id (buffer-local-value 'ewm-surface-id buf)))
-            ;; Only process each surface once (selected window already handled)
-            (when (and id (not (gethash id visible-surfaces)))
-              (puthash id window visible-surfaces)))))
-      ;; Second pass: show visible surfaces, hide others
+            (when id
+              (let ((active-p (eq window sel-window))
+                    (existing (gethash id surface-windows)))
+                (puthash id (cons (cons window active-p) existing) surface-windows))))))
+      ;; Send views or hide for each surface
       (maphash
        (lambda (id _info)
-         (let ((window (gethash id visible-surfaces)))
-           (if window
-               (ewm-layout--show id window)
+         (let ((windows (gethash id surface-windows)))
+           (if windows
+               ;; Surface is visible in one or more windows - send views
+               (let ((views (mapcar
+                             (lambda (win-pair)
+                               (let* ((window (car win-pair))
+                                      (active-p (cdr win-pair)))
+                                 (ewm-layout--make-view window active-p)))
+                             windows)))
+                 (ewm-views id (vconcat views)))
+             ;; Surface not visible - hide it
              (ewm-hide id))))
        ewm--surfaces))))
+
+(defun ewm-layout--make-view (window active-p)
+  "Create a view plist for WINDOW with ACTIVE-P flag."
+  (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
+         (x (pop edges))
+         (y (pop edges))
+         (width (- (pop edges) x))
+         (height (- (pop edges) y))
+         (csd-offset (ewm--frame-y-offset (window-frame window)))
+         (final-y (+ y csd-offset)))
+    `(:x ,x :y ,final-y :w ,width :h ,height :active ,(if active-p t :false))))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes."
