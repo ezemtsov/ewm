@@ -25,58 +25,18 @@ The key difference from EXWM: the compositor runs as a separate process, so appl
 
 ## Building
 
-### NixOS / Nix
-
 ```bash
-nix-shell
-cargo build --release -p ewm
+cd compositor
+cargo build --release
 ```
 
-### Other Linux distributions
-
-Install dependencies (names vary by distro):
-- `libxkbcommon`, `libGL`, `wayland`
-- `libX11`, `libXcursor`, `libXrandr`, `libXi` (for nested mode)
-- `libseat`, `libinput`, `libudev`, `libdrm`, `libgbm` (for DRM mode)
-- Rust toolchain
-
-Then:
-```bash
-cargo build --release -p ewm
-```
-
-## Testing
-
-### Nested Mode (inside existing Wayland/X11 session)
-
-The easiest way to test. Run from your current desktop:
+## Running
 
 ```bash
-# Basic test - runs Emacs inside EWM window
-cargo run -p ewm -- emacs
+# Nested mode (inside existing Wayland/X11)
+./target/release/ewm emacs
 
-# With custom Emacs config
-cargo run -p ewm -- emacs -Q -l /path/to/ewm.el
-
-# Test with a simple Wayland client
-cargo run -p ewm -- foot
-```
-
-EWM auto-detects nested mode when `WAYLAND_DISPLAY` or `DISPLAY` is set.
-
-### DRM Mode (standalone TTY session)
-
-For running EWM as your actual Wayland compositor:
-
-1. Switch to a TTY (`Ctrl+Alt+F2`)
-2. Ensure you're in the `video` and `input` groups
-3. Start a seat daemon if not running (`seatd` or via systemd-logind)
-4. Run:
-
-```bash
-# Make sure WAYLAND_DISPLAY and DISPLAY are unset
-unset WAYLAND_DISPLAY DISPLAY
-
+# DRM mode (from TTY, unset WAYLAND_DISPLAY first)
 ./target/release/ewm emacs
 ```
 
