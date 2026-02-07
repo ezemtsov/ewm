@@ -10,7 +10,7 @@
 //! all DRM operations until we receive an ActivateSession event.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use smithay::{
@@ -18,7 +18,7 @@ use smithay::{
         allocator::{
             format::FormatSet,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
-            Fourcc, Modifier,
+            Modifier,
         },
         drm::{
             compositor::{DrmCompositor, FrameFlags},
@@ -28,10 +28,6 @@ use smithay::{
         input::{Event, InputEvent, KeyboardKeyEvent},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            element::{
-                surface::WaylandSurfaceRenderElement,
-                AsRenderElements,
-            },
             gles::GlesRenderer,
             multigpu::{gbm::GbmGlesBackend, GpuManager},
             ImportDma, ImportEgl,
@@ -39,31 +35,35 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::primary_gpu,
     },
-    input::keyboard::FilterResult,
     output::{Mode, Output, OutputModeSource, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
-            generic::Generic, timer::{TimeoutAction, Timer}, EventLoop, Interest,
-            LoopHandle, Mode as CalloopMode, PostAction, RegistrationToken,
-            channel::{Sender, channel},
+            channel::{channel, Sender},
+            timer::{TimeoutAction, Timer},
+            EventLoop, LoopHandle, RegistrationToken,
         },
         drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
         wayland_server::{protocol::wl_surface::WlSurface, Display, Resource},
     },
-    utils::{DeviceFd, Scale, Transform, SERIAL_COUNTER},
-    wayland::{dmabuf::DmabufFeedbackBuilder, seat::WaylandFocus},
+    utils::{DeviceFd, Scale, Transform},
+    wayland::dmabuf::DmabufFeedbackBuilder,
 };
 use tracing::{debug, info, warn};
 
-use crate::{Ewm, LoopData, IPC_SOCKET};
+use crate::{
+    input::{handle_keyboard_event, KeyboardAction},
+    ipc::setup_ipc_listener,
+    render::collect_render_elements,
+    spawn_client, Ewm, LoopData,
+};
 
-const SUPPORTED_COLOR_FORMATS: [Fourcc; 4] = [
-    Fourcc::Xrgb8888,
-    Fourcc::Xbgr8888,
-    Fourcc::Argb8888,
-    Fourcc::Abgr8888,
+const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
+    smithay::backend::allocator::Fourcc::Xrgb8888,
+    smithay::backend::allocator::Fourcc::Xbgr8888,
+    smithay::backend::allocator::Fourcc::Argb8888,
+    smithay::backend::allocator::Fourcc::Abgr8888,
 ];
 
 /// Type alias for our DRM compositor
@@ -99,7 +99,9 @@ impl RedrawState {
         match self {
             RedrawState::Idle => RedrawState::Queued,
             RedrawState::WaitingForVBlank { .. } => RedrawState::WaitingForVBlank { redraw_needed: true },
-            RedrawState::WaitingForEstimatedVBlank(token) => RedrawState::WaitingForEstimatedVBlankAndQueued(token),
+            RedrawState::WaitingForEstimatedVBlank(token) => {
+                RedrawState::WaitingForEstimatedVBlankAndQueued(token)
+            }
             other => other, // Already queued, no-op
         }
     }
@@ -135,6 +137,10 @@ struct DrmDeviceState {
     render_node: DrmNode,
     surfaces: HashMap<crtc::Handle, OutputSurface>,
 }
+
+/// Marker type for DRM backend (used in Backend enum)
+#[allow(dead_code)]
+pub struct DrmBackend;
 
 /// Shared DRM backend state
 #[allow(dead_code)]
@@ -180,7 +186,10 @@ impl DrmBackendState {
         let Some(device) = &self.device else {
             return false;
         };
-        device.surfaces.values().any(|s| matches!(s.redraw_state, RedrawState::Queued))
+        device
+            .surfaces
+            .values()
+            .any(|s| matches!(s.redraw_state, RedrawState::Queued))
     }
 
     /// Perform early buffer import for a surface
@@ -192,7 +201,11 @@ impl DrmBackendState {
         };
         match device.gpu_manager.early_import(device.render_node, surface) {
             Ok(_) => info!("Early import succeeded for surface {:?}", surface.id()),
-            Err(err) => info!("Early buffer import skipped/failed for surface {:?}: {:?}", surface.id(), err),
+            Err(err) => info!(
+                "Early buffer import skipped/failed for surface {:?}: {:?}",
+                surface.id(),
+                err
+            ),
         }
     }
 
@@ -204,7 +217,9 @@ impl DrmBackendState {
             device.drm.pause();
             // Cancel any pending estimated VBlank timers and reset states to Idle
             for surface in device.surfaces.values_mut() {
-                if let RedrawState::WaitingForEstimatedVBlank(token) | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = surface.redraw_state {
+                if let RedrawState::WaitingForEstimatedVBlank(token)
+                | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = surface.redraw_state
+                {
                     if let Some(ref handle) = self.loop_handle {
                         handle.remove(token);
                     }
@@ -247,7 +262,7 @@ impl DrmBackendState {
     }
 
     /// Render a frame to the given output
-    fn render_output(&mut self, crtc: crtc::Handle, ewm: &crate::Ewm) {
+    fn render_output(&mut self, crtc: crtc::Handle, ewm: &Ewm) {
         let Some(device) = &mut self.device else {
             return;
         };
@@ -267,7 +282,11 @@ impl DrmBackendState {
         }
 
         if self.paused || !device.drm.is_active() {
-            debug!("Skipping render: paused={} drm_active={}", self.paused, device.drm.is_active());
+            debug!(
+                "Skipping render: paused={} drm_active={}",
+                self.paused,
+                device.drm.is_active()
+            );
             return;
         }
 
@@ -282,40 +301,12 @@ impl DrmBackendState {
             return;
         };
 
-        // Create render elements (matching winit backend approach)
-        let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
-
-        // First, render secondary views (non-active views for multi-view surfaces)
-        // This must come before primary surfaces so they appear underneath
-        for (&id, views) in &ewm.surface_views {
-            if let Some(window) = ewm.id_windows.get(&id) {
-                for view in views.iter().filter(|v| !v.active) {
-                    let location = smithay::utils::Point::from((view.x, view.y));
-                    let loc_physical = location.to_physical_precise_round(output_scale);
-                    let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                        window.render_elements(renderer.as_mut(), loc_physical, output_scale, 1.0);
-                    elements.extend(view_elements);
-                }
-            }
-        }
-
-        // Then render primary surfaces from the space
-        let space_element_count = ewm.space.elements().count();
-        for window in ewm.space.elements() {
-            let loc = ewm.space.element_location(window).unwrap_or_default();
-            let loc_physical = loc.to_physical_precise_round(output_scale);
-            // Use window.render_elements() which properly handles window geometry and subsurfaces
-            let window_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                window.render_elements(renderer.as_mut(), loc_physical, output_scale, 1.0);
-            debug!("Window at {:?}: {} render elements", loc, window_elements.len());
-            elements.extend(window_elements);
-        }
-
-        debug!("Rendering {} elements from {} windows", elements.len(), space_element_count);
+        // Collect render elements using shared function
+        let elements = collect_render_elements(ewm, renderer.as_mut(), output_scale);
 
         // Use the same frame flags as niri for proper plane scanout
-        let flags = FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
-            | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+        let flags =
+            FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
 
         // Render the frame
         let compositor = &mut surface.compositor;
@@ -333,18 +324,15 @@ impl DrmBackendState {
                     match compositor.queue_frame(()) {
                         Ok(()) => {
                             // Transition to WaitingForVBlank
-                            // Do NOT clear the flag here - wait for actual VBlank
                             surface.redraw_state = RedrawState::WaitingForVBlank { redraw_needed: false };
                         }
                         Err(err) => {
                             warn!("Error queueing frame: {:?}", err);
-                            // On error, go back to Idle so we can try again
                             surface.redraw_state = RedrawState::Idle;
                         }
                     }
                 } else {
                     // No damage - use estimated VBlank timer
-                    // This avoids busy-looping when there's nothing to render
                     self.queue_estimated_vblank_timer(crtc, refresh_interval_us);
                 }
 
@@ -355,7 +343,6 @@ impl DrmBackendState {
             }
             Err(err) => {
                 warn!("Error rendering frame: {:?}", err);
-                // On error, reset to Idle
                 if let Some(device) = &mut self.device {
                     if let Some(surface) = device.surfaces.get_mut(&crtc) {
                         surface.redraw_state = RedrawState::Idle;
@@ -366,7 +353,6 @@ impl DrmBackendState {
     }
 
     /// Queue an estimated VBlank timer when there's no damage
-    /// This replaces the real VBlank for frame pacing when we don't submit a frame
     fn queue_estimated_vblank_timer(&mut self, crtc: crtc::Handle, refresh_interval_us: u64) {
         let Some(handle) = self.loop_handle.clone() else {
             warn!("No loop handle available for estimated VBlank timer");
@@ -380,21 +366,16 @@ impl DrmBackendState {
             return;
         };
 
-        // Calculate timer duration (use refresh interval, minimum 1ms)
         let duration = Duration::from_micros(refresh_interval_us.max(1000));
 
-        // Create a one-shot timer
-        // We need to store the token so we can cancel it on pause
-        match handle.insert_source(
-            Timer::from_duration(duration),
-            move |_, _, data| {
-                // Timer fired - this is our estimated VBlank
-                if let Some(drm_backend) = data.state.drm_backend.as_ref() {
-                    drm_backend.borrow_mut().on_estimated_vblank_timer(crtc, &data.state);
-                }
-                TimeoutAction::Drop // One-shot
-            },
-        ) {
+        match handle.insert_source(Timer::from_duration(duration), move |_, _, data| {
+            if let Some(drm_backend) = data.state.drm_backend.as_ref() {
+                drm_backend
+                    .borrow_mut()
+                    .on_estimated_vblank_timer(crtc, &data.state);
+            }
+            TimeoutAction::Drop
+        }) {
             Ok(token) => {
                 surface.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
             }
@@ -406,8 +387,7 @@ impl DrmBackendState {
     }
 
     /// Handle estimated VBlank timer firing
-    fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &crate::Ewm) {
-        // First, check what state we're in and prepare for action
+    fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &Ewm) {
         let action = {
             let Some(device) = &mut self.device else {
                 return;
@@ -418,19 +398,16 @@ impl DrmBackendState {
 
             match &surface.redraw_state {
                 RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
-                    // A redraw was queued while waiting - transition to Queued
                     surface.redraw_state = RedrawState::Queued;
-                    Some(true) // needs render
+                    Some(true)
                 }
                 RedrawState::WaitingForEstimatedVBlank(_) => {
-                    // No redraw queued - go idle
-                    // Send frame callbacks to maintain the callback chain
                     let output = surface.output.clone();
                     for window in ewm.space.elements() {
                         window.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
                     }
                     surface.redraw_state = RedrawState::Idle;
-                    Some(false) // no render needed
+                    Some(false)
                 }
                 other => {
                     debug!("Unexpected state in on_estimated_vblank_timer: {:?}", other);
@@ -439,19 +416,16 @@ impl DrmBackendState {
             }
         };
 
-        // Now render if needed (after releasing the borrow)
         if action == Some(true) {
             self.render_output(crtc, ewm);
         }
     }
 
     /// Process all outputs that have queued redraws
-    /// Called from the main loop after event dispatch
-    pub(crate) fn redraw_queued_outputs(&mut self, ewm: &crate::Ewm) {
+    pub(crate) fn redraw_queued_outputs(&mut self, ewm: &Ewm) {
         let Some(device) = &self.device else {
             return;
         };
-        // Collect CRTCs that need rendering
         let queued_crtcs: Vec<crtc::Handle> = device
             .surfaces
             .iter()
@@ -459,7 +433,6 @@ impl DrmBackendState {
             .map(|(crtc, _)| *crtc)
             .collect();
 
-        // Render each queued output
         for crtc in queued_crtcs {
             self.render_output(crtc, ewm);
         }
@@ -467,16 +440,14 @@ impl DrmBackendState {
 }
 
 /// Initialize DRM device and set up outputs
-/// This is called when the session becomes active
 fn initialize_drm(
     backend_state: &std::rc::Rc<std::cell::RefCell<DrmBackendState>>,
     display_handle: &smithay::reexports::wayland_server::DisplayHandle,
     ewm_state: &mut Ewm,
-    event_loop_handle: &smithay::reexports::calloop::LoopHandle<'static, LoopData>,
+    event_loop_handle: &LoopHandle<'static, LoopData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut backend = backend_state.borrow_mut();
 
-    // Get pending init data
     let pending = backend.pending.take().ok_or("DRM already initialized")?;
 
     info!("Initializing DRM device (session is now active)");
@@ -492,16 +463,13 @@ fn initialize_drm(
 
     info!("DRM device created, is_active: {}", drm.is_active());
 
-    // Explicitly acquire DRM master - this is crucial!
-    // DrmDevice::new() may fail to get master initially, so we request it now
-    // that the session is confirmed active
     if let Err(err) = drm.activate(true) {
         warn!("Failed to activate DRM device (acquire master): {:?}", err);
     } else {
         info!("DRM device activated, is_active: {}", drm.is_active());
     }
 
-    // Create EGL display to get render node (using niri's approach)
+    // Create EGL display to get render node
     let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
     let egl_device = EGLDevice::device_for_display(&egl_display)?;
     let render_node = egl_device
@@ -509,14 +477,13 @@ fn initialize_drm(
         .ok_or("No render node found")?;
     info!("Render node: {:?}", render_node);
 
-    // Create GPU manager (handles renderer creation and EGL context)
-    let api: GbmGlesBackend<GlesRenderer, DrmDeviceFd> = GbmGlesBackend::with_context_priority(
-        smithay::backend::egl::context::ContextPriority::High,
-    );
+    // Create GPU manager
+    let api: GbmGlesBackend<GlesRenderer, DrmDeviceFd> =
+        GbmGlesBackend::with_context_priority(smithay::backend::egl::context::ContextPriority::High);
     let mut gpu_manager: GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>> = GpuManager::new(api)?;
     gpu_manager.as_mut().add_node(render_node, gbm.clone())?;
 
-    // Get a renderer and bind to Wayland display
+    // Bind renderer to Wayland display
     {
         let mut renderer = gpu_manager.single_renderer(&render_node)?;
         if let Err(err) = renderer.bind_wl_display(display_handle) {
@@ -527,11 +494,12 @@ fn initialize_drm(
 
         // Create dmabuf global
         let dmabuf_formats = renderer.dmabuf_formats().clone();
-        if let Ok(default_feedback) = DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats).build() {
-            let _global = ewm_state.dmabuf_state.create_global_with_default_feedback::<Ewm>(
-                display_handle,
-                &default_feedback,
-            );
+        if let Ok(default_feedback) =
+            DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats).build()
+        {
+            let _global = ewm_state
+                .dmabuf_state
+                .create_global_with_default_feedback::<Ewm>(display_handle, &default_feedback);
             info!("Dmabuf global created");
         }
     }
@@ -552,9 +520,7 @@ fn initialize_drm(
             .encoders()
             .iter()
             .filter_map(|enc| drm.get_encoder(*enc).ok())
-            .find_map(|enc| {
-                resources.filter_crtcs(enc.possible_crtcs()).into_iter().next()
-            })
+            .find_map(|enc| resources.filter_crtcs(enc.possible_crtcs()).into_iter().next())
             .ok_or("No suitable CRTC found")?;
 
         // Find preferred mode
@@ -585,7 +551,7 @@ fn initialize_drm(
         let renderer = gpu_manager.single_renderer(&render_node)?;
         let raw_render_formats = renderer.as_ref().egl_context().dmabuf_render_formats();
 
-        // Filter out problematic modifiers (CCS compression modifiers on Intel)
+        // Filter out problematic modifiers
         let render_formats: FormatSet = raw_render_formats
             .iter()
             .copied()
@@ -593,18 +559,25 @@ fn initialize_drm(
                 !matches!(
                     format.modifier,
                     Modifier::I915_y_tiled_ccs
-                    | Modifier::I915_y_tiled_gen12_rc_ccs
-                    | Modifier::I915_y_tiled_gen12_mc_ccs
+                        | Modifier::I915_y_tiled_gen12_rc_ccs
+                        | Modifier::I915_y_tiled_gen12_mc_ccs
                 )
             })
             .collect();
 
         // Create Smithay output
-        let connector_name = format!("{:?}-{}", connector_info.interface(), connector_info.interface_id());
+        let connector_name = format!(
+            "{:?}-{}",
+            connector_info.interface(),
+            connector_info.interface_id()
+        );
         let output = Output::new(
             connector_name.clone(),
             PhysicalProperties {
-                size: connector_info.size().map(|(w, h)| (w as i32, h as i32).into()).unwrap_or_default(),
+                size: connector_info
+                    .size()
+                    .map(|(w, h)| (w as i32, h as i32).into())
+                    .unwrap_or_default(),
                 subpixel: Subpixel::Unknown,
                 make: "EWM".into(),
                 model: "DRM".into(),
@@ -619,12 +592,12 @@ fn initialize_drm(
         output.set_preferred(smithay_mode);
         output.create_global::<Ewm>(display_handle);
 
-        // Create DrmCompositor - try with filtered formats first, fallback to Invalid modifier only
+        // Create DrmCompositor
         let cursor_size = drm.cursor_size();
         let compositor = match DrmCompositor::new(
             OutputModeSource::Auto(output.clone()),
             drm_surface,
-            None, // planes
+            None,
             allocator.clone(),
             gbm.clone(),
             SUPPORTED_COLOR_FORMATS,
@@ -634,16 +607,17 @@ fn initialize_drm(
         ) {
             Ok(c) => c,
             Err(err) => {
-                warn!("Error creating DRM compositor, trying with Invalid modifier: {:?}", err);
+                warn!(
+                    "Error creating DRM compositor, trying with Invalid modifier: {:?}",
+                    err
+                );
 
-                // Fallback: only use formats with Invalid modifier (linear)
                 let fallback_formats: FormatSet = render_formats
                     .iter()
                     .copied()
                     .filter(|format| format.modifier == Modifier::Invalid)
                     .collect();
 
-                // Recreate the surface since DrmCompositor::new consumed it
                 let drm_surface = drm.create_surface(crtc, mode, &[*connector_handle])?;
 
                 DrmCompositor::new(
@@ -662,20 +636,21 @@ fn initialize_drm(
 
         info!("DrmCompositor created for {}", connector_name);
 
-        // Calculate refresh interval in microseconds from the mode's refresh rate
-        // mode.vrefresh() returns Hz, so interval = 1_000_000 / Hz
         let refresh_interval_us = if mode.vrefresh() > 0 {
             1_000_000 / mode.vrefresh() as u64
         } else {
-            16_667 // Default to ~60Hz if unknown
+            16_667
         };
 
-        surfaces.insert(crtc, OutputSurface {
-            output: output.clone(),
-            compositor,
-            redraw_state: RedrawState::Queued, // Start with a queued redraw
-            refresh_interval_us,
-        });
+        surfaces.insert(
+            crtc,
+            OutputSurface {
+                output: output.clone(),
+                compositor,
+                redraw_state: RedrawState::Queued,
+                refresh_interval_us,
+            },
+        );
         ewm_state.space.map_output(&output, (0, 0));
         ewm_state.output_size = (mode.size().0 as i32, mode.size().1 as i32);
 
@@ -691,7 +666,6 @@ fn initialize_drm(
         surfaces,
     });
 
-    // Need to drop the borrow before registering the DRM notifier
     drop(backend);
 
     // Register DRM event notifier for VBlank
@@ -700,8 +674,6 @@ fn initialize_drm(
         if let DrmEvent::VBlank(crtc) = event {
             let mut backend = backend_for_vblank.borrow_mut();
 
-            // Mark the frame as submitted - this is crucial!
-            // Without this, the compositor thinks there's still a pending frame
             let mut should_render = false;
             if let Some(device) = &mut backend.device {
                 if let Some(surface) = device.surfaces.get_mut(&crtc) {
@@ -712,15 +684,12 @@ fn initialize_drm(
                         }
                     }
 
-                    // Handle RedrawState transition on VBlank
                     match surface.redraw_state {
                         RedrawState::WaitingForVBlank { redraw_needed } => {
                             if redraw_needed {
-                                // Another redraw was requested while waiting - queue it
                                 surface.redraw_state = RedrawState::Queued;
                                 should_render = true;
                             } else {
-                                // No pending redraw - go idle
                                 surface.redraw_state = RedrawState::Idle;
                             }
                         }
@@ -731,7 +700,6 @@ fn initialize_drm(
                 }
             }
 
-            // Render if we transitioned to Queued
             if should_render {
                 drop(backend);
                 backend_for_vblank.borrow_mut().render_output(crtc, &data.state);
@@ -741,7 +709,7 @@ fn initialize_drm(
 
     info!("DRM initialization complete");
 
-    // Trigger initial render to start the VBlank chain
+    // Trigger initial render
     {
         let backend = backend_state.borrow_mut();
         if let Some(device) = &backend.device {
@@ -760,23 +728,25 @@ fn initialize_drm(
 pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting EWM with DRM backend");
 
-    // 1. Initialize libseat session
+    // Initialize libseat session
     let (session, notifier) = LibSeatSession::new().map_err(|e| {
-        format!("Failed to create libseat session: {}. Are you running from a TTY?", e)
+        format!(
+            "Failed to create libseat session: {}. Are you running from a TTY?",
+            e
+        )
     })?;
     let seat_name = session.seat();
     info!("libseat session opened, seat: {}", seat_name);
 
-    // Check if session is already active
     let session_active = session.is_active();
     info!("Session active at startup: {}", session_active);
 
-    // 2. Create event loop and Wayland display
+    // Create event loop and Wayland display
     let mut event_loop: EventLoop<LoopData> = EventLoop::try_new()?;
     let mut display: Display<Ewm> = Display::new()?;
     let display_handle = display.handle();
 
-    // 3. Initialize Wayland socket
+    // Initialize Wayland socket
     let socket_name = Ewm::init_wayland_listener(&mut display, &event_loop.handle())?;
     let socket_name_str = socket_name.to_string_lossy().to_string();
     info!("Wayland socket: {:?}", socket_name);
@@ -788,20 +758,20 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         emacs: None,
     };
 
-    // 4. Find primary GPU (we can do this without DRM master)
-    let gpu_path = primary_gpu(&seat_name)?
-        .ok_or("No GPU found")?;
+    // Find primary GPU
+    let gpu_path = primary_gpu(&seat_name)?.ok_or("No GPU found")?;
     info!("Primary GPU: {:?}", gpu_path);
 
-    // 5. Initialize libinput (doesn't require DRM master)
+    // Initialize libinput
     let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
-    libinput.udev_assign_seat(&seat_name).map_err(|()| "Failed to assign seat to libinput")?;
+    libinput
+        .udev_assign_seat(&seat_name)
+        .map_err(|()| "Failed to assign seat to libinput")?;
 
-    // 6. Create channel for deferred DRM initialization
+    // Create channel for deferred DRM initialization
     let (init_sender, init_receiver) = channel::<DrmMessage>();
 
-    // 7. Create backend state (DRM device will be initialized later)
-    // Note: loop_handle will be set after we have access to it
+    // Create backend state
     let backend_state = std::rc::Rc::new(std::cell::RefCell::new(DrmBackendState {
         session,
         libinput: libinput.clone(),
@@ -812,20 +782,17 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         }),
         paused: false,
         init_sender: Some(init_sender),
-        loop_handle: None, // Will be set below
+        loop_handle: None,
     }));
 
-    // Store the loop handle for timer scheduling
     backend_state.borrow_mut().loop_handle = Some(event_loop.handle());
-
-    // Set the DRM backend on Ewm for early_import support
     data.state.set_drm_backend(backend_state.clone());
 
-    // 8. Register session notifier FIRST (before any DRM operations)
-    // This is critical - we need to receive ActivateSession before doing DRM setup
+    // Register session notifier
     let backend_for_session = backend_state.clone();
-    event_loop.handle().insert_source(notifier, move |event, _, _| {
-        match event {
+    event_loop
+        .handle()
+        .insert_source(notifier, move |event, _, _| match event {
             SessionEvent::PauseSession => {
                 info!("Session paused (VT switch away)");
                 backend_for_session.borrow_mut().pause();
@@ -834,168 +801,66 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                 info!("Session activated");
                 let backend = backend_for_session.borrow_mut();
                 if backend.device.is_none() {
-                    // First activation - trigger DRM initialization
                     info!("First session activation - triggering DRM init");
                     backend.trigger_init();
                 } else {
-                    // VT switch back - resume
-                    drop(backend);  // Release borrow before calling resume
+                    drop(backend);
                     backend_for_session.borrow_mut().resume();
                 }
             }
-        }
-    })?;
+        })?;
 
-    // 9. Register channel receiver for deferred DRM initialization
+    // Register channel receiver for deferred DRM initialization
     let backend_for_init = backend_state.clone();
     let display_handle_for_init = display_handle.clone();
     let event_loop_handle = event_loop.handle();
-    event_loop.handle().insert_source(init_receiver, move |event, _, data| {
-        if let smithay::reexports::calloop::channel::Event::Msg(DrmMessage::InitializeDrm) = event {
-            info!("Received DRM init message");
-            if let Err(e) = initialize_drm(
-                &backend_for_init,
-                &display_handle_for_init,
-                &mut data.state,
-                &event_loop_handle,
-            ) {
-                warn!("Failed to initialize DRM: {:?}", e);
-            }
-        }
-    })?;
-
-    // 10. Register libinput with event loop
-    let libinput_backend = LibinputInputBackend::new(libinput);
-    event_loop.handle().insert_source(libinput_backend, move |event, _, data| {
-        match event {
-            InputEvent::Keyboard { event: kb_event } => {
-                let serial = SERIAL_COUNTER.next_serial();
-                let time = Event::time_msec(&kb_event);
-                let keycode = kb_event.key_code();
-                let key_state = kb_event.state();
-                let is_press = key_state == smithay::backend::input::KeyState::Pressed;
-
-                let prefix_keys = data.state.prefix_keys.clone();
-                let current_focus_id = data.state.focused_surface_id;
-                let keyboard = data.state.seat.get_keyboard().unwrap();
-
-                let filter_result = keyboard.input::<u8, _>(
+    event_loop
+        .handle()
+        .insert_source(init_receiver, move |event, _, data| {
+            if let smithay::reexports::calloop::channel::Event::Msg(DrmMessage::InitializeDrm) = event
+            {
+                info!("Received DRM init message");
+                if let Err(e) = initialize_drm(
+                    &backend_for_init,
+                    &display_handle_for_init,
                     &mut data.state,
-                    keycode,
-                    key_state,
-                    serial,
-                    time,
-                    |_, mods, handle| {
-                        if !is_press {
-                            return FilterResult::Forward;
-                        }
+                    &event_loop_handle,
+                ) {
+                    warn!("Failed to initialize DRM: {:?}", e);
+                }
+            }
+        })?;
 
-                        if crate::is_kill_combo(keycode.raw(), mods.ctrl, mods.logo) {
-                            return FilterResult::Intercept(2);
-                        }
-
-                        let keysym = handle.modified_sym();
-                        let is_prefix = prefix_keys.iter().any(|pk| pk.matches(keysym.raw(), mods));
-
-                        if is_prefix && current_focus_id != 1 {
-                            FilterResult::Intercept(1)
-                        } else {
-                            FilterResult::Forward
-                        }
-                    },
+    // Register libinput with event loop
+    let libinput_backend = LibinputInputBackend::new(libinput);
+    event_loop
+        .handle()
+        .insert_source(libinput_backend, move |event, _, data| {
+            if let InputEvent::Keyboard { event: kb_event } = event {
+                let keyboard = data.state.seat.get_keyboard().unwrap();
+                let action = handle_keyboard_event(
+                    &mut data.state,
+                    &keyboard,
+                    kb_event.key_code().into(),
+                    kb_event.state(),
+                    Event::time_msec(&kb_event),
                 );
 
-                if filter_result == Some(2) {
+                if action == KeyboardAction::Shutdown {
                     info!("Kill combo pressed, shutting down");
                     data.state.running = false;
-                    return;
-                }
-
-                if filter_result == Some(1) {
-                    data.state.focused_surface_id = 1;
-                    if let Some(window) = data.state.id_windows.get(&1) {
-                        if let Some(surface) = window.wl_surface() {
-                            let emacs_surface: WlSurface = surface.into_owned();
-                            keyboard.set_focus(&mut data.state, Some(emacs_surface.clone()), serial);
-                            keyboard.input::<(), _>(
-                                &mut data.state,
-                                keycode,
-                                key_state,
-                                serial,
-                                time,
-                                |_, _, _| FilterResult::Forward,
-                            );
-                        }
-                    }
-                } else {
-                    let target_id = data.state.focused_surface_id;
-                    if let Some(window) = data.state.id_windows.get(&target_id) {
-                        if let Some(surface) = window.wl_surface() {
-                            let focus_surface: WlSurface = surface.into_owned();
-                            keyboard.set_focus(&mut data.state, Some(focus_surface), serial);
-                        }
-                    }
                 }
             }
-            _ => {}
-        }
-    })?;
+        })?;
 
-    // 11. Set up IPC socket
-    let ipc_path = Path::new(IPC_SOCKET);
-    if ipc_path.exists() {
-        std::fs::remove_file(ipc_path)?;
-    }
-    let ipc_listener = std::os::unix::net::UnixListener::bind(ipc_path)?;
-    ipc_listener.set_nonblocking(true)?;
-    info!("IPC socket: {}", IPC_SOCKET);
-
-    // Track IPC stream registration token for cleanup on reconnect
-    let ipc_stream_token: std::rc::Rc<std::cell::RefCell<Option<RegistrationToken>>> =
-        std::rc::Rc::new(std::cell::RefCell::new(None));
-    let ipc_stream_token_clone = ipc_stream_token.clone();
-    let loop_handle = event_loop.handle();
-    let loop_handle_for_listener = loop_handle.clone();
-
-    event_loop.handle().insert_source(
-        Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
-        move |_, listener, data| {
-            if let Ok((stream, _)) = listener.accept() {
-                info!("Emacs connected");
-                stream.set_nonblocking(true).ok();
-
-                // Remove previous stream source if any
-                if let Some(token) = ipc_stream_token_clone.borrow_mut().take() {
-                    loop_handle_for_listener.remove(token);
-                }
-
-                // Clone stream for writing (stored in data.emacs)
-                let write_stream = stream.try_clone().unwrap();
-                data.emacs = Some(write_stream);
-
-                // Register stream for reading as event source
-                let token = loop_handle_for_listener.insert_source(
-                    Generic::new(stream, Interest::READ, CalloopMode::Level),
-                    |_, source, data: &mut crate::LoopData| {
-                        // SAFETY: We're inside the event loop callback where the source is valid
-                        let stream = unsafe { source.get_mut() };
-                        data.process_commands_from_stream(stream);
-                        Ok(PostAction::Continue)
-                    },
-                ).expect("Failed to register IPC stream");
-
-                *ipc_stream_token_clone.borrow_mut() = Some(token);
-            }
-            Ok(PostAction::Continue)
-        },
-    )?;
+    // Set up IPC listener (shared code)
+    setup_ipc_listener(&event_loop.handle())?;
 
     info!("EWM DRM backend started (waiting for session activation)");
     info!("VT switching: Ctrl+Alt+F1-F7");
     info!("Kill combo: Super+Ctrl+Backspace");
 
-    // 13. If session is already active, initialize DRM immediately
-    // (This handles the case where we're the foreground session from the start)
+    // If session is already active, initialize DRM immediately
     if session_active {
         info!("Session already active, initializing DRM now");
         if let Err(e) = initialize_drm(
@@ -1008,11 +873,11 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         }
     }
 
-    // 14. Spawn client immediately
+    // Spawn client
     let client_process: std::rc::Rc<std::cell::RefCell<Option<std::process::Child>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
     info!("Spawning client...");
-    match crate::spawn_client(&program, &program_args, &socket_name_str) {
+    match spawn_client(&program, &program_args, &socket_name_str) {
         Ok(child) => {
             info!("Client spawned with PID {}", child.id());
             *client_process.borrow_mut() = Some(child);
@@ -1035,19 +900,12 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         data.display.flush_clients().unwrap();
 
         // Process any queued redraws after event dispatch
-        // This is how client commits trigger rendering
         backend_state.borrow_mut().redraw_queued_outputs(&data.state);
 
-        // Flush pending events to Emacs (shared IPC handling)
+        // Flush pending events to Emacs
         data.flush_events();
     }
 
     info!("EWM DRM backend shutting down");
     Ok(())
-}
-
-/// Check if we're running inside another compositor/display server
-pub fn is_nested() -> bool {
-    std::env::var("WAYLAND_DISPLAY").ok().filter(|s| !s.is_empty()).is_some()
-        || std::env::var("DISPLAY").ok().filter(|s| !s.is_empty()).is_some()
 }
