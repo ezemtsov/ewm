@@ -13,7 +13,7 @@ EMACS_SOCKET="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ewm-test-emacs"
 pkill -f ewm-compositor 2>/dev/null || true
 pkill -f "emacs.*ewm-test" 2>/dev/null || true
 rm -f "/run/user/$(id -u)/wayland-ewm"* 2>/dev/null || true
-rm -f /tmp/ewm.sock 2>/dev/null || true
+rm -f "${XDG_RUNTIME_DIR:-/tmp}/ewm.sock" 2>/dev/null || true
 rm -f "$EMACS_SOCKET" 2>/dev/null || true
 
 cleanup() {
@@ -21,7 +21,7 @@ cleanup() {
     kill $CLIENT_PID 2>/dev/null || true
     emacsclient -s "$EMACS_SOCKET" -e "(kill-emacs)" 2>/dev/null || true
     rm -f "/run/user/$(id -u)/wayland-ewm"* 2>/dev/null || true
-    rm -f /tmp/ewm.sock 2>/dev/null || true
+    rm -f "${XDG_RUNTIME_DIR:-/tmp}/ewm.sock" 2>/dev/null || true
     rm -f "$EMACS_SOCKET" 2>/dev/null || true
     echo "Logs saved to: $LOG_FILE"
 }

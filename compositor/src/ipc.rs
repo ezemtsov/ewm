@@ -15,19 +15,28 @@ use tracing::info;
 
 use crate::LoopData;
 
-/// Default IPC socket path
-pub const IPC_SOCKET_PATH: &str = "/tmp/ewm.sock";
+/// Socket filename
+const IPC_SOCKET_NAME: &str = "ewm.sock";
+
+/// Get the IPC socket path, using XDG_RUNTIME_DIR if available
+pub fn ipc_socket_path() -> String {
+    match std::env::var("XDG_RUNTIME_DIR") {
+        Ok(dir) => format!("{}/{}", dir, IPC_SOCKET_NAME),
+        Err(_) => format!("/tmp/{}", IPC_SOCKET_NAME),
+    }
+}
 
 /// Set up the IPC listener for Emacs communication
 ///
-/// This creates a Unix socket at IPC_SOCKET_PATH and registers it with
+/// This creates a Unix socket at $XDG_RUNTIME_DIR/ewm.sock and registers it with
 /// the event loop to accept connections and process commands.
 ///
 /// Returns Ok(()) on success, or an error if socket creation fails.
 pub fn setup_ipc_listener(
     event_loop: &LoopHandle<'static, LoopData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ipc_path = Path::new(IPC_SOCKET_PATH);
+    let socket_path = ipc_socket_path();
+    let ipc_path = Path::new(&socket_path);
 
     // Remove existing socket if present
     if ipc_path.exists() {
@@ -37,7 +46,7 @@ pub fn setup_ipc_listener(
     // Create and configure the listener
     let ipc_listener = UnixListener::bind(ipc_path)?;
     ipc_listener.set_nonblocking(true)?;
-    info!("IPC socket: {}", IPC_SOCKET_PATH);
+    info!("IPC socket: {}", socket_path);
 
     // Track IPC stream registration token for cleanup on reconnect
     let ipc_stream_token: Rc<RefCell<Option<RegistrationToken>>> = Rc::new(RefCell::new(None));

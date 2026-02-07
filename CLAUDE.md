@@ -20,7 +20,7 @@ Use conventional commits without Co-Authored-By lines:
 ### Rust
 - Follow standard Rust conventions
 - Keep named key → keysym mapping in `KeyId::to_keysym()`
-- IPC uses JSON over Unix socket at `/tmp/ewm.sock`
+- IPC uses JSON over Unix socket at `$XDG_RUNTIME_DIR/ewm.sock`
 
 ### Emacs Lisp
 - Use character literals for keys: `?\C-x` not `"C-x"`

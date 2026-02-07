@@ -213,31 +213,43 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
 
 ;;; Public API
 
+(defun ewm--default-socket-path ()
+  "Return the default IPC socket path.
+Uses $XDG_RUNTIME_DIR/ewm.sock if available, otherwise /tmp/ewm.sock."
+  (let ((runtime-dir (getenv "XDG_RUNTIME_DIR")))
+    (if runtime-dir
+        (expand-file-name "ewm.sock" runtime-dir)
+      "/tmp/ewm.sock")))
+
 (defun ewm-connect (&optional socket-path)
-  "Connect to compositor at SOCKET-PATH (default /tmp/ewm.sock).
-Safe to call unconditionally - warns and returns nil if socket not found."
+  "Connect to compositor at SOCKET-PATH.
+Default is $XDG_RUNTIME_DIR/ewm.sock.
+Safe to call unconditionally - returns nil with a message if connection fails."
   (interactive)
-  (let ((path (or socket-path "/tmp/ewm.sock")))
-    (if (not (file-exists-p path))
-        (message "EWM: socket %s not found (not running inside EWM?)" path)
-      (when (and ewm--process (process-live-p ewm--process))
-        (delete-process ewm--process))
-      ;; Disable CSD (client-side decorations) for all frames
-      ;; EWM manages windows directly, no need for title bars
-      (ewm--disable-csd)
-      (setq ewm--process
-            (make-network-process
-             :name "ewm"
-             :buffer (generate-new-buffer " *ewm-input*")
-             :family 'local
-             :service path
-             :filter #'ewm--filter
-             :sentinel #'ewm--sentinel))
-      (ewm--enable-layout-sync)
-      (ewm-input--enable)
-      ;; Scan keymaps and send intercept keys to compositor
-      (ewm--send-intercept-keys)
-      (message "EWM: connected to %s" path))))
+  (let ((path (or socket-path (ewm--default-socket-path))))
+    (when (and ewm--process (process-live-p ewm--process))
+      (delete-process ewm--process))
+    (condition-case nil
+        (progn
+          (setq ewm--process
+                (make-network-process
+                 :name "ewm"
+                 :buffer (generate-new-buffer " *ewm-input*")
+                 :family 'local
+                 :service path
+                 :filter #'ewm--filter
+                 :sentinel #'ewm--sentinel))
+          ;; Connection succeeded - set up EWM environment
+          ;; Disable CSD (client-side decorations) for all frames
+          ;; EWM manages windows directly, no need for title bars
+          (ewm--disable-csd)
+          (ewm--enable-layout-sync)
+          (ewm-input--enable)
+          ;; Scan keymaps and send intercept keys to compositor
+          (ewm--send-intercept-keys)
+          (message "EWM: connected to %s" path))
+      (file-error
+       (message "EWM: connection failed (not running inside EWM?)")))))
 
 (defun ewm--disable-csd ()
   "Disable client-side decorations and bars for all frames.
