@@ -244,11 +244,11 @@ pub fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<d
                     let source = event.source();
                     let horizontal = event
                         .amount(Axis::Horizontal)
-                        .or_else(|| event.amount_v120(Axis::Horizontal).map(|v| v * 3.0 / 120.0))
+                        .or_else(|| event.amount_v120(Axis::Horizontal).map(|v| v / 120.0 * 15.0))
                         .unwrap_or(0.0);
                     let vertical = event
                         .amount(Axis::Vertical)
-                        .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v * 3.0 / 120.0))
+                        .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v / 120.0 * 15.0))
                         .unwrap_or(0.0);
 
                     let mut frame = AxisFrame::new(event.time_msec()).source(source);

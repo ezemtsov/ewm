@@ -25,7 +25,10 @@ use smithay::{
             DrmDevice, DrmDeviceFd, DrmEvent, DrmNode,
         },
         egl::{EGLDevice, EGLDisplay},
-        input::{Event, InputEvent, KeyboardKeyEvent},
+        input::{
+            AbsolutePositionEvent, Axis, ButtonState, Event, InputEvent, KeyboardKeyEvent,
+            PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        },
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             gles::GlesRenderer,
@@ -35,6 +38,7 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::primary_gpu,
     },
+    input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     output::{Mode, Output, OutputModeSource, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
@@ -47,15 +51,16 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::{protocol::wl_surface::WlSurface, Display, Resource},
     },
-    utils::{DeviceFd, Scale, Transform},
-    wayland::dmabuf::DmabufFeedbackBuilder,
+    utils::{DeviceFd, Point, Scale, Transform, SERIAL_COUNTER},
+    wayland::{dmabuf::DmabufFeedbackBuilder, seat::WaylandFocus},
 };
 use tracing::{debug, info, warn};
 
 use crate::{
+    cursor::CursorBuffer,
     input::{handle_keyboard_event, KeyboardAction},
     ipc::setup_ipc_listener,
-    render::collect_render_elements,
+    render::collect_render_elements_with_cursor,
     spawn_client, Ewm, LoopData,
 };
 
@@ -156,6 +161,8 @@ pub struct DrmBackendState {
     init_sender: Option<Sender<DrmMessage>>,
     /// Event loop handle for scheduling timers
     loop_handle: Option<LoopHandle<'static, LoopData>>,
+    /// Cursor buffer for rendering the mouse cursor
+    cursor_buffer: CursorBuffer,
 }
 
 impl DrmBackendState {
@@ -301,8 +308,13 @@ impl DrmBackendState {
             return;
         };
 
-        // Collect render elements using shared function
-        let elements = collect_render_elements(ewm, renderer.as_mut(), output_scale);
+        // Collect render elements with cursor using shared function
+        let elements = collect_render_elements_with_cursor(
+            ewm,
+            renderer.as_mut(),
+            output_scale,
+            &self.cursor_buffer,
+        );
 
         // Use the same frame flags as niri for proper plane scanout
         let flags =
@@ -783,6 +795,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         paused: false,
         init_sender: Some(init_sender),
         loop_handle: None,
+        cursor_buffer: CursorBuffer::new(),
     }));
 
     backend_state.borrow_mut().loop_handle = Some(event_loop.handle());
@@ -836,20 +849,159 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     event_loop
         .handle()
         .insert_source(libinput_backend, move |event, _, data| {
-            if let InputEvent::Keyboard { event: kb_event } = event {
-                let keyboard = data.state.seat.get_keyboard().unwrap();
-                let action = handle_keyboard_event(
-                    &mut data.state,
-                    &keyboard,
-                    kb_event.key_code().into(),
-                    kb_event.state(),
-                    Event::time_msec(&kb_event),
-                );
+            match event {
+                InputEvent::Keyboard { event: kb_event } => {
+                    let keyboard = data.state.seat.get_keyboard().unwrap();
+                    let action = handle_keyboard_event(
+                        &mut data.state,
+                        &keyboard,
+                        kb_event.key_code().into(),
+                        kb_event.state(),
+                        Event::time_msec(&kb_event),
+                    );
 
-                if action == KeyboardAction::Shutdown {
-                    info!("Kill combo pressed, shutting down");
-                    data.state.running = false;
+                    if action == KeyboardAction::Shutdown {
+                        info!("Kill combo pressed, shutting down");
+                        data.state.running = false;
+                    }
                 }
+                InputEvent::PointerMotion { event } => {
+                    // Relative pointer motion (from mice)
+                    let (current_x, current_y) = data.state.pointer_location;
+                    let delta = event.delta();
+                    let (output_w, output_h) = data.state.output_size;
+
+                    // Calculate new position, clamped to output bounds
+                    let new_x = (current_x + delta.x).clamp(0.0, output_w as f64);
+                    let new_y = (current_y + delta.y).clamp(0.0, output_h as f64);
+                    data.state.pointer_location = (new_x, new_y);
+
+                    let pointer = data.state.seat.get_pointer().unwrap();
+                    let serial = SERIAL_COUNTER.next_serial();
+
+                    // Find surface under pointer
+                    let under = data
+                        .state
+                        .space
+                        .element_under((new_x, new_y))
+                        .and_then(|(window, loc)| {
+                            window
+                                .wl_surface()
+                                .map(|s| (s.into_owned(), Point::from((loc.x as f64, loc.y as f64))))
+                        });
+
+                    pointer.motion(
+                        &mut data.state,
+                        under.clone(),
+                        &MotionEvent {
+                            location: (new_x, new_y).into(),
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+
+                    // Send relative motion event (needed by some games/apps)
+                    pointer.relative_motion(
+                        &mut data.state,
+                        under,
+                        &RelativeMotionEvent {
+                            delta: event.delta(),
+                            delta_unaccel: event.delta_unaccel(),
+                            utime: event.time(),
+                        },
+                    );
+
+                    pointer.frame(&mut data.state);
+
+                    // Queue redraw to update cursor position
+                    if let Some(ref backend) = data.state.drm_backend {
+                        backend.borrow_mut().queue_redraw();
+                    }
+                }
+                InputEvent::PointerMotionAbsolute { event } => {
+                    // Absolute pointer motion (from touchpads in absolute mode, tablets)
+                    let (output_w, output_h) = data.state.output_size;
+                    let pos = event.position_transformed((output_w, output_h).into());
+                    data.state.pointer_location = (pos.x, pos.y);
+
+                    let pointer = data.state.seat.get_pointer().unwrap();
+                    let serial = SERIAL_COUNTER.next_serial();
+
+                    // Find surface under pointer
+                    let under = data
+                        .state
+                        .space
+                        .element_under((pos.x, pos.y))
+                        .and_then(|(window, loc)| {
+                            window
+                                .wl_surface()
+                                .map(|s| (s.into_owned(), Point::from((loc.x as f64, loc.y as f64))))
+                        });
+
+                    pointer.motion(
+                        &mut data.state,
+                        under,
+                        &MotionEvent {
+                            location: pos,
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(&mut data.state);
+
+                    // Queue redraw to update cursor position
+                    if let Some(ref backend) = data.state.drm_backend {
+                        backend.borrow_mut().queue_redraw();
+                    }
+                }
+                InputEvent::PointerButton { event } => {
+                    let pointer = data.state.seat.get_pointer().unwrap();
+                    let serial = SERIAL_COUNTER.next_serial();
+
+                    let button_state = match event.state() {
+                        ButtonState::Pressed => ButtonState::Pressed,
+                        ButtonState::Released => ButtonState::Released,
+                    };
+
+                    pointer.button(
+                        &mut data.state,
+                        &ButtonEvent {
+                            button: event.button_code(),
+                            state: button_state,
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(&mut data.state);
+                }
+                InputEvent::PointerAxis { event } => {
+                    let pointer = data.state.seat.get_pointer().unwrap();
+
+                    let source = event.source();
+
+                    // Get scroll amounts - try discrete v120 first, then continuous
+                    // Negate for natural scrolling (content follows finger direction)
+                    let horizontal = -event
+                        .amount(Axis::Horizontal)
+                        .or_else(|| event.amount_v120(Axis::Horizontal).map(|v| v / 120.0 * 15.0))
+                        .unwrap_or(0.0);
+                    let vertical = -event
+                        .amount(Axis::Vertical)
+                        .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v / 120.0 * 15.0))
+                        .unwrap_or(0.0);
+
+                    let mut frame = AxisFrame::new(event.time_msec()).source(source);
+                    if horizontal != 0.0 {
+                        frame = frame.value(Axis::Horizontal, horizontal);
+                    }
+                    if vertical != 0.0 {
+                        frame = frame.value(Axis::Vertical, vertical);
+                    }
+
+                    pointer.axis(&mut data.state, frame);
+                    pointer.frame(&mut data.state);
+                }
+                _ => {}
             }
         })?;
 
