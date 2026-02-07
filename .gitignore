@@ -1,1 +1,6 @@
-/ewm-compositor/target/
+/compositor/target/
+*.elc
+*.log
+*.png
+.direnv/
+\#*\#
