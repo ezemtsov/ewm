@@ -12,6 +12,7 @@
 //!   ewm weston-simple-shm       # Test with minimal Wayland client
 
 mod backend;
+mod cursor;
 mod input;
 mod ipc;
 mod render;
