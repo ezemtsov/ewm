@@ -152,21 +152,26 @@ pub fn collect_render_elements(
 /// Collect render elements including cursor for DRM backend
 ///
 /// This version includes the cursor render element at the pointer position.
+/// The `output_pos` parameter is the output's position in global space.
+/// All elements are offset by this position so they render correctly
+/// on outputs that aren't at (0, 0), following niri's approach.
 pub fn collect_render_elements_with_cursor(
     ewm: &Ewm,
     renderer: &mut GlesRenderer,
     scale: Scale<f64>,
     cursor_buffer: &cursor::CursorBuffer,
+    output_pos: Point<i32, smithay::utils::Logical>,
 ) -> Vec<EwmRenderElement> {
     use smithay::backend::renderer::element::AsRenderElements;
 
     // Cursor goes on top - add it first (elements at start render on top)
     let mut elements: Vec<EwmRenderElement> = Vec::new();
 
+    // Offset cursor position by output location (like niri does)
     let (pointer_x, pointer_y) = ewm.pointer_location;
     let cursor_pos: Point<i32, Physical> = Point::from((
-        (pointer_x - cursor::CURSOR_HOTSPOT.0 as f64) as i32,
-        (pointer_y - cursor::CURSOR_HOTSPOT.1 as f64) as i32,
+        (pointer_x - cursor::CURSOR_HOTSPOT.0 as f64 - output_pos.x as f64) as i32,
+        (pointer_y - cursor::CURSOR_HOTSPOT.1 as f64 - output_pos.y as f64) as i32,
     ));
 
     match cursor_buffer.render_element(renderer, cursor_pos) {
@@ -182,7 +187,8 @@ pub fn collect_render_elements_with_cursor(
     for (&id, views) in &ewm.surface_views {
         if let Some(window) = ewm.id_windows.get(&id) {
             for view in views.iter() {
-                let location = smithay::utils::Point::from((view.x, view.y));
+                // Offset by output position
+                let location = smithay::utils::Point::from((view.x - output_pos.x, view.y - output_pos.y));
                 let loc_physical = location.to_physical_precise_round(scale);
                 let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     window.render_elements(renderer, loc_physical, scale, 1.0);
@@ -201,7 +207,9 @@ pub fn collect_render_elements_with_cursor(
         }
 
         let loc = ewm.space.element_location(window).unwrap_or_default();
-        let loc_physical = loc.to_physical_precise_round(scale);
+        // Offset by output position
+        let loc_offset = Point::from((loc.x - output_pos.x, loc.y - output_pos.y));
+        let loc_physical = loc_offset.to_physical_precise_round(scale);
 
         let window_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
             window.render_elements(renderer, loc_physical, scale, 1.0);

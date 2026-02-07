@@ -302,6 +302,13 @@ impl DrmBackendState {
         let output = surface.output.clone();
         let output_scale = Scale::from(output.current_scale().fractional_scale());
 
+        // Get output position in global space (like niri does)
+        let output_pos = ewm
+            .space
+            .output_geometry(&output)
+            .map(|geo| geo.loc)
+            .unwrap_or_default();
+
         // Get a renderer from the GPU manager
         let Ok(mut renderer) = device.gpu_manager.single_renderer(&device.render_node) else {
             warn!("Failed to get renderer from GPU manager");
@@ -314,6 +321,7 @@ impl DrmBackendState {
             renderer.as_mut(),
             output_scale,
             &self.cursor_buffer,
+            output_pos,
         );
 
         // Use the same frame flags as niri for proper plane scanout
@@ -517,6 +525,8 @@ fn initialize_drm(
     }
 
     let mut surfaces = HashMap::new();
+    let mut used_crtcs = std::collections::HashSet::new();
+    let mut x_offset = 0i32;  // Track horizontal position for output placement
 
     // Set up outputs (monitors)
     let resources = drm.resource_handles()?;
@@ -527,13 +537,28 @@ fn initialize_drm(
             continue;
         }
 
-        // Find a suitable CRTC
+        // Find a suitable CRTC that hasn't been used yet
         let crtc = connector_info
             .encoders()
             .iter()
             .filter_map(|enc| drm.get_encoder(*enc).ok())
-            .find_map(|enc| resources.filter_crtcs(enc.possible_crtcs()).into_iter().next())
-            .ok_or("No suitable CRTC found")?;
+            .find_map(|enc| {
+                resources
+                    .filter_crtcs(enc.possible_crtcs())
+                    .into_iter()
+                    .find(|c| !used_crtcs.contains(c))
+            });
+
+        let Some(crtc) = crtc else {
+            warn!(
+                "No available CRTC for connector {:?}-{}",
+                connector_info.interface(),
+                connector_info.interface_id()
+            );
+            continue;
+        };
+
+        used_crtcs.insert(crtc);
 
         // Find preferred mode
         let mode = connector_info
@@ -663,11 +688,35 @@ fn initialize_drm(
                 refresh_interval_us,
             },
         );
-        ewm_state.space.map_output(&output, (0, 0));
-        ewm_state.output_size = (mode.size().0 as i32, mode.size().1 as i32);
 
-        break; // Only use first display
+        // Position this output horizontally after the previous ones
+        ewm_state.space.map_output(&output, (x_offset, 0));
+        info!(
+            "Mapped output {} at position ({}, 0), size {}x{}",
+            connector_name, x_offset, mode.size().0, mode.size().1
+        );
+
+        // Update x_offset for next output
+        x_offset += mode.size().0 as i32;
     }
+
+    // Update output_size to total bounding box (all outputs combined horizontally)
+    // For now, use the rightmost edge as width, and max height
+    let (total_width, max_height) = surfaces.values().fold((0i32, 0i32), |(w, h), surface| {
+        let output_geo = ewm_state.space.output_geometry(&surface.output);
+        if let Some(geo) = output_geo {
+            (w.max(geo.loc.x + geo.size.w), h.max(geo.size.h))
+        } else {
+            (w, h)
+        }
+    });
+    ewm_state.output_size = (total_width, max_height);
+    info!(
+        "Total output area: {}x{} ({} outputs)",
+        total_width,
+        max_height,
+        surfaces.len()
+    );
 
     // Store device state
     backend.device = Some(DrmDeviceState {
