@@ -47,7 +47,11 @@ cargo build --release
 Load `ewm.el` in your Emacs:
 
 ```elisp
-(load "/path/to/ewm/ewm.el")
+(use-package ewm
+  :load-path "~/git/ewm"
+  :config
+  ;; Auto-connect (safe - just warns if not running inside EWM)
+  (ewm-connect))
 ```
 
 When Emacs connects to the compositor, Wayland surfaces appear as special buffers. Use standard Emacs commands:
