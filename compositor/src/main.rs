@@ -171,6 +171,8 @@ enum Command {
         scale: Option<f64>,
         enabled: Option<bool>,
     },
+    #[serde(rename = "assign-output")]
+    AssignOutput { id: u32, output: String },
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -913,6 +915,45 @@ impl LoopData {
                     }
                 } else {
                     warn!("Output not found: {}", name);
+                }
+            }
+            Command::AssignOutput { id, output } => {
+                // Find the output by name and get its geometry
+                let output_geo = self
+                    .state
+                    .space
+                    .outputs()
+                    .find(|o| o.name() == output)
+                    .and_then(|o| self.state.space.output_geometry(o));
+
+                if let Some(geo) = output_geo {
+                    if let Some(window) = self.state.id_windows.get(&id) {
+                        // Position surface to fill the output
+                        self.state
+                            .space
+                            .map_element(window.clone(), (geo.loc.x, geo.loc.y), true);
+                        self.state.space.raise_element(window, true);
+
+                        // Resize to fill output
+                        window.toplevel().map(|t| {
+                            t.with_pending_state(|state| {
+                                state.size = Some((geo.size.w, geo.size.h).into());
+                            });
+                            t.send_configure();
+                        });
+
+                        if let Some(ref backend) = self.state.drm_backend {
+                            backend.borrow_mut().queue_redraw();
+                        }
+                        info!(
+                            "Assigned surface {} to output {} at ({}, {}) {}x{}",
+                            id, output, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h
+                        );
+                    } else {
+                        warn!("Surface not found: {}", id);
+                    }
+                } else {
+                    warn!("Output not found: {}", output);
                 }
             }
         }

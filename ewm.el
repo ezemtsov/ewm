@@ -239,6 +239,28 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
     (ewm--send `(:cmd "screenshot" :path ,target))
     (message "EWM: screenshot requested -> %s" target)))
 
+(defun ewm-configure-output (name &rest args)
+  "Configure output NAME with ARGS.
+ARGS is a plist with optional keys:
+  :x :y - position in global coordinate space
+  :enabled - t or nil to enable/disable the output
+Example:
+  (ewm-configure-output \"DP-1\" :x 1920 :y 0)
+  (ewm-configure-output \"DP-1\" :enabled nil)"
+  (let ((cmd `(:cmd "configure-output" :name ,name)))
+    (while args
+      (let ((key (pop args))
+            (val (pop args)))
+        (setq cmd (plist-put cmd key val))))
+    (ewm--send cmd)))
+
+(defun ewm-assign-output (id output)
+  "Assign surface ID to OUTPUT.
+The surface will be positioned and sized to fill the output.
+Example:
+  (ewm-assign-output 1 \"DP-1\")"
+  (ewm--send `(:cmd "assign-output" :id ,id :output ,output)))
+
 ;;; Process handling
 
 (defun ewm--filter (proc string)
