@@ -950,13 +950,41 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     ipc_listener.set_nonblocking(true)?;
     info!("IPC socket: {}", IPC_SOCKET);
 
+    // Track IPC stream registration token for cleanup on reconnect
+    let ipc_stream_token: std::rc::Rc<std::cell::RefCell<Option<RegistrationToken>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let ipc_stream_token_clone = ipc_stream_token.clone();
+    let loop_handle = event_loop.handle();
+    let loop_handle_for_listener = loop_handle.clone();
+
     event_loop.handle().insert_source(
         Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
-        |_, listener, data| {
+        move |_, listener, data| {
             if let Ok((stream, _)) = listener.accept() {
                 info!("Emacs connected");
                 stream.set_nonblocking(true).ok();
-                data.emacs = Some(stream);
+
+                // Remove previous stream source if any
+                if let Some(token) = ipc_stream_token_clone.borrow_mut().take() {
+                    loop_handle_for_listener.remove(token);
+                }
+
+                // Clone stream for writing (stored in data.emacs)
+                let write_stream = stream.try_clone().unwrap();
+                data.emacs = Some(write_stream);
+
+                // Register stream for reading as event source
+                let token = loop_handle_for_listener.insert_source(
+                    Generic::new(stream, Interest::READ, CalloopMode::Level),
+                    |_, source, data: &mut crate::LoopData| {
+                        // SAFETY: We're inside the event loop callback where the source is valid
+                        let stream = unsafe { source.get_mut() };
+                        data.process_commands_from_stream(stream);
+                        Ok(PostAction::Continue)
+                    },
+                ).expect("Failed to register IPC stream");
+
+                *ipc_stream_token_clone.borrow_mut() = Some(token);
             }
             Ok(PostAction::Continue)
         },
@@ -980,29 +1008,19 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         }
     }
 
-    // 14. Spawn client after a delay (using a one-shot timer so event loop runs first)
+    // 14. Spawn client immediately
     let client_process: std::rc::Rc<std::cell::RefCell<Option<std::process::Child>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
-    let client_process_for_timer = client_process.clone();
-    event_loop.handle().insert_source(
-        Timer::from_duration(Duration::from_secs(2)),
-        move |_, _, _data| {
-            info!("Spawning client after delay...");
-            match crate::spawn_client(&program, &program_args, &socket_name_str) {
-                Ok(child) => {
-                    info!("Client spawned with PID {}", child.id());
-                    *client_process_for_timer.borrow_mut() = Some(child);
-                }
-                Err(e) => {
-                    warn!("Failed to spawn client: {:?}", e);
-                }
-            }
-            TimeoutAction::Drop // One-shot timer
-        },
-    )?;
-
-    // Track keyboard focus for IPC commands
-    let mut keyboard_focus: Option<WlSurface> = None;
+    info!("Spawning client...");
+    match crate::spawn_client(&program, &program_args, &socket_name_str) {
+        Ok(child) => {
+            info!("Client spawned with PID {}", child.id());
+            *client_process.borrow_mut() = Some(child);
+        }
+        Err(e) => {
+            warn!("Failed to spawn client: {:?}", e);
+        }
+    }
 
     // Main loop
     while data.state.running {
@@ -1013,7 +1031,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
             }
         }
 
-        event_loop.dispatch(Some(Duration::from_millis(16)), &mut data)?;
+        event_loop.dispatch(None, &mut data)?;
         data.display.flush_clients().unwrap();
 
         // Process any queued redraws after event dispatch
@@ -1022,11 +1040,6 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
 
         // Flush pending events to Emacs (shared IPC handling)
         data.flush_events();
-
-        // Process commands from Emacs (shared IPC handling)
-        // Note: Screenshot command result is ignored for now in DRM backend
-        // (would need framebuffer capture implementation)
-        let _ = data.process_commands(&mut keyboard_focus);
     }
 
     info!("EWM DRM backend shutting down");

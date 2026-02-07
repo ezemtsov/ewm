@@ -43,6 +43,7 @@ use smithay::{
     reexports::{
         calloop::{
             generic::Generic, EventLoop, Interest, LoopHandle, Mode as CalloopMode, PostAction,
+            RegistrationToken,
         },
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState,
         wayland_server::{
@@ -291,7 +292,11 @@ struct Ewm {
     // Input
     pointer_location: (f64, f64),
     focused_surface_id: u32,  // Which surface has keyboard focus (1 = Emacs)
+    keyboard_focus: Option<WlSurface>,  // Actual keyboard focus surface
     prefix_keys: Vec<PrefixKey>, // Parsed prefix keys that redirect to Emacs
+
+    // Screenshot request (set by IPC, consumed by render loop)
+    pending_screenshot: Option<String>,
 
     // DRM backend (for early_import)
     drm_backend: Option<Rc<RefCell<DrmBackendState>>>,
@@ -332,7 +337,9 @@ impl Ewm {
             output_size: (800, 600), // Default, updated when output is created
             pointer_location: (0.0, 0.0),
             focused_surface_id: 1, // Default: Emacs has focus
+            keyboard_focus: None,
             prefix_keys: Vec::new(),
+            pending_screenshot: None,
             drm_backend: None,
         }
     }
@@ -720,27 +727,20 @@ impl LoopData {
         }
     }
 
-    /// Process IPC commands from Emacs (non-blocking)
-    /// Returns true if a command was processed that requires special handling
-    pub fn process_commands(&mut self, keyboard_focus: &mut Option<WlSurface>) -> Option<CommandResult> {
-        if let Some(ref mut stream) = self.emacs {
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
-                    if let Some(result) = self.handle_command(cmd, keyboard_focus) {
-                        line.clear();
-                        return Some(result);
-                    }
-                }
-                line.clear();
+    /// Process IPC commands from a stream (called by event source)
+    pub fn process_commands_from_stream(&mut self, stream: &mut UnixStream) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
+                self.handle_command(cmd);
             }
+            line.clear();
         }
-        None
     }
 
     /// Handle a single IPC command
-    fn handle_command(&mut self, cmd: Command, keyboard_focus: &mut Option<WlSurface>) -> Option<CommandResult> {
+    fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::Layout { id, x, y, w, h } => {
                 if let Some(window) = self.state.id_windows.get(&id) {
@@ -806,8 +806,9 @@ impl LoopData {
                     if let Some(surface) = window.wl_surface() {
                         let serial = SERIAL_COUNTER.next_serial();
                         let keyboard = self.state.seat.get_keyboard().unwrap();
-                        *keyboard_focus = Some(surface.into_owned());
-                        keyboard.set_focus(&mut self.state, keyboard_focus.clone(), serial);
+                        let focus_surface = surface.into_owned();
+                        self.state.keyboard_focus = Some(focus_surface.clone());
+                        keyboard.set_focus(&mut self.state, Some(focus_surface), serial);
                         info!("Focus surface {}", id);
                     }
                 } else {
@@ -817,7 +818,7 @@ impl LoopData {
             Command::Screenshot { path } => {
                 let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
                 info!("Screenshot requested: {}", target);
-                return Some(CommandResult::Screenshot(target));
+                self.state.pending_screenshot = Some(target);
             }
             Command::PrefixKeys { keys } => {
                 self.state.prefix_keys = keys.iter()
@@ -832,14 +833,7 @@ impl LoopData {
                 info!("Prefix keys set: {:?}", self.state.prefix_keys);
             }
         }
-        None
     }
-}
-
-/// Result from command processing that requires special handling by the backend
-#[derive(Debug)]
-pub(crate) enum CommandResult {
-    Screenshot(String),
 }
 
 fn main() {
@@ -926,15 +920,42 @@ fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<dyn s
     ipc_listener.set_nonblocking(true)?;
     info!("IPC socket: {}", IPC_SOCKET);
 
+    // Track IPC stream registration token for cleanup on reconnect
+    let ipc_stream_token: Rc<RefCell<Option<RegistrationToken>>> = Rc::new(RefCell::new(None));
+    let ipc_stream_token_clone = ipc_stream_token.clone();
+    let loop_handle = event_loop.handle();
+    let loop_handle_for_listener = loop_handle.clone();
+
     event_loop
         .handle()
         .insert_source(
             Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
-            |_, listener, data| {
+            move |_, listener, data| {
                 if let Ok((stream, _)) = listener.accept() {
                     info!("Emacs connected");
                     stream.set_nonblocking(true).ok();
-                    data.emacs = Some(stream);
+
+                    // Remove previous stream source if any
+                    if let Some(token) = ipc_stream_token_clone.borrow_mut().take() {
+                        loop_handle_for_listener.remove(token);
+                    }
+
+                    // Clone stream for writing (stored in data.emacs)
+                    let write_stream = stream.try_clone().unwrap();
+                    data.emacs = Some(write_stream);
+
+                    // Register stream for reading as event source
+                    let token = loop_handle_for_listener.insert_source(
+                        Generic::new(stream, Interest::READ, CalloopMode::Level),
+                        |_, source, data: &mut LoopData| {
+                            // SAFETY: We're inside the event loop callback where the source is valid
+                            let stream = unsafe { source.get_mut() };
+                            data.process_commands_from_stream(stream);
+                            Ok(PostAction::Continue)
+                        },
+                    ).expect("Failed to register IPC stream");
+
+                    *ipc_stream_token_clone.borrow_mut() = Some(token);
                 }
                 Ok(PostAction::Continue)
             },
@@ -977,8 +998,6 @@ fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<dyn s
     info!("EWM compositor started");
 
     // Main loop
-    // Set initial keyboard focus to first surface (Emacs)
-    let mut keyboard_focus: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> = None;
     let mut screenshot_path: Option<String> = None;
 
     while data.state.running {
@@ -1050,15 +1069,16 @@ fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<dyn s
                     // Clear focus
                     let serial = SERIAL_COUNTER.next_serial();
                     keyboard.set_focus(&mut data.state, None, serial);
-                    keyboard_focus = None;
+                    data.state.keyboard_focus = None;
                 } else {
                     // Restore focus to the previously focused surface
                     let target_id = data.state.focused_surface_id;
                     if let Some(window) = data.state.id_windows.get(&target_id) {
                         if let Some(surface) = window.wl_surface() {
                             let serial = SERIAL_COUNTER.next_serial();
-                            keyboard_focus = Some(surface.into_owned());
-                            keyboard.set_focus(&mut data.state, keyboard_focus.clone(), serial);
+                            let focus_surface = surface.into_owned();
+                            data.state.keyboard_focus = Some(focus_surface.clone());
+                            keyboard.set_focus(&mut data.state, Some(focus_surface), serial);
                         }
                     }
                 }
@@ -1134,7 +1154,7 @@ fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<dyn s
                         if let Some(window) = data.state.id_windows.get(&1) {
                             if let Some(surface) = window.wl_surface() {
                                 let emacs_surface = surface.into_owned();
-                                keyboard_focus = Some(emacs_surface.clone());
+                                data.state.keyboard_focus = Some(emacs_surface.clone());
                                 keyboard.set_focus(&mut data.state, Some(emacs_surface.clone()), serial);
                                 info!("Prefix key detected, redirecting focus to Emacs (focused_surface_id=1)");
 
@@ -1155,8 +1175,8 @@ fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<dyn s
                         if let Some(window) = data.state.id_windows.get(&target_id) {
                             if let Some(surface) = window.wl_surface() {
                                 let new_focus = surface.into_owned();
-                                if keyboard_focus.as_ref() != Some(&new_focus) {
-                                    keyboard_focus = Some(new_focus.clone());
+                                if data.state.keyboard_focus.as_ref() != Some(&new_focus) {
+                                    data.state.keyboard_focus = Some(new_focus.clone());
                                     keyboard.set_focus(&mut data.state, Some(new_focus), serial);
                                 }
                             }
@@ -1349,12 +1369,12 @@ fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<dyn s
         // Flush pending events to Emacs (shared IPC handling)
         data.flush_events();
 
-        // Read commands from Emacs (shared IPC handling)
-        if let Some(CommandResult::Screenshot(path)) = data.process_commands(&mut keyboard_focus) {
+        // Check for pending screenshot request
+        if let Some(path) = data.state.pending_screenshot.take() {
             screenshot_path = Some(path);
         }
 
-        event_loop.dispatch(Some(std::time::Duration::from_millis(16)), &mut data)?;
+        event_loop.dispatch(None, &mut data)?;
     }
 
     Ok(())
