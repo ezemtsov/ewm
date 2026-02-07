@@ -1,0 +1,168 @@
+#+TITLE: EWM Compositor Tasks
+#+STARTUP: overview
+
+This document tracks complexity areas and remaining work in the compositor.
+
+* Backend Support
+:PROPERTIES:
+:STATUS: needs-decision
+:END:
+
+*Current state:* Code supports both Winit (nested, ~400 lines) and DRM (standalone, ~700 lines) backends with significant duplication in input handling, IPC setup, and render loops.
+
+*Files:* =src/main.rs= (run_winit), =src/backend/drm.rs= (run_drm)
+
+*Question:* Do you need both backends, or could you target only one?
+- Winit only = simpler, good for development inside existing compositor
+- DRM only = production use case, running as standalone session
+- Both = current complexity
+
+*Decision:*
+
+*Simplification potential:* ~400-700 lines removed, unified event handling
+
+* Multi-Output Support
+:PROPERTIES:
+:STATUS: needs-decision
+:END:
+
+*Current state:* DRM backend uses =HashMap<crtc::Handle, OutputSurface>= but only uses first display.
+
+*Files:* =src/backend/drm.rs=
+
+*Question:* Will you ever need multi-monitor support?
+
+*Decision:*
+
+*Simplification potential:* HashMap -> Option, remove iteration logic, simpler state machine
+
+* Multi-View Surface Rendering
+:PROPERTIES:
+:STATUS: needs-decision
+:END:
+
+*Current state:* =surface_views: HashMap<u32, Vec<SurfaceView>>= allows rendering the same Wayland surface at multiple positions simultaneously. Used for showing the same buffer in multiple Emacs windows.
+
+*Files:* =src/main.rs=, =src/render.rs=
+
+*Question:* Could Emacs handle this differently?
+- Current: Compositor clones surface at multiple positions
+- Alternative: Emacs creates separate Wayland surfaces per view
+- Alternative: Only show surface in "active" view, hide in others
+
+*Decision:*
+
+*Simplification potential:* Remove secondary view rendering code, simpler layout commands
+
+* Emacs Reconnection
+:PROPERTIES:
+:STATUS: needs-decision
+:END:
+
+*Current state:* IPC handling tracks connection state to clean up old event sources when Emacs reconnects.
+
+*Files:* =src/ipc.rs=
+
+*Question:* Can you assume the compositor restarts if Emacs disconnects?
+
+*Decision:*
+
+*Simplification potential:* Remove token tracking, simplify connection handling
+
+* Prefix Key Parsing
+:PROPERTIES:
+:STATUS: needs-decision
+:END:
+
+*Current state:* =PrefixKey::parse= parses Emacs key notation ("C-x", "M-c", etc.) into keysyms and modifier flags at runtime.
+
+*Files:* =src/main.rs=
+
+*Question:* Could Emacs send pre-parsed keysyms/modifiers instead?
+- Current: ={"cmd": "prefix-keys", "keys": ["C-x", "M-x"]}=
+- Alternative: ={"cmd": "prefix-keys", "keys": [{"keysym": 120, "ctrl": true}, ...]}=
+
+*Decision:*
+
+*Simplification potential:* Remove 100+ lines of parsing code, eliminate keysym mapping table
+
+* VBlank State Machine
+:PROPERTIES:
+:STATUS: needs-decision
+:END:
+
+*Current state:* =RedrawState= enum has 5 states to handle VBlank synchronization and estimated VBlank timers for damage-less frames.
+
+*Files:* =src/backend/drm.rs=
+
+*Question:* Are estimated VBlank timers necessary?
+- Current: Uses timers when no damage to maintain frame callbacks without real flip
+- Alternative: Always queue real frame (wastes power but simpler)
+- Alternative: Accept that frame callbacks pause when idle (may affect some clients)
+
+*Decision:*
+
+*Simplification potential:* Reduce to 3 states (Idle, Queued, WaitingForVBlank), remove timer logic
+
+* Focus Model
+:PROPERTIES:
+:STATUS: needs-decision
+:END:
+
+*Current state:* Three related fields track focus:
+- =focused_surface_id: u32= - Which surface should have focus (1 = Emacs)
+- =keyboard_focus: Option<WlSurface>= - Actual Wayland keyboard focus
+- Space's implicit focus via =element_under()=
+
+*Files:* =src/main.rs=
+
+*Question:* Is the separate =focused_surface_id= necessary?
+- Current: Allows focus to be set before surface exists, preserves focus across reconnects
+- Alternative: Derive from keyboard_focus, use id=1 as default
+
+*Decision:*
+
+*Simplification potential:* Remove redundant state, simplify focus command handling
+
+* Mouse/Pointer Support (DRM Backend)
+
+*Current state:* Basic mouse input and cursor rendering implemented. Missing advanced features compared to niri.
+
+*Files:* =src/backend/drm.rs=, =src/cursor.rs=, =src/render.rs=, =src/main.rs=
+
+** DONE Pointer motion (relative + absolute)
+** DONE Pointer button events
+** DONE Scroll wheel events
+** DONE Fallback cursor rendering
+** DONE Relative motion events
+** DONE Correct scroll speed (15px per click)
+
+** TODO [#A] Client Cursor Support
+Apps can't set their own cursor (resize handles, text cursor, etc.). The =cursor_image()= callback in =SeatHandler= is empty.
+
+*Fix:* Store =CursorImageStatus= in state, render client surface when =Surface= variant, fallback when =Named=.
+
+** TODO [#A] Pointer Constraints
+Games that lock/confine pointer won't work. Need to implement =zwp_pointer_constraints= protocol.
+
+*Fix:* Add =delegate_pointer_constraints!=, check constraints before updating position, send only relative motion when locked.
+
+** TODO [#B] XCursor Theme Loading
+Currently using embedded fallback cursor only. Should load system themes.
+
+*Fix:* Add =xcursor= crate, implement theme loading like niri's =CursorManager=.
+
+** TODO [#C] Scroll Improvements
+Missing: =relative_direction=, =v120= passthrough, finger =stop= events.
+
+** TODO [#C] Interactive Move/Resize
+Mod+click to move/resize windows (niri feature).
+
+* Session Log
+
+** 2025-02-07
+- Implemented mouse support for DRM backend (based on niri)
+- Added fallback cursor rendering
+- Fixed scroll speed to match niri (15px per v120 click)
+- Added relative motion events
+- Documented remaining pointer tasks
