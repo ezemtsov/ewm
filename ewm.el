@@ -43,6 +43,18 @@
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to surface info.")
 
+(defvar ewm--outputs nil
+  "List of detected outputs.
+Each output is a plist with keys:
+  :name - connector name (e.g., \"HDMI-A-1\")
+  :make - manufacturer
+  :model - model name
+  :width-mm - physical width in mm
+  :height-mm - physical height in mm
+  :x - position x
+  :y - position y
+  :modes - list of available modes")
+
 ;;; Protocol
 
 (defun ewm--send (cmd)
@@ -58,6 +70,8 @@
       ("new" (ewm--handle-new-surface event))
       ("close" (ewm--handle-close-surface event))
       ("title" (ewm--handle-title-update event))
+      ("output_detected" (ewm--handle-output-detected event))
+      ("output_disconnected" (ewm--handle-output-disconnected event))
       (_ (message "EWM: unknown event type: %s" type)))))
 
 ;;; Event handlers
@@ -133,6 +147,47 @@ Adapted from EXWM's title update mechanism."
             (run-hooks 'ewm-update-title-hook))
           ;; Update cached info
           (puthash id `(:buffer ,buf :app ,app :title ,title) ewm--surfaces))))))
+
+(defun ewm--handle-output-detected (event)
+  "Handle output detected EVENT.
+Adds the output to `ewm--outputs'."
+  (let* ((name (gethash "name" event))
+         (make (gethash "make" event))
+         (model (gethash "model" event))
+         (width-mm (gethash "width_mm" event))
+         (height-mm (gethash "height_mm" event))
+         (x (gethash "x" event))
+         (y (gethash "y" event))
+         (modes (gethash "modes" event))
+         ;; Convert modes from hash tables to plists
+         (mode-plists (mapcar (lambda (m)
+                                (list :width (gethash "width" m)
+                                      :height (gethash "height" m)
+                                      :refresh (gethash "refresh" m)
+                                      :preferred (gethash "preferred" m)))
+                              (append modes nil)))
+         (output-plist (list :name name
+                             :make make
+                             :model model
+                             :width-mm width-mm
+                             :height-mm height-mm
+                             :x x
+                             :y y
+                             :modes mode-plists)))
+    ;; Remove existing entry with same name (update case)
+    (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
+                                     ewm--outputs))
+    ;; Add new output
+    (push output-plist ewm--outputs)
+    (message "EWM: output detected: %s at (%d, %d)" name x y)))
+
+(defun ewm--handle-output-disconnected (event)
+  "Handle output disconnected EVENT.
+Removes the output from `ewm--outputs'."
+  (let ((name (gethash "name" event)))
+    (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
+                                     ewm--outputs))
+    (message "EWM: output disconnected: %s" name)))
 
 (defun ewm--rename-buffer ()
   "Rename the current surface buffer based on app and title.
@@ -229,6 +284,8 @@ Safe to call unconditionally - returns nil with a message if connection fails."
   (let ((path (or socket-path (ewm--default-socket-path))))
     (when (and ewm--process (process-live-p ewm--process))
       (delete-process ewm--process))
+    ;; Reset outputs - will be repopulated on connect
+    (setq ewm--outputs nil)
     (condition-case nil
         (progn
           (setq ewm--process

@@ -83,6 +83,28 @@ pub fn is_kill_combo(keycode: u32, ctrl: bool, logo: bool) -> bool {
     (keycode == 14 || keycode == 22) && ctrl && logo
 }
 
+/// Output mode information
+#[derive(Serialize, Clone, Debug)]
+pub struct OutputMode {
+    pub width: i32,
+    pub height: i32,
+    pub refresh: i32, // mHz
+    pub preferred: bool,
+}
+
+/// Output information sent to Emacs
+#[derive(Serialize, Clone, Debug)]
+pub struct OutputInfo {
+    pub name: String,
+    pub make: String,
+    pub model: String,
+    pub width_mm: i32,
+    pub height_mm: i32,
+    pub x: i32,
+    pub y: i32,
+    pub modes: Vec<OutputMode>,
+}
+
 /// Events sent to Emacs
 #[derive(Serialize)]
 #[serde(tag = "event")]
@@ -93,6 +115,10 @@ enum IpcEvent {
     Close { id: u32 },
     #[serde(rename = "title")]
     Title { id: u32, app: String, title: String },
+    #[serde(rename = "output_detected")]
+    OutputDetected(OutputInfo),
+    #[serde(rename = "output_disconnected")]
+    OutputDisconnected { name: String },
 }
 
 /// Cached surface info for change detection
@@ -247,6 +273,7 @@ pub struct Ewm {
 
     // Output
     pub output_size: (i32, i32),
+    pub outputs: Vec<OutputInfo>,
 
     // Input
     pub pointer_location: (f64, f64),
@@ -296,6 +323,7 @@ impl Ewm {
             surface_views: HashMap::new(),
             pending_events: Vec::new(),
             output_size: (800, 600),
+            outputs: Vec::new(),
             pointer_location: (0.0, 0.0),
             focused_surface_id: 1,
             keyboard_focus: None,
@@ -687,6 +715,14 @@ impl LoopData {
         let events: Vec<_> = self.state.pending_events.drain(..).collect();
         for event in events {
             self.send_event(&event);
+        }
+    }
+
+    /// Send output detected events for all known outputs
+    pub fn send_output_events(&mut self) {
+        let outputs: Vec<_> = self.state.outputs.clone();
+        for output in outputs {
+            self.send_event(&IpcEvent::OutputDetected(output));
         }
     }
 

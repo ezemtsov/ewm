@@ -70,6 +70,12 @@ pub fn setup_ipc_listener(
                 let write_stream = stream.try_clone().unwrap();
                 data.emacs = Some(write_stream);
 
+                // Send output detected events for all known outputs
+                data.send_output_events();
+
+                // Flush any pending events (e.g., surface events queued before connect)
+                data.flush_events();
+
                 // Register stream for reading as event source
                 let token = loop_handle
                     .insert_source(

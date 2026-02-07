@@ -61,7 +61,7 @@ use crate::{
     input::{handle_keyboard_event, KeyboardAction},
     ipc::setup_ipc_listener,
     render::collect_render_elements_with_cursor,
-    spawn_client, Ewm, LoopData,
+    spawn_client, Ewm, LoopData, OutputInfo, OutputMode,
 };
 
 const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
@@ -695,6 +695,30 @@ fn initialize_drm(
             "Mapped output {} at position ({}, 0), size {}x{}",
             connector_name, x_offset, mode.size().0, mode.size().1
         );
+
+        // Collect output info for IPC
+        let physical_size = connector_info.size().unwrap_or((0, 0));
+        let output_modes: Vec<OutputMode> = connector_info
+            .modes()
+            .iter()
+            .map(|m| OutputMode {
+                width: m.size().0 as i32,
+                height: m.size().1 as i32,
+                refresh: (m.vrefresh() * 1000) as i32,
+                preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
+            })
+            .collect();
+
+        ewm_state.outputs.push(OutputInfo {
+            name: connector_name.clone(),
+            make: "Unknown".to_string(),  // EDID parsing would be needed for real values
+            model: "Unknown".to_string(),
+            width_mm: physical_size.0 as i32,
+            height_mm: physical_size.1 as i32,
+            x: x_offset,
+            y: 0,
+            modes: output_modes,
+        });
 
         // Update x_offset for next output
         x_offset += mode.size().0 as i32;
