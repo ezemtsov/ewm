@@ -21,8 +21,8 @@ pub use backend::DrmBackendState;
 
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output, delegate_seat,
-    delegate_shm, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
+    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_shell,
     desktop::{Space, Window},
     input::{
         keyboard::xkb::keysyms,
@@ -50,6 +50,9 @@ use smithay::{
             data_device::{
                 set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
                 ServerDndGrabHandler,
+            },
+            primary_selection::{
+                set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
             },
             SelectionHandler,
         },
@@ -231,6 +234,7 @@ pub struct Ewm {
     pub dmabuf_state: DmabufState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
     pub seat: Seat<Self>,
 
     // IPC
@@ -266,6 +270,7 @@ impl Ewm {
         let dmabuf_state = DmabufState::new();
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
 
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
         seat.add_keyboard(Default::default(), 200, 25).unwrap();
@@ -282,6 +287,7 @@ impl Ewm {
             dmabuf_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
             seat,
             next_surface_id: 1,
             window_ids: HashMap::new(),
@@ -508,7 +514,8 @@ impl SeatHandler for Ewm {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| self.display_handle.get_client(s.id()).ok());
-        set_data_device_focus(&self.display_handle, seat, client);
+        set_data_device_focus(&self.display_handle, seat, client.clone());
+        set_primary_focus(&self.display_handle, seat, client);
     }
 
     fn cursor_image(
@@ -532,6 +539,13 @@ impl DataDeviceHandler for Ewm {
     }
 }
 delegate_data_device!(Ewm);
+
+impl PrimarySelectionHandler for Ewm {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+delegate_primary_selection!(Ewm);
 
 // Output
 impl smithay::wayland::output::OutputHandler for Ewm {}
