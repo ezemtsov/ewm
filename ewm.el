@@ -232,8 +232,8 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
            :sentinel #'ewm--sentinel))
     (ewm--enable-layout-sync)
     (ewm-input--enable)
-    ;; Send prefix keys to compositor for char-mode handling
-    (ewm--send-prefix-keys)
+    ;; Scan keymaps and send intercept keys to compositor
+    (ewm--send-intercept-keys)
     (message "EWM: connected to %s" path)))
 
 (defun ewm--disable-csd ()
@@ -264,19 +264,23 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
     (setq ewm--process nil)
     (message "EWM: disconnected")))
 
-;;; Input handling (adapted from exwm-input.el)
+;;; Input handling
 ;;
-;; In EXWM, line-mode intercepts all keys via XGrabKey and decides whether
-;; each key goes to Emacs or the X window.  Keys without Emacs bindings
-;; are replayed to the X window, so regular typing works immediately.
+;; EWM automatically intercepts keys based on two settings:
 ;;
-;; EWM achieves similar behavior by:
-;; - Always keeping keyboard focus on the viewed surface
-;; - Regular typing goes directly to the surface (like EXWM)
-;; - Prefix keys (C-x, M-x, etc.) are intercepted by the compositor and
-;;   redirected to Emacs, enabling Emacs commands while viewing a surface
+;; 1. `ewm-intercept-prefixes' - Keys that start command sequences (C-x, M-x)
+;; 2. `ewm-intercept-modifiers' - Modifiers whose bindings are scanned from
+;;    Emacs keymaps (default: super)
 ;;
-;; Customize `ewm-input-prefix-keys' to add more keys that should go to Emacs.
+;; Unlike EXWM, you don't need a separate `exwm-input-global-keys'.
+;; Just use normal `global-set-key' or use-package :bind, and EWM
+;; will automatically intercept keys with the configured modifiers.
+;;
+;; Example:
+;;   (global-set-key (kbd "s-d") 'consult-buffer)
+;;   (global-set-key (kbd "s-<left>") 'windmove-left)
+;;
+;; These bindings work both in EWM and regular Emacs sessions.
 
 (defgroup ewm-input nil
   "EWM input handling."
@@ -285,19 +289,29 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
 (defvar-local ewm-input--mode 'line-mode
   "Current input mode: `line-mode' or `char-mode'.")
 
-(defcustom ewm-input-prefix-keys
+(defcustom ewm-intercept-prefixes
   '(?\C-x ?\C-u ?\C-h ?\M-x ?\M-` ?\M-& ?\M-:)
-  "Keys that always go to Emacs, even in char-mode.
-These keys switch keyboard focus back to Emacs.
+  "Prefix keys that always go to Emacs.
+These are keys that start command sequences.
+Can be character literals (e.g., ?\\C-x) or strings (e.g., \"C-x\").
 Adapted from `exwm-input-prefix-keys'."
-  :type '(repeat character)
+  :type '(repeat (choice character string))
+  :group 'ewm-input)
+
+(defcustom ewm-intercept-modifiers
+  '(super)
+  "Modifiers whose key bindings are auto-detected from Emacs keymaps.
+EWM scans `global-map' for keys with these modifiers and intercepts them.
+This means you can use normal `global-set-key' for bindings like s-d, s-left.
+
+Valid values: control, meta, super, hyper, shift, alt.
+Default is (super) to intercept all Super-key bindings."
+  :type '(repeat symbol)
   :group 'ewm-input)
 
 (defcustom ewm-input-simulation-keys nil
   "Simulation keys for translating Emacs keys to application keys.
 Each element is (EMACS-KEY . APP-KEY).
-In line-mode, when EMACS-KEY is pressed in a surface buffer,
-APP-KEY is sent to the surface.
 Adapted from `exwm-input-simulation-keys'."
   :type '(alist :key-type key-sequence :value-type key-sequence)
   :group 'ewm-input)
@@ -422,18 +436,70 @@ Also updates multi-view layout when selected window changes."
   (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
   (remove-hook 'post-command-hook #'ewm-input--on-post-command))
 
-(defun ewm--send-prefix-keys ()
-  "Send prefix keys configuration to compositor.
-Compositor uses these to switch focus back to Emacs in char-mode."
-  ;; Convert prefix keys to string descriptions for the compositor.
-  ;; Handle both character codes (integers) and string formats.
-  ;; Use vconcat to create a vector, which json-serialize treats as an array.
-  (let ((keys (vconcat (mapcar (lambda (key)
-                                 (if (stringp key)
-                                     key  ; Already a string description
-                                   (single-key-description key)))
-                               ewm-input-prefix-keys))))
-    (ewm--send `(:cmd "prefix-keys" :keys ,keys))))
+(defun ewm--event-to-intercept-spec (event)
+  "Convert EVENT to an intercept specification for the compositor.
+Returns a plist with :key (integer or string) and modifier flags."
+  (let* ((mods (event-modifiers event))
+         (base (event-basic-type event))
+         ;; base is either an integer (ASCII) or a symbol (special key)
+         (key-value (cond
+                     ((integerp base) base)
+                     ((symbolp base) (symbol-name base))
+                     (t nil))))
+    (when key-value
+      `(:key ,key-value
+        :ctrl ,(if (memq 'control mods) t :false)
+        :alt ,(if (memq 'meta mods) t :false)
+        :shift ,(if (memq 'shift mods) t :false)
+        :super ,(if (memq 'super mods) t :false)))))
+
+(defun ewm--scan-keymap-for-modifiers (keymap modifiers)
+  "Scan KEYMAP for keys that have any of MODIFIERS.
+Returns a list of intercept specs."
+  (let ((specs '()))
+    (map-keymap
+     (lambda (event binding)
+       (when (and binding
+                  (not (eq binding 'undefined))
+                  ;; Check if event has any of the target modifiers
+                  (let ((event-mods (event-modifiers event)))
+                    (cl-intersection event-mods modifiers)))
+         (when-let ((spec (ewm--event-to-intercept-spec event)))
+           (push spec specs))))
+     keymap)
+    specs))
+
+(defun ewm--send-intercept-keys ()
+  "Send intercepted keys configuration to compositor.
+Scans Emacs keymaps for keys matching `ewm-intercept-modifiers',
+and adds `ewm-intercept-prefixes'.
+This allows normal `global-set-key' bindings to work with EWM."
+  (let ((specs '())
+        (seen (make-hash-table :test 'equal)))
+    ;; Add prefix keys first
+    (dolist (key ewm-intercept-prefixes)
+      ;; Handle both character literals (integers) and strings
+      (let ((event (cond
+                    ((integerp key) key)
+                    ((stringp key) (aref (key-parse key) 0))
+                    (t nil))))
+        (when event
+          (when-let ((spec (ewm--event-to-intercept-spec event)))
+            (let ((spec-key (format "%S" spec)))
+              (unless (gethash spec-key seen)
+                (puthash spec-key t seen)
+                (push spec specs)))))))
+    ;; Scan global-map for keys with configured modifiers
+    (when ewm-intercept-modifiers
+      (dolist (spec (ewm--scan-keymap-for-modifiers
+                     (current-global-map) ewm-intercept-modifiers))
+        (let ((spec-key (format "%S" spec)))
+          (unless (gethash spec-key seen)
+            (puthash spec-key t seen)
+            (push spec specs)))))
+    ;; Send to compositor
+    (message "EWM: Intercepting %d keys" (length specs))
+    (ewm--send `(:cmd "intercept-keys" :keys ,(vconcat (nreverse specs))))))
 
 ;;; Surface mode
 

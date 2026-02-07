@@ -71,20 +71,17 @@ This document tracks complexity areas and remaining work in the compositor.
 
 * Prefix Key Parsing
 :PROPERTIES:
-:STATUS: needs-decision
+:STATUS: done
 :END:
 
-*Current state:* =PrefixKey::parse= parses Emacs key notation ("C-x", "M-c", etc.) into keysyms and modifier flags at runtime.
+*Current state:* Emacs sends pre-parsed keysyms/modifiers. Renamed to "intercept-keys" for clarity.
 
-*Files:* =src/main.rs=
+*Files:* =src/main.rs=, =ewm.el=
 
-*Question:* Could Emacs send pre-parsed keysyms/modifiers instead?
-- Current: ={"cmd": "prefix-keys", "keys": ["C-x", "M-x"]}=
-- Alternative: ={"cmd": "prefix-keys", "keys": [{"keysym": 120, "ctrl": true}, ...]}=
+*Decision:* Implemented the alternative approach. Emacs now sends:
+={"cmd": "intercept-keys", "keys": [{"keysym": 120, "ctrl": true}, ...]}=
 
-*Decision:*
-
-*Simplification potential:* Remove 100+ lines of parsing code, eliminate keysym mapping table
+*Result:* Removed ~100 lines of parsing code. Added =ewm-input-global-keys= for EXWM-like super key bindings.
 
 * VBlank State Machine
 :PROPERTIES:

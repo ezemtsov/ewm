@@ -125,124 +125,90 @@ enum Command {
     Focus { id: u32 },
     #[serde(rename = "screenshot")]
     Screenshot { path: Option<String> },
-    #[serde(rename = "prefix-keys")]
-    PrefixKeys { keys: Vec<String> },
+    #[serde(rename = "intercept-keys")]
+    InterceptKeys { keys: Vec<InterceptedKey> },
 }
 
-/// Parsed prefix key: keysym + required modifiers
-#[derive(Debug, Clone)]
-pub struct PrefixKey {
-    keysym: u32,
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    logo: bool, // Super/Windows key
+/// Key identifier: either a keysym integer or a named key string
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum KeyId {
+    Keysym(u32),
+    Named(String),
 }
 
-impl PrefixKey {
-    /// Parse an Emacs-style key description like "C-x", "M-x", "C-M-c"
-    fn parse(key_desc: &str) -> Option<Self> {
-        let mut ctrl = false;
-        let mut alt = false;
-        let mut shift = false;
-        let mut logo = false;
-        let mut remaining = key_desc;
-
-        // Parse modifiers (C- for Ctrl, M- for Meta/Alt, S- for Shift, s- for Super)
-        loop {
-            if remaining.starts_with("C-") {
-                ctrl = true;
-                remaining = &remaining[2..];
-            } else if remaining.starts_with("M-") {
-                alt = true;
-                remaining = &remaining[2..];
-            } else if remaining.starts_with("S-") {
-                shift = true;
-                remaining = &remaining[2..];
-            } else if remaining.starts_with("s-") {
-                logo = true;
-                remaining = &remaining[2..];
-            } else {
-                break;
-            }
-        }
-
-        // Parse the base key
-        let keysym = match remaining {
-            "SPC" | "space" => keysyms::KEY_space,
-            "RET" | "return" => keysyms::KEY_Return,
-            "TAB" | "tab" => keysyms::KEY_Tab,
-            "ESC" | "escape" => keysyms::KEY_Escape,
-            "DEL" | "delete" => keysyms::KEY_Delete,
-            "backspace" => keysyms::KEY_BackSpace,
-            // Special characters
-            "`" => keysyms::KEY_grave,
-            ":" => keysyms::KEY_colon,
-            ";" => keysyms::KEY_semicolon,
-            "&" => keysyms::KEY_ampersand,
-            "!" => keysyms::KEY_exclam,
-            "@" => keysyms::KEY_at,
-            "#" => keysyms::KEY_numbersign,
-            "$" => keysyms::KEY_dollar,
-            "%" => keysyms::KEY_percent,
-            "^" => keysyms::KEY_asciicircum,
-            "*" => keysyms::KEY_asterisk,
-            "(" => keysyms::KEY_parenleft,
-            ")" => keysyms::KEY_parenright,
-            "-" => keysyms::KEY_minus,
-            "_" => keysyms::KEY_underscore,
-            "=" => keysyms::KEY_equal,
-            "+" => keysyms::KEY_plus,
-            "[" => keysyms::KEY_bracketleft,
-            "]" => keysyms::KEY_bracketright,
-            "{" => keysyms::KEY_braceleft,
-            "}" => keysyms::KEY_braceright,
-            "\\" => keysyms::KEY_backslash,
-            "|" => keysyms::KEY_bar,
-            "'" => keysyms::KEY_apostrophe,
-            "\"" => keysyms::KEY_quotedbl,
-            "," => keysyms::KEY_comma,
-            "." => keysyms::KEY_period,
-            "/" => keysyms::KEY_slash,
-            "<" => keysyms::KEY_less,
-            ">" => keysyms::KEY_greater,
-            "?" => keysyms::KEY_question,
-            "~" => keysyms::KEY_asciitilde,
-            s if s.len() == 1 => {
-                let c = s.chars().next().unwrap();
-                if c.is_ascii_lowercase() {
-                    // a-z
-                    keysyms::KEY_a + (c as u32 - 'a' as u32)
-                } else if c.is_ascii_uppercase() {
-                    // A-Z (shifted)
-                    shift = true;
-                    keysyms::KEY_a + (c.to_ascii_lowercase() as u32 - 'a' as u32)
-                } else if c.is_ascii_digit() {
-                    // 0-9
-                    keysyms::KEY_0 + (c as u32 - '0' as u32)
-                } else {
-                    return None;
+impl KeyId {
+    /// Convert to keysym, mapping named keys to XKB keysyms
+    fn to_keysym(&self) -> Option<u32> {
+        match self {
+            KeyId::Keysym(k) => Some(*k),
+            KeyId::Named(name) => match name.as_str() {
+                // Arrow keys
+                "left" => Some(keysyms::KEY_Left),
+                "right" => Some(keysyms::KEY_Right),
+                "up" => Some(keysyms::KEY_Up),
+                "down" => Some(keysyms::KEY_Down),
+                // Navigation
+                "home" => Some(keysyms::KEY_Home),
+                "end" => Some(keysyms::KEY_End),
+                "prior" => Some(keysyms::KEY_Prior),
+                "next" => Some(keysyms::KEY_Next),
+                "insert" => Some(keysyms::KEY_Insert),
+                "delete" => Some(keysyms::KEY_Delete),
+                // Function keys
+                "f1" => Some(keysyms::KEY_F1),
+                "f2" => Some(keysyms::KEY_F2),
+                "f3" => Some(keysyms::KEY_F3),
+                "f4" => Some(keysyms::KEY_F4),
+                "f5" => Some(keysyms::KEY_F5),
+                "f6" => Some(keysyms::KEY_F6),
+                "f7" => Some(keysyms::KEY_F7),
+                "f8" => Some(keysyms::KEY_F8),
+                "f9" => Some(keysyms::KEY_F9),
+                "f10" => Some(keysyms::KEY_F10),
+                "f11" => Some(keysyms::KEY_F11),
+                "f12" => Some(keysyms::KEY_F12),
+                // Special keys
+                "return" => Some(keysyms::KEY_Return),
+                "tab" => Some(keysyms::KEY_Tab),
+                "escape" => Some(keysyms::KEY_Escape),
+                "backspace" => Some(keysyms::KEY_BackSpace),
+                _ => {
+                    warn!("Unknown key name: {}", name);
+                    None
                 }
-            }
-            _ => return None,
+            },
+        }
+    }
+}
+
+/// Intercepted key: key + required modifiers (sent pre-parsed from Emacs)
+#[derive(Debug, Clone, Deserialize)]
+pub struct InterceptedKey {
+    key: KeyId,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    alt: bool,
+    #[serde(default)]
+    shift: bool,
+    #[serde(rename = "super", default)]
+    logo: bool,
+}
+
+impl InterceptedKey {
+    /// Check if this key matches the given keysym and modifiers
+    pub fn matches(&self, keysym: u32, mods: &ModifiersState) -> bool {
+        let target_keysym = match self.key.to_keysym() {
+            Some(k) => k,
+            None => return false,
         };
 
-        Some(PrefixKey {
-            keysym,
-            ctrl,
-            alt,
-            shift,
-            logo,
-        })
-    }
-
-    /// Check if this prefix key matches the given keysym and modifiers
-    pub fn matches(&self, keysym: u32, mods: &ModifiersState) -> bool {
-        // For prefix keys, we check exact modifier match
-        let keysym_match = self.keysym == keysym
+        // Handle case-insensitive letter matching (A-Z vs a-z)
+        let keysym_match = target_keysym == keysym
             || (keysym >= keysyms::KEY_A
                 && keysym <= keysyms::KEY_Z
-                && self.keysym == keysym - keysyms::KEY_A + keysyms::KEY_a);
+                && target_keysym == keysym - keysyms::KEY_A + keysyms::KEY_a);
 
         keysym_match
             && self.ctrl == mods.ctrl
@@ -282,7 +248,7 @@ pub struct Ewm {
     pub pointer_location: (f64, f64),
     pub focused_surface_id: u32,
     pub keyboard_focus: Option<WlSurface>,
-    pub prefix_keys: Vec<PrefixKey>,
+    pub intercepted_keys: Vec<InterceptedKey>,
 
     // Screenshot request
     pub pending_screenshot: Option<String>,
@@ -327,7 +293,7 @@ impl Ewm {
             pointer_location: (0.0, 0.0),
             focused_surface_id: 1,
             keyboard_focus: None,
-            prefix_keys: Vec::new(),
+            intercepted_keys: Vec::new(),
             pending_screenshot: None,
             drm_backend: None,
         }
@@ -803,18 +769,9 @@ impl LoopData {
                 info!("Screenshot requested: {}", target);
                 self.state.pending_screenshot = Some(target);
             }
-            Command::PrefixKeys { keys } => {
-                self.state.prefix_keys = keys
-                    .iter()
-                    .filter_map(|k| {
-                        let parsed = PrefixKey::parse(k);
-                        if parsed.is_none() {
-                            warn!("Failed to parse prefix key: {}", k);
-                        }
-                        parsed
-                    })
-                    .collect();
-                info!("Prefix keys set: {:?}", self.state.prefix_keys);
+            Command::InterceptKeys { keys } => {
+                self.state.intercepted_keys = keys;
+                info!("Intercepted keys set: {:?}", self.state.intercepted_keys);
             }
         }
     }

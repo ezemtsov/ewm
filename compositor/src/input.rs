@@ -43,10 +43,10 @@ pub fn handle_keyboard_event(
     let is_press = key_state == KeyState::Pressed;
 
     // Clone values needed in the filter closure
-    let prefix_keys = state.prefix_keys.clone();
+    let intercepted_keys = state.intercepted_keys.clone();
     let current_focus_id = state.focused_surface_id;
 
-    // Process key with filter to detect prefix keys and kill combo
+    // Process key with filter to detect intercepted keys and kill combo
     let filter_result = keyboard.input::<u8, _>(
         state,
         keycode.into(),
@@ -63,12 +63,12 @@ pub fn handle_keyboard_event(
                 return FilterResult::Intercept(2); // 2 = kill
             }
 
-            // Get the keysym for this key and check if it matches any prefix key
+            // Get the keysym for this key and check if it matches any intercepted key
             let keysym = handle.modified_sym();
-            let is_prefix = prefix_keys.iter().any(|pk| pk.matches(keysym.raw(), mods));
+            let is_intercepted = intercepted_keys.iter().any(|ik| ik.matches(keysym.raw(), mods));
 
-            if is_prefix && current_focus_id != 1 {
-                // This is a prefix key and focus is not on Emacs
+            if is_intercepted && current_focus_id != 1 {
+                // This is an intercepted key and focus is not on Emacs
                 FilterResult::Intercept(1) // 1 = redirect to emacs
             } else {
                 FilterResult::Forward
