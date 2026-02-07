@@ -119,6 +119,8 @@ struct OutputSurface {
     redraw_state: RedrawState,
     /// Refresh interval in microseconds (for estimated VBlank timer)
     refresh_interval_us: u64,
+    /// Connector handle for mode lookups
+    connector: connector::Handle,
 }
 
 /// Message to trigger deferred DRM initialization
@@ -266,6 +268,91 @@ impl DrmBackendState {
                 warn!("Failed to send DRM init message: {:?}", e);
             }
         }
+    }
+
+    /// Set mode for an output by name
+    /// Returns true on success, false if output not found or mode change failed
+    pub fn set_mode(&mut self, output_name: &str, width: i32, height: i32, refresh: Option<i32>) -> bool {
+        let Some(device) = &mut self.device else {
+            warn!("DRM not initialized, cannot set mode");
+            return false;
+        };
+
+        // Find the surface by output name
+        let surface = device.surfaces.values_mut().find(|s| s.output.name() == output_name);
+        let Some(surface) = surface else {
+            warn!("Output not found: {}", output_name);
+            return false;
+        };
+
+        // Get connector info to find available modes
+        let Ok(connector_info) = device.drm.get_connector(surface.connector, false) else {
+            warn!("Failed to get connector info for {}", output_name);
+            return false;
+        };
+
+        // Find matching mode
+        let mode = connector_info
+            .modes()
+            .iter()
+            .filter(|m| {
+                m.size().0 as i32 == width && m.size().1 as i32 == height
+            })
+            .max_by_key(|m| {
+                // Prefer matching refresh rate, otherwise highest refresh
+                if let Some(target_refresh) = refresh {
+                    if (m.vrefresh() as i32 - target_refresh).abs() < 2 {
+                        return 1000 + m.vrefresh() as i32;
+                    }
+                }
+                m.vrefresh() as i32
+            });
+
+        let Some(mode) = mode.copied() else {
+            warn!("No matching mode found for {}x{} on {}", width, height, output_name);
+            return false;
+        };
+
+        info!(
+            "Setting mode for {}: {}x{}@{}Hz",
+            output_name,
+            mode.size().0,
+            mode.size().1,
+            mode.vrefresh()
+        );
+
+        // Apply the mode
+        if let Err(err) = surface.compositor.use_mode(mode) {
+            warn!("Failed to set mode: {:?}", err);
+            return false;
+        }
+
+        // Update Smithay output state
+        let smithay_mode = Mode {
+            size: (mode.size().0 as i32, mode.size().1 as i32).into(),
+            refresh: (mode.vrefresh() * 1000) as i32,
+        };
+        surface.output.change_current_state(Some(smithay_mode), None, None, None);
+        surface.output.set_preferred(smithay_mode);
+
+        // Update refresh interval
+        surface.refresh_interval_us = if mode.vrefresh() > 0 {
+            1_000_000 / mode.vrefresh() as u64
+        } else {
+            16_667
+        };
+
+        // Queue redraw
+        surface.redraw_state = RedrawState::Queued;
+
+        info!(
+            "Mode changed successfully for {}: {}x{}@{}Hz",
+            output_name,
+            mode.size().0,
+            mode.size().1,
+            mode.vrefresh()
+        );
+        true
     }
 
     /// Render a frame to the given output
@@ -686,6 +773,7 @@ fn initialize_drm(
                 compositor,
                 redraw_state: RedrawState::Queued,
                 refresh_interval_us,
+                connector: *connector_handle,
             },
         );
 

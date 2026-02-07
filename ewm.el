@@ -61,6 +61,22 @@ When creating frames, we send prepare-frame to compositor, then make-frame.
 Compositor assigns the surface to the output and sends \"new\" event with output.
 We match by output name to find the corresponding frame.")
 
+(defcustom ewm-output-config nil
+  "Output configuration alist.
+Each entry is (OUTPUT-NAME . PLIST) where PLIST can contain:
+  :width    - desired width in pixels
+  :height   - desired height in pixels
+  :refresh  - desired refresh rate in Hz (optional)
+  :x        - horizontal position (optional)
+  :y        - vertical position (optional)
+  :enabled  - whether output is enabled (default t)
+
+Example:
+  \\='((\"DP-1\" :width 2560 :height 1440)
+    (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0))"
+  :type '(alist :key-type string :value-type plist)
+  :group 'ewm)
+
 ;;; Protocol
 
 (defun ewm--send (cmd)
@@ -300,11 +316,33 @@ Primary is the output at position (0, 0), or the first output."
                  :name)
       (plist-get (car ewm--outputs) :name)))
 
+(defun ewm--apply-output-config ()
+  "Apply user output configuration from `ewm-output-config'."
+  (dolist (config ewm-output-config)
+    (let* ((name (car config))
+           (props (cdr config))
+           (width (plist-get props :width))
+           (height (plist-get props :height))
+           (refresh (plist-get props :refresh))
+           (x (plist-get props :x))
+           (y (plist-get props :y)))
+      (when (or width height)
+        (message "EWM: configuring %s to %dx%d" name width height)
+        (ewm-configure-output name
+                              :width width
+                              :height height
+                              :refresh refresh
+                              :x x
+                              :y y)))))
+
 (defun ewm--handle-outputs-complete ()
   "Handle outputs_complete event.
 Triggered after compositor sends all output_detected events.
-Sets up one frame per output if enabled."
+Applies user output config, then sets up frames."
   (message "EWM: all outputs received (%d)" (length ewm--outputs))
+  ;; Apply user output configuration first (mode changes, positioning)
+  (ewm--apply-output-config)
+  ;; Then set up frames
   (when ewm-auto-setup-frames
     (ewm--setup-frames-per-output)))
 

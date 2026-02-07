@@ -919,9 +919,9 @@ impl LoopData {
                 name,
                 x,
                 y,
-                width: _,
-                height: _,
-                refresh: _,
+                width,
+                height,
+                refresh,
                 scale: _,
                 enabled,
             } => {
@@ -940,6 +940,13 @@ impl LoopData {
                         self.state.space.unmap_output(&output);
                         info!("Disabled output {}", name);
                     } else {
+                        // Handle mode change if width/height specified
+                        if let (Some(w), Some(h)) = (width, height) {
+                            if let Some(ref backend) = self.state.drm_backend {
+                                backend.borrow_mut().set_mode(&name, w, h, refresh);
+                            }
+                        }
+
                         // Reposition if coordinates provided
                         let new_x = x.unwrap_or(0);
                         let new_y = y.unwrap_or(0);
