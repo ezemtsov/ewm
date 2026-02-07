@@ -156,6 +156,21 @@ enum Command {
     Screenshot { path: Option<String> },
     #[serde(rename = "intercept-keys")]
     InterceptKeys { keys: Vec<InterceptedKey> },
+    #[serde(rename = "configure-output")]
+    ConfigureOutput {
+        name: String,
+        x: Option<i32>,
+        y: Option<i32>,
+        #[allow(dead_code)]
+        width: Option<i32>,
+        #[allow(dead_code)]
+        height: Option<i32>,
+        #[allow(dead_code)]
+        refresh: Option<i32>,
+        #[allow(dead_code)]
+        scale: Option<f64>,
+        enabled: Option<bool>,
+    },
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -336,6 +351,21 @@ impl Ewm {
     /// Set the DRM backend reference for early_import support
     pub fn set_drm_backend(&mut self, backend: Rc<RefCell<DrmBackendState>>) {
         self.drm_backend = Some(backend);
+    }
+
+    /// Recalculate total output size from current space geometry
+    pub fn recalculate_output_size(&mut self) {
+        let (total_width, total_height) =
+            self.space
+                .outputs()
+                .fold((0i32, 0i32), |(w, h), output| {
+                    if let Some(geo) = self.space.output_geometry(output) {
+                        (w.max(geo.loc.x + geo.size.w), h.max(geo.loc.y + geo.size.h))
+                    } else {
+                        (w, h)
+                    }
+                });
+        self.output_size = (total_width, total_height);
     }
 
     pub fn init_wayland_listener(
@@ -822,6 +852,68 @@ impl LoopData {
             Command::InterceptKeys { keys } => {
                 self.state.intercepted_keys = keys;
                 info!("Intercepted keys set: {:?}", self.state.intercepted_keys);
+            }
+            Command::ConfigureOutput {
+                name,
+                x,
+                y,
+                width: _,
+                height: _,
+                refresh: _,
+                scale: _,
+                enabled,
+            } => {
+                // Find output by name
+                let output = self
+                    .state
+                    .space
+                    .outputs()
+                    .find(|o| o.name() == name)
+                    .cloned();
+
+                if let Some(output) = output {
+                    // Handle enable/disable
+                    if let Some(false) = enabled {
+                        // Disable: unmap from space
+                        self.state.space.unmap_output(&output);
+                        info!("Disabled output {}", name);
+                    } else {
+                        // Reposition if coordinates provided
+                        let new_x = x.unwrap_or(0);
+                        let new_y = y.unwrap_or(0);
+                        let new_pos = (new_x, new_y);
+
+                        self.state.space.map_output(&output, new_pos);
+
+                        // Update output's internal position state
+                        output.change_current_state(
+                            None,
+                            None,
+                            None,
+                            Some(new_pos.into()),
+                        );
+
+                        // Update our cached output info
+                        for out_info in &mut self.state.outputs {
+                            if out_info.name == name {
+                                out_info.x = new_x;
+                                out_info.y = new_y;
+                            }
+                        }
+
+                        // Recalculate total output size
+                        self.state.recalculate_output_size();
+
+                        info!("Configured output {} at ({}, {})", name, new_x, new_y);
+                    }
+
+                    // Queue redraw
+                    if let Some(ref backend) = self.state.drm_backend {
+                        backend.borrow_mut().queue_redraw();
+                    }
+                } else {
+                    warn!("Output not found: {}", name);
+                }
             }
         }
     }
