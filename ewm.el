@@ -55,6 +55,12 @@ Each output is a plist with keys:
   :y - position y
   :modes - list of available modes")
 
+(defvar ewm--pending-frame-outputs nil
+  "Alist of (output-name . frame) pairs waiting for surface assignment.
+When creating frames, we send prepare-frame to compositor, then make-frame.
+Compositor assigns the surface to the output and sends \"new\" event with output.
+We match by output name to find the corresponding frame.")
+
 ;;; Protocol
 
 (defun ewm--send (cmd)
@@ -72,6 +78,7 @@ Each output is a plist with keys:
       ("title" (ewm--handle-title-update event))
       ("output_detected" (ewm--handle-output-detected event))
       ("output_disconnected" (ewm--handle-output-disconnected event))
+      ("outputs_complete" (ewm--handle-outputs-complete))
       (_ (message "EWM: unknown event type: %s" type)))))
 
 ;;; Event handlers
@@ -85,21 +92,37 @@ Adapted from EXWM's behavior."
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
-Creates a buffer for the surface and optionally displays it.
+If event has output field, this is an Emacs frame - find matching pending frame.
+Otherwise, creates a buffer for external surface.
 Adapted from `exwm-manage--manage-window'."
   (let* ((id (gethash "id" event))
          (app (gethash "app" event))
-         (buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
-    (puthash id `(:buffer ,buf :app ,app) ewm--surfaces)
-    (with-current-buffer buf
-      (ewm-surface-mode)
-      (setq-local ewm-surface-id id)
-      (setq-local ewm-surface-app app))
-    ;; Display the new surface buffer (like EXWM's pop-to-buffer-same-window)
-    ;; This triggers buffer-list-update-hook which handles focus
-    (when ewm-manage-focus-new-surface
-      (pop-to-buffer-same-window buf))
-    (message "EWM: new surface %d (%s)" id app)))
+         (output (gethash "output" event)))
+    (if output
+        ;; Emacs frame assigned to output by compositor
+        ;; Find the pending frame for this output
+        (let ((pending (assoc output ewm--pending-frame-outputs
+                              (lambda (a b) (string= a b)))))
+          (if pending
+              (let ((frame (cdr pending)))
+                (setq ewm--pending-frame-outputs
+                      (delete pending ewm--pending-frame-outputs))
+                (set-frame-parameter frame 'ewm-output output)
+                (set-frame-parameter frame 'ewm-surface-id id)
+                (message "EWM: frame on %s (surface %d)" output id))
+            (message "EWM: frame for %s but no pending frame found" output)))
+      ;; Regular surface - create buffer
+      (let ((buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
+        (puthash id `(:buffer ,buf :app ,app) ewm--surfaces)
+        (with-current-buffer buf
+          (ewm-surface-mode)
+          (setq-local ewm-surface-id id)
+          (setq-local ewm-surface-app app))
+        ;; Display the new surface buffer (like EXWM's pop-to-buffer-same-window)
+        ;; This triggers buffer-list-update-hook which handles focus
+        (when ewm-manage-focus-new-surface
+          (pop-to-buffer-same-window buf))
+        (message "EWM: new surface %d (%s)" id app)))))
 
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.
@@ -261,6 +284,61 @@ Example:
   (ewm-assign-output 1 \"DP-1\")"
   (ewm--send `(:cmd "assign-output" :id ,id :output ,output)))
 
+(defun ewm-prepare-frame (output)
+  "Tell compositor to assign next frame to OUTPUT.
+Call this before `make-frame' to have the compositor automatically
+assign the new frame's surface to the specified output."
+  (ewm--send `(:cmd "prepare-frame" :output ,output)))
+
+(defun ewm--get-primary-output ()
+  "Return the primary output name.
+Primary is the output at position (0, 0), or the first output."
+  (or (plist-get (cl-find-if (lambda (o)
+                               (and (= 0 (plist-get o :x))
+                                    (= 0 (plist-get o :y))))
+                             ewm--outputs)
+                 :name)
+      (plist-get (car ewm--outputs) :name)))
+
+(defun ewm--handle-outputs-complete ()
+  "Handle outputs_complete event.
+Triggered after compositor sends all output_detected events.
+Sets up one frame per output if enabled."
+  (message "EWM: all outputs received (%d)" (length ewm--outputs))
+  (when ewm-auto-setup-frames
+    (ewm--setup-frames-per-output)))
+
+(defun ewm--frame-for-output (output-name)
+  "Return the frame assigned to OUTPUT-NAME, or nil."
+  (cl-find output-name (frame-list)
+           :test #'string=
+           :key (lambda (f) (frame-parameter f 'ewm-output))))
+
+(defun ewm--setup-frames-per-output ()
+  "Create one frame per output and assign accordingly.
+The initial frame (surface 1) is assigned to the primary output.
+Additional frames are created for other outputs.
+Skips outputs that already have a frame assigned."
+  (when ewm--outputs
+    (let* ((primary (ewm--get-primary-output))
+           (initial-frame (selected-frame)))
+      ;; Assign initial frame to primary output (if not already assigned)
+      (unless (ewm--frame-for-output primary)
+        (ewm-assign-output 1 primary)
+        (set-frame-parameter initial-frame 'ewm-output primary)
+        (set-frame-parameter initial-frame 'ewm-surface-id 1)
+        (message "EWM: initial frame on %s" primary))
+      ;; Create frames for other outputs (if not already assigned)
+      (dolist (output ewm--outputs)
+        (let ((name (plist-get output :name)))
+          (unless (or (string= name primary)
+                      (ewm--frame-for-output name))
+            ;; Tell compositor to assign next surface to this output
+            (ewm-prepare-frame name)
+            ;; Create frame and track pending assignment
+            (let ((new-frame (make-frame)))
+              (push (cons name new-frame) ewm--pending-frame-outputs))))))))
+
 ;;; Process handling
 
 (defun ewm--filter (proc string)
@@ -298,6 +376,11 @@ Uses $XDG_RUNTIME_DIR/ewm.sock if available, otherwise /tmp/ewm.sock."
         (expand-file-name "ewm.sock" runtime-dir)
       "/tmp/ewm.sock")))
 
+(defcustom ewm-auto-setup-frames t
+  "Whether to automatically create one frame per output on connect."
+  :type 'boolean
+  :group 'ewm)
+
 (defun ewm-connect (&optional socket-path)
   "Connect to compositor at SOCKET-PATH.
 Default is $XDG_RUNTIME_DIR/ewm.sock.
@@ -306,8 +389,9 @@ Safe to call unconditionally - returns nil with a message if connection fails."
   (let ((path (or socket-path (ewm--default-socket-path))))
     (when (and ewm--process (process-live-p ewm--process))
       (delete-process ewm--process))
-    ;; Reset outputs - will be repopulated on connect
+    ;; Reset outputs and pending assignments
     (setq ewm--outputs nil)
+    (setq ewm--pending-frame-outputs nil)
     (condition-case nil
         (progn
           (setq ewm--process
@@ -326,6 +410,7 @@ Safe to call unconditionally - returns nil with a message if connection fails."
           (ewm-input--enable)
           ;; Scan keymaps and send intercept keys to compositor
           (ewm--send-intercept-keys)
+          ;; Frame setup is triggered by outputs_complete event from compositor
           (message "EWM: connected to %s" path))
       (file-error
        (message "EWM: connection failed (not running inside EWM?)")))))

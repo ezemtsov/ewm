@@ -110,7 +110,12 @@ pub struct OutputInfo {
 #[serde(tag = "event")]
 enum IpcEvent {
     #[serde(rename = "new")]
-    New { id: u32, app: String },
+    New {
+        id: u32,
+        app: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
     #[serde(rename = "close")]
     Close { id: u32 },
     #[serde(rename = "title")]
@@ -119,6 +124,8 @@ enum IpcEvent {
     OutputDetected(OutputInfo),
     #[serde(rename = "output_disconnected")]
     OutputDisconnected { name: String },
+    #[serde(rename = "outputs_complete")]
+    OutputsComplete,
 }
 
 /// Cached surface info for change detection
@@ -173,6 +180,8 @@ enum Command {
     },
     #[serde(rename = "assign-output")]
     AssignOutput { id: u32, output: String },
+    #[serde(rename = "prepare-frame")]
+    PrepareFrame { output: String },
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -303,6 +312,9 @@ pub struct Ewm {
 
     // DRM backend (for early_import)
     pub drm_backend: Option<Rc<RefCell<DrmBackendState>>>,
+
+    // Pending frame-to-output assignments (from prepare-frame command)
+    pending_frame_outputs: Vec<String>,
 }
 
 impl Ewm {
@@ -347,6 +359,7 @@ impl Ewm {
             intercepted_keys: Vec::new(),
             pending_screenshot: None,
             drm_backend: None,
+            pending_frame_outputs: Vec::new(),
         }
     }
 
@@ -643,14 +656,59 @@ impl XdgShellHandler for Ewm {
         self.window_ids.insert(window.clone(), id);
         self.id_windows.insert(id, window.clone());
 
-        let position = if id == 1 { (0, 0) } else { (-10000, -10000) };
-        self.space.map_element(window, position, false);
+        // Check for pending frame-to-output assignment
+        let assigned_output = if !self.pending_frame_outputs.is_empty() {
+            Some(self.pending_frame_outputs.remove(0))
+        } else {
+            None
+        };
+
+        // Position based on assignment or default
+        let position = if id == 1 {
+            (0, 0)
+        } else if let Some(ref output_name) = assigned_output {
+            // Find output geometry and position there
+            self.space
+                .outputs()
+                .find(|o| o.name() == *output_name)
+                .and_then(|o| self.space.output_geometry(o))
+                .map(|geo| (geo.loc.x, geo.loc.y))
+                .unwrap_or((-10000, -10000))
+        } else {
+            (-10000, -10000)
+        };
+        self.space.map_element(window.clone(), position, false);
+
+        // Resize to fill output if assigned
+        if let Some(ref output_name) = assigned_output {
+            if let Some(geo) = self
+                .space
+                .outputs()
+                .find(|o| o.name() == *output_name)
+                .and_then(|o| self.space.output_geometry(o))
+            {
+                window.toplevel().map(|t| {
+                    t.with_pending_state(|state| {
+                        state.size = Some((geo.size.w, geo.size.h).into());
+                    });
+                    t.send_configure();
+                });
+            }
+        }
 
         if id != 1 {
-            self.pending_events
-                .push(IpcEvent::New { id, app: app.clone() });
+            self.pending_events.push(IpcEvent::New {
+                id,
+                app: app.clone(),
+                output: assigned_output.clone(),
+            });
         }
-        info!("New toplevel {} ({})", id, app);
+        info!(
+            "New toplevel {} ({}) -> {:?}",
+            id,
+            app,
+            assigned_output.as_deref().unwrap_or("unassigned")
+        );
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -756,6 +814,8 @@ impl LoopData {
         for output in outputs {
             self.send_event(&IpcEvent::OutputDetected(output));
         }
+        // Signal that all outputs have been sent
+        self.send_event(&IpcEvent::OutputsComplete);
     }
 
     /// Process IPC commands from a stream
@@ -955,6 +1015,11 @@ impl LoopData {
                 } else {
                     warn!("Output not found: {}", output);
                 }
+            }
+            Command::PrepareFrame { output } => {
+                // Queue output for next frame creation
+                self.state.pending_frame_outputs.push(output.clone());
+                info!("Prepared frame for output {}", output);
             }
         }
     }
