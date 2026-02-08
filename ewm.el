@@ -94,6 +94,7 @@ Example:
       ("new" (ewm--handle-new-surface event))
       ("close" (ewm--handle-close-surface event))
       ("title" (ewm--handle-title-update event))
+      ("focus" (ewm--handle-focus event))
       ("output_detected" (ewm--handle-output-detected event))
       ("output_disconnected" (ewm--handle-output-disconnected event))
       ("outputs_complete" (ewm--handle-outputs-complete))
@@ -158,6 +159,20 @@ Adapted from `exwm-manage--unmanage-window'."
           (kill-buffer buf)))
       (remhash id ewm--surfaces))
     (message "EWM: closed surface %d" id)))
+
+(defun ewm--handle-focus (event)
+  "Handle focus EVENT from compositor.
+Selects the window displaying the focused surface's buffer."
+  (let* ((id (gethash "id" event))
+         (info (gethash id ewm--surfaces)))
+    (when info
+      (let ((buf (plist-get info :buffer)))
+        (when (buffer-live-p buf)
+          ;; Find a window showing this buffer and select it
+          (let ((win (get-buffer-window buf t)))
+            (when win
+              (select-frame-set-input-focus (window-frame win))
+              (select-window win))))))))
 
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.

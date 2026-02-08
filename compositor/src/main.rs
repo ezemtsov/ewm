@@ -120,6 +120,8 @@ enum IpcEvent {
     Close { id: u32 },
     #[serde(rename = "title")]
     Title { id: u32, app: String, title: String },
+    #[serde(rename = "focus")]
+    Focus { id: u32 },
     #[serde(rename = "output_detected")]
     OutputDetected(OutputInfo),
     #[serde(rename = "output_disconnected")]
@@ -398,9 +400,28 @@ impl Ewm {
         self.emacs_surfaces.contains(&self.focused_surface_id)
     }
 
-    /// Get the output where the focused surface is located
-    fn get_focused_output(&self) -> Option<String> {
-        let window = self.id_windows.get(&self.focused_surface_id)?;
+    /// Set focus to a surface and notify Emacs
+    pub fn set_focus(&mut self, id: u32) {
+        if id != self.focused_surface_id && id != 0 {
+            self.focused_surface_id = id;
+            // Notify Emacs about focus change (skip Emacs frames, they handle their own focus)
+            if !self.emacs_surfaces.contains(&id) {
+                self.pending_events.push(IpcEvent::Focus { id });
+            }
+        }
+    }
+
+    /// Get surface ID from a WlSurface
+    pub fn surface_id(&self, surface: &WlSurface) -> Option<u32> {
+        self.window_ids
+            .iter()
+            .find(|(w, _)| w.wl_surface().map(|s| &*s == surface).unwrap_or(false))
+            .map(|(_, &id)| id)
+    }
+
+    /// Get the output where a surface is located
+    fn get_surface_output(&self, surface_id: u32) -> Option<String> {
+        let window = self.id_windows.get(&surface_id)?;
         let window_loc = self.space.element_location(window)?;
 
         // Find which output contains this window's location
@@ -417,6 +438,26 @@ impl Ewm {
         }
         // Fallback to first output
         self.space.outputs().next().map(|o| o.name())
+    }
+
+    /// Get the output where the focused surface is located
+    fn get_focused_output(&self) -> Option<String> {
+        self.get_surface_output(self.focused_surface_id)
+    }
+
+    /// Find the Emacs surface on the same output as the focused surface
+    pub fn get_emacs_surface_for_focused_output(&self) -> u32 {
+        let focused_output = self.get_focused_output();
+
+        // Find an Emacs surface on the same output
+        for &emacs_id in &self.emacs_surfaces {
+            if self.get_surface_output(emacs_id) == focused_output {
+                return emacs_id;
+            }
+        }
+
+        // Fallback to surface 1 (primary Emacs)
+        1
     }
 
     /// Recalculate total output size from current space geometry

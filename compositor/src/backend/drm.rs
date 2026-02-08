@@ -1117,12 +1117,34 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                 }
                 InputEvent::PointerButton { event } => {
                     let pointer = data.state.seat.get_pointer().unwrap();
+                    let keyboard = data.state.seat.get_keyboard().unwrap();
                     let serial = SERIAL_COUNTER.next_serial();
 
                     let button_state = match event.state() {
                         ButtonState::Pressed => ButtonState::Pressed,
                         ButtonState::Released => ButtonState::Released,
                     };
+
+                    // Click-to-focus: on button press, focus the surface under pointer
+                    if button_state == ButtonState::Pressed {
+                        let (px, py) = data.state.pointer_location;
+                        // Get surface info before mutating state
+                        let focus_info = data
+                            .state
+                            .space
+                            .element_under((px, py))
+                            .and_then(|(window, _)| {
+                                let id = data.state.window_ids.get(&window).copied()?;
+                                let surface = window.wl_surface()?.into_owned();
+                                Some((id, surface))
+                            });
+
+                        if let Some((id, surface)) = focus_info {
+                            data.state.set_focus(id);
+                            data.state.keyboard_focus = Some(surface.clone());
+                            keyboard.set_focus(&mut data.state, Some(surface), serial);
+                        }
+                    }
 
                     pointer.button(
                         &mut data.state,

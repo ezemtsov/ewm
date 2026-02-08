@@ -82,9 +82,10 @@ pub fn handle_keyboard_event(
     }
 
     if filter_result == Some(1) {
-        // Switch focus to Emacs (surface 1)
-        state.focused_surface_id = 1;
-        if let Some(window) = state.id_windows.get(&1) {
+        // Switch focus to the Emacs frame on the same output as the focused surface
+        let emacs_id = state.get_emacs_surface_for_focused_output();
+        state.focused_surface_id = emacs_id;
+        if let Some(window) = state.id_windows.get(&emacs_id) {
             if let Some(surface) = window.wl_surface() {
                 let emacs_surface: WlSurface = surface.into_owned();
                 state.keyboard_focus = Some(emacs_surface.clone());
