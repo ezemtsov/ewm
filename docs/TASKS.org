@@ -83,7 +83,8 @@ Currently using embedded fallback cursor only. Should load system themes.
 *Fix:* Add =xcursor= crate, implement theme loading like niri's =CursorManager=.
 
 ** TODO [#C] Scroll Improvements
-Missing: =relative_direction=, =v120= passthrough, finger =stop= events.
+Missing: =relative_direction=, =v120= passthrough.
+DONE: finger =stop= events (required for touchpad scrolling in Firefox).
 
 ** TODO [#C] Interactive Move/Resize
 Mod+click to move/resize windows (niri feature).

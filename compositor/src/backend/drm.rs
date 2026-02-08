@@ -26,8 +26,8 @@ use smithay::{
         },
         egl::{EGLDevice, EGLDisplay},
         input::{
-            AbsolutePositionEvent, Axis, ButtonState, Event, InputEvent, KeyboardKeyEvent,
-            PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputEvent,
+            KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
         },
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
@@ -1477,14 +1477,15 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
 
                     let source = event.source();
 
-                    // Get scroll amounts - try discrete v120 first, then continuous
+                    // Get scroll amounts - try continuous first, then discrete v120
                     // Negate for natural scrolling (content follows finger direction)
-                    let horizontal = -event
-                        .amount(Axis::Horizontal)
+                    let horizontal_amount = event.amount(Axis::Horizontal);
+                    let vertical_amount = event.amount(Axis::Vertical);
+
+                    let horizontal = -horizontal_amount
                         .or_else(|| event.amount_v120(Axis::Horizontal).map(|v| v / 120.0 * 15.0))
                         .unwrap_or(0.0);
-                    let vertical = -event
-                        .amount(Axis::Vertical)
+                    let vertical = -vertical_amount
                         .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v / 120.0 * 15.0))
                         .unwrap_or(0.0);
 
@@ -1494,6 +1495,17 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                     }
                     if vertical != 0.0 {
                         frame = frame.value(Axis::Vertical, vertical);
+                    }
+
+                    // For finger scroll (touchpad), send stop events when scrolling ends
+                    // (libinput sends a final event with amount == Some(0.0))
+                    if source == AxisSource::Finger {
+                        if horizontal_amount == Some(0.0) {
+                            frame = frame.stop(Axis::Horizontal);
+                        }
+                        if vertical_amount == Some(0.0) {
+                            frame = frame.stop(Axis::Vertical);
+                        }
                     }
 
                     pointer.axis(&mut data.state, frame);
