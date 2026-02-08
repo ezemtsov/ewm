@@ -9,13 +9,13 @@ EWM brings EXWM-like workflows to Wayland. Wayland applications appear as Emacs 
 The key difference from EXWM: the compositor runs as a separate process, so applications never freeze waiting for Emacs.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Compositor (Rust)  ◄───Unix Socket───►  Emacs      │
-│  - Renders surfaces                    - Controls   │
-│  - Handles input                         layout     │
-│  - Manages Wayland                     - Buffer     │
-│    protocol                              per app    │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│  Compositor (Rust)  ◄───Unix Socket───►  Emacs            │
+│  - Renders surfaces                    - Controls layout  │
+│  - Handles input                       - Frame per output │
+│  - Manages Wayland                     - Buffer per app   │
+│    protocol                                               │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ## Inspirations
@@ -68,10 +68,11 @@ When Emacs connects to the compositor, Wayland surfaces appear as special buffer
 - Line/char mode (like EXWM)
 - Client-side decoration auto-disable
 - Both nested (Winit) and standalone (DRM) backends
+- Multi-monitor support (hotplug, per-output Emacs frames)
+- Screen sharing via xdg-desktop-portal (PipeWire DMA-BUF)
 
 ## Known Limitations
 
-- No multi-monitor support yet
 - No layer-shell protocol (waybar, etc.)
 - No screen locking
 - Input method support is basic
