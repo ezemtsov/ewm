@@ -36,7 +36,7 @@ use smithay::{
             ImportDma, ImportEgl,
         },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
-        udev::primary_gpu,
+        udev::{primary_gpu, UdevBackend, UdevEvent},
     },
     input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     output::{Mode, Output, OutputModeSource, PhysicalProperties, Subpixel},
@@ -49,11 +49,12 @@ use smithay::{
         drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
-        wayland_server::{protocol::wl_surface::WlSurface, Display, Resource},
+        wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle, Resource},
     },
     utils::{DeviceFd, Point, Scale, Transform, SERIAL_COUNTER},
     wayland::{dmabuf::DmabufFeedbackBuilder, seat::WaylandFocus},
 };
+use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -139,6 +140,7 @@ struct DrmPendingInit {
 #[allow(dead_code)]
 struct DrmDeviceState {
     drm: DrmDevice,
+    drm_scanner: DrmScanner,
     gbm: GbmDevice<DrmDeviceFd>,
     gpu_manager: GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>,
     render_node: DrmNode,
@@ -165,6 +167,8 @@ pub struct DrmBackendState {
     loop_handle: Option<LoopHandle<'static, LoopData>>,
     /// Cursor buffer for rendering the mouse cursor
     cursor_buffer: CursorBuffer,
+    /// Display handle for creating output globals on hotplug
+    display_handle: Option<DisplayHandle>,
 }
 
 impl DrmBackendState {
@@ -544,6 +548,302 @@ impl DrmBackendState {
             self.render_output(crtc, ewm);
         }
     }
+
+    /// Handle udev device change event (monitor hotplug)
+    pub fn on_device_changed(&mut self, ewm: &mut Ewm) {
+        if self.paused {
+            return;
+        }
+
+        let Some(device) = &mut self.device else {
+            return;
+        };
+
+        // Scan for connector changes
+        let scan_result = match device.drm_scanner.scan_connectors(&device.drm) {
+            Ok(x) => x,
+            Err(err) => {
+                warn!("Error scanning connectors: {:?}", err);
+                return;
+            }
+        };
+
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+
+        for event in scan_result {
+            match event {
+                DrmScanEvent::Connected { connector, crtc: Some(crtc) } => {
+                    info!("Connector connected: {:?}-{}", connector.interface(), connector.interface_id());
+                    added.push((connector, crtc));
+                }
+                DrmScanEvent::Connected { connector, crtc: None } => {
+                    warn!("Connector {:?}-{} has no available CRTC", connector.interface(), connector.interface_id());
+                }
+                DrmScanEvent::Disconnected { connector, crtc: Some(crtc) } => {
+                    info!("Connector disconnected: {:?}-{}", connector.interface(), connector.interface_id());
+                    removed.push(crtc);
+                }
+                DrmScanEvent::Disconnected { connector, crtc: None } => {
+                    debug!("Connector {:?}-{} disconnected (had no CRTC)", connector.interface(), connector.interface_id());
+                }
+            }
+        }
+
+        // Process disconnections first
+        for crtc in removed {
+            self.disconnect_output(crtc, ewm);
+        }
+
+        // Process new connections
+        for (connector, crtc) in added {
+            if let Err(err) = self.connect_output(connector, crtc, ewm) {
+                warn!("Failed to connect output: {:?}", err);
+            }
+        }
+    }
+
+    /// Connect a new output
+    fn connect_output(
+        &mut self,
+        connector: connector::Info,
+        crtc: crtc::Handle,
+        ewm: &mut Ewm,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(device) = &mut self.device else {
+            return Err("DRM device not initialized".into());
+        };
+
+        let Some(display_handle) = &self.display_handle else {
+            return Err("Display handle not available".into());
+        };
+
+        // Find preferred mode
+        let mode = connector
+            .modes()
+            .iter()
+            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+            .or_else(|| connector.modes().first())
+            .copied()
+            .ok_or("No mode available")?;
+
+        info!(
+            "Connecting display: {:?}-{} {}x{}@{}Hz",
+            connector.interface(),
+            connector.interface_id(),
+            mode.size().0,
+            mode.size().1,
+            mode.vrefresh()
+        );
+
+        // Create DRM surface
+        let drm_surface = device.drm.create_surface(crtc, mode, &[connector.handle()])?;
+
+        // Create allocator
+        let gbm_flags = GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT;
+        let allocator = GbmAllocator::new(device.gbm.clone(), gbm_flags);
+
+        // Get render formats from GPU manager
+        let renderer = device.gpu_manager.single_renderer(&device.render_node)?;
+        let raw_render_formats = renderer.as_ref().egl_context().dmabuf_render_formats();
+
+        // Filter out problematic modifiers
+        let render_formats: FormatSet = raw_render_formats
+            .iter()
+            .copied()
+            .filter(|format| {
+                !matches!(
+                    format.modifier,
+                    Modifier::I915_y_tiled_ccs
+                        | Modifier::I915_y_tiled_gen12_rc_ccs
+                        | Modifier::I915_y_tiled_gen12_mc_ccs
+                )
+            })
+            .collect();
+
+        // Create Smithay output
+        let connector_name = format!(
+            "{:?}-{}",
+            connector.interface(),
+            connector.interface_id()
+        );
+        let output = Output::new(
+            connector_name.clone(),
+            PhysicalProperties {
+                size: connector
+                    .size()
+                    .map(|(w, h)| (w as i32, h as i32).into())
+                    .unwrap_or_default(),
+                subpixel: Subpixel::Unknown,
+                make: "EWM".into(),
+                model: "DRM".into(),
+            },
+        );
+
+        let smithay_mode = Mode {
+            size: (mode.size().0 as i32, mode.size().1 as i32).into(),
+            refresh: (mode.vrefresh() * 1000) as i32,
+        };
+        output.change_current_state(Some(smithay_mode), Some(Transform::Normal), None, None);
+        output.set_preferred(smithay_mode);
+        output.create_global::<Ewm>(display_handle);
+
+        // Create DrmCompositor
+        let cursor_size = device.drm.cursor_size();
+        let compositor = match DrmCompositor::new(
+            OutputModeSource::Auto(output.clone()),
+            drm_surface,
+            None,
+            allocator.clone(),
+            device.gbm.clone(),
+            SUPPORTED_COLOR_FORMATS,
+            render_formats.clone(),
+            cursor_size,
+            Some(device.gbm.clone()),
+        ) {
+            Ok(c) => c,
+            Err(err) => {
+                warn!(
+                    "Error creating DRM compositor, trying with Invalid modifier: {:?}",
+                    err
+                );
+
+                let fallback_formats: FormatSet = render_formats
+                    .iter()
+                    .copied()
+                    .filter(|format| format.modifier == Modifier::Invalid)
+                    .collect();
+
+                let drm_surface = device.drm.create_surface(crtc, mode, &[connector.handle()])?;
+
+                DrmCompositor::new(
+                    OutputModeSource::Auto(output.clone()),
+                    drm_surface,
+                    None,
+                    allocator,
+                    device.gbm.clone(),
+                    SUPPORTED_COLOR_FORMATS,
+                    fallback_formats,
+                    cursor_size,
+                    Some(device.gbm.clone()),
+                )?
+            }
+        };
+
+        info!("DrmCompositor created for {}", connector_name);
+
+        let refresh_interval_us = if mode.vrefresh() > 0 {
+            1_000_000 / mode.vrefresh() as u64
+        } else {
+            16_667
+        };
+
+        // Calculate position: place after existing outputs
+        let x_offset = ewm.output_size.0;
+
+        device.surfaces.insert(
+            crtc,
+            OutputSurface {
+                output: output.clone(),
+                compositor,
+                redraw_state: RedrawState::Queued,
+                refresh_interval_us,
+                connector: connector.handle(),
+            },
+        );
+
+        // Position this output horizontally after the previous ones
+        ewm.space.map_output(&output, (x_offset, 0));
+        info!(
+            "Mapped output {} at position ({}, 0), size {}x{}",
+            connector_name, x_offset, mode.size().0, mode.size().1
+        );
+
+        // Collect output info for IPC
+        let physical_size = connector.size().unwrap_or((0, 0));
+        let output_modes: Vec<OutputMode> = connector
+            .modes()
+            .iter()
+            .map(|m| OutputMode {
+                width: m.size().0 as i32,
+                height: m.size().1 as i32,
+                refresh: (m.vrefresh() * 1000) as i32,
+                preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
+            })
+            .collect();
+
+        let output_info = OutputInfo {
+            name: connector_name.clone(),
+            make: "Unknown".to_string(),
+            model: "Unknown".to_string(),
+            width_mm: physical_size.0 as i32,
+            height_mm: physical_size.1 as i32,
+            x: x_offset,
+            y: 0,
+            modes: output_modes,
+        };
+
+        ewm.outputs.push(output_info.clone());
+
+        // Recalculate output_size
+        self.recalculate_output_size(ewm);
+
+        // Send IPC event
+        ewm.send_output_detected(output_info);
+
+        info!("Output connected: {}", connector_name);
+
+        Ok(())
+    }
+
+    /// Disconnect an output
+    fn disconnect_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
+        let Some(device) = &mut self.device else {
+            return;
+        };
+
+        let Some(surface) = device.surfaces.remove(&crtc) else {
+            return;
+        };
+
+        // Cancel pending timers
+        if let RedrawState::WaitingForEstimatedVBlank(token)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = surface.redraw_state
+        {
+            if let Some(ref handle) = self.loop_handle {
+                handle.remove(token);
+            }
+        }
+
+        let output_name = surface.output.name();
+
+        // Unmap from space
+        ewm.space.unmap_output(&surface.output);
+
+        // Remove from outputs list
+        ewm.outputs.retain(|o| o.name != output_name);
+
+        // Recalculate output_size
+        self.recalculate_output_size(ewm);
+
+        // Send IPC event
+        ewm.send_output_disconnected(&output_name);
+
+        info!("Output disconnected: {}", output_name);
+    }
+
+    /// Recalculate total output size from current surfaces
+    fn recalculate_output_size(&self, ewm: &mut Ewm) {
+        let (total_width, max_height) = ewm.space.outputs().fold((0i32, 0i32), |(w, h), output| {
+            if let Some(geo) = ewm.space.output_geometry(output) {
+                (w.max(geo.loc.x + geo.size.w), h.max(geo.size.h))
+            } else {
+                (w, h)
+            }
+        });
+        ewm.output_size = (total_width, max_height);
+        info!("Total output area: {}x{}", total_width, max_height);
+    }
 }
 
 /// Initialize DRM device and set up outputs
@@ -611,41 +911,32 @@ fn initialize_drm(
         }
     }
 
+    // Store display handle for hotplug
+    backend.display_handle = Some(display_handle.clone());
+
     let mut surfaces = HashMap::new();
-    let mut used_crtcs = std::collections::HashSet::new();
     let mut x_offset = 0i32;  // Track horizontal position for output placement
 
-    // Set up outputs (monitors)
-    let resources = drm.resource_handles()?;
+    // Create DrmScanner for connector management (initial scan and hotplug)
+    let mut drm_scanner = DrmScanner::new();
 
-    for connector_handle in resources.connectors() {
-        let connector_info = drm.get_connector(*connector_handle, false)?;
-        if connector_info.state() != connector::State::Connected {
-            continue;
-        }
-
-        // Find a suitable CRTC that hasn't been used yet
-        let crtc = connector_info
-            .encoders()
-            .iter()
-            .filter_map(|enc| drm.get_encoder(*enc).ok())
-            .find_map(|enc| {
-                resources
-                    .filter_crtcs(enc.possible_crtcs())
-                    .into_iter()
-                    .find(|c| !used_crtcs.contains(c))
-            });
-
-        let Some(crtc) = crtc else {
-            warn!(
-                "No available CRTC for connector {:?}-{}",
-                connector_info.interface(),
-                connector_info.interface_id()
-            );
-            continue;
+    // Initial connector scan
+    let scan_result = drm_scanner.scan_connectors(&drm)?;
+    for event in scan_result {
+        let (connector, crtc) = match event {
+            DrmScanEvent::Connected { connector, crtc: Some(crtc) } => (connector, crtc),
+            DrmScanEvent::Connected { connector, crtc: None } => {
+                warn!(
+                    "No available CRTC for connector {:?}-{}",
+                    connector.interface(),
+                    connector.interface_id()
+                );
+                continue;
+            }
+            DrmScanEvent::Disconnected { .. } => continue, // Skip disconnects on initial scan
         };
 
-        used_crtcs.insert(crtc);
+        let connector_info = &connector;
 
         // Find preferred mode
         let mode = connector_info
@@ -665,7 +956,7 @@ fn initialize_drm(
         );
 
         // Create DRM surface
-        let drm_surface = drm.create_surface(crtc, mode, &[*connector_handle])?;
+        let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
 
         // Create allocator
         let gbm_flags = GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT;
@@ -742,7 +1033,7 @@ fn initialize_drm(
                     .filter(|format| format.modifier == Modifier::Invalid)
                     .collect();
 
-                let drm_surface = drm.create_surface(crtc, mode, &[*connector_handle])?;
+                let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
 
                 DrmCompositor::new(
                     OutputModeSource::Auto(output.clone()),
@@ -773,7 +1064,7 @@ fn initialize_drm(
                 compositor,
                 redraw_state: RedrawState::Queued,
                 refresh_interval_us,
-                connector: *connector_handle,
+                connector: connector.handle(),
             },
         );
 
@@ -833,6 +1124,7 @@ fn initialize_drm(
     // Store device state
     backend.device = Some(DrmDeviceState {
         drm,
+        drm_scanner,
         gbm,
         gpu_manager,
         render_node,
@@ -957,6 +1249,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         init_sender: Some(init_sender),
         loop_handle: None,
         cursor_buffer: CursorBuffer::new(),
+        display_handle: None, // Set during initialize_drm
     }));
 
     backend_state.borrow_mut().loop_handle = Some(event_loop.handle());
@@ -983,6 +1276,28 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                 }
             }
         })?;
+
+    // Register UdevBackend for hotplug detection
+    let udev_backend = UdevBackend::new(&seat_name)?;
+    let backend_for_udev = backend_state.clone();
+    event_loop.handle().insert_source(udev_backend, move |event, _, data| {
+        match event {
+            UdevEvent::Changed { device_id: _ } => {
+                // Scan for connector changes
+                backend_for_udev.borrow_mut().on_device_changed(&mut data.state);
+                // Queue redraws after hotplug
+                if let Some(ref backend) = data.state.drm_backend {
+                    backend.borrow_mut().queue_redraw();
+                }
+            }
+            UdevEvent::Added { device_id, path } => {
+                debug!("UDev device added: {:?} at {:?}", device_id, path);
+            }
+            UdevEvent::Removed { device_id } => {
+                debug!("UDev device removed: {:?}", device_id);
+            }
+        }
+    })?;
 
     // Register channel receiver for deferred DRM initialization
     let backend_for_init = backend_state.clone();

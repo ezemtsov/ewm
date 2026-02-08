@@ -213,7 +213,7 @@ Adapted from EXWM's title update mechanism."
 
 (defun ewm--handle-output-detected (event)
   "Handle output detected EVENT.
-Adds the output to `ewm--outputs'."
+Adds the output to `ewm--outputs' and creates a frame for hotplugged monitors."
   (let* ((name (gethash "name" event))
          (make (gethash "make" event))
          (model (gethash "model" event))
@@ -236,20 +236,39 @@ Adds the output to `ewm--outputs'."
                              :height-mm height-mm
                              :x x
                              :y y
-                             :modes mode-plists)))
+                             :modes mode-plists))
+         ;; Check if this is a hotplug (output not already known)
+         (is-hotplug (not (cl-find name ewm--outputs
+                                   :test #'string= :key (lambda (o) (plist-get o :name))))))
     ;; Remove existing entry with same name (update case)
     (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
                                      ewm--outputs))
     ;; Add new output
     (push output-plist ewm--outputs)
-    (message "EWM: output detected: %s at (%d, %d)" name x y)))
+    (message "EWM: output detected: %s at (%d, %d)" name x y)
+    ;; For hotplugged outputs, create a new frame
+    (when (and is-hotplug ewm-auto-setup-frames)
+      (unless (ewm--frame-for-output name)
+        (ewm-prepare-frame name)
+        (let ((new-frame (make-frame)))
+          (push (cons name new-frame) ewm--pending-frame-outputs))))))
 
 (defun ewm--handle-output-disconnected (event)
   "Handle output disconnected EVENT.
-Removes the output from `ewm--outputs'."
+Removes the output from `ewm--outputs' and closes its frame."
   (let ((name (gethash "name" event)))
     (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
                                      ewm--outputs))
+    ;; Find and delete frame for this output
+    (when-let ((frame (ewm--frame-for-output name)))
+      ;; Move windows to another frame before deletion
+      (let ((target-frame (car (cl-remove frame (frame-list)))))
+        (when target-frame
+          (dolist (window (window-list frame))
+            (let ((buf (window-buffer window)))
+              (with-selected-frame target-frame
+                (switch-to-buffer buf))))))
+      (delete-frame frame))
     (message "EWM: output disconnected: %s" name)))
 
 (defun ewm--rename-buffer ()

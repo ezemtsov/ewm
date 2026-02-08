@@ -477,6 +477,18 @@ impl Ewm {
         self.output_size = (total_width, total_height);
     }
 
+    /// Send output detected event to Emacs
+    pub fn send_output_detected(&mut self, output: OutputInfo) {
+        self.pending_events.push(IpcEvent::OutputDetected(output));
+    }
+
+    /// Send output disconnected event to Emacs
+    pub fn send_output_disconnected(&mut self, name: &str) {
+        self.pending_events.push(IpcEvent::OutputDisconnected {
+            name: name.to_string(),
+        });
+    }
+
     pub fn init_wayland_listener(
         display: &mut Display<Ewm>,
         event_loop: &LoopHandle<LoopData>,

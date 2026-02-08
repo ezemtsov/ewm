@@ -577,6 +577,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smithay",
+ "smithay-drm-extras",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2035,6 +2036,14 @@ dependencies = [
  "wayland-protocols-wlr",
  "wayland-scanner",
  "xkeysym",
+]
+
+[[package]]
+name = "smithay-drm-extras"
+version = "0.1.0"
+source = "git+https://github.com/Smithay/smithay.git?rev=0c2230f858580b52d628087d6dae1795278b8756#0c2230f858580b52d628087d6dae1795278b8756"
+dependencies = [
+ "drm",
 ]
 
 [[package]]

@@ -30,3 +30,8 @@ features = [
     "use_system_lib",
     "wayland_frontend",
 ]
+
+[dependencies.smithay-drm-extras]
+git = "https://github.com/Smithay/smithay.git"
+rev = "0c2230f858580b52d628087d6dae1795278b8756"
+default-features = false
