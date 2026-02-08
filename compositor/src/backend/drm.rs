@@ -1307,6 +1307,36 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     let socket_name_str = socket_name.to_string_lossy().to_string();
     info!("Wayland socket: {:?}", socket_name);
 
+    // Set environment variables for child processes and portals
+    // SAFETY: We're single-threaded at this point, before spawning any threads
+    unsafe {
+        std::env::set_var("WAYLAND_DISPLAY", &socket_name_str);
+        std::env::set_var("XDG_CURRENT_DESKTOP", "wlroots");
+        std::env::set_var("XDG_SESSION_TYPE", "wayland");
+    }
+
+    // Update D-Bus/systemd environment so portals can find us
+    let variables = "WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE";
+    match std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!(
+                "systemctl --user import-environment {variables}; \
+                 hash dbus-update-activation-environment 2>/dev/null && \
+                 dbus-update-activation-environment {variables}"
+            ),
+        ])
+        .status()
+    {
+        Ok(status) if !status.success() => {
+            warn!("import environment exited with {}", status);
+        }
+        Err(e) => {
+            warn!("Failed to import environment: {}", e);
+        }
+        _ => {}
+    }
+
     let state = Ewm::new(display_handle.clone());
     let mut data = LoopData {
         state,
