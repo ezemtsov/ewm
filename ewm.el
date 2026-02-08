@@ -39,6 +39,12 @@
   "Emacs Wayland Manager."
   :group 'environment)
 
+(defcustom ewm-mouse-follows-focus t
+  "Whether the mouse pointer follows focus changes.
+When non-nil, warps the pointer to the center of the focused window."
+  :type 'boolean
+  :group 'ewm)
+
 (defvar ewm--process nil
   "Network process for compositor connection.")
 
@@ -285,6 +291,10 @@ Sends xdg_toplevel.close to the client."
 (defun ewm-focus (id)
   "Focus surface ID."
   (ewm--send `(:cmd "focus" :id ,id)))
+
+(defun ewm-warp-pointer (x y)
+  "Warp pointer to absolute position X, Y."
+  (ewm--send `(:cmd "warp-pointer" :x ,x :y ,y)))
 
 (defun ewm-screenshot (&optional path)
   "Take a screenshot of the compositor.
@@ -622,6 +632,10 @@ Used to avoid sending redundant focus commands.")
   "Last selected window.
 Used to detect window switches for multi-view input routing.")
 
+(defvar ewm-input--mff-last-window nil
+  "Last window for mouse-follows-focus.
+Used to avoid redundant pointer warps.")
+
 (defvar ewm-input--focus-timer nil
   "Timer for debounced focus updates.")
 
@@ -639,6 +653,44 @@ Set temporarily after we send a focus command to prevent loops.")
     (unless ewm-input--focus-timer
       (setq ewm-input--focus-timer
             (run-with-timer 0.01 nil #'ewm-input--focus-commit)))))
+
+(defun ewm-input--warp-pointer-to-window (window)
+  "Warp pointer to center of WINDOW.
+Does nothing if pointer is already inside the window or if it's a minibuffer."
+  (unless (minibufferp (window-buffer window))
+    (let* ((frame (window-frame window))
+           (output (frame-parameter frame 'ewm-output))
+           (output-offset (ewm--get-output-offset output))
+           (edges (window-inside-pixel-edges window))
+           (x (+ (car output-offset) (/ (+ (nth 0 edges) (nth 2 edges)) 2)))
+           (y (+ (cdr output-offset) (/ (+ (nth 1 edges) (nth 3 edges)) 2))))
+      (ewm-warp-pointer (float x) (float y)))))
+
+(defun ewm-input--mouse-triggered-p ()
+  "Return non-nil if current focus change was triggered by mouse."
+  (or (mouse-event-p last-input-event)
+      (eq this-command 'handle-select-window)))
+
+(defun ewm-input--on-select-window (window &optional norecord)
+  "Advice for `select-window' to implement mouse-follows-focus.
+Warps pointer to WINDOW unless NORECORD is non-nil, the window hasn't
+changed, or the focus change was triggered by a mouse event."
+  (when (and ewm-mouse-follows-focus
+             (not norecord)
+             (not (eq window ewm-input--mff-last-window))
+             (not (ewm-input--mouse-triggered-p)))
+    (setq ewm-input--mff-last-window window)
+    (ewm-input--warp-pointer-to-window window)))
+
+(defun ewm-input--on-select-frame (frame &optional _norecord)
+  "Advice for `select-frame-set-input-focus' to implement mouse-follows-focus.
+Warps pointer to the selected window on FRAME unless triggered by mouse."
+  (when (and ewm-mouse-follows-focus
+             (not (ewm-input--mouse-triggered-p)))
+    (let ((window (frame-selected-window frame)))
+      (unless (eq window ewm-input--mff-last-window)
+        (setq ewm-input--mff-last-window window)
+        (ewm-input--warp-pointer-to-window window)))))
 
 (defun ewm-input--focus-commit ()
   "Commit pending focus change."
@@ -705,17 +757,23 @@ Called via `after-focus-change-function' to sync compositor focus."
   "Enable EWM input handling."
   (setq ewm-input--last-focused-id 1)  ; Start with Emacs focused
   (setq ewm-input--last-selected-window (selected-window))
+  (setq ewm-input--mff-last-window (selected-window))
   (add-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
   (add-hook 'post-command-hook #'ewm-input--on-post-command)
-  (add-function :after after-focus-change-function #'ewm-input--on-focus-change))
+  (add-function :after after-focus-change-function #'ewm-input--on-focus-change)
+  (advice-add 'select-window :after #'ewm-input--on-select-window)
+  (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm-input--last-focused-id nil)
   (setq ewm-input--last-selected-window nil)
+  (setq ewm-input--mff-last-window nil)
   (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
   (remove-hook 'post-command-hook #'ewm-input--on-post-command)
-  (remove-function after-focus-change-function #'ewm-input--on-focus-change))
+  (remove-function after-focus-change-function #'ewm-input--on-focus-change)
+  (advice-remove 'select-window #'ewm-input--on-select-window)
+  (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
 
 (defun ewm--event-to-intercept-spec (event)
   "Convert EVENT to an intercept specification for the compositor.

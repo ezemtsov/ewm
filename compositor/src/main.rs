@@ -161,6 +161,8 @@ enum Command {
     Close { id: u32 },
     #[serde(rename = "focus")]
     Focus { id: u32 },
+    #[serde(rename = "warp-pointer")]
+    WarpPointer { x: f64, y: f64 },
     #[serde(rename = "screenshot")]
     Screenshot { path: Option<String> },
     #[serde(rename = "intercept-keys")]
@@ -1010,6 +1012,40 @@ impl LoopData {
                     }
                 } else {
                     info!("Focus surface {} (surface not found)", id);
+                }
+            }
+            Command::WarpPointer { x, y } => {
+                self.state.pointer_location = (x, y);
+                let pointer = self.state.seat.get_pointer().unwrap();
+                let serial = SERIAL_COUNTER.next_serial();
+
+                // Find surface under new pointer location
+                let under = self
+                    .state
+                    .space
+                    .element_under((x, y))
+                    .and_then(|(window, loc)| {
+                        window.wl_surface().map(|s| {
+                            (
+                                s.into_owned(),
+                                smithay::utils::Point::from((loc.x as f64, loc.y as f64)),
+                            )
+                        })
+                    });
+
+                pointer.motion(
+                    &mut self.state,
+                    under,
+                    &smithay::input::pointer::MotionEvent {
+                        location: (x, y).into(),
+                        serial,
+                        time: 0,
+                    },
+                );
+                pointer.frame(&mut self.state);
+
+                if let Some(ref backend) = self.state.drm_backend {
+                    backend.borrow_mut().queue_redraw();
                 }
             }
             Command::Screenshot { path } => {
