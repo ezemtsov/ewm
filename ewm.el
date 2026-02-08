@@ -34,6 +34,42 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'map)
+
+;;; Debug logging
+
+(defvar ewm-debug-log-file "/tmp/ewm-emacs.log"
+  "File to write EWM debug logs to.")
+
+(defvar ewm-debug-logging nil
+  "When non-nil, write debug messages to `ewm-debug-log-file'.")
+
+(defun ewm-log (format-string &rest args)
+  "Log FORMAT-STRING with ARGS to debug file and *Messages*."
+  (let ((msg (apply #'format format-string args)))
+    (message "EWM: %s" msg)
+    (when ewm-debug-logging
+      (with-temp-buffer
+        (insert (format-time-string "[%Y-%m-%d %H:%M:%S] ")
+                msg "\n")
+        (write-region (point-min) (point-max) ewm-debug-log-file t 'silent)
+        ;; Force sync
+        (call-process "sync" nil nil nil)))))
+
+;;; Input state struct (defined early for use in event handlers)
+
+(cl-defstruct (ewm-input-state (:constructor ewm-input-state-create))
+  "State for EWM input handling."
+  (last-focused-id 1)
+  (last-selected-window nil)
+  (mff-last-window nil)
+  (compositor-focus nil)
+  (focus-timer nil)
+  (pending-focus-id nil)
+  (inhibit-update nil))
+
+(defvar ewm--input-state nil
+  "Current input state, or nil if not connected.")
 
 (defgroup ewm nil
   "Emacs Wayland Manager."
@@ -63,11 +99,20 @@ Each output is a plist with keys:
   :y - position y
   :modes - list of available modes")
 
+(defvar ewm--initial-setup-done nil
+  "Non-nil after initial outputs_complete has been processed.
+Used to distinguish hotplug events from initial output detection.")
+
 (defvar ewm--pending-frame-outputs nil
   "Alist of (output-name . frame) pairs waiting for surface assignment.
 When creating frames, we send prepare-frame to compositor, then make-frame.
 Compositor assigns the surface to the output and sends \"new\" event with output.
 We match by output name to find the corresponding frame.")
+
+(defvar ewm--pending-output-for-next-frame nil
+  "Output name for the next frame being created.
+Set this before calling `make-frame' to have the on-make-frame hook
+register the frame as pending for that output instead of deleting it.")
 
 (defcustom ewm-output-config nil
   "Output configuration alist.
@@ -104,7 +149,7 @@ Example:
       ("output_detected" (ewm--handle-output-detected event))
       ("output_disconnected" (ewm--handle-output-disconnected event))
       ("outputs_complete" (ewm--handle-outputs-complete))
-      (_ (message "EWM: unknown event type: %s" type)))))
+      (_ (ewm-log "unknown event type: %s" type)))))
 
 ;;; Event handlers
 
@@ -120,18 +165,20 @@ Adapted from EXWM's behavior."
 If there's a pending frame for this output, this is an Emacs frame.
 Otherwise, creates a buffer for external surface and displays on the target output.
 Adapted from `exwm-manage--manage-window'."
-  (let* ((id (gethash "id" event))
-         (app (gethash "app" event))
-         (output (gethash "output" event))
-         (pending (and output (assoc output ewm--pending-frame-outputs))))
-    (if pending
+  (pcase-let (((map ("id" id) ("app" app) ("output" output)) event))
+    (ewm-log "new-surface id=%d app=%s output=%s" id app output)
+    (let ((pending (and output (assoc output ewm--pending-frame-outputs))))
+      (ewm-log "pending-frame-outputs=%s, found pending=%s"
+               ewm--pending-frame-outputs pending)
+      (if pending
         ;; Emacs frame assigned to output by compositor
         (let ((frame (cdr pending)))
+          (ewm-log "assigning surface %d to pending frame %s for %s" id frame output)
           (setq ewm--pending-frame-outputs
                 (delete pending ewm--pending-frame-outputs))
           (set-frame-parameter frame 'ewm-output output)
           (set-frame-parameter frame 'ewm-surface-id id)
-          (message "EWM: frame on %s (surface %d)" output id))
+          (ewm-log "frame on %s (surface %d) - assignment complete" output id))
       ;; Regular surface - create buffer and display on target output's frame
       (let ((buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
         (puthash id `(:buffer ,buf :app ,app) ewm--surfaces)
@@ -146,15 +193,15 @@ Adapted from `exwm-manage--manage-window'."
                 (with-selected-frame target-frame
                   (pop-to-buffer-same-window buf))
               (pop-to-buffer-same-window buf))))
-        (message "EWM: new surface %d (%s) on %s" id app (or output "current"))))))
+        (ewm-log "new surface %d (%s) on %s" id app (or output "current")))))))
 
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.
 Kills the surface buffer and focuses Emacs.
 Adapted from `exwm-manage--unmanage-window'."
-  (let* ((id (gethash "id" event))
-         (info (gethash id ewm--surfaces)))
-    (when info
+  (pcase-let (((map ("id" id)) event))
+    (let ((info (gethash id ewm--surfaces)))
+      (when info
       (let ((buf (plist-get info :buffer)))
         (when (buffer-live-p buf)
           ;; Remove the buffer-local kill query function that would block the kill,
@@ -163,24 +210,29 @@ Adapted from `exwm-manage--unmanage-window'."
             (remove-hook 'kill-buffer-query-functions
                          #'ewm--kill-buffer-query-function t))
           (kill-buffer buf)))
-      (remhash id ewm--surfaces))
-    (message "EWM: closed surface %d" id)))
+        (remhash id ewm--surfaces))
+      (ewm-log "closed surface %d" id))))
 
 (defun ewm--handle-focus (event)
   "Handle focus EVENT from compositor.
 Selects the window displaying the focused surface's buffer."
-  (let* ((id (gethash "id" event))
-         (info (gethash id ewm--surfaces)))
-    (when info
-      (let ((buf (plist-get info :buffer)))
-        (when (buffer-live-p buf)
-          ;; Find a window showing this buffer and select it
-          (let ((win (get-buffer-window buf t)))
-            (when win
-              ;; Suppress mouse-follows-focus since this came from a click
-              (let ((ewm-input--compositor-focus t))
-                (select-frame-set-input-focus (window-frame win))
-                (select-window win)))))))))
+  (pcase-let (((map ("id" id)) event))
+    (let ((info (gethash id ewm--surfaces)))
+      (when info
+        (let ((buf (plist-get info :buffer)))
+          (when (buffer-live-p buf)
+            ;; Find a window showing this buffer and select it
+            (let ((win (get-buffer-window buf t)))
+              (when win
+                ;; Suppress mouse-follows-focus since this came from a click
+                (when ewm--input-state
+                  (setf (ewm-input-state-compositor-focus ewm--input-state) t))
+                (unwind-protect
+                    (progn
+                      (select-frame-set-input-focus (window-frame win))
+                      (select-window win))
+                  (when ewm--input-state
+                    (setf (ewm-input-state-compositor-focus ewm--input-state) nil)))))))))))
 
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.
@@ -193,11 +245,8 @@ The current buffer is the surface buffer when this runs."
   "Handle title update EVENT.
 Updates buffer-local variables and renames the buffer.
 Adapted from EXWM's title update mechanism."
-  (let* ((id (gethash "id" event))
-         (app (gethash "app" event))
-         (title (gethash "title" event))
-         (info (gethash id ewm--surfaces)))
-    (when info
+  (pcase-let (((map ("id" id) ("app" app) ("title" title)) event))
+    (when-let ((info (gethash id ewm--surfaces)))
       (let ((buf (plist-get info :buffer)))
         (when (buffer-live-p buf)
           (with-current-buffer buf
@@ -214,49 +263,43 @@ Adapted from EXWM's title update mechanism."
 (defun ewm--handle-output-detected (event)
   "Handle output detected EVENT.
 Adds the output to `ewm--outputs' and creates a frame for hotplugged monitors."
-  (let* ((name (gethash "name" event))
-         (make (gethash "make" event))
-         (model (gethash "model" event))
-         (width-mm (gethash "width_mm" event))
-         (height-mm (gethash "height_mm" event))
-         (x (gethash "x" event))
-         (y (gethash "y" event))
-         (modes (gethash "modes" event))
-         ;; Convert modes from hash tables to plists
-         (mode-plists (mapcar (lambda (m)
-                                (list :width (gethash "width" m)
-                                      :height (gethash "height" m)
-                                      :refresh (gethash "refresh" m)
-                                      :preferred (gethash "preferred" m)))
-                              (append modes nil)))
-         (output-plist (list :name name
-                             :make make
-                             :model model
-                             :width-mm width-mm
-                             :height-mm height-mm
-                             :x x
-                             :y y
-                             :modes mode-plists))
-         ;; Check if this is a hotplug (output not already known)
-         (is-hotplug (not (cl-find name ewm--outputs
-                                   :test #'string= :key (lambda (o) (plist-get o :name))))))
-    ;; Remove existing entry with same name (update case)
-    (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
-                                     ewm--outputs))
-    ;; Add new output
-    (push output-plist ewm--outputs)
-    (message "EWM: output detected: %s at (%d, %d)" name x y)
-    ;; For hotplugged outputs, create a new frame
-    (when (and is-hotplug ewm-auto-setup-frames)
-      (unless (ewm--frame-for-output name)
-        (ewm-prepare-frame name)
-        (let ((new-frame (make-frame)))
-          (push (cons name new-frame) ewm--pending-frame-outputs))))))
+  (pcase-let (((map ("name" name) ("make" make) ("model" model)
+                    ("width_mm" width-mm) ("height_mm" height-mm)
+                    ("x" x) ("y" y) ("modes" modes)) event))
+    (let* (;; Convert modes from hash tables to plists
+           (mode-plists (mapcar (lambda (m)
+                                  (pcase-let (((map ("width" width) ("height" height)
+                                                    ("refresh" refresh) ("preferred" preferred)) m))
+                                    (list :width width
+                                          :height height
+                                          :refresh refresh
+                                          :preferred preferred)))
+                                (append modes nil)))
+           (output-plist (list :name name
+                               :make make
+                               :model model
+                               :width-mm width-mm
+                               :height-mm height-mm
+                               :x x
+                               :y y
+                               :modes mode-plists))
+           ;; Check if this is a hotplug (output not already known)
+           (is-hotplug (not (cl-find name ewm--outputs
+                                     :test #'string= :key (lambda (o) (plist-get o :name))))))
+      ;; Remove existing entry with same name (update case)
+      (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
+                                       ewm--outputs))
+      ;; Add new output
+      (push output-plist ewm--outputs)
+      (ewm-log "output detected: %s at (%d, %d)" name x y)
+      ;; Create frame for hotplugged output (after initial setup)
+      (when (and is-hotplug ewm--initial-setup-done)
+        (ewm--create-frame-for-output name)))))
 
 (defun ewm--handle-output-disconnected (event)
   "Handle output disconnected EVENT.
 Removes the output from `ewm--outputs' and closes its frame."
-  (let ((name (gethash "name" event)))
+  (pcase-let (((map ("name" name)) event))
     (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
                                      ewm--outputs))
     ;; Find and delete frame for this output
@@ -269,7 +312,7 @@ Removes the output from `ewm--outputs' and closes its frame."
               (with-selected-frame target-frame
                 (switch-to-buffer buf))))))
       (delete-frame frame))
-    (message "EWM: output disconnected: %s" name)))
+    (ewm-log "output disconnected: %s" name)))
 
 (defun ewm--rename-buffer ()
   "Rename the current surface buffer based on app and title.
@@ -323,7 +366,7 @@ Saves to PATH, or /tmp/ewm-screenshot.png by default."
   (interactive)
   (let ((target (or path "/tmp/ewm-screenshot.png")))
     (ewm--send `(:cmd "screenshot" :path ,target))
-    (message "EWM: screenshot requested -> %s" target)))
+    (ewm-log "screenshot requested -> %s" target)))
 
 (defun ewm-configure-output (name &rest args)
   "Configure output NAME with ARGS.
@@ -356,12 +399,16 @@ assign the new frame's surface to the specified output."
 (defun ewm--get-primary-output ()
   "Return the primary output name.
 Primary is the output at position (0, 0), or the first output."
-  (or (plist-get (cl-find-if (lambda (o)
-                               (and (= 0 (plist-get o :x))
-                                    (= 0 (plist-get o :y))))
-                             ewm--outputs)
-                 :name)
-      (plist-get (car ewm--outputs) :name)))
+  (ewm-log "get-primary-output: outputs=%S" ewm--outputs)
+  (let ((found (cl-find-if (lambda (o)
+                             (let ((x (plist-get o :x))
+                                   (y (plist-get o :y)))
+                               (ewm-log "  checking output %s: x=%S (type %s), y=%S (type %s)"
+                                        (plist-get o :name) x (type-of x) y (type-of y))
+                               (and (eql 0 x) (eql 0 y))))
+                           ewm--outputs)))
+    (or (plist-get found :name)
+        (plist-get (car ewm--outputs) :name))))
 
 (defun ewm--get-output-offset (output-name)
   "Return (x . y) offset for OUTPUT-NAME, or (0 . 0) if not found."
@@ -383,7 +430,7 @@ Primary is the output at position (0, 0), or the first output."
            (x (plist-get props :x))
            (y (plist-get props :y)))
       (when (or width height)
-        (message "EWM: configuring %s to %dx%d" name width height)
+        (ewm-log "configuring %s to %dx%d" name width height)
         (ewm-configure-output name
                               :width width
                               :height height
@@ -395,12 +442,16 @@ Primary is the output at position (0, 0), or the first output."
   "Handle outputs_complete event.
 Triggered after compositor sends all output_detected events.
 Applies user output config, then sets up frames."
-  (message "EWM: all outputs received (%d)" (length ewm--outputs))
+  (ewm-log "all outputs received (%d)" (length ewm--outputs))
   ;; Apply user output configuration first (mode changes, positioning)
   (ewm--apply-output-config)
   ;; Then set up frames
   (when ewm-auto-setup-frames
-    (ewm--setup-frames-per-output)))
+    (ewm--setup-frames-per-output))
+  ;; Enforce 1:1 output-frame relationship
+  (ewm--enforce-frame-output-parity)
+  ;; Mark initial setup as complete (for hotplug detection)
+  (setq ewm--initial-setup-done t))
 
 (defun ewm--frame-for-output (output-name)
   "Return the frame assigned to OUTPUT-NAME, or nil."
@@ -408,30 +459,94 @@ Applies user output config, then sets up frames."
            :test #'string=
            :key (lambda (f) (frame-parameter f 'ewm-output))))
 
+(defun ewm--create-frame-for-output (output-name)
+  "Create a new frame for OUTPUT-NAME.
+Sends prepare-frame to compositor and creates a pending frame.
+The frame will be fully assigned when the compositor responds."
+  (ewm-log "creating frame for %s" output-name)
+  (ewm-prepare-frame output-name)
+  (setq ewm--pending-output-for-next-frame output-name)
+  (make-frame '((visibility . t))))
+
 (defun ewm--setup-frames-per-output ()
   "Create one frame per output and assign accordingly.
 The initial frame (surface 1) is assigned to the primary output.
 Additional frames are created for other outputs.
 Skips outputs that already have a frame assigned."
+  (ewm-log "setup-frames-per-output called, %d outputs" (length ewm--outputs))
   (when ewm--outputs
     (let* ((primary (ewm--get-primary-output))
            (initial-frame (selected-frame)))
+      (ewm-log "primary output: %s, initial frame: %s" primary initial-frame)
       ;; Assign initial frame to primary output (if not already assigned)
-      (unless (ewm--frame-for-output primary)
+      (if (ewm--frame-for-output primary)
+          (ewm-log "primary %s already has frame" primary)
         (ewm-assign-output 1 primary)
         (set-frame-parameter initial-frame 'ewm-output primary)
         (set-frame-parameter initial-frame 'ewm-surface-id 1)
-        (message "EWM: initial frame on %s" primary))
-      ;; Create frames for other outputs (if not already assigned)
+        (ewm-log "assigned initial frame to %s (surface 1)" primary))
+      ;; Create frames for other outputs
       (dolist (output ewm--outputs)
-        (let ((name (plist-get output :name)))
-          (unless (or (string= name primary)
-                      (ewm--frame-for-output name))
-            ;; Tell compositor to assign next surface to this output
-            (ewm-prepare-frame name)
-            ;; Create frame and track pending assignment
-            (let ((new-frame (make-frame)))
-              (push (cons name new-frame) ewm--pending-frame-outputs))))))))
+        (let ((output-name (plist-get output :name)))
+          (unless (or (string= output-name primary)
+                      (ewm--frame-for-output output-name))
+            (ewm--create-frame-for-output output-name)))))))
+
+(defun ewm--on-make-frame (frame)
+  "Enforce 1:1 output-frame relationship.
+Delete FRAME unless it's managed by EWM (has output or is pending assignment)."
+  (when ewm-mode
+    (let ((has-output (frame-parameter frame 'ewm-output))
+          (pending-output ewm--pending-output-for-next-frame))
+      (cond
+       ;; Already has output - keep it
+       (has-output
+        (ewm-log "on-make-frame %s already has output %s" frame has-output))
+       ;; Being created for a specific output - register as pending
+       (pending-output
+        (ewm-log "on-make-frame %s registering as pending for %s" frame pending-output)
+        (push (cons pending-output frame) ewm--pending-frame-outputs)
+        (setq ewm--pending-output-for-next-frame nil))
+       ;; Unauthorized frame - delete it
+       (t
+        (ewm-log "on-make-frame %s has no output, deleting" frame)
+        ;; Defer deletion to avoid issues during frame creation
+        (run-at-time 0 nil #'delete-frame frame))))))
+
+(defun ewm--enforce-frame-output-parity ()
+  "Ensure exactly one frame per output.
+Deletes frames without outputs and duplicate frames on the same output.
+Skips frames that are pending assignment (waiting for compositor response)."
+  (ewm-log "enforce-frame-output-parity, %d frames, %d outputs, %d pending"
+           (length (frame-list)) (length ewm--outputs)
+           (length ewm--pending-frame-outputs))
+  (let ((seen-outputs (make-hash-table :test 'equal))
+        (deleted-count 0))
+    (dolist (frame (frame-list))
+      (let ((output (frame-parameter frame 'ewm-output))
+            (is-pending (rassq frame ewm--pending-frame-outputs)))
+        (ewm-log "checking frame %s, output=%s, pending=%s"
+                 frame output (if is-pending (car is-pending) nil))
+        (cond
+         ;; Pending assignment - skip (waiting for compositor)
+         (is-pending
+          (ewm-log "skipping pending frame %s for %s" frame (car is-pending)))
+         ;; No output and not pending - delete
+         ((null output)
+          (ewm-log "deleting orphan frame %s (no output)" frame)
+          (cl-incf deleted-count)
+          (delete-frame frame))
+         ;; Duplicate - delete
+         ((gethash output seen-outputs)
+          (ewm-log "deleting duplicate frame %s on %s" frame output)
+          (cl-incf deleted-count)
+          (delete-frame frame))
+         ;; First for this output - keep
+         (t
+          (ewm-log "keeping frame %s for %s" frame output)
+          (puthash output frame seen-outputs)))))
+    (ewm-log "enforce complete, deleted %d, kept %d"
+             deleted-count (hash-table-count seen-outputs))))
 
 ;;; Process handling
 
@@ -448,7 +563,7 @@ Skips outputs that already have a frame assigned."
                (event (condition-case err
                           (json-parse-string line)
                         (error
-                         (message "EWM: JSON parse error: %s" err)
+                         (ewm-log "JSON parse error: %s" err)
                          nil))))
           (delete-region (point-min) (point))
           (when event
@@ -456,7 +571,7 @@ Skips outputs that already have a frame assigned."
 
 (defun ewm--sentinel (proc event)
   "Process sentinel for PROC with EVENT."
-  (message "EWM: connection %s" (string-trim event))
+  (ewm-log "connection %s" (string-trim event))
   (when (not (process-live-p proc))
     (setq ewm--process nil)))
 
@@ -496,18 +611,12 @@ Safe to call unconditionally - returns nil with a message if connection fails."
                  :service path
                  :filter #'ewm--filter
                  :sentinel #'ewm--sentinel))
-          ;; Connection succeeded - set up EWM environment
-          ;; Disable CSD (client-side decorations) for all frames
-          ;; EWM manages windows directly, no need for title bars
-          (ewm--disable-csd)
-          (ewm--enable-layout-sync)
-          (ewm-input--enable)
-          ;; Scan keymaps and send intercept keys to compositor
-          (ewm--send-intercept-keys)
+          ;; Connection succeeded - enable EWM mode
+          (ewm-mode 1)
           ;; Frame setup is triggered by outputs_complete event from compositor
-          (message "EWM: connected to %s" path))
+          (ewm-log "connected to %s" path))
       (file-error
-       (message "EWM: connection failed (not running inside EWM?)")))))
+       (ewm-log "connection failed (not running inside EWM?)")))))
 
 (defun ewm--disable-csd ()
   "Disable client-side decorations and bars for all frames.
@@ -530,12 +639,11 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
 (defun ewm-disconnect ()
   "Disconnect from compositor."
   (interactive)
-  (ewm--disable-layout-sync)
-  (ewm-input--disable)
+  (ewm-mode -1)
   (when ewm--process
     (delete-process ewm--process)
     (setq ewm--process nil)
-    (message "EWM: disconnected")))
+    (ewm-log "disconnected")))
 
 ;;; Input handling
 ;;
@@ -605,33 +713,34 @@ keys via XGrabKey.  In EWM/Wayland, we achieve similar behavior by:
 - Char-mode: surface has focus, no interception (same as line-mode for now)
 
 Both modes keep focus on the surface so typing works immediately."
-  (when ewm-surface-id
-    (setq ewm-input--mode mode)
-    ;; Always focus the surface - this matches EXWM behavior where the X window
-    ;; has focus even in line-mode (EXWM intercepts via XGrabKey)
-    (setq ewm-input--last-focused-id ewm-surface-id)
-    (ewm-focus ewm-surface-id)
-    (force-mode-line-update)))
+  (when-let ((state ewm--input-state))
+    (when ewm-surface-id
+      (setq ewm-input--mode mode)
+      ;; Always focus the surface - this matches EXWM behavior where the X window
+      ;; has focus even in line-mode (EXWM intercepts via XGrabKey)
+      (setf (ewm-input-state-last-focused-id state) ewm-surface-id)
+      (ewm-focus ewm-surface-id)
+      (force-mode-line-update))))
 
 (defun ewm-input-char-mode ()
   "Switch to char-mode: keys go directly to surface.
 Press a prefix key to return to line-mode."
   (interactive)
   (ewm-input--update-mode 'char-mode)
-  (message "EWM: char-mode"))
+  (ewm-log "char-mode"))
 
 (defun ewm-input-line-mode ()
   "Switch to line-mode: keys go to Emacs."
   (interactive)
   (ewm-input--update-mode 'line-mode)
-  (message "EWM: line-mode"))
+  (ewm-log "line-mode"))
 
 (defun ewm-input-toggle-mode ()
   "Toggle between line-mode and char-mode."
   (interactive)
   (ewm-input--update-mode
    (if (eq ewm-input--mode 'char-mode) 'line-mode 'char-mode))
-  (message "EWM: %s" ewm-input--mode))
+  (ewm-log "%s" ewm-input--mode))
 
 (defun ewm-input-send-key (key)
   "Send KEY to the current surface.
@@ -640,44 +749,19 @@ KEY should be a key sequence."
   (when ewm-surface-id
     (ewm--send `(:cmd "key" :id ,ewm-surface-id :key ,(key-description key)))))
 
-;; Internal variables for focus tracking
+;; Internal variable for skipping buffer list updates
 (defvar ewm-input--skip-buffer-list-update nil
   "Non-nil to skip `ewm-input--on-buffer-list-update'.
 Used when buffer changes are expected and focus should not change.")
 
-(defvar ewm-input--last-focused-id nil
-  "Last surface ID that was focused.
-Used to avoid sending redundant focus commands.")
-
-(defvar ewm-input--last-selected-window nil
-  "Last selected window.
-Used to detect window switches for multi-view input routing.")
-
-(defvar ewm-input--mff-last-window nil
-  "Last window for mouse-follows-focus.
-Used to avoid redundant pointer warps.")
-
-(defvar ewm-input--compositor-focus nil
-  "Non-nil when focus change is initiated by compositor.
-Set during `ewm--handle-focus' to suppress mouse-follows-focus.")
-
-(defvar ewm-input--focus-timer nil
-  "Timer for debounced focus updates.")
-
-(defvar ewm-input--pending-focus-id nil
-  "Pending focus target, applied after debounce delay.")
-
-(defvar ewm-input--inhibit-focus-update nil
-  "When non-nil, ignore focus-related hooks.
-Set temporarily after we send a focus command to prevent loops.")
-
 (defun ewm-input--focus-debounced (id)
   "Request focus on ID with debouncing to prevent focus loops."
-  (unless ewm-input--inhibit-focus-update
-    (setq ewm-input--pending-focus-id id)
-    (unless ewm-input--focus-timer
-      (setq ewm-input--focus-timer
-            (run-with-timer 0.01 nil #'ewm-input--focus-commit)))))
+  (when-let ((state ewm--input-state))
+    (unless (ewm-input-state-inhibit-update state)
+      (setf (ewm-input-state-pending-focus-id state) id)
+      (unless (ewm-input-state-focus-timer state)
+        (setf (ewm-input-state-focus-timer state)
+              (run-with-timer 0.01 nil #'ewm-input--focus-commit))))))
 
 (defun ewm-input--warp-pointer-to-window (window)
   "Warp pointer to center of WINDOW.
@@ -695,41 +779,48 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
   "Return non-nil if current focus change was triggered by mouse."
   (or (mouse-event-p last-input-event)
       (eq this-command 'handle-select-window)
-      ewm-input--compositor-focus))
+      (and ewm--input-state
+           (ewm-input-state-compositor-focus ewm--input-state))))
 
 (defun ewm-input--on-select-window (window &optional norecord)
   "Advice for `select-window' to implement mouse-follows-focus.
 Warps pointer to WINDOW unless NORECORD is non-nil, the window hasn't
 changed, or the focus change was triggered by a mouse event."
-  (when (and ewm-mouse-follows-focus
-             (not norecord)
-             (not (eq window ewm-input--mff-last-window))
-             (not (ewm-input--mouse-triggered-p)))
-    (setq ewm-input--mff-last-window window)
-    (ewm-input--warp-pointer-to-window window)))
+  (when-let ((state ewm--input-state))
+    (when (and ewm-mouse-follows-focus
+               (not norecord)
+               (not (eq window (ewm-input-state-mff-last-window state)))
+               (not (ewm-input--mouse-triggered-p)))
+      (setf (ewm-input-state-mff-last-window state) window)
+      (ewm-input--warp-pointer-to-window window))))
 
 (defun ewm-input--on-select-frame (frame &optional _norecord)
   "Advice for `select-frame-set-input-focus' to implement mouse-follows-focus.
 Warps pointer to the selected window on FRAME unless triggered by mouse."
-  (when (and ewm-mouse-follows-focus
-             (not (ewm-input--mouse-triggered-p)))
-    (let ((window (frame-selected-window frame)))
-      (unless (eq window ewm-input--mff-last-window)
-        (setq ewm-input--mff-last-window window)
-        (ewm-input--warp-pointer-to-window window)))))
+  (when-let ((state ewm--input-state))
+    (when (and ewm-mouse-follows-focus
+               (not (ewm-input--mouse-triggered-p)))
+      (let ((window (frame-selected-window frame)))
+        (unless (eq window (ewm-input-state-mff-last-window state))
+          (setf (ewm-input-state-mff-last-window state) window)
+          (ewm-input--warp-pointer-to-window window))))))
 
 (defun ewm-input--focus-commit ()
   "Commit pending focus change."
-  (setq ewm-input--focus-timer nil)
-  (let ((id ewm-input--pending-focus-id))
-    (setq ewm-input--pending-focus-id nil)
-    (when (and id (not (eq id ewm-input--last-focused-id)))
-      (setq ewm-input--last-focused-id id)
-      ;; Inhibit focus updates while compositor processes our request
-      (setq ewm-input--inhibit-focus-update t)
-      (ewm-focus id)
-      ;; Re-enable after a short delay to let focus events settle
-      (run-with-timer 0.05 nil (lambda () (setq ewm-input--inhibit-focus-update nil))))))
+  (when-let ((state ewm--input-state))
+    (setf (ewm-input-state-focus-timer state) nil)
+    (let ((id (ewm-input-state-pending-focus-id state)))
+      (setf (ewm-input-state-pending-focus-id state) nil)
+      (when (and id (not (eq id (ewm-input-state-last-focused-id state))))
+        (setf (ewm-input-state-last-focused-id state) id)
+        ;; Inhibit focus updates while compositor processes our request
+        (setf (ewm-input-state-inhibit-update state) t)
+        (ewm-focus id)
+        ;; Re-enable after a short delay to let focus events settle
+        (run-with-timer 0.05 nil
+                        (lambda ()
+                          (when ewm--input-state
+                            (setf (ewm-input-state-inhibit-update ewm--input-state) nil))))))))
 
 (defun ewm-input--on-buffer-list-update ()
   "Hook called when buffer list changes.
@@ -756,19 +847,20 @@ Emacs (surface 1) has focus."
   "Hook called after each command.
 Re-focuses the surface if we're in a surface buffer.
 Also updates multi-view layout when selected window changes."
-  (when (and ewm--process
-             (process-live-p ewm--process)
-             (not (minibufferp)))
-    (let ((id (buffer-local-value 'ewm-surface-id (current-buffer)))
-          (current-window (selected-window)))
-      ;; Check if selected window changed (important for multi-view input routing)
-      (unless (eq current-window ewm-input--last-selected-window)
-        (setq ewm-input--last-selected-window current-window)
-        ;; Refresh layout so the new window's view becomes active for input
-        (ewm-layout--refresh))
-      ;; Focus the surface for keyboard input
-      (when id
-        (ewm-input--focus-debounced id)))))
+  (when-let ((state ewm--input-state))
+    (when (and ewm--process
+               (process-live-p ewm--process)
+               (not (minibufferp)))
+      (let ((id (buffer-local-value 'ewm-surface-id (current-buffer)))
+            (current-window (selected-window)))
+        ;; Check if selected window changed (important for multi-view input routing)
+        (unless (eq current-window (ewm-input-state-last-selected-window state))
+          (setf (ewm-input-state-last-selected-window state) current-window)
+          ;; Refresh layout so the new window's view becomes active for input
+          (ewm-layout--refresh))
+        ;; Focus the surface for keyboard input
+        (when id
+          (ewm-input--focus-debounced id))))))
 
 (defun ewm-input--on-focus-change ()
   "Handle frame focus changes.
@@ -781,9 +873,11 @@ Called via `after-focus-change-function' to sync compositor focus."
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
-  (setq ewm-input--last-focused-id 1)  ; Start with Emacs focused
-  (setq ewm-input--last-selected-window (selected-window))
-  (setq ewm-input--mff-last-window (selected-window))
+  (setq ewm--input-state
+        (ewm-input-state-create
+         :last-focused-id 1
+         :last-selected-window (selected-window)
+         :mff-last-window (selected-window)))
   (add-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
   (add-hook 'post-command-hook #'ewm-input--on-post-command)
   (add-function :after after-focus-change-function #'ewm-input--on-focus-change)
@@ -792,9 +886,7 @@ Called via `after-focus-change-function' to sync compositor focus."
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
-  (setq ewm-input--last-focused-id nil)
-  (setq ewm-input--last-selected-window nil)
-  (setq ewm-input--mff-last-window nil)
+  (setq ewm--input-state nil)
   (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
   (remove-hook 'post-command-hook #'ewm-input--on-post-command)
   (remove-function after-focus-change-function #'ewm-input--on-focus-change)
@@ -863,7 +955,7 @@ This allows normal `global-set-key' bindings to work with EWM."
             (puthash spec-key t seen)
             (push spec specs)))))
     ;; Send to compositor
-    (message "EWM: Intercepting %d keys" (length specs))
+    (ewm-log "Intercepting %d keys" (length specs))
     (ewm--send `(:cmd "intercept-keys" :keys ,(vconcat (nreverse specs))))))
 
 ;;; Surface mode
@@ -1144,6 +1236,32 @@ Catches minibuffer height changes that window-configuration-change misses."
   (remove-hook 'window-size-change-functions #'ewm--on-window-size-change)
   (remove-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
   (remove-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
+
+;;; Global minor mode
+
+(defun ewm--mode-enable ()
+  "Enable EWM integration."
+  (ewm--disable-csd)
+  (ewm--enable-layout-sync)
+  (ewm-input--enable)
+  (ewm--send-intercept-keys)
+  (add-hook 'after-make-frame-functions #'ewm--on-make-frame))
+
+(defun ewm--mode-disable ()
+  "Disable EWM integration."
+  (ewm--disable-layout-sync)
+  (ewm-input--disable)
+  (remove-hook 'after-make-frame-functions #'ewm--on-make-frame))
+
+;;;###autoload
+(define-minor-mode ewm-mode
+  "Global minor mode for EWM compositor integration."
+  :global t
+  :lighter " EWM"
+  :group 'ewm
+  (if ewm-mode
+      (ewm--mode-enable)
+    (ewm--mode-disable)))
 
 (provide 'ewm)
 ;;; ewm.el ends here
