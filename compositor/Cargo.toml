@@ -36,3 +36,14 @@ features = [
 git = "https://github.com/Smithay/smithay.git"
 rev = "0c2230f858580b52d628087d6dae1795278b8756"
 default-features = false
+
+# PipeWire for screen sharing (optional)
+[dependencies.pipewire]
+git = "https://gitlab.freedesktop.org/pipewire/pipewire-rs.git"
+rev = "86df39190c0ab67444666a42908f7e8c1344e24a"
+optional = true
+features = ["v0_3_33"]
+
+[features]
+default = []
+screencast = ["pipewire"]

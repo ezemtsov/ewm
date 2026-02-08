@@ -15,6 +15,8 @@ mod backend;
 mod cursor;
 mod input;
 mod ipc;
+#[cfg(feature = "screencast")]
+mod pipewire;
 mod protocols;
 mod render;
 
@@ -335,6 +337,10 @@ pub struct Ewm {
     // Output manager state (provides xdg-output protocol)
     #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
+
+    // PipeWire for screen sharing (initialized lazily)
+    #[cfg(feature = "screencast")]
+    pub pipewire: Option<pipewire::PipeWire>,
 }
 
 impl Ewm {
@@ -390,6 +396,8 @@ impl Ewm {
             pending_frame_outputs: Vec::new(),
             screencopy_state,
             output_manager_state,
+            #[cfg(feature = "screencast")]
+            pipewire: None,
         }
     }
 

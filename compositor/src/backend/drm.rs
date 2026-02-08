@@ -1313,6 +1313,23 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     backend_state.borrow_mut().loop_handle = Some(event_loop.handle());
     data.state.set_drm_backend(backend_state.clone());
 
+    // Initialize PipeWire for screen sharing
+    #[cfg(feature = "screencast")]
+    {
+        use crate::pipewire::PipeWire;
+        match PipeWire::new(&event_loop.handle(), || {
+            tracing::warn!("PipeWire fatal error");
+        }) {
+            Ok(pw) => {
+                tracing::info!("PipeWire initialized successfully");
+                data.state.pipewire = Some(pw);
+            }
+            Err(err) => {
+                tracing::warn!("PipeWire initialization failed: {err:?}");
+            }
+        }
+    }
+
     // Register session notifier
     let backend_for_session = backend_state.clone();
     event_loop
