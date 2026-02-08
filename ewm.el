@@ -833,8 +833,8 @@ Emacs (surface 1) has focus."
   (when (and ewm--process
              (process-live-p ewm--process)
              (not ewm-input--skip-buffer-list-update)
-             ;; Don't process during minibuffer operations
-             (not (minibufferp)))
+             ;; Don't process during minibuffer operations (e.g., consult preview)
+             (not (active-minibuffer-window)))
     (let* ((buf (current-buffer))
            (id (buffer-local-value 'ewm-surface-id buf))
            ;; Surface buffer: focus the surface (like EXWM)
@@ -850,7 +850,7 @@ Also updates multi-view layout when selected window changes."
   (when-let ((state ewm--input-state))
     (when (and ewm--process
                (process-live-p ewm--process)
-               (not (minibufferp)))
+               (not (active-minibuffer-window)))
       (let ((id (buffer-local-value 'ewm-surface-id (current-buffer)))
             (current-window (selected-window)))
         ;; Check if selected window changed (important for multi-view input routing)
