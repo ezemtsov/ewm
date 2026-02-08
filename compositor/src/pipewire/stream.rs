@@ -26,8 +26,10 @@ use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
 use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::drm::DrmDeviceFd;
+use smithay::backend::renderer::element::RenderElement;
+use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::gbm::Modifier;
-use smithay::utils::{Physical, Size};
+use smithay::utils::{Physical, Scale, Size, Transform};
 use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
@@ -54,6 +56,8 @@ pub struct Cast {
     pub is_active: Rc<Cell<bool>>,
     pub size: Size<u32, Physical>,
     pub node_id: Rc<Cell<Option<u32>>>,
+    /// The output name this cast is capturing
+    pub output_name: String,
     #[allow(dead_code)]
     state: Rc<RefCell<CastState>>,
     #[allow(dead_code)]
@@ -67,6 +71,7 @@ impl Cast {
         gbm: GbmDevice<DrmDeviceFd>,
         size: Size<i32, Physical>,
         refresh: u32,
+        output_name: String,
         signal_ctx: SignalEmitter<'static>,
     ) -> anyhow::Result<Self> {
         let size = Size::from((size.w as u32, size.h as u32));
@@ -356,9 +361,81 @@ impl Cast {
             is_active,
             size,
             node_id,
+            output_name,
             state,
             dmabufs,
         })
+    }
+
+    /// Check if the stream is actively streaming
+    pub fn is_streaming(&self) -> bool {
+        self.is_active.get()
+    }
+
+    /// Dequeue a buffer, render to it, and queue it back (like niri)
+    /// Returns true if a frame was rendered
+    pub fn dequeue_buffer_and_render<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        elements: &[E],
+        _size: Size<i32, Physical>,
+        scale: Scale<f64>,
+    ) -> bool
+    where
+        E: RenderElement<GlesRenderer>,
+    {
+        if !self.is_streaming() {
+            return false;
+        }
+
+        let state = self.state.borrow();
+        let CastState::Ready { size, .. } = &*state else {
+            trace!("dequeue_buffer_and_render: not ready yet");
+            return false;
+        };
+        // Use the negotiated size from CastState to match dmabuf dimensions
+        let size = Size::from((size.w as i32, size.h as i32));
+        drop(state);
+
+        let Some(mut buffer) = self.stream.dequeue_buffer() else {
+            trace!("no available buffer in pw stream");
+            return false;
+        };
+
+        let fd = buffer.datas_mut()[0].as_raw().fd;
+        let dmabufs = self.dmabufs.borrow();
+        let Some(dmabuf) = dmabufs.get(&fd) else {
+            warn!("dmabuf not found for fd {}", fd);
+            return false;
+        };
+
+        // Render to the dmabuf
+        if let Err(err) = crate::render::render_to_dmabuf(
+            renderer,
+            dmabuf.clone(),
+            size,
+            scale,
+            Transform::Normal,
+            elements.iter().rev(),
+        ) {
+            warn!("error rendering to dmabuf: {err:?}");
+            return false;
+        }
+
+        // Update buffer chunk metadata (like niri)
+        for (data, (stride, offset)) in buffer
+            .datas_mut()
+            .iter_mut()
+            .zip(dmabuf.strides().zip(dmabuf.offsets()))
+        {
+            let chunk = data.chunk_mut();
+            *chunk.size_mut() = 1; // niri uses 1 here
+            *chunk.stride_mut() = stride as i32;
+            *chunk.offset_mut() = offset;
+        }
+
+        trace!("frame rendered to pw stream");
+        true
     }
 }
 

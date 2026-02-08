@@ -51,7 +51,7 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle, Resource},
     },
-    utils::{DeviceFd, Point, Scale, Transform, SERIAL_COUNTER},
+    utils::{DeviceFd, Point, Scale, Size, Transform, SERIAL_COUNTER},
     wayland::{dmabuf::DmabufFeedbackBuilder, seat::WaylandFocus},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -517,6 +517,60 @@ impl DrmBackendState {
                     event_loop,
                 );
             }
+        }
+
+        // Render to active screen casts for this output
+        #[cfg(feature = "screencast")]
+        if should_process_screencopy {
+            let output_size = output
+                .current_mode()
+                .map(|m| Size::from((m.size.w, m.size.h)))
+                .unwrap_or_else(|| Size::from((1920, 1080)));
+
+            // Use mem::take pattern (like niri) to avoid borrow conflicts
+            let mut screen_casts = std::mem::take(&mut ewm.screen_casts);
+            let mut sc_elements = None;
+
+            for cast in screen_casts.values_mut() {
+                if !cast.is_streaming() || cast.output_name != output.name() {
+                    continue;
+                }
+
+                // Lazily collect elements on first active cast
+                let elements = sc_elements.get_or_insert_with(|| {
+                    let Some(device) = &mut self.device else {
+                        return Vec::new();
+                    };
+                    let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
+                        return Vec::new();
+                    };
+                    collect_render_elements_with_cursor(
+                        ewm,
+                        renderer.as_mut(),
+                        output_scale,
+                        &self.cursor_buffer,
+                        output_pos,
+                    )
+                });
+
+                // Get renderer for rendering to screen cast
+                let Some(device) = &mut self.device else {
+                    break;
+                };
+                let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
+                    break;
+                };
+
+                // Render frame to the screen cast
+                cast.dequeue_buffer_and_render(
+                    renderer.as_mut(),
+                    elements,
+                    output_size,
+                    output_scale,
+                );
+            }
+
+            ewm.screen_casts = screen_casts;
         }
     }
 
@@ -1392,69 +1446,77 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
             }
         }
 
-        // Start D-Bus ScreenCast server
-        use crate::dbus::{self, ScreenCastToCompositor};
+        // Start D-Bus servers (following niri's pattern)
+        use crate::dbus::{DBusServers, ScreenCastToCompositor};
         use smithay::reexports::calloop::channel::Event as ChannelEvent;
 
         let outputs = data.state.dbus_outputs.clone();
-        match dbus::start_dbus_server(outputs) {
-            Ok(receiver) => {
-                // Register the receiver to handle D-Bus messages
-                event_loop
-                    .handle()
-                    .insert_source(receiver, |event, _, loop_data| {
-                        if let ChannelEvent::Msg(msg) = event {
-                            match msg {
-                                ScreenCastToCompositor::StartCast { session_id, output_name, signal_ctx } => {
-                                    tracing::info!("StartCast: session={}, output={}", session_id, output_name);
+        let (dbus_servers, receiver) = DBusServers::start(
+            outputs,
+            display_handle.clone(),
+        );
+        // Store D-Bus servers to keep connections alive
+        data.state.dbus_servers = Some(dbus_servers);
 
-                                    // Create PipeWire stream for this output
-                                    let pw = loop_data.state.pipewire.as_ref();
-                                    let gbm = loop_data.state.drm_backend.as_ref()
-                                        .and_then(|b| b.borrow().device.as_ref().map(|d| d.gbm.clone()));
+        // Notify systemd we're ready (D-Bus interfaces registered)
+        // This is used when running as a systemd service with Type=notify
+        if let Err(err) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
+            tracing::warn!("Error notifying systemd: {err:?}");
+        } else {
+            tracing::info!("Notified systemd that compositor is ready");
+        }
 
-                                    if let (Some(pw), Some(gbm)) = (pw, gbm) {
-                                        // Find output info
-                                        let output_info = loop_data.state.dbus_outputs.lock().unwrap()
-                                            .iter()
-                                            .find(|o| o.name == output_name)
-                                            .cloned();
+        // Register the receiver to handle D-Bus messages
+        event_loop
+            .handle()
+            .insert_source(receiver, |event, _, loop_data| {
+                if let ChannelEvent::Msg(msg) = event {
+                    match msg {
+                        ScreenCastToCompositor::StartCast { session_id, output_name, signal_ctx } => {
+                            tracing::info!("StartCast: session={}, output={}", session_id, output_name);
 
-                                        if let Some(info) = output_info {
-                                            use crate::pipewire::stream::Cast;
-                                            use smithay::utils::Size;
+                            // Create PipeWire stream for this output
+                            let pw = loop_data.state.pipewire.as_ref();
+                            let gbm = loop_data.state.drm_backend.as_ref()
+                                .and_then(|b| b.borrow().device.as_ref().map(|d| d.gbm.clone()));
 
-                                            match Cast::new(pw, gbm, Size::from((info.width, info.height)), info.refresh, signal_ctx) {
-                                                Ok(cast) => {
-                                                    tracing::info!("PipeWire stream created, waiting for state change");
-                                                    // Store the cast to keep the stream alive
-                                                    loop_data.state.screen_casts.insert(session_id, cast);
-                                                }
-                                                Err(err) => {
-                                                    tracing::warn!("Failed to create PipeWire stream: {err:?}");
-                                                }
-                                            }
+                            if let (Some(pw), Some(gbm)) = (pw, gbm) {
+                                // Find output info
+                                let output_info = loop_data.state.dbus_outputs.lock().unwrap()
+                                    .iter()
+                                    .find(|o| o.name == output_name)
+                                    .cloned();
+
+                                if let Some(info) = output_info {
+                                    use crate::pipewire::stream::Cast;
+                                    use smithay::utils::Size;
+
+                                    match Cast::new(pw, gbm, Size::from((info.width, info.height)), info.refresh, output_name.clone(), signal_ctx) {
+                                        Ok(cast) => {
+                                            tracing::info!("PipeWire stream created, waiting for state change");
+                                            // Store the cast to keep the stream alive
+                                            loop_data.state.screen_casts.insert(session_id, cast);
                                         }
-                                    } else {
-                                        tracing::warn!("PipeWire or GBM not available for screen cast");
+                                        Err(err) => {
+                                            tracing::warn!("Failed to create PipeWire stream: {err:?}");
+                                        }
                                     }
                                 }
-                                ScreenCastToCompositor::StopCast { session_id } => {
-                                    tracing::info!("StopCast: session={}", session_id);
-                                    // Remove the cast which will drop the PipeWire stream
-                                    loop_data.state.screen_casts.remove(&session_id);
-                                }
+                            } else {
+                                tracing::warn!("PipeWire or GBM not available for screen cast");
                             }
                         }
-                    })
-                    .expect("Failed to register D-Bus receiver");
+                        ScreenCastToCompositor::StopCast { session_id } => {
+                            tracing::info!("StopCast: session={}", session_id);
+                            // Remove the cast which will drop the PipeWire stream
+                            loop_data.state.screen_casts.remove(&session_id);
+                        }
+                    }
+                }
+            })
+            .expect("Failed to register D-Bus receiver");
 
-                tracing::info!("D-Bus ScreenCast server started");
-            }
-            Err(err) => {
-                tracing::warn!("D-Bus server failed to start: {err:?}");
-            }
-        }
+        tracing::info!("D-Bus ScreenCast server started");
     }
 
     // Register session notifier
