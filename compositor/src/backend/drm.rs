@@ -1409,7 +1409,11 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                                     tracing::info!("StartCast: session={}, output={}", session_id, output_name);
 
                                     // Create PipeWire stream for this output
-                                    if let Some(ref pw) = loop_data.state.pipewire {
+                                    let pw = loop_data.state.pipewire.as_ref();
+                                    let gbm = loop_data.state.drm_backend.as_ref()
+                                        .and_then(|b| b.borrow().device.as_ref().map(|d| d.gbm.clone()));
+
+                                    if let (Some(pw), Some(gbm)) = (pw, gbm) {
                                         // Find output info
                                         let output_info = loop_data.state.dbus_outputs.lock().unwrap()
                                             .iter()
@@ -1420,7 +1424,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                                             use crate::pipewire::stream::Cast;
                                             use smithay::utils::Size;
 
-                                            match Cast::new(pw, Size::from((info.width, info.height)), info.refresh, signal_ctx) {
+                                            match Cast::new(pw, gbm, Size::from((info.width, info.height)), info.refresh, signal_ctx) {
                                                 Ok(cast) => {
                                                     tracing::info!("PipeWire stream created, waiting for state change");
                                                     // Store the cast to keep the stream alive
@@ -1431,6 +1435,8 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                                                 }
                                             }
                                         }
+                                    } else {
+                                        tracing::warn!("PipeWire or GBM not available for screen cast");
                                     }
                                 }
                                 ScreenCastToCompositor::StopCast { session_id } => {
