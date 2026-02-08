@@ -44,6 +44,14 @@ rev = "86df39190c0ab67444666a42908f7e8c1344e24a"
 optional = true
 features = ["v0_3_33"]
 
+[dependencies.zbus]
+version = "5.3"
+optional = true
+
+[dependencies.async-io]
+version = "2"
+optional = true
+
 [features]
 default = []
-screencast = ["pipewire"]
+screencast = ["pipewire", "zbus", "async-io"]

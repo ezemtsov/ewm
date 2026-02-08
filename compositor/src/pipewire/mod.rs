@@ -3,6 +3,8 @@
 //! This module provides PipeWire support for screen casting via the
 //! org.gnome.Mutter.ScreenCast D-Bus interface.
 
+pub mod stream;
+
 use std::mem;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::time::Duration;

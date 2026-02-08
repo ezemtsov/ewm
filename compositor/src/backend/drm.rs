@@ -843,6 +843,19 @@ impl DrmBackendState {
 
         ewm.outputs.push(output_info.clone());
 
+        // Update D-Bus outputs for screen casting
+        #[cfg(feature = "screencast")]
+        {
+            let mut dbus_outputs = ewm.dbus_outputs.lock().unwrap();
+            dbus_outputs.push(crate::dbus::OutputInfo {
+                name: connector_name.clone(),
+                width: mode.size().0 as i32,
+                height: mode.size().1 as i32,
+                refresh: mode.vrefresh(),
+            });
+            info!("Added D-Bus output: {} (total: {})", connector_name, dbus_outputs.len());
+        }
+
         // Recalculate output_size
         self.recalculate_output_size(ewm);
 
@@ -880,6 +893,13 @@ impl DrmBackendState {
 
         // Remove from outputs list
         ewm.outputs.retain(|o| o.name != output_name);
+
+        // Remove from D-Bus outputs
+        #[cfg(feature = "screencast")]
+        {
+            let mut dbus_outputs = ewm.dbus_outputs.lock().unwrap();
+            dbus_outputs.retain(|o| o.name != output_name);
+        }
 
         // Recalculate output_size
         self.recalculate_output_size(ewm);
@@ -1157,6 +1177,19 @@ fn initialize_drm(
             modes: output_modes,
         });
 
+        // Update D-Bus outputs for screen casting
+        #[cfg(feature = "screencast")]
+        {
+            let mut dbus_outputs = ewm_state.dbus_outputs.lock().unwrap();
+            dbus_outputs.push(crate::dbus::OutputInfo {
+                name: connector_name.clone(),
+                width: mode.size().0 as i32,
+                height: mode.size().1 as i32,
+                refresh: mode.vrefresh(),
+            });
+            info!("Added D-Bus output: {} (total: {})", connector_name, dbus_outputs.len());
+        }
+
         // Update x_offset for next output
         x_offset += mode.size().0 as i32;
     }
@@ -1313,7 +1346,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     backend_state.borrow_mut().loop_handle = Some(event_loop.handle());
     data.state.set_drm_backend(backend_state.clone());
 
-    // Initialize PipeWire for screen sharing
+    // Initialize PipeWire and D-Bus for screen sharing
     #[cfg(feature = "screencast")]
     {
         use crate::pipewire::PipeWire;
@@ -1326,6 +1359,18 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
             }
             Err(err) => {
                 tracing::warn!("PipeWire initialization failed: {err:?}");
+            }
+        }
+
+        // Start D-Bus ScreenCast server
+        use crate::dbus;
+        let outputs = data.state.dbus_outputs.clone();
+        match dbus::start_dbus_server(&event_loop.handle(), outputs) {
+            Ok(_sender) => {
+                tracing::info!("D-Bus ScreenCast server started");
+            }
+            Err(err) => {
+                tracing::warn!("D-Bus server failed to start: {err:?}");
             }
         }
     }

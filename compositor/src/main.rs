@@ -13,6 +13,8 @@
 
 mod backend;
 mod cursor;
+#[cfg(feature = "screencast")]
+mod dbus;
 mod input;
 mod ipc;
 #[cfg(feature = "screencast")]
@@ -341,6 +343,10 @@ pub struct Ewm {
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
+
+    // Shared output info for D-Bus ScreenCast (thread-safe)
+    #[cfg(feature = "screencast")]
+    pub dbus_outputs: std::sync::Arc<std::sync::Mutex<Vec<dbus::OutputInfo>>>,
 }
 
 impl Ewm {
@@ -398,6 +404,8 @@ impl Ewm {
             output_manager_state,
             #[cfg(feature = "screencast")]
             pipewire: None,
+            #[cfg(feature = "screencast")]
+            dbus_outputs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
