@@ -98,7 +98,9 @@ pub fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<d
 
     // Spawn client inside the compositor
     let mut client_process = spawn_client(&program, &program_args, &socket_name_str)?;
-    info!("Client spawned with PID {}", client_process.id());
+    let emacs_pid = client_process.id();
+    info!("Client spawned with PID {}", emacs_pid);
+    data.state.set_emacs_pid(emacs_pid);
 
     info!("EWM compositor started");
 

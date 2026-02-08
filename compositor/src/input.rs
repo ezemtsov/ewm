@@ -44,7 +44,7 @@ pub fn handle_keyboard_event(
 
     // Clone values needed in the filter closure
     let intercepted_keys = state.intercepted_keys.clone();
-    let current_focus_id = state.focused_surface_id;
+    let focus_on_emacs = state.is_focus_on_emacs();
 
     // Process key with filter to detect intercepted keys and kill combo
     let filter_result = keyboard.input::<u8, _>(
@@ -67,8 +67,8 @@ pub fn handle_keyboard_event(
             let keysym = handle.modified_sym();
             let is_intercepted = intercepted_keys.iter().any(|ik| ik.matches(keysym.raw(), mods));
 
-            if is_intercepted && current_focus_id != 1 {
-                // This is an intercepted key and focus is not on Emacs
+            if is_intercepted && !focus_on_emacs {
+                // This is an intercepted key and focus is on an external app (not Emacs)
                 FilterResult::Intercept(1) // 1 = redirect to emacs
             } else {
                 FilterResult::Forward

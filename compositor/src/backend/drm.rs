@@ -1192,7 +1192,9 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     info!("Spawning client...");
     match spawn_client(&program, &program_args, &socket_name_str) {
         Ok(child) => {
-            info!("Client spawned with PID {}", child.id());
+            let pid = child.id();
+            info!("Client spawned with PID {}", pid);
+            data.state.set_emacs_pid(pid);
             *client_process.borrow_mut() = Some(child);
         }
         Err(e) => {

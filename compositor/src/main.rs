@@ -307,6 +307,11 @@ pub struct Ewm {
     pub keyboard_focus: Option<WlSurface>,
     pub intercepted_keys: Vec<InterceptedKey>,
 
+    // Emacs client tracking - used to identify which surfaces belong to Emacs
+    // vs external applications (for key interception)
+    pub emacs_pid: Option<u32>,
+    pub emacs_surfaces: std::collections::HashSet<u32>,
+
     // Screenshot request
     pub pending_screenshot: Option<String>,
 
@@ -357,6 +362,8 @@ impl Ewm {
             focused_surface_id: 1,
             keyboard_focus: None,
             intercepted_keys: Vec::new(),
+            emacs_pid: None,
+            emacs_surfaces: std::collections::HashSet::new(),
             pending_screenshot: None,
             drm_backend: None,
             pending_frame_outputs: Vec::new(),
@@ -366,6 +373,29 @@ impl Ewm {
     /// Set the DRM backend reference for early_import support
     pub fn set_drm_backend(&mut self, backend: Rc<RefCell<DrmBackendState>>) {
         self.drm_backend = Some(backend);
+    }
+
+    /// Set the Emacs process PID for client identification
+    pub fn set_emacs_pid(&mut self, pid: u32) {
+        info!("Tracking Emacs PID: {}", pid);
+        self.emacs_pid = Some(pid);
+    }
+
+    /// Check if a surface belongs to the Emacs client
+    fn is_emacs_client(&self, surface: &WlSurface) -> bool {
+        if let Some(emacs_pid) = self.emacs_pid {
+            if let Ok(client) = self.display_handle.get_client(surface.id()) {
+                if let Ok(creds) = client.get_credentials(&self.display_handle) {
+                    return creds.pid == emacs_pid as i32;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if focus is on an Emacs surface (for key interception decisions)
+    pub fn is_focus_on_emacs(&self) -> bool {
+        self.emacs_surfaces.contains(&self.focused_surface_id)
     }
 
     /// Recalculate total output size from current space geometry
@@ -440,7 +470,8 @@ impl Ewm {
 
         if let Some(window) = window {
             if let Some(&id) = self.window_ids.get(&window) {
-                if id == 1 {
+                // Skip title change events for Emacs surfaces
+                if self.emacs_surfaces.contains(&id) {
                     return;
                 }
 
@@ -634,6 +665,13 @@ impl XdgShellHandler for Ewm {
         let id = self.next_surface_id;
         self.next_surface_id += 1;
 
+        // Check if this surface belongs to the Emacs client
+        let is_emacs = self.is_emacs_client(surface.wl_surface());
+        if is_emacs {
+            info!("Surface {} is an Emacs surface", id);
+            self.emacs_surfaces.insert(id);
+        }
+
         let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
@@ -723,6 +761,7 @@ impl XdgShellHandler for Ewm {
                 self.id_windows.remove(&id);
                 self.surface_info.remove(&id);
                 self.surface_views.remove(&id);
+                self.emacs_surfaces.remove(&id);
                 self.pending_events.push(IpcEvent::Close { id });
                 info!("Toplevel {} destroyed", id);
             }

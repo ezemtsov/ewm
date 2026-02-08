@@ -33,6 +33,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+
 (defgroup ewm nil
   "Emacs Wayland Manager."
   :group 'environment)
@@ -117,8 +119,7 @@ Adapted from `exwm-manage--manage-window'."
     (if output
         ;; Emacs frame assigned to output by compositor
         ;; Find the pending frame for this output
-        (let ((pending (assoc output ewm--pending-frame-outputs
-                              (lambda (a b) (string= a b)))))
+        (let ((pending (assoc output ewm--pending-frame-outputs)))
           (if pending
               (let ((frame (cdr pending)))
                 (setq ewm--pending-frame-outputs
@@ -597,6 +598,37 @@ Used to avoid sending redundant focus commands.")
   "Last selected window.
 Used to detect window switches for multi-view input routing.")
 
+(defvar ewm-input--focus-timer nil
+  "Timer for debounced focus updates.")
+
+(defvar ewm-input--pending-focus-id nil
+  "Pending focus target, applied after debounce delay.")
+
+(defvar ewm-input--inhibit-focus-update nil
+  "When non-nil, ignore focus-related hooks.
+Set temporarily after we send a focus command to prevent loops.")
+
+(defun ewm-input--focus-debounced (id)
+  "Request focus on ID with debouncing to prevent focus loops."
+  (unless ewm-input--inhibit-focus-update
+    (setq ewm-input--pending-focus-id id)
+    (unless ewm-input--focus-timer
+      (setq ewm-input--focus-timer
+            (run-with-timer 0.01 nil #'ewm-input--focus-commit)))))
+
+(defun ewm-input--focus-commit ()
+  "Commit pending focus change."
+  (setq ewm-input--focus-timer nil)
+  (let ((id ewm-input--pending-focus-id))
+    (setq ewm-input--pending-focus-id nil)
+    (when (and id (not (eq id ewm-input--last-focused-id)))
+      (setq ewm-input--last-focused-id id)
+      ;; Inhibit focus updates while compositor processes our request
+      (setq ewm-input--inhibit-focus-update t)
+      (ewm-focus id)
+      ;; Re-enable after a short delay to let focus events settle
+      (run-with-timer 0.05 nil (lambda () (setq ewm-input--inhibit-focus-update nil))))))
+
 (defun ewm-input--on-buffer-list-update ()
   "Hook called when buffer list changes.
 Updates keyboard focus based on current buffer.
@@ -613,12 +645,10 @@ Emacs (surface 1) has focus."
     (let* ((buf (current-buffer))
            (id (buffer-local-value 'ewm-surface-id buf))
            ;; Surface buffer: focus the surface (like EXWM)
-           ;; Non-surface buffer: focus Emacs
-           (target-id (or id 1)))
-      ;; Only send focus command if target changed
-      (unless (eq target-id ewm-input--last-focused-id)
-        (setq ewm-input--last-focused-id target-id)
-        (ewm-focus target-id)))))
+           ;; Non-surface buffer: focus the current frame's surface
+           (frame-surface-id (frame-parameter nil 'ewm-surface-id))
+           (target-id (or id frame-surface-id 1)))
+      (ewm-input--focus-debounced target-id))))
 
 (defun ewm-input--on-post-command ()
   "Hook called after each command.
@@ -636,22 +666,32 @@ Also updates multi-view layout when selected window changes."
         (ewm-layout--refresh))
       ;; Focus the surface for keyboard input
       (when id
-        (setq ewm-input--last-focused-id id)
-        (ewm-focus id)))))
+        (ewm-input--focus-debounced id)))))
+
+(defun ewm-input--on-focus-change ()
+  "Handle frame focus changes.
+Called via `after-focus-change-function' to sync compositor focus."
+  (when (and ewm--process (process-live-p ewm--process))
+    (let* ((frame (selected-frame))
+           (frame-surface-id (frame-parameter frame 'ewm-surface-id)))
+      (when frame-surface-id
+        (ewm-input--focus-debounced frame-surface-id)))))
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm-input--last-focused-id 1)  ; Start with Emacs focused
   (setq ewm-input--last-selected-window (selected-window))
   (add-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
-  (add-hook 'post-command-hook #'ewm-input--on-post-command))
+  (add-hook 'post-command-hook #'ewm-input--on-post-command)
+  (add-function :after after-focus-change-function #'ewm-input--on-focus-change))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm-input--last-focused-id nil)
   (setq ewm-input--last-selected-window nil)
   (remove-hook 'buffer-list-update-hook #'ewm-input--on-buffer-list-update)
-  (remove-hook 'post-command-hook #'ewm-input--on-post-command))
+  (remove-hook 'post-command-hook #'ewm-input--on-post-command)
+  (remove-function after-focus-change-function #'ewm-input--on-focus-change))
 
 (defun ewm--event-to-intercept-spec (event)
   "Convert EVENT to an intercept specification for the compositor.
@@ -846,8 +886,6 @@ Writes to /tmp/ewm-surfaces.txt for debugging."
 
 ;;; Layout (adapted from EXWM's exwm-layout.el and exwm-core.el)
 
-(require 'cl-lib)
-
 ;; Compatibility wrapper for window-inside-absolute-pixel-edges
 ;; Fixes tab-line handling for Emacs < 31 (from exwm-core.el)
 (defalias 'ewm--window-inside-absolute-pixel-edges
@@ -904,18 +942,7 @@ Adapted from exwm-layout--show."
          (width (- (pop edges) x))
          (height (- (pop edges) y))
          (csd-offset (ewm--frame-y-offset (window-frame window)))
-         ;; Add CSD offset only - internal bars (menu, tool, tab) are already
-         ;; reflected in absolute pixel edges
          (final-y (+ y csd-offset)))
-    ;; Log debug info
-    (with-temp-buffer
-      (insert (format "=== Layout Debug ===\n"))
-      (insert (format "Surface ID: %d\n" id))
-      (insert (format "Window: %s\n" window))
-      (insert (format "Absolute edges: (%d %d %d %d)\n" x y (+ x width) (+ y height)))
-      (insert (format "CSD offset: %d\n" csd-offset))
-      (insert (format "Sending: (%d, %d) %dx%d\n" x final-y width height))
-      (write-region (point-min) (point-max) "/tmp/ewm-layout.txt"))
     (ewm-layout id x final-y width height)))
 
 (defun ewm-layout--refresh ()
