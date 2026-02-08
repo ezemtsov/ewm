@@ -398,6 +398,27 @@ impl Ewm {
         self.emacs_surfaces.contains(&self.focused_surface_id)
     }
 
+    /// Get the output where the focused surface is located
+    fn get_focused_output(&self) -> Option<String> {
+        let window = self.id_windows.get(&self.focused_surface_id)?;
+        let window_loc = self.space.element_location(window)?;
+
+        // Find which output contains this window's location
+        for output in self.space.outputs() {
+            if let Some(geo) = self.space.output_geometry(output) {
+                if window_loc.x >= geo.loc.x
+                    && window_loc.x < geo.loc.x + geo.size.w
+                    && window_loc.y >= geo.loc.y
+                    && window_loc.y < geo.loc.y + geo.size.h
+                {
+                    return Some(output.name());
+                }
+            }
+        }
+        // Fallback to first output
+        self.space.outputs().next().map(|o| o.name())
+    }
+
     /// Recalculate total output size from current space geometry
     pub fn recalculate_output_size(&mut self) {
         let (total_width, total_height) =
@@ -694,18 +715,21 @@ impl XdgShellHandler for Ewm {
         self.window_ids.insert(window.clone(), id);
         self.id_windows.insert(id, window.clone());
 
-        // Check for pending frame-to-output assignment
-        let assigned_output = if !self.pending_frame_outputs.is_empty() {
+        // Determine target output:
+        // 1. Emacs frames: from prepare-frame command (position at output, size to fill)
+        // 2. Other surfaces: from currently focused surface's output (offscreen, layout handles)
+        let frame_output = if !self.pending_frame_outputs.is_empty() {
             Some(self.pending_frame_outputs.remove(0))
         } else {
             None
         };
+        let target_output = frame_output.clone().or_else(|| self.get_focused_output());
 
-        // Position based on assignment or default
+        // Position based on surface type
         let position = if id == 1 {
             (0, 0)
-        } else if let Some(ref output_name) = assigned_output {
-            // Find output geometry and position there
+        } else if let Some(ref output_name) = frame_output {
+            // Emacs frame: position at output origin
             self.space
                 .outputs()
                 .find(|o| o.name() == *output_name)
@@ -713,12 +737,13 @@ impl XdgShellHandler for Ewm {
                 .map(|geo| (geo.loc.x, geo.loc.y))
                 .unwrap_or((-10000, -10000))
         } else {
+            // External app: offscreen, Emacs layout will position
             (-10000, -10000)
         };
         self.space.map_element(window.clone(), position, false);
 
-        // Resize to fill output if assigned
-        if let Some(ref output_name) = assigned_output {
+        // Resize Emacs frames to fill their output
+        if let Some(ref output_name) = frame_output {
             if let Some(geo) = self
                 .space
                 .outputs()
@@ -734,18 +759,19 @@ impl XdgShellHandler for Ewm {
             }
         }
 
+        // Send event to Emacs with target output
         if id != 1 {
             self.pending_events.push(IpcEvent::New {
                 id,
                 app: app.clone(),
-                output: assigned_output.clone(),
+                output: target_output.clone(),
             });
         }
         info!(
             "New toplevel {} ({}) -> {:?}",
             id,
             app,
-            assigned_output.as_deref().unwrap_or("unassigned")
+            target_output.as_deref().unwrap_or("unknown")
         );
     }
 

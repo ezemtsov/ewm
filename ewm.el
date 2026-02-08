@@ -110,36 +110,36 @@ Adapted from EXWM's behavior."
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
-If event has output field, this is an Emacs frame - find matching pending frame.
-Otherwise, creates a buffer for external surface.
+If there's a pending frame for this output, this is an Emacs frame.
+Otherwise, creates a buffer for external surface and displays on the target output.
 Adapted from `exwm-manage--manage-window'."
   (let* ((id (gethash "id" event))
          (app (gethash "app" event))
-         (output (gethash "output" event)))
-    (if output
+         (output (gethash "output" event))
+         (pending (and output (assoc output ewm--pending-frame-outputs))))
+    (if pending
         ;; Emacs frame assigned to output by compositor
-        ;; Find the pending frame for this output
-        (let ((pending (assoc output ewm--pending-frame-outputs)))
-          (if pending
-              (let ((frame (cdr pending)))
-                (setq ewm--pending-frame-outputs
-                      (delete pending ewm--pending-frame-outputs))
-                (set-frame-parameter frame 'ewm-output output)
-                (set-frame-parameter frame 'ewm-surface-id id)
-                (message "EWM: frame on %s (surface %d)" output id))
-            (message "EWM: frame for %s but no pending frame found" output)))
-      ;; Regular surface - create buffer
+        (let ((frame (cdr pending)))
+          (setq ewm--pending-frame-outputs
+                (delete pending ewm--pending-frame-outputs))
+          (set-frame-parameter frame 'ewm-output output)
+          (set-frame-parameter frame 'ewm-surface-id id)
+          (message "EWM: frame on %s (surface %d)" output id))
+      ;; Regular surface - create buffer and display on target output's frame
       (let ((buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
         (puthash id `(:buffer ,buf :app ,app) ewm--surfaces)
         (with-current-buffer buf
           (ewm-surface-mode)
           (setq-local ewm-surface-id id)
           (setq-local ewm-surface-app app))
-        ;; Display the new surface buffer (like EXWM's pop-to-buffer-same-window)
-        ;; This triggers buffer-list-update-hook which handles focus
+        ;; Display the new surface buffer on the frame for target output
         (when ewm-manage-focus-new-surface
-          (pop-to-buffer-same-window buf))
-        (message "EWM: new surface %d (%s)" id app)))))
+          (let ((target-frame (ewm--frame-for-output output)))
+            (if target-frame
+                (with-selected-frame target-frame
+                  (pop-to-buffer-same-window buf))
+              (pop-to-buffer-same-window buf))))
+        (message "EWM: new surface %d (%s) on %s" id app (or output "current"))))))
 
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.
@@ -316,6 +316,15 @@ Primary is the output at position (0, 0), or the first output."
                              ewm--outputs)
                  :name)
       (plist-get (car ewm--outputs) :name)))
+
+(defun ewm--get-output-offset (output-name)
+  "Return (x . y) offset for OUTPUT-NAME, or (0 . 0) if not found."
+  (let ((output (cl-find output-name ewm--outputs
+                         :test #'string= :key (lambda (o) (plist-get o :name)))))
+    (if output
+        (cons (or (plist-get output :x) 0)
+              (or (plist-get output :y) 0))
+      (cons 0 0))))
 
 (defun ewm--apply-output-config ()
   "Apply user output configuration from `ewm-output-config'."
@@ -936,14 +945,17 @@ The FRAME argument is kept for API compatibility but not used."
 (defun ewm-layout--show (id &optional window)
   "Show surface ID exactly fit in the Emacs window WINDOW.
 Adapted from exwm-layout--show."
-  (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
+  (let* ((frame (window-frame window))
+         (output-offset (ewm--get-output-offset (frame-parameter frame 'ewm-output)))
+         (edges (ewm--window-inside-absolute-pixel-edges window))
          (x (pop edges))
          (y (pop edges))
          (width (- (pop edges) x))
          (height (- (pop edges) y))
-         (csd-offset (ewm--frame-y-offset (window-frame window)))
-         (final-y (+ y csd-offset)))
-    (ewm-layout id x final-y width height)))
+         (csd-offset (ewm--frame-y-offset frame))
+         (final-x (+ x (car output-offset)))
+         (final-y (+ y csd-offset (cdr output-offset))))
+    (ewm-layout id final-x final-y width height)))
 
 (defun ewm-layout--refresh ()
   "Refresh layout for all surface buffers.
@@ -984,14 +996,17 @@ Adapted from exwm-layout--refresh-workspace."
 
 (defun ewm-layout--make-view (window active-p)
   "Create a view plist for WINDOW with ACTIVE-P flag."
-  (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
+  (let* ((frame (window-frame window))
+         (output-offset (ewm--get-output-offset (frame-parameter frame 'ewm-output)))
+         (edges (ewm--window-inside-absolute-pixel-edges window))
          (x (pop edges))
          (y (pop edges))
          (width (- (pop edges) x))
          (height (- (pop edges) y))
-         (csd-offset (ewm--frame-y-offset (window-frame window)))
-         (final-y (+ y csd-offset)))
-    `(:x ,x :y ,final-y :w ,width :h ,height :active ,(if active-p t :false))))
+         (csd-offset (ewm--frame-y-offset frame))
+         (final-x (+ x (car output-offset)))
+         (final-y (+ y csd-offset (cdr output-offset))))
+    `(:x ,final-x :y ,final-y :w ,width :h ,height :active ,(if active-p t :false))))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes."
