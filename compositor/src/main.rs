@@ -351,6 +351,10 @@ pub struct Ewm {
     // Active screen cast sessions (keyed by session_id)
     #[cfg(feature = "screencast")]
     pub screen_casts: std::collections::HashMap<usize, pipewire::stream::Cast>,
+
+    // D-Bus servers (must be kept alive for interfaces to work)
+    #[cfg(feature = "screencast")]
+    pub dbus_servers: Option<dbus::DBusServers>,
 }
 
 impl Ewm {
@@ -412,6 +416,8 @@ impl Ewm {
             dbus_outputs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             #[cfg(feature = "screencast")]
             screen_casts: std::collections::HashMap::new(),
+            #[cfg(feature = "screencast")]
+            dbus_servers: None,
         }
     }
 
@@ -645,8 +651,8 @@ impl Ewm {
 
 // Client tracking
 #[derive(Default)]
-struct ClientState {
-    compositor: CompositorClientState,
+pub struct ClientState {
+    pub compositor: CompositorClientState,
 }
 impl ClientData for ClientState {
     fn initialized(&self, client_id: ClientId) {

@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex};
 
 use smithay::reexports::calloop::channel::Sender;
 use tracing::{debug, info, warn};
+use zbus::blocking::Connection;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::{OwnedObjectPath, Value};
 use zbus::{fdo, interface, ObjectServer};
 
-use super::OutputInfo;
+use super::{OutputInfo, Start};
 
 /// Messages sent from D-Bus to compositor
 pub enum ScreenCastToCompositor {
@@ -325,4 +326,16 @@ impl Stream {
         signal_ctxt: &SignalEmitter<'_>,
         node_id: u32,
     ) -> zbus::Result<()>;
+}
+
+impl Start for ScreenCast {
+    fn start(self) -> anyhow::Result<Connection> {
+        info!("ScreenCast::start() - requesting D-Bus name org.gnome.Mutter.ScreenCast");
+        let conn = zbus::blocking::connection::Builder::session()?
+            .name("org.gnome.Mutter.ScreenCast")?
+            .serve_at("/org/gnome/Mutter/ScreenCast", self)?
+            .build()?;
+        info!("ScreenCast::start() - D-Bus connection established, unique name: {:?}", conn.unique_name());
+        Ok(conn)
+    }
 }

@@ -3,36 +3,25 @@
 //! Implements:
 //! - org.gnome.Mutter.ScreenCast for screen sharing
 //! - org.gnome.Mutter.DisplayConfig for monitor enumeration
+//! - org.gnome.Mutter.ServiceChannel for portal client connections
+//!
+//! Following niri's pattern: each interface gets its own blocking connection.
 
 pub mod display_config;
 pub mod screen_cast;
+pub mod service_channel;
 
 use std::sync::Arc;
 
-use anyhow::Context as _;
-use smithay::reexports::calloop::channel::{self, Channel, Sender};
+use smithay::reexports::calloop::channel::{self, Channel};
+use smithay::reexports::wayland_server::DisplayHandle;
 use tracing::{info, warn};
+use zbus::blocking::Connection;
+use zbus::object_server::Interface;
 
 pub use display_config::DisplayConfig;
 pub use screen_cast::{ScreenCast, ScreenCastToCompositor};
-
-/// Start the D-Bus server for screen casting and display config
-/// Returns a channel receiver that should be registered with the event loop
-pub fn start_dbus_server(
-    outputs: Arc<std::sync::Mutex<Vec<OutputInfo>>>,
-) -> anyhow::Result<Channel<ScreenCastToCompositor>> {
-    let (sender, receiver) = channel::channel::<ScreenCastToCompositor>();
-
-    // Spawn async D-Bus server
-    let outputs_clone = outputs.clone();
-    std::thread::spawn(move || {
-        if let Err(err) = run_dbus_server(outputs_clone, sender) {
-            warn!("D-Bus server error: {err:?}");
-        }
-    });
-
-    Ok(receiver)
-}
+pub use service_channel::ServiceChannel;
 
 /// Output information for D-Bus
 #[derive(Debug, Clone)]
@@ -43,28 +32,56 @@ pub struct OutputInfo {
     pub refresh: u32,
 }
 
-fn run_dbus_server(
-    outputs: Arc<std::sync::Mutex<Vec<OutputInfo>>>,
-    sender: Sender<ScreenCastToCompositor>,
-) -> anyhow::Result<()> {
-    async_io::block_on(async {
-        let screen_cast = ScreenCast::new(outputs.clone(), sender);
-        let display_config = DisplayConfig::new(outputs);
+/// Trait for starting D-Bus interfaces (like niri)
+trait Start: Interface {
+    fn start(self) -> anyhow::Result<Connection>;
+}
 
-        let _connection = zbus::connection::Builder::session()?
-            .name("org.gnome.Mutter.ScreenCast")?
-            .name("org.gnome.Mutter.DisplayConfig")?
-            .serve_at("/org/gnome/Mutter/ScreenCast", screen_cast)?
-            .serve_at("/org/gnome/Mutter/DisplayConfig", display_config)?
-            .build()
-            .await
-            .context("Failed to build D-Bus connection")?;
+/// D-Bus server connections
+#[derive(Default)]
+pub struct DBusServers {
+    pub conn_service_channel: Option<Connection>,
+    pub conn_display_config: Option<Connection>,
+    pub conn_screen_cast: Option<Connection>,
+}
 
-        info!("D-Bus interfaces registered (ScreenCast, DisplayConfig)");
+impl DBusServers {
+    /// Start all D-Bus servers (called from main thread, like niri)
+    pub fn start(
+        outputs: Arc<std::sync::Mutex<Vec<OutputInfo>>>,
+        display_handle: DisplayHandle,
+    ) -> (Self, Channel<ScreenCastToCompositor>) {
+        let mut dbus = Self::default();
 
-        // Keep the connection alive
-        loop {
-            std::future::pending::<()>().await;
+        // Start ServiceChannel first (needed for portal compatibility)
+        let service_channel = ServiceChannel::new(display_handle);
+        dbus.conn_service_channel = try_start(service_channel);
+
+        // Start DisplayConfig
+        let display_config = DisplayConfig::new(outputs.clone());
+        dbus.conn_display_config = try_start(display_config);
+
+        // Start ScreenCast with channel for compositor communication
+        let (sender, receiver) = channel::channel::<ScreenCastToCompositor>();
+        let screen_cast = ScreenCast::new(outputs, sender);
+        dbus.conn_screen_cast = try_start(screen_cast);
+
+        info!("D-Bus servers started");
+
+        (dbus, receiver)
+    }
+}
+
+fn try_start<I: Start>(iface: I) -> Option<Connection> {
+    info!("Attempting to start D-Bus interface: {}", I::name());
+    match iface.start() {
+        Ok(conn) => {
+            info!("Successfully started D-Bus interface: {} (unique_name: {:?})", I::name(), conn.unique_name());
+            Some(conn)
         }
-    })
+        Err(err) => {
+            warn!("FAILED to start D-Bus interface {}: {err:?}", I::name());
+            None
+        }
+    }
 }

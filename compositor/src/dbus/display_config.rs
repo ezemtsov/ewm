@@ -5,11 +5,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
+use tracing::info;
+use zbus::blocking::Connection;
 use zbus::zvariant::{OwnedValue, Type, Value};
 use zbus::{fdo, interface};
-use serde::Serialize;
 
-use super::OutputInfo;
+use super::{OutputInfo, Start};
 
 /// DisplayConfig D-Bus interface
 #[derive(Clone)]
@@ -68,7 +70,9 @@ impl DisplayConfig {
         Vec<LogicalMonitor>,              // logical_monitors
         HashMap<String, OwnedValue>,      // properties
     )> {
+        info!("DisplayConfig::get_current_state() called");
         let outputs = self.outputs.lock().unwrap();
+        info!("DisplayConfig::get_current_state() - found {} outputs", outputs.len());
 
         let mut monitors = Vec::new();
         let mut logical_monitors = Vec::new();
@@ -162,5 +166,17 @@ impl DisplayConfig {
     #[zbus(property)]
     fn night_light_supported(&self) -> bool {
         false
+    }
+}
+
+impl Start for DisplayConfig {
+    fn start(self) -> anyhow::Result<Connection> {
+        info!("DisplayConfig::start() - requesting D-Bus name org.gnome.Mutter.DisplayConfig");
+        let conn = zbus::blocking::connection::Builder::session()?
+            .name("org.gnome.Mutter.DisplayConfig")?
+            .serve_at("/org/gnome/Mutter/DisplayConfig", self)?
+            .build()?;
+        info!("DisplayConfig::start() - D-Bus connection established, unique name: {:?}", conn.unique_name());
+        Ok(conn)
     }
 }
