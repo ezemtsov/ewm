@@ -29,6 +29,7 @@ features = [
     "renderer_multi",
     "use_system_lib",
     "wayland_frontend",
+    "wayland-protocols-wlr",
 ]
 
 [dependencies.smithay-drm-extras]

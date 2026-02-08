@@ -15,6 +15,7 @@ mod backend;
 mod cursor;
 mod input;
 mod ipc;
+mod protocols;
 mod render;
 
 pub use backend::DrmBackendState;
@@ -34,6 +35,7 @@ use smithay::{
             generic::Generic, Interest, LoopHandle, Mode as CalloopMode, PostAction,
         },
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState,
+        wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
@@ -62,9 +64,11 @@ use smithay::{
             XdgToplevelSurfaceData,
         },
         shm::{ShmHandler, ShmState},
+        output::OutputManagerState,
         socket::ListeningSocketSource,
     },
 };
+use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -324,6 +328,13 @@ pub struct Ewm {
 
     // Pending frame-to-output assignments (from prepare-frame command)
     pending_frame_outputs: Vec<String>,
+
+    // Screencopy protocol state
+    pub screencopy_state: ScreencopyManagerState,
+
+    // Output manager state (provides xdg-output protocol)
+    #[allow(dead_code)]
+    pub output_manager_state: OutputManagerState,
 }
 
 impl Ewm {
@@ -340,6 +351,12 @@ impl Ewm {
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
         seat.add_keyboard(Default::default(), 200, 25).unwrap();
         seat.add_pointer();
+
+        // Initialize screencopy state before moving display_handle
+        let screencopy_state = ScreencopyManagerState::new::<Self, _>(&display_handle, |_| true);
+
+        // Initialize output manager with xdg-output protocol support
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
         Self {
             running: true,
@@ -371,6 +388,8 @@ impl Ewm {
             pending_screenshot: None,
             drm_backend: None,
             pending_frame_outputs: Vec::new(),
+            screencopy_state,
+            output_manager_state,
         }
     }
 
@@ -487,6 +506,14 @@ impl Ewm {
         self.pending_events.push(IpcEvent::OutputDisconnected {
             name: name.to_string(),
         });
+    }
+
+    /// Check if there are pending screencopy requests for any output
+    pub fn has_pending_screencopies(&self) -> bool {
+        // This is a workaround since we can't easily check the internal state
+        // without mutable access. We'll always return false here and let
+        // the render loop handle it with the mutable state.
+        false
     }
 
     pub fn init_wayland_listener(
@@ -897,6 +924,22 @@ impl XdgDecorationHandler for Ewm {
     fn unset_mode(&mut self, _toplevel: ToplevelSurface) {}
 }
 smithay::delegate_xdg_decoration!(Ewm);
+
+// Screencopy protocol
+impl ScreencopyHandler for Ewm {
+    fn frame(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy) {
+        // Queue all screencopy requests for processing during render
+        // (both with_damage and immediate requests are handled in the render loop)
+        if let Some(queue) = self.screencopy_state.get_queue_mut(manager) {
+            queue.push(screencopy);
+        }
+    }
+
+    fn screencopy_state(&mut self) -> &mut ScreencopyManagerState {
+        &mut self.screencopy_state
+    }
+}
+delegate_screencopy!(Ewm);
 
 /// Shared loop data for both winit and DRM backends
 pub struct LoopData {

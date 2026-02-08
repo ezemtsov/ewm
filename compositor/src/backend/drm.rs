@@ -61,7 +61,7 @@ use crate::{
     cursor::CursorBuffer,
     input::{handle_keyboard_event, KeyboardAction},
     ipc::setup_ipc_listener,
-    render::collect_render_elements_with_cursor,
+    render::{collect_render_elements_with_cursor, process_screencopies_for_output},
     spawn_client, Ewm, LoopData, OutputInfo, OutputMode,
 };
 
@@ -360,37 +360,48 @@ impl DrmBackendState {
     }
 
     /// Render a frame to the given output
-    fn render_output(&mut self, crtc: crtc::Handle, ewm: &Ewm) {
-        let Some(device) = &mut self.device else {
-            return;
-        };
+    fn render_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
+        // First pass: check if we should render and extract needed data
+        let (should_render, refresh_interval_us, output, render_node) = {
+            let Some(device) = &self.device else {
+                return;
+            };
 
-        let Some(surface) = device.surfaces.get_mut(&crtc) else {
-            return;
-        };
+            let Some(surface) = device.surfaces.get(&crtc) else {
+                return;
+            };
 
-        // Only render if we're in a queued state
-        let should_render = matches!(
-            surface.redraw_state,
-            RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-        );
-        if !should_render {
-            debug!("Skipping render: state={:?}", surface.redraw_state);
-            return;
-        }
-
-        if self.paused || !device.drm.is_active() {
-            debug!(
-                "Skipping render: paused={} drm_active={}",
-                self.paused,
-                device.drm.is_active()
+            // Only render if we're in a queued state
+            let should_render = matches!(
+                surface.redraw_state,
+                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
             );
+            if !should_render {
+                debug!("Skipping render: state={:?}", surface.redraw_state);
+                return;
+            }
+
+            if self.paused || !device.drm.is_active() {
+                debug!(
+                    "Skipping render: paused={} drm_active={}",
+                    self.paused,
+                    device.drm.is_active()
+                );
+                return;
+            }
+
+            (
+                should_render,
+                surface.refresh_interval_us,
+                surface.output.clone(),
+                device.render_node,
+            )
+        };
+
+        if !should_render {
             return;
         }
 
-        // Extract refresh_interval_us before we start borrowing surface mutably
-        let refresh_interval_us = surface.refresh_interval_us;
-        let output = surface.output.clone();
         let output_scale = Scale::from(output.current_scale().fractional_scale());
 
         // Get output position in global space (like niri does)
@@ -401,7 +412,11 @@ impl DrmBackendState {
             .unwrap_or_default();
 
         // Get a renderer from the GPU manager
-        let Ok(mut renderer) = device.gpu_manager.single_renderer(&device.render_node) else {
+        let Some(device) = &mut self.device else {
+            return;
+        };
+
+        let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
             warn!("Failed to get renderer from GPU manager");
             return;
         };
@@ -419,20 +434,28 @@ impl DrmBackendState {
         let flags =
             FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
 
-        // Render the frame
-        let compositor = &mut surface.compositor;
-        match compositor.render_frame::<_, _>(
+        // Render the frame - need to get surface mutably
+        let Some(surface) = device.surfaces.get_mut(&crtc) else {
+            return;
+        };
+
+        let render_result = surface.compositor.render_frame::<_, _>(
             renderer.as_mut(),
             &elements,
             [0.1, 0.1, 0.1, 1.0], // Dark gray background
             flags,
-        ) {
+        );
+
+        // Track if we need to process screencopy after releasing the surface borrow
+        let mut should_process_screencopy = false;
+
+        match render_result {
             Ok(result) => {
                 debug!("Render result: is_empty={}", result.is_empty);
 
                 if !result.is_empty {
                     // There's damage to display - queue frame and wait for VBlank
-                    match compositor.queue_frame(()) {
+                    match surface.compositor.queue_frame(()) {
                         Ok(()) => {
                             // Transition to WaitingForVBlank
                             surface.redraw_state = RedrawState::WaitingForVBlank { redraw_needed: false };
@@ -443,22 +466,56 @@ impl DrmBackendState {
                         }
                     }
                 } else {
-                    // No damage - use estimated VBlank timer
-                    self.queue_estimated_vblank_timer(crtc, refresh_interval_us);
+                    // No damage - mark that we need to queue estimated vblank timer
+                    // We'll do it after releasing the borrow
+                    surface.redraw_state = RedrawState::Idle; // Temporarily, will be updated
                 }
 
-                // Send frame callbacks to clients so they can commit new buffers
-                for window in ewm.space.elements() {
-                    window.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
-                }
+                should_process_screencopy = true;
             }
             Err(err) => {
                 warn!("Error rendering frame: {:?}", err);
-                if let Some(device) = &mut self.device {
-                    if let Some(surface) = device.surfaces.get_mut(&crtc) {
-                        surface.redraw_state = RedrawState::Idle;
-                    }
-                }
+                surface.redraw_state = RedrawState::Idle;
+            }
+        }
+
+        // Check if we need to queue estimated vblank timer (no-damage case)
+        let need_estimated_vblank = {
+            let Some(device) = &self.device else {
+                return;
+            };
+            let Some(surface) = device.surfaces.get(&crtc) else {
+                return;
+            };
+            matches!(surface.redraw_state, RedrawState::Idle) && should_process_screencopy
+        };
+
+        if need_estimated_vblank {
+            self.queue_estimated_vblank_timer(crtc, refresh_interval_us);
+        }
+
+        // Send frame callbacks to clients so they can commit new buffers
+        for window in ewm.space.elements() {
+            window.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
+        }
+
+        // Process pending screencopy requests for this output
+        if should_process_screencopy {
+            if let Some(ref event_loop) = self.loop_handle {
+                // Get renderer again for screencopy
+                let Some(device) = &mut self.device else {
+                    return;
+                };
+                let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
+                    return;
+                };
+                process_screencopies_for_output(
+                    ewm,
+                    renderer.as_mut(),
+                    &output,
+                    &self.cursor_buffer,
+                    event_loop,
+                );
             }
         }
     }
@@ -480,10 +537,11 @@ impl DrmBackendState {
         let duration = Duration::from_micros(refresh_interval_us.max(1000));
 
         match handle.insert_source(Timer::from_duration(duration), move |_, _, data| {
-            if let Some(drm_backend) = data.state.drm_backend.as_ref() {
+            // Clone the Rc to avoid borrow issues
+            if let Some(drm_backend) = data.state.drm_backend.clone() {
                 drm_backend
                     .borrow_mut()
-                    .on_estimated_vblank_timer(crtc, &data.state);
+                    .on_estimated_vblank_timer(crtc, &mut data.state);
             }
             TimeoutAction::Drop
         }) {
@@ -498,7 +556,7 @@ impl DrmBackendState {
     }
 
     /// Handle estimated VBlank timer firing
-    fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &Ewm) {
+    fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
         let action = {
             let Some(device) = &mut self.device else {
                 return;
@@ -533,7 +591,7 @@ impl DrmBackendState {
     }
 
     /// Process all outputs that have queued redraws
-    pub(crate) fn redraw_queued_outputs(&mut self, ewm: &Ewm) {
+    pub(crate) fn redraw_queued_outputs(&mut self, ewm: &mut Ewm) {
         let Some(device) = &self.device else {
             return;
         };
@@ -1167,7 +1225,7 @@ fn initialize_drm(
 
             if should_render {
                 drop(backend);
-                backend_for_vblank.borrow_mut().render_output(crtc, &data.state);
+                backend_for_vblank.borrow_mut().render_output(crtc, &mut data.state);
             }
         }
     })?;
@@ -1564,7 +1622,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         data.display.flush_clients().unwrap();
 
         // Process any queued redraws after event dispatch
-        backend_state.borrow_mut().redraw_queued_outputs(&data.state);
+        backend_state.borrow_mut().redraw_queued_outputs(&mut data.state);
 
         // Flush pending events to Emacs
         data.flush_events();

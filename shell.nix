@@ -27,8 +27,12 @@ pkgs.mkShell {
     libdrm.dev
     libgbm       # provides gbm
 
-    # For tests
+    # Wayland debugging utilities
     grim
+    wlr-randr      # output configuration
+    wayland-utils  # wayland-info
+    wev            # wayland event viewer
+    slurp          # region selection
   ];
 
   LD_LIBRARY_PATH = with pkgs; lib.makeLibraryPath [

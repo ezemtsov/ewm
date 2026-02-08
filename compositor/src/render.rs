@@ -3,19 +3,33 @@
 //! This module provides functions for collecting render elements from
 //! the compositor state, shared between Winit and DRM backends.
 
+use std::ptr;
+
+use anyhow::{ensure, Context};
 use smithay::{
-    backend::renderer::{
-        element::{
-            memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement, Element,
-            Id, Kind, RenderElement,
+    backend::{
+        allocator::{dmabuf::Dmabuf, Buffer, Fourcc},
+        renderer::{
+            element::{
+                memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement, Element,
+                Id, Kind, RenderElement,
+            },
+            gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
+            sync::SyncPoint,
+            Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Unbind,
         },
-        gles::{GlesError, GlesFrame, GlesRenderer},
     },
-    utils::{Physical, Point, Rectangle, Scale},
+    reexports::{
+        calloop::LoopHandle,
+        wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm::Format},
+    },
+    utils::{Physical, Point, Rectangle, Scale, Size, Transform},
+    wayland::shm,
 };
 use tracing::warn;
 
-use crate::{cursor, Ewm};
+use crate::protocols::screencopy::ScreencopyBuffer;
+use crate::{cursor, Ewm, LoopData};
 
 /// Combined render element type for ewm
 /// This allows rendering both wayland surfaces and cursor images
@@ -217,4 +231,228 @@ pub fn collect_render_elements_with_cursor(
     }
 
     elements
+}
+
+/// Render elements to a dmabuf buffer for screencopy
+pub fn render_to_dmabuf(
+    renderer: &mut GlesRenderer,
+    dmabuf: Dmabuf,
+    size: Size<i32, Physical>,
+    scale: Scale<f64>,
+    transform: Transform,
+    elements: impl Iterator<Item = impl RenderElement<GlesRenderer>>,
+) -> anyhow::Result<SyncPoint> {
+    ensure!(
+        dmabuf.width() == size.w as u32 && dmabuf.height() == size.h as u32,
+        "invalid buffer size"
+    );
+    renderer.bind(dmabuf).context("error binding dmabuf")?;
+    render_elements_to_buffer(renderer, size, scale, transform, elements)
+}
+
+/// Render elements to an SHM buffer for screencopy
+pub fn render_to_shm(
+    renderer: &mut GlesRenderer,
+    buffer: &WlBuffer,
+    size: Size<i32, Physical>,
+    scale: Scale<f64>,
+    transform: Transform,
+    elements: impl Iterator<Item = impl RenderElement<GlesRenderer>>,
+) -> anyhow::Result<()> {
+    shm::with_buffer_contents_mut(buffer, |shm_buffer, shm_len, buffer_data| {
+        ensure!(
+            buffer_data.format == Format::Xrgb8888
+                && buffer_data.width == size.w
+                && buffer_data.height == size.h
+                && buffer_data.stride == size.w * 4
+                && shm_len == buffer_data.stride as usize * buffer_data.height as usize,
+            "invalid buffer format or size"
+        );
+
+        // Render to a texture first
+        let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+        let texture: GlesTexture = renderer
+            .create_buffer(Fourcc::Xrgb8888, buffer_size)
+            .context("error creating texture")?;
+
+        renderer
+            .bind(texture.clone())
+            .context("error binding texture")?;
+
+        // Render elements (don't unbind yet - we need to copy the framebuffer)
+        let _ = render_elements_no_unbind(renderer, size, scale, transform, elements)?;
+
+        // Download the result
+        let mapping = renderer
+            .copy_framebuffer(Rectangle::from_size(buffer_size), Fourcc::Xrgb8888)
+            .context("error copying framebuffer")?;
+
+        let bytes = renderer
+            .map_texture(&mapping)
+            .context("error mapping texture")?;
+
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), shm_buffer.cast(), shm_len);
+        }
+
+        // Now unbind
+        if let Err(err) = renderer.unbind() {
+            warn!("error unbinding after rendering: {:?}", err);
+        }
+
+        Ok(())
+    })
+    .context("expected shm buffer, but didn't get one")?
+}
+
+/// Shared rendering logic - renders elements but does NOT unbind
+fn render_elements_no_unbind(
+    renderer: &mut GlesRenderer,
+    size: Size<i32, Physical>,
+    scale: Scale<f64>,
+    transform: Transform,
+    elements: impl Iterator<Item = impl RenderElement<GlesRenderer>>,
+) -> anyhow::Result<SyncPoint> {
+    let transform = transform.invert();
+    let output_rect = Rectangle::from_size(transform.transform_size(size));
+
+    let mut frame = renderer
+        .render(size, transform)
+        .context("error starting frame")?;
+
+    frame
+        .clear(Color32F::TRANSPARENT, &[output_rect])
+        .context("error clearing")?;
+
+    for element in elements {
+        let src = element.src();
+        let dst = element.geometry(scale);
+
+        if let Some(mut damage) = output_rect.intersection(dst) {
+            damage.loc -= dst.loc;
+            element
+                .draw(&mut frame, src, dst, &[damage], &[])
+                .context("error drawing element")?;
+        }
+    }
+
+    frame.finish().context("error finishing frame")
+}
+
+/// Shared rendering logic for screencopy (renders and unbinds)
+fn render_elements_to_buffer(
+    renderer: &mut GlesRenderer,
+    size: Size<i32, Physical>,
+    scale: Scale<f64>,
+    transform: Transform,
+    elements: impl Iterator<Item = impl RenderElement<GlesRenderer>>,
+) -> anyhow::Result<SyncPoint> {
+    let sync = render_elements_no_unbind(renderer, size, scale, transform, elements)?;
+
+    if let Err(err) = renderer.unbind() {
+        warn!("error unbinding after rendering: {:?}", err);
+    }
+
+    Ok(sync)
+}
+
+/// Process pending screencopy requests for a specific output
+///
+/// This should be called after rendering the main frame for an output.
+/// It renders the screen content to any pending screencopy buffers.
+pub fn process_screencopies_for_output(
+    ewm: &mut Ewm,
+    renderer: &mut GlesRenderer,
+    output: &smithay::output::Output,
+    cursor_buffer: &cursor::CursorBuffer,
+    event_loop: &LoopHandle<'static, LoopData>,
+) {
+    use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
+
+    let output_scale = Scale::from(output.current_scale().fractional_scale());
+    let output_transform = output.current_transform();
+
+    // Get output position
+    let output_pos = ewm
+        .space
+        .output_geometry(output)
+        .map(|geo| geo.loc)
+        .unwrap_or_default();
+
+    // Collect pending screencopies for this output
+    let mut pending = Vec::new();
+    for queue in ewm.screencopy_state.queues_mut() {
+        while let Some(screencopy) = queue.split() {
+            if screencopy.output() == output {
+                pending.push(queue.pop());
+            } else {
+                break;
+            }
+        }
+    }
+
+    if pending.is_empty() {
+        return;
+    }
+
+    // Collect render elements once for all screencopies
+    let elements = collect_render_elements_with_cursor(
+        ewm,
+        renderer,
+        output_scale,
+        cursor_buffer,
+        output_pos,
+    );
+
+    for screencopy in pending {
+        let size = screencopy.buffer_size();
+        let region_loc = screencopy.region_loc();
+
+        // Offset elements for region capture
+        let relocated_elements: Vec<_> = elements
+            .iter()
+            .map(|element| {
+                RelocateRenderElement::from_element(
+                    element,
+                    region_loc.upscale(-1),
+                    Relocate::Relative,
+                )
+            })
+            .collect();
+
+        let render_result = match screencopy.buffer() {
+            ScreencopyBuffer::Dmabuf(dmabuf) => {
+                render_to_dmabuf(
+                    renderer,
+                    dmabuf.clone(),
+                    size,
+                    output_scale,
+                    output_transform,
+                    relocated_elements.iter().rev(),
+                )
+                .map(Some)
+            }
+            ScreencopyBuffer::Shm(buffer) => {
+                render_to_shm(
+                    renderer,
+                    buffer,
+                    size,
+                    output_scale,
+                    output_transform,
+                    relocated_elements.iter().rev(),
+                )
+                .map(|_| None)
+            }
+        };
+
+        match render_result {
+            Ok(sync) => {
+                screencopy.submit_after_sync(false, sync, event_loop);
+            }
+            Err(err) => {
+                warn!("Error rendering for screencopy: {:?}", err);
+                // screencopy will be dropped and client notified of failure
+            }
+        }
+    }
 }
