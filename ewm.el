@@ -177,8 +177,10 @@ Selects the window displaying the focused surface's buffer."
           ;; Find a window showing this buffer and select it
           (let ((win (get-buffer-window buf t)))
             (when win
-              (select-frame-set-input-focus (window-frame win))
-              (select-window win))))))))
+              ;; Suppress mouse-follows-focus since this came from a click
+              (let ((ewm-input--compositor-focus t))
+                (select-frame-set-input-focus (window-frame win))
+                (select-window win)))))))))
 
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.
@@ -636,6 +638,10 @@ Used to detect window switches for multi-view input routing.")
   "Last window for mouse-follows-focus.
 Used to avoid redundant pointer warps.")
 
+(defvar ewm-input--compositor-focus nil
+  "Non-nil when focus change is initiated by compositor.
+Set during `ewm--handle-focus' to suppress mouse-follows-focus.")
+
 (defvar ewm-input--focus-timer nil
   "Timer for debounced focus updates.")
 
@@ -669,7 +675,8 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
 (defun ewm-input--mouse-triggered-p ()
   "Return non-nil if current focus change was triggered by mouse."
   (or (mouse-event-p last-input-event)
-      (eq this-command 'handle-select-window)))
+      (eq this-command 'handle-select-window)
+      ewm-input--compositor-focus))
 
 (defun ewm-input--on-select-window (window &optional norecord)
   "Advice for `select-window' to implement mouse-follows-focus.
