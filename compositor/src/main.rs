@@ -347,6 +347,10 @@ pub struct Ewm {
     // Shared output info for D-Bus ScreenCast (thread-safe)
     #[cfg(feature = "screencast")]
     pub dbus_outputs: std::sync::Arc<std::sync::Mutex<Vec<dbus::OutputInfo>>>,
+
+    // Active screen cast sessions (keyed by session_id)
+    #[cfg(feature = "screencast")]
+    pub screen_casts: std::collections::HashMap<usize, pipewire::stream::Cast>,
 }
 
 impl Ewm {
@@ -406,6 +410,8 @@ impl Ewm {
             pipewire: None,
             #[cfg(feature = "screencast")]
             dbus_outputs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            #[cfg(feature = "screencast")]
+            screen_casts: std::collections::HashMap::new(),
         }
     }
 

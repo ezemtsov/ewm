@@ -1363,10 +1363,60 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         }
 
         // Start D-Bus ScreenCast server
-        use crate::dbus;
+        use crate::dbus::{self, ScreenCastToCompositor};
+        use smithay::reexports::calloop::channel::Event as ChannelEvent;
+
         let outputs = data.state.dbus_outputs.clone();
-        match dbus::start_dbus_server(&event_loop.handle(), outputs) {
-            Ok(_sender) => {
+        match dbus::start_dbus_server(outputs) {
+            Ok(receiver) => {
+                // Register the receiver to handle D-Bus messages
+                event_loop
+                    .handle()
+                    .insert_source(receiver, |event, _, loop_data| {
+                        if let ChannelEvent::Msg(msg) = event {
+                            match msg {
+                                ScreenCastToCompositor::StartCast { session_id, output_name } => {
+                                    tracing::info!("StartCast: session={}, output={}", session_id, output_name);
+
+                                    // Create PipeWire stream for this output
+                                    if let Some(ref pw) = loop_data.state.pipewire {
+                                        // Find output info
+                                        let output_info = loop_data.state.dbus_outputs.lock().unwrap()
+                                            .iter()
+                                            .find(|o| o.name == output_name)
+                                            .cloned();
+
+                                        if let Some(info) = output_info {
+                                            use crate::pipewire::stream::Cast;
+                                            use smithay::utils::Size;
+
+                                            match Cast::new(pw, Size::from((info.width, info.height)), info.refresh) {
+                                                Ok(cast) => {
+                                                    if let Some(node_id) = cast.node_id.get() {
+                                                        tracing::info!("PipeWire stream created, node_id={}", node_id);
+                                                    } else {
+                                                        tracing::info!("PipeWire stream created, waiting for node_id");
+                                                    }
+                                                    // Store the cast to keep the stream alive
+                                                    loop_data.state.screen_casts.insert(session_id, cast);
+                                                }
+                                                Err(err) => {
+                                                    tracing::warn!("Failed to create PipeWire stream: {err:?}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ScreenCastToCompositor::StopCast { session_id } => {
+                                    tracing::info!("StopCast: session={}", session_id);
+                                    // Remove the cast which will drop the PipeWire stream
+                                    loop_data.state.screen_casts.remove(&session_id);
+                                }
+                            }
+                        }
+                    })
+                    .expect("Failed to register D-Bus receiver");
+
                 tracing::info!("D-Bus ScreenCast server started");
             }
             Err(err) => {

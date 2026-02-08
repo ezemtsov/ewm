@@ -7,38 +7,26 @@ pub mod screen_cast;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use smithay::reexports::calloop::channel::{self, Sender};
-use smithay::reexports::calloop::LoopHandle;
+use smithay::reexports::calloop::channel::{self, Channel, Sender};
 use tracing::{info, warn};
 
 pub use screen_cast::{ScreenCast, ScreenCastToCompositor};
 
 /// Start the D-Bus server for screen casting
-pub fn start_dbus_server<D: 'static>(
-    event_loop: &LoopHandle<'static, D>,
+/// Returns a channel receiver that should be registered with the event loop
+pub fn start_dbus_server(
     outputs: Arc<std::sync::Mutex<Vec<OutputInfo>>>,
-) -> anyhow::Result<Sender<ScreenCastToCompositor>> {
+) -> anyhow::Result<Channel<ScreenCastToCompositor>> {
     let (sender, receiver) = channel::channel::<ScreenCastToCompositor>();
 
     // Spawn async D-Bus server
-    let sender_clone = sender.clone();
     std::thread::spawn(move || {
-        if let Err(err) = run_dbus_server(outputs, sender_clone) {
+        if let Err(err) = run_dbus_server(outputs, sender) {
             warn!("D-Bus server error: {err:?}");
         }
     });
 
-    // Register receiver with calloop
-    event_loop
-        .insert_source(receiver, |event, _, _| {
-            if let channel::Event::Msg(msg) = event {
-                info!("Received D-Bus message: {:?}", msg);
-                // Handle screen cast messages here
-            }
-        })
-        .map_err(|e| anyhow::anyhow!("Failed to register D-Bus receiver: {}", e))?;
-
-    Ok(sender)
+    Ok(receiver)
 }
 
 /// Output information for D-Bus
