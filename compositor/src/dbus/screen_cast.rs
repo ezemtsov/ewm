@@ -1,27 +1,46 @@
 //! org.gnome.Mutter.ScreenCast D-Bus interface implementation
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use smithay::reexports::calloop::channel::Sender;
 use tracing::{debug, info, warn};
-use zbus::object_server::SignalEmitter;
+use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::{OwnedObjectPath, Value};
 use zbus::{fdo, interface, ObjectServer};
 
 use super::OutputInfo;
 
 /// Messages sent from D-Bus to compositor
-#[derive(Debug)]
 pub enum ScreenCastToCompositor {
     StartCast {
         session_id: usize,
         output_name: String,
+        signal_ctx: SignalEmitter<'static>,
     },
     StopCast {
         session_id: usize,
     },
+}
+
+// Manual Debug impl since SignalEmitter doesn't implement Debug
+impl std::fmt::Debug for ScreenCastToCompositor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StartCast { session_id, output_name, .. } => {
+                f.debug_struct("StartCast")
+                    .field("session_id", session_id)
+                    .field("output_name", output_name)
+                    .finish()
+            }
+            Self::StopCast { session_id } => {
+                f.debug_struct("StopCast")
+                    .field("session_id", session_id)
+                    .finish()
+            }
+        }
+    }
 }
 
 /// Main ScreenCast interface
@@ -52,16 +71,8 @@ impl ScreenCast {
     async fn create_session(
         &self,
         #[zbus(object_server)] server: &ObjectServer,
-        properties: HashMap<&str, Value<'_>>,
+        _properties: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<OwnedObjectPath> {
-        debug!("CreateSession called with properties: {:?}", properties);
-
-        if properties.contains_key("remote-desktop-session-id") {
-            return Err(fdo::Error::Failed(
-                "remote desktop sessions not supported".to_owned(),
-            ));
-        }
-
         let session_id = SESSION_ID.fetch_add(1, Ordering::SeqCst);
         let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
         let path = OwnedObjectPath::try_from(path).unwrap();
@@ -76,24 +87,26 @@ impl ScreenCast {
             Ok(true) => {
                 self.sessions.lock().unwrap().push(session_id);
                 info!("Created ScreenCast session: {}", path);
+                Ok(path)
             }
-            Ok(false) => {
-                return Err(fdo::Error::Failed("session path already exists".to_owned()))
-            }
-            Err(err) => {
-                return Err(fdo::Error::Failed(format!(
-                    "error creating session object: {err:?}"
-                )))
-            }
+            Ok(false) => Err(fdo::Error::Failed("session path already exists".to_owned())),
+            Err(err) => Err(fdo::Error::Failed(format!(
+                "error creating session object: {err:?}"
+            ))),
         }
-
-        Ok(path)
     }
 
-    #[zbus(property)]
-    async fn version(&self) -> i32 {
+    #[zbus(property, name = "Version")]
+    fn version(&self) -> i32 {
         4
     }
+}
+
+/// Stream info stored in session
+struct StreamInfo {
+    stream: Stream,
+    iface: InterfaceRef<Stream>,
+    output_name: String,
 }
 
 /// Session interface
@@ -102,7 +115,8 @@ pub struct Session {
     id: usize,
     outputs: Arc<Mutex<Vec<OutputInfo>>>,
     to_compositor: Sender<ScreenCastToCompositor>,
-    streams: Arc<Mutex<Vec<usize>>>,
+    streams: Arc<Mutex<Vec<StreamInfo>>>,
+    stopped: Arc<AtomicBool>,
 }
 
 impl Session {
@@ -116,6 +130,7 @@ impl Session {
             outputs,
             to_compositor,
             streams: Arc::new(Mutex::new(Vec::new())),
+            stopped: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -126,7 +141,16 @@ static STREAM_ID: AtomicUsize = AtomicUsize::new(0);
 impl Session {
     async fn start(&self) {
         debug!("Session {} start", self.id);
-        // Streams are started when RecordMonitor is called
+
+        // Start all streams - send StartCast with signal emitter for each
+        let streams = self.streams.lock().unwrap();
+        for stream_info in streams.iter() {
+            stream_info.stream.start(
+                self.id,
+                stream_info.output_name.clone(),
+                stream_info.iface.signal_emitter().clone(),
+            );
+        }
     }
 
     async fn stop(
@@ -136,14 +160,27 @@ impl Session {
     ) {
         debug!("Session {} stop", self.id);
 
+        if self.stopped.swap(true, Ordering::SeqCst) {
+            // Already stopped
+            return;
+        }
+
+        // Signal that session is closed
+        let _ = Session::closed(&ctxt).await;
+
         if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StopCast {
             session_id: self.id,
         }) {
             warn!("Failed to send StopCast: {err:?}");
         }
 
-        // Signal that session is closed
-        let _ = Session::closed(&ctxt).await;
+        // Remove stream objects
+        let streams = std::mem::take(&mut *self.streams.lock().unwrap());
+        for stream_info in streams {
+            let _ = server
+                .remove::<Stream, _>(stream_info.iface.signal_emitter().path())
+                .await;
+        }
 
         // Remove session from server
         let _ = server.remove::<Session, _>(ctxt.path()).await;
@@ -184,10 +221,18 @@ impl Session {
             self.to_compositor.clone(),
         );
 
-        match server.at(&path, stream).await {
+        // Register stream with D-Bus and get InterfaceRef
+        let iface = match server.at(&path, stream.clone()).await {
             Ok(true) => {
-                self.streams.lock().unwrap().push(stream_id);
-                info!("Created ScreenCast stream: {}", path);
+                // Get the InterfaceRef for the stream we just registered
+                match server.interface::<_, Stream>(&path).await {
+                    Ok(iface) => iface,
+                    Err(err) => {
+                        return Err(fdo::Error::Failed(format!(
+                            "error getting stream interface: {err:?}"
+                        )));
+                    }
+                }
             }
             Ok(false) => {
                 return Err(fdo::Error::Failed("stream path already exists".to_owned()))
@@ -197,16 +242,16 @@ impl Session {
                     "error creating stream object: {err:?}"
                 )))
             }
-        }
+        };
 
-        // Notify compositor to start casting
-        if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StartCast {
-            session_id: self.id,
+        // Store stream info for later use in start()
+        self.streams.lock().unwrap().push(StreamInfo {
+            stream,
+            iface,
             output_name: connector.to_string(),
-        }) {
-            warn!("Failed to send StartCast: {err:?}");
-        }
+        });
 
+        info!("Created ScreenCast stream: {}", path);
         Ok(path)
     }
 
@@ -217,11 +262,13 @@ impl Session {
 /// Stream interface
 #[derive(Clone)]
 pub struct Stream {
+    #[allow(dead_code)]
     id: usize,
+    #[allow(dead_code)]
     session_id: usize,
     output: OutputInfo,
     to_compositor: Sender<ScreenCastToCompositor>,
-    pipewire_node_id: Arc<Mutex<Option<u32>>>,
+    was_started: Arc<AtomicBool>,
 }
 
 impl Stream {
@@ -236,12 +283,24 @@ impl Stream {
             session_id,
             output,
             to_compositor,
-            pipewire_node_id: Arc::new(Mutex::new(None)),
+            was_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn set_pipewire_node_id(&self, node_id: u32) {
-        *self.pipewire_node_id.lock().unwrap() = Some(node_id);
+    fn start(&self, session_id: usize, output_name: String, signal_ctx: SignalEmitter<'static>) {
+        if self.was_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        info!("Stream {} starting for output {}", self.id, output_name);
+
+        if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StartCast {
+            session_id,
+            output_name,
+            signal_ctx,
+        }) {
+            warn!("Failed to send StartCast: {err:?}");
+        }
     }
 }
 
@@ -262,7 +321,7 @@ impl Stream {
     }
 
     #[zbus(signal)]
-    async fn pipe_wire_stream_added(
+    pub async fn pipe_wire_stream_added(
         signal_ctxt: &SignalEmitter<'_>,
         node_id: u32,
     ) -> zbus::Result<()>;

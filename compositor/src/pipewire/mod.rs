@@ -18,6 +18,7 @@ use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, Regist
 use tracing::{info, warn};
 
 /// Messages sent from PipeWire thread to main compositor
+#[allow(dead_code)]
 pub enum PwToCompositor {
     /// A fatal error occurred, PipeWire needs to be reset
     FatalError,

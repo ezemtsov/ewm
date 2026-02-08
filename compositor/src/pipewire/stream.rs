@@ -18,8 +18,10 @@ use pipewire::spa::pod::ChoiceValue;
 use pipewire::stream::{Stream, StreamFlags, StreamListener, StreamState};
 use smithay::utils::{Physical, Size};
 use tracing::{debug, info, warn};
+use zbus::object_server::SignalEmitter;
 
 use super::PipeWire;
+use crate::dbus::screen_cast;
 
 /// A screen cast session
 pub struct Cast {
@@ -36,6 +38,7 @@ impl Cast {
         pipewire: &PipeWire,
         size: Size<i32, Physical>,
         refresh: u32,
+        signal_ctx: SignalEmitter<'static>,
     ) -> anyhow::Result<Self> {
         let size = Size::from((size.w as u32, size.h as u32));
 
@@ -56,9 +59,28 @@ impl Cast {
 
                 match new {
                     StreamState::Paused => {
-                        let id = stream.node_id();
-                        info!("PipeWire stream paused, node_id: {id}");
-                        node_id_clone.set(Some(id));
+                        // Only emit signal on first transition to Paused (when node_id is set)
+                        if node_id_clone.get().is_none() {
+                            let id = stream.node_id();
+                            info!("PipeWire stream paused, node_id: {id}");
+                            node_id_clone.set(Some(id));
+
+                            // Emit PipeWireStreamAdded signal
+                            info!("Emitting PipeWireStreamAdded signal with node_id={}", id);
+                            async_io::block_on(async {
+                                let res = screen_cast::Stream::pipe_wire_stream_added(
+                                    &signal_ctx,
+                                    id,
+                                )
+                                .await;
+
+                                if let Err(err) = res {
+                                    warn!("Error sending PipeWireStreamAdded: {err:?}");
+                                } else {
+                                    info!("PipeWireStreamAdded signal emitted successfully");
+                                }
+                            });
+                        }
                         is_active_clone.set(false);
                     }
                     StreamState::Streaming => {

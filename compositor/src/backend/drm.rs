@@ -1375,7 +1375,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                     .insert_source(receiver, |event, _, loop_data| {
                         if let ChannelEvent::Msg(msg) = event {
                             match msg {
-                                ScreenCastToCompositor::StartCast { session_id, output_name } => {
+                                ScreenCastToCompositor::StartCast { session_id, output_name, signal_ctx } => {
                                     tracing::info!("StartCast: session={}, output={}", session_id, output_name);
 
                                     // Create PipeWire stream for this output
@@ -1390,13 +1390,9 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                                             use crate::pipewire::stream::Cast;
                                             use smithay::utils::Size;
 
-                                            match Cast::new(pw, Size::from((info.width, info.height)), info.refresh) {
+                                            match Cast::new(pw, Size::from((info.width, info.height)), info.refresh, signal_ctx) {
                                                 Ok(cast) => {
-                                                    if let Some(node_id) = cast.node_id.get() {
-                                                        tracing::info!("PipeWire stream created, node_id={}", node_id);
-                                                    } else {
-                                                        tracing::info!("PipeWire stream created, waiting for node_id");
-                                                    }
+                                                    tracing::info!("PipeWire stream created, waiting for state change");
                                                     // Store the cast to keep the stream alive
                                                     loop_data.state.screen_casts.insert(session_id, cast);
                                                 }

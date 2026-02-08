@@ -45,7 +45,7 @@ fn run_dbus_server(
     async_io::block_on(async {
         let screen_cast = ScreenCast::new(outputs, sender);
 
-        let connection = zbus::connection::Builder::session()?
+        let _connection = zbus::connection::Builder::session()?
             .name("org.gnome.Mutter.ScreenCast")?
             .serve_at("/org/gnome/Mutter/ScreenCast", screen_cast)?
             .build()
