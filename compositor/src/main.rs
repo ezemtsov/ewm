@@ -25,7 +25,6 @@ mod render;
 pub use backend::DrmBackendState;
 
 use smithay::{
-    backend::renderer::utils::with_renderer_surface_state,
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_shell,
     desktop::{Space, Window},
@@ -50,7 +49,10 @@ use smithay::{
     utils::SERIAL_COUNTER,
     wayland::{
         buffer::BufferHandler,
-        compositor::{CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{
+            get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler,
+            CompositorState,
+        },
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         seat::WaylandFocus,
         selection::{
@@ -774,45 +776,49 @@ impl CompositorHandler for Ewm {
             backend.borrow_mut().early_import(surface);
         }
 
-        let has_buffer =
-            with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
+        // Early return for sync subsurfaces - parent commit will handle them
+        if is_sync_subsurface(surface) {
+            return;
+        }
 
-        if has_buffer {
-            // Find which window this surface belongs to
-            let window_id = self.space.elements().find_map(|window| {
-                window.wl_surface().and_then(|ws| {
-                    if ws.id() == surface.id() {
-                        self.window_ids.get(window).copied()
-                    } else {
-                        None
-                    }
-                })
-            });
+        // Find the root surface (toplevel) for this surface
+        let mut root_surface = surface.clone();
+        while let Some(parent) = get_parent(&root_surface) {
+            root_surface = parent;
+        }
 
-            if let Some(ref backend) = self.drm_backend {
-                if let Some(id) = window_id {
-                    // Queue redraw only for outputs this window is visible on
-                    let outputs = self.outputs_for_window(id);
-                    if outputs.is_empty() {
-                        // Fallback: window not on any output, redraw all
-                        backend.borrow_mut().queue_redraw();
-                    } else {
-                        for output in &outputs {
-                            backend.borrow_mut().queue_redraw_for_output(output);
-                        }
-                    }
+        // Find the window that owns this root surface
+        let window_and_id = self.space.elements().find_map(|window| {
+            window.wl_surface().and_then(|ws| {
+                if *ws == root_surface {
+                    self.window_ids.get(window).map(|&id| (window.clone(), id))
                 } else {
-                    // Surface without window_id (subsurface or popup)
-                    // Parent surface will trigger redraw
+                    None
+                }
+            })
+        });
+
+        if let Some((window, id)) = window_and_id {
+            // Call on_commit only for this specific window
+            window.on_commit();
+
+            // Queue redraw only for outputs this window is visible on
+            if let Some(ref backend) = self.drm_backend {
+                let outputs = self.outputs_for_window(id);
+                if outputs.is_empty() {
+                    backend.borrow_mut().queue_redraw();
+                } else {
+                    for output in &outputs {
+                        backend.borrow_mut().queue_redraw_for_output(output);
+                    }
                 }
             }
-        }
 
-        for window in self.space.elements() {
-            window.on_commit();
+            // Check for title/app_id changes (only for toplevels)
+            self.check_surface_info_changes(surface);
         }
-
-        self.check_surface_info_changes(surface);
+        // For surfaces without a toplevel (popups, layer surfaces, etc.),
+        // the parent's commit or other handlers will manage redraw
     }
 }
 delegate_compositor!(Ewm);
