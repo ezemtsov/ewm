@@ -53,10 +53,27 @@ Load `ewm.el` in your Emacs:
 ```elisp
 (use-package ewm
   :load-path "~/git/ewm"
+  :demand t  ; IMPORTANT: required when using :bind
+  :custom
+  ;; Optional: configure output modes
+  (ewm-output-config '(("DP-1" :width 2560 :height 1440)))
   :config
-  ;; Auto-connect (safe - just warns if not running inside EWM)
-  (ewm-connect))
+  (ewm-connect)
+  :bind
+  ;; Super-key bindings are auto-detected by EWM
+  ("s-d" . consult-buffer)
+  ("s-<left>" . windmove-left)
+  ("s-<right>" . windmove-right))
 ```
+
+**Why `:demand t`?** When you use `:bind`, use-package defers loading until a
+bound key is pressed. This breaks EWM because `ewm-connect` in `:config` never
+runs at startup. Adding `:demand t` forces immediate loading so the compositor
+connection is established when Emacs starts.
+
+Unlike EXWM's `exwm-input-global-keys`, you don't need separate configuration.
+Just use normal `:bind` or `global-set-key` - EWM scans your keymaps and
+automatically intercepts keys with the super modifier.
 
 When Emacs connects to the compositor, Wayland surfaces appear as special buffers. Use standard Emacs commands:
 - `C-x b` - switch between apps and regular buffers
