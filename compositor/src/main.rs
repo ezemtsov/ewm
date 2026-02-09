@@ -83,7 +83,7 @@ use std::os::unix::net::UnixStream;
 use std::process::Child;
 use std::rc::Rc;
 use std::sync::Arc;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, warn};
 
 /// Kill combo: Super+Ctrl+Backspace
 /// Returns true if this key event is the kill combo
@@ -764,7 +764,6 @@ impl CompositorHandler for Ewm {
                     let outputs = self.outputs_for_window(id);
                     if outputs.is_empty() {
                         // Fallback: window not on any output, redraw all
-                        trace!(window_id = id, "window not on any output, redraw all");
                         backend.borrow_mut().queue_redraw();
                     } else {
                         for output in &outputs {
@@ -772,9 +771,8 @@ impl CompositorHandler for Ewm {
                         }
                     }
                 } else {
-                    // Surface without window_id - could be subsurface or popup
-                    // For now, don't trigger any redraw - parent will handle it
-                    trace!(surface = ?surface.id(), "surface without window_id, skipping redraw");
+                    // Surface without window_id (subsurface or popup)
+                    // Parent surface will trigger redraw
                 }
             }
         }
