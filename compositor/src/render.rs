@@ -11,14 +11,16 @@ use smithay::{
         allocator::{dmabuf::Dmabuf, Buffer, Fourcc},
         renderer::{
             element::{
-                memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement, Element,
-                Id, Kind, RenderElement,
+                memory::MemoryRenderBufferRenderElement,
+                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                Element, Id, Kind, RenderElement,
             },
             gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
             sync::SyncPoint,
             Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Unbind,
         },
     },
+    desktop::PopupManager,
     reexports::{
         calloop::LoopHandle,
         wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm::Format},
@@ -125,6 +127,7 @@ pub fn collect_render_elements(
     scale: Scale<f64>,
 ) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
     use smithay::backend::renderer::element::AsRenderElements;
+    use smithay::wayland::seat::WaylandFocus;
 
     let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
 
@@ -160,6 +163,28 @@ pub fn collect_render_elements(
         elements.extend(window_elements);
     }
 
+    // Render popups on top of windows
+    for window in ewm.space.elements() {
+        if let Some(surface) = window.wl_surface() {
+            let window_loc = ewm.space.element_location(window).unwrap_or_default();
+            let window_geo = window.geometry();
+
+            for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
+                let popup_loc = window_loc + window_geo.loc + popup_offset - popup.geometry().loc;
+                let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                    render_elements_from_surface_tree(
+                        renderer,
+                        popup.wl_surface(),
+                        popup_loc.to_physical_precise_round(scale),
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    );
+                elements.extend(render_elements);
+            }
+        }
+    }
+
     elements
 }
 
@@ -185,11 +210,15 @@ pub fn collect_render_elements_for_output(
 ) -> Vec<EwmRenderElement> {
     use smithay::backend::renderer::element::AsRenderElements;
     use smithay::utils::Logical;
+    use smithay::wayland::seat::WaylandFocus;
 
     let mut elements: Vec<EwmRenderElement> = Vec::new();
 
     // Output bounds in global logical coordinates
     let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
+
+    // Track cursor element count for popup insertion point
+    let mut cursor_element_count = 0;
 
     // Cursor goes on top - add it first (elements at start render on top)
     // Only include if cursor is within this output's bounds
@@ -207,6 +236,7 @@ pub fn collect_render_elements_for_output(
             match cursor_buffer.render_element(renderer, cursor_pos) {
                 Ok(cursor_element) => {
                     elements.push(EwmRenderElement::Cursor(cursor_element));
+                    cursor_element_count = 1;
                 }
                 Err(e) => {
                     warn!("Failed to create cursor render element: {:?}", e);
@@ -276,6 +306,47 @@ pub fn collect_render_elements_for_output(
             window.render_elements(renderer, loc_physical, scale, 1.0);
         elements.extend(window_elements.into_iter().map(EwmRenderElement::Surface));
     }
+
+    // Render popups on top of windows
+    // We collect popup elements and insert at the beginning for correct z-order
+    let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
+    for window in ewm.space.elements() {
+        if let Some(surface) = window.wl_surface() {
+            let window_loc = ewm.space.element_location(window).unwrap_or_default();
+            let window_geo = window.geometry();
+
+            for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
+                let popup_loc = window_loc + window_geo.loc + popup_offset - popup.geometry().loc;
+
+                // Check if popup intersects with this output
+                let popup_rect: Rectangle<i32, Logical> =
+                    Rectangle::new(popup_loc, popup.geometry().size);
+                if !output_rect.overlaps(popup_rect) {
+                    continue;
+                }
+
+                // Offset by output position for rendering
+                let render_loc = Point::from((
+                    popup_loc.x - output_pos.x,
+                    popup_loc.y - output_pos.y,
+                ));
+                let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                    render_elements_from_surface_tree(
+                        renderer,
+                        popup.wl_surface(),
+                        render_loc.to_physical_precise_round(scale),
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    );
+                popup_elements
+                    .extend(render_elements.into_iter().map(EwmRenderElement::Surface));
+            }
+        }
+    }
+
+    // Insert popups after cursor but before windows (cursor renders on top of popups)
+    elements.splice(cursor_element_count..cursor_element_count, popup_elements);
 
     elements
 }

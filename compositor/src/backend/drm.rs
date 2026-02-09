@@ -49,7 +49,7 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle, Resource},
     },
-    utils::{DeviceFd, Point, Scale, Transform, SERIAL_COUNTER},
+    utils::{DeviceFd, Scale, Transform, SERIAL_COUNTER},
     wayland::{dmabuf::DmabufFeedbackBuilder, seat::WaylandFocus},
 };
 #[cfg(feature = "screencast")]
@@ -1711,16 +1711,8 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                     let pointer = data.state.seat.get_pointer().unwrap();
                     let serial = SERIAL_COUNTER.next_serial();
 
-                    // Find surface under pointer
-                    let under = data
-                        .state
-                        .space
-                        .element_under((new_x, new_y))
-                        .and_then(|(window, loc)| {
-                            window
-                                .wl_surface()
-                                .map(|s| (s.into_owned(), Point::from((loc.x as f64, loc.y as f64))))
-                        });
+                    // Find surface under pointer (including popups)
+                    let under = data.state.surface_under_point((new_x, new_y).into());
 
                     pointer.motion(
                         &mut data.state,
@@ -1759,16 +1751,8 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                     let pointer = data.state.seat.get_pointer().unwrap();
                     let serial = SERIAL_COUNTER.next_serial();
 
-                    // Find surface under pointer
-                    let under = data
-                        .state
-                        .space
-                        .element_under((pos.x, pos.y))
-                        .and_then(|(window, loc)| {
-                            window
-                                .wl_surface()
-                                .map(|s| (s.into_owned(), Point::from((loc.x as f64, loc.y as f64))))
-                        });
+                    // Find surface under pointer (including popups)
+                    let under = data.state.surface_under_point(pos);
 
                     pointer.motion(
                         &mut data.state,

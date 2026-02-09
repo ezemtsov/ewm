@@ -27,7 +27,9 @@ pub use backend::DrmBackendState;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_shell,
-    desktop::{Space, Window},
+    desktop::{
+        find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window,
+    },
     output::Output,
     input::{
         keyboard::xkb::keysyms,
@@ -46,7 +48,7 @@ use smithay::{
             Display, DisplayHandle, Resource,
         },
     },
-    utils::SERIAL_COUNTER,
+    utils::{Rectangle, Size, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{
@@ -343,6 +345,9 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
 
+    // Popup manager for XDG popups
+    pub popups: PopupManager,
+
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
@@ -413,6 +418,7 @@ impl Ewm {
             pending_frame_outputs: Vec::new(),
             screencopy_state,
             output_manager_state,
+            popups: PopupManager::default(),
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -500,6 +506,45 @@ impl Ewm {
             .iter()
             .find(|(w, _)| w.wl_surface().map(|s| &*s == surface).unwrap_or(false))
             .map(|(_, &id)| id)
+    }
+
+    /// Find the surface under a point, checking popups first (they're on top)
+    /// Returns the surface and its location in global coordinates
+    pub fn surface_under_point(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
+        use smithay::wayland::seat::WaylandFocus;
+
+        // Check popups first (they're on top)
+        for window in self.space.elements() {
+            if let Some(surface) = window.wl_surface() {
+                let window_loc = self.space.element_location(window).unwrap_or_default();
+                let window_geo = window.geometry();
+
+                for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
+                    let popup_loc =
+                        (window_loc + window_geo.loc + popup_offset - popup.geometry().loc).to_f64();
+                    let pos_in_popup = pos - popup_loc;
+                    let popup_geo = popup.geometry();
+
+                    if pos_in_popup.x >= 0.0
+                        && pos_in_popup.y >= 0.0
+                        && pos_in_popup.x < popup_geo.size.w as f64
+                        && pos_in_popup.y < popup_geo.size.h as f64
+                    {
+                        return Some((popup.wl_surface().clone(), popup_loc));
+                    }
+                }
+            }
+        }
+
+        // Fall back to toplevels
+        self.space.element_under(pos).and_then(|(window, loc)| {
+            window
+                .wl_surface()
+                .map(|s| (s.into_owned(), loc.to_f64()))
+        })
     }
 
     /// Get the output where a surface is located
@@ -625,6 +670,35 @@ impl Ewm {
         // without mutable access. We'll always return false here and let
         // the render loop handle it with the mutable state.
         false
+    }
+
+    /// Unconstrain a popup's position to keep it within screen bounds
+    fn unconstrain_popup(&self, popup: &PopupSurface) {
+        let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
+            return;
+        };
+
+        // Find the window that owns this popup
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|w| w.wl_surface().map(|s| *s == root).unwrap_or(false))
+        else {
+            return;
+        };
+
+        // Get window location in global coordinates
+        let window_loc = self.space.element_location(window).unwrap_or_default();
+        let window_geo = window.geometry();
+
+        // Target rectangle is the full output, adjusted for popup's position in window
+        let mut target = Rectangle::from_size(Size::from(self.output_size));
+        target.loc -= window_loc + window_geo.loc;
+        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+
+        popup.with_pending_state(|state| {
+            state.geometry = state.positioner.get_unconstrained_geometry(target);
+        });
     }
 
     pub fn init_wayland_listener(
@@ -774,6 +848,16 @@ impl CompositorHandler for Ewm {
         // Early import for DRM backend
         if let Some(ref backend) = self.drm_backend {
             backend.borrow_mut().early_import(surface);
+        }
+
+        // Handle popup commits
+        self.popups.commit(surface);
+        if let Some(popup) = self.popups.find_popup(surface) {
+            if let PopupKind::Xdg(ref xdg_popup) = popup {
+                if !xdg_popup.is_initial_configure_sent() {
+                    xdg_popup.send_configure().expect("initial configure failed");
+                }
+            }
         }
 
         // Early return for sync subsurfaces - parent commit will handle them
@@ -1016,22 +1100,48 @@ impl XdgShellHandler for Ewm {
         }
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        self.unconstrain_popup(&surface);
+        if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
+            warn!("error tracking popup: {err:?}");
+        }
+    }
 
     fn grab(
         &mut self,
-        _surface: PopupSurface,
+        surface: PopupSurface,
         _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
-        _serial: smithay::utils::Serial,
+        serial: smithay::utils::Serial,
     ) {
+        let popup = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&popup) else {
+            return;
+        };
+
+        if let Err(err) = self.popups.grab_popup(root, popup, &self.seat, serial) {
+            warn!("error grabbing popup: {err:?}");
+        }
     }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+        self.unconstrain_popup(&surface);
+        surface.send_repositioned(token);
+    }
+
+    fn popup_destroyed(&mut self, _surface: PopupSurface) {
+        // Queue redraw to clear the popup from screen
+        if let Some(ref backend) = self.drm_backend {
+            backend.borrow_mut().queue_redraw();
+        }
     }
 }
 delegate_xdg_shell!(Ewm);

@@ -198,16 +198,8 @@ pub fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<d
                     let pointer = data.state.seat.get_pointer().unwrap();
                     let serial = SERIAL_COUNTER.next_serial();
 
-                    // Find surface under pointer
-                    let under = data
-                        .state
-                        .space
-                        .element_under((pos.x, pos.y))
-                        .and_then(|(window, loc)| {
-                            window
-                                .wl_surface()
-                                .map(|s| (s.into_owned(), (loc.x as f64, loc.y as f64).into()))
-                        });
+                    // Find surface under pointer (including popups)
+                    let under = data.state.surface_under_point(pos.into());
 
                     pointer.motion(
                         &mut data.state,
@@ -230,9 +222,11 @@ pub fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<d
                         ButtonState::Released => smithay::backend::input::ButtonState::Released,
                     };
 
-                    // Click-to-focus: on button press, focus the surface under pointer
+                    // Click-to-focus: on button press, focus the toplevel under pointer
+                    // (popups don't take independent keyboard focus)
                     if button_state == smithay::backend::input::ButtonState::Pressed {
                         let (px, py) = data.state.pointer_location;
+                        // Only focus toplevels, not popups
                         let focus_info = data
                             .state
                             .space
