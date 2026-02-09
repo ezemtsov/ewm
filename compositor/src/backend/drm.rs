@@ -3,8 +3,6 @@
 //! This module provides the backend for running directly on hardware without
 //! another compositor (like running from a TTY).
 //!
-//! Based on niri's TTY backend approach.
-//!
 //! Key insight: DRM master can only be acquired when the session is active.
 //! Session activation happens asynchronously via libseat, so we must defer
 //! all DRM operations until we receive an ActivateSession event.
@@ -58,12 +56,14 @@ use smithay::{
 use smithay::utils::Size;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, warn};
+#[cfg(feature = "screencast")]
+use tracing::trace;
 
 use crate::{
     cursor::CursorBuffer,
     input::{handle_keyboard_event, KeyboardAction},
     ipc::setup_ipc_listener,
-    render::{collect_render_elements_with_cursor, process_screencopies_for_output},
+    render::{collect_render_elements_for_output, process_screencopies_for_output},
     spawn_client, Ewm, LoopData, OutputInfo, OutputMode,
 };
 
@@ -82,9 +82,9 @@ type GbmDrmCompositor = DrmCompositor<
     DrmDeviceFd,
 >;
 
-/// Redraw state machine for proper VBlank synchronization
-/// Based on niri's approach to avoid the timing bug where the redraw flag
-/// is cleared too early (after queue_frame instead of after VBlank).
+/// Redraw state machine for proper VBlank synchronization.
+/// Avoids the timing bug where the redraw flag is cleared too early
+/// (after queue_frame instead of after VBlank).
 #[derive(Debug, Default)]
 pub enum RedrawState {
     /// No redraw pending, output is idle
@@ -406,12 +406,13 @@ impl DrmBackendState {
 
         let output_scale = Scale::from(output.current_scale().fractional_scale());
 
-        // Get output position in global space (like niri does)
-        let output_pos = ewm
+        // Get output geometry in global space
+        let output_geo = ewm
             .space
             .output_geometry(&output)
-            .map(|geo| geo.loc)
             .unwrap_or_default();
+        let output_pos = output_geo.loc;
+        let output_size = output_geo.size;
 
         // Get a renderer from the GPU manager
         let Some(device) = &mut self.device else {
@@ -423,16 +424,18 @@ impl DrmBackendState {
             return;
         };
 
-        // Collect render elements with cursor using shared function
-        let elements = collect_render_elements_with_cursor(
+        // Collect render elements for this specific output
+        let elements = collect_render_elements_for_output(
             ewm,
             renderer.as_mut(),
             output_scale,
             &self.cursor_buffer,
             output_pos,
+            output_size,
+            true, // include_cursor
         );
 
-        // Use the same frame flags as niri for proper plane scanout
+        // Frame flags for proper plane scanout
         let flags =
             FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
 
@@ -524,12 +527,18 @@ impl DrmBackendState {
         // Render to active screen casts for this output
         #[cfg(feature = "screencast")]
         if should_process_screencopy {
-            let output_size = output
+            use crate::protocols::screencopy::get_monotonic_time;
+
+            // Physical size for PipeWire buffer
+            let output_size_physical = output
                 .current_mode()
                 .map(|m| Size::from((m.size.w, m.size.h)))
                 .unwrap_or_else(|| Size::from((1920, 1080)));
 
-            // Use mem::take pattern (like niri) to avoid borrow conflicts
+            // Get current time for frame rate limiting
+            let target_frame_time = get_monotonic_time();
+
+            // Use mem::take pattern to avoid borrow conflicts
             let mut screen_casts = std::mem::take(&mut ewm.screen_casts);
             let mut sc_elements = None;
 
@@ -538,7 +547,13 @@ impl DrmBackendState {
                     continue;
                 }
 
-                // Lazily collect elements on first active cast
+                // Frame rate limiting - skip if too soon
+                if cast.should_skip_frame(target_frame_time) {
+                    trace!("PipeWire frame too soon, skipping");
+                    continue;
+                }
+
+                // Lazily collect elements for this output on first active cast
                 let elements = sc_elements.get_or_insert_with(|| {
                     let Some(device) = &mut self.device else {
                         return Vec::new();
@@ -546,12 +561,15 @@ impl DrmBackendState {
                     let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
                         return Vec::new();
                     };
-                    collect_render_elements_with_cursor(
+                    // Collect elements only for this output
+                    collect_render_elements_for_output(
                         ewm,
                         renderer.as_mut(),
                         output_scale,
                         &self.cursor_buffer,
                         output_pos,
+                        output_size,
+                        true, // include_cursor
                     )
                 });
 
@@ -563,13 +581,16 @@ impl DrmBackendState {
                     break;
                 };
 
-                // Render frame to the screen cast
-                cast.dequeue_buffer_and_render(
+                // Render frame to the screen cast (includes damage-based skipping)
+                if cast.dequeue_buffer_and_render(
                     renderer.as_mut(),
                     elements,
-                    output_size,
+                    output_size_physical,
                     output_scale,
-                );
+                ) {
+                    // Update last_frame_time on successful render
+                    cast.last_frame_time = target_frame_time;
+                }
             }
 
             ewm.screen_casts = screen_casts;
@@ -1452,7 +1473,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
             }
         }
 
-        // Start D-Bus servers (following niri's pattern)
+        // Start D-Bus servers
         use crate::dbus::{DBusServers, ScreenCastToCompositor};
         use smithay::reexports::calloop::channel::Event as ChannelEvent;
 

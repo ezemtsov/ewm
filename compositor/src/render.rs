@@ -163,46 +163,79 @@ pub fn collect_render_elements(
     elements
 }
 
-/// Collect render elements including cursor for DRM backend
+/// Collect render elements for a specific output.
 ///
-/// This version includes the cursor render element at the pointer position.
-/// The `output_pos` parameter is the output's position in global space.
-/// All elements are offset by this position so they render correctly
-/// on outputs that aren't at (0, 0), following niri's approach.
-pub fn collect_render_elements_with_cursor(
+/// This function collects only elements visible on the target output, filtering
+/// during collection rather than after. This is important for:
+/// 1. Efficient rendering - don't process elements that won't be visible
+/// 2. Accurate damage tracking - elements from other outputs don't trigger false damage
+///
+/// Parameters:
+/// - `output_pos`: The output's position in global logical space
+/// - `output_size`: The output's size in logical coordinates
+/// - `include_cursor`: Whether to include the cursor element
+pub fn collect_render_elements_for_output(
     ewm: &Ewm,
     renderer: &mut GlesRenderer,
     scale: Scale<f64>,
     cursor_buffer: &cursor::CursorBuffer,
     output_pos: Point<i32, smithay::utils::Logical>,
+    output_size: Size<i32, smithay::utils::Logical>,
+    include_cursor: bool,
 ) -> Vec<EwmRenderElement> {
     use smithay::backend::renderer::element::AsRenderElements;
+    use smithay::utils::Logical;
 
-    // Cursor goes on top - add it first (elements at start render on top)
     let mut elements: Vec<EwmRenderElement> = Vec::new();
 
-    // Offset cursor position by output location (like niri does)
-    let (pointer_x, pointer_y) = ewm.pointer_location;
-    let cursor_pos: Point<i32, Physical> = Point::from((
-        (pointer_x - cursor::CURSOR_HOTSPOT.0 as f64 - output_pos.x as f64) as i32,
-        (pointer_y - cursor::CURSOR_HOTSPOT.1 as f64 - output_pos.y as f64) as i32,
-    ));
+    // Output bounds in global logical coordinates
+    let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
 
-    match cursor_buffer.render_element(renderer, cursor_pos) {
-        Ok(cursor_element) => {
-            elements.push(EwmRenderElement::Cursor(cursor_element));
-        }
-        Err(e) => {
-            warn!("Failed to create cursor render element: {:?}", e);
+    // Cursor goes on top - add it first (elements at start render on top)
+    // Only include if cursor is within this output's bounds
+    if include_cursor {
+        let (pointer_x, pointer_y) = ewm.pointer_location;
+        let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
+
+        if output_rect.contains(pointer_pos) {
+            // Offset cursor position by output location
+            let cursor_pos: Point<i32, Physical> = Point::from((
+                (pointer_x - cursor::CURSOR_HOTSPOT.0 as f64 - output_pos.x as f64) as i32,
+                (pointer_y - cursor::CURSOR_HOTSPOT.1 as f64 - output_pos.y as f64) as i32,
+            ));
+
+            match cursor_buffer.render_element(renderer, cursor_pos) {
+                Ok(cursor_element) => {
+                    elements.push(EwmRenderElement::Cursor(cursor_element));
+                }
+                Err(e) => {
+                    warn!("Failed to create cursor render element: {:?}", e);
+                }
+            }
         }
     }
 
-    // Render ALL views for surfaces that have view data (from Emacs)
+    // Render views for surfaces that have view data (from Emacs)
+    // Only include views that intersect with this output
     for (&id, views) in &ewm.surface_views {
         if let Some(window) = ewm.id_windows.get(&id) {
+            // Get window size for intersection test
+            let window_geo = window.geometry();
+
             for view in views.iter() {
-                // Offset by output position
-                let location = smithay::utils::Point::from((view.x - output_pos.x, view.y - output_pos.y));
+                // View bounds in global coordinates
+                let view_rect: Rectangle<i32, Logical> = Rectangle::new(
+                    Point::from((view.x, view.y)),
+                    Size::from((window_geo.size.w, window_geo.size.h)),
+                );
+
+                // Skip views that don't intersect with this output
+                if !output_rect.overlaps(view_rect) {
+                    continue;
+                }
+
+                // Offset by output position for rendering
+                let location = Point::from((view.x - output_pos.x, view.y - output_pos.y));
                 let loc_physical = location.to_physical_precise_round(scale);
                 let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     window.render_elements(renderer, loc_physical, scale, 1.0);
@@ -211,7 +244,8 @@ pub fn collect_render_elements_with_cursor(
         }
     }
 
-    // Render surfaces from the space that DON'T have view data (like Emacs itself)
+    // Render surfaces from the space that DON'T have view data (like Emacs frames)
+    // Only include windows that intersect with this output
     for window in ewm.space.elements() {
         let window_id = ewm.window_ids.get(window).copied().unwrap_or(0);
 
@@ -221,7 +255,20 @@ pub fn collect_render_elements_with_cursor(
         }
 
         let loc = ewm.space.element_location(window).unwrap_or_default();
-        // Offset by output position
+        let window_geo = window.geometry();
+
+        // Window bounds in global coordinates
+        let window_rect: Rectangle<i32, Logical> = Rectangle::new(
+            loc,
+            Size::from((window_geo.size.w, window_geo.size.h)),
+        );
+
+        // Skip windows that don't intersect with this output
+        if !output_rect.overlaps(window_rect) {
+            continue;
+        }
+
+        // Offset by output position for rendering
         let loc_offset = Point::from((loc.x - output_pos.x, loc.y - output_pos.y));
         let loc_physical = loc_offset.to_physical_precise_round(scale);
 
@@ -368,25 +415,26 @@ pub fn process_screencopies_for_output(
     event_loop: &LoopHandle<'static, LoopData>,
 ) {
     use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
+    use tracing::trace;
 
     let output_scale = Scale::from(output.current_scale().fractional_scale());
     let output_transform = output.current_transform();
 
-    // Get output position
-    let output_pos = ewm
+    // Get output geometry
+    let output_geo = ewm
         .space
         .output_geometry(output)
-        .map(|geo| geo.loc)
         .unwrap_or_default();
+    let output_pos = output_geo.loc;
+    let output_size = output_geo.size;
 
     // Collect pending screencopies for this output
     let mut pending = Vec::new();
     for queue in ewm.screencopy_state.queues_mut() {
-        while let Some(screencopy) = queue.split() {
+        let (_damage_tracker, maybe_screencopy) = queue.split();
+        if let Some(screencopy) = maybe_screencopy {
             if screencopy.output() == output {
                 pending.push(queue.pop());
-            } else {
-                break;
             }
         }
     }
@@ -395,18 +443,21 @@ pub fn process_screencopies_for_output(
         return;
     }
 
-    // Collect render elements once for all screencopies
-    let elements = collect_render_elements_with_cursor(
+    // Collect render elements for this specific output
+    let elements = collect_render_elements_for_output(
         ewm,
         renderer,
         output_scale,
         cursor_buffer,
         output_pos,
+        output_size,
+        true, // include_cursor
     );
 
     for screencopy in pending {
         let size = screencopy.buffer_size();
         let region_loc = screencopy.region_loc();
+        let with_damage = screencopy.with_damage();
 
         // Offset elements for region capture
         let relocated_elements: Vec<_> = elements
@@ -447,6 +498,17 @@ pub fn process_screencopies_for_output(
 
         match render_result {
             Ok(sync) => {
+                // Send damage info if requested (with_damage=true)
+                if with_damage {
+                    // For now, report full damage since we always render
+                    // A more sophisticated implementation would track actual damage
+                    // Damage is in buffer coordinates (same as Physical for scale=1)
+                    let full_damage: Rectangle<i32, smithay::utils::Buffer> = Rectangle::from_size(
+                        Size::from((size.w, size.h))
+                    );
+                    screencopy.damage(std::iter::once(full_damage));
+                    trace!("screencopy with_damage: sent full damage");
+                }
                 screencopy.submit_after_sync(false, sync, event_loop);
             }
             Err(err) => {

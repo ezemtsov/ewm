@@ -31,3 +31,33 @@ Use conventional commits without Co-Authored-By lines:
 - Emacs sends pre-parsed keysyms to compositor (not string notation)
 - Super-key bindings are auto-detected from Emacs keymaps
 - `ewm-connect` is safe to call unconditionally (warns if socket missing)
+
+## Compositor Design Principles
+
+### Per-Output Rendering
+Render elements are collected per-output, not globally. Each output only receives
+elements that intersect with its geometry. This is critical for:
+- **Efficient rendering**: Don't process elements that won't be visible
+- **Accurate damage tracking**: Elements from other outputs don't trigger false damage
+- **Screen sharing**: Only elements on the shared output affect the stream
+
+### Damage-Based Frame Skipping
+Screen sharing uses damage tracking to skip frames when content hasn't changed:
+- `OutputDamageTracker` compares element commit counters between frames
+- No damage = no render = reduced CPU/GPU usage
+- Frame rate limiting provides a fallback (~30fps cap)
+
+### VBlank Synchronization
+The redraw state machine ensures proper frame pacing:
+- `RedrawState::Idle` → `Queued` → `WaitingForVBlank` → `Idle`
+- Redraw flag cleared after VBlank, not after queue_frame
+- Estimated VBlank timer used when no damage (avoids busy-waiting)
+
+### D-Bus Integration
+Each D-Bus interface (ScreenCast, DisplayConfig, ServiceChannel) gets its own
+blocking connection to avoid deadlocks between interfaces.
+
+## Reference Implementation
+The compositor's DRM backend, screen sharing, and D-Bus integration follow
+patterns from [niri](https://github.com/YaLTeR/niri), a Wayland compositor
+with excellent documentation and clean architecture.

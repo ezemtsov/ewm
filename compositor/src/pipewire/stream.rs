@@ -1,7 +1,6 @@
 //! PipeWire video stream for screen casting
 //!
 //! This module implements PipeWire video streaming for screen sharing.
-//! Based on niri's pw_utils.rs implementation.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -22,12 +21,16 @@ use pipewire::spa::pod::{self, ChoiceValue, Pod, PodPropFlags, Property, Propert
 use pipewire::spa::sys::*;
 use pipewire::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Direction, Fraction, Rectangle, SpaTypes};
 use pipewire::stream::{Stream, StreamFlags, StreamListener, StreamState};
+use std::time::Duration;
+
 use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
 use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::drm::DrmDeviceFd;
+use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::output::OutputModeSource;
 use smithay::reexports::gbm::Modifier;
 use smithay::utils::{Physical, Scale, Size, Transform};
 use tracing::{debug, info, trace, warn};
@@ -35,6 +38,9 @@ use zbus::object_server::SignalEmitter;
 
 use super::PipeWire;
 use crate::dbus::screen_cast;
+
+/// Allowance for frame timing - if delay is below this, proceed anyway
+const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 
 /// Cast state machine
 #[derive(Debug)]
@@ -46,6 +52,8 @@ enum CastState {
         size: Size<u32, Physical>,
         modifier: Modifier,
         plane_count: i32,
+        /// Damage tracker for skip-if-no-damage optimization (lazily initialized)
+        damage_tracker: Option<OutputDamageTracker>,
     },
 }
 
@@ -58,10 +66,12 @@ pub struct Cast {
     pub node_id: Rc<Cell<Option<u32>>>,
     /// The output name this cast is capturing
     pub output_name: String,
-    #[allow(dead_code)]
     state: Rc<RefCell<CastState>>,
-    #[allow(dead_code)]
     dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>>,
+    /// Monotonic time of last frame capture
+    pub last_frame_time: Duration,
+    /// Minimum time between frames (set during format negotiation)
+    min_time_between_frames: Rc<Cell<Duration>>,
 }
 
 impl Cast {
@@ -84,12 +94,14 @@ impl Cast {
         let is_active = Rc::new(Cell::new(false));
         let state = Rc::new(RefCell::new(CastState::Pending));
         let dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>> = Rc::new(RefCell::new(HashMap::new()));
+        let min_time_between_frames = Rc::new(Cell::new(Duration::ZERO));
 
         let node_id_clone = node_id.clone();
         let is_active_clone = is_active.clone();
 
         let state_clone = state.clone();
         let gbm_clone = gbm.clone();
+        let min_time_between_frames_clone = min_time_between_frames.clone();
 
         let listener = stream
             .add_local_listener_with_user_data(())
@@ -134,6 +146,7 @@ impl Cast {
             .param_changed({
                 let state = state_clone.clone();
                 let gbm = gbm_clone.clone();
+                let min_time_between_frames = min_time_between_frames_clone.clone();
                 move |stream, (), id, pod| {
                     if ParamType::from_raw(id) != ParamType::Format {
                         return;
@@ -159,6 +172,16 @@ impl Cast {
                         return;
                     }
                     debug!("PipeWire format: {format:?}");
+
+                    // Extract max framerate and compute min_time_between_frames
+                    let max_frame_rate = format.max_framerate();
+                    if max_frame_rate.num > 0 {
+                        let min_frame_time = Duration::from_micros(
+                            1_000_000 * u64::from(max_frame_rate.denom) / u64::from(max_frame_rate.num),
+                        );
+                        min_time_between_frames.set(min_frame_time);
+                        debug!("min_time_between_frames set to {:?}", min_frame_time);
+                    }
 
                     let format_size = Size::from((format.size().width, format.size().height));
 
@@ -204,6 +227,7 @@ impl Cast {
                                 size: format_size,
                                 modifier,
                                 plane_count: plane_count as i32,
+                                damage_tracker: None,
                             };
 
                             // Update params with fixated modifier
@@ -241,6 +265,7 @@ impl Cast {
                         size: format_size,
                         modifier,
                         plane_count: plane_count as i32,
+                        damage_tracker: None,
                     };
 
                     // Set buffer params
@@ -284,11 +309,14 @@ impl Cast {
                 let dmabufs = dmabufs.clone();
                 let gbm = gbm_clone.clone();
                 move |_stream, (), buffer| {
-                    let state = state.borrow();
-                    let CastState::Ready { size, modifier, .. } = &*state else {
+                    let state_ref = state.borrow();
+                    let CastState::Ready { size, modifier, .. } = &*state_ref else {
                         trace!("add_buffer but not ready yet");
                         return;
                     };
+                    let size = *size;
+                    let modifier = *modifier;
+                    drop(state_ref);
 
                     trace!("add_buffer: size={size:?}, modifier={modifier:?}");
 
@@ -296,7 +324,7 @@ impl Cast {
                         let spa_buffer = (*buffer).buffer;
                         let fourcc = Fourcc::Xrgb8888;
 
-                        let dmabuf = match allocate_dmabuf(&gbm, *size, fourcc, *modifier) {
+                        let dmabuf = match allocate_dmabuf(&gbm, size, fourcc, modifier) {
                             Ok(d) => d,
                             Err(err) => {
                                 warn!("error allocating dmabuf: {err:?}");
@@ -364,6 +392,8 @@ impl Cast {
             output_name,
             state,
             dmabufs,
+            last_frame_time: Duration::ZERO,
+            min_time_between_frames,
         })
     }
 
@@ -372,8 +402,49 @@ impl Cast {
         self.is_active.get()
     }
 
-    /// Dequeue a buffer, render to it, and queue it back (like niri)
-    /// Returns true if a frame was rendered
+    /// Compute extra delay needed before capturing next frame.
+    /// Returns Duration::ZERO if frame can be captured now.
+    fn compute_extra_delay(&self, target_frame_time: Duration) -> Duration {
+        let last = self.last_frame_time;
+        let min = self.min_time_between_frames.get();
+
+        if last.is_zero() {
+            trace!(?target_frame_time, ?last, "last is zero, recording first frame");
+            return Duration::ZERO;
+        }
+
+        if target_frame_time < last {
+            // Record frame with a warning; in case it was an overflow this will fix it.
+            warn!(
+                ?target_frame_time,
+                ?last,
+                "target frame time is below last, did it overflow?"
+            );
+            return Duration::ZERO;
+        }
+
+        let diff = target_frame_time - last;
+        if diff < min {
+            let delay = min - diff;
+            trace!(
+                ?target_frame_time,
+                ?last,
+                "frame is too soon: min={min:?}, delay={:?}",
+                delay
+            );
+            return delay;
+        }
+
+        Duration::ZERO
+    }
+
+    /// Returns true if frame should be skipped (too soon based on frame rate).
+    pub fn should_skip_frame(&self, target_frame_time: Duration) -> bool {
+        self.compute_extra_delay(target_frame_time) >= CAST_DELAY_ALLOWANCE
+    }
+
+    /// Dequeue a buffer, render to it, and queue it back.
+    /// Returns true if a frame was rendered.
     pub fn dequeue_buffer_and_render<E>(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -388,13 +459,41 @@ impl Cast {
             return false;
         }
 
-        let state = self.state.borrow();
-        let CastState::Ready { size, .. } = &*state else {
+        // Get ready state and check damage
+        let mut state = self.state.borrow_mut();
+        let CastState::Ready { size: ready_size, damage_tracker, .. } = &mut *state else {
             trace!("dequeue_buffer_and_render: not ready yet");
             return false;
         };
+
         // Use the negotiated size from CastState to match dmabuf dimensions
-        let size = Size::from((size.w as i32, size.h as i32));
+        let size = Size::from((ready_size.w as i32, ready_size.h as i32));
+
+        // Initialize or reset damage tracker if needed
+        let dt = damage_tracker.get_or_insert_with(|| {
+            OutputDamageTracker::new(size, scale, Transform::Normal)
+        });
+
+        // Check if scale changed (size change creates new Ready state)
+        let OutputModeSource::Static { scale: t_scale, .. } = dt.mode() else {
+            unreachable!();
+        };
+        if *t_scale != scale {
+            *dt = OutputDamageTracker::new(size, scale, Transform::Normal);
+        }
+
+        // Check damage - skip if none
+        let (damage, _states) = dt.damage_output(1, elements).unwrap();
+        if damage.is_none() {
+            trace!("no damage, skipping PipeWire frame");
+            return false;
+        }
+        trace!(
+            element_count = elements.len(),
+            damage_regions = ?damage.as_ref().map(|d| d.len()),
+            "PipeWire frame has damage"
+        );
+
         drop(state);
 
         let Some(mut buffer) = self.stream.dequeue_buffer() else {
@@ -422,14 +521,14 @@ impl Cast {
             return false;
         }
 
-        // Update buffer chunk metadata (like niri)
+        // Update buffer chunk metadata
         for (data, (stride, offset)) in buffer
             .datas_mut()
             .iter_mut()
             .zip(dmabuf.strides().zip(dmabuf.offsets()))
         {
             let chunk = data.chunk_mut();
-            *chunk.size_mut() = 1; // niri uses 1 here
+            *chunk.size_mut() = 1; // Size is set to 1 for DMA-BUF chunks
             *chunk.stride_mut() = stride as i32;
             *chunk.offset_mut() = offset;
         }
@@ -481,12 +580,12 @@ fn make_video_params(size: Size<u32, Physical>, refresh: u32) -> pod::Object {
             Fraction,
             Fraction {
                 num: refresh,
-                denom: 1000
+                denom: 1
             },
             Fraction { num: 1, denom: 1 },
             Fraction {
                 num: refresh,
-                denom: 1000
+                denom: 1
             }
         ),
     )
@@ -527,12 +626,12 @@ fn make_video_params_fixated(size: Size<u32, Physical>, refresh: u32, modifier: 
             Fraction,
             Fraction {
                 num: refresh,
-                denom: 1000
+                denom: 1
             },
             Fraction { num: 1, denom: 1 },
             Fraction {
                 num: refresh,
-                denom: 1000
+                denom: 1
             }
         ),
     )

@@ -697,7 +697,21 @@ impl CompositorHandler for Ewm {
             with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
 
         if has_buffer {
-            debug!("Surface {:?} committed with buffer", surface.id());
+            // Find which window this surface belongs to
+            let window_id = self.space.elements().find_map(|window| {
+                window.wl_surface().and_then(|ws| {
+                    if ws.id() == surface.id() {
+                        self.window_ids.get(window).copied()
+                    } else {
+                        None
+                    }
+                })
+            });
+            debug!(
+                "Surface {:?} committed with buffer (window_id: {:?})",
+                surface.id(),
+                window_id
+            );
             if let Some(ref backend) = self.drm_backend {
                 backend.borrow_mut().queue_redraw();
             }

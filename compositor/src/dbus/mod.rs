@@ -5,7 +5,7 @@
 //! - org.gnome.Mutter.DisplayConfig for monitor enumeration
 //! - org.gnome.Mutter.ServiceChannel for portal client connections
 //!
-//! Following niri's pattern: each interface gets its own blocking connection.
+//! Each interface gets its own blocking connection to avoid deadlocks.
 
 pub mod display_config;
 pub mod screen_cast;
@@ -34,7 +34,7 @@ pub struct OutputInfo {
     pub refresh: u32,
 }
 
-/// Trait for starting D-Bus interfaces (like niri)
+/// Trait for starting D-Bus interfaces
 trait Start: Interface {
     fn start(self) -> anyhow::Result<Connection>;
 }
@@ -48,7 +48,7 @@ pub struct DBusServers {
 }
 
 impl DBusServers {
-    /// Start all D-Bus servers (called from main thread, like niri)
+    /// Start all D-Bus servers (called from main thread)
     pub fn start(
         outputs: Arc<std::sync::Mutex<Vec<OutputInfo>>>,
         display_handle: DisplayHandle,

@@ -2,8 +2,6 @@
 //!
 //! This module provides support for the wlr-screencopy-unstable-v1 protocol,
 //! which allows clients like `grim` to capture screenshots.
-//!
-//! Adapted from niri's implementation.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +10,7 @@ use std::time::Duration;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Fourcc};
+use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
@@ -29,7 +28,7 @@ use smithay::reexports::wayland_server::protocol::wl_shm::Format;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
-use smithay::utils::{Physical, Point, Rectangle, Size};
+use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
 use smithay::wayland::{dmabuf, shm};
 use tracing::trace;
 
@@ -43,24 +42,30 @@ pub fn get_monotonic_time() -> Duration {
 
 /// Queue of pending screencopy requests for an output
 pub struct ScreencopyQueue {
+    damage_tracker: OutputDamageTracker,
     screencopies: Vec<Screencopy>,
 }
 
 impl Default for ScreencopyQueue {
     fn default() -> Self {
-        Self::new()
+        Self {
+            damage_tracker: OutputDamageTracker::new((0, 0), 1.0, Transform::Normal),
+            screencopies: Vec::new(),
+        }
     }
 }
 
 impl ScreencopyQueue {
     pub fn new() -> Self {
         Self {
+            damage_tracker: OutputDamageTracker::new((0, 0), 1.0, Transform::Normal),
             screencopies: Vec::new(),
         }
     }
 
-    pub fn split(&mut self) -> Option<&Screencopy> {
-        self.screencopies.first()
+    /// Split to get both damage tracker and first screencopy for damage-based optimization
+    pub fn split(&mut self) -> (&mut OutputDamageTracker, Option<&Screencopy>) {
+        (&mut self.damage_tracker, self.screencopies.first())
     }
 
     pub fn push(&mut self, screencopy: Screencopy) {

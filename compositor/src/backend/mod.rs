@@ -2,8 +2,6 @@
 //!
 //! This module provides a unified interface for different compositor backends
 //! (Winit for nested sessions, DRM for standalone TTY sessions).
-//!
-//! Following niri's architecture pattern for backend unification.
 
 pub mod drm;
 pub mod winit;
