@@ -63,8 +63,11 @@ pub fn handle_keyboard_event(
                 return FilterResult::Intercept(2); // 2 = kill
             }
 
-            // Get the keysym for this key and check if it matches any intercepted key
-            let keysym = handle.modified_sym();
+            // Get the raw latin keysym for this key (layout-independent)
+            // This ensures intercepted keys work regardless of current XKB layout
+            let raw_latin = handle.raw_latin_sym_or_raw_current_sym();
+            let modified = handle.modified_sym();
+            let keysym = raw_latin.unwrap_or(modified);
             let is_intercepted = intercepted_keys.iter().any(|ik| ik.matches(keysym.raw(), mods));
 
             if is_intercepted && !focus_on_emacs {
@@ -91,6 +94,16 @@ pub fn handle_keyboard_event(
                 state.keyboard_focus = Some(emacs_surface.clone());
                 keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
 
+                // Switch to base layout (index 0) when redirecting to Emacs
+                // This ensures Emacs keybindings work correctly
+                if state.xkb_current_layout != 0 && !state.xkb_layout_names.is_empty() {
+                    keyboard.with_xkb_state(state, |mut context| {
+                        context.set_layout(smithay::input::keyboard::Layout(0));
+                    });
+                    state.xkb_current_layout = 0;
+                    tracing::info!("Switched to base layout for Emacs redirect");
+                }
+
                 // Re-send the key to Emacs
                 keyboard.input::<(), _>(
                     state,
@@ -114,6 +127,22 @@ pub fn handle_keyboard_event(
                 state.keyboard_focus = Some(new_focus.clone());
                 keyboard.set_focus(state, Some(new_focus), serial);
             }
+        }
+    }
+
+    // Check if XKB layout changed (e.g., via grp:caps_toggle)
+    let current_layout = keyboard.with_xkb_state(state, |context| {
+        context.xkb().lock().unwrap().active_layout().0 as usize
+    });
+    if current_layout != state.xkb_current_layout {
+        state.xkb_current_layout = current_layout;
+        tracing::info!("XKB layout changed to index {}", current_layout);
+        // Notify Emacs of layout change
+        if !state.xkb_layout_names.is_empty() {
+            state.pending_events.push(crate::IpcEvent::LayoutSwitched {
+                layout: state.xkb_layout_names.get(current_layout).cloned().unwrap_or_default(),
+                index: current_layout,
+            });
         }
     }
 

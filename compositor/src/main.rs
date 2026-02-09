@@ -33,7 +33,7 @@ use smithay::{
     output::Output,
     input::{
         keyboard::xkb::keysyms,
-        keyboard::ModifiersState,
+        keyboard::{Layout, ModifiersState},
         Seat, SeatHandler, SeatState,
     },
     reexports::{
@@ -141,6 +141,10 @@ enum IpcEvent {
     OutputDisconnected { name: String },
     #[serde(rename = "outputs_complete")]
     OutputsComplete,
+    #[serde(rename = "layouts")]
+    Layouts { layouts: Vec<String>, current: usize },
+    #[serde(rename = "layout-switched")]
+    LayoutSwitched { layout: String, index: usize },
 }
 
 /// Cached surface info for change detection
@@ -199,6 +203,12 @@ enum Command {
     AssignOutput { id: u32, output: String },
     #[serde(rename = "prepare-frame")]
     PrepareFrame { output: String },
+    #[serde(rename = "configure-xkb")]
+    ConfigureXkb { layouts: String, options: Option<String> },
+    #[serde(rename = "switch-layout")]
+    SwitchLayout { layout: String },
+    #[serde(rename = "get-layouts")]
+    GetLayouts,
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -363,6 +373,10 @@ pub struct Ewm {
     // D-Bus servers (must be kept alive for interfaces to work)
     #[cfg(feature = "screencast")]
     pub dbus_servers: Option<dbus::DBusServers>,
+
+    // XKB layout state
+    pub xkb_layout_names: Vec<String>,
+    pub xkb_current_layout: usize,
 }
 
 impl Ewm {
@@ -427,6 +441,8 @@ impl Ewm {
             screen_casts: std::collections::HashMap::new(),
             #[cfg(feature = "screencast")]
             dbus_servers: None,
+            xkb_layout_names: vec!["us".to_string()],
+            xkb_current_layout: 0,
         }
     }
 
@@ -1473,6 +1489,96 @@ impl LoopData {
                 // Queue output for next frame creation
                 self.state.pending_frame_outputs.push(output.clone());
                 info!("Prepared frame for output {}", output);
+            }
+            Command::ConfigureXkb { layouts, options } => {
+                // Parse layout names from comma-separated string
+                let layout_names: Vec<String> = layouts
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if layout_names.is_empty() {
+                    warn!("No valid layouts in configure-xkb");
+                    return;
+                }
+
+                // Build XKB configuration
+                let xkb_config = smithay::input::keyboard::XkbConfig {
+                    layout: &layouts,
+                    options: options.clone(),
+                    ..Default::default()
+                };
+
+                // Reconfigure keyboard with new XKB settings
+                let keyboard = self.state.seat.get_keyboard().unwrap();
+                if let Err(e) = keyboard.set_xkb_config(&mut self.state, xkb_config) {
+                    error!("Failed to configure XKB: {:?}", e);
+                    return;
+                }
+
+                // Store layout names for name→index lookup
+                self.state.xkb_layout_names = layout_names.clone();
+                self.state.xkb_current_layout = 0;
+
+                info!(
+                    "Configured XKB layouts: {:?}, options: {:?}",
+                    layout_names,
+                    options
+                );
+
+                // Send layouts event back to Emacs
+                self.state.pending_events.push(IpcEvent::Layouts {
+                    layouts: layout_names,
+                    current: 0,
+                });
+            }
+            Command::SwitchLayout { layout } => {
+                // Find index of layout name
+                let index = self
+                    .state
+                    .xkb_layout_names
+                    .iter()
+                    .position(|l| l == &layout);
+
+                match index {
+                    Some(idx) => {
+                        // Switch to the layout using Smithay's keyboard API
+                        let keyboard = self.state.seat.get_keyboard().unwrap();
+
+                        // Clear focus, switch layout, restore focus (like niri)
+                        let current_focus = self.state.keyboard_focus.clone();
+                        keyboard.set_focus(&mut self.state, None, SERIAL_COUNTER.next_serial());
+                        keyboard.with_xkb_state(&mut self.state, |mut context| {
+                            context.set_layout(Layout(idx as u32));
+                        });
+                        keyboard.set_focus(&mut self.state, current_focus, SERIAL_COUNTER.next_serial());
+
+                        // Update internal state
+                        self.state.xkb_current_layout = idx;
+
+                        info!("Switched to layout: {} (index {})", layout, idx);
+
+                        // Emit layout-switched event
+                        self.state.pending_events.push(IpcEvent::LayoutSwitched {
+                            layout: layout.clone(),
+                            index: idx,
+                        });
+                    }
+                    None => {
+                        warn!(
+                            "Layout '{}' not found. Available: {:?}",
+                            layout, self.state.xkb_layout_names
+                        );
+                    }
+                }
+            }
+            Command::GetLayouts => {
+                // Query current layouts and active index
+                self.state.pending_events.push(IpcEvent::Layouts {
+                    layouts: self.state.xkb_layout_names.clone(),
+                    current: self.state.xkb_current_layout,
+                });
             }
         }
     }

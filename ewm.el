@@ -159,6 +159,8 @@ Example:
       ("output_detected" (ewm--handle-output-detected event))
       ("output_disconnected" (ewm--handle-output-disconnected event))
       ("outputs_complete" (ewm--handle-outputs-complete))
+      ("layouts" (ewm--handle-layouts event))
+      ("layout-switched" (ewm--handle-layout-switched event))
       (_ (ewm-log "unknown event type: %s" type)))))
 
 ;;; Event handlers
@@ -466,6 +468,21 @@ Applies user output config, then sets up frames."
   ;; Mark initial setup as complete (for hotplug detection)
   (setq ewm--initial-setup-done t))
 
+(defun ewm--handle-layouts (event)
+  "Handle layouts EVENT from compositor.
+Updates internal tracking of available layouts."
+  (pcase-let (((map ("layouts" layouts) ("current" current)) event))
+    (setq ewm--xkb-layouts-configured (append layouts nil))
+    (setq ewm--xkb-current-layout (nth current ewm--xkb-layouts-configured))
+    (ewm-log "layouts configured: %s, current: %s"
+             ewm--xkb-layouts-configured ewm--xkb-current-layout)))
+
+(defun ewm--handle-layout-switched (event)
+  "Handle layout-switched EVENT from compositor."
+  (pcase-let (((map ("layout" layout) ("index" _index)) event))
+    (setq ewm--xkb-current-layout layout)
+    (ewm-log "layout switched to: %s" layout)))
+
 (defun ewm--frame-for-output (output-name)
   "Return the frame assigned to OUTPUT-NAME, or nil."
   (cl-find output-name (frame-list)
@@ -679,6 +696,27 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
 (defgroup ewm-input nil
   "EWM input handling."
   :group 'ewm)
+
+;;; Keyboard layout integration
+
+(defcustom ewm-xkb-layouts '("us")
+  "List of XKB layout names to configure in the compositor.
+These layouts will be available for switching via `set-input-method'.
+Example: \\='(\"us\" \"ru\" \"no\")"
+  :type '(repeat string)
+  :group 'ewm-input)
+
+(defcustom ewm-xkb-options nil
+  "XKB options string for the compositor.
+Example: \"ctrl:nocaps,grp:alt_shift_toggle\""
+  :type '(choice (const nil) string)
+  :group 'ewm-input)
+
+(defvar ewm--xkb-layouts-configured nil
+  "List of layout names currently configured in compositor.")
+
+(defvar ewm--xkb-current-layout nil
+  "Current XKB layout name in compositor.")
 
 (defvar-local ewm-input--mode 'line-mode
   "Current input mode: `line-mode' or `char-mode'.")
@@ -1323,6 +1361,24 @@ Catches minibuffer height changes that window-configuration-change misses."
   (remove-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
   (remove-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
 
+;;; Keyboard layout sync
+
+(defun ewm--send-xkb-config ()
+  "Send XKB configuration to compositor.
+Configures keyboard layouts from `ewm-xkb-layouts' and options from
+`ewm-xkb-options'."
+  (when (and ewm--process (process-live-p ewm--process))
+    (let* ((layouts-str (string-join ewm-xkb-layouts ","))
+           (cmd (if ewm-xkb-options
+                    `(:cmd "configure-xkb"
+                      :layouts ,layouts-str
+                      :options ,ewm-xkb-options)
+                  `(:cmd "configure-xkb"
+                    :layouts ,layouts-str))))
+      (ewm--send cmd)
+      (ewm-log "sent XKB config: layouts=%s options=%s"
+               layouts-str ewm-xkb-options))))
+
 ;;; Global minor mode
 
 (defun ewm--mode-enable ()
@@ -1331,7 +1387,11 @@ Catches minibuffer height changes that window-configuration-change misses."
   (ewm--enable-layout-sync)
   (ewm-input--enable)
   (ewm--send-intercept-keys)
-  (add-hook 'after-make-frame-functions #'ewm--on-make-frame))
+  (ewm--send-xkb-config)
+  (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
+  ;; Resend intercept keys after startup to catch late-loaded bindings
+  (unless after-init-time
+    (add-hook 'emacs-startup-hook #'ewm--send-intercept-keys)))
 
 (defun ewm--mode-disable ()
   "Disable EWM integration."
