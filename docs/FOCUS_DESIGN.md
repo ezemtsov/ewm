@@ -72,11 +72,12 @@ With input-to-focus:
 - `ewm-focus(id)`: Request compositor to focus a surface
 - `ewm--handle-focus`: Handle focus event from compositor
 - `ewm-input--focus-debounced`: Debounced focus changes to prevent loops
-- `ewm-input--on-buffer-list-update`: Sync focus when buffer list changes
+- `ewm-input--on-window-buffer-change`: Sync focus when window's buffer changes
+- `ewm-input--on-window-selection-change`: Sync focus when selected window changes
 
-Note: Focus sync uses `(window-buffer (selected-window))` rather than
-`(current-buffer)` to avoid spurious focus changes during internal buffer
-operations (e.g., vterm output processing).
+Note: Focus sync uses `window-buffer-change-functions` and
+`window-selection-change-functions` instead of `buffer-list-update-hook`.
+This avoids spurious focus events from buffer renames (e.g., vterm title updates).
 
 ## Multi-Monitor Behavior
 
