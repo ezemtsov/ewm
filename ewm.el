@@ -824,7 +824,7 @@ Warps pointer to the selected window on FRAME unless triggered by mouse."
 
 (defun ewm-input--on-buffer-list-update ()
   "Hook called when buffer list changes.
-Updates keyboard focus based on current buffer.
+Updates keyboard focus based on selected window's buffer.
 Adapted from `exwm-input--on-buffer-list-update'.
 
 Like EXWM, when viewing a surface buffer, the surface has keyboard focus
@@ -835,7 +835,9 @@ Emacs (surface 1) has focus."
              (not ewm-input--skip-buffer-list-update)
              ;; Don't process during minibuffer operations (e.g., consult preview)
              (not (active-minibuffer-window)))
-    (let* ((buf (current-buffer))
+    ;; Use selected window's buffer, not current-buffer, to avoid spurious
+    ;; focus changes during internal buffer operations (e.g., vterm output)
+    (let* ((buf (window-buffer (selected-window)))
            (id (buffer-local-value 'ewm-surface-id buf))
            ;; Surface buffer: focus the surface (like EXWM)
            ;; Non-surface buffer: focus the current frame's surface
