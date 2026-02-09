@@ -54,6 +54,8 @@ use smithay::{
     utils::{DeviceFd, Point, Scale, Transform, SERIAL_COUNTER},
     wayland::{dmabuf::DmabufFeedbackBuilder, seat::WaylandFocus},
 };
+#[cfg(feature = "screencast")]
+use smithay::utils::Size;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, warn};
 
@@ -1742,6 +1744,26 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                 }
                 InputEvent::PointerAxis { event } => {
                     let pointer = data.state.seat.get_pointer().unwrap();
+                    let keyboard = data.state.seat.get_keyboard().unwrap();
+                    let serial = SERIAL_COUNTER.next_serial();
+
+                    // Scroll-to-focus: focus the surface under pointer on scroll
+                    let (px, py) = data.state.pointer_location;
+                    let focus_info = data
+                        .state
+                        .space
+                        .element_under((px, py))
+                        .and_then(|(window, _)| {
+                            let id = data.state.window_ids.get(&window).copied()?;
+                            let surface = window.wl_surface()?.into_owned();
+                            Some((id, surface))
+                        });
+
+                    if let Some((id, surface)) = focus_info {
+                        data.state.set_focus(id);
+                        data.state.keyboard_focus = Some(surface.clone());
+                        keyboard.set_focus(&mut data.state, Some(surface), serial);
+                    }
 
                     let source = event.source();
 
