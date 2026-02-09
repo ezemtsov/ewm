@@ -51,7 +51,7 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle, Resource},
     },
-    utils::{DeviceFd, Point, Scale, Size, Transform, SERIAL_COUNTER},
+    utils::{DeviceFd, Point, Scale, Transform, SERIAL_COUNTER},
     wayland::{dmabuf::DmabufFeedbackBuilder, seat::WaylandFocus},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -903,11 +903,13 @@ impl DrmBackendState {
             let mut dbus_outputs = ewm.dbus_outputs.lock().unwrap();
             dbus_outputs.push(crate::dbus::OutputInfo {
                 name: connector_name.clone(),
+                x: x_offset,
+                y: 0,
                 width: mode.size().0 as i32,
                 height: mode.size().1 as i32,
                 refresh: mode.vrefresh(),
             });
-            info!("Added D-Bus output: {} (total: {})", connector_name, dbus_outputs.len());
+            info!("Added D-Bus output: {} at ({}, 0) (total: {})", connector_name, x_offset, dbus_outputs.len());
         }
 
         // Recalculate output_size
@@ -1237,11 +1239,13 @@ fn initialize_drm(
             let mut dbus_outputs = ewm_state.dbus_outputs.lock().unwrap();
             dbus_outputs.push(crate::dbus::OutputInfo {
                 name: connector_name.clone(),
+                x: x_offset,
+                y: 0,
                 width: mode.size().0 as i32,
                 height: mode.size().1 as i32,
                 refresh: mode.vrefresh(),
             });
-            info!("Added D-Bus output: {} (total: {})", connector_name, dbus_outputs.len());
+            info!("Added D-Bus output: {} at ({}, 0) (total: {})", connector_name, x_offset, dbus_outputs.len());
         }
 
         // Update x_offset for next output

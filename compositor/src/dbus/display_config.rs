@@ -119,11 +119,10 @@ impl DisplayConfig {
                 properties,
             });
 
-            // Create logical monitor (assume all outputs are enabled at origin for now)
-            // TODO: Get actual position from compositor state
+            // Create logical monitor with actual position from compositor
             logical_monitors.push(LogicalMonitor {
-                x: 0,
-                y: 0,
+                x: output.x,
+                y: output.y,
                 scale: 1.0,
                 transform: 0, // Normal
                 is_primary: idx == 0,
