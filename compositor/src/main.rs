@@ -26,7 +26,8 @@ pub use backend::DrmBackendState;
 
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
-    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_shell,
+    delegate_primary_selection, delegate_seat, delegate_shm, delegate_text_input_manager,
+    delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window,
     },
@@ -75,6 +76,7 @@ use smithay::{
         shm::{ShmHandler, ShmState},
         output::OutputManagerState,
         socket::ListeningSocketSource,
+        text_input::TextInputManagerState,
     },
 };
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
@@ -355,6 +357,10 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
 
+    // Text input state (provides zwp_text_input_v3 protocol)
+    #[allow(dead_code)]
+    pub text_input_state: TextInputManagerState,
+
     // Popup manager for XDG popups
     pub popups: PopupManager,
 
@@ -400,6 +406,9 @@ impl Ewm {
         // Initialize output manager with xdg-output protocol support
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
+        // Initialize text input for input method support
+        let text_input_state = TextInputManagerState::new::<Self>(&display_handle);
+
         Self {
             running: true,
             space: Space::default(),
@@ -432,6 +441,7 @@ impl Ewm {
             pending_frame_outputs: Vec::new(),
             screencopy_state,
             output_manager_state,
+            text_input_state,
             popups: PopupManager::default(),
             #[cfg(feature = "screencast")]
             pipewire: None,
@@ -996,6 +1006,9 @@ delegate_primary_selection!(Ewm);
 // Output
 impl smithay::wayland::output::OutputHandler for Ewm {}
 delegate_output!(Ewm);
+
+// Text Input (for input method support)
+delegate_text_input_manager!(Ewm);
 
 // XDG Shell
 impl XdgShellHandler for Ewm {
