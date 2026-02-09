@@ -25,9 +25,9 @@ mod render;
 pub use backend::DrmBackendState;
 
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
-    delegate_primary_selection, delegate_seat, delegate_shm, delegate_text_input_manager,
-    delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_input_method_manager,
+    delegate_output, delegate_primary_selection, delegate_seat, delegate_shm,
+    delegate_text_input_manager, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window,
     },
@@ -77,6 +77,7 @@ use smithay::{
         output::OutputManagerState,
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
+        input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface},
     },
 };
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
@@ -361,6 +362,10 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub text_input_state: TextInputManagerState,
 
+    // Input method state (provides zwp_input_method_v2 protocol)
+    #[allow(dead_code)]
+    pub input_method_state: InputMethodManagerState,
+
     // Popup manager for XDG popups
     pub popups: PopupManager,
 
@@ -409,6 +414,9 @@ impl Ewm {
         // Initialize text input for input method support
         let text_input_state = TextInputManagerState::new::<Self>(&display_handle);
 
+        // Initialize input method manager (allows Emacs to act as input method)
+        let input_method_state = InputMethodManagerState::new::<Self, _>(&display_handle, |_| true);
+
         Self {
             running: true,
             space: Space::default(),
@@ -442,6 +450,7 @@ impl Ewm {
             screencopy_state,
             output_manager_state,
             text_input_state,
+            input_method_state,
             popups: PopupManager::default(),
             #[cfg(feature = "screencast")]
             pipewire: None,
@@ -1009,6 +1018,26 @@ delegate_output!(Ewm);
 
 // Text Input (for input method support)
 delegate_text_input_manager!(Ewm);
+
+// Input Method (allows Emacs to act as input method)
+impl InputMethodHandler for Ewm {
+    fn new_popup(&mut self, _surface: IMPopupSurface) {
+        // Input method popups not supported yet
+    }
+
+    fn dismiss_popup(&mut self, _surface: IMPopupSurface) {
+        // Input method popups not supported yet
+    }
+
+    fn popup_repositioned(&mut self, _surface: IMPopupSurface) {
+        // Input method popups not supported yet
+    }
+
+    fn parent_geometry(&self, _parent: &WlSurface) -> Rectangle<i32, smithay::utils::Logical> {
+        Rectangle::default()
+    }
+}
+delegate_input_method_manager!(Ewm);
 
 // XDG Shell
 impl XdgShellHandler for Ewm {
