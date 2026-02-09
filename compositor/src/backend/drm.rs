@@ -554,7 +554,20 @@ impl DrmBackendState {
             let mut screen_casts = std::mem::take(&mut ewm.screen_casts);
             let mut sc_elements = None;
 
+            // Collect valid output names to detect orphaned casts
+            let valid_outputs: std::collections::HashSet<String> = ewm
+                .space
+                .outputs()
+                .map(|o| o.name())
+                .collect();
+
             for cast in screen_casts.values_mut() {
+                // Skip casts for outputs that no longer exist (orphaned)
+                if !valid_outputs.contains(&cast.output_name) {
+                    trace!(output = %cast.output_name, "skipping orphaned cast");
+                    continue;
+                }
+
                 if !cast.is_streaming() || cast.output_name != output.name() {
                     continue;
                 }
@@ -978,6 +991,26 @@ impl DrmBackendState {
         }
 
         let output_name = surface.output.name();
+
+        // Stop any active screen casts for this output
+        #[cfg(feature = "screencast")]
+        {
+            let sessions_to_stop: Vec<usize> = ewm
+                .screen_casts
+                .iter()
+                .filter(|(_, cast)| cast.output_name == output_name)
+                .map(|(id, _)| *id)
+                .collect();
+
+            for session_id in sessions_to_stop {
+                info!(
+                    output = %output_name,
+                    session_id,
+                    "stopping cast due to output disconnect"
+                );
+                ewm.stop_cast(session_id);
+            }
+        }
 
         // Unmap from space
         ewm.space.unmap_output(&surface.output);
@@ -1474,10 +1507,31 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     {
         use crate::pipewire::PipeWire;
         match PipeWire::new(&event_loop.handle(), || {
-            tracing::warn!("PipeWire fatal error");
+            tracing::warn!("PipeWire fatal error callback triggered");
         }) {
-            Ok(pw) => {
+            Ok(mut pw) => {
                 tracing::info!("PipeWire initialized successfully");
+
+                // Register handler for PipeWire fatal errors
+                // Take the channel out of the Option since it can only be consumed once
+                if let Some(fatal_error_rx) = pw.fatal_error_rx.take() {
+                    event_loop
+                        .handle()
+                        .insert_source(fatal_error_rx, |event, _, loop_data| {
+                            use smithay::reexports::calloop::channel::Event as ChannelEvent;
+                            if let ChannelEvent::Msg(()) = event {
+                                tracing::error!("PipeWire fatal error, stopping all screen casts");
+                                // Clear all screen casts - they will be dropped and cleaned up
+                                let count = loop_data.state.screen_casts.len();
+                                loop_data.state.screen_casts.clear();
+                                if count > 0 {
+                                    tracing::info!("Stopped {} screen cast(s) due to PipeWire error", count);
+                                }
+                            }
+                        })
+                        .expect("Failed to register PipeWire fatal error handler");
+                }
+
                 data.state.pipewire = Some(pw);
             }
             Err(err) => {
@@ -1547,8 +1601,7 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                         }
                         ScreenCastToCompositor::StopCast { session_id } => {
                             tracing::info!("StopCast: session={}", session_id);
-                            // Remove the cast which will drop the PipeWire stream
-                            loop_data.state.screen_casts.remove(&session_id);
+                            loop_data.state.stop_cast(session_id);
                         }
                     }
                 }

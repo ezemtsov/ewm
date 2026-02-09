@@ -7,28 +7,28 @@ pub mod stream;
 
 use std::mem;
 use std::os::fd::{AsFd, BorrowedFd};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use pipewire::context::Context;
 use pipewire::core::{Core, PW_ID_CORE};
 use pipewire::main_loop::MainLoop;
+use smithay::reexports::calloop::channel::{self, Channel};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
-use tracing::{info, warn};
-
-/// Messages sent from PipeWire thread to main compositor
-#[allow(dead_code)]
-pub enum PwToCompositor {
-    /// A fatal error occurred, PipeWire needs to be reset
-    FatalError,
-}
+use tracing::{error, info, warn};
 
 /// PipeWire state
 pub struct PipeWire {
     _context: Context,
     pub core: Core,
     pub token: RegistrationToken,
+    /// Channel to receive fatal error notifications (Option so it can be taken)
+    pub fatal_error_rx: Option<Channel<()>>,
+    /// Flag to track if PipeWire has encountered a fatal error
+    pub had_fatal_error: Arc<AtomicBool>,
 }
 
 impl PipeWire {
@@ -43,14 +43,23 @@ impl PipeWire {
         let context = Context::new(&main_loop).context("error creating PipeWire Context")?;
         let core = context.connect(None).context("error connecting to PipeWire")?;
 
+        // Create channel for fatal error notifications
+        let (fatal_error_tx, fatal_error_rx) = channel::channel::<()>();
+        let had_fatal_error = Arc::new(AtomicBool::new(false));
+        let had_fatal_error_clone = had_fatal_error.clone();
+
         // Listen for PipeWire errors
         let listener = core
             .add_listener_local()
             .error(move |id, seq, res, message| {
                 warn!(id, seq, res, message, "PipeWire error");
 
-                // Reset PipeWire on connection errors
+                // Detect connection lost error (id=0, res=-32 is EPIPE)
                 if id == PW_ID_CORE && res == -32 {
+                    error!("PipeWire connection lost");
+                    had_fatal_error_clone.store(true, Ordering::SeqCst);
+                    // Notify compositor via channel (ignore send error if receiver dropped)
+                    let _ = fatal_error_tx.send(());
                     on_error();
                 }
             })
@@ -81,6 +90,13 @@ impl PipeWire {
             _context: context,
             core,
             token,
+            fatal_error_rx: Some(fatal_error_rx),
+            had_fatal_error,
         })
+    }
+
+    /// Check if PipeWire has encountered a fatal error
+    pub fn has_fatal_error(&self) -> bool {
+        self.had_fatal_error.load(Ordering::SeqCst)
     }
 }

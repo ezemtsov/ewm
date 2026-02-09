@@ -72,6 +72,8 @@ pub struct Cast {
     pub last_frame_time: Duration,
     /// Minimum time between frames (set during format negotiation)
     min_time_between_frames: Rc<Cell<Duration>>,
+    /// Flag indicating a fatal error occurred (e.g., signal emission failed)
+    had_error: Rc<Cell<bool>>,
 }
 
 impl Cast {
@@ -95,9 +97,11 @@ impl Cast {
         let state = Rc::new(RefCell::new(CastState::Pending));
         let dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>> = Rc::new(RefCell::new(HashMap::new()));
         let min_time_between_frames = Rc::new(Cell::new(Duration::ZERO));
+        let had_error = Rc::new(Cell::new(false));
 
         let node_id_clone = node_id.clone();
         let is_active_clone = is_active.clone();
+        let had_error_clone = had_error.clone();
 
         let state_clone = state.clone();
         let gbm_clone = gbm.clone();
@@ -125,6 +129,8 @@ impl Cast {
 
                                 if let Err(err) = res {
                                     warn!("Error sending PipeWireStreamAdded: {err:?}");
+                                    // Mark as errored - client won't be able to connect
+                                    had_error_clone.set(true);
                                 } else {
                                     info!("PipeWireStreamAdded signal emitted successfully");
                                 }
@@ -139,6 +145,7 @@ impl Cast {
                     StreamState::Error(msg) => {
                         warn!("PipeWire stream error: {msg}");
                         is_active_clone.set(false);
+                        had_error_clone.set(true);
                     }
                     _ => {}
                 }
@@ -394,12 +401,18 @@ impl Cast {
             dmabufs,
             last_frame_time: Duration::ZERO,
             min_time_between_frames,
+            had_error,
         })
     }
 
-    /// Check if the stream is actively streaming
+    /// Check if the stream is actively streaming (and hasn't had a fatal error)
     pub fn is_streaming(&self) -> bool {
-        self.is_active.get()
+        self.is_active.get() && !self.had_error.get()
+    }
+
+    /// Check if the stream has encountered a fatal error
+    pub fn has_error(&self) -> bool {
+        self.had_error.get()
     }
 
     /// Compute extra delay needed before capturing next frame.
@@ -703,4 +716,13 @@ fn allocate_dmabuf(
         .export()
         .context("error exporting GBM buffer as dmabuf")?;
     Ok(dmabuf)
+}
+
+impl Drop for Cast {
+    fn drop(&mut self) {
+        info!(output = %self.output_name, "Disconnecting PipeWire stream");
+        if let Err(err) = self.stream.disconnect() {
+            warn!(output = %self.output_name, "Error disconnecting PipeWire stream: {err:?}");
+        }
+    }
 }

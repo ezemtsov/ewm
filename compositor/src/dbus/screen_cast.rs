@@ -154,7 +154,7 @@ impl Session {
         }
     }
 
-    async fn stop(
+    pub async fn stop(
         &self,
         #[zbus(object_server)] server: &ObjectServer,
         #[zbus(signal_context)] ctxt: SignalEmitter<'_>,
@@ -167,7 +167,9 @@ impl Session {
         }
 
         // Signal that session is closed
-        let _ = Session::closed(&ctxt).await;
+        if let Err(err) = Session::closed(&ctxt).await {
+            warn!(session_id = self.id, "failed to emit Closed signal: {err:?}");
+        }
 
         if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StopCast {
             session_id: self.id,
@@ -178,13 +180,17 @@ impl Session {
         // Remove stream objects
         let streams = std::mem::take(&mut *self.streams.lock().unwrap());
         for stream_info in streams {
-            let _ = server
-                .remove::<Stream, _>(stream_info.iface.signal_emitter().path())
-                .await;
+            let stream_path = stream_info.iface.signal_emitter().path().to_owned();
+            if let Err(err) = server.remove::<Stream, _>(&stream_path).await {
+                warn!(path = %stream_path, "failed to remove Stream from D-Bus: {err:?}");
+            }
         }
 
         // Remove session from server
-        let _ = server.remove::<Session, _>(ctxt.path()).await;
+        let session_path = ctxt.path().to_owned();
+        if let Err(err) = server.remove::<Session, _>(&session_path).await {
+            warn!(path = %session_path, "failed to remove Session from D-Bus: {err:?}");
+        }
     }
 
     async fn record_monitor(
@@ -258,6 +264,16 @@ impl Session {
 
     #[zbus(signal)]
     async fn closed(signal_ctxt: &SignalEmitter<'_>) -> zbus::Result<()>;
+}
+
+/// Ensure session cleanup even if stop() is not called
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Send StopCast to ensure compositor cleans up even if stop() wasn't called
+        let _ = self.to_compositor.send(ScreenCastToCompositor::StopCast {
+            session_id: self.id,
+        });
+    }
 }
 
 /// Stream interface

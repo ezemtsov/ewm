@@ -427,6 +427,37 @@ impl Ewm {
         self.drm_backend = Some(backend);
     }
 
+    /// Stop a screen cast session properly (PipeWire + D-Bus cleanup)
+    #[cfg(feature = "screencast")]
+    pub fn stop_cast(&mut self, session_id: usize) {
+        use tracing::debug;
+
+        debug!(session_id, "stop_cast");
+
+        // Remove cast from our map (Drop impl disconnects PipeWire stream)
+        if self.screen_casts.remove(&session_id).is_none() {
+            return; // Cast not found
+        }
+
+        // Call Session::stop() on D-Bus to emit Closed signal
+        if let Some(ref dbus) = self.dbus_servers {
+            if let Some(ref conn) = dbus.conn_screen_cast {
+                let server = conn.object_server();
+                let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
+
+                if let Ok(iface) = server.interface::<_, dbus::screen_cast::Session>(path.as_str()) {
+                    async_io::block_on(async {
+                        let signal_emitter = iface.signal_emitter().clone();
+                        iface
+                            .get()
+                            .stop(server.inner(), signal_emitter)
+                            .await
+                    });
+                }
+            }
+        }
+    }
+
     /// Set the Emacs process PID for client identification
     pub fn set_emacs_pid(&mut self, pid: u32) {
         info!("Tracking Emacs PID: {}", pid);
