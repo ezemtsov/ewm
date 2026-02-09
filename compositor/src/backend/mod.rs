@@ -9,6 +9,7 @@ pub mod winit;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 pub use drm::DrmBackendState;
@@ -34,6 +35,13 @@ impl Backend {
     pub fn queue_redraw(&self) {
         if let Backend::Drm(state) = self {
             state.borrow_mut().queue_redraw();
+        }
+    }
+
+    /// Queue a redraw for a specific output only (DRM only, no-op for Winit)
+    pub fn queue_redraw_for_output(&self, output: &Output) {
+        if let Backend::Drm(state) = self {
+            state.borrow_mut().queue_redraw_for_output(output);
         }
     }
 

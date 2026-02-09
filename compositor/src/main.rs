@@ -29,6 +29,7 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_shell,
     desktop::{Space, Window},
+    output::Output,
     input::{
         keyboard::xkb::keysyms,
         keyboard::ModifiersState,
@@ -82,7 +83,7 @@ use std::os::unix::net::UnixStream;
 use std::process::Child;
 use std::rc::Rc;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Kill combo: Super+Ctrl+Backspace
 /// Returns true if this key event is the kill combo
@@ -494,6 +495,55 @@ impl Ewm {
         self.get_surface_output(self.focused_surface_id)
     }
 
+    /// Get all outputs that a window intersects with (considering views)
+    fn outputs_for_window(&self, window_id: u32) -> Vec<Output> {
+        use smithay::utils::{Logical, Point, Rectangle, Size};
+
+        let mut outputs = Vec::new();
+
+        // Check if window has views
+        if let Some(views) = self.surface_views.get(&window_id) {
+            // Get window geometry for view size
+            let window_size = self.id_windows.get(&window_id)
+                .map(|w| w.geometry().size)
+                .unwrap_or_else(|| Size::from((100, 100)));
+
+            for view in views {
+                let view_rect: Rectangle<i32, Logical> = Rectangle::new(
+                    Point::from((view.x, view.y)),
+                    Size::from((window_size.w, window_size.h)),
+                );
+
+                for output in self.space.outputs() {
+                    if let Some(output_geo) = self.space.output_geometry(output) {
+                        if output_geo.overlaps(view_rect) && !outputs.contains(output) {
+                            outputs.push(output.clone());
+                        }
+                    }
+                }
+            }
+        } else if let Some(window) = self.id_windows.get(&window_id) {
+            // No views - use window's position in space
+            if let Some(loc) = self.space.element_location(window) {
+                let window_geo = window.geometry();
+                let window_rect: Rectangle<i32, Logical> = Rectangle::new(
+                    loc,
+                    Size::from((window_geo.size.w, window_geo.size.h)),
+                );
+
+                for output in self.space.outputs() {
+                    if let Some(output_geo) = self.space.output_geometry(output) {
+                        if output_geo.overlaps(window_rect) {
+                            outputs.push(output.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        outputs
+    }
+
     /// Find the Emacs surface on the same output as the focused surface
     pub fn get_emacs_surface_for_focused_output(&self) -> u32 {
         let focused_output = self.get_focused_output();
@@ -707,13 +757,25 @@ impl CompositorHandler for Ewm {
                     }
                 })
             });
-            debug!(
-                "Surface {:?} committed with buffer (window_id: {:?})",
-                surface.id(),
-                window_id
-            );
+
             if let Some(ref backend) = self.drm_backend {
-                backend.borrow_mut().queue_redraw();
+                if let Some(id) = window_id {
+                    // Queue redraw only for outputs this window is visible on
+                    let outputs = self.outputs_for_window(id);
+                    if outputs.is_empty() {
+                        // Fallback: window not on any output, redraw all
+                        trace!(window_id = id, "window not on any output, redraw all");
+                        backend.borrow_mut().queue_redraw();
+                    } else {
+                        for output in &outputs {
+                            backend.borrow_mut().queue_redraw_for_output(output);
+                        }
+                    }
+                } else {
+                    // Surface without window_id - could be subsurface or popup
+                    // For now, don't trigger any redraw - parent will handle it
+                    trace!(surface = ?surface.id(), "surface without window_id, skipping redraw");
+                }
             }
         }
 

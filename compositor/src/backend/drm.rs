@@ -55,9 +55,7 @@ use smithay::{
 #[cfg(feature = "screencast")]
 use smithay::utils::Size;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
-use tracing::{debug, info, warn};
-#[cfg(feature = "screencast")]
-use tracing::trace;
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     cursor::CursorBuffer,
@@ -184,8 +182,7 @@ impl DrmBackendState {
         self.device.as_ref().map(|d| d.render_node)
     }
 
-    /// Mark that a redraw is needed for all outputs (called from client commit handler)
-    /// This transitions each output's RedrawState appropriately
+    /// Mark that a redraw is needed for all outputs
     pub fn queue_redraw(&mut self) {
         let Some(device) = &mut self.device else {
             return;
@@ -193,6 +190,21 @@ impl DrmBackendState {
         for surface in device.surfaces.values_mut() {
             let old_state = std::mem::take(&mut surface.redraw_state);
             surface.redraw_state = old_state.queue_redraw();
+        }
+    }
+
+    /// Mark that a redraw is needed for a specific output only
+    pub fn queue_redraw_for_output(&mut self, output: &Output) {
+        let Some(device) = &mut self.device else {
+            return;
+        };
+        for surface in device.surfaces.values_mut() {
+            if &surface.output == output {
+                trace!(output = %output.name(), "queue_redraw for specific output");
+                let old_state = std::mem::take(&mut surface.redraw_state);
+                surface.redraw_state = old_state.queue_redraw();
+                return;
+            }
         }
     }
 
