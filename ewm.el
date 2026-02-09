@@ -690,9 +690,15 @@ Default is (super) to intercept all Super-key bindings."
   :type '(repeat symbol)
   :group 'ewm-input)
 
-(defcustom ewm-input-simulation-keys nil
+(defcustom ewm-input-simulation-keys
+  '(([?\C-g] . [escape]))
   "Simulation keys for translating Emacs keys to application keys.
-Each element is (EMACS-KEY . APP-KEY).
+Each element is (EMACS-KEY . APP-KEY) where both are key vectors.
+These bindings are active in `ewm-surface-mode' buffers, translating
+familiar Emacs keys to their application equivalents.
+
+Default: C-g sends Escape (quit/cancel in most applications).
+
 Adapted from `exwm-input-simulation-keys'."
   :type '(alist :key-type key-sequence :value-type key-sequence)
   :group 'ewm-input)
@@ -1012,6 +1018,25 @@ In char-mode, keys go directly to the surface.
 ;; Keybindings for surface mode (adapted from exwm-input.el)
 (define-key ewm-surface-mode-map (kbd "C-c C-k") #'ewm-input-char-mode)
 (define-key ewm-surface-mode-map (kbd "C-c C-t") #'ewm-input-toggle-mode)
+
+(defun ewm-input--simulation-key-command (target-key)
+  "Return a command that sends TARGET-KEY to the current surface."
+  (lambda ()
+    (interactive)
+    (ewm-input-send-key target-key)))
+
+(defun ewm-input--setup-simulation-keys ()
+  "Set up simulation key bindings in `ewm-surface-mode-map'.
+Binds keys from `ewm-input-simulation-keys' to send their
+translated equivalents to the surface."
+  (dolist (mapping ewm-input-simulation-keys)
+    (let ((source-key (car mapping))
+          (target-key (cdr mapping)))
+      (define-key ewm-surface-mode-map source-key
+                  (ewm-input--simulation-key-command target-key)))))
+
+;; Apply simulation keys when the mode map is available
+(ewm-input--setup-simulation-keys)
 
 ;;; Debug
 
