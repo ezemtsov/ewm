@@ -259,21 +259,30 @@ pub fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<d
                     let pointer = data.state.seat.get_pointer().unwrap();
 
                     let source = event.source();
-                    let horizontal = event
-                        .amount(Axis::Horizontal)
-                        .or_else(|| event.amount_v120(Axis::Horizontal).map(|v| v / 120.0 * 15.0))
+                    let horizontal_amount = event.amount(Axis::Horizontal);
+                    let vertical_amount = event.amount(Axis::Vertical);
+                    let horizontal_v120 = event.amount_v120(Axis::Horizontal);
+                    let vertical_v120 = event.amount_v120(Axis::Vertical);
+
+                    let horizontal = horizontal_amount
+                        .or_else(|| horizontal_v120.map(|v| v / 120.0 * 15.0))
                         .unwrap_or(0.0);
-                    let vertical = event
-                        .amount(Axis::Vertical)
-                        .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v / 120.0 * 15.0))
+                    let vertical = vertical_amount
+                        .or_else(|| vertical_v120.map(|v| v / 120.0 * 15.0))
                         .unwrap_or(0.0);
 
                     let mut frame = AxisFrame::new(event.time_msec()).source(source);
                     if horizontal != 0.0 {
                         frame = frame.value(Axis::Horizontal, horizontal);
+                        if let Some(v120) = horizontal_v120 {
+                            frame = frame.v120(Axis::Horizontal, v120 as i32);
+                        }
                     }
                     if vertical != 0.0 {
                         frame = frame.value(Axis::Vertical, vertical);
+                        if let Some(v120) = vertical_v120 {
+                            frame = frame.v120(Axis::Vertical, v120 as i32);
+                        }
                     }
 
                     pointer.axis(&mut data.state, frame);

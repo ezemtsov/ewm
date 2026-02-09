@@ -1680,8 +1680,16 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
     let libinput_backend = LibinputInputBackend::new(libinput);
     event_loop
         .handle()
-        .insert_source(libinput_backend, move |event, _, data| {
+        .insert_source(libinput_backend, move |mut event, _, data| {
             match event {
+                InputEvent::DeviceAdded { ref mut device } => {
+                    // Enable natural scrolling for touchpads
+                    // (touchpads have tap finger count > 0)
+                    if device.config_tap_finger_count() > 0 {
+                        let _ = device.config_scroll_set_natural_scroll_enabled(true);
+                        info!("Enabled natural scroll for touchpad: {:?}", device.name());
+                    }
+                }
                 InputEvent::Keyboard { event: kb_event } => {
                     let keyboard = data.state.seat.get_keyboard().unwrap();
                     let action = handle_keyboard_event(
@@ -1837,24 +1845,34 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
 
                     let source = event.source();
 
-                    // Get scroll amounts - try continuous first, then discrete v120
-                    // Negate for natural scrolling (content follows finger direction)
+                    // Get scroll amounts (natural scrolling is handled at libinput device level)
                     let horizontal_amount = event.amount(Axis::Horizontal);
                     let vertical_amount = event.amount(Axis::Vertical);
+                    let horizontal_v120 = event.amount_v120(Axis::Horizontal);
+                    let vertical_v120 = event.amount_v120(Axis::Vertical);
 
-                    let horizontal = -horizontal_amount
-                        .or_else(|| event.amount_v120(Axis::Horizontal).map(|v| v / 120.0 * 15.0))
+                    // Compute continuous values, falling back to v120 if no continuous amount
+                    let horizontal = horizontal_amount
+                        .or_else(|| horizontal_v120.map(|v| v / 120.0 * 15.0))
                         .unwrap_or(0.0);
-                    let vertical = -vertical_amount
-                        .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v / 120.0 * 15.0))
+                    let vertical = vertical_amount
+                        .or_else(|| vertical_v120.map(|v| v / 120.0 * 15.0))
                         .unwrap_or(0.0);
 
                     let mut frame = AxisFrame::new(event.time_msec()).source(source);
                     if horizontal != 0.0 {
                         frame = frame.value(Axis::Horizontal, horizontal);
+                        // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
+                        if let Some(v120) = horizontal_v120 {
+                            frame = frame.v120(Axis::Horizontal, v120 as i32);
+                        }
                     }
                     if vertical != 0.0 {
                         frame = frame.value(Axis::Vertical, vertical);
+                        // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
+                        if let Some(v120) = vertical_v120 {
+                            frame = frame.v120(Axis::Vertical, v120 as i32);
+                        }
                     }
 
                     // For finger scroll (touchpad), send stop events when scrolling ends
