@@ -1439,6 +1439,9 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         std::env::set_var("WAYLAND_DISPLAY", &socket_name_str);
         std::env::set_var("XDG_CURRENT_DESKTOP", "wlroots");
         std::env::set_var("XDG_SESSION_TYPE", "wayland");
+        // Use Wayland-native input method for GTK/Qt apps
+        std::env::set_var("GTK_IM_MODULE", "wayland");
+        std::env::set_var("QT_IM_MODULE", "wayland");
     }
 
     // Update D-Bus/systemd environment so portals can find us
@@ -1463,7 +1466,16 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         _ => {}
     }
 
-    let state = Ewm::new(display_handle.clone());
+    let mut state = Ewm::new(display_handle.clone());
+
+    // Connect input method relay to ourselves
+    let socket_path = std::env::var("XDG_RUNTIME_DIR")
+        .map(|dir| std::path::PathBuf::from(dir).join(&socket_name_str))
+        .ok();
+    if let Some(ref path) = socket_path {
+        state.connect_im_relay(path);
+    }
+
     let mut data = LoopData {
         state,
         display,
@@ -1803,9 +1815,14 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                             });
 
                         if let Some((id, surface)) = focus_info {
+                            use smithay::wayland::text_input::TextInputSeat;
+                            tracing::info!("Click focus: setting text_input focus to surface {:?}", surface.id());
                             data.state.set_focus(id);
                             data.state.keyboard_focus = Some(surface.clone());
-                            keyboard.set_focus(&mut data.state, Some(surface), serial);
+                            keyboard.set_focus(&mut data.state, Some(surface.clone()), serial);
+                            // Update text_input focus for input method support
+                            data.state.seat.text_input().set_focus(Some(surface.clone()));
+                            data.state.seat.text_input().enter();
                         }
                     }
 
@@ -1838,9 +1855,13 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                         });
 
                     if let Some((id, surface)) = focus_info {
+                        use smithay::wayland::text_input::TextInputSeat;
                         data.state.set_focus(id);
                         data.state.keyboard_focus = Some(surface.clone());
-                        keyboard.set_focus(&mut data.state, Some(surface), serial);
+                        keyboard.set_focus(&mut data.state, Some(surface.clone()), serial);
+                        // Update text_input focus for input method support
+                        data.state.seat.text_input().set_focus(Some(surface.clone()));
+                        data.state.seat.text_input().enter();
                     }
 
                     let source = event.source();

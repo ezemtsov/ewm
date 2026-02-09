@@ -55,6 +55,14 @@ optional = true
 [dependencies.sd-notify]
 version = "0.4"
 
+# Wayland client (for self-connecting as input method)
+[dependencies.wayland-client]
+version = "0.31"
+
+[dependencies.wayland-protocols-misc]
+version = "0.3"
+features = ["client"]
+
 [features]
 default = []
 screencast = ["pipewire", "zbus", "async-io"]

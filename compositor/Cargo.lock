@@ -863,6 +863,8 @@ dependencies = [
  "smithay-drm-extras",
  "tracing",
  "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols-misc",
  "zbus",
 ]
 
@@ -3106,6 +3108,7 @@ checksum = "791c58fdeec5406aa37169dd815327d1e47f334219b523444bc26d70ceb4c34e"
 dependencies = [
  "bitflags 2.10.0",
  "wayland-backend",
+ "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
  "wayland-server",

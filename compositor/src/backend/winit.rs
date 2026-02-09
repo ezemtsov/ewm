@@ -58,7 +58,16 @@ pub fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<d
     let socket_name_str = socket_name.to_string_lossy().to_string();
     info!("Wayland socket: {:?}", socket_name);
 
-    let state = Ewm::new(display_handle.clone());
+    let mut state = Ewm::new(display_handle.clone());
+
+    // Connect input method relay to ourselves
+    let socket_path = std::env::var("XDG_RUNTIME_DIR")
+        .map(|dir| std::path::PathBuf::from(dir).join(&socket_name_str))
+        .ok();
+    if let Some(ref path) = socket_path {
+        state.connect_im_relay(path);
+    }
+
     let mut data = LoopData {
         state,
         display,

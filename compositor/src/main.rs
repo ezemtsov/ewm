@@ -15,6 +15,7 @@ mod backend;
 mod cursor;
 #[cfg(feature = "screencast")]
 mod dbus;
+mod im_relay;
 mod input;
 mod ipc;
 #[cfg(feature = "screencast")]
@@ -388,6 +389,10 @@ pub struct Ewm {
     // XKB layout state
     pub xkb_layout_names: Vec<String>,
     pub xkb_current_layout: usize,
+
+    // Input method relay (self-connection to activate input_method protocol)
+    #[allow(dead_code)]
+    pub im_relay: Option<im_relay::ImRelay>,
 }
 
 impl Ewm {
@@ -462,6 +467,17 @@ impl Ewm {
             dbus_servers: None,
             xkb_layout_names: vec!["us".to_string()],
             xkb_current_layout: 0,
+            im_relay: None,
+        }
+    }
+
+    /// Connect the input method relay after socket is ready
+    pub fn connect_im_relay(&mut self, socket_path: &std::path::Path) {
+        self.im_relay = im_relay::ImRelay::connect(socket_path);
+        if self.im_relay.is_some() {
+            info!("Input method relay connected successfully");
+        } else {
+            warn!("Failed to connect input method relay");
         }
     }
 
@@ -978,9 +994,25 @@ impl SeatHandler for Ewm {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        use smithay::wayland::text_input::TextInputSeat;
+
+        tracing::info!("focus_changed: {:?}", focused.map(|s| s.id()));
+
         let client = focused.and_then(|s| self.display_handle.get_client(s.id()).ok());
         set_data_device_focus(&self.display_handle, seat, client.clone());
         set_primary_focus(&self.display_handle, seat, client);
+
+        // Update text_input focus for input method support
+        let text_input = seat.text_input();
+        if let Some(surface) = focused {
+            text_input.set_focus(Some(surface.clone()));
+            text_input.enter();
+            tracing::info!("text_input focus set to {:?}", surface.id());
+        } else {
+            text_input.leave();
+            text_input.set_focus(None);
+            tracing::info!("text_input focus cleared");
+        }
     }
 
     fn cursor_image(
@@ -1362,6 +1394,7 @@ impl LoopData {
                 }
             }
             Command::Focus { id } => {
+                use smithay::wayland::text_input::TextInputSeat;
                 self.state.focused_surface_id = id;
                 if let Some(window) = self.state.id_windows.get(&id) {
                     if let Some(surface) = window.wl_surface() {
@@ -1369,7 +1402,10 @@ impl LoopData {
                         let keyboard = self.state.seat.get_keyboard().unwrap();
                         let focus_surface = surface.into_owned();
                         self.state.keyboard_focus = Some(focus_surface.clone());
-                        keyboard.set_focus(&mut self.state, Some(focus_surface), serial);
+                        keyboard.set_focus(&mut self.state, Some(focus_surface.clone()), serial);
+                        // Update text_input focus for input method support
+                        self.state.seat.text_input().set_focus(Some(focus_surface.clone()));
+                        self.state.seat.text_input().enter();
                         info!("Focus surface {}", id);
                     }
                 } else {

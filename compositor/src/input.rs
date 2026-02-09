@@ -9,6 +9,7 @@ use smithay::{
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::SERIAL_COUNTER,
     wayland::seat::WaylandFocus,
+    wayland::text_input::TextInputSeat,
 };
 
 use crate::{is_kill_combo, Ewm};
@@ -93,6 +94,9 @@ pub fn handle_keyboard_event(
                 let emacs_surface: WlSurface = surface.into_owned();
                 state.keyboard_focus = Some(emacs_surface.clone());
                 keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
+                // Update text_input focus
+                state.seat.text_input().set_focus(Some(emacs_surface.clone()));
+                state.seat.text_input().enter();
 
                 // Switch to base layout (index 0) when redirecting to Emacs
                 // This ensures Emacs keybindings work correctly
@@ -125,7 +129,10 @@ pub fn handle_keyboard_event(
             let new_focus = surface.into_owned();
             if state.keyboard_focus.as_ref() != Some(&new_focus) {
                 state.keyboard_focus = Some(new_focus.clone());
-                keyboard.set_focus(state, Some(new_focus), serial);
+                keyboard.set_focus(state, Some(new_focus.clone()), serial);
+                // Update text_input focus
+                state.seat.text_input().set_focus(Some(new_focus.clone()));
+                state.seat.text_input().enter();
             }
         }
     }
@@ -173,6 +180,9 @@ pub fn release_all_keys(state: &mut Ewm, keyboard: &KeyboardHandle<Ewm>) {
     // Clear focus
     keyboard.set_focus(state, None, serial);
     state.keyboard_focus = None;
+    // Clear text_input focus
+    state.seat.text_input().leave();
+    state.seat.text_input().set_focus(None);
 }
 
 /// Restore focus to a specific surface
@@ -182,7 +192,10 @@ pub fn restore_focus(state: &mut Ewm, keyboard: &KeyboardHandle<Ewm>, surface_id
             let serial = SERIAL_COUNTER.next_serial();
             let focus_surface = surface.into_owned();
             state.keyboard_focus = Some(focus_surface.clone());
-            keyboard.set_focus(state, Some(focus_surface), serial);
+            keyboard.set_focus(state, Some(focus_surface.clone()), serial);
+            // Update text_input focus
+            state.seat.text_input().set_focus(Some(focus_surface.clone()));
+            state.seat.text_input().enter();
         }
     }
 }
