@@ -81,7 +81,8 @@ pub fn handle_keyboard_event(
             } else if text_input_intercept && !focus_on_emacs && !mods.ctrl && !mods.alt && !mods.logo {
                 // Text input intercept mode: capture printable keys for Emacs IM processing
                 // Skip if any command modifiers are held (let those go to Emacs via intercept-keys)
-                let utf8 = xkb::keysym_to_utf8(keysym);
+                // Use modified keysym for UTF-8 (includes Shift for uppercase/@/etc)
+                let utf8 = xkb::keysym_to_utf8(modified);
                 if !utf8.is_empty() && !utf8.chars().all(|c| c.is_control()) {
                     // This is a printable character - intercept for text input
                     FilterResult::Intercept((3, keysym_raw, Some(utf8))) // 3 = text input
