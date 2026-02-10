@@ -565,6 +565,25 @@ impl Ewm {
         }
     }
 
+    /// Focus a surface, updating internal state, keyboard focus, and text input.
+    /// If `notify_emacs` is true, sends IpcEvent::Focus to Emacs.
+    pub fn focus_surface(&mut self, id: u32, notify_emacs: bool) {
+        self.focused_surface_id = id;
+        if notify_emacs {
+            self.pending_events.push(IpcEvent::Focus { id });
+        }
+
+        if let Some(window) = self.id_windows.get(&id) {
+            if let Some(surface) = window.wl_surface() {
+                let keyboard = self.seat.get_keyboard().unwrap();
+                let focus_surface = surface.into_owned();
+                self.keyboard_focus = Some(focus_surface.clone());
+                keyboard.set_focus(self, Some(focus_surface.clone()), SERIAL_COUNTER.next_serial());
+                self.update_text_input_focus(Some(&focus_surface), Some(id));
+            }
+        }
+    }
+
     /// Update text_input focus for input method support.
     /// Skips Emacs surfaces since Emacs handles its own input methods.
     pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u32>) {
@@ -1201,12 +1220,30 @@ impl XdgShellHandler for Ewm {
 
         if let Some(window) = window {
             if let Some(id) = self.window_ids.remove(&window) {
+                // Capture output before removing, in case this was the focused surface
+                let was_focused = self.focused_surface_id == id;
+                let output = self.get_surface_output(id);
+
                 self.id_windows.remove(&id);
                 self.surface_info.remove(&id);
                 self.surface_views.remove(&id);
                 self.emacs_surfaces.remove(&id);
                 self.pending_events.push(IpcEvent::Close { id });
                 info!("Toplevel {} destroyed", id);
+
+                // If destroyed surface had focus, refocus Emacs on same output
+                if was_focused {
+                    let emacs_id = output
+                        .as_ref()
+                        .and_then(|out| {
+                            self.emacs_surfaces
+                                .iter()
+                                .find(|&&eid| self.get_surface_output(eid).as_ref() == Some(out))
+                                .copied()
+                        })
+                        .unwrap_or(1);
+                    self.focus_surface(emacs_id, true);
+                }
             }
             self.space.unmap_elem(&window);
         }
@@ -1416,19 +1453,9 @@ impl LoopData {
                 }
             }
             Command::Focus { id } => {
-                self.state.focused_surface_id = id;
-                if let Some(window) = self.state.id_windows.get(&id) {
-                    if let Some(surface) = window.wl_surface() {
-                        let serial = SERIAL_COUNTER.next_serial();
-                        let keyboard = self.state.seat.get_keyboard().unwrap();
-                        let focus_surface = surface.into_owned();
-                        self.state.keyboard_focus = Some(focus_surface.clone());
-                        keyboard.set_focus(&mut self.state, Some(focus_surface.clone()), serial);
-                        self.state.update_text_input_focus(Some(&focus_surface), Some(id));
-                        info!("Focus surface {}", id);
-                    }
-                } else {
-                    info!("Focus surface {} (surface not found)", id);
+                if self.state.id_windows.contains_key(&id) {
+                    self.state.focus_surface(id, false);
+                    info!("Focus surface {}", id);
                 }
             }
             Command::WarpPointer { x, y } => {
