@@ -91,12 +91,12 @@ When Emacs connects to the compositor, Wayland surfaces appear as special buffer
 - Both nested (Winit) and standalone (DRM) backends
 - Multi-monitor support (hotplug, per-output Emacs frames)
 - Screen sharing via xdg-desktop-portal (PipeWire DMA-BUF)
+- Input method support (type in any script via Emacs input methods)
 
 ## Known Limitations
 
 - No layer-shell protocol (waybar, etc.)
 - No screen locking
-- Input method support is basic
 - GPU selection is automatic (no override)
 
 ## License
