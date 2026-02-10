@@ -121,6 +121,9 @@ pub fn handle_keyboard_event(
                 keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
                 state.update_text_input_focus(None, Some(emacs_id));
 
+                // Notify Emacs that focus changed so its tracking stays in sync
+                state.pending_events.push(crate::IpcEvent::Focus { id: emacs_id });
+
                 // Switch to base layout (index 0) when redirecting to Emacs
                 // This ensures Emacs keybindings work correctly
                 if state.xkb_current_layout != 0 && !state.xkb_layout_names.is_empty() {

@@ -76,10 +76,29 @@ Only logs when `ewm-debug-focus' is non-nil."
   (compositor-focus nil)
   (focus-timer nil)
   (pending-focus-id nil)
-  (inhibit-update nil))
+  (inhibit-update nil)
+  (inhibit-timer nil))
 
 (defvar ewm--input-state nil
   "Current input state, or nil if not connected.")
+
+(defconst ewm--focus-inhibit-delay 0.05
+  "Seconds to inhibit focus updates after compositor-initiated focus change.
+Prevents feedback loops when compositor redirects focus during key interception.")
+
+(defun ewm-input--set-inhibit ()
+  "Set focus inhibit flag and schedule its clearing.
+Cancels any existing inhibit timer to ensure correct timing."
+  (when-let ((state ewm--input-state))
+    (when-let ((timer (ewm-input-state-inhibit-timer state)))
+      (cancel-timer timer))
+    (setf (ewm-input-state-inhibit-update state) t)
+    (setf (ewm-input-state-inhibit-timer state)
+          (run-with-timer ewm--focus-inhibit-delay nil
+                          (lambda ()
+                            (when ewm--input-state
+                              (setf (ewm-input-state-inhibit-update ewm--input-state) nil)
+                              (setf (ewm-input-state-inhibit-timer ewm--input-state) nil)))))))
 
 (defgroup ewm nil
   "Emacs Wayland Manager."
@@ -230,9 +249,23 @@ Adapted from `exwm-manage--unmanage-window'."
 
 (defun ewm--handle-focus (event)
   "Handle focus EVENT from compositor.
-Selects the window displaying the focused surface's buffer."
+Updates focus tracking and selects the window displaying the surface's buffer."
   (pcase-let (((map ("id" id)) event))
     (ewm--focus-log "compositor" "received focus event for id=%d" id)
+    ;; Always update last-focused-id to match compositor's actual focus.
+    ;; This is critical when compositor redirects focus (e.g., during prefix
+    ;; key interception) so EWM's tracking stays in sync.
+    (when ewm--input-state
+      (setf (ewm-input-state-last-focused-id ewm--input-state) id)
+      ;; Cancel any pending focus timer to prevent feedback loop.
+      ;; When compositor redirects focus (e.g., C-x intercept), a focus timer
+      ;; for the old surface may already be scheduled.
+      (when-let ((timer (ewm-input-state-focus-timer ewm--input-state)))
+        (cancel-timer timer)
+        (setf (ewm-input-state-focus-timer ewm--input-state) nil)
+        (setf (ewm-input-state-pending-focus-id ewm--input-state) nil))
+      ;; Inhibit new focus updates briefly.
+      (ewm-input--set-inhibit))
     (let ((info (gethash id ewm--surfaces)))
       (when info
         (let ((buf (plist-get info :buffer)))
@@ -1017,15 +1050,8 @@ Warps pointer to the selected window on FRAME unless triggered by mouse."
           (ewm--focus-log "commit" "FOCUSING id=%d (was %d)"
                           id (ewm-input-state-last-focused-id state))
           (setf (ewm-input-state-last-focused-id state) id)
-          ;; Inhibit focus updates while compositor processes our request
-          (setf (ewm-input-state-inhibit-update state) t)
-          (ewm-focus id)
-          ;; Re-enable after a short delay to let focus events settle
-          (run-with-timer 0.05 nil
-                          (lambda ()
-                            (when ewm--input-state
-                              (ewm--focus-log "commit" "inhibit-update cleared")
-                              (setf (ewm-input-state-inhibit-update ewm--input-state) nil)))))))))
+          (ewm-input--set-inhibit)
+          (ewm-focus id))))))
 
 (defun ewm-input--on-window-buffer-change (frame)
   "Handle window buffer changes on FRAME.
@@ -1233,7 +1259,7 @@ Adapted from exwm-manage--kill-buffer-query-function."
       "[C]"
     "[L]"))
 
-(define-derived-mode ewm-surface-mode special-mode "EWM"
+(define-derived-mode ewm-surface-mode fundamental-mode "EWM"
   "Major mode for EWM surface buffers.
 \\<ewm-surface-mode-map>
 In line-mode (default), keys go to Emacs.
@@ -1243,6 +1269,7 @@ In char-mode, keys go directly to the surface.
 \\[ewm-input-line-mode] - switch to line-mode
 \\[ewm-input-toggle-mode] - toggle input mode"
   (setq buffer-read-only t)
+  (setq-local cursor-type nil)
   ;; Set up mode line to show input mode
   (setq mode-name '("EWM" (:eval (ewm-surface-mode-line-mode))))
   ;; Kill buffer -> close window (like EXWM)
@@ -1464,14 +1491,24 @@ Adapted from exwm-layout--refresh-workspace."
   "Hook called when window configuration changes."
   (ewm-layout--refresh))
 
+(defvar ewm--pre-minibuffer-surface-id nil
+  "Surface ID that was focused before minibuffer opened.")
+
 (defun ewm--on-minibuffer-setup ()
-  "Refresh layout when minibuffer activates.
-Defers refresh to allow minibuffer to settle."
+  "Save focused surface and refresh layout when minibuffer activates."
+  (when-let ((state ewm--input-state))
+    (setq ewm--pre-minibuffer-surface-id
+          (ewm-input-state-last-focused-id state)))
   (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay))
 
 (defun ewm--on-minibuffer-exit ()
-  "Refresh layout when minibuffer exits."
-  (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay))
+  "Restore focus and refresh layout when minibuffer exits."
+  (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay)
+  (when (and ewm--pre-minibuffer-surface-id
+             ewm--process
+             (process-live-p ewm--process))
+    (ewm--send `(:cmd "focus" :id ,ewm--pre-minibuffer-surface-id))
+    (setq ewm--pre-minibuffer-surface-id nil)))
 
 (defun ewm--refresh-with-redisplay ()
   "Force redisplay then refresh layout.
