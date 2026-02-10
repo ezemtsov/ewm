@@ -153,6 +153,8 @@ enum IpcEvent {
     TextInputActivated,
     #[serde(rename = "text-input-deactivated")]
     TextInputDeactivated,
+    #[serde(rename = "key")]
+    Key { keysym: u32, utf8: Option<String> },
 }
 
 /// Cached surface info for change detection
@@ -219,6 +221,8 @@ enum Command {
     GetLayouts,
     #[serde(rename = "im-commit")]
     ImCommit { text: String },
+    #[serde(rename = "text-input-intercept")]
+    TextInputIntercept { enabled: bool },
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -373,6 +377,9 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub input_method_state: InputMethodManagerState,
 
+    // When true, intercept all keys and send to Emacs for text input
+    pub text_input_intercept: bool,
+
     // Popup manager for XDG popups
     pub popups: PopupManager,
 
@@ -462,6 +469,7 @@ impl Ewm {
             output_manager_state,
             text_input_state,
             input_method_state,
+            text_input_intercept: false,
             popups: PopupManager::default(),
             #[cfg(feature = "screencast")]
             pipewire: None,
@@ -1671,6 +1679,10 @@ impl LoopData {
                 } else {
                     warn!("im-commit received but no IM relay connected");
                 }
+            }
+            Command::TextInputIntercept { enabled } => {
+                info!("Text input intercept: {}", enabled);
+                self.state.text_input_intercept = enabled;
             }
         }
     }

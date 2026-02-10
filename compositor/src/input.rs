@@ -5,7 +5,7 @@
 
 use smithay::{
     backend::input::KeyState,
-    input::keyboard::{FilterResult, KeyboardHandle},
+    input::keyboard::{xkb, FilterResult, KeyboardHandle},
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::SERIAL_COUNTER,
     wayland::seat::WaylandFocus,
@@ -23,6 +23,8 @@ pub enum KeyboardAction {
     RedirectToEmacs,
     /// Kill combo pressed - shut down compositor
     Shutdown,
+    /// Key intercepted for text input (sent to Emacs via IPC)
+    TextInputIntercepted,
 }
 
 /// Process a keyboard key event
@@ -46,9 +48,10 @@ pub fn handle_keyboard_event(
     // Clone values needed in the filter closure
     let intercepted_keys = state.intercepted_keys.clone();
     let focus_on_emacs = state.is_focus_on_emacs();
+    let text_input_intercept = state.text_input_intercept;
 
     // Process key with filter to detect intercepted keys and kill combo
-    let filter_result = keyboard.input::<u8, _>(
+    let filter_result = keyboard.input::<(u8, u32, Option<String>), _>(
         state,
         keycode.into(),
         key_state,
@@ -61,7 +64,7 @@ pub fn handle_keyboard_event(
 
             // Check for kill combo first (Super+Ctrl+Backspace)
             if is_kill_combo(keycode, mods.ctrl, mods.logo) {
-                return FilterResult::Intercept(2); // 2 = kill
+                return FilterResult::Intercept((2, 0, None)); // 2 = kill
             }
 
             // Get the raw latin keysym for this key (layout-independent)
@@ -69,11 +72,22 @@ pub fn handle_keyboard_event(
             let raw_latin = handle.raw_latin_sym_or_raw_current_sym();
             let modified = handle.modified_sym();
             let keysym = raw_latin.unwrap_or(modified);
-            let is_intercepted = intercepted_keys.iter().any(|ik| ik.matches(keysym.raw(), mods));
+            let keysym_raw = keysym.raw();
+            let is_intercepted = intercepted_keys.iter().any(|ik| ik.matches(keysym_raw, mods));
 
             if is_intercepted && !focus_on_emacs {
                 // This is an intercepted key and focus is on an external app (not Emacs)
-                FilterResult::Intercept(1) // 1 = redirect to emacs
+                FilterResult::Intercept((1, keysym_raw, None)) // 1 = redirect to emacs
+            } else if text_input_intercept && !focus_on_emacs && !mods.ctrl && !mods.alt && !mods.logo {
+                // Text input intercept mode: capture printable keys for Emacs IM processing
+                // Skip if any command modifiers are held (let those go to Emacs via intercept-keys)
+                let utf8 = xkb::keysym_to_utf8(keysym);
+                if !utf8.is_empty() && !utf8.chars().all(|c| c.is_control()) {
+                    // This is a printable character - intercept for text input
+                    FilterResult::Intercept((3, keysym_raw, Some(utf8))) // 3 = text input
+                } else {
+                    FilterResult::Forward
+                }
             } else {
                 FilterResult::Forward
             }
@@ -81,11 +95,22 @@ pub fn handle_keyboard_event(
     );
 
     // Determine action from filter result
-    if filter_result == Some(2) {
-        return KeyboardAction::Shutdown;
+    if let Some((code, keysym, ref utf8)) = filter_result {
+        match code {
+            2 => return KeyboardAction::Shutdown,
+            3 => {
+                // Text input intercept - send key to Emacs via IPC
+                state.pending_events.push(crate::IpcEvent::Key {
+                    keysym,
+                    utf8: utf8.clone(),
+                });
+                return KeyboardAction::TextInputIntercepted;
+            }
+            _ => {}
+        }
     }
 
-    if filter_result == Some(1) {
+    if filter_result.as_ref().map(|(c, _, _)| *c) == Some(1) {
         // Switch focus to the Emacs frame on the same output as the focused surface
         let emacs_id = state.get_emacs_surface_for_focused_output();
         state.focused_surface_id = emacs_id;
