@@ -47,24 +47,29 @@
 (defvar ewm-debug-focus nil
   "When non-nil, log detailed focus change tracing.")
 
+(defun ewm--log-to-buffer (msg)
+  "Append MSG to *ewm-info* buffer."
+  (let ((buf (get-buffer-create "*ewm-info*")))
+    (with-current-buffer buf
+      (goto-char (point-max))
+      (insert (format-time-string "[%H:%M:%S] ") msg "\n"))))
+
 (defun ewm-log (format-string &rest args)
-  "Log FORMAT-STRING with ARGS to debug file and *Messages*."
+  "Log FORMAT-STRING with ARGS to *ewm-info* buffer."
   (let ((msg (apply #'format format-string args)))
-    (message "EWM: %s" msg)
+    (ewm--log-to-buffer msg)
     (when ewm-debug-logging
       (with-temp-buffer
         (insert (format-time-string "[%Y-%m-%d %H:%M:%S] ")
                 msg "\n")
-        (write-region (point-min) (point-max) ewm-debug-log-file t 'silent)
-        ;; Force sync
-        (call-process "sync" nil nil nil)))))
+        (write-region (point-min) (point-max) ewm-debug-log-file t 'silent)))))
 
 (defun ewm--focus-log (source format-string &rest args)
   "Log focus-related message from SOURCE with FORMAT-STRING and ARGS.
 Only logs when `ewm-debug-focus' is non-nil."
   (when ewm-debug-focus
-    (let ((msg (apply #'format format-string args)))
-      (message "EWM-FOCUS [%s]: %s" source msg))))
+    (let ((msg (format "FOCUS [%s]: %s" source (apply #'format format-string args))))
+      (ewm--log-to-buffer msg))))
 
 ;;; Input state struct (defined early for use in event handlers)
 
@@ -1043,15 +1048,17 @@ Warps pointer to the selected window on FRAME unless triggered by mouse."
     (setf (ewm-input-state-focus-timer state) nil)
     (let ((id (ewm-input-state-pending-focus-id state)))
       (setf (ewm-input-state-pending-focus-id state) nil)
-      (if (not id)
-          (ewm--focus-log "commit" "no pending id")
-        (if (eq id (ewm-input-state-last-focused-id state))
-            (ewm--focus-log "commit" "skipping id=%d (same as last)" id)
-          (ewm--focus-log "commit" "FOCUSING id=%d (was %d)"
-                          id (ewm-input-state-last-focused-id state))
-          (setf (ewm-input-state-last-focused-id state) id)
-          (ewm-input--set-inhibit)
-          (ewm-focus id))))))
+      (cond
+       ((not id)
+        (ewm--focus-log "commit" "no pending id"))
+       ((eq id (ewm-input-state-last-focused-id state))
+        (ewm--focus-log "commit" "skipping id=%d (same as last)" id))
+       (t
+        (ewm--focus-log "commit" "FOCUSING id=%d (was %d)"
+                        id (ewm-input-state-last-focused-id state))
+        (setf (ewm-input-state-last-focused-id state) id)
+        (ewm-input--set-inhibit)
+        (ewm-focus id))))))
 
 (defun ewm-input--on-window-buffer-change (frame)
   "Handle window buffer changes on FRAME.
