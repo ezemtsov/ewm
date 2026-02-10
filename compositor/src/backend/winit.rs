@@ -342,6 +342,9 @@ pub fn run_winit(program: String, program_args: Vec<String>) -> Result<(), Box<d
         data.state.space.refresh();
         data.display.flush_clients().unwrap();
 
+        // Process IM relay events and send to Emacs
+        data.process_im_events();
+
         // Flush pending events to Emacs (shared IPC handling)
         data.flush_events();
 

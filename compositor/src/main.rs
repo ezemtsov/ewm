@@ -149,6 +149,10 @@ enum IpcEvent {
     Layouts { layouts: Vec<String>, current: usize },
     #[serde(rename = "layout-switched")]
     LayoutSwitched { layout: String, index: usize },
+    #[serde(rename = "text-input-activated")]
+    TextInputActivated,
+    #[serde(rename = "text-input-deactivated")]
+    TextInputDeactivated,
 }
 
 /// Cached surface info for change detection
@@ -213,6 +217,8 @@ enum Command {
     SwitchLayout { layout: String },
     #[serde(rename = "get-layouts")]
     GetLayouts,
+    #[serde(rename = "im-commit")]
+    ImCommit { text: String },
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -1657,6 +1663,32 @@ impl LoopData {
                     layouts: self.state.xkb_layout_names.clone(),
                     current: self.state.xkb_current_layout,
                 });
+            }
+            Command::ImCommit { text } => {
+                // Forward text to input method relay for commit
+                if let Some(ref relay) = self.state.im_relay {
+                    relay.commit_string(text);
+                } else {
+                    warn!("im-commit received but no IM relay connected");
+                }
+            }
+        }
+    }
+
+    /// Process events from the IM relay and send to Emacs
+    pub fn process_im_events(&mut self) {
+        if let Some(ref relay) = self.state.im_relay {
+            while let Ok(event) = relay.event_rx.try_recv() {
+                match event {
+                    im_relay::ImEvent::Activated => {
+                        info!("Text input activated, notifying Emacs");
+                        self.state.pending_events.push(IpcEvent::TextInputActivated);
+                    }
+                    im_relay::ImEvent::Deactivated => {
+                        info!("Text input deactivated, notifying Emacs");
+                        self.state.pending_events.push(IpcEvent::TextInputDeactivated);
+                    }
+                }
             }
         }
     }

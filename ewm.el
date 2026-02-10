@@ -161,6 +161,8 @@ Example:
       ("outputs_complete" (ewm--handle-outputs-complete))
       ("layouts" (ewm--handle-layouts event))
       ("layout-switched" (ewm--handle-layout-switched event))
+      ("text-input-activated" (ewm--handle-text-input-activated))
+      ("text-input-deactivated" (ewm--handle-text-input-deactivated))
       (_ (ewm-log "unknown event type: %s" type)))))
 
 ;;; Event handlers
@@ -483,6 +485,38 @@ Updates internal tracking of available layouts."
     (setq ewm--xkb-current-layout layout)
     (ewm-log "layout switched to: %s" layout)))
 
+;;; Text Input Support (EXWM-XIM equivalent)
+
+(defvar ewm-text-input-active nil
+  "Non-nil when a client text field is active and expecting input.")
+
+(defun ewm--handle-text-input-activated ()
+  "Handle text-input-activated event from compositor.
+Called when a client's text field gains focus."
+  (ewm-log "text input activated")
+  (setq ewm-text-input-active t)
+  (run-hooks 'ewm-text-input-activated-hook))
+
+(defun ewm--handle-text-input-deactivated ()
+  "Handle text-input-deactivated event from compositor.
+Called when a client's text field loses focus."
+  (ewm-log "text input deactivated")
+  (setq ewm-text-input-active nil)
+  (run-hooks 'ewm-text-input-deactivated-hook))
+
+(defvar ewm-text-input-activated-hook nil
+  "Hook run when a client text field becomes active.
+Use this to enable special input handling modes.")
+
+(defvar ewm-text-input-deactivated-hook nil
+  "Hook run when a client text field becomes inactive.")
+
+(defun ewm-im-commit (text)
+  "Commit TEXT to the currently focused client text field.
+This is the core function for input method support - any text passed here
+will be inserted into the client's text field (e.g., Firefox URL bar)."
+  (ewm--send `(:cmd "im-commit" :text ,text)))
+
 (defun ewm--frame-for-output (output-name)
   "Return the frame assigned to OUTPUT-NAME, or nil."
   (cl-find output-name (frame-list)
@@ -670,6 +704,7 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
   "Disconnect from compositor."
   (interactive)
   (ewm-mode -1)
+  (setq ewm-text-input-active nil)
   (when ewm--process
     (delete-process ewm--process)
     (setq ewm--process nil)

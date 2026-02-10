@@ -1965,6 +1965,9 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
         // Process any queued redraws after event dispatch
         backend_state.borrow_mut().redraw_queued_outputs(&mut data.state);
 
+        // Process IM relay events and send to Emacs
+        data.process_im_events();
+
         // Flush pending events to Emacs
         data.flush_events();
     }
