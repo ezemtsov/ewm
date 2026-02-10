@@ -1815,14 +1815,11 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                             });
 
                         if let Some((id, surface)) = focus_info {
-                            use smithay::wayland::text_input::TextInputSeat;
                             tracing::info!("Click focus: setting text_input focus to surface {:?}", surface.id());
                             data.state.set_focus(id);
                             data.state.keyboard_focus = Some(surface.clone());
                             keyboard.set_focus(&mut data.state, Some(surface.clone()), serial);
-                            // Update text_input focus for input method support
-                            data.state.seat.text_input().set_focus(Some(surface.clone()));
-                            data.state.seat.text_input().enter();
+                            data.state.update_text_input_focus(Some(&surface), Some(id));
                         }
                     }
 
@@ -1855,13 +1852,10 @@ pub fn run_drm(program: String, program_args: Vec<String>) -> Result<(), Box<dyn
                         });
 
                     if let Some((id, surface)) = focus_info {
-                        use smithay::wayland::text_input::TextInputSeat;
                         data.state.set_focus(id);
                         data.state.keyboard_focus = Some(surface.clone());
                         keyboard.set_focus(&mut data.state, Some(surface.clone()), serial);
-                        // Update text_input focus for input method support
-                        data.state.seat.text_input().set_focus(Some(surface.clone()));
-                        data.state.seat.text_input().enter();
+                        data.state.update_text_input_focus(Some(&surface), Some(id));
                     }
 
                     let source = event.source();

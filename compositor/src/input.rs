@@ -119,9 +119,7 @@ pub fn handle_keyboard_event(
                 let emacs_surface: WlSurface = surface.into_owned();
                 state.keyboard_focus = Some(emacs_surface.clone());
                 keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
-                // Update text_input focus
-                state.seat.text_input().set_focus(Some(emacs_surface.clone()));
-                state.seat.text_input().enter();
+                state.update_text_input_focus(None, Some(emacs_id));
 
                 // Switch to base layout (index 0) when redirecting to Emacs
                 // This ensures Emacs keybindings work correctly
@@ -155,9 +153,7 @@ pub fn handle_keyboard_event(
             if state.keyboard_focus.as_ref() != Some(&new_focus) {
                 state.keyboard_focus = Some(new_focus.clone());
                 keyboard.set_focus(state, Some(new_focus.clone()), serial);
-                // Update text_input focus
-                state.seat.text_input().set_focus(Some(new_focus.clone()));
-                state.seat.text_input().enter();
+                state.update_text_input_focus(Some(&new_focus), Some(target_id));
             }
         }
     }

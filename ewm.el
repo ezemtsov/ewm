@@ -522,12 +522,13 @@ will be inserted into the client's text field (e.g., Firefox URL bar)."
   "Input method to use for text input translation.
 When nil, uses `current-input-method' or `default-input-method'.")
 
-(defun ewm-text-input--translate-char (char)
-  "Translate CHAR through current input method if active.
+(defun ewm-text-input--translate-char (char &optional input-method)
+  "Translate CHAR through INPUT-METHOD if provided.
+If INPUT-METHOD is nil, uses `ewm-text-input-method' or `current-input-method'.
 For quail-based input methods, looks up the translation directly."
-  (let ((im (or ewm-text-input-method
-                current-input-method
-                default-input-method)))
+  (let ((im (or input-method
+                ewm-text-input-method
+                current-input-method)))
     (if (and im (fboundp 'quail-lookup-key))
         (let ((current-input-method im))
           (activate-input-method im)
@@ -593,9 +594,20 @@ and sends back via `ewm-im-commit'."
 Called when text-input-intercept is enabled and a printable key is pressed."
   (pcase-let (((map ("utf8" utf8)) event))
     (when utf8
-      ;; Translate through input method if active
-      (let ((translated (ewm-text-input--translate-char (string-to-char utf8))))
+      ;; Get input method from the focused surface buffer
+      (let* ((surface-buf (ewm--focused-surface-buffer))
+             (im (when surface-buf
+                   (buffer-local-value 'current-input-method surface-buf)))
+             (translated (ewm-text-input--translate-char (string-to-char utf8) im)))
         (ewm-im-commit translated)))))
+
+(defun ewm--focused-surface-buffer ()
+  "Return the buffer displaying the currently focused surface."
+  (when-let ((state ewm--input-state))
+    (let ((focused-id (ewm-input-state-last-focused-id state)))
+      (cl-find-if (lambda (buf)
+                    (eq (buffer-local-value 'ewm-surface-id buf) focused-id))
+                  (buffer-list)))))
 
 (defun ewm-text-input--auto-enable ()
   "Enable text input mode when a client text field is activated."

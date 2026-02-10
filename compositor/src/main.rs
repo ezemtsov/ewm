@@ -565,6 +565,24 @@ impl Ewm {
         }
     }
 
+    /// Update text_input focus for input method support.
+    /// Skips Emacs surfaces since Emacs handles its own input methods.
+    pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u32>) {
+        use smithay::wayland::text_input::TextInputSeat;
+        let text_input = self.seat.text_input();
+
+        // Skip if this is an Emacs surface
+        let is_emacs = surface_id.map_or(false, |id| self.emacs_surfaces.contains(&id));
+
+        if is_emacs || surface.is_none() {
+            text_input.leave();
+            text_input.set_focus(None);
+        } else if let Some(s) = surface {
+            text_input.set_focus(Some(s.clone()));
+            text_input.enter();
+        }
+    }
+
     /// Get surface ID from a WlSurface
     pub fn surface_id(&self, surface: &WlSurface) -> Option<u32> {
         self.window_ids
@@ -1008,8 +1026,6 @@ impl SeatHandler for Ewm {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        use smithay::wayland::text_input::TextInputSeat;
-
         tracing::info!("focus_changed: {:?}", focused.map(|s| s.id()));
 
         let client = focused.and_then(|s| self.display_handle.get_client(s.id()).ok());
@@ -1017,16 +1033,8 @@ impl SeatHandler for Ewm {
         set_primary_focus(&self.display_handle, seat, client);
 
         // Update text_input focus for input method support
-        let text_input = seat.text_input();
-        if let Some(surface) = focused {
-            text_input.set_focus(Some(surface.clone()));
-            text_input.enter();
-            tracing::info!("text_input focus set to {:?}", surface.id());
-        } else {
-            text_input.leave();
-            text_input.set_focus(None);
-            tracing::info!("text_input focus cleared");
-        }
+        let surface_id = focused.and_then(|s| self.surface_id(s));
+        self.update_text_input_focus(focused, surface_id);
     }
 
     fn cursor_image(
@@ -1408,7 +1416,6 @@ impl LoopData {
                 }
             }
             Command::Focus { id } => {
-                use smithay::wayland::text_input::TextInputSeat;
                 self.state.focused_surface_id = id;
                 if let Some(window) = self.state.id_windows.get(&id) {
                     if let Some(surface) = window.wl_surface() {
@@ -1417,9 +1424,7 @@ impl LoopData {
                         let focus_surface = surface.into_owned();
                         self.state.keyboard_focus = Some(focus_surface.clone());
                         keyboard.set_focus(&mut self.state, Some(focus_surface.clone()), serial);
-                        // Update text_input focus for input method support
-                        self.state.seat.text_input().set_focus(Some(focus_surface.clone()));
-                        self.state.seat.text_input().enter();
+                        self.state.update_text_input_focus(Some(&focus_surface), Some(id));
                         info!("Focus surface {}", id);
                     }
                 } else {
