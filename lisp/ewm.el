@@ -47,7 +47,9 @@
   "Root directory of the EWM project.
 When loaded from lisp/, this resolves to the parent directory.")
 
-(defcustom ewm-module-dir
+(defun ewm--find-module-dir ()
+  "Find the directory containing libewm_core.so.
+Prefers release build over debug build."
   (or (getenv "EWM_MODULE_PATH")
       ;; Development: prefer release, fall back to debug
       (let ((release-dir (expand-file-name "compositor/target/release" ewm--dir))
@@ -58,19 +60,25 @@ When loaded from lisp/, this resolves to the parent directory.")
          ((file-exists-p (expand-file-name "libewm_core.so" debug-dir))
           debug-dir)))
       ;; Installed: same directory as ewm.el
-      ewm--dir)
+      ewm--dir))
+
+(defcustom ewm-module-dir nil
   "Directory containing the ewm-core dynamic module.
+If nil, automatically detected (preferring release over debug).
 Set EWM_MODULE_PATH environment variable to override."
-  :type 'directory
+  :type '(choice (const :tag "Auto-detect" nil)
+                 directory)
   :group 'ewm)
 
 (defun ewm-load-module ()
-  "Load the ewm-core dynamic module from `ewm-module-dir'.
+  "Load the ewm-core dynamic module.
+Uses `ewm-module-dir' if set, otherwise auto-detects (preferring release).
 Returns t if loaded successfully, nil otherwise."
   (interactive)
   (if (featurep 'ewm-core)
       (progn (message "ewm-core already loaded") t)
-    (let ((module-path (expand-file-name "libewm_core.so" ewm-module-dir)))
+    (let* ((dir (or ewm-module-dir (ewm--find-module-dir)))
+           (module-path (expand-file-name "libewm_core.so" dir)))
       (if (not (file-exists-p module-path))
           (progn
             (message "Module not found: %s" module-path)
@@ -78,7 +86,9 @@ Returns t if loaded successfully, nil otherwise."
         (condition-case err
             (progn
               (module-load module-path)
-              (message "Loaded ewm-core from %s" module-path)
+              (message "Loaded ewm-core (%s build) from %s"
+                       (if (string-match-p "/release/" module-path) "release" "debug")
+                       module-path)
               t)
           (error
            (message "Failed to load ewm-core: %s" (error-message-string err))
