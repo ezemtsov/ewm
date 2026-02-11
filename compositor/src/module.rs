@@ -289,14 +289,14 @@ fn start(_: &Env) -> Result<bool> {
         init_notify_pipe().expect("Failed to create notification pipe")
     });
 
-    // Spawn compositor thread with emacsclient to create initial frame
-    // (Emacs server is already running since we're inside Emacs)
+    // Spawn compositor thread - frames are created via output_detected events
+    // (Emacs receives events and creates frames with ewm--create-frame-for-output)
     let handle = thread::spawn(move || {
         tracing::info!("Compositor thread starting");
 
         // Catch panics so they don't crash Emacs
-        let client = Some(("emacsclient".to_string(), vec!["-c".to_string()]));
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_drm(client)));
+        // No client spawn - frames created by Emacs via output_detected events
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_drm(None)));
 
         match result {
             Ok(Ok(())) => {

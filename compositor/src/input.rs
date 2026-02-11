@@ -138,37 +138,38 @@ pub fn handle_keyboard_event(
 
     if filter_result.as_ref().map(|(c, _, _)| *c) == Some(1) {
         // Switch focus to the Emacs frame on the same output as the focused surface
-        let emacs_id = state.get_emacs_surface_for_focused_output();
-        state.focused_surface_id = emacs_id;
-        if let Some(window) = state.id_windows.get(&emacs_id) {
-            if let Some(surface) = window.wl_surface() {
-                let emacs_surface: WlSurface = surface.into_owned();
-                state.keyboard_focus = Some(emacs_surface.clone());
-                keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
-                state.update_text_input_focus(None, Some(emacs_id));
+        if let Some(emacs_id) = state.get_emacs_surface_for_focused_output() {
+            state.focused_surface_id = emacs_id;
+            if let Some(window) = state.id_windows.get(&emacs_id) {
+                if let Some(surface) = window.wl_surface() {
+                    let emacs_surface: WlSurface = surface.into_owned();
+                    state.keyboard_focus = Some(emacs_surface.clone());
+                    keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
+                    state.update_text_input_focus(None, Some(emacs_id));
 
-                // Notify Emacs that focus changed so its tracking stays in sync
-                state.queue_event(crate::Event::Focus { id: emacs_id });
+                    // Notify Emacs that focus changed so its tracking stays in sync
+                    state.queue_event(crate::Event::Focus { id: emacs_id });
 
-                // Switch to base layout (index 0) when redirecting to Emacs
-                // This ensures Emacs keybindings work correctly
-                if state.xkb_current_layout != 0 && !state.xkb_layout_names.is_empty() {
-                    keyboard.with_xkb_state(state, |mut context| {
-                        context.set_layout(smithay::input::keyboard::Layout(0));
-                    });
-                    state.xkb_current_layout = 0;
-                    tracing::info!("Switched to base layout for Emacs redirect");
+                    // Switch to base layout (index 0) when redirecting to Emacs
+                    // This ensures Emacs keybindings work correctly
+                    if state.xkb_current_layout != 0 && !state.xkb_layout_names.is_empty() {
+                        keyboard.with_xkb_state(state, |mut context| {
+                            context.set_layout(smithay::input::keyboard::Layout(0));
+                        });
+                        state.xkb_current_layout = 0;
+                        tracing::info!("Switched to base layout for Emacs redirect");
+                    }
+
+                    // Re-send the key to Emacs
+                    keyboard.input::<(), _>(
+                        state,
+                        keycode.into(),
+                        key_state,
+                        serial,
+                        time,
+                        |_, _, _| FilterResult::Forward,
+                    );
                 }
-
-                // Re-send the key to Emacs
-                keyboard.input::<(), _>(
-                    state,
-                    keycode.into(),
-                    key_state,
-                    serial,
-                    time,
-                    |_, _, _| FilterResult::Forward,
-                );
             }
         }
         return KeyboardAction::RedirectToEmacs;

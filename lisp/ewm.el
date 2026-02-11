@@ -191,9 +191,6 @@ Each output is a plist with keys:
   :y - position y
   :modes - list of available modes")
 
-(defvar ewm--initial-setup-done nil
-  "Non-nil after initial outputs_complete has been processed.
-Used to distinguish hotplug events from initial output detection.")
 
 (defvar ewm--pending-frame-outputs nil
   "Alist of (output-name . frame) pairs waiting for surface assignment.
@@ -376,7 +373,7 @@ Adapted from EXWM's title update mechanism."
 
 (defun ewm--handle-output-detected (event)
   "Handle output detected EVENT.
-Adds the output to `ewm--outputs' and creates a frame for hotplugged monitors."
+Adds the output to `ewm--outputs' and creates a frame if needed."
   (pcase-let (((map ("name" name) ("make" make) ("model" model)
                     ("width_mm" width-mm) ("height_mm" height-mm)
                     ("x" x) ("y" y) ("modes" modes)) event))
@@ -396,18 +393,15 @@ Adds the output to `ewm--outputs' and creates a frame for hotplugged monitors."
                                :height-mm height-mm
                                :x x
                                :y y
-                               :modes mode-plists))
-           ;; Check if this is a hotplug (output not already known)
-           (is-hotplug (not (cl-find name ewm--outputs
-                                     :test #'string= :key (lambda (o) (plist-get o :name))))))
+                               :modes mode-plists)))
       ;; Remove existing entry with same name (update case)
       (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
                                        ewm--outputs))
       ;; Add new output
       (push output-plist ewm--outputs)
       (ewm-log "output detected: %s at (%d, %d)" name x y)
-      ;; Create frame for hotplugged output (after initial setup)
-      (when (and is-hotplug ewm--initial-setup-done)
+      ;; Create frame if this output doesn't have one yet
+      (unless (ewm--frame-for-output name)
         (ewm--create-frame-for-output name)))))
 
 (defun ewm--handle-output-disconnected (event)
@@ -510,20 +504,6 @@ Call this before `make-frame' to have the compositor automatically
 assign the new frame's surface to the specified output."
   (ewm--send `(:cmd "prepare-frame" :output ,output)))
 
-(defun ewm--get-primary-output ()
-  "Return the primary output name.
-Primary is the output at position (0, 0), or the first output."
-  (ewm-log "get-primary-output: outputs=%S" ewm--outputs)
-  (let ((found (cl-find-if (lambda (o)
-                             (let ((x (plist-get o :x))
-                                   (y (plist-get o :y)))
-                               (ewm-log "  checking output %s: x=%S (type %s), y=%S (type %s)"
-                                        (plist-get o :name) x (type-of x) y (type-of y))
-                               (and (eql 0 x) (eql 0 y))))
-                           ewm--outputs)))
-    (or (plist-get found :name)
-        (plist-get (car ewm--outputs) :name))))
-
 (defun ewm--get-output-offset (output-name)
   "Return (x . y) offset for OUTPUT-NAME, or (0 . 0) if not found."
   (let ((output (cl-find output-name ewm--outputs
@@ -555,17 +535,12 @@ Primary is the output at position (0, 0), or the first output."
 (defun ewm--handle-outputs-complete ()
   "Handle outputs_complete event.
 Triggered after compositor sends all output_detected events.
-Applies user output config, then sets up frames."
+Applies user output config and enforces frame-output parity."
   (ewm-log "all outputs received (%d)" (length ewm--outputs))
-  ;; Apply user output configuration first (mode changes, positioning)
+  ;; Apply user output configuration (mode changes, positioning)
   (ewm--apply-output-config)
-  ;; Then set up frames
-  (when ewm-auto-setup-frames
-    (ewm--setup-frames-per-output))
   ;; Enforce 1:1 output-frame relationship
-  (ewm--enforce-frame-output-parity)
-  ;; Mark initial setup as complete (for hotplug detection)
-  (setq ewm--initial-setup-done t))
+  (ewm--enforce-frame-output-parity))
 
 (defun ewm--handle-layouts (event)
   "Handle layouts EVENT from compositor.
@@ -728,31 +703,9 @@ The frame will be fully assigned when the compositor responds."
   (ewm-log "creating frame for %s" output-name)
   (ewm-prepare-frame output-name)
   (setq ewm--pending-output-for-next-frame output-name)
-  (make-frame '((visibility . t))))
+  ;; Use window-system pgtk for fg-daemon mode (no initial display connection)
+  (make-frame '((visibility . t) (window-system . pgtk))))
 
-(defun ewm--setup-frames-per-output ()
-  "Create one frame per output and assign accordingly.
-The initial frame (surface 1) is assigned to the primary output.
-Additional frames are created for other outputs.
-Skips outputs that already have a frame assigned."
-  (ewm-log "setup-frames-per-output called, %d outputs" (length ewm--outputs))
-  (when ewm--outputs
-    (let* ((primary (ewm--get-primary-output))
-           (initial-frame (selected-frame)))
-      (ewm-log "primary output: %s, initial frame: %s" primary initial-frame)
-      ;; Assign initial frame to primary output (if not already assigned)
-      (if (ewm--frame-for-output primary)
-          (ewm-log "primary %s already has frame" primary)
-        (ewm-assign-output 1 primary)
-        (set-frame-parameter initial-frame 'ewm-output primary)
-        (set-frame-parameter initial-frame 'ewm-surface-id 1)
-        (ewm-log "assigned initial frame to %s (surface 1)" primary))
-      ;; Create frames for other outputs
-      (dolist (output ewm--outputs)
-        (let ((output-name (plist-get output :name)))
-          (unless (or (string= output-name primary)
-                      (ewm--frame-for-output output-name))
-            (ewm--create-frame-for-output output-name)))))))
 
 (defun ewm--on-make-frame (frame)
   "Enforce 1:1 output-frame relationship.
@@ -862,11 +815,6 @@ e.g., on VT3: \"ewm-vt3.sock\"."
   (let* ((runtime-dir (or (getenv "XDG_RUNTIME_DIR") "/tmp"))
          (socket-name (format "ewm%s.sock" (ewm--vt-suffix))))
     (expand-file-name socket-name runtime-dir)))
-
-(defcustom ewm-auto-setup-frames t
-  "Whether to automatically create one frame per output on connect."
-  :type 'boolean
-  :group 'ewm)
 
 (defun ewm-connect (&optional socket-path)
   "Connect to compositor at SOCKET-PATH.

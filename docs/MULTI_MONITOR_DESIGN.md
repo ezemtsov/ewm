@@ -2,7 +2,7 @@
 
 ## Overview
 
-EWM supports multiple monitors with automatic frame-per-output management, hotplug detection, and Emacs-controlled configuration.
+EWM supports multiple monitors with automatic frame-per-output management, hotplug detection, and Emacs-controlled configuration. Emacs runs as a foreground daemon (`--fg-daemon`), creating frames explicitly for each discovered output.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ EWM supports multiple monitors with automatic frame-per-output management, hotpl
 │  - Reports hardware info to Emacs                           │
 │  - Executes positioning/assignment commands                 │
 │  - Renders all outputs independently                        │
-│  - Default: show new surfaces on primary output             │
+│  - Tracks active output (cursor/focus based)                │
 └─────────────────────────────────────────────────────────────┘
                     │ events                   ▲ commands
                     ▼                          │
@@ -21,27 +21,31 @@ EWM supports multiple monitors with automatic frame-per-output management, hotpl
 │                Emacs (ewm.el) - Controller                  │
 │  - User configuration for outputs                           │
 │  - Decides output arrangement/positioning                   │
-│  - Creates frames, requests output assignment               │
+│  - Creates one frame per output on startup                  │
 │  - All policy decisions live here                           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Key Design Decisions
 
-### Single Frame Per Monitor
+### Foreground Daemon Mode
+Emacs starts with `--fg-daemon`, meaning no frames exist initially. Frames are created explicitly when outputs are discovered, ensuring uniform handling for all outputs.
+
+### Single Frame Per Output
 Each physical output maps to one Emacs frame. Emacs manages all windows within frames; the compositor handles output discovery and rendering.
 
 ### Emacs-Controlled Configuration
-All output configuration (positioning, scale, primary selection) is controlled via `ewm.el`, not hardcoded in the compositor. This allows user-friendly configuration through Emacs customization.
+All output configuration (positioning, scale) is controlled via `ewm.el`, not hardcoded in the compositor. This allows user-friendly configuration through Emacs customization.
 
-### Compositor-Controlled Frame Assignment
-Unlike X11 where clients control positioning, the Wayland compositor controls where surfaces appear. Emacs requests assignment via IPC, compositor executes.
+### Active Output (Not Primary)
+Following niri's pattern, there is no static "primary" output. Instead, the **active output** is dynamic:
+- The output containing the cursor, or
+- The output with the focused Emacs frame
 
-### Show Immediately, Reassign Later
-All new surfaces appear immediately on the primary output. Emacs can reassign to other outputs via IPC. This ensures:
-- Something is always visible, even with broken config
-- No timeouts or hidden states
-- Uniform mechanism for all surfaces (including first frame)
+New non-Emacs surfaces appear on the active output. This is intuitive: windows open where you're currently working.
+
+### Explicit Frame Creation
+Emacs frames are created with an explicit target output. No "show then reassign" logic needed for frames. The compositor assigns the frame to the requested output immediately.
 
 ## IPC Protocol
 
@@ -60,7 +64,7 @@ enum IpcEvent {
     },
     OutputDisconnected { name: String },
 
-    // Surface events include output info
+    // Surface events (for non-Emacs clients)
     New { id: u32, app: String, output: String },
 }
 
@@ -88,18 +92,32 @@ enum Command {
         enabled: bool,
     },
 
-    // Surface-to-output assignment
+    // Create frame on specific output
+    CreateFrame { output: String },
+
+    // Surface-to-output assignment (for non-Emacs clients)
     AssignOutput { id: u32, output: String },
 }
 ```
 
-## Surface Lifecycle
+## Emacs Frame Lifecycle
 
 ```
-1. Surface created (Emacs frame, or other Wayland client)
-2. Compositor assigns to primary output immediately (always visible)
-3. Compositor sends: New { id, app, output: "primary-output-name" }
-4. Emacs receives, checks config/policy
+1. Compositor sends OutputDetected { name: "HDMI-A-1", ... }
+2. Emacs receives event, consults ewm-output-config
+3. Emacs sends CreateFrame { output: "HDMI-A-1" }
+4. Emacs calls (make-frame) which creates a Wayland surface
+5. Compositor assigns the new surface to the requested output
+6. Frame is visible on the correct output immediately
+```
+
+## Non-Emacs Surface Lifecycle
+
+```
+1. External client (Firefox, terminal, etc.) creates surface
+2. Compositor assigns to active output (cursor/focus based)
+3. Compositor sends: New { id, app, output }
+4. Emacs receives, checks app-output-rules
 5. If different output desired: Emacs sends AssignOutput { id, output }
 6. Compositor moves surface to requested output
 ```
@@ -110,66 +128,67 @@ enum Command {
 1. ewm starts
 2. Compositor discovers outputs via DRM
 3. Compositor positions outputs (auto-horizontal initially)
-4. Compositor spawns Emacs
-5. Emacs creates initial frame → toplevel surface
-6. Compositor shows frame on primary output immediately
-7. Compositor sends New event (queued until IPC connects)
-8. Emacs runs ewm-connect (early in startup)
-9. IPC connects, compositor sends:
-   - OutputDetected for each output
-   - Queued New events
-10. Emacs consults ewm-output-config
-11. Emacs sends ConfigureOutput for each output (repositions them)
-12. Emacs sends AssignOutput for surfaces if needed
-13. System is in user-configured state
+4. Compositor spawns: emacs --fg-daemon
+5. Emacs daemon starts (no frames exist yet)
+6. Emacs runs ewm-connect (early in startup)
+7. IPC connects, compositor sends OutputDetected for each output
+8. For each output, Emacs:
+   a. Consults ewm-output-config for positioning/scale
+   b. Sends ConfigureOutput to set output properties
+   c. Sends CreateFrame to request a frame on that output
+   d. Calls (make-frame) to create the actual frame
+9. All outputs now have frames, system is ready
 ```
 
 ## Hotplug Support
 
-The compositor uses UdevBackend to detect monitor connect/disconnect events at runtime:
+The compositor uses UdevBackend to detect monitor connect/disconnect events at runtime. Hotplug uses the exact same codepath as startup:
 
-- **Connect**: Sends `OutputDetected` event, Emacs creates a new frame
-- **Disconnect**: Sends `OutputDisconnected` event, Emacs closes the frame and moves windows to remaining frames
+- **Connect**: Compositor sends `OutputDetected` → Emacs creates frame for it
+- **Disconnect**: Compositor sends `OutputDisconnected` → Emacs closes the frame, moves windows to remaining frames
+
+This uniformity means no special cases for "first output" vs "hotplugged output".
 
 ## Failure Modes
 
 | Failure | Behavior |
 |---------|----------|
-| Broken Emacs config | All surfaces on primary, user can fix |
-| IPC never connects | Single-monitor mode, fully functional |
-| AssignOutput bug | Surfaces stay on primary |
+| Broken Emacs config | Frames created with default positioning |
+| IPC never connects | No frames created, compositor shows fallback |
+| CreateFrame for unknown output | Compositor ignores, logs warning |
 | Emacs crashes | Existing surfaces remain visible |
+| No outputs connected | Emacs daemon running, ready for hotplug |
 
 ## User Configuration
 
 ```elisp
 ;; Output positioning and properties
 (setq ewm-output-config
-      '(("HDMI-A-1" :position (0 . 0) :scale 1.0 :primary t)
+      '(("HDMI-A-1" :position (0 . 0) :scale 1.0)
         ("DP-1" :position (1920 . 0) :scale 1.25)
         ("eDP-1" :position (0 . 1080) :scale 2.0)))
 
-;; Policy for new outputs not in config
+;; Policy for new outputs not in config (hotplug)
 (setq ewm-default-output-position 'right)  ; 'right, 'left, 'above, 'below
 
-;; Per-app output rules
+;; Per-app output rules (for non-Emacs clients)
 (setq ewm-app-output-rules
       '(("firefox" . "DP-1")
-        ("emacs" . follow-focus)))
+        ("slack" . follow-focus)))  ; open on active output
 ```
 
 ## Emacs Commands
 
 ```elisp
 ewm--outputs                        ; list of detected outputs
-(length (frame-list))               ; number of frames
+(ewm-active-output)                 ; output with cursor/focus
 (frame-parameter nil 'ewm-output)   ; output of current frame
 
 ;; Reposition an output
-(ewm-configure-output "DisplayPort-1" :x 1920 :y 0)
+(ewm-configure-output "DP-1" :x 1920 :y 0)
 
-;; Assign surface to output
-(ewm-assign-output 1 "DisplayPort-1")
+;; Assign non-Emacs surface to output
+(ewm-assign-output 42 "DP-1")
 ```
 
 ## Per-Output Rendering
@@ -191,6 +210,21 @@ Key patterns NOT adopted (Emacs handles instead):
 - Workspace management
 - Window-to-monitor assignment logic
 - Output configuration parsing
+
+## Active Output Tracking
+
+The compositor tracks the "active output" for placing new non-Emacs surfaces:
+
+```rust
+fn active_output(&self) -> &Output {
+    // Priority: cursor position > focused surface's output
+    self.output_under_cursor()
+        .or_else(|| self.focused_output())
+        .unwrap_or_else(|| self.outputs.first())
+}
+```
+
+This follows niri's pattern: windows open where you're working, not on a static "primary".
 
 ## Troubleshooting
 
@@ -217,12 +251,21 @@ echo '{"command":"screenshot"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ewm.sock
 ;; Check if outputs were received
 ewm--outputs
 
-;; Manually trigger frame creation
+;; Manually trigger frame creation for all outputs
 (ewm--setup-outputs)
+
+;; Create frame for specific output
+(ewm--create-frame-on-output "HDMI-A-1")
 ```
 
 **Hotplug not detected:**
 ```bash
 # Check udev events
 udevadm monitor --property | grep -i drm
+```
+
+**No frames on startup:**
+```bash
+# Ensure Emacs is started as fg-daemon
+# Check ewm spawn command includes --fg-daemon
 ```

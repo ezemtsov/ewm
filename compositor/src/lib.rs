@@ -445,7 +445,7 @@ impl Ewm {
             output_size: (800, 600),
             outputs: Vec::new(),
             pointer_location: (0.0, 0.0),
-            focused_surface_id: 1,
+            focused_surface_id: 0,
             keyboard_focus: None,
             intercepted_keys: Vec::new(),
             emacs_pid: None,
@@ -692,7 +692,34 @@ impl Ewm {
 
     /// Get the output where the focused surface is located
     fn get_focused_output(&self) -> Option<String> {
+        if self.focused_surface_id == 0 {
+            return None;
+        }
         self.get_surface_output(self.focused_surface_id)
+    }
+
+    /// Get the output under the cursor position
+    fn output_under_cursor(&self) -> Option<String> {
+        use smithay::utils::Point;
+        let (px, py) = self.pointer_location;
+        let cursor_point = Point::from((px as i32, py as i32));
+
+        for output in self.space.outputs() {
+            if let Some(geo) = self.space.output_geometry(output) {
+                if geo.contains(cursor_point) {
+                    return Some(output.name());
+                }
+            }
+        }
+        None
+    }
+
+    /// Get active output for placing new non-Emacs surfaces.
+    /// Priority: cursor position > focused output > first output
+    fn active_output(&self) -> Option<String> {
+        self.output_under_cursor()
+            .or_else(|| self.get_focused_output())
+            .or_else(|| self.space.outputs().next().map(|o| o.name()))
     }
 
     /// Get all outputs that a window intersects with (considering views)
@@ -746,18 +773,18 @@ impl Ewm {
     }
 
     /// Find the Emacs surface on the same output as the focused surface
-    pub fn get_emacs_surface_for_focused_output(&self) -> u32 {
-        let focused_output = self.get_focused_output();
+    pub fn get_emacs_surface_for_focused_output(&self) -> Option<u32> {
+        let focused_output = self.get_focused_output()?;
 
         // Find an Emacs surface on the same output
         for &emacs_id in &self.emacs_surfaces {
-            if self.get_surface_output(emacs_id) == focused_output {
-                return emacs_id;
+            if self.get_surface_output(emacs_id) == Some(focused_output.clone()) {
+                return Some(emacs_id);
             }
         }
 
-        // Fallback to surface 1 (primary Emacs)
-        1
+        // Fallback to first Emacs surface
+        self.emacs_surfaces.iter().next().copied()
     }
 
     /// Recalculate total output size from current space geometry
@@ -1162,18 +1189,16 @@ impl XdgShellHandler for Ewm {
 
         // Determine target output:
         // 1. Emacs frames: from prepare-frame command (position at output, size to fill)
-        // 2. Other surfaces: from currently focused surface's output (offscreen, layout handles)
+        // 2. Other surfaces: from active_output (cursor > focused > first)
         let frame_output = if !self.pending_frame_outputs.is_empty() {
             Some(self.pending_frame_outputs.remove(0))
         } else {
             None
         };
-        let target_output = frame_output.clone().or_else(|| self.get_focused_output());
+        let target_output = frame_output.clone().or_else(|| self.active_output());
 
         // Position based on surface type
-        let position = if id == 1 {
-            (0, 0)
-        } else if let Some(ref output_name) = frame_output {
+        let position = if let Some(ref output_name) = frame_output {
             // Emacs frame: position at output origin
             self.space
                 .outputs()
@@ -1204,14 +1229,12 @@ impl XdgShellHandler for Ewm {
             }
         }
 
-        // Send event to Emacs with target output
-        if id != 1 {
-            self.queue_event(Event::New {
-                id,
-                app: app.clone(),
-                output: target_output.clone(),
-            });
-        }
+        // Send event to Emacs with target output (for all surfaces)
+        self.queue_event(Event::New {
+            id,
+            app: app.clone(),
+            output: target_output.clone(),
+        });
         info!(
             "New toplevel {} ({}) -> {:?}",
             id,
