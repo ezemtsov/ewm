@@ -3,20 +3,22 @@
 ;; Copyright (C) 2025
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
+;; Package-Requires: ((emacs "28.1") (transient "0.4"))
+
 ;;; Commentary:
 
 ;; EWM integrates Emacs with a Wayland compositor, providing an EXWM-like
 ;; experience without the single-threaded limitations.
 ;;
 ;; Quick start (compositor spawns Emacs automatically):
-;;   EWM_INIT=/path/to/ewm.el ewm
+;;   EWM_INIT=/path/to/lisp/ewm.el ewm
 ;;
 ;; Or with custom Emacs args:
-;;   EWM_INIT=/path/to/ewm.el ewm -Q --eval "(load-theme 'modus-vivendi)"
+;;   EWM_INIT=/path/to/lisp/ewm.el ewm -Q --eval "(load-theme 'modus-vivendi)"
 ;;
 ;; Manual startup:
 ;;   1. Start compositor: ewm --no-auto-emacs
-;;   2. Start Emacs inside: WAYLAND_DISPLAY=wayland-ewm emacs -l ewm.el -f ewm-connect
+;;   2. Start Emacs inside: WAYLAND_DISPLAY=wayland-ewm emacs -l lisp/ewm.el -f ewm-connect
 ;;
 ;; Start apps inside the compositor:
 ;;   WAYLAND_DISPLAY=wayland-ewm foot
@@ -29,12 +31,58 @@
 ;;
 ;; Environment variables:
 ;;   EWM_EMACS - Path to Emacs binary (default: "emacs")
-;;   EWM_INIT  - Path to ewm.el (auto-loads and connects)
+;;   EWM_INIT  - Path to lisp/ewm.el (auto-loads and connects)
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'map)
+
+;;; Dynamic module loading
+
+(defconst ewm--dir
+  (file-name-directory
+   (directory-file-name
+    (file-name-directory (or load-file-name ""))))
+  "Root directory of the EWM project.
+When loaded from lisp/, this resolves to the parent directory.")
+
+(defcustom ewm-module-dir
+  (or (getenv "EWM_MODULE_PATH")
+      ;; Development: prefer release, fall back to debug
+      (let ((release-dir (expand-file-name "compositor/target/release" ewm--dir))
+            (debug-dir (expand-file-name "compositor/target/debug" ewm--dir)))
+        (cond
+         ((file-exists-p (expand-file-name "libewm_core.so" release-dir))
+          release-dir)
+         ((file-exists-p (expand-file-name "libewm_core.so" debug-dir))
+          debug-dir)))
+      ;; Installed: same directory as ewm.el
+      ewm--dir)
+  "Directory containing the ewm-core dynamic module.
+Set EWM_MODULE_PATH environment variable to override."
+  :type 'directory
+  :group 'ewm)
+
+(defun ewm-load-module ()
+  "Load the ewm-core dynamic module from `ewm-module-dir'.
+Returns t if loaded successfully, nil otherwise."
+  (interactive)
+  (if (featurep 'ewm-core)
+      (progn (message "ewm-core already loaded") t)
+    (let ((module-path (expand-file-name "libewm_core.so" ewm-module-dir)))
+      (if (not (file-exists-p module-path))
+          (progn
+            (message "Module not found: %s" module-path)
+            nil)
+        (condition-case err
+            (progn
+              (module-load module-path)
+              (message "Loaded ewm-core from %s" module-path)
+              t)
+          (error
+           (message "Failed to load ewm-core: %s" (error-message-string err))
+           nil))))))
 
 ;;; Debug logging
 
@@ -1591,6 +1639,8 @@ Configures keyboard layouts from `ewm-xkb-layouts' and options from
   (if ewm-mode
       (ewm--mode-enable)
     (ewm--mode-disable)))
+
+(require 'ewm-transient)
 
 (provide 'ewm)
 ;;; ewm.el ends here

@@ -31,7 +31,7 @@ use smithay::{
 use tracing::warn;
 
 use crate::protocols::screencopy::ScreencopyBuffer;
-use crate::{cursor, Ewm, LoopData};
+use crate::{cursor, Ewm, State};
 
 /// Combined render element type for ewm
 /// This allows rendering both wayland surfaces and cursor images
@@ -483,7 +483,7 @@ pub fn process_screencopies_for_output(
     renderer: &mut GlesRenderer,
     output: &smithay::output::Output,
     cursor_buffer: &cursor::CursorBuffer,
-    event_loop: &LoopHandle<'static, LoopData>,
+    event_loop: &LoopHandle<'static, State>,
 ) {
     use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
     use tracing::trace;

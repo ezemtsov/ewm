@@ -1,13 +1,22 @@
 [package]
 name = "ewm"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 license = "GPL-3.0"
 description = "Emacs Wayland Manager - Wayland compositor with Emacs integration"
 
+[[bin]]
+name = "ewm"
+path = "src/main.rs"
+
+[lib]
+name = "ewm_core"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 anyhow = "1"
-image = "0.25"
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -18,7 +27,6 @@ git = "https://github.com/Smithay/smithay.git"
 rev = "0c2230f858580b52d628087d6dae1795278b8756"
 default-features = false
 features = [
-    "backend_winit",
     "backend_drm",
     "backend_gbm",
     "backend_libinput",
@@ -62,6 +70,10 @@ version = "0.31"
 [dependencies.wayland-protocols-misc]
 version = "0.3"
 features = ["client"]
+
+# Emacs dynamic module support
+[dependencies.emacs]
+version = "0.19"
 
 [features]
 default = []

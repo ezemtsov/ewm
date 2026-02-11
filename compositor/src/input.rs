@@ -101,7 +101,7 @@ pub fn handle_keyboard_event(
             2 => return KeyboardAction::Shutdown,
             3 => {
                 // Text input intercept - send key to Emacs via IPC
-                state.pending_events.push(crate::IpcEvent::Key {
+                state.queue_event(crate::Event::Key {
                     keysym,
                     utf8: utf8.clone(),
                 });
@@ -123,7 +123,7 @@ pub fn handle_keyboard_event(
                 state.update_text_input_focus(None, Some(emacs_id));
 
                 // Notify Emacs that focus changed so its tracking stays in sync
-                state.pending_events.push(crate::IpcEvent::Focus { id: emacs_id });
+                state.queue_event(crate::Event::Focus { id: emacs_id });
 
                 // Switch to base layout (index 0) when redirecting to Emacs
                 // This ensures Emacs keybindings work correctly
@@ -171,7 +171,7 @@ pub fn handle_keyboard_event(
         tracing::info!("XKB layout changed to index {}", current_layout);
         // Notify Emacs of layout change
         if !state.xkb_layout_names.is_empty() {
-            state.pending_events.push(crate::IpcEvent::LayoutSwitched {
+            state.queue_event(crate::Event::LayoutSwitched {
                 layout: state.xkb_layout_names.get(current_layout).cloned().unwrap_or_default(),
                 index: current_layout,
             });
@@ -223,4 +223,210 @@ pub fn restore_focus(state: &mut Ewm, keyboard: &KeyboardHandle<Ewm>, surface_id
             state.seat.text_input().enter();
         }
     }
+}
+
+// ============================================================================
+// Pointer event handling
+// ============================================================================
+
+use smithay::{
+    backend::input::{
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend,
+        PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    },
+    backend::libinput::LibinputInputBackend,
+    input::pointer::{
+        AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent,
+    },
+    reexports::wayland_server::Resource,
+};
+
+/// Configure a newly added libinput device
+pub fn handle_device_added(device: &mut <LibinputInputBackend as InputBackend>::Device) {
+    // Enable natural scrolling for touchpads
+    if device.config_tap_finger_count() > 0 {
+        let _ = device.config_scroll_set_natural_scroll_enabled(true);
+        tracing::info!("Enabled natural scroll for touchpad: {:?}", device.name());
+    }
+}
+
+/// Handle relative pointer motion (mice, trackpoints)
+pub fn handle_pointer_motion<B: InputBackend>(state: &mut Ewm, event: B::PointerMotionEvent) -> bool {
+    let (current_x, current_y) = state.pointer_location;
+    let delta = event.delta();
+    let (output_w, output_h) = state.output_size;
+
+    // Calculate new position, clamped to output bounds
+    let new_x = (current_x + delta.x).clamp(0.0, output_w as f64);
+    let new_y = (current_y + delta.y).clamp(0.0, output_h as f64);
+    state.pointer_location = (new_x, new_y);
+
+    let pointer = state.seat.get_pointer().unwrap();
+    let serial = SERIAL_COUNTER.next_serial();
+
+    // Find surface under pointer (including popups)
+    let under = state.surface_under_point((new_x, new_y).into());
+
+    pointer.motion(
+        state,
+        under.clone(),
+        &MotionEvent {
+            location: (new_x, new_y).into(),
+            serial,
+            time: event.time_msec(),
+        },
+    );
+
+    // Send relative motion event (needed by some games/apps)
+    pointer.relative_motion(
+        state,
+        under,
+        &RelativeMotionEvent {
+            delta: event.delta(),
+            delta_unaccel: event.delta_unaccel(),
+            utime: event.time(),
+        },
+    );
+
+    pointer.frame(state);
+    true // needs redraw
+}
+
+/// Handle absolute pointer motion (touchpads in absolute mode, tablets)
+pub fn handle_pointer_motion_absolute<B: InputBackend>(state: &mut Ewm, event: B::PointerMotionAbsoluteEvent) -> bool {
+    let (output_w, output_h) = state.output_size;
+    let pos = event.position_transformed((output_w, output_h).into());
+    state.pointer_location = (pos.x, pos.y);
+
+    let pointer = state.seat.get_pointer().unwrap();
+    let serial = SERIAL_COUNTER.next_serial();
+
+    // Find surface under pointer (including popups)
+    let under = state.surface_under_point(pos);
+
+    pointer.motion(
+        state,
+        under,
+        &MotionEvent {
+            location: pos,
+            serial,
+            time: event.time_msec(),
+        },
+    );
+    pointer.frame(state);
+    true // needs redraw
+}
+
+/// Handle pointer button press/release with click-to-focus
+pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::PointerButtonEvent) {
+    let pointer = state.seat.get_pointer().unwrap();
+    let keyboard = state.seat.get_keyboard().unwrap();
+    let serial = SERIAL_COUNTER.next_serial();
+
+    let button_state = match event.state() {
+        ButtonState::Pressed => ButtonState::Pressed,
+        ButtonState::Released => ButtonState::Released,
+    };
+
+    // Click-to-focus: on button press, focus the surface under pointer
+    if button_state == ButtonState::Pressed {
+        let (px, py) = state.pointer_location;
+        let focus_info = state
+            .space
+            .element_under((px, py))
+            .and_then(|(window, _)| {
+                let id = state.window_ids.get(&window).copied()?;
+                let surface = window.wl_surface()?.into_owned();
+                Some((id, surface))
+            });
+
+        if let Some((id, surface)) = focus_info {
+            tracing::info!("Click focus: setting focus to surface {:?}", surface.id());
+            state.set_focus(id);
+            state.keyboard_focus = Some(surface.clone());
+            keyboard.set_focus(state, Some(surface.clone()), serial);
+            state.update_text_input_focus(Some(&surface), Some(id));
+        }
+    }
+
+    pointer.button(
+        state,
+        &ButtonEvent {
+            button: event.button_code(),
+            state: button_state,
+            serial,
+            time: event.time_msec(),
+        },
+    );
+    pointer.frame(state);
+}
+
+/// Handle pointer axis (scroll wheel, touchpad scroll)
+pub fn handle_pointer_axis<B: InputBackend>(state: &mut Ewm, event: B::PointerAxisEvent) {
+    let pointer = state.seat.get_pointer().unwrap();
+    let keyboard = state.seat.get_keyboard().unwrap();
+    let serial = SERIAL_COUNTER.next_serial();
+
+    // Scroll-to-focus: focus the surface under pointer on scroll
+    let (px, py) = state.pointer_location;
+    let focus_info = state
+        .space
+        .element_under((px, py))
+        .and_then(|(window, _)| {
+            let id = state.window_ids.get(&window).copied()?;
+            let surface = window.wl_surface()?.into_owned();
+            Some((id, surface))
+        });
+
+    if let Some((id, surface)) = focus_info {
+        state.set_focus(id);
+        state.keyboard_focus = Some(surface.clone());
+        keyboard.set_focus(state, Some(surface.clone()), serial);
+        state.update_text_input_focus(Some(&surface), Some(id));
+    }
+
+    let source = event.source();
+
+    // Get scroll amounts (natural scrolling is handled at libinput device level)
+    let horizontal_amount = event.amount(Axis::Horizontal);
+    let vertical_amount = event.amount(Axis::Vertical);
+    let horizontal_v120 = event.amount_v120(Axis::Horizontal);
+    let vertical_v120 = event.amount_v120(Axis::Vertical);
+
+    // Compute continuous values, falling back to v120 if no continuous amount
+    let horizontal = horizontal_amount
+        .or_else(|| horizontal_v120.map(|v| v / 120.0 * 15.0))
+        .unwrap_or(0.0);
+    let vertical = vertical_amount
+        .or_else(|| vertical_v120.map(|v| v / 120.0 * 15.0))
+        .unwrap_or(0.0);
+
+    let mut frame = AxisFrame::new(event.time_msec()).source(source);
+    if horizontal != 0.0 {
+        frame = frame.value(Axis::Horizontal, horizontal);
+        // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
+        if let Some(v120) = horizontal_v120 {
+            frame = frame.v120(Axis::Horizontal, v120 as i32);
+        }
+    }
+    if vertical != 0.0 {
+        frame = frame.value(Axis::Vertical, vertical);
+        // Send discrete v120 value for wheel scrolling
+        if let Some(v120) = vertical_v120 {
+            frame = frame.v120(Axis::Vertical, v120 as i32);
+        }
+    }
+
+    // For finger scroll (touchpad), send stop events when scrolling ends
+    if source == AxisSource::Finger {
+        if horizontal_amount == Some(0.0) {
+            frame = frame.stop(Axis::Horizontal);
+        }
+        if vertical_amount == Some(0.0) {
+            frame = frame.stop(Axis::Vertical);
+        }
+    }
+
+    pointer.axis(state, frame);
+    pointer.frame(state);
 }

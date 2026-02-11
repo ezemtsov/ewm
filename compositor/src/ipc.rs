@@ -3,17 +3,15 @@
 //! This module provides shared IPC functionality for communication
 //! with Emacs, used by both Winit and DRM backends.
 
-use std::cell::RefCell;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
-use std::rc::Rc;
 
 use smithay::reexports::calloop::{
-    generic::Generic, Interest, LoopHandle, Mode as CalloopMode, PostAction, RegistrationToken,
+    generic::Generic, Interest, LoopHandle, Mode as CalloopMode, PostAction,
 };
 use tracing::info;
 
-use crate::LoopData;
+use crate::State;
 
 /// Socket filename
 const IPC_SOCKET_NAME: &str = "ewm.sock";
@@ -33,7 +31,7 @@ pub fn ipc_socket_path() -> String {
 ///
 /// Returns Ok(()) on success, or an error if socket creation fails.
 pub fn setup_ipc_listener(
-    event_loop: &LoopHandle<'static, LoopData>,
+    event_loop: &LoopHandle<'static, State>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = ipc_socket_path();
     let ipc_path = Path::new(&socket_path);
@@ -48,48 +46,45 @@ pub fn setup_ipc_listener(
     ipc_listener.set_nonblocking(true)?;
     info!("IPC socket: {}", socket_path);
 
-    // Track IPC stream registration token for cleanup on reconnect
-    let ipc_stream_token: Rc<RefCell<Option<RegistrationToken>>> = Rc::new(RefCell::new(None));
-    let ipc_stream_token_clone = ipc_stream_token.clone();
     let loop_handle = event_loop.clone();
 
     // Register the listener to accept connections
     event_loop.insert_source(
         Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
-        move |_, listener, data| {
+        move |_, listener, state| {
             if let Ok((stream, _)) = listener.accept() {
                 info!("Emacs connected");
                 stream.set_nonblocking(true).ok();
 
                 // Remove previous stream source if any
-                if let Some(token) = ipc_stream_token_clone.borrow_mut().take() {
+                if let Some(token) = state.ipc_stream_token.take() {
                     loop_handle.remove(token);
                 }
 
-                // Clone stream for writing (stored in data.emacs)
+                // Clone stream for writing (stored in state.emacs)
                 let write_stream = stream.try_clone().unwrap();
-                data.emacs = Some(write_stream);
+                state.emacs = Some(write_stream);
 
                 // Send output detected events for all known outputs
-                data.send_output_events();
+                state.send_output_events();
 
                 // Flush any pending events (e.g., surface events queued before connect)
-                data.flush_events();
+                state.flush_events();
 
                 // Register stream for reading as event source
                 let token = loop_handle
                     .insert_source(
                         Generic::new(stream, Interest::READ, CalloopMode::Level),
-                        |_, source, data: &mut LoopData| {
+                        |_, source, state: &mut State| {
                             // SAFETY: We're inside the event loop callback where the source is valid
                             let stream = unsafe { source.get_mut() };
-                            data.process_commands_from_stream(stream);
+                            state.process_commands_from_stream(stream);
                             Ok(PostAction::Continue)
                         },
                     )
                     .expect("Failed to register IPC stream");
 
-                *ipc_stream_token_clone.borrow_mut() = Some(token);
+                state.ipc_stream_token = Some(token);
             }
             Ok(PostAction::Continue)
         },
