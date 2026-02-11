@@ -1967,6 +1967,11 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
                 warn!("Failed to spawn client: {:?}", e);
             }
         }
+    } else {
+        // Module mode: Emacs is the current process
+        let pid = std::process::id();
+        info!("Module mode: tracking Emacs PID {}", pid);
+        state.ewm.set_emacs_pid(pid);
     }
 
     // Run the event loop with per-frame callback

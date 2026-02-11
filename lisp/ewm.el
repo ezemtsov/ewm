@@ -128,6 +128,11 @@ Returns t if loaded successfully, nil otherwise."
 (defconst ewm--module-poll-interval 0.016
   "Interval for polling module events (16ms = ~60Hz).")
 
+(defun ewm--compositor-active-p ()
+  "Return non-nil if compositor is active (module or IPC mode)."
+  (or ewm--module-mode
+      (and ewm--process (process-live-p ewm--process))))
+
 (defun ewm--start-module-polling ()
   "Start timer-based event polling for module mode."
   (ewm--stop-module-polling)
@@ -993,9 +998,10 @@ The compositor runs as a thread within the Emacs process."
         (setq ewm--module-mode t)
         ;; Wait briefly for compositor to initialize
         (sleep-for 0.5)
-        ;; Set WAYLAND_DISPLAY based on VT (socket name is wayland-ewm-vtN)
+        ;; Set environment for Wayland clients
         (let ((socket-name (format "wayland-ewm-vt%d" (ewm--current-vt))))
           (setenv "WAYLAND_DISPLAY" socket-name)
+          (setenv "XDG_SESSION_TYPE" "wayland")
           (ewm-log "Set WAYLAND_DISPLAY=%s" socket-name))
         ;; Start event polling
         (ewm--start-module-polling)
@@ -1241,8 +1247,7 @@ Unlike `buffer-list-update-hook', this does NOT fire for buffer renames.
 When viewing a surface buffer, the surface has keyboard focus so that
 typing works immediately.  When viewing a non-surface buffer, the
 frame's Emacs surface has focus."
-  (when (and ewm--process
-             (process-live-p ewm--process)
+  (when (and (ewm--compositor-active-p)
              (not ewm-input--skip-window-change)
              (not (active-minibuffer-window))
              (eq frame (selected-frame)))
@@ -1258,8 +1263,7 @@ frame's Emacs surface has focus."
 (defun ewm-input--on-window-selection-change (frame)
   "Handle window selection changes on FRAME.
 Called via `window-selection-change-functions' when selected window changes."
-  (when (and ewm--process
-             (process-live-p ewm--process)
+  (when (and (ewm--compositor-active-p)
              (not ewm-input--skip-window-change)
              (not (active-minibuffer-window))
              (eq frame (selected-frame)))
@@ -1277,8 +1281,7 @@ Called via `window-selection-change-functions' when selected window changes."
 Re-focuses the surface if we're in a surface buffer.
 Also updates multi-view layout when selected window changes."
   (when-let ((state ewm--input-state))
-    (when (and ewm--process
-               (process-live-p ewm--process)
+    (when (and (ewm--compositor-active-p)
                (not (active-minibuffer-window)))
       ;; Use selected window's buffer, not current-buffer, to avoid spurious
       ;; focus changes when current-buffer differs from displayed buffer
@@ -1301,8 +1304,7 @@ Also updates multi-view layout when selected window changes."
 Called via `after-focus-change-function' to sync compositor focus.
 Prefers focusing the surface shown in the frame's selected window,
 falling back to the frame's own surface for Emacs buffers."
-  (when (and ewm--process
-             (process-live-p ewm--process)
+  (when (and (ewm--compositor-active-p)
              (not (active-minibuffer-window)))
     (let* ((frame (selected-frame))
            (win (frame-selected-window frame))
@@ -1625,7 +1627,8 @@ Adapted from exwm-layout--show."
 Collects all windows showing each surface and sends multi-view commands.
 Supports displaying the same surface in multiple windows (true multi-view).
 Adapted from exwm-layout--refresh-workspace."
-  (when (and ewm--process (process-live-p ewm--process))
+  (when (or ewm--module-mode
+            (and ewm--process (process-live-p ewm--process)))
     ;; Force redisplay to ensure window sizes are current
     (redisplay t)
     ;; Build a hash table: surface-id -> list of (window . active-p)
@@ -1689,9 +1692,8 @@ Adapted from exwm-layout--refresh-workspace."
   "Restore focus and refresh layout when minibuffer exits."
   (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay)
   (when (and ewm--pre-minibuffer-surface-id
-             ewm--process
-             (process-live-p ewm--process))
-    (ewm--send `(:cmd "focus" :id ,ewm--pre-minibuffer-surface-id))
+             (ewm--compositor-active-p))
+    (ewm-focus ewm--pre-minibuffer-surface-id)
     (setq ewm--pre-minibuffer-surface-id nil)))
 
 (defun ewm--refresh-with-redisplay ()
