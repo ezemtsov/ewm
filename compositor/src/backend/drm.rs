@@ -38,7 +38,7 @@ use smithay::{
         calloop::{
             channel::{channel, Sender},
             timer::{TimeoutAction, Timer},
-            EventLoop, LoopHandle,
+            EventLoop, LoopHandle, RegistrationToken,
         },
         drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
         input::Libinput,
@@ -130,6 +130,11 @@ pub struct DrmBackend;
 ///
 /// Field order matters for Drop: device must drop before session.
 /// See https://github.com/Smithay/smithay/issues/1102
+///
+/// IMPORTANT: We implement Drop to remove the session notifier from the event
+/// loop BEFORE the session is dropped. The notifier holds references to session
+/// internals that become invalid after session drop. This is critical for
+/// embedded mode where process exit doesn't clean up resources.
 #[allow(dead_code)]
 pub struct DrmBackendState {
     /// Channel to trigger deferred initialization
@@ -143,12 +148,30 @@ pub struct DrmBackendState {
     /// Pending initialization data - Some until DRM is initialized
     pending: Option<DrmPendingInit>,
     paused: bool,
+    /// Token for session notifier - must be removed before session drops
+    session_notifier_token: Option<RegistrationToken>,
     // SAFETY: Fields below are dropped in declaration order.
     // device must drop before session (surfaces → drm → libseat).
     // See https://github.com/Smithay/smithay/issues/1102
     device: Option<DrmDeviceState>,
     libinput: Libinput,
     session: Option<LibSeatSession>,
+}
+
+impl Drop for DrmBackendState {
+    fn drop(&mut self) {
+        // CRITICAL: Remove session notifier from event loop BEFORE session is dropped.
+        // The notifier holds references to session internals that become invalid after
+        // session drop. This is essential for embedded mode where process exit doesn't
+        // clean up resources automatically.
+        if let (Some(handle), Some(token)) = (&self.loop_handle, self.session_notifier_token.take())
+        {
+            info!("Removing session notifier from event loop before session drop");
+            handle.remove(token);
+        }
+        info!("DrmBackendState dropping - session will be released");
+        // After this, fields drop in declaration order: device → libinput → session
+    }
 }
 
 impl DrmBackendState {
@@ -1484,6 +1507,7 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
             seat_name: seat_name.clone(),
         }),
         paused: false,
+        session_notifier_token: None, // Set after registering notifier
         init_sender: Some(init_sender),
         loop_handle: Some(event_loop.handle()),
         cursor_buffer: CursorBuffer::new(),
@@ -1606,8 +1630,8 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
         tracing::info!("D-Bus ScreenCast server started");
     }
 
-    // Register session notifier
-    event_loop
+    // Register session notifier and store token for cleanup in Drop
+    let session_notifier_token = event_loop
         .handle()
         .insert_source(notifier, |event, _, state| {
             match event {
@@ -1626,6 +1650,7 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
                 }
             }
         })?;
+    state.backend.session_notifier_token = Some(session_notifier_token);
 
     // Register UdevBackend for hotplug detection
     let udev_backend = UdevBackend::new(&seat_name)?;
