@@ -839,13 +839,29 @@ Skips frames that are pending assignment (waiting for compositor response)."
 
 ;;; Public API
 
+(defun ewm--current-vt ()
+  "Return the current VT number, or nil if not on a VT."
+  (when-let ((active (ignore-errors
+                       (string-trim
+                        (with-temp-buffer
+                          (insert-file-contents "/sys/class/tty/tty0/active")
+                          (buffer-string))))))
+    (when (string-match "\\`tty\\([0-9]+\\)\\'" active)
+      (string-to-number (match-string 1 active)))))
+
+(defun ewm--vt-suffix ()
+  "Return VT-specific suffix for socket names, e.g., \"-vt3\"."
+  (if-let ((vt (ewm--current-vt)))
+      (format "-vt%d" vt)
+    ""))
+
 (defun ewm--default-socket-path ()
   "Return the default IPC socket path.
-Uses $XDG_RUNTIME_DIR/ewm.sock if available, otherwise /tmp/ewm.sock."
-  (let ((runtime-dir (getenv "XDG_RUNTIME_DIR")))
-    (if runtime-dir
-        (expand-file-name "ewm.sock" runtime-dir)
-      "/tmp/ewm.sock")))
+Socket name is automatically derived from current VT number,
+e.g., on VT3: \"ewm-vt3.sock\"."
+  (let* ((runtime-dir (or (getenv "XDG_RUNTIME_DIR") "/tmp"))
+         (socket-name (format "ewm%s.sock" (ewm--vt-suffix))))
+    (expand-file-name socket-name runtime-dir)))
 
 (defcustom ewm-auto-setup-frames t
   "Whether to automatically create one frame per output on connect."
@@ -854,7 +870,7 @@ Uses $XDG_RUNTIME_DIR/ewm.sock if available, otherwise /tmp/ewm.sock."
 
 (defun ewm-connect (&optional socket-path)
   "Connect to compositor at SOCKET-PATH.
-Default is $XDG_RUNTIME_DIR/ewm.sock.
+Default path is automatically derived from current VT (e.g., ewm-vt3.sock).
 Safe to call unconditionally - returns nil with a message if connection fails."
   (interactive)
   (let ((path (or socket-path (ewm--default-socket-path))))

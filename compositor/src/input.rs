@@ -5,7 +5,7 @@
 
 use smithay::{
     backend::input::KeyState,
-    input::keyboard::{xkb, FilterResult, KeyboardHandle},
+    input::keyboard::{keysyms, xkb, FilterResult, KeyboardHandle},
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::SERIAL_COUNTER,
     wayland::seat::WaylandFocus,
@@ -25,6 +25,8 @@ pub enum KeyboardAction {
     Shutdown,
     /// Key intercepted for text input (sent to Emacs via IPC)
     TextInputIntercepted,
+    /// VT switch requested (Ctrl+Alt+F1-F12)
+    ChangeVt(i32),
 }
 
 /// Process a keyboard key event
@@ -62,7 +64,20 @@ pub fn handle_keyboard_event(
                 return FilterResult::Forward;
             }
 
-            // Check for kill combo first (Super+Ctrl+Backspace)
+            // Get the modified keysym (with modifiers applied by XKB)
+            let modified = handle.modified_sym();
+            let modified_raw = modified.raw();
+
+            // Check for VT switch keys (Ctrl+Alt+F1-F12 → XF86Switch_VT_*)
+            // XKB transforms Ctrl+Alt+F1-F12 into XF86Switch_VT_1-12 keysyms
+            if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
+                .contains(&modified_raw)
+            {
+                let vt = (modified_raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32;
+                return FilterResult::Intercept((4, vt as u32, None)); // 4 = VT switch
+            }
+
+            // Check for kill combo (Super+Ctrl+Backspace)
             if is_kill_combo(keycode, mods.ctrl, mods.logo) {
                 return FilterResult::Intercept((2, 0, None)); // 2 = kill
             }
@@ -70,15 +85,21 @@ pub fn handle_keyboard_event(
             // Get the raw latin keysym for this key (layout-independent)
             // This ensures intercepted keys work regardless of current XKB layout
             let raw_latin = handle.raw_latin_sym_or_raw_current_sym();
-            let modified = handle.modified_sym();
             let keysym = raw_latin.unwrap_or(modified);
             let keysym_raw = keysym.raw();
-            let is_intercepted = intercepted_keys.iter().any(|ik| ik.matches(keysym_raw, mods));
+            let is_intercepted = intercepted_keys
+                .iter()
+                .any(|ik| ik.matches(keysym_raw, mods));
 
             if is_intercepted && !focus_on_emacs {
                 // This is an intercepted key and focus is on an external app (not Emacs)
                 FilterResult::Intercept((1, keysym_raw, None)) // 1 = redirect to emacs
-            } else if text_input_intercept && !focus_on_emacs && !mods.ctrl && !mods.alt && !mods.logo {
+            } else if text_input_intercept
+                && !focus_on_emacs
+                && !mods.ctrl
+                && !mods.alt
+                && !mods.logo
+            {
                 // Text input intercept mode: capture printable keys for Emacs IM processing
                 // Skip if any command modifiers are held (let those go to Emacs via intercept-keys)
                 // Use modified keysym for UTF-8 (includes Shift for uppercase/@/etc)
@@ -106,6 +127,10 @@ pub fn handle_keyboard_event(
                     utf8: utf8.clone(),
                 });
                 return KeyboardAction::TextInputIntercepted;
+            }
+            4 => {
+                // VT switch - keysym contains the VT number
+                return KeyboardAction::ChangeVt(keysym as i32);
             }
             _ => {}
         }
@@ -172,7 +197,11 @@ pub fn handle_keyboard_event(
         // Notify Emacs of layout change
         if !state.xkb_layout_names.is_empty() {
             state.queue_event(crate::Event::LayoutSwitched {
-                layout: state.xkb_layout_names.get(current_layout).cloned().unwrap_or_default(),
+                layout: state
+                    .xkb_layout_names
+                    .get(current_layout)
+                    .cloned()
+                    .unwrap_or_default(),
                 index: current_layout,
             });
         }
@@ -219,7 +248,10 @@ pub fn restore_focus(state: &mut Ewm, keyboard: &KeyboardHandle<Ewm>, surface_id
             state.keyboard_focus = Some(focus_surface.clone());
             keyboard.set_focus(state, Some(focus_surface.clone()), serial);
             // Update text_input focus
-            state.seat.text_input().set_focus(Some(focus_surface.clone()));
+            state
+                .seat
+                .text_input()
+                .set_focus(Some(focus_surface.clone()));
             state.seat.text_input().enter();
         }
     }
@@ -235,9 +267,7 @@ use smithay::{
         PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     backend::libinput::LibinputInputBackend,
-    input::pointer::{
-        AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent,
-    },
+    input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     reexports::wayland_server::Resource,
 };
 
@@ -251,7 +281,10 @@ pub fn handle_device_added(device: &mut <LibinputInputBackend as InputBackend>::
 }
 
 /// Handle relative pointer motion (mice, trackpoints)
-pub fn handle_pointer_motion<B: InputBackend>(state: &mut Ewm, event: B::PointerMotionEvent) -> bool {
+pub fn handle_pointer_motion<B: InputBackend>(
+    state: &mut Ewm,
+    event: B::PointerMotionEvent,
+) -> bool {
     let (current_x, current_y) = state.pointer_location;
     let delta = event.delta();
     let (output_w, output_h) = state.output_size;
@@ -293,7 +326,10 @@ pub fn handle_pointer_motion<B: InputBackend>(state: &mut Ewm, event: B::Pointer
 }
 
 /// Handle absolute pointer motion (touchpads in absolute mode, tablets)
-pub fn handle_pointer_motion_absolute<B: InputBackend>(state: &mut Ewm, event: B::PointerMotionAbsoluteEvent) -> bool {
+pub fn handle_pointer_motion_absolute<B: InputBackend>(
+    state: &mut Ewm,
+    event: B::PointerMotionAbsoluteEvent,
+) -> bool {
     let (output_w, output_h) = state.output_size;
     let pos = event.position_transformed((output_w, output_h).into());
     state.pointer_location = (pos.x, pos.y);
@@ -331,14 +367,11 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::Pointer
     // Click-to-focus: on button press, focus the surface under pointer
     if button_state == ButtonState::Pressed {
         let (px, py) = state.pointer_location;
-        let focus_info = state
-            .space
-            .element_under((px, py))
-            .and_then(|(window, _)| {
-                let id = state.window_ids.get(&window).copied()?;
-                let surface = window.wl_surface()?.into_owned();
-                Some((id, surface))
-            });
+        let focus_info = state.space.element_under((px, py)).and_then(|(window, _)| {
+            let id = state.window_ids.get(&window).copied()?;
+            let surface = window.wl_surface()?.into_owned();
+            Some((id, surface))
+        });
 
         if let Some((id, surface)) = focus_info {
             tracing::info!("Click focus: setting focus to surface {:?}", surface.id());
@@ -369,14 +402,11 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut Ewm, event: B::PointerAx
 
     // Scroll-to-focus: focus the surface under pointer on scroll
     let (px, py) = state.pointer_location;
-    let focus_info = state
-        .space
-        .element_under((px, py))
-        .and_then(|(window, _)| {
-            let id = state.window_ids.get(&window).copied()?;
-            let surface = window.wl_surface()?.into_owned();
-            Some((id, surface))
-        });
+    let focus_info = state.space.element_under((px, py)).and_then(|(window, _)| {
+        let id = state.window_ids.get(&window).copied()?;
+        let surface = window.wl_surface()?.into_owned();
+        Some((id, surface))
+    });
 
     if let Some((id, surface)) = focus_info {
         state.set_focus(id);

@@ -260,6 +260,20 @@ impl DrmBackendState {
             }
         }
     }
+
+    /// Change to a different VT (virtual terminal)
+    /// This is used for Ctrl+Alt+F1-F12 VT switching.
+    pub fn change_vt(&mut self, vt: i32) {
+        debug!("change_vt called with vt={}, session={:?}", vt, self.session.is_some());
+        if let Some(ref mut session) = self.session {
+            info!("Switching to VT {}", vt);
+            if let Err(err) = session.change_vt(vt) {
+                warn!("Error changing VT to {}: {}", vt, err);
+            }
+        } else {
+            warn!("Cannot change VT: no session");
+        }
+    }
 }
 
 
@@ -1714,9 +1728,15 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
                         kb_event.state(),
                         Event::time_msec(&kb_event),
                     );
-                    if action == KeyboardAction::Shutdown {
-                        info!("Kill combo pressed, shutting down");
-                        state.ewm.stop();
+                    match action {
+                        KeyboardAction::Shutdown => {
+                            info!("Kill combo pressed, shutting down");
+                            state.ewm.stop();
+                        }
+                        KeyboardAction::ChangeVt(vt) => {
+                            state.backend.change_vt(vt);
+                        }
+                        _ => {}
                     }
                 }
                 InputEvent::PointerMotion { event } => {

@@ -829,10 +829,10 @@ impl Ewm {
         display: Display<Ewm>,
         event_loop: &LoopHandle<State>,
     ) -> Result<std::ffi::OsString, Box<dyn std::error::Error>> {
-        let socket_name_env =
-            std::env::var("EWM_SOCKET").unwrap_or_else(|_| "wayland-ewm".to_string());
-        info!("Creating Wayland socket with name: {}", socket_name_env);
-        let socket = ListeningSocketSource::with_name(&socket_name_env)?;
+        // Automatically derive socket name from current VT for multi-instance support
+        let socket_name = format!("wayland-ewm{}", crate::ipc::vt_suffix());
+        info!("Creating Wayland socket with name: {}", socket_name);
+        let socket = ListeningSocketSource::with_name(&socket_name)?;
         let socket_name = socket.socket_name().to_os_string();
 
         // Socket listener - uses display_handle from state

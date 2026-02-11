@@ -13,14 +13,37 @@ use tracing::info;
 
 use crate::State;
 
-/// Socket filename
-const IPC_SOCKET_NAME: &str = "ewm.sock";
+/// Get the current VT (virtual terminal) number.
+/// Returns None if not running on a VT or detection fails.
+pub fn current_vt() -> Option<u32> {
+    // Read the active VT from sysfs
+    std::fs::read_to_string("/sys/class/tty/tty0/active")
+        .ok()
+        .and_then(|s| {
+            // Format is "ttyN" where N is the VT number
+            s.trim().strip_prefix("tty")?.parse().ok()
+        })
+}
 
-/// Get the IPC socket path, using XDG_RUNTIME_DIR if available
+/// Get a VT-specific suffix for socket names.
+/// Returns "-vt{N}" if on a VT, empty string otherwise.
+pub fn vt_suffix() -> String {
+    current_vt()
+        .map(|vt| format!("-vt{}", vt))
+        .unwrap_or_default()
+}
+
+/// Get the IPC socket path, using XDG_RUNTIME_DIR if available.
+///
+/// Socket name is automatically derived from the current VT number,
+/// allowing multiple EWM instances on different TTYs without configuration.
+/// E.g., on VT3: "ewm-vt3.sock"
 pub fn ipc_socket_path() -> String {
+    let socket_name = format!("ewm{}.sock", vt_suffix());
+
     match std::env::var("XDG_RUNTIME_DIR") {
-        Ok(dir) => format!("{}/{}", dir, IPC_SOCKET_NAME),
-        Err(_) => format!("/tmp/{}", IPC_SOCKET_NAME),
+        Ok(dir) => format!("{}/{}", dir, socket_name),
+        Err(_) => format!("/tmp/{}", socket_name),
     }
 }
 
