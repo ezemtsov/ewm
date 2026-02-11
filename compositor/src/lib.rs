@@ -266,15 +266,15 @@ impl KeyId {
 /// Intercepted key: key + required modifiers (sent pre-parsed from Emacs)
 #[derive(Debug, Clone, Deserialize)]
 pub struct InterceptedKey {
-    key: KeyId,
+    pub key: KeyId,
     #[serde(default)]
-    ctrl: bool,
+    pub ctrl: bool,
     #[serde(default)]
-    alt: bool,
+    pub alt: bool,
     #[serde(default)]
-    shift: bool,
+    pub shift: bool,
     #[serde(rename = "super", default)]
-    logo: bool,
+    pub logo: bool,
 }
 
 impl InterceptedKey {
@@ -1400,6 +1400,11 @@ impl State {
             }
         }
 
+        // Process module commands (from Emacs via dynamic module)
+        for cmd in crate::module::drain_commands() {
+            self.handle_module_command(cmd);
+        }
+
         // Process pending early imports
         let pending_imports: Vec<_> = self.ewm.pending_early_imports.drain(..).collect();
         for surface in pending_imports {
@@ -1595,33 +1600,43 @@ impl State {
                             self.backend.set_mode(&mut self.ewm, &name, w, h, refresh);
                         }
 
-                        // Reposition if coordinates provided
-                        let new_x = x.unwrap_or(0);
-                        let new_y = y.unwrap_or(0);
-                        let new_pos = (new_x, new_y);
+                        // Only update position if x or y is explicitly provided
+                        if x.is_some() || y.is_some() {
+                            let current_pos = self
+                                .ewm
+                                .space
+                                .output_geometry(&output)
+                                .map(|g| (g.loc.x, g.loc.y))
+                                .unwrap_or((0, 0));
+                            let new_x = x.unwrap_or(current_pos.0);
+                            let new_y = y.unwrap_or(current_pos.1);
+                            let new_pos = (new_x, new_y);
 
-                        self.ewm.space.map_output(&output, new_pos);
+                            self.ewm.space.map_output(&output, new_pos);
 
-                        // Update output's internal position state
-                        output.change_current_state(
-                            None,
-                            None,
-                            None,
-                            Some(new_pos.into()),
-                        );
+                            // Update output's internal position state
+                            output.change_current_state(
+                                None,
+                                None,
+                                None,
+                                Some(new_pos.into()),
+                            );
 
-                        // Update our cached output info
-                        for out_info in &mut self.ewm.outputs {
-                            if out_info.name == name {
-                                out_info.x = new_x;
-                                out_info.y = new_y;
+                            // Update our cached output info
+                            for out_info in &mut self.ewm.outputs {
+                                if out_info.name == name {
+                                    out_info.x = new_x;
+                                    out_info.y = new_y;
+                                }
                             }
+
+                            // Recalculate total output size
+                            self.ewm.recalculate_output_size();
+
+                            info!("Configured output {} at ({}, {})", name, new_x, new_y);
+                        } else {
+                            info!("Configured output {} (position unchanged)", name);
                         }
-
-                        // Recalculate total output size
-                        self.ewm.recalculate_output_size();
-
-                        info!("Configured output {} at ({}, {})", name, new_x, new_y);
                     }
 
                     // Queue redraw
@@ -1773,6 +1788,273 @@ impl State {
             Command::TextInputIntercept { enabled } => {
                 info!("Text input intercept: {}", enabled);
                 self.ewm.text_input_intercept = enabled;
+            }
+        }
+    }
+
+    /// Handle a module command (from Emacs via dynamic module).
+    /// This mirrors handle_command but uses ModuleCommand enum.
+    fn handle_module_command(&mut self, cmd: module::ModuleCommand) {
+        use module::ModuleCommand;
+        match cmd {
+            ModuleCommand::Layout { id, x, y, w, h } => {
+                if let Some(window) = self.ewm.id_windows.get(&id) {
+                    self.ewm.space.map_element(window.clone(), (x, y), true);
+                    self.ewm.space.raise_element(window, true);
+                    window.toplevel().map(|t| {
+                        t.with_pending_state(|state| {
+                            state.size = Some((w as i32, h as i32).into());
+                        });
+                        t.send_configure();
+                    });
+                    self.ewm.queue_redraw_all();
+                    info!("Module: Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
+                }
+            }
+            ModuleCommand::Views { id, views } => {
+                if let Some(window) = self.ewm.id_windows.get(&id) {
+                    let primary_view = views.iter().find(|v| v.active).or_else(|| views.first());
+                    if let Some(view) = primary_view {
+                        self.ewm
+                            .space
+                            .map_element(window.clone(), (view.x, view.y), true);
+                        self.ewm.space.raise_element(window, true);
+                        window.toplevel().map(|t| {
+                            t.with_pending_state(|state| {
+                                state.size = Some((view.w as i32, view.h as i32).into());
+                            });
+                            t.send_configure();
+                        });
+                    }
+                    self.ewm.surface_views.insert(id, views);
+                    self.ewm.queue_redraw_all();
+                }
+            }
+            ModuleCommand::Hide { id } => {
+                if let Some(window) = self.ewm.id_windows.get(&id) {
+                    self.ewm
+                        .space
+                        .map_element(window.clone(), (-10000, -10000), false);
+                    self.ewm.surface_views.remove(&id);
+                    self.ewm.queue_redraw_all();
+                    info!("Module: Hide surface {}", id);
+                }
+            }
+            ModuleCommand::Close { id } => {
+                if let Some(window) = self.ewm.id_windows.get(&id) {
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.send_close();
+                        info!("Module: Close surface {} (sent close request)", id);
+                    }
+                }
+            }
+            ModuleCommand::Focus { id } => {
+                if self.ewm.id_windows.contains_key(&id) {
+                    self.ewm.focus_surface(id, false);
+                    info!("Module: Focus surface {}", id);
+                }
+            }
+            ModuleCommand::WarpPointer { x, y } => {
+                self.ewm.pointer_location = (x, y);
+                let pointer = self.ewm.seat.get_pointer().unwrap();
+                let serial = SERIAL_COUNTER.next_serial();
+                let under = self
+                    .ewm
+                    .space
+                    .element_under((x, y))
+                    .and_then(|(window, loc)| {
+                        window.wl_surface().map(|s| {
+                            (
+                                s.into_owned(),
+                                smithay::utils::Point::from((loc.x as f64, loc.y as f64)),
+                            )
+                        })
+                    });
+                pointer.motion(
+                    &mut self.ewm,
+                    under,
+                    &smithay::input::pointer::MotionEvent {
+                        location: (x, y).into(),
+                        serial,
+                        time: 0,
+                    },
+                );
+                pointer.frame(&mut self.ewm);
+                self.ewm.queue_redraw_all();
+            }
+            ModuleCommand::Screenshot { path } => {
+                let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
+                info!("Module: Screenshot requested: {}", target);
+                self.ewm.pending_screenshot = Some(target);
+            }
+            ModuleCommand::AssignOutput { id, output } => {
+                let output_geo = self
+                    .ewm
+                    .space
+                    .outputs()
+                    .find(|o| o.name() == output)
+                    .and_then(|o| self.ewm.space.output_geometry(o));
+                if let Some(geo) = output_geo {
+                    if let Some(window) = self.ewm.id_windows.get(&id) {
+                        self.ewm
+                            .space
+                            .map_element(window.clone(), (geo.loc.x, geo.loc.y), true);
+                        self.ewm.space.raise_element(window, true);
+                        window.toplevel().map(|t| {
+                            t.with_pending_state(|state| {
+                                state.size = Some((geo.size.w, geo.size.h).into());
+                            });
+                            t.send_configure();
+                        });
+                        self.ewm.queue_redraw_all();
+                        info!(
+                            "Module: Assigned surface {} to output {} at ({}, {}) {}x{}",
+                            id, output, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h
+                        );
+                    } else {
+                        warn!("Module: Surface not found: {}", id);
+                    }
+                } else {
+                    warn!("Module: Output not found: {}", output);
+                }
+            }
+            ModuleCommand::PrepareFrame { output } => {
+                self.ewm.pending_frame_outputs.push(output.clone());
+                info!("Module: Prepared frame for output {}", output);
+            }
+            ModuleCommand::ConfigureOutput {
+                name,
+                x,
+                y,
+                width,
+                height,
+                refresh,
+                enabled,
+            } => {
+                let output = self
+                    .ewm
+                    .space
+                    .outputs()
+                    .find(|o| o.name() == name)
+                    .cloned();
+                if let Some(output) = output {
+                    if let Some(false) = enabled {
+                        self.ewm.space.unmap_output(&output);
+                        info!("Module: Disabled output {}", name);
+                    } else {
+                        if let (Some(w), Some(h)) = (width, height) {
+                            self.backend.set_mode(&mut self.ewm, &name, w, h, refresh);
+                        }
+                        // Only update position if x or y is explicitly specified
+                        if x.is_some() || y.is_some() {
+                            // Get current position as default
+                            let current_pos = self.ewm.space.output_geometry(&output)
+                                .map(|g| (g.loc.x, g.loc.y))
+                                .unwrap_or((0, 0));
+                            let new_x = x.unwrap_or(current_pos.0);
+                            let new_y = y.unwrap_or(current_pos.1);
+                            let new_pos = (new_x, new_y);
+                            self.ewm.space.map_output(&output, new_pos);
+                            output.change_current_state(None, None, None, Some(new_pos.into()));
+                            for out_info in &mut self.ewm.outputs {
+                                if out_info.name == name {
+                                    out_info.x = new_x;
+                                    out_info.y = new_y;
+                                }
+                            }
+                            self.ewm.recalculate_output_size();
+                            info!("Module: Configured output {} at ({}, {})", name, new_x, new_y);
+                        } else {
+                            info!("Module: Configured output {} (mode only)", name);
+                        }
+                    }
+                    self.ewm.queue_redraw_all();
+                } else {
+                    warn!("Module: Output not found: {}", name);
+                }
+            }
+            ModuleCommand::InterceptKeys { keys } => {
+                self.ewm.intercepted_keys = keys;
+                info!("Module: Intercepted keys set: {:?}", self.ewm.intercepted_keys);
+            }
+            ModuleCommand::ImCommit { text } => {
+                if let Some(ref relay) = self.ewm.im_relay {
+                    relay.commit_string(text);
+                } else {
+                    warn!("Module: im-commit received but no IM relay connected");
+                }
+            }
+            ModuleCommand::TextInputIntercept { enabled } => {
+                info!("Module: Text input intercept: {}", enabled);
+                self.ewm.text_input_intercept = enabled;
+            }
+            ModuleCommand::ConfigureXkb { layouts, options } => {
+                let layout_names: Vec<String> = layouts
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if layout_names.is_empty() {
+                    warn!("Module: No valid layouts in configure-xkb");
+                    return;
+                }
+                let xkb_config = smithay::input::keyboard::XkbConfig {
+                    layout: &layouts,
+                    options: options.clone(),
+                    ..Default::default()
+                };
+                let keyboard = self.ewm.seat.get_keyboard().unwrap();
+                if let Err(e) = keyboard.set_xkb_config(&mut self.ewm, xkb_config) {
+                    error!("Module: Failed to configure XKB: {:?}", e);
+                    return;
+                }
+                self.ewm.xkb_layout_names = layout_names.clone();
+                self.ewm.xkb_current_layout = 0;
+                info!(
+                    "Module: Configured XKB layouts: {:?}, options: {:?}",
+                    layout_names, options
+                );
+                self.ewm.queue_event(Event::Layouts {
+                    layouts: layout_names,
+                    current: 0,
+                });
+            }
+            ModuleCommand::SwitchLayout { layout } => {
+                let index = self
+                    .ewm
+                    .xkb_layout_names
+                    .iter()
+                    .position(|l| l == &layout);
+                match index {
+                    Some(idx) => {
+                        use smithay::input::keyboard::Layout;
+                        let keyboard = self.ewm.seat.get_keyboard().unwrap();
+                        let current_focus = self.ewm.keyboard_focus.clone();
+                        keyboard.set_focus(&mut self.ewm, None, SERIAL_COUNTER.next_serial());
+                        keyboard.with_xkb_state(&mut self.ewm, |mut context| {
+                            context.set_layout(Layout(idx as u32));
+                        });
+                        keyboard.set_focus(&mut self.ewm, current_focus, SERIAL_COUNTER.next_serial());
+                        self.ewm.xkb_current_layout = idx;
+                        info!("Module: Switched to layout: {} (index {})", layout, idx);
+                        self.ewm.queue_event(Event::LayoutSwitched {
+                            layout: layout.clone(),
+                            index: idx,
+                        });
+                    }
+                    None => {
+                        warn!(
+                            "Module: Layout '{}' not found. Available: {:?}",
+                            layout, self.ewm.xkb_layout_names
+                        );
+                    }
+                }
+            }
+            ModuleCommand::GetLayouts => {
+                self.ewm.queue_event(Event::Layouts {
+                    layouts: self.ewm.xkb_layout_names.clone(),
+                    current: self.ewm.xkb_current_layout,
+                });
             }
         }
     }

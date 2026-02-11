@@ -10,6 +10,63 @@ use std::thread::{self, JoinHandle};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::event::Event;
+use crate::{InterceptedKey, KeyId, SurfaceView};
+
+// ============================================================================
+// Module Commands (Emacs -> Compositor)
+// ============================================================================
+
+/// Commands that can be sent from Emacs to the compositor via the module interface.
+/// These mirror the IPC Command enum but are sent via direct function calls.
+#[derive(Debug, Clone)]
+pub enum ModuleCommand {
+    Layout { id: u32, x: i32, y: i32, w: u32, h: u32 },
+    Views { id: u32, views: Vec<SurfaceView> },
+    Hide { id: u32 },
+    Close { id: u32 },
+    Focus { id: u32 },
+    WarpPointer { x: f64, y: f64 },
+    Screenshot { path: Option<String> },
+    AssignOutput { id: u32, output: String },
+    PrepareFrame { output: String },
+    ConfigureOutput {
+        name: String,
+        x: Option<i32>,
+        y: Option<i32>,
+        width: Option<i32>,
+        height: Option<i32>,
+        refresh: Option<i32>,
+        enabled: Option<bool>,
+    },
+    InterceptKeys { keys: Vec<InterceptedKey> },
+    ImCommit { text: String },
+    TextInputIntercept { enabled: bool },
+    ConfigureXkb { layouts: String, options: Option<String> },
+    SwitchLayout { layout: String },
+    GetLayouts,
+}
+
+/// Command queue shared between Emacs thread and compositor
+static COMMAND_QUEUE: OnceLock<Mutex<Vec<ModuleCommand>>> = OnceLock::new();
+
+fn command_queue() -> &'static Mutex<Vec<ModuleCommand>> {
+    COMMAND_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Drain all pending commands from the queue.
+/// Called by the compositor in its main loop.
+pub fn drain_commands() -> Vec<ModuleCommand> {
+    command_queue().lock().unwrap().drain(..).collect()
+}
+
+/// Push a command to the queue and wake the compositor.
+fn push_command(cmd: ModuleCommand) {
+    command_queue().lock().unwrap().push(cmd);
+    // Wake the event loop so it processes the command
+    if let Some(signal) = LOOP_SIGNAL.get() {
+        signal.wakeup();
+    }
+}
 
 /// Flag to request compositor shutdown from Emacs thread
 pub static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -356,4 +413,247 @@ fn running(_: &Env) -> Result<bool> {
 #[defun]
 fn socket(_: &Env) -> Result<Option<String>> {
     Ok(std::env::var("EWM_WAYLAND_DISPLAY").ok())
+}
+
+// ============================================================================
+// Module Command Functions (direct Emacs → Compositor)
+// ============================================================================
+
+/// Set surface position and size (module mode).
+#[defun]
+fn layout_module(_: &Env, id: i64, x: i64, y: i64, w: i64, h: i64) -> Result<()> {
+    push_command(ModuleCommand::Layout {
+        id: id as u32,
+        x: x as i32,
+        y: y as i32,
+        w: w as u32,
+        h: h as u32,
+    });
+    Ok(())
+}
+
+/// Set multiple views for a surface (module mode).
+/// VIEWS is a vector of plists with :x :y :w :h :active keys.
+#[defun]
+fn views_module(env: &Env, id: i64, views: Value<'_>) -> Result<()> {
+    let mut parsed_views = Vec::new();
+
+    // Iterate through the vector of views
+    let len_val: Value = env.call("length", (views,))?;
+    let len: i64 = len_val.into_rust()?;
+    for i in 0..len {
+        let view: Value = env.call("aref", (views, i))?;
+
+        // Extract fields from plist
+        let x_val: Value = env.call("plist-get", (view, env.intern(":x")?))?;
+        let y_val: Value = env.call("plist-get", (view, env.intern(":y")?))?;
+        let w_val: Value = env.call("plist-get", (view, env.intern(":w")?))?;
+        let h_val: Value = env.call("plist-get", (view, env.intern(":h")?))?;
+        let x: i64 = x_val.into_rust()?;
+        let y: i64 = y_val.into_rust()?;
+        let w: i64 = w_val.into_rust()?;
+        let h: i64 = h_val.into_rust()?;
+
+        let active_val: Value = env.call("plist-get", (view, env.intern(":active")?))?;
+        // Active is true unless it's nil or :false
+        let false_sym = env.intern(":false")?;
+        let eq_result: Value = env.call("eq", (active_val, false_sym))?;
+        let is_false = eq_result.is_not_nil();
+        let active = active_val.is_not_nil() && !is_false;
+
+        parsed_views.push(SurfaceView {
+            x: x as i32,
+            y: y as i32,
+            w: w as u32,
+            h: h as u32,
+            active,
+        });
+    }
+
+    push_command(ModuleCommand::Views {
+        id: id as u32,
+        views: parsed_views,
+    });
+    Ok(())
+}
+
+/// Hide a surface (module mode).
+#[defun]
+fn hide_module(_: &Env, id: i64) -> Result<()> {
+    push_command(ModuleCommand::Hide { id: id as u32 });
+    Ok(())
+}
+
+/// Request surface to close (module mode).
+#[defun]
+fn close_module(_: &Env, id: i64) -> Result<()> {
+    push_command(ModuleCommand::Close { id: id as u32 });
+    Ok(())
+}
+
+/// Focus a surface (module mode).
+#[defun]
+fn focus_module(_: &Env, id: i64) -> Result<()> {
+    push_command(ModuleCommand::Focus { id: id as u32 });
+    Ok(())
+}
+
+/// Warp pointer to absolute position (module mode).
+#[defun]
+fn warp_pointer_module(_: &Env, x: f64, y: f64) -> Result<()> {
+    push_command(ModuleCommand::WarpPointer { x, y });
+    Ok(())
+}
+
+/// Take a screenshot (module mode).
+#[defun]
+fn screenshot_module(_: &Env, path: Option<String>) -> Result<()> {
+    push_command(ModuleCommand::Screenshot { path });
+    Ok(())
+}
+
+/// Assign surface to output (module mode).
+#[defun]
+fn assign_output_module(_: &Env, id: i64, output: String) -> Result<()> {
+    push_command(ModuleCommand::AssignOutput {
+        id: id as u32,
+        output,
+    });
+    Ok(())
+}
+
+/// Prepare next frame for output (module mode).
+#[defun]
+fn prepare_frame_module(_: &Env, output: String) -> Result<()> {
+    push_command(ModuleCommand::PrepareFrame { output });
+    Ok(())
+}
+
+/// Configure output (module mode).
+/// ENABLED should be t, nil, or omitted.
+#[defun]
+fn configure_output_module(
+    env: &Env,
+    name: String,
+    x: Option<i64>,
+    y: Option<i64>,
+    width: Option<i64>,
+    height: Option<i64>,
+    refresh: Option<i64>,
+    enabled: Value<'_>,
+) -> Result<()> {
+    // Convert enabled value: t -> Some(true), nil -> Some(false), unspecified -> None
+    // We use a special marker to detect "not provided" vs nil
+    let enabled_opt = if enabled.is_not_nil() {
+        // Check if it's :unset (our marker for "not provided")
+        let unset_sym = env.intern(":unset")?;
+        let eq_result: Value = env.call("eq", (enabled, unset_sym))?;
+        if eq_result.is_not_nil() {
+            None
+        } else {
+            Some(true)
+        }
+    } else {
+        Some(false)
+    };
+
+    push_command(ModuleCommand::ConfigureOutput {
+        name,
+        x: x.map(|v| v as i32),
+        y: y.map(|v| v as i32),
+        width: width.map(|v| v as i32),
+        height: height.map(|v| v as i32),
+        refresh: refresh.map(|v| v as i32),
+        enabled: enabled_opt,
+    });
+    Ok(())
+}
+
+/// Set intercepted keys (module mode).
+/// KEYS is a vector of plists with :key :ctrl :alt :shift :super keys.
+#[defun]
+fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
+    let mut parsed_keys = Vec::new();
+
+    let len_val: Value = env.call("length", (keys,))?;
+    let len: i64 = len_val.into_rust()?;
+    let false_sym = env.intern(":false")?;
+
+    for i in 0..len {
+        let key_spec: Value = env.call("aref", (keys, i))?;
+
+        // Extract :key (can be integer or string)
+        let key_val: Value = env.call("plist-get", (key_spec, env.intern(":key")?))?;
+        let key = if let Ok(k) = key_val.into_rust::<i64>() {
+            KeyId::Keysym(k as u32)
+        } else if let Ok(s) = key_val.into_rust::<String>() {
+            KeyId::Named(s)
+        } else {
+            continue; // Skip invalid keys
+        };
+
+        // Helper to check if a value is truthy (not nil and not :false)
+        let is_true = |v: Value| -> bool {
+            if !v.is_not_nil() {
+                return false;
+            }
+            let eq_result: Value = env.call("eq", (v, false_sym)).unwrap();
+            !eq_result.is_not_nil()
+        };
+
+        // Extract modifier flags
+        let ctrl_val: Value = env.call("plist-get", (key_spec, env.intern(":ctrl")?))?;
+        let alt_val: Value = env.call("plist-get", (key_spec, env.intern(":alt")?))?;
+        let shift_val: Value = env.call("plist-get", (key_spec, env.intern(":shift")?))?;
+        let super_val: Value = env.call("plist-get", (key_spec, env.intern(":super")?))?;
+
+        parsed_keys.push(InterceptedKey {
+            key,
+            ctrl: is_true(ctrl_val),
+            alt: is_true(alt_val),
+            shift: is_true(shift_val),
+            logo: is_true(super_val),
+        });
+    }
+
+    push_command(ModuleCommand::InterceptKeys { keys: parsed_keys });
+    Ok(())
+}
+
+/// Commit text to focused input field (module mode).
+#[defun]
+fn im_commit_module(_: &Env, text: String) -> Result<()> {
+    push_command(ModuleCommand::ImCommit { text });
+    Ok(())
+}
+
+/// Enable/disable text input interception (module mode).
+/// ENABLED should be t or nil.
+#[defun]
+fn text_input_intercept_module(_: &Env, enabled: Value<'_>) -> Result<()> {
+    push_command(ModuleCommand::TextInputIntercept {
+        enabled: enabled.is_not_nil(),
+    });
+    Ok(())
+}
+
+/// Configure XKB layouts (module mode).
+#[defun]
+fn configure_xkb_module(_: &Env, layouts: String, options: Option<String>) -> Result<()> {
+    push_command(ModuleCommand::ConfigureXkb { layouts, options });
+    Ok(())
+}
+
+/// Switch to named XKB layout (module mode).
+#[defun]
+fn switch_layout_module(_: &Env, layout: String) -> Result<()> {
+    push_command(ModuleCommand::SwitchLayout { layout });
+    Ok(())
+}
+
+/// Get current XKB layouts (module mode).
+#[defun]
+fn get_layouts_module(_: &Env) -> Result<()> {
+    push_command(ModuleCommand::GetLayouts);
+    Ok(())
 }

@@ -1415,6 +1415,14 @@ fn initialize_drm(
 
     info!("DRM initialization complete");
 
+    // Send output_detected events for all outputs
+    for output_info in state.ewm.outputs.clone() {
+        state.ewm.send_output_detected(output_info);
+    }
+    // Send outputs_complete event
+    state.ewm.queue_event(crate::event::Event::OutputsComplete);
+    info!("Sent {} output_detected events", state.ewm.outputs.len());
+
     // Trigger initial render - collect CRTCs first, then render
     let crtcs: Vec<_> = state.backend.device.as_ref()
         .map(|d| d.surfaces.keys().copied().collect())
