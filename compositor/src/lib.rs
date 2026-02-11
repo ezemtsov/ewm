@@ -136,11 +136,10 @@ impl Default for OutputState {
     }
 }
 
-/// Kill combo: Super+Ctrl+Backspace
+/// Kill combo: Super+Shift+E
 /// Returns true if this key event is the kill combo
-/// Note: keycode 22 (X11/xkb) or 14 (evdev) for Backspace
-pub fn is_kill_combo(keycode: u32, ctrl: bool, logo: bool) -> bool {
-    (keycode == 14 || keycode == 22) && ctrl && logo
+pub fn is_kill_combo(keycode: u32, shift: bool, logo: bool) -> bool {
+    keycode == 18 && shift && logo // evdev keycode for 'e'
 }
 
 /// Cached surface info for change detection

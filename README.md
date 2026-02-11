@@ -44,7 +44,7 @@ cargo build --release
 ./target/release/ewm emacs
 ```
 
-**Kill combo**: `Super+Ctrl+Backspace` exits the compositor.
+**Kill combo**: `Super+Shift+E` exits the compositor (homage 🙂).
 
 ## Emacs Setup
 

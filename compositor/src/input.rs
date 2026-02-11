@@ -77,8 +77,8 @@ pub fn handle_keyboard_event(
                 return FilterResult::Intercept((4, vt as u32, None)); // 4 = VT switch
             }
 
-            // Check for kill combo (Super+Ctrl+Backspace)
-            if is_kill_combo(keycode, mods.ctrl, mods.logo) {
+            // Check for kill combo
+            if is_kill_combo(keycode, mods.shift, mods.logo) {
                 return FilterResult::Intercept((2, 0, None)); // 2 = kill
             }
 
