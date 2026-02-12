@@ -19,6 +19,13 @@ use crate::{InterceptedKey, KeyId, SurfaceView};
 /// Current focused surface ID (updated by compositor, queried by Emacs)
 static FOCUSED_SURFACE_ID: AtomicU32 = AtomicU32::new(0);
 
+/// Current pointer location in compositor coordinates (updated by compositor, queried by Emacs)
+static POINTER_LOCATION: OnceLock<Mutex<(f64, f64)>> = OnceLock::new();
+
+fn pointer_location() -> &'static Mutex<(f64, f64)> {
+    POINTER_LOCATION.get_or_init(|| Mutex::new((0.0, 0.0)))
+}
+
 /// Output offsets: name -> (x, y)
 static OUTPUT_OFFSETS: OnceLock<Mutex<HashMap<String, (i32, i32)>>> = OnceLock::new();
 
@@ -75,6 +82,11 @@ pub fn remove_output(name: &str) {
     output_offsets().lock().unwrap().remove(name);
 }
 
+/// Update pointer location (called by compositor)
+pub fn set_pointer_location(x: f64, y: f64) {
+    *pointer_location().lock().unwrap() = (x, y);
+}
+
 /// Query focused surface ID (called by Emacs)
 #[defun]
 fn get_focused_id(_: &Env) -> Result<i64> {
@@ -90,6 +102,14 @@ fn get_output_offset<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
         Some((x, y)) => env.call("cons", (*x as i64, *y as i64)),
         None => ().into_lisp(env),
     }
+}
+
+/// Query pointer location (called by Emacs)
+/// Returns (x . y) cons cell in compositor coordinates
+#[defun]
+fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
+    let (x, y) = *pointer_location().lock().unwrap();
+    env.call("cons", (x, y))
 }
 
 // ============================================================================

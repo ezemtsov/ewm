@@ -44,6 +44,7 @@
 (declare-function ewm-configure-output-module "ewm-core")
 (declare-function ewm-get-focused-id "ewm-core")
 (declare-function ewm-get-output-offset "ewm-core")
+(declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-get-state-module "ewm-core")
 (declare-function ewm-debug-mode-module "ewm-core")
 (declare-function ewm-debug-mode-p "ewm-core")

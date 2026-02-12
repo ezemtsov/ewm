@@ -67,6 +67,7 @@ use smithay::{
 use crate::{
     cursor::CursorBuffer,
     input::{handle_device_added, handle_keyboard_event, KeyboardAction},
+    module,
     render::{collect_render_elements_for_output, process_screencopies_for_output},
     Ewm, State, OutputInfo, OutputMode, OutputState, RedrawState,
 };
@@ -1755,6 +1756,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     let new_x = (current_x + delta.x).clamp(0.0, output_w as f64);
                     let new_y = (current_y + delta.y).clamp(0.0, output_h as f64);
                     state.ewm.pointer_location = (new_x, new_y);
+                    module::set_pointer_location(new_x, new_y);
 
                     let pointer = state.ewm.seat.get_pointer().unwrap();
                     let serial = SERIAL_COUNTER.next_serial();
@@ -1793,6 +1795,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     let (output_w, output_h) = state.ewm.output_size;
                     let pos = event.position_transformed((output_w, output_h).into());
                     state.ewm.pointer_location = (pos.x, pos.y);
+                    module::set_pointer_location(pos.x, pos.y);
 
                     let pointer = state.ewm.seat.get_pointer().unwrap();
                     let serial = SERIAL_COUNTER.next_serial();

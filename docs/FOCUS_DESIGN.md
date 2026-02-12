@@ -41,6 +41,22 @@ When a Super-key binding is pressed while focus is on an external surface:
 
 Because scroll updates focus, the focused surface is always where the user last interacted, ensuring intercepted keys route to the correct Emacs frame.
 
+### Mouse-Follows-Focus
+
+When `ewm-mouse-follows-focus` is enabled, the pointer warps to the center of a
+window when it gains focus via keyboard (e.g., `C-x o`, windmove). This ensures
+the pointer is always in the active window for subsequent mouse interactions.
+
+The implementation includes a pointer-in-window check inspired by
+[exwm-mff](https://codeberg.org/emacs-weirdware/exwm-mff): if the pointer is
+already inside the target window, no warp occurs. This prevents unnecessary
+pointer jumps when keyboard-switching to a window the mouse happens to be over.
+
+Key functions:
+- `ewm-input--pointer-in-window-p`: Checks if pointer is within window bounds
+- `ewm-input--warp-pointer-to-window`: Warps pointer to window center (if needed)
+- `ewm-get-pointer-location`: Queries compositor for current pointer position
+
 ### Why Input-to-Focus?
 
 Previous design had keyboard focus only change on click. This caused issues:

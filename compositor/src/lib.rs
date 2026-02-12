@@ -1614,6 +1614,7 @@ impl State {
             }
             ModuleCommand::WarpPointer { x, y } => {
                 self.ewm.pointer_location = (x, y);
+                module::set_pointer_location(x, y);
                 let pointer = self.ewm.seat.get_pointer().unwrap();
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self

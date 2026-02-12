@@ -305,6 +305,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
     let new_x = (current_x + delta.x).clamp(0.0, output_w as f64);
     let new_y = (current_y + delta.y).clamp(0.0, output_h as f64);
     state.pointer_location = (new_x, new_y);
+    module::set_pointer_location(new_x, new_y);
 
     let pointer = state.seat.get_pointer().unwrap();
     let serial = SERIAL_COUNTER.next_serial();
@@ -345,6 +346,7 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     let (output_w, output_h) = state.output_size;
     let pos = event.position_transformed((output_w, output_h).into());
     state.pointer_location = (pos.x, pos.y);
+    module::set_pointer_location(pos.x, pos.y);
 
     let pointer = state.seat.get_pointer().unwrap();
     let serial = SERIAL_COUNTER.next_serial();

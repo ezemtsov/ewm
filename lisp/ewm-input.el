@@ -28,6 +28,7 @@
 
 (declare-function ewm-intercept-keys-module "ewm-core")
 (declare-function ewm-configure-xkb-module "ewm-core")
+(declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-warp-pointer "ewm")
 (declare-function ewm-focus "ewm")
 (declare-function ewm--get-output-offset "ewm")
@@ -118,10 +119,28 @@ Press a prefix key to return to line-mode."
 
 ;;; Mouse-follows-focus
 
+(defun ewm-input--pointer-in-window-p (window)
+  "Return non-nil if pointer is inside WINDOW.
+Coordinates are in compositor space."
+  (let* ((frame (window-frame window))
+         (output (frame-parameter frame 'ewm-output))
+         (output-offset (ewm--get-output-offset output))
+         (edges (window-inside-pixel-edges window))
+         (left (+ (car output-offset) (nth 0 edges)))
+         (top (+ (cdr output-offset) (nth 1 edges)))
+         (right (+ (car output-offset) (nth 2 edges)))
+         (bottom (+ (cdr output-offset) (nth 3 edges)))
+         (pointer (ewm-get-pointer-location))
+         (px (car pointer))
+         (py (cdr pointer)))
+    (and (<= left px right)
+         (<= top py bottom))))
+
 (defun ewm-input--warp-pointer-to-window (window)
   "Warp pointer to center of WINDOW.
 Does nothing if pointer is already inside the window or if it's a minibuffer."
-  (unless (minibufferp (window-buffer window))
+  (unless (or (minibufferp (window-buffer window))
+              (ewm-input--pointer-in-window-p window))
     (let* ((frame (window-frame window))
            (output (frame-parameter frame 'ewm-output))
            (output-offset (ewm--get-output-offset output))
