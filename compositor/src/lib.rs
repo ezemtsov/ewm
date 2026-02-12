@@ -1049,7 +1049,6 @@ impl SeatHandler for Ewm {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        tracing::info!("focus_changed: {:?}", focused.map(|s| s.id()));
 
         let client = focused.and_then(|s| self.display_handle.get_client(s.id()).ok());
         set_data_device_focus(&self.display_handle, seat, client.clone());
@@ -1402,7 +1401,7 @@ impl State {
                         t.send_configure();
                     });
                     self.ewm.queue_redraw_all();
-                    info!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
+                    debug!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
                 }
             }
             ModuleCommand::Views { id, views } => {
@@ -1440,7 +1439,7 @@ impl State {
                             .map_element(window.clone(), (-10000, -10000), false);
                         self.ewm.surface_views.remove(&id);
                         self.ewm.queue_redraw_all();
-                        info!("Hide surface {}", id);
+                        debug!("Hide surface {}", id);
                     }
                 }
             }
@@ -1456,7 +1455,6 @@ impl State {
                 // Skip if already focused
                 if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
                     self.ewm.focus_surface_with_source(id, false, "emacs_command", None);
-                    info!("Focus surface {}", id);
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {

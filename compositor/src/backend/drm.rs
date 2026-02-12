@@ -51,7 +51,7 @@ use smithay::{
 #[cfg(feature = "screencast")]
 use smithay::utils::Size;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use smithay::{
     backend::input::{
@@ -196,14 +196,8 @@ impl DrmBackendState {
             debug!("DRM not initialized yet, skipping early_import");
             return;
         };
-        match device.gpu_manager.early_import(device.render_node, surface) {
-            Ok(_) => trace!("Early import succeeded for surface {:?}", surface.id()),
-            Err(err) => trace!(
-                "Early buffer import skipped/failed for surface {:?}: {:?}",
-                surface.id(),
-                err
-            ),
-        }
+        // Early import for DMA-BUF surfaces (errors are expected for SHM surfaces)
+        let _ = device.gpu_manager.early_import(device.render_node, surface);
     }
 
     /// Handle session pause (VT switch away)
@@ -465,8 +459,6 @@ impl DrmBackendState {
 
         match render_result {
             Ok(result) => {
-                trace!("Render result: is_empty={}", result.is_empty);
-
                 if !result.is_empty {
                     // There's damage to display - queue frame and wait for VBlank
                     match surface.compositor.queue_frame(()) {

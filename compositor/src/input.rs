@@ -281,7 +281,6 @@ use smithay::{
     },
     backend::libinput::LibinputInputBackend,
     input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
-    reexports::wayland_server::Resource,
 };
 
 /// Configure a newly added libinput device
@@ -388,7 +387,6 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::Pointer
 
         if let Some((id, surface)) = focus_info {
             module::record_focus(id, "click", None);
-            tracing::info!("Click focus: setting focus to surface {:?}", surface.id());
             state.set_focus(id);
             state.keyboard_focus = Some(surface.clone());
             // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
