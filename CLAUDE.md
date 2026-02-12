@@ -57,6 +57,29 @@ The redraw state machine ensures proper frame pacing:
 Each D-Bus interface (ScreenCast, DisplayConfig, ServiceChannel) gets its own
 blocking connection to avoid deadlocks between interfaces.
 
+## Module Development Workflow
+
+### Debug vs Release Build
+The ewm-core dynamic module can be built in debug or release mode:
+- `cargo build` → `target/debug/libewm_core.so`
+- `cargo build --release` → `target/release/libewm_core.so`
+
+**Critical**: Emacs cannot hot-reload dynamic modules. Once loaded, the module
+stays in memory until Emacs fully restarts. If you rebuild the module, you MUST
+restart Emacs to load the new version.
+
+### Checking Which Module is Loaded
+- Check `*Messages*` buffer for "Loaded ewm-core (debug/release build) from ..."
+- Run `M-x ewm-module-info` to see the currently loaded module path and build time
+- `ewm--find-module-dir` prefers release over debug if both exist
+
+### Common Pitfall
+Building release while Emacs has debug loaded (or vice versa) means your changes
+won't take effect. Always verify the loaded module matches what you're building:
+1. Build: `cargo build` (debug) or `cargo build --release`
+2. Restart Emacs completely
+3. Check with `M-x ewm-module-info`
+
 ## Reference Implementation
 The compositor's DRM backend, screen sharing, and D-Bus integration follow
 patterns from [niri](https://github.com/YaLTeR/niri), a Wayland compositor

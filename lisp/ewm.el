@@ -93,15 +93,20 @@ Set EWM_MODULE_PATH environment variable to override."
                  directory)
   :group 'ewm)
 
+(defvar ewm--loaded-module-path nil
+  "Path to the currently loaded ewm-core module.
+Used to detect debug/release build mismatches.")
+
 (defun ewm-load-module ()
   "Load the ewm-core dynamic module.
 Uses `ewm-module-dir' if set, otherwise auto-detects (preferring release).
 Returns t if loaded successfully, nil otherwise."
   (interactive)
   (if (featurep 'ewm-core)
-      (progn (message "ewm-core already loaded") t)
+      (progn (message "ewm-core already loaded from %s" ewm--loaded-module-path) t)
     (let* ((dir (or ewm-module-dir (ewm--find-module-dir)))
-           (module-path (expand-file-name "libewm_core.so" dir)))
+           (module-path (expand-file-name "libewm_core.so" dir))
+           (is-debug (string-match-p "/debug/" module-path)))
       (if (not (file-exists-p module-path))
           (progn
             (message "Module not found: %s" module-path)
@@ -109,13 +114,34 @@ Returns t if loaded successfully, nil otherwise."
         (condition-case err
             (progn
               (module-load module-path)
+              (setq ewm--loaded-module-path module-path)
               (message "Loaded ewm-core (%s build) from %s"
-                       (if (string-match-p "/release/" module-path) "release" "debug")
+                       (if is-debug "debug" "release")
                        module-path)
+              ;; Warn prominently if debug build is loaded
+              (when is-debug
+                (display-warning 'ewm
+                  (format "Loaded DEBUG build of ewm-core from:\n%s\n\nIf you're developing, rebuild with 'cargo build' (not --release).\nRestart Emacs after rebuilding to load the new module."
+                          module-path)
+                  :warning))
               t)
           (error
            (message "Failed to load ewm-core: %s" (error-message-string err))
            nil))))))
+
+(defun ewm-module-info ()
+  "Display information about the loaded ewm-core module."
+  (interactive)
+  (if ewm--loaded-module-path
+      (let* ((is-debug (string-match-p "/debug/" ewm--loaded-module-path))
+             (mtime (file-attribute-modification-time
+                     (file-attributes ewm--loaded-module-path)))
+             (mtime-str (format-time-string "%Y-%m-%d %H:%M:%S" mtime)))
+        (message "ewm-core: %s build, loaded from %s (built %s)"
+                 (if is-debug "DEBUG" "RELEASE")
+                 ewm--loaded-module-path
+                 mtime-str))
+    (message "ewm-core module not loaded")))
 
 ;;; Module mode (compositor runs in-process)
 
