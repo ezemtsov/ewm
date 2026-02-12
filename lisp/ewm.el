@@ -59,13 +59,12 @@
 
 (defun ewm-load-module ()
   "Load the ewm-core dynamic module.
-Tries debug build relative to ewm.el, then EWM_MODULE_PATH env var."
+Tries EWM_MODULE_PATH env var first, then debug build relative to ewm.el."
   (interactive)
   (if (featurep 'ewm-core)
       (message "ewm-core already loaded")
-    (let ((path (if (file-exists-p ewm--module-path)
-                    ewm--module-path
-                  (getenv "EWM_MODULE_PATH"))))
+    (let ((path (or (getenv "EWM_MODULE_PATH")
+                    (and (file-exists-p ewm--module-path) ewm--module-path))))
       (if (and path (file-exists-p path))
           (condition-case err
               (progn
