@@ -215,7 +215,11 @@ Adapted from EXWM's behavior."
         (if target-frame
             (with-selected-frame target-frame
               (pop-to-buffer-same-window buf))
-          (pop-to-buffer-same-window buf))))))
+          (pop-to-buffer-same-window buf)))
+      ;; Explicitly focus the new surface.
+      ;; We can't rely on layout sync because with-selected-frame restores
+      ;; the previous frame selection, so selected-window won't be this buffer.
+      (ewm-focus id))))
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
@@ -241,15 +245,19 @@ Kills the surface buffer."
 
 (defun ewm--handle-focus (event)
   "Handle focus EVENT from compositor.
-Selects the window displaying the surface's buffer."
+Selects the window displaying the surface's buffer, or displays it if hidden."
   (pcase-let (((map ("id" id)) event))
     ;; Select window unless minibuffer is active
     (unless (ewm--minibuffer-active-p)
       (when-let* ((buf (gethash id ewm--surfaces))
-                  ((buffer-live-p buf))
-                  (win (get-buffer-window buf t)))
-        (select-frame-set-input-focus (window-frame win))
-        (select-window win)))))
+                  ((buffer-live-p buf)))
+        (let ((win (get-buffer-window buf t)))
+          (if win
+              (progn
+                (select-frame-set-input-focus (window-frame win))
+                (select-window win))
+            ;; Buffer not visible - display it
+            (pop-to-buffer-same-window buf)))))))
 
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.

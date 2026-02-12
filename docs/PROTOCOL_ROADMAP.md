@@ -15,6 +15,7 @@ This document outlines Wayland protocols to implement for broader application co
 | `zwp-input-method-v2` | Done | Emacs as input method |
 | `linux-dmabuf` | Done | Efficient buffer sharing |
 | `xdg-output` | Done | Multi-monitor info |
+| `xdg-activation-v1` | Done | Focus requests from apps |
 
 ## Priority 1: Desktop Shell Support
 
@@ -58,17 +59,6 @@ These protocols enable desktop shells like DankMaterialShell, waybar extensions,
 **Reference**: [niri/src/handlers/session_lock.rs](https://github.com/YaLTeR/niri)
 
 ## Priority 2: Application Compatibility
-
-### xdg-activation-v1
-
-**Purpose**: Focus stealing prevention and proper app launching
-
-**Enables**:
-- Apps requesting focus after launch
-- File managers opening apps correctly
-- Terminal spawned apps getting focus
-
-**Complexity**: Low-Medium - Token-based focus requests
 
 ### pointer-constraints-unstable-v1
 

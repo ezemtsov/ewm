@@ -37,7 +37,7 @@ pub use backend::DrmBackendState;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_input_method_manager,
     delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_seat, delegate_shm,
-    delegate_text_input_manager, delegate_xdg_shell,
+    delegate_text_input_manager, delegate_xdg_activation, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind,
         PopupManager, Space, Window,
@@ -92,6 +92,9 @@ use smithay::{
         input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface},
         shell::wlr_layer::{
             Layer, WlrLayerShellHandler, WlrLayerShellState,
+        },
+        xdg_activation::{
+            XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
         },
     },
 };
@@ -342,6 +345,9 @@ pub struct Ewm {
     pub layer_shell_state: WlrLayerShellState,
     pub unmapped_layer_surfaces: std::collections::HashSet<WlSurface>,
 
+    // XDG activation state (allows apps to request focus)
+    pub activation_state: XdgActivationState,
+
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
@@ -397,6 +403,9 @@ impl Ewm {
         // Initialize layer shell for panels, notifications, etc.
         let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
 
+        // Initialize xdg-activation for focus requests
+        let activation_state = XdgActivationState::new::<Self>(&display_handle);
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -434,6 +443,7 @@ impl Ewm {
             popups: PopupManager::default(),
             layer_shell_state,
             unmapped_layer_surfaces: std::collections::HashSet::new(),
+            activation_state,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -1488,6 +1498,54 @@ impl WlrLayerShellHandler for Ewm {
     }
 }
 delegate_layer_shell!(Ewm);
+
+// XDG Activation protocol (allows apps to request focus)
+impl XdgActivationHandler for Ewm {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.activation_state
+    }
+
+    fn token_created(&mut self, _token: XdgActivationToken, _data: XdgActivationTokenData) -> bool {
+        // TODO: Implement proper token validation for security.
+        // Currently accepting all tokens. For proper security:
+        // 1. Add ewm-create-activation-token module function
+        // 2. Advise browse-url in Emacs to set XDG_ACTIVATION_TOKEN env var
+        // 3. Validate tokens were created by focused app
+        true
+    }
+
+    fn request_activation(
+        &mut self,
+        token: XdgActivationToken,
+        token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        use std::time::Duration;
+        const TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+        debug!("xdg_activation: request_activation called for surface {:?}", surface.id());
+
+        if token_data.timestamp.elapsed() < TOKEN_TIMEOUT {
+            // Find the surface ID for this WlSurface
+            if let Some(&id) = self.window_ids.iter()
+                .find(|(w, _)| w.wl_surface().map(|s| &*s == &surface).unwrap_or(false))
+                .map(|(_, id)| id)
+            {
+                // Focus the surface and notify Emacs
+                self.focus_surface_with_source(id, true, "xdg_activation", None);
+                info!("xdg_activation: granted for surface {}", id);
+            } else {
+                debug!("xdg_activation: surface not found in window_ids");
+            }
+        } else {
+            debug!("xdg_activation: token expired (age={:?})", token_data.timestamp.elapsed());
+        }
+
+        // Always remove the token (single-use)
+        self.activation_state.remove_token(&token);
+    }
+}
+delegate_xdg_activation!(Ewm);
 
 // Screencopy protocol
 impl ScreencopyHandler for Ewm {
