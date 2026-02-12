@@ -20,7 +20,9 @@ use smithay::{
             Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Unbind,
         },
     },
-    desktop::PopupManager,
+    desktop::{layer_map_for_output, LayerMap, PopupManager},
+    output::Output,
+    wayland::shell::wlr_layer::Layer,
     reexports::{
         calloop::LoopHandle,
         wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm::Format},
@@ -188,6 +190,31 @@ pub fn collect_render_elements(
     elements
 }
 
+/// Render layer surfaces on a specific layer to element list.
+/// LayerMap returns layers in reverse stacking order, so we reverse to get correct order.
+fn render_layer(
+    layer_map: &LayerMap,
+    layer: Layer,
+    renderer: &mut GlesRenderer,
+    scale: Scale<f64>,
+    elements: &mut Vec<EwmRenderElement>,
+) {
+    for surface in layer_map.layers_on(layer).rev() {
+        if let Some(geo) = layer_map.layer_geometry(surface) {
+            let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                render_elements_from_surface_tree(
+                    renderer,
+                    surface.wl_surface(),
+                    geo.loc.to_physical_precise_round(scale),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                );
+            elements.extend(render_elements.into_iter().map(EwmRenderElement::Surface));
+        }
+    }
+}
+
 /// Collect render elements for a specific output.
 ///
 /// This function collects only elements visible on the target output, filtering
@@ -195,7 +222,17 @@ pub fn collect_render_elements(
 /// 1. Efficient rendering - don't process elements that won't be visible
 /// 2. Accurate damage tracking - elements from other outputs don't trigger false damage
 ///
+/// Rendering order (front to back):
+/// 1. Overlay layer (highest z-order)
+/// 2. Cursor
+/// 3. Top layer
+/// 4. Popups
+/// 5. Views and windows
+/// 6. Bottom layer
+/// 7. Background layer (lowest z-order)
+///
 /// Parameters:
+/// - `output`: The output to render for (provides layer map)
 /// - `output_pos`: The output's position in global logical space
 /// - `output_size`: The output's size in logical coordinates
 /// - `include_cursor`: Whether to include the cursor element
@@ -207,6 +244,7 @@ pub fn collect_render_elements_for_output(
     output_pos: Point<i32, smithay::utils::Logical>,
     output_size: Size<i32, smithay::utils::Logical>,
     include_cursor: bool,
+    output: &Output,
 ) -> Vec<EwmRenderElement> {
     use smithay::backend::renderer::element::AsRenderElements;
     use smithay::utils::Logical;
@@ -217,11 +255,13 @@ pub fn collect_render_elements_for_output(
     // Output bounds in global logical coordinates
     let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
 
-    // Track cursor element count for popup insertion point
-    let mut cursor_element_count = 0;
+    // Get layer map for this output
+    let layer_map = layer_map_for_output(output);
 
-    // Cursor goes on top - add it first (elements at start render on top)
-    // Only include if cursor is within this output's bounds
+    // 1. Overlay layer (highest z-order, renders on top of everything including cursor)
+    render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut elements);
+
+    // 2. Cursor - add if within this output's bounds
     if include_cursor {
         let (pointer_x, pointer_y) = ewm.pointer_location;
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
@@ -236,7 +276,6 @@ pub fn collect_render_elements_for_output(
             match cursor_buffer.render_element(renderer, cursor_pos) {
                 Ok(cursor_element) => {
                     elements.push(EwmRenderElement::Cursor(cursor_element));
-                    cursor_element_count = 1;
                 }
                 Err(e) => {
                     warn!("Failed to create cursor render element: {:?}", e);
@@ -245,7 +284,13 @@ pub fn collect_render_elements_for_output(
         }
     }
 
-    // Render views for surfaces that have view data (from Emacs)
+    // 3. Top layer
+    render_layer(&layer_map, Layer::Top, renderer, scale, &mut elements);
+
+    // Track position for popup insertion (after top layer)
+    let popup_insert_pos = elements.len();
+
+    // 4. Render views for surfaces that have view data (from Emacs)
     // Only include views that intersect with this output
     for (&id, views) in &ewm.surface_views {
         if let Some(window) = ewm.id_windows.get(&id) {
@@ -274,7 +319,7 @@ pub fn collect_render_elements_for_output(
         }
     }
 
-    // Render surfaces from the space that DON'T have view data (like Emacs frames)
+    // 5. Render surfaces from the space that DON'T have view data (like Emacs frames)
     // Only include windows that intersect with this output
     for window in ewm.space.elements() {
         let window_id = ewm.window_ids.get(window).copied().unwrap_or(0);
@@ -307,8 +352,13 @@ pub fn collect_render_elements_for_output(
         elements.extend(window_elements.into_iter().map(EwmRenderElement::Surface));
     }
 
-    // Render popups on top of windows
-    // We collect popup elements and insert at the beginning for correct z-order
+    // 6. Bottom layer (below windows but above background)
+    render_layer(&layer_map, Layer::Bottom, renderer, scale, &mut elements);
+
+    // 7. Background layer (lowest z-order)
+    render_layer(&layer_map, Layer::Background, renderer, scale, &mut elements);
+
+    // Collect popups and insert them after the top layer (before windows)
     let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
     for window in ewm.space.elements() {
         if let Some(surface) = window.wl_surface() {
@@ -345,8 +395,11 @@ pub fn collect_render_elements_for_output(
         }
     }
 
-    // Insert popups after cursor but before windows (cursor renders on top of popups)
-    elements.splice(cursor_element_count..cursor_element_count, popup_elements);
+    // Insert popups after top layer but before windows
+    elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
+
+    // Drop the layer map before returning
+    drop(layer_map);
 
     elements
 }
@@ -523,6 +576,7 @@ pub fn process_screencopies_for_output(
         output_pos,
         output_size,
         true, // include_cursor
+        output,
     );
 
     for screencopy in pending {

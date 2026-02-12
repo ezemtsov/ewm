@@ -52,6 +52,8 @@ use smithay::{
 use smithay::utils::Size;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, info, warn};
+#[cfg(feature = "screencast")]
+use tracing::trace;
 
 use smithay::{
     backend::input::{
@@ -435,6 +437,7 @@ impl DrmBackendState {
             output_pos,
             output_size,
             true, // include_cursor
+            &output,
         );
 
         // Frame flags for proper plane scanout
@@ -501,6 +504,13 @@ impl DrmBackendState {
         for window in ewm.space.elements() {
             window.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
         }
+
+        // Send frame callbacks to layer surfaces
+        let layer_map = smithay::desktop::layer_map_for_output(&output);
+        for layer in layer_map.layers() {
+            layer.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
+        }
+        drop(layer_map);
 
         // Process pending screencopy requests for this output
         if should_process_screencopy {
@@ -581,6 +591,7 @@ impl DrmBackendState {
                         output_pos,
                         output_size,
                         true, // include_cursor
+                        &output,
                     )
                 });
 

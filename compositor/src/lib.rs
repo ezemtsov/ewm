@@ -36,10 +36,11 @@ pub use backend::DrmBackendState;
 
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_input_method_manager,
-    delegate_output, delegate_primary_selection, delegate_seat, delegate_shm,
+    delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_seat, delegate_shm,
     delegate_text_input_manager, delegate_xdg_shell,
     desktop::{
-        find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window,
+        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind,
+        PopupManager, Space, Window,
     },
     output::Output,
     input::{
@@ -89,6 +90,9 @@ use smithay::{
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
         input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface},
+        shell::wlr_layer::{
+            Layer, WlrLayerShellHandler, WlrLayerShellState,
+        },
     },
 };
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
@@ -331,6 +335,10 @@ pub struct Ewm {
     // Popup manager for XDG popups
     pub popups: PopupManager,
 
+    // Layer shell state
+    pub layer_shell_state: WlrLayerShellState,
+    pub unmapped_layer_surfaces: std::collections::HashSet<WlSurface>,
+
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
@@ -383,6 +391,9 @@ impl Ewm {
         // Initialize input method manager (allows Emacs to act as input method)
         let input_method_state = InputMethodManagerState::new::<Self, _>(&display_handle, |_| true);
 
+        // Initialize layer shell for panels, notifications, etc.
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -418,6 +429,8 @@ impl Ewm {
             text_input_intercept: false,
             text_input_active: false,
             popups: PopupManager::default(),
+            layer_shell_state,
+            unmapped_layer_surfaces: std::collections::HashSet::new(),
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -916,6 +929,82 @@ impl Ewm {
             }
         }
     }
+
+    /// Handle commit for layer surfaces. Returns true if this was a layer surface.
+    /// Following niri's layer_shell_handle_commit pattern.
+    pub fn handle_layer_surface_commit(&mut self, surface: &WlSurface) -> bool {
+        use smithay::backend::renderer::utils::with_renderer_surface_state;
+        use smithay::desktop::WindowSurfaceType;
+        use smithay::wayland::compositor::get_parent;
+        use smithay::wayland::shell::wlr_layer::LayerSurfaceData;
+
+        // Find root surface
+        let mut root_surface = surface.clone();
+        while let Some(parent) = get_parent(&root_surface) {
+            root_surface = parent;
+        }
+
+        // Find which output has this layer surface
+        let output = self
+            .space
+            .outputs()
+            .find(|o| {
+                let map = layer_map_for_output(o);
+                map.layer_for_surface(&root_surface, WindowSurfaceType::TOPLEVEL)
+                    .is_some()
+            })
+            .cloned();
+
+        let Some(output) = output else {
+            return false;
+        };
+
+        if surface == &root_surface {
+            let initial_configure_sent =
+                smithay::wayland::compositor::with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<LayerSurfaceData>()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .initial_configure_sent
+                });
+
+            let mut map = layer_map_for_output(&output);
+
+            // Arrange the layers before sending the initial configure
+            map.arrange();
+
+            let layer = map
+                .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                .unwrap();
+
+            if initial_configure_sent {
+                let is_mapped =
+                    with_renderer_surface_state(surface, |state| state.buffer().is_some())
+                        .unwrap_or(false);
+
+                if is_mapped {
+                    let was_unmapped = self.unmapped_layer_surfaces.remove(surface);
+                    if was_unmapped {
+                        debug!("Layer surface mapped");
+                    }
+                } else {
+                    self.unmapped_layer_surfaces.insert(surface.clone());
+                }
+            } else {
+                layer.layer_surface().send_configure();
+            }
+            drop(map);
+            self.queue_redraw(&output);
+        } else {
+            // This is a layer-shell subsurface
+            self.queue_redraw(&output);
+        }
+
+        true
+    }
 }
 
 // Client tracking
@@ -959,6 +1048,11 @@ impl CompositorHandler for Ewm {
 
         // Queue early import for DRM backend (processed in main loop)
         self.pending_early_imports.push(surface.clone());
+
+        // Handle layer surface commits
+        if self.handle_layer_surface_commit(surface) {
+            return;
+        }
 
         // Handle popup commits
         self.popups.commit(surface);
@@ -1321,6 +1415,76 @@ impl XdgDecorationHandler for Ewm {
     fn unset_mode(&mut self, _toplevel: ToplevelSurface) {}
 }
 smithay::delegate_xdg_decoration!(Ewm);
+
+// Layer Shell
+impl WlrLayerShellHandler for Ewm {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: smithay::wayland::shell::wlr_layer::LayerSurface,
+        wl_output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        _layer: Layer,
+        namespace: String,
+    ) {
+        use smithay::desktop::LayerSurface;
+
+        // Get the output for this layer surface
+        let output = if let Some(wl_output) = &wl_output {
+            Output::from_resource(wl_output)
+        } else {
+            self.space.outputs().next().cloned()
+        };
+
+        let Some(output) = output else {
+            warn!("No output for new layer surface, closing");
+            surface.send_close();
+            return;
+        };
+
+        let wl_surface = surface.wl_surface().clone();
+        self.unmapped_layer_surfaces.insert(wl_surface);
+
+        let mut map = layer_map_for_output(&output);
+        map.map_layer(&LayerSurface::new(surface, namespace.clone()))
+            .unwrap();
+        info!("New layer surface: namespace={} on output {}", namespace, output.name());
+    }
+
+    fn layer_destroyed(&mut self, surface: smithay::wayland::shell::wlr_layer::LayerSurface) {
+        let wl_surface = surface.wl_surface();
+        self.unmapped_layer_surfaces.remove(wl_surface);
+
+        // Find and unmap the layer surface
+        let output = self.space.outputs().find_map(|o| {
+            let map = layer_map_for_output(o);
+            let layer = map
+                .layers()
+                .find(|&layer| layer.layer_surface() == &surface)
+                .cloned();
+            layer.map(|layer| (o.clone(), layer))
+        });
+
+        if let Some((output, layer)) = output {
+            let mut map = layer_map_for_output(&output);
+            map.unmap_layer(&layer);
+            drop(map);
+            self.queue_redraw(&output);
+            info!("Layer surface destroyed");
+        }
+    }
+
+    fn new_popup(
+        &mut self,
+        _parent: smithay::wayland::shell::wlr_layer::LayerSurface,
+        popup: smithay::wayland::shell::xdg::PopupSurface,
+    ) {
+        let _ = self.popups.track_popup(PopupKind::Xdg(popup));
+    }
+}
+delegate_layer_shell!(Ewm);
 
 // Screencopy protocol
 impl ScreencopyHandler for Ewm {
