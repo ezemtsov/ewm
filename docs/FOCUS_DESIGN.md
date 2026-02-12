@@ -68,11 +68,13 @@ With input-to-focus:
 - Scroll Firefox → Firefox has focus, external monitor is "active"
 - Press M-x → routes to Emacs frame on external monitor
 
-## IPC Events
+## Module Events
+
+Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 
 | Event | When Sent | Purpose |
 |-------|-----------|---------|
-| `focus` | External surface clicked | Tell Emacs to show surface buffer |
+| `focus` | External surface clicked/scrolled | Tell Emacs to show surface buffer |
 | `new` | Surface created | Register new surface with Emacs |
 | `close` | Surface destroyed | Clean up surface buffer |
 

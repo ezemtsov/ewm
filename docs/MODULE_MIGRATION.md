@@ -192,7 +192,7 @@ All shared state protected by `Mutex`. Locks released before crossing thread bou
 |------|------------|
 | Module crash = Emacs crash | `catch_unwind` at thread boundary |
 | Threading deadlocks | Single mutex per queue, release before Elisp |
-| Development iteration | Debug/release builds, `ewm-module-info` |
+| Development iteration | Debug builds, `ewm-show-state` for inspection |
 
 ## Files
 

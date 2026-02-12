@@ -5,7 +5,7 @@ EWM (Emacs Wayland Manager) is a Wayland compositor designed specifically for Em
 
 ## Architecture
 - `compositor/` - Rust compositor using Smithay framework
-- `ewm.el` - Emacs integration package
+- `lisp/` - Emacs integration package (ewm.el and submodules)
 
 ## Commit Style
 Use conventional commits without Co-Authored-By lines:
@@ -65,6 +65,11 @@ cargo build  # builds to compositor/target/debug/libewm_core.so
 **Critical**: Emacs cannot hot-reload dynamic modules. Once loaded, the module
 stays in memory until Emacs fully restarts. If you rebuild the module, you MUST
 restart Emacs to load the new version.
+
+**Stale .elc files**: Byte-compiled Elisp (.elc) can cause subtle bugs when the
+source (.el) changes. If behavior doesn't match the source code, delete all .elc
+files in `lisp/`: `rm lisp/*.elc`. Symptoms include: functions not found, wrong
+number of arguments, or old behavior persisting after edits.
 
 ### Module Loading
 The module is loaded from `compositor/target/debug/libewm_core.so` relative to

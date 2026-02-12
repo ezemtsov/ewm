@@ -10,41 +10,45 @@ https://github.com/user-attachments/assets/d1c19772-532e-4b99-8c21-0ecba6e598c5
 
 EWM brings EXWM-like workflows to Wayland. Wayland applications appear as Emacs buffers, letting you switch between code and apps with `C-x b`, organize windows with your familiar Emacs commands, and keep everything responsive even when Emacs is busy evaluating.
 
-The key difference from EXWM: the compositor runs as a separate process, so applications never freeze waiting for Emacs.
+The key difference from EXWM: the compositor runs as a separate thread within Emacs (via a dynamic module), so applications never freeze waiting for Elisp evaluation.
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│  Compositor (Rust)  ◄───Unix Socket───►  Emacs            │
-│  - Renders surfaces                    - Controls layout  │
-│  - Handles input                       - Frame per output │
-│  - Manages Wayland                     - Buffer per app   │
-│    protocol                                               │
-└───────────────────────────────────────────────────────────┘
+┌─ Emacs Process ────────────────────────────────────────────┐
+│  Main Thread: Elisp execution                              │
+│       ↑↓ shared memory, mutex-protected                    │
+│  Compositor Thread: Smithay (Rust dynamic module)          │
+│       ↑↓                                                   │
+│  Render Thread: DRM/GPU                                    │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ## Inspirations
 
 - **[EXWM](https://github.com/ch11ng/exwm)** (Emacs side): Buffer-per-window model, prefix key interception, line/char mode switching, automatic focus management
-- **[niri](https://github.com/YaLTeR/niri)** (Compositor side): Backend architecture, Smithay patterns, DRM/Winit abstraction
+- **[niri](https://github.com/YaLTeR/niri)** (Compositor side): Backend architecture, Smithay patterns, DRM abstraction
 
 ## Building
 
 ```bash
 cd compositor
-cargo build --release
+cargo build  # builds to compositor/target/debug/libewm_core.so
 ```
 
 ## Running
 
-```bash
-# Nested mode (inside existing Wayland/X11)
-./target/release/ewm emacs
+From a TTY (not inside an existing Wayland/X11 session):
 
-# DRM mode (from TTY, unset WAYLAND_DISPLAY first)
-./target/release/ewm emacs
+```bash
+emacs --fg-daemon
+# Then in Emacs: M-x ewm-start-module
 ```
 
-**Kill combo**: `Super+Shift+E` exits the compositor (homage 🙂).
+Or start apps in the compositor:
+```bash
+WAYLAND_DISPLAY=wayland-ewm foot
+```
+
+**Kill combo**: `Super+Shift+E` exits the compositor.
 
 ## Emacs Setup
 
@@ -52,13 +56,10 @@ Load `ewm.el` in your Emacs:
 
 ```elisp
 (use-package ewm
-  :load-path "~/git/ewm"
-  :demand t  ; IMPORTANT: required when using :bind
+  :load-path "~/git/ewm/lisp"
   :custom
   ;; Optional: configure output modes
   (ewm-output-config '(("DP-1" :width 2560 :height 1440)))
-  :config
-  (ewm-connect)
   :bind
   ;; Super-key bindings are auto-detected by EWM
   ("s-d" . consult-buffer)
@@ -66,16 +67,13 @@ Load `ewm.el` in your Emacs:
   ("s-<right>" . windmove-right))
 ```
 
-**Why `:demand t`?** When you use `:bind`, use-package defers loading until a
-bound key is pressed. This breaks EWM because `ewm-connect` in `:config` never
-runs at startup. Adding `:demand t` forces immediate loading so the compositor
-connection is established when Emacs starts.
+Then start the compositor with `M-x ewm-start-module`.
 
 Unlike EXWM's `exwm-input-global-keys`, you don't need separate configuration.
 Just use normal `:bind` or `global-set-key` - EWM scans your keymaps and
 automatically intercepts keys with the super modifier.
 
-When Emacs connects to the compositor, Wayland surfaces appear as special buffers. Use standard Emacs commands:
+When the compositor starts, Wayland surfaces appear as special buffers. Use standard Emacs commands:
 - `C-x b` - switch between apps and regular buffers
 - `C-x 2`, `C-x 3` - split windows (surfaces follow)
 - `C-x 0`, `C-x 1` - close/maximize windows
@@ -88,16 +86,16 @@ When Emacs connects to the compositor, Wayland surfaces appear as special buffer
 - Prefix key interception (compositor forwards to Emacs)
 - Line/char mode (like EXWM)
 - Client-side decoration auto-disable
-- Both nested (Winit) and standalone (DRM) backends
-- Multi-monitor support (hotplug, per-output Emacs frames)
+- DRM backend with multi-monitor support (hotplug, per-output Emacs frames)
+- Layer-shell protocol (waybar, notifications, etc.)
 - Screen sharing via xdg-desktop-portal (PipeWire DMA-BUF)
 - Input method support (type in any script via Emacs input methods)
 
 ## Known Limitations
 
-- No layer-shell protocol (waybar, etc.)
-- No screen locking
+- No screen locking (ext-session-lock-v1)
 - GPU selection is automatic (no override)
+- Must run from TTY (no nested mode)
 
 ## License
 

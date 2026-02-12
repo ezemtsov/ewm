@@ -47,67 +47,39 @@ New non-Emacs surfaces appear on the active output. This is intuitive: windows o
 ### Explicit Frame Creation
 Emacs frames are created with an explicit target output. No "show then reassign" logic needed for frames. The compositor assigns the frame to the requested output immediately.
 
-## IPC Protocol
+## Module Interface
+
+The compositor runs as a dynamic module thread within Emacs. Communication happens
+via shared state protected by mutexes, with SIGUSR1 signals for event notification.
 
 ### Compositor → Emacs Events
 
-```rust
-enum IpcEvent {
-    // Output discovery
-    OutputDetected {
-        name: String,           // e.g., "HDMI-A-1"
-        make: String,           // manufacturer
-        model: String,          // model name
-        width_mm: i32,          // physical dimensions
-        height_mm: i32,
-        modes: Vec<Mode>,       // available video modes
-    },
-    OutputDisconnected { name: String },
+Events are pushed to a shared queue and Emacs is notified via SIGUSR1:
 
-    // Surface events (for non-Emacs clients)
-    New { id: u32, app: String, output: String },
-}
+| Event | Fields | Purpose |
+|-------|--------|---------|
+| `output_detected` | name, make, model, width_mm, height_mm, modes | Monitor connected |
+| `output_disconnected` | name | Monitor removed |
+| `new` | id, app, output | Surface created |
 
-struct Mode {
-    width: i32,
-    height: i32,
-    refresh: i32,  // mHz
-    preferred: bool,
-}
-```
+### Emacs → Compositor Functions
 
-### Emacs → Compositor Commands
+Emacs calls module functions directly (no serialization needed):
 
-```rust
-enum Command {
-    // Output configuration
-    ConfigureOutput {
-        name: String,
-        x: i32,
-        y: i32,
-        mode_width: i32,
-        mode_height: i32,
-        mode_refresh: i32,
-        scale: f64,
-        enabled: bool,
-    },
-
-    // Create frame on specific output
-    CreateFrame { output: String },
-
-    // Surface-to-output assignment (for non-Emacs clients)
-    AssignOutput { id: u32, output: String },
-}
+```elisp
+(ewm-configure-output name &key x y width height refresh enabled)
+(ewm-prepare-frame output)     ; Register pending frame for output
+(ewm-assign-output id output)  ; Move surface to output
 ```
 
 ## Emacs Frame Lifecycle
 
 ```
-1. Compositor sends OutputDetected { name: "HDMI-A-1", ... }
+1. Compositor pushes output_detected event, signals Emacs via SIGUSR1
 2. Emacs receives event, consults ewm-output-config
-3. Emacs sends CreateFrame { output: "HDMI-A-1" }
+3. Emacs calls (ewm-prepare-frame "HDMI-A-1") to register pending frame
 4. Emacs calls (make-frame) which creates a Wayland surface
-5. Compositor assigns the new surface to the requested output
+5. Compositor matches the new surface to the pending frame, assigns to output
 6. Frame is visible on the correct output immediately
 ```
 
@@ -116,28 +88,27 @@ enum Command {
 ```
 1. External client (Firefox, terminal, etc.) creates surface
 2. Compositor assigns to active output (cursor/focus based)
-3. Compositor sends: New { id, app, output }
-4. Emacs receives, checks app-output-rules
-5. If different output desired: Emacs sends AssignOutput { id, output }
+3. Compositor pushes new event with { id, app, output }
+4. Emacs receives via SIGUSR1, creates buffer for surface
+5. If different output desired: Emacs calls (ewm-assign-output id output)
 6. Compositor moves surface to requested output
 ```
 
 ## Startup Flow
 
 ```
-1. ewm starts
-2. Compositor discovers outputs via DRM
-3. Compositor positions outputs (auto-horizontal initially)
-4. Compositor spawns: emacs --fg-daemon
-5. Emacs daemon starts (no frames exist yet)
-6. Emacs runs ewm-connect (early in startup)
-7. IPC connects, compositor sends OutputDetected for each output
-8. For each output, Emacs:
+1. Emacs starts with --fg-daemon (no frames exist yet)
+2. User runs M-x ewm-start-module
+3. Module loads, compositor thread starts
+4. Compositor discovers outputs via DRM
+5. For each output, compositor pushes output_detected event
+6. After all outputs discovered, compositor pushes outputs_complete event
+7. Emacs receives events, for each output:
    a. Consults ewm-output-config for positioning/scale
-   b. Sends ConfigureOutput to set output properties
-   c. Sends CreateFrame to request a frame on that output
+   b. Calls ewm-configure-output to set properties
+   c. Calls ewm-prepare-frame to register pending frame
    d. Calls (make-frame) to create the actual frame
-9. All outputs now have frames, system is ready
+8. All outputs now have frames, system is ready
 ```
 
 ## Hotplug Support
@@ -154,9 +125,9 @@ This uniformity means no special cases for "first output" vs "hotplugged output"
 | Failure | Behavior |
 |---------|----------|
 | Broken Emacs config | Frames created with default positioning |
-| IPC never connects | No frames created, compositor shows fallback |
-| CreateFrame for unknown output | Compositor ignores, logs warning |
-| Emacs crashes | Existing surfaces remain visible |
+| Module fails to load | Error message, compositor not started |
+| PrepareFrame for unknown output | Compositor ignores, logs warning |
+| Compositor thread panics | Emacs continues running (catch_unwind) |
 | No outputs connected | Emacs daemon running, ready for hotplug |
 
 ## User Configuration
@@ -230,32 +201,32 @@ This follows niri's pattern: windows open where you're working, not on a static 
 
 **Only one monitor shows content:**
 ```bash
-# Check if outputs are being discovered
-RUST_LOG=debug ./target/release/ewm emacs 2>&1 | grep -i connector
+# Check compositor logs for output discovery
+journalctl --user -t ewm | grep -i connector
 
 # Verify DRM sees all outputs
 cat /sys/class/drm/card*-*/status
 ```
 
-**IPC not receiving events:**
-```bash
-# Verify socket exists
-ls -la $XDG_RUNTIME_DIR/ewm.sock
+**Events not reaching Emacs:**
+```elisp
+;; Check if SIGUSR1 handler is installed
+(lookup-key special-event-map [sigusr1])
 
-# Test socket manually
-echo '{"command":"screenshot"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/ewm.sock
+;; Check if compositor is running
+(ewm-running)
+
+;; Manually drain event queue
+(ewm--process-pending-events)
 ```
 
 **Frames not created for outputs:**
 ```elisp
-;; Check if outputs were received
-ewm--outputs
+;; Dump compositor state to see detected outputs
+M-x ewm-show-state
 
-;; Manually trigger frame creation for all outputs
-(ewm--setup-outputs)
-
-;; Create frame for specific output
-(ewm--create-frame-on-output "HDMI-A-1")
+;; Create frame for specific output manually
+(ewm--create-frame-for-output "HDMI-A-1")
 ```
 
 **Hotplug not detected:**
@@ -266,6 +237,7 @@ udevadm monitor --property | grep -i drm
 
 **No frames on startup:**
 ```bash
-# Ensure Emacs is started as fg-daemon
-# Check ewm spawn command includes --fg-daemon
+# Ensure Emacs is started as fg-daemon from TTY
+emacs --fg-daemon
+# Then run M-x ewm-start-module
 ```

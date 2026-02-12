@@ -15,24 +15,24 @@ EWM provides full input method support:
 (setq ewm-xkb-options "grp:caps_toggle")     ; Caps Lock toggles layout
 ```
 
-On connect, Emacs sends `configure-xkb` to initialize the keyboard.
+On startup, Emacs configures XKB via the dynamic module.
 
-### IPC Protocol
+### Module Interface
 
-**Commands (Emacs → Compositor):**
+**Emacs → Compositor (module functions):**
 
-| Command | Fields | Purpose |
-|---------|--------|---------|
-| `configure-xkb` | `layouts`, `options` | Set available layouts and XKB options |
-| `switch-layout` | `layout` | Switch to layout by name |
-| `get-layouts` | - | Query current layouts |
+```elisp
+(ewm-configure-xkb-module layouts options)  ; Set layouts and XKB options
+(ewm-switch-layout-module layout)           ; Switch to layout by name
+(ewm-get-layouts-module)                    ; Query current layouts
+```
 
-**Events (Compositor → Emacs):**
+**Compositor → Emacs (events via SIGUSR1):**
 
 | Event | Fields | Purpose |
 |-------|--------|---------|
 | `layouts` | `layouts`, `current` | Report configured layouts |
-| `layout-switched` | `layout`, `index` | Layout changed |
+| `layout_switched` | `layout`, `index` | Layout changed |
 
 ### Implementation
 
@@ -63,21 +63,22 @@ Application                    Compositor                      Emacs
      |<--commit_string--------------|                              |
 ```
 
-### IPC Protocol
+### Module Interface
 
-**Events (Compositor → Emacs):**
+**Compositor → Emacs (events via SIGUSR1):**
 
 | Event | Fields | Purpose |
 |-------|--------|---------|
-| `text-input-activated` | - | Text field focused in client |
-| `text-input-deactivated` | - | Text field unfocused |
-| `input-key` | `keysym`, `state` | Key press in text field |
+| `text_input_activated` | - | Text field focused in client |
+| `text_input_deactivated` | - | Text field unfocused |
+| `key` | `keysym`, `utf8` | Key press in text field |
 
-**Commands (Emacs → Compositor):**
+**Emacs → Compositor (module functions):**
 
-| Command | Fields | Purpose |
-|---------|--------|---------|
-| `commit-text` | `id`, `text` | Insert text into focused field |
+```elisp
+(ewm-im-commit-module text)              ; Insert text into focused field
+(ewm-text-input-intercept-module enable) ; Enable/disable key interception
+```
 
 ### Usage
 

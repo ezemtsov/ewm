@@ -10,15 +10,12 @@ The compositor uses direct state ownership through the event loop's generic para
 
 ```rust
 pub struct State {
-    pub backend: DrmBackendState,                    // DRM backend (directly owned)
-    pub ewm: Ewm,                                    // Compositor state
-    pub emacs: Option<UnixStream>,                   // Emacs IPC connection
-    pub ipc_stream_token: Option<RegistrationToken>, // IPC stream cleanup token
-    pub client_process: Option<Child>,               // Spawned client (standalone mode)
+    pub backend: DrmBackendState,  // DRM backend (directly owned)
+    pub ewm: Ewm,                  // Compositor state
 }
 ```
 
-Note: The Wayland `Display` is owned by the event loop (via `Generic` source), not by `State`. This ensures the display outlives all handlers.
+Note: The Wayland `Display` is owned by the event loop (via `Generic` source), not by `State`. This ensures the display outlives all handlers. Communication with Emacs happens via shared state (mutexes) and SIGUSR1 signals - no IPC socket needed.
 
 ### Event Loop Integration
 
@@ -292,4 +289,4 @@ impl Drop for DrmBackendState {
 }
 ```
 
-This ensures clean shutdown in both standalone and embedded modes.
+This ensures clean shutdown when running as a dynamic module within Emacs.
