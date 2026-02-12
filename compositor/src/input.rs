@@ -147,8 +147,12 @@ pub fn handle_keyboard_event(
                     keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
                     state.update_text_input_focus(None, Some(emacs_id));
 
-                    // Notify Emacs that focus changed so its tracking stays in sync
-                    state.queue_event(crate::Event::Focus { id: emacs_id });
+                    // NOTE: We intentionally do NOT send a Focus event here.
+                    // The prefix key redirect is temporary for the key sequence,
+                    // and sending Focus would cause ewm-layout--refresh to
+                    // redirect focus back to the external surface before the
+                    // sequence completes (race condition with C-x left/right etc).
+                    // Emacs frames handle their own focus via Wayland protocol.
 
                     // Switch to base layout (index 0) when redirecting to Emacs
                     // This ensures Emacs keybindings work correctly

@@ -184,6 +184,19 @@ Called periodically by `ewm--module-timer'."
     (when (fboundp 'ewm-drain-events)
       (ewm-drain-events))))
 
+(defun ewm--process-pending-events ()
+  "Process all pending module events synchronously.
+Call this before making focus decisions to ensure state is current.
+With the module architecture, events are in shared memory and can be
+read synchronously, eliminating the need for timer-based debouncing."
+  (when (and ewm--module-mode
+             (fboundp 'ewm-running)
+             (ewm-running))
+    (while-let ((event (ewm-pop-event)))
+      (ewm--handle-module-event event))
+    (when (fboundp 'ewm-drain-events)
+      (ewm-drain-events))))
+
 (defun ewm--alist-to-hash (alist)
   "Convert ALIST to a hash table for compatibility with existing handlers.
 The handlers expect hash tables with string keys."
@@ -242,34 +255,11 @@ Only logs when `ewm-debug-focus' is non-nil."
 (cl-defstruct (ewm-input-state (:constructor ewm-input-state-create))
   "State for EWM input handling."
   (last-focused-id 1)
-  (last-selected-window nil)
   (mff-last-window nil)
-  (compositor-focus nil)
-  (focus-timer nil)
-  (pending-focus-id nil)
-  (inhibit-update nil)
-  (inhibit-timer nil))
+  (compositor-focus nil))
 
 (defvar ewm--input-state nil
   "Current input state, or nil if not connected.")
-
-(defconst ewm--focus-inhibit-delay 0.05
-  "Seconds to inhibit focus updates after compositor-initiated focus change.
-Prevents feedback loops when compositor redirects focus during key interception.")
-
-(defun ewm-input--set-inhibit ()
-  "Set focus inhibit flag and schedule its clearing.
-Cancels any existing inhibit timer to ensure correct timing."
-  (when-let ((state ewm--input-state))
-    (when-let ((timer (ewm-input-state-inhibit-timer state)))
-      (cancel-timer timer))
-    (setf (ewm-input-state-inhibit-update state) t)
-    (setf (ewm-input-state-inhibit-timer state)
-          (run-with-timer ewm--focus-inhibit-delay nil
-                          (lambda ()
-                            (when ewm--input-state
-                              (setf (ewm-input-state-inhibit-update ewm--input-state) nil)
-                              (setf (ewm-input-state-inhibit-timer ewm--input-state) nil)))))))
 
 (defgroup ewm nil
   "Emacs Wayland Manager."
@@ -433,38 +423,26 @@ Kills the surface buffer and focuses Emacs."
 Updates focus tracking and selects the window displaying the surface's buffer."
   (pcase-let (((map ("id" id)) event))
     (ewm--focus-log "compositor" "received focus event for id=%d" id)
-    ;; Always update last-focused-id to match compositor's actual focus.
-    ;; This is critical when compositor redirects focus (e.g., during prefix
-    ;; key interception) so EWM's tracking stays in sync.
+    ;; Always update tracking to match compositor's actual focus
     (when ewm--input-state
-      (setf (ewm-input-state-last-focused-id ewm--input-state) id)
-      ;; Cancel any pending focus timer to prevent feedback loop.
-      ;; When compositor redirects focus (e.g., C-x intercept), a focus timer
-      ;; for the old surface may already be scheduled.
-      (when-let ((timer (ewm-input-state-focus-timer ewm--input-state)))
-        (cancel-timer timer)
-        (setf (ewm-input-state-focus-timer ewm--input-state) nil)
-        (setf (ewm-input-state-pending-focus-id ewm--input-state) nil))
-      ;; Inhibit new focus updates briefly.
-      (ewm-input--set-inhibit))
-    (let ((info (gethash id ewm--surfaces)))
-      (when info
-        (let ((buf (plist-get info :buffer)))
-          (when (buffer-live-p buf)
-            ;; Find a window showing this buffer and select it
-            (let ((win (get-buffer-window buf t)))
-              (when win
-                (ewm--focus-log "compositor" "selecting window for %s (id=%d)"
-                                (buffer-name buf) id)
-                ;; Suppress mouse-follows-focus since this came from a click
-                (when ewm--input-state
-                  (setf (ewm-input-state-compositor-focus ewm--input-state) t))
-                (unwind-protect
-                    (progn
-                      (select-frame-set-input-focus (window-frame win))
-                      (select-window win))
-                  (when ewm--input-state
-                    (setf (ewm-input-state-compositor-focus ewm--input-state) nil)))))))))))
+      (setf (ewm-input-state-last-focused-id ewm--input-state) id))
+    ;; Select window unless minibuffer is active
+    (unless (ewm--minibuffer-active-p)
+      (when-let* ((info (gethash id ewm--surfaces))
+                  (buf (plist-get info :buffer))
+                  ((buffer-live-p buf))
+                  (win (get-buffer-window buf t)))
+        (ewm--focus-log "compositor" "selecting window for %s (id=%d)"
+                        (buffer-name buf) id)
+        ;; Suppress mouse-follows-focus since this came from a click
+        (when ewm--input-state
+          (setf (ewm-input-state-compositor-focus ewm--input-state) t))
+        (unwind-protect
+            (progn
+              (select-frame-set-input-focus (window-frame win))
+              (select-window win))
+          (when ewm--input-state
+            (setf (ewm-input-state-compositor-focus ewm--input-state) nil)))))))
 
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.
@@ -1028,6 +1006,9 @@ The compositor runs as a thread within the Emacs process."
         (let ((socket-name (format "wayland-ewm-vt%d" (ewm--current-vt))))
           (setenv "WAYLAND_DISPLAY" socket-name)
           (setenv "XDG_SESSION_TYPE" "wayland")
+          ;; Use native Wayland input method protocol for GTK/Qt apps
+          (setenv "GTK_IM_MODULE" "wayland")
+          (setenv "QT_IM_MODULE" "wayland")
           (ewm-log "Set WAYLAND_DISPLAY=%s" socket-name))
         ;; Start event polling
         (ewm--start-module-polling)
@@ -1186,24 +1167,6 @@ KEY should be a key sequence."
   (when ewm-surface-id
     (ewm--send `(:cmd "key" :id ,ewm-surface-id :key ,(key-description key)))))
 
-;; Internal variable for skipping window change updates
-(defvar ewm-input--skip-window-change nil
-  "Non-nil to skip window change handlers.
-Used when buffer/window changes are expected and focus should not change.")
-
-(defun ewm-input--focus-debounced (id)
-  "Request focus on ID with debouncing to prevent focus loops."
-  (when-let ((state ewm--input-state))
-    (if (ewm-input-state-inhibit-update state)
-        (ewm--focus-log "debounced" "INHIBITED id=%d (inhibit-update is set)" id)
-      (ewm--focus-log "debounced" "queuing id=%d (pending=%s, timer=%s)"
-                      id
-                      (ewm-input-state-pending-focus-id state)
-                      (if (ewm-input-state-focus-timer state) "active" "none"))
-      (setf (ewm-input-state-pending-focus-id state) id)
-      (unless (ewm-input-state-focus-timer state)
-        (setf (ewm-input-state-focus-timer state)
-              (run-with-timer 0.01 nil #'ewm-input--focus-commit))))))
 
 (defun ewm-input--warp-pointer-to-window (window)
   "Warp pointer to center of WINDOW.
@@ -1247,125 +1210,26 @@ Warps pointer to the selected window on FRAME unless triggered by mouse."
           (setf (ewm-input-state-mff-last-window state) window)
           (ewm-input--warp-pointer-to-window window))))))
 
-(defun ewm-input--focus-commit ()
-  "Commit pending focus change."
-  (when-let ((state ewm--input-state))
-    (setf (ewm-input-state-focus-timer state) nil)
-    (let ((id (ewm-input-state-pending-focus-id state)))
-      (setf (ewm-input-state-pending-focus-id state) nil)
-      (cond
-       ((not id)
-        (ewm--focus-log "commit" "no pending id"))
-       ((eq id (ewm-input-state-last-focused-id state))
-        (ewm--focus-log "commit" "skipping id=%d (same as last)" id))
-       (t
-        (ewm--focus-log "commit" "FOCUSING id=%d (was %d)"
-                        id (ewm-input-state-last-focused-id state))
-        (setf (ewm-input-state-last-focused-id state) id)
-        (ewm-input--set-inhibit)
-        (ewm-focus id))))))
-
-(defun ewm-input--on-window-buffer-change (frame)
-  "Handle window buffer changes on FRAME.
-Called via `window-buffer-change-functions' when a window's buffer changes.
-Unlike `buffer-list-update-hook', this does NOT fire for buffer renames.
-
-When viewing a surface buffer, the surface has keyboard focus so that
-typing works immediately.  When viewing a non-surface buffer, the
-frame's Emacs surface has focus."
-  (when (and (ewm--compositor-active-p)
-             (not ewm-input--skip-window-change)
-             (not (active-minibuffer-window))
-             (eq frame (selected-frame)))
-    (let* ((win (frame-selected-window frame))
-           (buf (window-buffer win))
-           (id (buffer-local-value 'ewm-surface-id buf))
-           (frame-surface-id (frame-parameter frame 'ewm-surface-id))
-           (target-id (or id frame-surface-id 1)))
-      (ewm--focus-log "window-buffer" "buf=%s id=%s frame-id=%s -> target=%d"
-                      (buffer-name buf) id frame-surface-id target-id)
-      (ewm-input--focus-debounced target-id))))
-
-(defun ewm-input--on-window-selection-change (frame)
-  "Handle window selection changes on FRAME.
-Called via `window-selection-change-functions' when selected window changes."
-  (when (and (ewm--compositor-active-p)
-             (not ewm-input--skip-window-change)
-             (not (active-minibuffer-window))
-             (eq frame (selected-frame)))
-    (let* ((win (frame-selected-window frame))
-           (buf (window-buffer win))
-           (id (buffer-local-value 'ewm-surface-id buf))
-           (frame-surface-id (frame-parameter frame 'ewm-surface-id))
-           (target-id (or id frame-surface-id 1)))
-      (ewm--focus-log "window-selection" "buf=%s id=%s frame-id=%s -> target=%d"
-                      (buffer-name buf) id frame-surface-id target-id)
-      (ewm-input--focus-debounced target-id))))
-
-(defun ewm-input--on-post-command ()
-  "Hook called after each command.
-Re-focuses the surface if we're in a surface buffer.
-Also updates multi-view layout when selected window changes."
-  (when-let ((state ewm--input-state))
-    (when (and (ewm--compositor-active-p)
-               (not (active-minibuffer-window)))
-      ;; Use selected window's buffer, not current-buffer, to avoid spurious
-      ;; focus changes when current-buffer differs from displayed buffer
-      (let* ((current-window (selected-window))
-             (buf (window-buffer current-window))
-             (id (buffer-local-value 'ewm-surface-id buf)))
-        ;; Check if selected window changed (important for multi-view input routing)
-        (unless (eq current-window (ewm-input-state-last-selected-window state))
-          (setf (ewm-input-state-last-selected-window state) current-window)
-          ;; Refresh layout so the new window's view becomes active for input
-          (ewm-layout--refresh))
-        ;; Focus the surface for keyboard input
-        (when id
-          (ewm--focus-log "post-command" "buf=%s id=%d cmd=%s"
-                          (buffer-name buf) id this-command)
-          (ewm-input--focus-debounced id))))))
-
-(defun ewm-input--on-focus-change ()
-  "Handle frame focus changes.
-Called via `after-focus-change-function' to sync compositor focus.
-Prefers focusing the surface shown in the frame's selected window,
-falling back to the frame's own surface for Emacs buffers."
-  (when (and (ewm--compositor-active-p)
-             (not (active-minibuffer-window)))
-    (let* ((frame (selected-frame))
-           (win (frame-selected-window frame))
-           (buf (window-buffer win))
-           (surface-id (buffer-local-value 'ewm-surface-id buf))
-           (frame-surface-id (frame-parameter frame 'ewm-surface-id))
-           (target-id (or surface-id frame-surface-id)))
-      (when target-id
-        (ewm--focus-log "focus-change" "frame=%s surface-id=%s frame-id=%s -> target=%s"
-                        (frame-parameter frame 'name) surface-id frame-surface-id target-id)
-        (ewm-input--focus-debounced target-id)))))
+(defun ewm-input--on-window-selection-change (_frame)
+  "Sync focus when selected window changes."
+  (ewm-layout--refresh))
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--input-state
         (ewm-input-state-create
          :last-focused-id 1
-         :last-selected-window (selected-window)
          :mff-last-window (selected-window)))
-  ;; Use window-specific hooks instead of buffer-list-update-hook
-  ;; to avoid spurious triggers from buffer renames (e.g., vterm title updates)
-  (add-hook 'window-buffer-change-functions #'ewm-input--on-window-buffer-change)
+  ;; Focus sync on window selection change
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  (add-hook 'post-command-hook #'ewm-input--on-post-command)
-  (add-function :after after-focus-change-function #'ewm-input--on-focus-change)
+  ;; Mouse-follows-focus advice
   (advice-add 'select-window :after #'ewm-input--on-select-window)
   (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm--input-state nil)
-  (remove-hook 'window-buffer-change-functions #'ewm-input--on-window-buffer-change)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  (remove-hook 'post-command-hook #'ewm-input--on-post-command)
-  (remove-function after-focus-change-function #'ewm-input--on-focus-change)
   (advice-remove 'select-window #'ewm-input--on-select-window)
   (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
 
@@ -1649,17 +1513,19 @@ Adapted from exwm-layout--show."
     (ewm-layout id final-x final-y width height)))
 
 (defun ewm-layout--refresh ()
-  "Refresh layout for all surface buffers.
+  "Refresh layout for all surface buffers and sync focus.
 Collects all windows showing each surface and sends multi-view commands.
-Supports displaying the same surface in multiple windows (true multi-view).
-Adapted from exwm-layout--refresh-workspace."
+Also handles focus: focuses the surface in the selected window, or the
+Emacs frame surface if viewing a regular buffer.
+This is the SINGLE place where focus is synced, avoiding race conditions."
   (when (or ewm--module-mode
             (and ewm--process (process-live-p ewm--process)))
     ;; Force redisplay to ensure window sizes are current
     (redisplay t)
     ;; Build a hash table: surface-id -> list of (window . active-p)
     (let ((surface-windows (make-hash-table :test 'eql))
-          (sel-window (selected-window)))
+          (sel-window (selected-window))
+          (sel-frame (selected-frame)))
       ;; Collect all windows showing each surface
       (dolist (frame (frame-list))
         (dolist (window (window-list frame 'no-minibuf))
@@ -1684,7 +1550,19 @@ Adapted from exwm-layout--refresh-workspace."
                  (ewm-views id (vconcat views)))
              ;; Surface not visible - hide it
              (ewm-hide id))))
-       ewm--surfaces))))
+       ewm--surfaces)
+      ;; Sync focus (unless minibuffer is active)
+      (unless (ewm--minibuffer-active-p)
+        (let* ((sel-buf (window-buffer sel-window))
+               (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
+               (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))
+               (target-id (or surface-id frame-surface-id)))
+          (when (and target-id ewm--input-state)
+            (unless (eq target-id (ewm-input-state-last-focused-id ewm--input-state))
+              (ewm--focus-log "layout-refresh" "FOCUSING id=%d (was %d)"
+                              target-id (ewm-input-state-last-focused-id ewm--input-state))
+              (setf (ewm-input-state-last-focused-id ewm--input-state) target-id)
+              (ewm-focus target-id))))))))
 
 (defun ewm-layout--make-view (window active-p)
   "Create a view plist for WINDOW with ACTIVE-P flag."
@@ -1707,18 +1585,33 @@ Adapted from exwm-layout--refresh-workspace."
 (defvar ewm--pre-minibuffer-surface-id nil
   "Surface ID that was focused before minibuffer opened.")
 
+(defun ewm--minibuffer-active-p ()
+  "Return non-nil if minibuffer is currently active.
+More reliable than tracking with hooks since it checks actual state."
+  (or (active-minibuffer-window)
+      (> (minibuffer-depth) 0)
+      ;; Also check if current buffer is a minibuffer
+      (minibufferp)))
+
 (defun ewm--on-minibuffer-setup ()
-  "Save focused surface and refresh layout when minibuffer activates."
+  "Focus Emacs frame when minibuffer activates.
+Saves previous surface to restore on exit."
   (when-let ((state ewm--input-state))
     (setq ewm--pre-minibuffer-surface-id
-          (ewm-input-state-last-focused-id state)))
+          (ewm-input-state-last-focused-id state))
+    ;; Immediately focus Emacs frame so keyboard goes to minibuffer
+    (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
+      (setf (ewm-input-state-last-focused-id state) frame-surface-id)
+      (ewm-focus frame-surface-id)))
   (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay))
 
 (defun ewm--on-minibuffer-exit ()
-  "Restore focus and refresh layout when minibuffer exits."
+  "Restore focus to previous surface when minibuffer exits."
   (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay)
   (when (and ewm--pre-minibuffer-surface-id
+             ewm--input-state
              (ewm--compositor-active-p))
+    (setf (ewm-input-state-last-focused-id ewm--input-state) ewm--pre-minibuffer-surface-id)
     (ewm-focus ewm--pre-minibuffer-surface-id)
     (setq ewm--pre-minibuffer-surface-id nil)))
 
