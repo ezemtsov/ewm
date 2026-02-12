@@ -10,15 +10,8 @@
 ;; EWM integrates Emacs with a Wayland compositor, providing an EXWM-like
 ;; experience without the single-threaded limitations.
 ;;
-;; Quick start (compositor spawns Emacs automatically):
-;;   EWM_INIT=/path/to/lisp/ewm.el ewm
-;;
-;; Or with custom Emacs args:
-;;   EWM_INIT=/path/to/lisp/ewm.el ewm -Q --eval "(load-theme 'modus-vivendi)"
-;;
-;; Manual startup:
-;;   1. Start compositor: ewm --no-auto-emacs
-;;   2. Start Emacs inside: WAYLAND_DISPLAY=wayland-ewm emacs -l lisp/ewm.el -f ewm-connect
+;; Usage: M-x ewm-start-module
+;;   Starts the compositor as a thread within Emacs.
 ;;
 ;; Start apps inside the compositor:
 ;;   WAYLAND_DISPLAY=wayland-ewm foot
@@ -28,10 +21,6 @@
 ;; Input handling (like EXWM):
 ;;   When viewing a surface buffer, typing goes directly to the surface.
 ;;   Prefix keys (C-x, M-x, etc.) are intercepted and go to Emacs.
-;;
-;; Environment variables:
-;;   EWM_EMACS - Path to Emacs binary (default: "emacs")
-;;   EWM_INIT  - Path to lisp/ewm.el (auto-loads and connects)
 
 ;;; Code:
 
