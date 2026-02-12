@@ -16,7 +16,8 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-journald = "0.3"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"

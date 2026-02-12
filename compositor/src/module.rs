@@ -2,7 +2,6 @@
 
 use emacs::{defun, Env, IntoLisp, Result, Value};
 use std::collections::HashMap;
-use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -295,30 +294,31 @@ fn compositor_state() -> &'static Mutex<CompositorState> {
     COMPOSITOR.get_or_init(|| Mutex::new(CompositorState { thread: None }))
 }
 
-/// Initialize logging to file or stderr.
-/// Uses EWM_LOG_FILE env var, falls back to $XDG_RUNTIME_DIR/ewm.log or stderr.
+/// Initialize logging to journald.
+/// Filter controlled by RUST_LOG env var (default: ewm=debug,smithay=warn).
+/// View logs with: journalctl --user -t ewm -f
 fn init_logging() {
     use std::sync::Once;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::EnvFilter;
+
     static INIT_LOG: Once = Once::new();
     INIT_LOG.call_once(|| {
-        let log_path = std::env::var("EWM_LOG_FILE").ok().or_else(|| {
-            std::env::var("XDG_RUNTIME_DIR")
-                .ok()
-                .map(|dir| format!("{}/ewm.log", dir))
-        });
+        let default_filter = "ewm=debug,smithay=warn";
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(default_filter));
 
-        let initialized = log_path.and_then(|path| {
-            File::create(&path).ok().map(|file| {
-                tracing_subscriber::fmt()
-                    .with_writer(Mutex::new(file))
-                    .with_ansi(false)
-                    .with_max_level(tracing::Level::INFO)
-                    .init();
-            })
-        });
-
-        if initialized.is_none() {
-            tracing_subscriber::fmt::init();
+        // Try journald first, fall back to stderr
+        if let Ok(journald) = tracing_journald::layer() {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(journald.with_syslog_identifier("ewm".to_string()))
+                .init();
+        } else {
+            // Fallback for systems without journald
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .init();
         }
     });
 }

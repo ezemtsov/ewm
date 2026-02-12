@@ -70,6 +70,14 @@ restart Emacs to load the new version.
 The module is loaded from `compositor/target/debug/libewm_core.so` relative to
 `ewm.el`. Set `EWM_MODULE_PATH` environment variable to override.
 
+### Viewing Logs
+Compositor logs go to journald with identifier `ewm`:
+```sh
+journalctl --user -t ewm -f      # follow logs
+journalctl --user -t ewm -n 100  # last 100 lines
+```
+Filter controlled by `RUST_LOG` env var (default: `ewm=debug,smithay=warn`).
+
 ## Reference Implementation
 The compositor's DRM backend, screen sharing, and D-Bus integration follow
 patterns from [niri](https://github.com/YaLTeR/niri), a Wayland compositor
