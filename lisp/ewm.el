@@ -600,8 +600,7 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
     (tool-bar-mode -1))
   (when (bound-and-true-p tab-bar-mode)
     (tab-bar-mode -1))
-  ;; With no decorations and no bars, CSD height is 0
-  (setq ewm-csd-height 0))
+)
 
 ;;;###autoload
 (defun ewm-start-module ()
@@ -945,16 +944,10 @@ This version correctly handles tab-lines on Emacs prior to v31."
     #'window-inside-absolute-pixel-edges)
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
-(defvar ewm-csd-height nil
-  "Height of client-side decorations in pixels.
-Auto-detected on connect, or set manually before connecting.")
-
 (defun ewm--frame-y-offset (&optional _frame)
-  "Calculate Y offset to account for CSD only.
-Internal bars (menu-bar, tool-bar, tab-bar) are already reflected in
-`window-inside-absolute-pixel-edges', so we only add CSD height here.
-The FRAME argument is kept for API compatibility but not used."
-  (or ewm-csd-height 0))
+  "Return Y offset for CSD (always 0 with no decorations).
+Internal bars are already reflected in `window-inside-absolute-pixel-edges'."
+  0)
 
 (defun ewm-layout--refresh ()
   "Refresh layout for all surface buffers and sync focus."
