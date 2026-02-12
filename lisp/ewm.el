@@ -175,12 +175,7 @@ Called by SIGUSR1 handler when compositor queues events."
              (fboundp 'ewm-running)
              (ewm-running))
     (while-let ((event (ewm-pop-event)))
-      (ewm--handle-module-event event))))
-
-(defun ewm--handle-module-event (event)
-  "Handle EVENT from the module (an alist)."
-  (when event
-    (ewm--handle-event event)))
+      (ewm--handle-event event))))
 
 ;;; Input state (plain variables instead of struct)
 
@@ -680,7 +675,6 @@ The frame will be fully assigned when the compositor responds."
   (setq ewm--pending-output-for-next-frame output-name)
   ;; Use window-system pgtk for fg-daemon mode (no initial display connection)
   (make-frame '((visibility . t) (window-system . pgtk))))
-
 
 (defun ewm--on-make-frame (frame)
   "Hook for frame creation. Register pending or delete unauthorized."
