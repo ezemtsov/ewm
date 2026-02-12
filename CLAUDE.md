@@ -82,6 +82,19 @@ Filter controlled by `RUST_LOG` env var (default: `ewm=debug,smithay=warn`).
 Use `M-x ewm-show-state` to dump compositor state to `*ewm-state*` buffer.
 Shows surfaces, outputs, pointer location, intercepted keys, XKB layouts, etc.
 
+### Debug Mode
+Use `M-x ewm-debug-mode` to toggle verbose logging at runtime.
+When enabled, the state dump includes:
+- `focus_history`: Last 20 focus changes with source (click/scroll/keyboard/emacs_command)
+- `pending_commands`: Commands waiting in the queue between Emacs and compositor
+
+Focus history is especially useful for diagnosing race conditions where focus
+isn't being set correctly. Each entry shows:
+- `seq`: Monotonic sequence number
+- `surface_id`: Which surface received focus
+- `source`: What triggered the focus change
+- `context`: Additional context (e.g., "keyboard_event" for pending focus)
+
 ## Reference Implementation
 The compositor's DRM backend, screen sharing, and D-Bus integration follow
 patterns from [niri](https://github.com/YaLTeR/niri), a Wayland compositor
