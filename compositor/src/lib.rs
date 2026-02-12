@@ -308,8 +308,6 @@ pub struct Ewm {
     // Pending early imports (surfaces that need dmabuf import before rendering)
     pub pending_early_imports: Vec<WlSurface>,
 
-    // Pending frame-to-output assignments (from prepare-frame command)
-    pending_frame_outputs: Vec<String>,
 
     // Screencopy protocol state
     pub screencopy_state: ScreencopyManagerState,
@@ -415,7 +413,6 @@ impl Ewm {
             pending_screenshot: None,
             output_state: HashMap::new(),
             pending_early_imports: Vec::new(),
-            pending_frame_outputs: Vec::new(),
             screencopy_state,
             output_manager_state,
             text_input_state,
@@ -1155,13 +1152,9 @@ impl XdgShellHandler for Ewm {
         self.id_windows.insert(id, window.clone());
 
         // Determine target output:
-        // 1. Emacs frames: from prepare-frame command (position at output, size to fill)
+        // 1. Emacs frames: from prepare-frame (synchronous mutex, not command queue)
         // 2. Other surfaces: from active_output (cursor > focused > first)
-        let frame_output = if !self.pending_frame_outputs.is_empty() {
-            Some(self.pending_frame_outputs.remove(0))
-        } else {
-            None
-        };
+        let frame_output = module::take_pending_frame_output();
         let target_output = frame_output.clone().or_else(|| self.active_output());
 
         // Position based on surface type
@@ -1521,10 +1514,6 @@ impl State {
                     warn!("Output not found: {}", output);
                 }
             }
-            ModuleCommand::PrepareFrame { output } => {
-                self.ewm.pending_frame_outputs.push(output.clone());
-                info!("Prepared frame for output {}", output);
-            }
             ModuleCommand::ConfigureOutput {
                 name,
                 x,
@@ -1679,7 +1668,7 @@ impl State {
                     "xkb_layouts": self.ewm.xkb_layout_names,
                     "xkb_current_layout": self.ewm.xkb_current_layout,
                     "next_surface_id": self.ewm.next_surface_id,
-                    "pending_frame_outputs": self.ewm.pending_frame_outputs,
+                    "pending_frame_outputs": module::peek_pending_frame_outputs(),
                     // Debug info
                     "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
                     "pending_commands": module::peek_commands(),

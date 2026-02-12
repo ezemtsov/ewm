@@ -26,6 +26,28 @@ fn output_offsets() -> &'static Mutex<HashMap<String, (i32, i32)>> {
     OUTPUT_OFFSETS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Pending frame-to-output assignments (synchronous to avoid race with surface creation)
+static PENDING_FRAME_OUTPUTS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn pending_frame_outputs() -> &'static Mutex<Vec<String>> {
+    PENDING_FRAME_OUTPUTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Take the next pending frame output (called by compositor when creating surfaces).
+pub fn take_pending_frame_output() -> Option<String> {
+    let mut outputs = pending_frame_outputs().lock().unwrap();
+    if outputs.is_empty() {
+        None
+    } else {
+        Some(outputs.remove(0))
+    }
+}
+
+/// Get pending frame outputs for state dump.
+pub fn peek_pending_frame_outputs() -> Vec<String> {
+    pending_frame_outputs().lock().unwrap().clone()
+}
+
 /// Update focused surface ID (called by compositor)
 pub fn set_focused_id(id: u32) {
     FOCUSED_SURFACE_ID.store(id, Ordering::Relaxed);
@@ -73,7 +95,6 @@ pub enum ModuleCommand {
     WarpPointer { x: f64, y: f64 },
     Screenshot { path: Option<String> },
     AssignOutput { id: u32, output: String },
-    PrepareFrame { output: String },
     ConfigureOutput {
         name: String,
         x: Option<i32>,
@@ -611,10 +632,11 @@ fn assign_output_module(_: &Env, id: i64, output: String) -> Result<()> {
     Ok(())
 }
 
-/// Prepare next frame for output (module mode).
+/// Prepare next frame for output (synchronous to avoid race with surface creation).
 #[defun]
 fn prepare_frame_module(_: &Env, output: String) -> Result<()> {
-    push_command(ModuleCommand::PrepareFrame { output });
+    pending_frame_outputs().lock().unwrap().push(output.clone());
+    tracing::info!("Prepared frame for output {}", output);
     Ok(())
 }
 
