@@ -96,7 +96,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::mem;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Redraw state machine for proper VBlank synchronization.
 ///
@@ -1391,8 +1391,10 @@ impl State {
             ModuleCommand::Views { id, views } => {
                 // Skip if views unchanged
                 if self.ewm.surface_views.get(&id) == Some(&views) {
+                    trace!("Views surface {} unchanged, skipping", id);
                     return;
                 }
+                trace!("Views surface {} changed: {:?}", id, views);
                 if let Some(window) = self.ewm.id_windows.get(&id) {
                     let primary_view = views.iter().find(|v| v.active).or_else(|| views.first());
                     if let Some(view) = primary_view {

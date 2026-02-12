@@ -63,16 +63,15 @@ Internal bars are already reflected in `window-inside-absolute-pixel-edges'."
                     (existing (gethash id surface-windows)))
                 (puthash id (cons (cons window active-p) existing) surface-windows))))))
       ;; Send views or hide for each surface
+      ;; Deduplication happens in compositor (single source of truth)
       (maphash
        (lambda (id _info)
          (let ((windows (gethash id surface-windows)))
            (if windows
-               ;; Surface is visible in one or more windows - send views
+               ;; Surface is visible - send views
                (let ((views (mapcar
                              (lambda (win-pair)
-                               (let* ((window (car win-pair))
-                                      (active-p (cdr win-pair)))
-                                 (ewm-layout--make-view window active-p)))
+                               (ewm-layout--make-view (car win-pair) (cdr win-pair)))
                              windows)))
                  (ewm-views id (vconcat views)))
              ;; Surface not visible - hide it

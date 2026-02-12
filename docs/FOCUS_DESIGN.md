@@ -247,3 +247,54 @@ No timers needed. Synchronous `redisplay t` ensures geometry is current:
 3. **No polling**: No timers for event sync
 4. **No resources**: No sockets, files, or processes
 5. **Reliable**: Built-in Emacs signal handling
+
+## Layout Synchronization
+
+### Single Source of Truth
+
+Layout updates (Views/Hide commands) use a single-cache architecture where the
+compositor is the source of truth:
+
+```
+Emacs (stateless)              │  Compositor (cache)
+                               │
+ewm-layout--refresh            │
+  └─ compute views for surface │
+  └─ ewm-views(id, views) ────►│  if views == cached[id]:
+                               │    skip (unchanged)
+                               │  else:
+                               │    cached[id] = views
+                               │    apply layout
+```
+
+### Why Single Cache?
+
+The dynamic module runs in-process, so IPC cost is negligible (just copying
+a few integers). The expensive part is Emacs's `redisplay` and window
+traversal, which happens regardless of caching.
+
+Alternative approaches and why they were rejected:
+
+1. **Dual caching** (Emacs + compositor): Risk of cache divergence, more
+   complex code, no meaningful performance benefit.
+
+2. **Emacs-only cache**: Compositor becomes stateless, but if Emacs cache
+   corrupts, compositor has no way to detect or recover.
+
+3. **Compositor-only cache** (current): Single source of truth, impossible
+   to desync, simple Emacs code.
+
+### Deduplication Stats
+
+In practice, ~70% of Views calls are filtered as duplicates. This happens
+because Emacs triggers `window-configuration-change-hook` frequently (on
+every keystroke in some modes), but actual geometry changes are rare.
+
+### Commands with Deduplication
+
+| Command | Cache Key | Skip Condition |
+|---------|-----------|----------------|
+| `Views` | surface ID | `views == cached_views[id]` |
+| `Hide` | surface ID | `!cached_views.contains(id)` |
+| `Focus` | global | `id == focused_surface_id` |
+| `TextInputIntercept` | global | `state == cached_state` |
