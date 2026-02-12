@@ -173,8 +173,6 @@ Example:
       ("output_disconnected" (ewm--handle-output-disconnected event))
       ("outputs_complete" (ewm--handle-outputs-complete))
       ("ready" (ewm--handle-ready))
-      ("layouts" (ewm--handle-layouts event))
-      ("layout-switched" (ewm--handle-layout-switched event))
       ("text-input-activated" (ewm--handle-text-input-activated))
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
       ("key" (ewm--handle-key event)))))
@@ -398,18 +396,6 @@ Applies user output config and enforces frame-output parity."
   "Handle ready event from compositor.
 Signals that the compositor is fully initialized."
   (setq ewm--compositor-ready t))
-
-(defun ewm--handle-layouts (event)
-  "Handle layouts EVENT from compositor.
-Updates internal tracking of available layouts."
-  (pcase-let (((map ("layouts" layouts) ("current" current)) event))
-    (setq ewm--xkb-layouts-configured (append layouts nil))
-    (setq ewm--xkb-current-layout (nth current ewm--xkb-layouts-configured))))
-
-(defun ewm--handle-layout-switched (event)
-  "Handle layout-switched EVENT from compositor."
-  (pcase-let (((map ("layout" layout) ("index" _index)) event))
-    (setq ewm--xkb-current-layout layout)))
 
 ;;; Text Input Support (EXWM-XIM equivalent)
 
@@ -698,12 +684,6 @@ Example: \\='(\"us\" \"ru\" \"no\")"
 Example: \"ctrl:nocaps,grp:alt_shift_toggle\""
   :type '(choice (const nil) string)
   :group 'ewm-input)
-
-(defvar ewm--xkb-layouts-configured nil
-  "List of layout names currently configured in compositor.")
-
-(defvar ewm--xkb-current-layout nil
-  "Current XKB layout name in compositor.")
 
 (defvar-local ewm-input--mode 'line-mode
   "Current input mode: `line-mode' or `char-mode'.")
