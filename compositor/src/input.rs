@@ -140,6 +140,7 @@ pub fn handle_keyboard_event(
         // Switch focus to the Emacs frame on the same output as the focused surface
         if let Some(emacs_id) = state.get_emacs_surface_for_focused_output() {
             state.focused_surface_id = emacs_id;
+            crate::module::set_focused_id(emacs_id);
             if let Some(window) = state.id_windows.get(&emacs_id) {
                 if let Some(surface) = window.wl_surface() {
                     let emacs_surface: WlSurface = surface.into_owned();

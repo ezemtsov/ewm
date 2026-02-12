@@ -48,6 +48,8 @@
 (declare-function ewm-configure-xkb-module "ewm-core")
 (declare-function ewm-switch-layout-module "ewm-core")
 (declare-function ewm-get-layouts-module "ewm-core")
+(declare-function ewm-get-focused-id "ewm-core")
+(declare-function ewm-get-output-offset "ewm-core")
 
 ;;; Dynamic module loading
 
@@ -113,14 +115,6 @@ Called by SIGUSR1 handler when compositor queues events."
     (while-let ((event (ewm-pop-event)))
       (ewm--handle-event event))))
 
-;;; Input state (plain variables instead of struct)
-
-(defvar ewm--last-focused-id nil
-  "Last focused surface ID, for avoiding redundant focus calls.")
-
-(defvar ewm--mff-last-window nil
-  "Last window for mouse-follows-focus, to avoid redundant warps.")
-
 (defgroup ewm nil
   "Emacs Wayland Manager."
   :group 'environment)
@@ -131,20 +125,11 @@ When non-nil, warps the pointer to the center of the focused window."
   :type 'boolean
   :group 'ewm)
 
-(defvar ewm--surfaces (make-hash-table :test 'eql)
-  "Hash table mapping surface ID to surface info.")
+(defvar ewm--mff-last-window nil
+  "Last window for mouse-follows-focus, to avoid redundant warps.")
 
-(defvar ewm--outputs nil
-  "List of detected outputs.
-Each output is a plist with keys:
-  :name - connector name (e.g., \"HDMI-A-1\")
-  :make - manufacturer
-  :model - model name
-  :width-mm - physical width in mm
-  :height-mm - physical height in mm
-  :x - position x
-  :y - position y
-  :modes - list of available modes")
+(defvar ewm--surfaces (make-hash-table :test 'eql)
+  "Hash table mapping surface ID to buffer.")
 
 
 (defvar ewm--pending-frame-outputs nil
@@ -221,7 +206,7 @@ Adapted from EXWM's behavior."
 (defun ewm--create-surface-buffer (id app output)
   "Create buffer for regular surface ID with APP on OUTPUT."
   (let ((buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
-    (puthash id `(:buffer ,buf :app ,app) ewm--surfaces)
+    (puthash id buf ewm--surfaces)
     (with-current-buffer buf
       (ewm-surface-mode)
       (setq-local ewm-surface-id id)
@@ -246,27 +231,23 @@ Otherwise, creates a buffer for external surface."
 
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.
-Kills the surface buffer and focuses Emacs."
+Kills the surface buffer."
   (pcase-let (((map ("id" id)) event))
-    (let ((info (gethash id ewm--surfaces)))
-      (when info
-        (let ((buf (plist-get info :buffer)))
-          (when (buffer-live-p buf)
-            (with-current-buffer buf
-              (remove-hook 'kill-buffer-query-functions
-                           #'ewm--kill-buffer-query-function t))
-            (kill-buffer buf)))
-        (remhash id ewm--surfaces)))))
+    (when-let ((buf (gethash id ewm--surfaces)))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (remove-hook 'kill-buffer-query-functions
+                       #'ewm--kill-buffer-query-function t))
+        (kill-buffer buf))
+      (remhash id ewm--surfaces))))
 
 (defun ewm--handle-focus (event)
   "Handle focus EVENT from compositor.
-Updates focus tracking and selects the window displaying the surface's buffer."
+Selects the window displaying the surface's buffer."
   (pcase-let (((map ("id" id)) event))
-    (setq ewm--last-focused-id id)
     ;; Select window unless minibuffer is active
     (unless (ewm--minibuffer-active-p)
-      (when-let* ((info (gethash id ewm--surfaces))
-                  (buf (plist-get info :buffer))
+      (when-let* ((buf (gethash id ewm--surfaces))
                   ((buffer-live-p buf))
                   (win (get-buffer-window buf t)))
         (select-frame-set-input-focus (window-frame win))
@@ -281,62 +262,25 @@ The current buffer is the surface buffer when this runs."
 
 (defun ewm--handle-title-update (event)
   "Handle title update EVENT.
-Updates buffer-local variables and renames the buffer.
-Adapted from EXWM's title update mechanism."
+Updates buffer-local variables and renames the buffer."
   (pcase-let (((map ("id" id) ("app" app) ("title" title)) event))
-    (when-let ((info (gethash id ewm--surfaces)))
-      (let ((buf (plist-get info :buffer)))
-        (when (buffer-live-p buf)
-          (with-current-buffer buf
-            ;; Update buffer-local variables
-            (setq-local ewm-surface-app app)
-            (setq-local ewm-surface-title title)
-            ;; Rename buffer based on app and title
-            (ewm--rename-buffer)
-            ;; Run user hooks for customization
-            (run-hooks 'ewm-update-title-hook))
-          ;; Update cached info
-          (puthash id `(:buffer ,buf :app ,app :title ,title) ewm--surfaces))))))
+    (when-let ((buf (gethash id ewm--surfaces)))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (setq-local ewm-surface-app app)
+          (setq-local ewm-surface-title title)
+          (ewm--rename-buffer)
+          (run-hooks 'ewm-update-title-hook))))))
 
 (defun ewm--handle-output-detected (event)
-  "Handle output detected EVENT.
-Adds the output to `ewm--outputs' and creates a frame if needed."
-  (pcase-let (((map ("name" name) ("make" make) ("model" model)
-                    ("width_mm" width-mm) ("height_mm" height-mm)
-                    ("x" x) ("y" y) ("modes" modes)) event))
-    (let* (;; Convert modes from hash tables to plists
-           (mode-plists (mapcar (lambda (m)
-                                  (pcase-let (((map ("width" width) ("height" height)
-                                                    ("refresh" refresh) ("preferred" preferred)) m))
-                                    (list :width width
-                                          :height height
-                                          :refresh refresh
-                                          :preferred preferred)))
-                                (append modes nil)))
-           (output-plist (list :name name
-                               :make make
-                               :model model
-                               :width-mm width-mm
-                               :height-mm height-mm
-                               :x x
-                               :y y
-                               :modes mode-plists)))
-      ;; Remove existing entry with same name (update case)
-      (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
-                                       ewm--outputs))
-      ;; Add new output
-      (push output-plist ewm--outputs)
-      ;; Create frame if this output doesn't have one yet
-      (unless (ewm--frame-for-output name)
-        (ewm--create-frame-for-output name)))))
+  "Handle output detected EVENT. Creates a frame if needed."
+  (pcase-let (((map ("name" name)) event))
+    (unless (ewm--frame-for-output name)
+      (ewm--create-frame-for-output name))))
 
 (defun ewm--handle-output-disconnected (event)
-  "Handle output disconnected EVENT.
-Removes the output from `ewm--outputs' and closes its frame."
+  "Handle output disconnected EVENT. Closes its frame."
   (pcase-let (((map ("name" name)) event))
-    (setq ewm--outputs (cl-remove-if (lambda (o) (equal (plist-get o :name) name))
-                                     ewm--outputs))
-    ;; Find and delete frame for this output
     (when-let ((frame (ewm--frame-for-output name)))
       ;; Move windows to another frame before deletion
       (let ((target-frame (car (cl-remove frame (frame-list)))))
@@ -423,12 +367,7 @@ ARGS is a plist with optional keys:
 
 (defun ewm--get-output-offset (output-name)
   "Return (x . y) offset for OUTPUT-NAME, or (0 . 0) if not found."
-  (let ((output (cl-find output-name ewm--outputs
-                         :test #'string= :key (lambda (o) (plist-get o :name)))))
-    (if output
-        (cons (or (plist-get output :x) 0)
-              (or (plist-get output :y) 0))
-      (cons 0 0))))
+  (or (ewm-get-output-offset output-name) '(0 . 0)))
 
 (defun ewm--apply-output-config ()
   "Apply user output configuration from `ewm-output-config'."
@@ -577,10 +516,7 @@ Called when text-input-intercept is enabled and a printable key is pressed."
 
 (defun ewm--focused-surface-buffer ()
   "Return the buffer displaying the currently focused surface."
-  (when ewm--last-focused-id
-    (cl-find-if (lambda (buf)
-                  (eq (buffer-local-value 'ewm-surface-id buf) ewm--last-focused-id))
-                (buffer-list))))
+  (gethash (ewm-get-focused-id) ewm--surfaces))
 
 (defun ewm-text-input--auto-enable ()
   "Enable text input mode when a client text field is activated."
@@ -681,7 +617,6 @@ The compositor runs as a thread within the Emacs process."
   (when (and (fboundp 'ewm-running) (ewm-running))
     (user-error "EWM compositor is already running"))
   ;; Reset state
-  (setq ewm--outputs nil)
   (setq ewm--pending-frame-outputs nil)
   (setq ewm--module-mode nil)
   (setq ewm--compositor-ready nil)
@@ -806,7 +741,6 @@ keys via XGrabKey.  In EWM/Wayland, we achieve similar behavior by:
 Both modes keep focus on the surface so typing works immediately."
   (when ewm-surface-id
     (setq ewm-input--mode mode)
-    (setq ewm--last-focused-id ewm-surface-id)
     (ewm-focus ewm-surface-id)
     (force-mode-line-update)))
 
@@ -868,7 +802,6 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
-  (setq ewm--last-focused-id nil)
   (setq ewm--mff-last-window (selected-window))
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (advice-add 'select-window :after #'ewm-input--on-select-window)
@@ -876,7 +809,6 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
-  (setq ewm--last-focused-id nil)
   (setq ewm--mff-last-window nil)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (advice-remove 'select-window #'ewm-input--on-select-window)
@@ -1064,8 +996,7 @@ The FRAME argument is kept for API compatibility but not used."
                (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
                (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))
                (target-id (or surface-id frame-surface-id)))
-          (when (and target-id (not (eq target-id ewm--last-focused-id)))
-            (setq ewm--last-focused-id target-id)
+          (when (and target-id (not (eq target-id (ewm-get-focused-id))))
             (ewm-focus target-id)))))))
 
 (defun ewm-layout--make-view (window active-p)
@@ -1100,9 +1031,8 @@ More reliable than tracking with hooks since it checks actual state."
 (defun ewm--on-minibuffer-setup ()
   "Focus Emacs frame when minibuffer activates.
 Saves previous surface to restore on exit."
-  (setq ewm--pre-minibuffer-surface-id ewm--last-focused-id)
+  (setq ewm--pre-minibuffer-surface-id (ewm-get-focused-id))
   (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
-    (setq ewm--last-focused-id frame-surface-id)
     (ewm-focus frame-surface-id))
   (redisplay t)
   (ewm-layout--refresh))
@@ -1110,7 +1040,6 @@ Saves previous surface to restore on exit."
 (defun ewm--on-minibuffer-exit ()
   "Restore focus to previous surface when minibuffer exits."
   (when (and ewm--pre-minibuffer-surface-id (ewm--compositor-active-p))
-    (setq ewm--last-focused-id ewm--pre-minibuffer-surface-id)
     (ewm-focus ewm--pre-minibuffer-surface-id)
     (setq ewm--pre-minibuffer-surface-id nil))
   (redisplay t)

@@ -1,8 +1,9 @@
 //! Emacs dynamic module interface for EWM
 
 use emacs::{defun, Env, IntoLisp, Result, Value};
+use std::collections::HashMap;
 use std::fs::File;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 
@@ -10,6 +11,52 @@ use smithay::reexports::calloop::LoopSignal;
 
 use crate::event::Event;
 use crate::{InterceptedKey, KeyId, SurfaceView};
+
+// ============================================================================
+// Shared State (read by Emacs, written by compositor)
+// ============================================================================
+
+/// Current focused surface ID (updated by compositor, queried by Emacs)
+static FOCUSED_SURFACE_ID: AtomicU32 = AtomicU32::new(0);
+
+/// Output offsets: name -> (x, y)
+static OUTPUT_OFFSETS: OnceLock<Mutex<HashMap<String, (i32, i32)>>> = OnceLock::new();
+
+fn output_offsets() -> &'static Mutex<HashMap<String, (i32, i32)>> {
+    OUTPUT_OFFSETS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Update focused surface ID (called by compositor)
+pub fn set_focused_id(id: u32) {
+    FOCUSED_SURFACE_ID.store(id, Ordering::Relaxed);
+}
+
+/// Update output offset (called by compositor)
+pub fn set_output_offset(name: &str, x: i32, y: i32) {
+    output_offsets().lock().unwrap().insert(name.to_string(), (x, y));
+}
+
+/// Remove output (called by compositor)
+pub fn remove_output(name: &str) {
+    output_offsets().lock().unwrap().remove(name);
+}
+
+/// Query focused surface ID (called by Emacs)
+#[defun]
+fn get_focused_id(_: &Env) -> Result<i64> {
+    Ok(FOCUSED_SURFACE_ID.load(Ordering::Relaxed) as i64)
+}
+
+/// Query output offset (called by Emacs)
+/// Returns (x . y) cons cell, or nil if output not found
+#[defun]
+fn get_output_offset<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
+    let offsets = output_offsets().lock().unwrap();
+    match offsets.get(&name) {
+        Some((x, y)) => env.call("cons", (*x as i64, *y as i64)),
+        None => ().into_lisp(env),
+    }
+}
 
 // ============================================================================
 // Module Commands (Emacs -> Compositor)

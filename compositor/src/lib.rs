@@ -529,6 +529,7 @@ impl Ewm {
     pub fn set_focus(&mut self, id: u32) {
         if id != self.focused_surface_id && id != 0 {
             self.focused_surface_id = id;
+            crate::module::set_focused_id(id);
             // Notify Emacs about focus change (skip Emacs frames, they handle their own focus)
             if !self.emacs_surfaces.contains(&id) {
                 self.queue_event(Event::Focus { id });
@@ -540,6 +541,7 @@ impl Ewm {
     /// If `notify_emacs` is true, sends Event::Focus to Emacs.
     pub fn focus_surface(&mut self, id: u32, notify_emacs: bool) {
         self.focused_surface_id = id;
+        crate::module::set_focused_id(id);
         if notify_emacs {
             self.queue_event(Event::Focus { id });
         }
@@ -760,11 +762,13 @@ impl Ewm {
 
     /// Send output detected event to Emacs
     pub fn send_output_detected(&mut self, output: OutputInfo) {
+        crate::module::set_output_offset(&output.name, output.x, output.y);
         self.queue_event(Event::OutputDetected(output));
     }
 
     /// Send output disconnected event to Emacs
     pub fn send_output_disconnected(&mut self, name: &str) {
+        crate::module::remove_output(name);
         self.queue_event(Event::OutputDisconnected {
             name: name.to_string(),
         });
@@ -1532,6 +1536,7 @@ impl State {
                                     out_info.y = new_y;
                                 }
                             }
+                            crate::module::set_output_offset(&name, new_x, new_y);
                             self.ewm.recalculate_output_size();
                             info!("Configured output {} at ({}, {})", name, new_x, new_y);
                         } else {
