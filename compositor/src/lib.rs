@@ -96,7 +96,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::mem;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Redraw state machine for proper VBlank synchronization.
 ///
@@ -163,7 +163,7 @@ struct SurfaceInfo {
 }
 
 /// A single view of a surface (position in an Emacs window)
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SurfaceView {
     pub x: i32,
     pub y: i32,
@@ -1389,6 +1389,10 @@ impl State {
                 }
             }
             ModuleCommand::Views { id, views } => {
+                // Skip if views unchanged
+                if self.ewm.surface_views.get(&id) == Some(&views) {
+                    return;
+                }
                 if let Some(window) = self.ewm.id_windows.get(&id) {
                     let primary_view = views.iter().find(|v| v.active).or_else(|| views.first());
                     if let Some(view) = primary_view {
@@ -1403,6 +1407,7 @@ impl State {
                             t.send_configure();
                         });
                     }
+                    debug!("Views surface {} ({} views)", id, views.len());
                     self.ewm.surface_views.insert(id, views);
                     self.ewm.queue_redraw_all();
                 }
