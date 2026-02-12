@@ -1105,47 +1105,12 @@ This version correctly handles tab-lines on Emacs prior to v31."
   "Height of client-side decorations in pixels.
 Auto-detected on connect, or set manually before connecting.")
 
-(defun ewm--detect-csd-height ()
-  "Detect the CSD (title bar) height for the current frame.
-Returns the height in pixels."
-  (let* ((frame (selected-frame))
-         (geometry (frame-geometry frame)))
-    ;; If frame is undecorated, no CSD
-    (if (frame-parameter frame 'undecorated)
-        0
-      ;; Try to get the title bar size from frame geometry
-      (let ((title-bar-size (alist-get 'title-bar-size geometry)))
-        (if (and title-bar-size (> (cdr title-bar-size) 0))
-            (cdr title-bar-size)
-          ;; Fallback: try to detect from frame edges
-          (let ((outer (alist-get 'outer-edges geometry))
-                (inner (alist-get 'inner-edges geometry)))
-            (if (and outer inner)
-                (- (cadr inner) (cadr outer))
-              ;; Last resort: assume standard GTK title bar
-              37)))))))
-
 (defun ewm--frame-y-offset (&optional _frame)
   "Calculate Y offset to account for CSD only.
 Internal bars (menu-bar, tool-bar, tab-bar) are already reflected in
 `window-inside-absolute-pixel-edges', so we only add CSD height here.
 The FRAME argument is kept for API compatibility but not used."
   (or ewm-csd-height 0))
-
-(defun ewm-layout--show (id &optional window)
-  "Show surface ID exactly fit in the Emacs window WINDOW.
-Adapted from exwm-layout--show."
-  (let* ((frame (window-frame window))
-         (output-offset (ewm--get-output-offset (frame-parameter frame 'ewm-output)))
-         (edges (ewm--window-inside-absolute-pixel-edges window))
-         (x (pop edges))
-         (y (pop edges))
-         (width (- (pop edges) x))
-         (height (- (pop edges) y))
-         (csd-offset (ewm--frame-y-offset frame))
-         (final-x (+ x (car output-offset)))
-         (final-y (+ y csd-offset (cdr output-offset))))
-    (ewm-layout id final-x final-y width height)))
 
 (defun ewm-layout--refresh ()
   "Refresh layout for all surface buffers and sync focus."
