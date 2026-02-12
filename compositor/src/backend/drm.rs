@@ -51,9 +51,7 @@ use smithay::{
 #[cfg(feature = "screencast")]
 use smithay::utils::Size;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
-use tracing::{debug, info, warn};
-#[cfg(feature = "screencast")]
-use tracing::trace;
+use tracing::{debug, info, trace, warn};
 
 use smithay::{
     backend::input::{
@@ -199,8 +197,8 @@ impl DrmBackendState {
             return;
         };
         match device.gpu_manager.early_import(device.render_node, surface) {
-            Ok(_) => info!("Early import succeeded for surface {:?}", surface.id()),
-            Err(err) => info!(
+            Ok(_) => trace!("Early import succeeded for surface {:?}", surface.id()),
+            Err(err) => trace!(
                 "Early buffer import skipped/failed for surface {:?}: {:?}",
                 surface.id(),
                 err
@@ -467,7 +465,7 @@ impl DrmBackendState {
 
         match render_result {
             Ok(result) => {
-                debug!("Render result: is_empty={}", result.is_empty);
+                trace!("Render result: is_empty={}", result.is_empty);
 
                 if !result.is_empty {
                     // There's damage to display - queue frame and wait for VBlank
