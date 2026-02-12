@@ -71,7 +71,7 @@ in
     emacsPackage = lib.mkPackageOption pkgs "emacs" { };
 
     initDirectory = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Emacs init directory (passed as --init-directory).";
       example = "/etc/nixos/dotfiles/emacs";
