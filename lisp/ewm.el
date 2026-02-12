@@ -538,19 +538,14 @@ Updates internal tracking of available layouts."
 
 ;;; Text Input Support (EXWM-XIM equivalent)
 
-(defvar ewm-text-input-active nil
-  "Non-nil when a client text field is active and expecting input.")
-
 (defun ewm--handle-text-input-activated ()
   "Handle text-input-activated event from compositor.
 Called when a client's text field gains focus."
-  (setq ewm-text-input-active t)
   (run-hooks 'ewm-text-input-activated-hook))
 
 (defun ewm--handle-text-input-deactivated ()
   "Handle text-input-deactivated event from compositor.
 Called when a client's text field loses focus."
-  (setq ewm-text-input-active nil)
   (run-hooks 'ewm-text-input-deactivated-hook))
 
 (defvar ewm-text-input-activated-hook nil
