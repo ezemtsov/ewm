@@ -92,7 +92,7 @@ use smithay::{
     },
 };
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::mem;
@@ -156,14 +156,14 @@ pub fn is_kill_combo(keysym: u32, shift: bool, logo: bool) -> bool {
 }
 
 /// Cached surface info for change detection
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize)]
 struct SurfaceInfo {
     app_id: String,
     title: String,
 }
 
 /// A single view of a surface (position in an Emacs window)
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct SurfaceView {
     pub x: i32,
     pub y: i32,
@@ -173,7 +173,7 @@ pub struct SurfaceView {
 }
 
 /// Key identifier: either a keysym integer or a named key string
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum KeyId {
     Keysym(u32),
@@ -226,7 +226,7 @@ impl KeyId {
 }
 
 /// Intercepted key: key + required modifiers (sent pre-parsed from Emacs)
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InterceptedKey {
     pub key: KeyId,
     #[serde(default)]
@@ -1191,6 +1191,17 @@ impl XdgShellHandler for Ewm {
             }
         }
 
+        // Initialize surface_info for non-Emacs surfaces
+        if !is_emacs {
+            self.surface_info.insert(
+                id,
+                SurfaceInfo {
+                    app_id: app.clone(),
+                    title: String::new(),
+                },
+            );
+        }
+
         // Send event to Emacs with target output (for all surfaces)
         self.queue_event(Event::New {
             id,
@@ -1646,6 +1657,26 @@ impl State {
                     layouts: self.ewm.xkb_layout_names.clone(),
                     current: self.ewm.xkb_current_layout,
                 });
+            }
+            ModuleCommand::GetState => {
+                let state = serde_json::json!({
+                    "surfaces": self.ewm.surface_info,
+                    "emacs_surfaces": self.ewm.emacs_surfaces,
+                    "surface_views": self.ewm.surface_views,
+                    "focused_surface_id": self.ewm.focused_surface_id,
+                    "outputs": self.ewm.outputs,
+                    "pointer_location": self.ewm.pointer_location,
+                    "intercepted_keys": self.ewm.intercepted_keys,
+                    "emacs_pid": self.ewm.emacs_pid,
+                    "text_input_intercept": self.ewm.text_input_intercept,
+                    "text_input_active": self.ewm.text_input_active,
+                    "xkb_layouts": self.ewm.xkb_layout_names,
+                    "xkb_current_layout": self.ewm.xkb_current_layout,
+                    "next_surface_id": self.ewm.next_surface_id,
+                    "pending_frame_outputs": self.ewm.pending_frame_outputs,
+                });
+                let json = serde_json::to_string_pretty(&state).unwrap_or_default();
+                self.ewm.queue_event(Event::State { json });
             }
         }
     }

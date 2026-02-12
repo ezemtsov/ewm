@@ -88,6 +88,7 @@ pub enum ModuleCommand {
     ConfigureXkb { layouts: String, options: Option<String> },
     SwitchLayout { layout: String },
     GetLayouts,
+    GetState,
 }
 
 /// Command queue shared between Emacs thread and compositor
@@ -267,6 +268,12 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
                 items.push(cons("utf8", s.into_lisp(env)?)?);
             }
             list(items)
+        }
+        Event::State { json } => {
+            list(vec![
+                cons("event", "state".into_lisp(env)?)?,
+                cons("json", json.into_lisp(env)?)?,
+            ])
         }
     }
 }
@@ -652,5 +659,12 @@ fn switch_layout_module(_: &Env, layout: String) -> Result<()> {
 #[defun]
 fn get_layouts_module(_: &Env) -> Result<()> {
     push_command(ModuleCommand::GetLayouts);
+    Ok(())
+}
+
+/// Request compositor state dump (module mode).
+#[defun]
+fn get_state_module(_: &Env) -> Result<()> {
+    push_command(ModuleCommand::GetState);
     Ok(())
 }

@@ -44,6 +44,7 @@
 (declare-function ewm-configure-output-module "ewm-core")
 (declare-function ewm-get-focused-id "ewm-core")
 (declare-function ewm-get-output-offset "ewm-core")
+(declare-function ewm-get-state-module "ewm-core")
 
 ;;; Dynamic module loading
 
@@ -168,7 +169,8 @@ Example:
       ("ready" (ewm--handle-ready))
       ("text-input-activated" (ewm--handle-text-input-activated))
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
-      ("key" (ewm--handle-key event)))))
+      ("key" (ewm--handle-key event))
+      ("state" (ewm--handle-state event)))))
 
 ;;; Event handlers
 
@@ -311,6 +313,18 @@ Applies user output config and enforces frame-output parity."
 Signals that the compositor is fully initialized."
   (setq ewm--compositor-ready t))
 
+(defun ewm--handle-state (event)
+  "Handle state event from compositor.
+Displays the compositor state in a buffer for debugging."
+  (let ((json (map-elt event "json")))
+    (with-current-buffer (get-buffer-create "*ewm-state*")
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert json)
+        (goto-char (point-min)))
+      (when (fboundp 'js-json-mode) (js-json-mode))
+      (display-buffer (current-buffer)))))
+
 ;;; Commands
 
 (defun ewm-layout (id x y w h)
@@ -343,6 +357,13 @@ The :active view receives input, others are visual copies."
   "Take a screenshot of the compositor."
   (interactive)
   (ewm-screenshot-module (or path "/tmp/ewm-screenshot.png")))
+
+(defun ewm-show-state ()
+  "Request compositor state dump.
+State will be displayed in *ewm-state* buffer when received."
+  (interactive)
+  (ewm-get-state-module)
+  (message "Requested compositor state..."))
 
 (defun ewm-configure-output (name &rest args)
   "Configure output NAME with ARGS.

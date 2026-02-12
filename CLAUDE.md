@@ -78,6 +78,10 @@ journalctl --user -t ewm -n 100  # last 100 lines
 ```
 Filter controlled by `RUST_LOG` env var (default: `ewm=debug,smithay=warn`).
 
+### State Inspection
+Use `M-x ewm-show-state` to dump compositor state to `*ewm-state*` buffer.
+Shows surfaces, outputs, pointer location, intercepted keys, XKB layouts, etc.
+
 ## Reference Implementation
 The compositor's DRM backend, screen sharing, and D-Bus integration follow
 patterns from [niri](https://github.com/YaLTeR/niri), a Wayland compositor
