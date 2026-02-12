@@ -195,16 +195,13 @@ EVENT is an alist, which we convert to a hash table for the existing handlers."
     (let ((hash (ewm--alist-to-hash event)))
       (ewm--handle-event hash))))
 
-;;; Input state struct (defined early for use in event handlers)
+;;; Input state (plain variables instead of struct)
 
-(cl-defstruct (ewm-input-state (:constructor ewm-input-state-create))
-  "State for EWM input handling."
-  (last-focused-id 1)
-  (mff-last-window nil)
-  (compositor-focus nil))
+(defvar ewm--last-focused-id nil
+  "Last focused surface ID, for avoiding redundant focus calls.")
 
-(defvar ewm--input-state nil
-  "Current input state, or nil if not connected.")
+(defvar ewm--mff-last-window nil
+  "Last window for mouse-follows-focus, to avoid redundant warps.")
 
 (defgroup ewm nil
   "Emacs Wayland Manager."
@@ -347,24 +344,15 @@ Kills the surface buffer and focuses Emacs."
   "Handle focus EVENT from compositor.
 Updates focus tracking and selects the window displaying the surface's buffer."
   (pcase-let (((map ("id" id)) event))
-    ;; Always update tracking to match compositor's actual focus
-    (when ewm--input-state
-      (setf (ewm-input-state-last-focused-id ewm--input-state) id))
+    (setq ewm--last-focused-id id)
     ;; Select window unless minibuffer is active
     (unless (ewm--minibuffer-active-p)
       (when-let* ((info (gethash id ewm--surfaces))
                   (buf (plist-get info :buffer))
                   ((buffer-live-p buf))
                   (win (get-buffer-window buf t)))
-        ;; Suppress mouse-follows-focus since this came from a click
-        (when ewm--input-state
-          (setf (ewm-input-state-compositor-focus ewm--input-state) t))
-        (unwind-protect
-            (progn
-              (select-frame-set-input-focus (window-frame win))
-              (select-window win))
-          (when ewm--input-state
-            (setf (ewm-input-state-compositor-focus ewm--input-state) nil)))))))
+        (select-frame-set-input-focus (window-frame win))
+        (select-window win)))))
 
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.
@@ -676,11 +664,10 @@ Called when text-input-intercept is enabled and a printable key is pressed."
 
 (defun ewm--focused-surface-buffer ()
   "Return the buffer displaying the currently focused surface."
-  (when-let ((state ewm--input-state))
-    (let ((focused-id (ewm-input-state-last-focused-id state)))
-      (cl-find-if (lambda (buf)
-                    (eq (buffer-local-value 'ewm-surface-id buf) focused-id))
-                  (buffer-list)))))
+  (when ewm--last-focused-id
+    (cl-find-if (lambda (buf)
+                  (eq (buffer-local-value 'ewm-surface-id buf) ewm--last-focused-id))
+                (buffer-list))))
 
 (defun ewm-text-input--auto-enable ()
   "Enable text input mode when a client text field is activated."
@@ -924,14 +911,11 @@ keys via XGrabKey.  In EWM/Wayland, we achieve similar behavior by:
 - Char-mode: surface has focus, no interception (same as line-mode for now)
 
 Both modes keep focus on the surface so typing works immediately."
-  (when-let ((state ewm--input-state))
-    (when ewm-surface-id
-      (setq ewm-input--mode mode)
-      ;; Always focus the surface - this matches EXWM behavior where the X window
-      ;; has focus even in line-mode (EXWM intercepts via XGrabKey)
-      (setf (ewm-input-state-last-focused-id state) ewm-surface-id)
-      (ewm-focus ewm-surface-id)
-      (force-mode-line-update))))
+  (when ewm-surface-id
+    (setq ewm-input--mode mode)
+    (setq ewm--last-focused-id ewm-surface-id)
+    (ewm-focus ewm-surface-id)
+    (force-mode-line-update)))
 
 (defun ewm-input-char-mode ()
   "Switch to char-mode: keys go directly to surface.
@@ -972,32 +956,25 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
 (defun ewm-input--mouse-triggered-p ()
   "Return non-nil if current focus change was triggered by mouse."
   (or (mouse-event-p last-input-event)
-      (eq this-command 'handle-select-window)
-      (and ewm--input-state
-           (ewm-input-state-compositor-focus ewm--input-state))))
+      (eq this-command 'handle-select-window)))
 
 (defun ewm-input--on-select-window (window &optional norecord)
-  "Advice for `select-window' to implement mouse-follows-focus.
-Warps pointer to WINDOW unless NORECORD is non-nil, the window hasn't
-changed, or the focus change was triggered by a mouse event."
-  (when-let ((state ewm--input-state))
-    (when (and ewm-mouse-follows-focus
-               (not norecord)
-               (not (eq window (ewm-input-state-mff-last-window state)))
-               (not (ewm-input--mouse-triggered-p)))
-      (setf (ewm-input-state-mff-last-window state) window)
-      (ewm-input--warp-pointer-to-window window))))
+  "Advice for `select-window' to implement mouse-follows-focus."
+  (when (and ewm-mouse-follows-focus
+             (not norecord)
+             (not (eq window ewm--mff-last-window))
+             (not (ewm-input--mouse-triggered-p)))
+    (setq ewm--mff-last-window window)
+    (ewm-input--warp-pointer-to-window window)))
 
 (defun ewm-input--on-select-frame (frame &optional _norecord)
-  "Advice for `select-frame-set-input-focus' to implement mouse-follows-focus.
-Warps pointer to the selected window on FRAME unless triggered by mouse."
-  (when-let ((state ewm--input-state))
-    (when (and ewm-mouse-follows-focus
-               (not (ewm-input--mouse-triggered-p)))
-      (let ((window (frame-selected-window frame)))
-        (unless (eq window (ewm-input-state-mff-last-window state))
-          (setf (ewm-input-state-mff-last-window state) window)
-          (ewm-input--warp-pointer-to-window window))))))
+  "Advice for `select-frame-set-input-focus' to implement mouse-follows-focus."
+  (when (and ewm-mouse-follows-focus
+             (not (ewm-input--mouse-triggered-p)))
+    (let ((window (frame-selected-window frame)))
+      (unless (eq window ewm--mff-last-window)
+        (setq ewm--mff-last-window window)
+        (ewm-input--warp-pointer-to-window window)))))
 
 (defun ewm-input--on-window-selection-change (_frame)
   "Sync focus when selected window changes."
@@ -1005,19 +982,16 @@ Warps pointer to the selected window on FRAME unless triggered by mouse."
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
-  (setq ewm--input-state
-        (ewm-input-state-create
-         :last-focused-id 1
-         :mff-last-window (selected-window)))
-  ;; Focus sync on window selection change
+  (setq ewm--last-focused-id nil)
+  (setq ewm--mff-last-window (selected-window))
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  ;; Mouse-follows-focus advice
   (advice-add 'select-window :after #'ewm-input--on-select-window)
   (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
-  (setq ewm--input-state nil)
+  (setq ewm--last-focused-id nil)
+  (setq ewm--mff-last-window nil)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (advice-remove 'select-window #'ewm-input--on-select-window)
   (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
@@ -1258,10 +1232,9 @@ Adapted from exwm-layout--show."
                (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
                (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))
                (target-id (or surface-id frame-surface-id)))
-          (when (and target-id ewm--input-state)
-            (unless (eq target-id (ewm-input-state-last-focused-id ewm--input-state))
-              (setf (ewm-input-state-last-focused-id ewm--input-state) target-id)
-              (ewm-focus target-id))))))))
+          (when (and target-id (not (eq target-id ewm--last-focused-id)))
+            (setq ewm--last-focused-id target-id)
+            (ewm-focus target-id)))))))
 
 (defun ewm-layout--make-view (window active-p)
   "Create a view plist for WINDOW with ACTIVE-P flag."
@@ -1295,22 +1268,17 @@ More reliable than tracking with hooks since it checks actual state."
 (defun ewm--on-minibuffer-setup ()
   "Focus Emacs frame when minibuffer activates.
 Saves previous surface to restore on exit."
-  (when-let ((state ewm--input-state))
-    (setq ewm--pre-minibuffer-surface-id
-          (ewm-input-state-last-focused-id state))
-    ;; Focus Emacs frame so keyboard goes to minibuffer
-    (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
-      (setf (ewm-input-state-last-focused-id state) frame-surface-id)
-      (ewm-focus frame-surface-id)))
+  (setq ewm--pre-minibuffer-surface-id ewm--last-focused-id)
+  (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
+    (setq ewm--last-focused-id frame-surface-id)
+    (ewm-focus frame-surface-id))
   (redisplay t)
   (ewm-layout--refresh))
 
 (defun ewm--on-minibuffer-exit ()
   "Restore focus to previous surface when minibuffer exits."
-  (when (and ewm--pre-minibuffer-surface-id
-             ewm--input-state
-             (ewm--compositor-active-p))
-    (setf (ewm-input-state-last-focused-id ewm--input-state) ewm--pre-minibuffer-surface-id)
+  (when (and ewm--pre-minibuffer-surface-id (ewm--compositor-active-p))
+    (setq ewm--last-focused-id ewm--pre-minibuffer-surface-id)
     (ewm-focus ewm--pre-minibuffer-surface-id)
     (setq ewm--pre-minibuffer-surface-id nil))
   (redisplay t)
