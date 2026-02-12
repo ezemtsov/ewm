@@ -50,6 +50,33 @@ WAYLAND_DISPLAY=wayland-ewm foot
 
 **Kill combo**: `Super+Shift+E` exits the compositor.
 
+## NixOS Setup
+
+EWM provides a NixOS module for easy deployment. Import the module and configure it:
+
+```nix
+# configuration.nix
+{ pkgs, ... }:
+
+{
+  imports = [ /path/to/ewm/nix/service.nix ];
+
+  programs.ewm = {
+    enable = true;
+    emacsPackage = pkgs.emacs30-pgtk;
+    initDirectory = /etc/nixos/dotfiles/emacs;
+  };
+}
+```
+
+The module registers an `ewm` session with your display manager (e.g., ly, gdm).
+Select "EWM" at login to start the compositor.
+
+Module options:
+- `emacsPackage`: Your Emacs package (default: `pkgs.emacs`)
+- `initDirectory`: Path to your Emacs config directory
+- `screencast.enable`: Enable screen sharing via PipeWire (default: true)
+
 ## Emacs Setup
 
 Load `ewm.el` in your Emacs:
