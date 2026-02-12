@@ -3,7 +3,7 @@
 use emacs::{defun, Env, IntoLisp, Result, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::collections::VecDeque;
 use std::thread::{self, JoinHandle};
 
@@ -46,6 +46,18 @@ pub fn take_pending_frame_output() -> Option<String> {
 /// Get pending frame outputs for state dump.
 pub fn peek_pending_frame_outputs() -> Vec<String> {
     pending_frame_outputs().lock().unwrap().clone()
+}
+
+/// Intercepted keys (synchronous to avoid race during startup)
+static INTERCEPTED_KEYS: OnceLock<RwLock<Vec<InterceptedKey>>> = OnceLock::new();
+
+fn intercepted_keys() -> &'static RwLock<Vec<InterceptedKey>> {
+    INTERCEPTED_KEYS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Get intercepted keys (called by compositor during input handling).
+pub fn get_intercepted_keys() -> Vec<InterceptedKey> {
+    intercepted_keys().read().unwrap().clone()
 }
 
 /// Update focused surface ID (called by compositor)
@@ -104,7 +116,6 @@ pub enum ModuleCommand {
         refresh: Option<i32>,
         enabled: Option<bool>,
     },
-    InterceptKeys { keys: Vec<InterceptedKey> },
     ImCommit { text: String },
     TextInputIntercept { enabled: bool },
     ConfigureXkb { layouts: String, options: Option<String> },
@@ -727,7 +738,8 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         });
     }
 
-    push_command(ModuleCommand::InterceptKeys { keys: parsed_keys });
+    *intercepted_keys().write().unwrap() = parsed_keys;
+    tracing::info!("Intercepted keys set ({} keys)", intercepted_keys().read().unwrap().len());
     Ok(())
 }
 

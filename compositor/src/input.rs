@@ -57,7 +57,7 @@ pub fn handle_keyboard_event(
     }
 
     // Clone values needed in the filter closure
-    let intercepted_keys = state.intercepted_keys.clone();
+    let intercepted_keys = crate::module::get_intercepted_keys();
     let focus_on_emacs = state.is_focus_on_emacs();
     let text_input_intercept = state.text_input_intercept;
 

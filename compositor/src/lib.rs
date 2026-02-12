@@ -292,7 +292,6 @@ pub struct Ewm {
     pub pointer_location: (f64, f64),
     pub focused_surface_id: u32,
     pub keyboard_focus: Option<WlSurface>,
-    pub intercepted_keys: Vec<InterceptedKey>,
 
     // Emacs client tracking - used to identify which surfaces belong to Emacs
     // vs external applications (for key interception)
@@ -407,7 +406,6 @@ impl Ewm {
             pointer_location: (0.0, 0.0),
             focused_surface_id: 0,
             keyboard_focus: None,
-            intercepted_keys: Vec::new(),
             emacs_pid: None,
             emacs_surfaces: std::collections::HashSet::new(),
             pending_screenshot: None,
@@ -1566,10 +1564,6 @@ impl State {
                     warn!("Output not found: {}", name);
                 }
             }
-            ModuleCommand::InterceptKeys { keys } => {
-                self.ewm.intercepted_keys = keys;
-                info!("Intercepted keys set: {:?}", self.ewm.intercepted_keys);
-            }
             ModuleCommand::ImCommit { text } => {
                 if let Some(ref relay) = self.ewm.im_relay {
                     relay.commit_string(text);
@@ -1661,7 +1655,7 @@ impl State {
                     "id_windows": id_window_keys,
                     "outputs": self.ewm.outputs,
                     "pointer_location": self.ewm.pointer_location,
-                    "intercepted_keys": self.ewm.intercepted_keys,
+                    "intercepted_keys": module::get_intercepted_keys(),
                     "emacs_pid": self.ewm.emacs_pid,
                     "text_input_intercept": self.ewm.text_input_intercept,
                     "text_input_active": self.ewm.text_input_active,
