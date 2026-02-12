@@ -177,23 +177,10 @@ Called by SIGUSR1 handler when compositor queues events."
     (while-let ((event (ewm-pop-event)))
       (ewm--handle-module-event event))))
 
-(defun ewm--alist-to-hash (alist)
-  "Convert ALIST to a hash table for compatibility with existing handlers.
-The handlers expect hash tables with string keys."
-  (let ((hash (make-hash-table :test 'equal)))
-    (dolist (pair alist)
-      (let ((key (car pair)))
-        ;; Key might be a symbol or string depending on source
-        (puthash (if (symbolp key) (symbol-name key) key)
-                 (cdr pair) hash)))
-    hash))
-
 (defun ewm--handle-module-event (event)
-  "Handle EVENT from the module.
-EVENT is an alist, which we convert to a hash table for the existing handlers."
+  "Handle EVENT from the module (an alist)."
   (when event
-    (let ((hash (ewm--alist-to-hash event)))
-      (ewm--handle-event hash))))
+    (ewm--handle-event event)))
 
 ;;; Input state (plain variables instead of struct)
 
@@ -259,8 +246,8 @@ Example:
 ;;; Protocol
 
 (defun ewm--handle-event (event)
-  "Handle EVENT from compositor."
-  (let ((type (gethash "event" event)))
+  "Handle EVENT from compositor (an alist with string keys)."
+  (let ((type (map-elt event "event")))
     (pcase type
       ("new" (ewm--handle-new-surface event))
       ("close" (ewm--handle-close-surface event))
