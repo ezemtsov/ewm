@@ -42,12 +42,6 @@
 (declare-function ewm-assign-output-module "ewm-core")
 (declare-function ewm-prepare-frame-module "ewm-core")
 (declare-function ewm-configure-output-module "ewm-core")
-(declare-function ewm-intercept-keys-module "ewm-core")
-(declare-function ewm-im-commit-module "ewm-core")
-(declare-function ewm-text-input-intercept-module "ewm-core")
-(declare-function ewm-configure-xkb-module "ewm-core")
-(declare-function ewm-switch-layout-module "ewm-core")
-(declare-function ewm-get-layouts-module "ewm-core")
 (declare-function ewm-get-focused-id "ewm-core")
 (declare-function ewm-get-output-offset "ewm-core")
 
@@ -130,7 +124,6 @@ When non-nil, warps the pointer to the center of the focused window."
 
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to buffer.")
-
 
 (defvar ewm--pending-frame-outputs nil
   "Alist of (output-name . frame) pairs waiting for surface assignment.
@@ -306,6 +299,18 @@ Similar to `exwm-workspace-rename-buffer'."
       (setq name (format "*%s<%d>*" basename (cl-incf counter))))
     (rename-buffer name)))
 
+(defun ewm--handle-outputs-complete ()
+  "Handle outputs_complete event.
+Triggered after compositor sends all output_detected events.
+Applies user output config and enforces frame-output parity."
+  (ewm--apply-output-config)
+  (ewm--enforce-frame-output-parity))
+
+(defun ewm--handle-ready ()
+  "Handle ready event from compositor.
+Signals that the compositor is fully initialized."
+  (setq ewm--compositor-ready t))
+
 ;;; Commands
 
 (defun ewm-layout (id x y w h)
@@ -385,134 +390,7 @@ ARGS is a plist with optional keys:
                               :x x
                               :y y)))))
 
-(defun ewm--handle-outputs-complete ()
-  "Handle outputs_complete event.
-Triggered after compositor sends all output_detected events.
-Applies user output config and enforces frame-output parity."
-  (ewm--apply-output-config)
-  (ewm--enforce-frame-output-parity))
-
-(defun ewm--handle-ready ()
-  "Handle ready event from compositor.
-Signals that the compositor is fully initialized."
-  (setq ewm--compositor-ready t))
-
-;;; Text Input Support (EXWM-XIM equivalent)
-
-(defun ewm--handle-text-input-activated ()
-  "Handle text-input-activated event from compositor.
-Called when a client's text field gains focus."
-  (run-hooks 'ewm-text-input-activated-hook))
-
-(defun ewm--handle-text-input-deactivated ()
-  "Handle text-input-deactivated event from compositor.
-Called when a client's text field loses focus."
-  (run-hooks 'ewm-text-input-deactivated-hook))
-
-(defvar ewm-text-input-activated-hook nil
-  "Hook run when a client text field becomes active.
-Use this to enable special input handling modes.")
-
-(defvar ewm-text-input-deactivated-hook nil
-  "Hook run when a client text field becomes inactive.")
-
-(defun ewm-im-commit (text)
-  "Commit TEXT to the currently focused client text field."
-  (ewm-im-commit-module text))
-
-(defvar ewm-text-input-method nil
-  "Input method to use for text input translation.
-When nil, uses `current-input-method' or `default-input-method'.")
-
-(defun ewm-text-input--translate-char (char &optional input-method)
-  "Translate CHAR through INPUT-METHOD if provided.
-If INPUT-METHOD is nil, uses `ewm-text-input-method' or `current-input-method'.
-For quail-based input methods, looks up the translation directly."
-  (let ((im (or input-method
-                ewm-text-input-method
-                current-input-method)))
-    (if (and im (fboundp 'quail-lookup-key))
-        (let ((current-input-method im))
-          (activate-input-method im)
-          (let ((result (quail-lookup-key (string char))))
-            (cond
-             ((and (consp result) (integerp (car result)))
-              ;; Quail returns (charcode) - convert to string
-              (string (car result)))
-             ((stringp result) result)
-             (t (string char)))))
-      (string char))))
-
-(defun ewm-text-input--self-insert ()
-  "Handle self-insert when text input mode is active.
-Sends the typed character to the client via commit_string,
-applying input method translation if active."
-  (interactive)
-  (let* ((char last-command-event)
-         (translated (ewm-text-input--translate-char char)))
-    (when (stringp translated)
-      (ewm-im-commit translated))))
-
-(defvar ewm-text-input-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [remap self-insert-command] #'ewm-text-input--self-insert)
-    map)
-  "Keymap for `ewm-text-input-mode'.")
-
-(define-minor-mode ewm-text-input-mode
-  "Minor mode for typing in client text fields.
-When enabled, regular keystrokes are sent to the focused client
-text field via input method commit_string, while Emacs commands
-like C-x and M-x continue to work normally.
-
-Input method translations (e.g., russian-computer) are applied."
-  :lighter " TxtIn"
-  :keymap ewm-text-input-mode-map)
-
-(defun ewm-text-input-auto-mode-enable ()
-  "Enable automatic text input mode switching.
-Text input mode will be enabled/disabled automatically when
-client text fields gain/lose focus."
-  (interactive)
-  (add-hook 'ewm-text-input-activated-hook #'ewm-text-input--auto-enable)
-  (add-hook 'ewm-text-input-deactivated-hook #'ewm-text-input--auto-disable))
-
-(defun ewm-text-input-auto-mode-disable ()
-  "Disable automatic text input mode switching."
-  (interactive)
-  (remove-hook 'ewm-text-input-activated-hook #'ewm-text-input--auto-enable)
-  (remove-hook 'ewm-text-input-deactivated-hook #'ewm-text-input--auto-disable)
-  (ewm-text-input-mode -1))
-
-(defun ewm-text-input-intercept (enabled)
-  "Enable or disable text input key interception."
-  (ewm-text-input-intercept-module (if (eq enabled :false) nil enabled)))
-
-(defun ewm--handle-key (event)
-  "Handle key event from compositor.
-Called when text-input-intercept is enabled and a printable key is pressed."
-  (pcase-let (((map ("utf8" utf8)) event))
-    (when utf8
-      ;; Get input method from the focused surface buffer
-      (let* ((surface-buf (ewm--focused-surface-buffer))
-             (im (when surface-buf
-                   (buffer-local-value 'current-input-method surface-buf)))
-             (translated (ewm-text-input--translate-char (string-to-char utf8) im)))
-        (ewm-im-commit translated)))))
-
-(defun ewm--focused-surface-buffer ()
-  "Return the buffer displaying the currently focused surface."
-  (gethash (ewm-get-focused-id) ewm--surfaces))
-
-(defun ewm-text-input--auto-enable ()
-  "Enable text input mode when a client text field is activated."
-  (ewm-text-input-intercept t)
-  (ewm-text-input-mode 1))
-
-(defun ewm-text-input--auto-disable ()
-  "Disable text input mode when a client text field is deactivated."
-  (ewm-text-input-intercept :false)
-  (ewm-text-input-mode -1))
+;;; Frame management
 
 (defun ewm--frame-for-output (output-name)
   "Return the frame assigned to OUTPUT-NAME, or nil."
@@ -585,8 +463,7 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
   (when (bound-and-true-p tool-bar-mode)
     (tool-bar-mode -1))
   (when (bound-and-true-p tab-bar-mode)
-    (tab-bar-mode -1))
-)
+    (tab-bar-mode -1)))
 
 ;;;###autoload
 (defun ewm-start-module ()
@@ -648,402 +525,6 @@ The compositor runs as a thread within the Emacs process."
     (setq ewm--compositor-ready nil)
     (ewm-mode -1)))
 
-;;; Input handling
-;;
-;; EWM automatically intercepts keys based on two settings:
-;;
-;; 1. `ewm-intercept-prefixes' - Keys that start command sequences (C-x, M-x)
-;; 2. `ewm-intercept-modifiers' - Modifiers whose bindings are scanned from
-;;    Emacs keymaps (default: super)
-;;
-;; Unlike EXWM, you don't need a separate `exwm-input-global-keys'.
-;; Just use normal `global-set-key' or use-package :bind, and EWM
-;; will automatically intercept keys with the configured modifiers.
-;;
-;; Example:
-;;   (global-set-key (kbd "s-d") 'consult-buffer)
-;;   (global-set-key (kbd "s-<left>") 'windmove-left)
-;;
-;; These bindings work both in EWM and regular Emacs sessions.
-
-(defgroup ewm-input nil
-  "EWM input handling."
-  :group 'ewm)
-
-;;; Keyboard layout integration
-
-(defcustom ewm-xkb-layouts '("us")
-  "List of XKB layout names to configure in the compositor.
-These layouts will be available for switching via `set-input-method'.
-Example: \\='(\"us\" \"ru\" \"no\")"
-  :type '(repeat string)
-  :group 'ewm-input)
-
-(defcustom ewm-xkb-options nil
-  "XKB options string for the compositor.
-Example: \"ctrl:nocaps,grp:alt_shift_toggle\""
-  :type '(choice (const nil) string)
-  :group 'ewm-input)
-
-(defvar-local ewm-input--mode 'line-mode
-  "Current input mode: `line-mode' or `char-mode'.")
-
-(defcustom ewm-intercept-prefixes
-  '(?\C-x ?\C-u ?\C-h ?\M-x ?\M-` ?\M-& ?\M-:)
-  "Prefix keys that always go to Emacs.
-These are keys that start command sequences.
-Can be character literals (e.g., ?\\C-x) or strings (e.g., \"C-x\").
-Adapted from `exwm-input-prefix-keys'."
-  :type '(repeat (choice character string))
-  :group 'ewm-input)
-
-(defcustom ewm-intercept-modifiers
-  '(super)
-  "Modifiers whose key bindings are auto-detected from Emacs keymaps.
-EWM scans `global-map' for keys with these modifiers and intercepts them.
-This means you can use normal `global-set-key' for bindings like s-d, s-left.
-
-Valid values: control, meta, super, hyper, shift, alt.
-Default is (super) to intercept all Super-key bindings."
-  :type '(repeat symbol)
-  :group 'ewm-input)
-
-(defun ewm-input--update-mode (mode)
-  "Update input mode to MODE for current buffer.
-MODE is either `line-mode' or `char-mode'.
-
-In EXWM, line-mode still gives the X window keyboard focus but intercepts
-keys via XGrabKey.  In EWM/Wayland, we achieve similar behavior by:
-- Line-mode: surface has focus, compositor intercepts prefix keys
-- Char-mode: surface has focus, no interception (same as line-mode for now)
-
-Both modes keep focus on the surface so typing works immediately."
-  (when ewm-surface-id
-    (setq ewm-input--mode mode)
-    (ewm-focus ewm-surface-id)
-    (force-mode-line-update)))
-
-(defun ewm-input-char-mode ()
-  "Switch to char-mode: keys go directly to surface.
-Press a prefix key to return to line-mode."
-  (interactive)
-  (ewm-input--update-mode 'char-mode))
-
-(defun ewm-input-line-mode ()
-  "Switch to line-mode: keys go to Emacs."
-  (interactive)
-  (ewm-input--update-mode 'line-mode))
-
-(defun ewm-input-toggle-mode ()
-  "Toggle between line-mode and char-mode."
-  (interactive)
-  (ewm-input--update-mode
-   (if (eq ewm-input--mode 'char-mode) 'line-mode 'char-mode)))
-
-(defun ewm-input--warp-pointer-to-window (window)
-  "Warp pointer to center of WINDOW.
-Does nothing if pointer is already inside the window or if it's a minibuffer."
-  (unless (minibufferp (window-buffer window))
-    (let* ((frame (window-frame window))
-           (output (frame-parameter frame 'ewm-output))
-           (output-offset (ewm--get-output-offset output))
-           (edges (window-inside-pixel-edges window))
-           (x (+ (car output-offset) (/ (+ (nth 0 edges) (nth 2 edges)) 2)))
-           (y (+ (cdr output-offset) (/ (+ (nth 1 edges) (nth 3 edges)) 2))))
-      (ewm-warp-pointer (float x) (float y)))))
-
-(defun ewm-input--mouse-triggered-p ()
-  "Return non-nil if current focus change was triggered by mouse."
-  (or (mouse-event-p last-input-event)
-      (eq this-command 'handle-select-window)))
-
-(defun ewm-input--on-select-window (window &optional norecord)
-  "Advice for `select-window' to implement mouse-follows-focus."
-  (when (and ewm-mouse-follows-focus
-             (not norecord)
-             (not (eq window ewm--mff-last-window))
-             (not (ewm-input--mouse-triggered-p)))
-    (setq ewm--mff-last-window window)
-    (ewm-input--warp-pointer-to-window window)))
-
-(defun ewm-input--on-select-frame (frame &optional _norecord)
-  "Advice for `select-frame-set-input-focus' to implement mouse-follows-focus."
-  (when (and ewm-mouse-follows-focus
-             (not (ewm-input--mouse-triggered-p)))
-    (let ((window (frame-selected-window frame)))
-      (unless (eq window ewm--mff-last-window)
-        (setq ewm--mff-last-window window)
-        (ewm-input--warp-pointer-to-window window)))))
-
-(defun ewm-input--on-window-selection-change (_frame)
-  "Sync focus when selected window changes."
-  (ewm-layout--refresh))
-
-(defun ewm-input--enable ()
-  "Enable EWM input handling."
-  (setq ewm--mff-last-window (selected-window))
-  (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  (advice-add 'select-window :after #'ewm-input--on-select-window)
-  (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
-
-(defun ewm-input--disable ()
-  "Disable EWM input handling."
-  (setq ewm--mff-last-window nil)
-  (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  (advice-remove 'select-window #'ewm-input--on-select-window)
-  (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
-
-(defun ewm--event-to-intercept-spec (event)
-  "Convert EVENT to an intercept specification for the compositor.
-Returns a plist with :key (integer or string) and modifier flags."
-  (let* ((mods (event-modifiers event))
-         (base (event-basic-type event))
-         ;; base is either an integer (ASCII) or a symbol (special key)
-         (key-value (cond
-                     ((integerp base) base)
-                     ((symbolp base) (symbol-name base))
-                     (t nil))))
-    (when key-value
-      `(:key ,key-value
-        :ctrl ,(if (memq 'control mods) t :false)
-        :alt ,(if (memq 'meta mods) t :false)
-        :shift ,(if (memq 'shift mods) t :false)
-        :super ,(if (memq 'super mods) t :false)))))
-
-(defun ewm--scan-keymap-for-modifiers (keymap modifiers)
-  "Scan KEYMAP for keys that have any of MODIFIERS.
-Returns a list of intercept specs."
-  (let ((specs '()))
-    (map-keymap
-     (lambda (event binding)
-       (when (and binding
-                  (not (eq binding 'undefined))
-                  ;; Check if event has any of the target modifiers
-                  (let ((event-mods (event-modifiers event)))
-                    (cl-intersection event-mods modifiers)))
-         (when-let ((spec (ewm--event-to-intercept-spec event)))
-           (push spec specs))))
-     keymap)
-    specs))
-
-(defun ewm--send-intercept-keys ()
-  "Send intercepted keys configuration to compositor.
-Scans Emacs keymaps for keys matching `ewm-intercept-modifiers',
-and adds `ewm-intercept-prefixes'.
-This allows normal `global-set-key' bindings to work with EWM."
-  (let ((specs '())
-        (seen (make-hash-table :test 'equal)))
-    ;; Add prefix keys first
-    (dolist (key ewm-intercept-prefixes)
-      ;; Handle both character literals (integers) and strings
-      (let ((event (cond
-                    ((integerp key) key)
-                    ((stringp key) (aref (key-parse key) 0))
-                    (t nil))))
-        (when event
-          (when-let ((spec (ewm--event-to-intercept-spec event)))
-            (let ((spec-key (format "%S" spec)))
-              (unless (gethash spec-key seen)
-                (puthash spec-key t seen)
-                (push spec specs)))))))
-    ;; Scan global-map for keys with configured modifiers
-    (when ewm-intercept-modifiers
-      (dolist (spec (ewm--scan-keymap-for-modifiers
-                     (current-global-map) ewm-intercept-modifiers))
-        (let ((spec-key (format "%S" spec)))
-          (unless (gethash spec-key seen)
-            (puthash spec-key t seen)
-            (push spec specs)))))
-    ;; Send to compositor
-    (ewm-intercept-keys-module (vconcat (nreverse specs)))))
-
-;;; Surface mode
-
-(defvar-local ewm-surface-id nil
-  "Surface ID for this buffer.")
-
-(defvar-local ewm-surface-app nil
-  "Application name (app_id) for this buffer.
-Similar to `exwm-class-name'.")
-
-(defvar-local ewm-surface-title nil
-  "Window title for this buffer.
-Similar to `exwm-title'.")
-
-(defun ewm--kill-buffer-query-function ()
-  "Run in `kill-buffer-query-functions' for surface buffers.
-Sends close request to compositor and prevents immediate buffer kill."
-  (if (not (and ewm-surface-id ewm--module-mode))
-      t  ; Not a surface buffer or compositor not running
-    ;; Request graceful close via xdg_toplevel.close
-    (ewm-close ewm-surface-id)
-    nil))
-
-(defun ewm-surface-mode-line-mode ()
-  "Return mode-line indicator for current input mode."
-  (if (eq ewm-input--mode 'char-mode)
-      "[C]"
-    "[L]"))
-
-(define-derived-mode ewm-surface-mode fundamental-mode "EWM"
-  "Major mode for EWM surface buffers.
-\\<ewm-surface-mode-map>
-In line-mode (default), keys go to Emacs.
-In char-mode, keys go directly to the surface.
-
-\\[ewm-input-char-mode] - switch to char-mode
-\\[ewm-input-line-mode] - switch to line-mode
-\\[ewm-input-toggle-mode] - toggle input mode"
-  (setq buffer-read-only t)
-  (setq-local cursor-type nil)
-  ;; Set up mode line to show input mode
-  (setq mode-name '("EWM" (:eval (ewm-surface-mode-line-mode))))
-  ;; Kill buffer -> close window (like EXWM)
-  (add-hook 'kill-buffer-query-functions
-            #'ewm--kill-buffer-query-function nil t))
-
-;; Keybindings for surface mode (adapted from exwm-input.el)
-(define-key ewm-surface-mode-map (kbd "C-c C-k") #'ewm-input-char-mode)
-(define-key ewm-surface-mode-map (kbd "C-c C-t") #'ewm-input-toggle-mode)
-
-;;; Layout (adapted from EXWM's exwm-layout.el and exwm-core.el)
-
-;; Compatibility wrapper for window-inside-absolute-pixel-edges
-;; Fixes tab-line handling for Emacs < 31 (from exwm-core.el)
-(defalias 'ewm--window-inside-absolute-pixel-edges
-  (if (< emacs-major-version 31)
-      (lambda (&optional window)
-        "Return absolute pixel edges of WINDOW's text area.
-This version correctly handles tab-lines on Emacs prior to v31."
-        (let* ((window (window-normalize-window window t))
-               (edges (window-inside-absolute-pixel-edges window))
-               (tab-line-height (window-tab-line-height window)))
-          (cl-incf (elt edges 1) tab-line-height)
-          (cl-incf (elt edges 3) tab-line-height)
-          edges))
-    #'window-inside-absolute-pixel-edges)
-  "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
-
-(defun ewm--frame-y-offset (&optional _frame)
-  "Return Y offset for CSD (always 0 with no decorations).
-Internal bars are already reflected in `window-inside-absolute-pixel-edges'."
-  0)
-
-(defun ewm-layout--refresh ()
-  "Refresh layout for all surface buffers and sync focus."
-  (when ewm--module-mode
-    ;; Force redisplay to ensure window sizes are current
-    (redisplay t)
-    ;; Build a hash table: surface-id -> list of (window . active-p)
-    (let ((surface-windows (make-hash-table :test 'eql))
-          (sel-window (selected-window))
-          (sel-frame (selected-frame)))
-      ;; Collect all windows showing each surface
-      (dolist (frame (frame-list))
-        (dolist (window (window-list frame 'no-minibuf))
-          (let* ((buf (window-buffer window))
-                 (id (buffer-local-value 'ewm-surface-id buf)))
-            (when id
-              (let ((active-p (eq window sel-window))
-                    (existing (gethash id surface-windows)))
-                (puthash id (cons (cons window active-p) existing) surface-windows))))))
-      ;; Send views or hide for each surface
-      (maphash
-       (lambda (id _info)
-         (let ((windows (gethash id surface-windows)))
-           (if windows
-               ;; Surface is visible in one or more windows - send views
-               (let ((views (mapcar
-                             (lambda (win-pair)
-                               (let* ((window (car win-pair))
-                                      (active-p (cdr win-pair)))
-                                 (ewm-layout--make-view window active-p)))
-                             windows)))
-                 (ewm-views id (vconcat views)))
-             ;; Surface not visible - hide it
-             (ewm-hide id))))
-       ewm--surfaces)
-      ;; Sync focus (unless minibuffer is active)
-      (unless (ewm--minibuffer-active-p)
-        (let* ((sel-buf (window-buffer sel-window))
-               (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
-               (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))
-               (target-id (or surface-id frame-surface-id)))
-          (when (and target-id (not (eq target-id (ewm-get-focused-id))))
-            (ewm-focus target-id)))))))
-
-(defun ewm-layout--make-view (window active-p)
-  "Create a view plist for WINDOW with ACTIVE-P flag."
-  (let* ((frame (window-frame window))
-         (output-offset (ewm--get-output-offset (frame-parameter frame 'ewm-output)))
-         (edges (ewm--window-inside-absolute-pixel-edges window))
-         (x (pop edges))
-         (y (pop edges))
-         (width (- (pop edges) x))
-         (height (- (pop edges) y))
-         (csd-offset (ewm--frame-y-offset frame))
-         (final-x (+ x (car output-offset)))
-         (final-y (+ y csd-offset (cdr output-offset))))
-    `(:x ,final-x :y ,final-y :w ,width :h ,height :active ,(if active-p t :false))))
-
-(defun ewm--window-config-change ()
-  "Hook called when window configuration changes."
-  (ewm-layout--refresh))
-
-(defvar ewm--pre-minibuffer-surface-id nil
-  "Surface ID that was focused before minibuffer opened.")
-
-(defun ewm--minibuffer-active-p ()
-  "Return non-nil if minibuffer is currently active.
-More reliable than tracking with hooks since it checks actual state."
-  (or (active-minibuffer-window)
-      (> (minibuffer-depth) 0)
-      ;; Also check if current buffer is a minibuffer
-      (minibufferp)))
-
-(defun ewm--on-minibuffer-setup ()
-  "Focus Emacs frame when minibuffer activates.
-Saves previous surface to restore on exit."
-  (setq ewm--pre-minibuffer-surface-id (ewm-get-focused-id))
-  (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
-    (ewm-focus frame-surface-id))
-  (redisplay t)
-  (ewm-layout--refresh))
-
-(defun ewm--on-minibuffer-exit ()
-  "Restore focus to previous surface when minibuffer exits."
-  (when (and ewm--pre-minibuffer-surface-id (ewm--compositor-active-p))
-    (ewm-focus ewm--pre-minibuffer-surface-id)
-    (setq ewm--pre-minibuffer-surface-id nil))
-  (redisplay t)
-  (ewm-layout--refresh))
-
-(defun ewm--on-window-size-change (_frame)
-  "Refresh layout when window sizes change.
-Catches minibuffer height changes that window-configuration-change misses."
-  (ewm-layout--refresh))
-
-(defun ewm--enable-layout-sync ()
-  "Enable automatic layout sync."
-  (add-hook 'window-configuration-change-hook #'ewm--window-config-change)
-  (add-hook 'window-size-change-functions #'ewm--on-window-size-change)
-  (add-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
-  (add-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
-
-(defun ewm--disable-layout-sync ()
-  "Disable automatic layout sync."
-  (remove-hook 'window-configuration-change-hook #'ewm--window-config-change)
-  (remove-hook 'window-size-change-functions #'ewm--on-window-size-change)
-  (remove-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
-  (remove-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
-
-;;; Keyboard layout sync
-
-(defun ewm--send-xkb-config ()
-  "Send XKB configuration to compositor."
-  (when ewm--module-mode
-    (ewm-configure-xkb-module (string-join ewm-xkb-layouts ",") ewm-xkb-options)))
-
 ;;; Global minor mode
 
 (defun ewm--mode-enable ()
@@ -1082,6 +563,11 @@ Catches minibuffer height changes that window-configuration-change misses."
       (ewm--mode-enable)
     (ewm--mode-disable)))
 
+;; Load submodules
+(require 'ewm-surface)
+(require 'ewm-layout)
+(require 'ewm-input)
+(require 'ewm-text-input)
 (require 'ewm-transient)
 
 (provide 'ewm)
