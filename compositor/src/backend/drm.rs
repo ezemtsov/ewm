@@ -1720,7 +1720,8 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
 
     // Register libinput with event loop (using shared input handlers)
     let libinput_backend = LibinputInputBackend::new(libinput);
-    event_loop
+    info!("Registering libinput backend with event loop...");
+    let _libinput_token = event_loop
         .handle()
         .insert_source(libinput_backend, move |mut event, _, state| {
             match event {
@@ -1939,7 +1940,7 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
 
     info!("EWM DRM backend started (waiting for session activation)");
     info!("VT switching: Ctrl+Alt+F1-F7");
-    info!("Kill combo: Super+Ctrl+Backspace");
+    info!("Kill combo: Super+Shift+E");
 
     // If session is already active, initialize DRM immediately
     if session_active {

@@ -32,7 +32,7 @@ pub enum KeyboardAction {
 /// Process a keyboard key event
 ///
 /// This handles:
-/// - Kill combo detection (Super+Ctrl+Backspace)
+/// - Kill combo detection (Super+Shift+E)
 /// - Prefix key interception (redirect to Emacs)
 /// - Normal key forwarding to focused surface
 ///
@@ -77,16 +77,16 @@ pub fn handle_keyboard_event(
                 return FilterResult::Intercept((4, vt as u32, None)); // 4 = VT switch
             }
 
-            // Check for kill combo
-            if is_kill_combo(keycode, mods.shift, mods.logo) {
-                return FilterResult::Intercept((2, 0, None)); // 2 = kill
-            }
-
             // Get the raw latin keysym for this key (layout-independent)
             // This ensures intercepted keys work regardless of current XKB layout
             let raw_latin = handle.raw_latin_sym_or_raw_current_sym();
             let keysym = raw_latin.unwrap_or(modified);
             let keysym_raw = keysym.raw();
+
+            // Check for kill combo (Super+Shift+E)
+            if is_kill_combo(keysym_raw, mods.shift, mods.logo) {
+                return FilterResult::Intercept((2, 0, None)); // 2 = kill
+            }
             let is_intercepted = intercepted_keys
                 .iter()
                 .any(|ik| ik.matches(keysym_raw, mods));

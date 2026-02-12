@@ -137,9 +137,10 @@ impl Default for OutputState {
 }
 
 /// Kill combo: Super+Shift+E
-/// Returns true if this key event is the kill combo
-pub fn is_kill_combo(keycode: u32, shift: bool, logo: bool) -> bool {
-    keycode == 18 && shift && logo // evdev keycode for 'e'
+/// Returns true if this key event is the kill combo (keysym-based)
+pub fn is_kill_combo(keysym: u32, shift: bool, logo: bool) -> bool {
+    // 'e' = 0x65, 'E' = 0x45 (standard X11/XKB keysyms)
+    (keysym == 0x65 || keysym == 0x45) && shift && logo
 }
 
 /// Cached surface info for change detection
