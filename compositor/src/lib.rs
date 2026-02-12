@@ -1405,13 +1405,16 @@ impl State {
                 }
             }
             ModuleCommand::Hide { id } => {
-                if let Some(window) = self.ewm.id_windows.get(&id) {
-                    self.ewm
-                        .space
-                        .map_element(window.clone(), (-10000, -10000), false);
-                    self.ewm.surface_views.remove(&id);
-                    self.ewm.queue_redraw_all();
-                    info!("Hide surface {}", id);
+                // Only hide if surface has views (skip if already hidden)
+                if self.ewm.surface_views.contains_key(&id) {
+                    if let Some(window) = self.ewm.id_windows.get(&id) {
+                        self.ewm
+                            .space
+                            .map_element(window.clone(), (-10000, -10000), false);
+                        self.ewm.surface_views.remove(&id);
+                        self.ewm.queue_redraw_all();
+                        info!("Hide surface {}", id);
+                    }
                 }
             }
             ModuleCommand::Close { id } => {
@@ -1423,7 +1426,8 @@ impl State {
                 }
             }
             ModuleCommand::Focus { id } => {
-                if self.ewm.id_windows.contains_key(&id) {
+                // Skip if already focused
+                if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
                     self.ewm.focus_surface(id, false);
                     info!("Focus surface {}", id);
                 }
@@ -1560,8 +1564,10 @@ impl State {
                 }
             }
             ModuleCommand::TextInputIntercept { enabled } => {
-                info!("Text input intercept: {}", enabled);
-                self.ewm.text_input_intercept = enabled;
+                if self.ewm.text_input_intercept != enabled {
+                    info!("Text input intercept: {}", enabled);
+                    self.ewm.text_input_intercept = enabled;
+                }
             }
             ModuleCommand::ConfigureXkb { layouts, options } => {
                 let layout_names: Vec<String> = layouts
