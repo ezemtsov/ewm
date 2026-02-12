@@ -215,21 +215,21 @@ impl Dispatch<ZwpInputMethodV2, ()> for RelayState {
         use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_v2::Event;
         match event {
             Event::Activate => {
-                tracing::info!("IM relay: ACTIVATE - text field focused");
+                tracing::trace!("IM relay: ACTIVATE - text field focused");
                 state.active = true;
                 let _ = state.event_tx.send(ImEvent::Activated);
             }
             Event::Deactivate => {
-                tracing::info!("IM relay: DEACTIVATE - text field unfocused");
+                tracing::trace!("IM relay: DEACTIVATE - text field unfocused");
                 state.active = false;
                 let _ = state.event_tx.send(ImEvent::Deactivated);
             }
             Event::Done => {
                 state.serial = state.serial.wrapping_add(1);
-                tracing::debug!("IM relay: done, serial={}", state.serial);
+                tracing::trace!("IM relay: done, serial={}", state.serial);
             }
             Event::SurroundingText { text, cursor, anchor } => {
-                tracing::debug!(
+                tracing::trace!(
                     "IM relay: surrounding_text cursor={} anchor={} text={:?}",
                     cursor,
                     anchor,
@@ -237,13 +237,13 @@ impl Dispatch<ZwpInputMethodV2, ()> for RelayState {
                 );
             }
             Event::ContentType { hint, purpose } => {
-                tracing::debug!("IM relay: content_type hint={:?} purpose={:?}", hint, purpose);
+                tracing::trace!("IM relay: content_type hint={:?} purpose={:?}", hint, purpose);
             }
             Event::TextChangeCause { cause } => {
-                tracing::debug!("IM relay: text_change_cause={:?}", cause);
+                tracing::trace!("IM relay: text_change_cause={:?}", cause);
             }
             Event::Unavailable => tracing::warn!("IM relay: unavailable"),
-            _ => tracing::debug!("IM relay: other event"),
+            _ => tracing::trace!("IM relay: other event"),
         }
     }
 }
