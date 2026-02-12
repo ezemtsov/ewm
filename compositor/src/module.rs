@@ -2,8 +2,9 @@
 
 use emacs::{defun, Env, IntoLisp, Result, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::collections::VecDeque;
 use std::thread::{self, JoinHandle};
 
 use smithay::reexports::calloop::LoopSignal;
@@ -121,6 +122,16 @@ pub fn take_pending_focus() -> Option<u32> {
     focus_id
 }
 
+/// Peek at pending commands without draining (for state dump)
+pub fn peek_commands() -> Vec<String> {
+    command_queue()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|cmd| format!("{:?}", cmd))
+        .collect()
+}
+
 /// Push a command to the queue and wake the compositor.
 fn push_command(cmd: ModuleCommand) {
     command_queue().lock().unwrap().push(cmd);
@@ -133,8 +144,65 @@ fn push_command(cmd: ModuleCommand) {
 /// Flag to request compositor shutdown from Emacs thread
 pub static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Debug mode flag - when enabled, more verbose logging is output
+pub static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
+
 /// Event loop signal for waking the compositor from Emacs thread
 pub static LOOP_SIGNAL: OnceLock<LoopSignal> = OnceLock::new();
+
+// ============================================================================
+// Focus History (for debugging focus issues)
+// ============================================================================
+
+/// Maximum focus history entries
+const FOCUS_HISTORY_SIZE: usize = 20;
+
+/// A single focus event for the history
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FocusEvent {
+    /// Timestamp (monotonic counter)
+    pub seq: usize,
+    /// Surface ID that received focus
+    pub surface_id: u32,
+    /// Source of the focus change
+    pub source: String,
+    /// Additional context
+    pub context: Option<String>,
+}
+
+/// Focus history shared between compositor and Emacs
+static FOCUS_HISTORY: OnceLock<Mutex<VecDeque<FocusEvent>>> = OnceLock::new();
+static FOCUS_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+fn focus_history() -> &'static Mutex<VecDeque<FocusEvent>> {
+    FOCUS_HISTORY.get_or_init(|| Mutex::new(VecDeque::with_capacity(FOCUS_HISTORY_SIZE)))
+}
+
+/// Record a focus change (called by compositor)
+pub fn record_focus(surface_id: u32, source: &str, context: Option<&str>) {
+    let seq = FOCUS_SEQ.fetch_add(1, Ordering::Relaxed);
+    let event = FocusEvent {
+        seq,
+        surface_id,
+        source: source.to_string(),
+        context: context.map(|s| s.to_string()),
+    };
+
+    if DEBUG_MODE.load(Ordering::Relaxed) {
+        tracing::debug!("Focus #{}: {} -> {} {:?}", seq, source, surface_id, context);
+    }
+
+    let mut history = focus_history().lock().unwrap();
+    if history.len() >= FOCUS_HISTORY_SIZE {
+        history.pop_front();
+    }
+    history.push_back(event);
+}
+
+/// Get focus history as JSON (for state dump)
+pub fn get_focus_history() -> Vec<FocusEvent> {
+    focus_history().lock().unwrap().iter().cloned().collect()
+}
 
 // ============================================================================
 // Event Queue
@@ -684,4 +752,27 @@ fn get_layouts_module(_: &Env) -> Result<()> {
 fn get_state_module(_: &Env) -> Result<()> {
     push_command(ModuleCommand::GetState);
     Ok(())
+}
+
+/// Toggle debug mode for verbose logging.
+/// Returns new debug mode state (t or nil).
+#[defun]
+fn debug_mode_module(_: &Env, enabled: Option<Value<'_>>) -> Result<bool> {
+    let new_state = match enabled {
+        Some(v) => v.is_not_nil(),
+        None => !DEBUG_MODE.load(Ordering::Relaxed),
+    };
+    DEBUG_MODE.store(new_state, Ordering::Relaxed);
+    if new_state {
+        tracing::info!("Debug mode ENABLED - verbose logging active");
+    } else {
+        tracing::info!("Debug mode DISABLED");
+    }
+    Ok(new_state)
+}
+
+/// Check if debug mode is enabled.
+#[defun]
+fn debug_mode_p(_: &Env) -> Result<bool> {
+    Ok(DEBUG_MODE.load(Ordering::Relaxed))
 }

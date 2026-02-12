@@ -543,6 +543,12 @@ impl Ewm {
     /// Focus a surface, updating internal state, keyboard focus, and text input.
     /// If `notify_emacs` is true, sends Event::Focus to Emacs.
     pub fn focus_surface(&mut self, id: u32, notify_emacs: bool) {
+        self.focus_surface_with_source(id, notify_emacs, "focus_surface", None);
+    }
+
+    /// Focus a surface with source tracking for debugging.
+    pub fn focus_surface_with_source(&mut self, id: u32, notify_emacs: bool, source: &str, context: Option<&str>) {
+        module::record_focus(id, source, context);
         self.focused_surface_id = id;
         crate::module::set_focused_id(id);
         if notify_emacs {
@@ -1449,7 +1455,7 @@ impl State {
             ModuleCommand::Focus { id } => {
                 // Skip if already focused
                 if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
-                    self.ewm.focus_surface(id, false);
+                    self.ewm.focus_surface_with_source(id, false, "emacs_command", None);
                     info!("Focus surface {}", id);
                 }
             }
@@ -1676,6 +1682,10 @@ impl State {
                     "xkb_current_layout": self.ewm.xkb_current_layout,
                     "next_surface_id": self.ewm.next_surface_id,
                     "pending_frame_outputs": self.ewm.pending_frame_outputs,
+                    // Debug info
+                    "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
+                    "pending_commands": module::peek_commands(),
+                    "focus_history": module::get_focus_history(),
                 });
                 let json = serde_json::to_string_pretty(&state).unwrap_or_default();
                 self.ewm.queue_event(Event::State { json });

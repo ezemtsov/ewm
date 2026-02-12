@@ -52,7 +52,7 @@ pub fn handle_keyboard_event(
     // avoiding race conditions where keys arrive before focus is synced.
     if let Some(focus_id) = module::take_pending_focus() {
         if state.focused_surface_id != focus_id && state.id_windows.contains_key(&focus_id) {
-            state.focus_surface(focus_id, false);
+            state.focus_surface_with_source(focus_id, false, "pending_focus", Some("keyboard_event"));
         }
     }
 
@@ -148,6 +148,7 @@ pub fn handle_keyboard_event(
     if filter_result.as_ref().map(|(c, _, _)| *c) == Some(1) {
         // Switch focus to the Emacs frame on the same output as the focused surface
         if let Some(emacs_id) = state.get_emacs_surface_for_focused_output() {
+            module::record_focus(emacs_id, "intercept_redirect", Some("prefix_key"));
             state.focused_surface_id = emacs_id;
             crate::module::set_focused_id(emacs_id);
             if let Some(window) = state.id_windows.get(&emacs_id) {
@@ -386,6 +387,7 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::Pointer
         });
 
         if let Some((id, surface)) = focus_info {
+            module::record_focus(id, "click", None);
             tracing::info!("Click focus: setting focus to surface {:?}", surface.id());
             state.set_focus(id);
             state.keyboard_focus = Some(surface.clone());
@@ -421,6 +423,7 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut Ewm, event: B::PointerAx
     });
 
     if let Some((id, surface)) = focus_info {
+        module::record_focus(id, "scroll", None);
         state.set_focus(id);
         state.keyboard_focus = Some(surface.clone());
         // focus_changed handles text_input focus

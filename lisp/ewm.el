@@ -45,6 +45,8 @@
 (declare-function ewm-get-focused-id "ewm-core")
 (declare-function ewm-get-output-offset "ewm-core")
 (declare-function ewm-get-state-module "ewm-core")
+(declare-function ewm-debug-mode-module "ewm-core")
+(declare-function ewm-debug-mode-p "ewm-core")
 
 ;;; Dynamic module loading
 
@@ -364,6 +366,24 @@ State will be displayed in *ewm-state* buffer when received."
   (interactive)
   (ewm-get-state-module)
   (message "Requested compositor state..."))
+
+(defun ewm-debug-mode (&optional enable)
+  "Toggle compositor debug mode for verbose logging.
+With prefix arg, ENABLE if positive, disable if zero or negative.
+Without prefix arg, toggles the current state.
+
+When debug mode is enabled:
+- Focus changes are logged with source tracking
+- Command queue contents are shown in state dump
+- More verbose trace logging is active
+
+Check `journalctl --user -t ewm -f' to see debug output."
+  (interactive "P")
+  (let ((new-state
+         (if enable
+             (ewm-debug-mode-module (> (prefix-numeric-value enable) 0))
+           (ewm-debug-mode-module nil))))
+    (message "EWM debug mode: %s" (if new-state "ENABLED" "disabled"))))
 
 (defun ewm-configure-output (name &rest args)
   "Configure output NAME with ARGS.
