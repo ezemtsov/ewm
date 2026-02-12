@@ -29,6 +29,8 @@
 (declare-function ewm-intercept-keys-module "ewm-core")
 (declare-function ewm-configure-xkb-module "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
+(declare-function ewm-in-prefix-sequence-p "ewm-core")
+(declare-function ewm-clear-prefix-sequence "ewm-core")
 (declare-function ewm-warp-pointer "ewm")
 (declare-function ewm-focus "ewm")
 (declare-function ewm--get-output-offset "ewm")
@@ -64,11 +66,15 @@ Example: \"ctrl:nocaps,grp:alt_shift_toggle\""
 ;;; Key interception
 
 (defcustom ewm-intercept-prefixes
-  '(?\C-x ?\C-u ?\C-h ?\M-x ?\M-` ?\M-& ?\M-:)
+  '(?\C-x ?\C-u ?\C-h ?\M-x)
   "Prefix keys that always go to Emacs.
 These are keys that start command sequences.
 Can be character literals (e.g., ?\\C-x) or strings (e.g., \"C-x\").
-Adapted from `exwm-input-prefix-keys'."
+
+Default includes only essential prefixes. Add more as needed:
+  (add-to-list \\='ewm-intercept-prefixes ?\\M-`)   ; tmm-menubar
+  (add-to-list \\='ewm-intercept-prefixes ?\\M-&)  ; async-shell-command
+  (add-to-list \\='ewm-intercept-prefixes ?\\M-:)  ; eval-expression"
   :type '(repeat (choice character string))
   :group 'ewm-input)
 
@@ -172,33 +178,60 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
         (setq ewm--mff-last-window window)
         (ewm-input--warp-pointer-to-window window)))))
 
-(defun ewm-input--on-window-selection-change (_frame)
-  "Sync focus when selected window changes."
-  (ewm-layout--refresh))
+;;; Focus sync (debounced)
+;;
+;; Focus is synced after commands complete, with a short debounce delay.
+;; This lets Emacs "settle" before syncing, naturally handling:
+;; - Popup windows (transient, which-key, etc.)
+;; - Prefix key sequences
+;; - Rapid command sequences
+;; This is the same approach EXWM uses.
 
-;;; Enable/disable
+(defconst ewm-input--focus-delay 0.01
+  "Delay in seconds before syncing focus.
+Short enough to be imperceptible, long enough for Emacs to settle.")
 
-(defun ewm-input--on-input-method-change ()
-  "Sync focus when input method changes.
-This ensures focus is restored after intercepted key sequences
-like s-SPC r that switch input methods."
-  (ewm-layout--refresh))
+(defvar ewm-input--focus-timer nil
+  "Timer for debounced focus sync.")
+
+(defun ewm-input--sync-focus ()
+  "Actually sync focus after debounce delay."
+  (setq ewm-input--focus-timer nil)
+  ;; Always clear the prefix sequence flag - the debounced timer means
+  ;; the user's command completed (even if we're now in minibuffer etc.)
+  (ewm-clear-prefix-sequence)
+  ;; Check other conditions (NOT prefix sequence - we just cleared it)
+  (unless (or (active-minibuffer-window)
+              (> (minibuffer-depth) 0)
+              prefix-arg
+              (and overriding-terminal-local-map
+                   (keymapp overriding-terminal-local-map)))
+    (ewm-layout--refresh)))
+
+(defun ewm-input--on-post-command ()
+  "Schedule debounced focus sync after command completes."
+  (when ewm-input--focus-timer
+    (cancel-timer ewm-input--focus-timer))
+  ;; Schedule debounced sync - let sync-focus decide when to clear the flag
+  (setq ewm-input--focus-timer
+        (run-with-timer ewm-input--focus-delay nil
+                        #'ewm-input--sync-focus)))
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
-  (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  (add-hook 'input-method-activate-hook #'ewm-input--on-input-method-change)
-  (add-hook 'input-method-deactivate-hook #'ewm-input--on-input-method-change)
+  (add-hook 'post-command-hook #'ewm-input--on-post-command)
+  ;; Mouse-follows-focus hooks
   (advice-add 'select-window :after #'ewm-input--on-select-window)
   (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
-  (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  (remove-hook 'input-method-activate-hook #'ewm-input--on-input-method-change)
-  (remove-hook 'input-method-deactivate-hook #'ewm-input--on-input-method-change)
+  (when ewm-input--focus-timer
+    (cancel-timer ewm-input--focus-timer)
+    (setq ewm-input--focus-timer nil))
+  (remove-hook 'post-command-hook #'ewm-input--on-post-command)
   (advice-remove 'select-window #'ewm-input--on-select-window)
   (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
 
@@ -206,20 +239,24 @@ like s-SPC r that switch input methods."
 
 (defun ewm--event-to-intercept-spec (event)
   "Convert EVENT to an intercept specification for the compositor.
-Returns a plist with :key (integer or string) and modifier flags."
+Returns a plist with :key, modifier flags, and :is-prefix."
   (let* ((mods (event-modifiers event))
          (base (event-basic-type event))
          ;; base is either an integer (ASCII) or a symbol (special key)
          (key-value (cond
                      ((integerp base) base)
                      ((symbolp base) (symbol-name base))
-                     (t nil))))
+                     (t nil)))
+         ;; Check if this key is bound to a keymap (prefix)
+         (binding (key-binding (vector event)))
+         (is-prefix (keymapp binding)))
     (when key-value
       `(:key ,key-value
         :ctrl ,(if (memq 'control mods) t :false)
         :alt ,(if (memq 'meta mods) t :false)
         :shift ,(if (memq 'shift mods) t :false)
-        :super ,(if (memq 'super mods) t :false)))))
+        :super ,(if (memq 'super mods) t :false)
+        :is-prefix ,(if is-prefix t :false)))))
 
 (defun ewm--scan-keymap-for-modifiers (keymap modifiers)
   "Scan KEYMAP for keys that have any of MODIFIERS.

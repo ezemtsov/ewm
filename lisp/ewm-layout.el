@@ -18,6 +18,7 @@
 (declare-function ewm--get-output-offset "ewm")
 (declare-function ewm--compositor-active-p "ewm")
 (declare-function ewm-get-focused-id "ewm-core")
+(declare-function ewm-in-prefix-sequence-p "ewm-core")
 
 (defvar ewm--module-mode)
 (defvar ewm--surfaces)
@@ -43,6 +44,21 @@ This version correctly handles tab-lines on Emacs prior to v31."
   "Return Y offset for CSD (always 0 with no decorations).
 Internal bars are already reflected in `window-inside-absolute-pixel-edges'."
   0)
+
+(defun ewm--focus-locked-p ()
+  "Return non-nil if focus should not be synced to surfaces.
+This covers various Emacs states where focus needs to stay on Emacs:
+- Minibuffer is active
+- In a prefix key sequence (compositor flag)
+- Emacs is reading a key sequence (overriding-terminal-local-map)
+- Universal argument pending (prefix-arg)"
+  (or (active-minibuffer-window)
+      (> (minibuffer-depth) 0)
+      prefix-arg
+      (ewm-in-prefix-sequence-p)
+      ;; Emacs sets this during key sequence reading (isearch, read-key, etc.)
+      (and overriding-terminal-local-map
+           (keymapp overriding-terminal-local-map))))
 
 (defun ewm-layout--refresh ()
   "Refresh layout for all surface buffers and sync focus."
@@ -77,8 +93,8 @@ Internal bars are already reflected in `window-inside-absolute-pixel-edges'."
              ;; Surface not visible - hide it
              (ewm-hide id))))
        ewm--surfaces)
-      ;; Sync focus (unless minibuffer is active)
-      (unless (ewm--minibuffer-active-p)
+      ;; Sync focus (unless focus is locked by minibuffer, prefix sequence, etc.)
+      (unless (ewm--focus-locked-p)
         (let* ((sel-buf (window-buffer sel-window))
                (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
                (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))

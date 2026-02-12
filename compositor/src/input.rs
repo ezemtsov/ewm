@@ -96,14 +96,26 @@ pub fn handle_keyboard_event(
             if is_kill_combo(keysym_raw, mods.shift, mods.logo) {
                 return FilterResult::Intercept((2, 0, None)); // 2 = kill
             }
-            let is_intercepted = intercepted_keys
+            // Find if this is an intercepted key and whether it's a prefix
+            let matched_key = intercepted_keys
                 .iter()
-                .any(|ik| ik.matches(keysym_raw, mods));
+                .find(|ik| ik.matches(keysym_raw, mods));
 
-            if is_intercepted && !focus_on_emacs {
-                // This is an intercepted key and focus is on an external app (not Emacs)
-                FilterResult::Intercept((1, keysym_raw, None)) // 1 = redirect to emacs
-            } else if text_input_intercept
+            if let Some(ik) = matched_key {
+                if !focus_on_emacs {
+                    // This is an intercepted key and focus is on an external app (not Emacs)
+                    // Only SET the flag on prefix keys, never clear it here
+                    // Emacs clears the flag when the command sequence completes
+                    if ik.is_prefix {
+                        module::set_in_prefix_sequence(true);
+                    }
+                    return FilterResult::Intercept((1, keysym_raw, None)); // 1 = redirect to emacs
+                }
+                // Intercepted key but already on Emacs - just forward
+                return FilterResult::Forward;
+            }
+
+            if text_input_intercept
                 && !focus_on_emacs
                 && !mods.ctrl
                 && !mods.alt

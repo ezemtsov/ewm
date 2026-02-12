@@ -41,6 +41,85 @@ When a Super-key binding is pressed while focus is on an external surface:
 
 Because scroll updates focus, the focused surface is always where the user last interacted, ensuring intercepted keys route to the correct Emacs frame.
 
+### Prefix Key Sequences
+
+When a prefix key (C-x, C-h, M-x) is intercepted from an external app, focus
+must stay on Emacs until the key sequence completes. Without this, popups like
+which-key would appear but the user couldn't interact with them.
+
+#### The Problem
+
+EXWM solves this with X11 keyboard grabbing - during a prefix sequence, ALL keys
+go to Emacs regardless of focus. Wayland doesn't have an equivalent mechanism.
+
+Without special handling:
+1. User presses C-x in Firefox
+2. Compositor intercepts, redirects to Emacs
+3. which-key popup appears (triggers `window-configuration-change-hook`)
+4. Hook calls `ewm-layout--refresh`, which syncs focus back to Firefox
+5. User's next keypress goes to Firefox instead of completing the sequence
+
+#### Solution: Compositor-side Prefix Tracking
+
+During initialization, Emacs tells the compositor which intercepted keys are
+prefix keys (bound to keymaps). The compositor uses this to track state:
+
+```
+Initialization:
+  Emacs scans keymaps → sends intercept specs with :is-prefix flag
+
+Runtime:
+  Prefix key intercepted → compositor sets IN_PREFIX_SEQUENCE=true
+  Other sync paths check ewm--focus-locked-p → see flag=true → skip sync
+  Debounced sync timer fires → clears flag → refreshes layout
+```
+
+Key insight: Compositor only SETS the flag true on prefix keys, never clears it.
+The debounced `ewm-input--sync-focus` always clears the flag first (avoiding
+circular dependency), then checks other conditions before refreshing.
+
+#### Implementation
+
+**Rust side:**
+- `InterceptedKey.is_prefix` - marks prefix keys
+- `IN_PREFIX_SEQUENCE: AtomicBool` - the tracking flag
+- `ewm-in-prefix-sequence-p` - Emacs queries the flag
+- `ewm-clear-prefix-sequence` - Emacs clears the flag
+
+**Elisp side:**
+- `ewm--event-to-intercept-spec` adds `:is-prefix` based on `(keymapp (key-binding ...))`
+- `ewm--focus-locked-p` - centralized check for all focus sync paths:
+
+```elisp
+(defun ewm--focus-locked-p ()
+  "Return non-nil if focus should not be synced to surfaces."
+  (or (active-minibuffer-window)
+      (> (minibuffer-depth) 0)
+      prefix-arg
+      (ewm-in-prefix-sequence-p)
+      (and overriding-terminal-local-map
+           (keymapp overriding-terminal-local-map))))
+```
+
+#### Critical Design Decisions
+
+1. **Don't clear flag on non-prefix intercepts**: If user presses C-x then s-left
+   (an intercepted non-prefix key), the flag must stay true. Only the debounced
+   sync timer clears it.
+
+2. **Centralized focus lock check**: Multiple code paths call `ewm-layout--refresh`:
+   - `window-configuration-change-hook` (which-key popup)
+   - `window-size-change-functions`
+   - `minibuffer-setup-hook` / `minibuffer-exit-hook`
+
+   All these paths check `ewm--focus-locked-p` (which includes prefix sequence
+   check) before syncing focus.
+
+3. **Debounced sync clears flag first**: `ewm-input--sync-focus` always clears
+   the prefix sequence flag before checking other conditions. This avoids a
+   circular dependency where the flag could never be cleared because the check
+   itself prevented clearing.
+
 ### Mouse-Follows-Focus
 
 When `ewm-mouse-follows-focus` is enabled, the pointer warps to the center of a
@@ -113,158 +192,6 @@ The input-to-focus model was chosen over alternatives:
 2. **Full focus-follows-mouse (hover = focus)**: Too aggressive, causes focus changes during casual mouse movement.
 
 3. **Input-to-focus (current)**: Simple unified model where any interaction (click or scroll) activates that location. Matches user intent: "I'm interacting here, so this is active."
-
-## Module Architecture: Signal-Based Event Sync
-
-### The Fundamental Problem
-
-The compositor runs as a thread within Emacs. Two execution contexts must sync:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Emacs Process                        │
-│  ┌─────────────────┐         ┌─────────────────────┐   │
-│  │  Main Thread    │  SIGUSR1│  Compositor Thread  │   │
-│  │  (Lisp, UI)     │◄────────│  (Wayland, Input)   │   │
-│  └─────────────────┘         └─────────────────────┘   │
-│          │                              │              │
-│          └──────── Event Queue ─────────┘              │
-└─────────────────────────────────────────────────────────┘
-```
-
-Emacs Lisp is single-threaded and cannot be called from the compositor thread.
-The solution: compositor pushes events to a shared queue and signals Emacs
-via SIGUSR1. Emacs handles the signal and drains the queue.
-
-### Solution: SIGUSR1 + Shared Queue
-
-```
-Compositor Thread              │  Emacs Main Thread
-                               │
-push_event(Event::Focus{...})  │
-  └─ queue.push(event)         │
-  └─ raise(SIGUSR1) ──────────►│  [sigusr1] event received
-                               │    └─ ewm--sigusr1-handler
-                               │    └─ ewm--process-pending-events
-                               │    └─ while (event = pop_event())
-                               │         ewm--handle-module-event(event)
-```
-
-### Implementation
-
-#### Rust Side (15 lines)
-
-```rust
-static EVENT_QUEUE: OnceLock<Mutex<Vec<Event>>> = OnceLock::new();
-
-pub fn push_event(event: Event) {
-    let mut queue = event_queue().lock().unwrap();
-    queue.push(event);
-    drop(queue);  // Release lock before signaling
-    unsafe { libc::raise(libc::SIGUSR1); }
-}
-```
-
-#### Emacs Side (10 lines)
-
-```elisp
-(defun ewm--sigusr1-handler ()
-  "Handle SIGUSR1 signal from compositor."
-  (interactive)
-  (ewm--process-pending-events))
-
-(defun ewm--enable-signal-handler ()
-  (define-key special-event-map [sigusr1] #'ewm--sigusr1-handler))
-
-(defun ewm--disable-signal-handler ()
-  (define-key special-event-map [sigusr1] nil))
-```
-
-### Why SIGUSR1 Works
-
-Emacs has built-in support for Unix signals via `special-event-map`. When
-SIGUSR1 arrives, Emacs queues a `[sigusr1]` event that runs our handler
-at the next safe point in the event loop.
-
-Signal coalescing is fine—multiple rapid events result in one signal, but
-the handler drains the entire queue each time.
-
-### Startup Sequence
-
-The compositor sends a `ready` event after initialization. Emacs waits for
-this event instead of using arbitrary sleep delays:
-
-```elisp
-(defun ewm-start-module ()
-  (ewm-start)                      ; Start compositor thread
-  (setq ewm--module-mode t)
-  (ewm-mode 1)                     ; Enable BEFORE processing events
-  (ewm--enable-signal-handler)
-  ;; Wait for ready event
-  (let ((timeout 50))
-    (while (and (> timeout 0) (not ewm--compositor-ready))
-      (sleep-for 0.1)
-      (ewm--process-pending-events)
-      (cl-decf timeout)))
-  ...)
-```
-
-**Critical**: `ewm-mode` must be enabled before the wait loop so that
-`output_detected` events properly register frames as pending.
-
-### Events
-
-| Event | Rust | Purpose |
-|-------|------|---------|
-| `ready` | `Event::Ready` | Compositor initialized |
-| `new` | `Event::New{id,app,output}` | Surface created |
-| `close` | `Event::Close{id}` | Surface destroyed |
-| `focus` | `Event::Focus{id}` | External surface focused |
-| `title` | `Event::Title{id,app,title}` | Surface title changed |
-| `output_detected` | `Event::OutputDetected(info)` | Monitor connected |
-| `output_disconnected` | `Event::OutputDisconnected{name}` | Monitor removed |
-| `outputs_complete` | `Event::OutputsComplete` | All outputs sent |
-| `key` | `Event::Key{keysym,utf8}` | Intercepted key |
-
-### Timer Usage (Minimal)
-
-| Timer | Purpose | Status |
-|-------|---------|--------|
-| ~~60Hz polling~~ | Event sync | Removed (SIGUSR1) |
-| ~~Minibuffer 50ms~~ | Layout settle | Removed (sync redisplay) |
-| ~~Startup sleep~~ | Wait for init | Removed (ready event) |
-| Shutdown polling | Wait for thread exit | Kept |
-| Frame deletion | Defer during creation | Kept (one-shot) |
-
-### Minibuffer Handling
-
-No timers needed. Synchronous `redisplay t` ensures geometry is current:
-
-```elisp
-(defun ewm--on-minibuffer-setup ()
-  (when-let ((state ewm--input-state))
-    (setq ewm--pre-minibuffer-surface-id
-          (ewm-input-state-last-focused-id state))
-    (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
-      (ewm-focus frame-surface-id)))
-  (redisplay t)
-  (ewm-layout--refresh))
-
-(defun ewm--on-minibuffer-exit ()
-  (when ewm--pre-minibuffer-surface-id
-    (ewm-focus ewm--pre-minibuffer-surface-id)
-    (setq ewm--pre-minibuffer-surface-id nil))
-  (redisplay t)
-  (ewm-layout--refresh))
-```
-
-### Benefits
-
-1. **Simple**: ~25 lines total (Rust + Elisp)
-2. **Zero latency**: Signal delivered immediately
-3. **No polling**: No timers for event sync
-4. **No resources**: No sockets, files, or processes
-5. **Reliable**: Built-in Emacs signal handling
 
 ## Layout Synchronization
 

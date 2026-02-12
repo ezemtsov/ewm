@@ -241,6 +241,9 @@ pub struct InterceptedKey {
     pub shift: bool,
     #[serde(rename = "super", default)]
     pub logo: bool,
+    /// True if this key is bound to a keymap (prefix key)
+    #[serde(default)]
+    pub is_prefix: bool,
 }
 
 impl InterceptedKey {
@@ -1828,6 +1831,7 @@ impl State {
                     "xkb_current_layout": self.ewm.xkb_current_layout,
                     "next_surface_id": self.ewm.next_surface_id,
                     "pending_frame_outputs": module::peek_pending_frame_outputs(),
+                    "in_prefix_sequence": module::get_in_prefix_sequence(),
                     // Debug info
                     "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
                     "pending_commands": module::peek_commands(),

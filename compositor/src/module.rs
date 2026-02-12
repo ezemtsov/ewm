@@ -67,6 +67,20 @@ pub fn get_intercepted_keys() -> Vec<InterceptedKey> {
     intercepted_keys().read().unwrap().clone()
 }
 
+/// Flag indicating we're in an incomplete prefix key sequence.
+/// Set when prefix key intercepted, cleared when Emacs completes a command.
+static IN_PREFIX_SEQUENCE: AtomicBool = AtomicBool::new(false);
+
+/// Set the prefix sequence flag (called from input handling)
+pub fn set_in_prefix_sequence(value: bool) {
+    IN_PREFIX_SEQUENCE.store(value, Ordering::Relaxed);
+}
+
+/// Get the prefix sequence flag (for state dump)
+pub fn get_in_prefix_sequence() -> bool {
+    IN_PREFIX_SEQUENCE.load(Ordering::Relaxed)
+}
+
 /// Update focused surface ID (called by compositor)
 pub fn set_focused_id(id: u32) {
     FOCUSED_SURFACE_ID.store(id, Ordering::Relaxed);
@@ -748,6 +762,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         let alt_val: Value = env.call("plist-get", (key_spec, env.intern(":alt")?))?;
         let shift_val: Value = env.call("plist-get", (key_spec, env.intern(":shift")?))?;
         let super_val: Value = env.call("plist-get", (key_spec, env.intern(":super")?))?;
+        let is_prefix_val: Value = env.call("plist-get", (key_spec, env.intern(":is-prefix")?))?;
 
         parsed_keys.push(InterceptedKey {
             key,
@@ -755,6 +770,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
             alt: is_true(alt_val),
             shift: is_true(shift_val),
             logo: is_true(super_val),
+            is_prefix: is_true(is_prefix_val),
         });
     }
 
@@ -829,4 +845,17 @@ fn debug_mode_module(_: &Env, enabled: Option<Value<'_>>) -> Result<bool> {
 #[defun]
 fn debug_mode_p(_: &Env) -> Result<bool> {
     Ok(DEBUG_MODE.load(Ordering::Relaxed))
+}
+
+/// Query prefix sequence state (called by Emacs before focus sync).
+#[defun]
+fn in_prefix_sequence_p(_: &Env) -> Result<bool> {
+    Ok(IN_PREFIX_SEQUENCE.load(Ordering::Relaxed))
+}
+
+/// Clear prefix sequence flag (called by Emacs when command completes).
+#[defun]
+fn clear_prefix_sequence(_: &Env) -> Result<()> {
+    IN_PREFIX_SEQUENCE.store(false, Ordering::Relaxed);
+    Ok(())
 }
