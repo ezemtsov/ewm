@@ -33,6 +33,9 @@ pub struct OutputInfo {
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "event")]
 pub enum Event {
+    /// Compositor is ready
+    #[serde(rename = "ready")]
+    Ready,
     /// New surface created
     #[serde(rename = "new")]
     New {

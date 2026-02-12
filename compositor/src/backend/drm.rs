@@ -1418,9 +1418,10 @@ fn initialize_drm(
     for output_info in state.ewm.outputs.clone() {
         state.ewm.send_output_detected(output_info);
     }
-    // Send outputs_complete event
+    // Send outputs_complete event followed by ready
     state.ewm.queue_event(crate::event::Event::OutputsComplete);
-    info!("Sent {} output_detected events", state.ewm.outputs.len());
+    state.ewm.queue_event(crate::event::Event::Ready);
+    info!("Sent {} output_detected events, compositor ready", state.ewm.outputs.len());
 
     // Trigger initial render - collect CRTCs first, then render
     let crtcs: Vec<_> = state.backend.device.as_ref()

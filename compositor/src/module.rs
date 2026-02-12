@@ -2,7 +2,6 @@
 
 use emacs::{defun, Env, IntoLisp, Result, Value};
 use std::fs::File;
-use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -80,66 +79,21 @@ pub static LOOP_SIGNAL: OnceLock<LoopSignal> = OnceLock::new();
 /// Event queue shared between compositor thread and Emacs
 static EVENT_QUEUE: OnceLock<Mutex<Vec<Event>>> = OnceLock::new();
 
-/// Notification pipe: (read_fd, write_fd)
-/// Emacs monitors read_fd; compositor writes to write_fd when events arrive
-static NOTIFY_PIPE: OnceLock<(RawFd, RawFd)> = OnceLock::new();
-
 fn event_queue() -> &'static Mutex<Vec<Event>> {
     EVENT_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Initialize the notification pipe
-fn init_notify_pipe() -> std::io::Result<(RawFd, RawFd)> {
-    let mut fds = [0 as libc::c_int; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    // Set non-blocking on both ends
-    for fd in &fds {
-        let flags = unsafe { libc::fcntl(*fd, libc::F_GETFL) };
-        unsafe { libc::fcntl(*fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-    }
-
-    Ok((fds[0], fds[1]))
-}
-
-/// Push an event to the queue and notify Emacs
+/// Push an event to the queue and notify Emacs via SIGUSR1
 pub fn push_event(event: Event) {
     let mut queue = event_queue().lock().unwrap();
     queue.push(event);
+    drop(queue); // Release lock before signaling
 
-    // Write a byte to wake Emacs (if pipe exists)
-    if let Some((_, write_fd)) = NOTIFY_PIPE.get() {
-        let buf = [1u8];
-        unsafe { libc::write(*write_fd, buf.as_ptr() as *const libc::c_void, 1) };
+    // Send SIGUSR1 to wake Emacs event loop
+    // Signal coalescing is fine - Emacs will drain the whole queue
+    unsafe {
+        libc::raise(libc::SIGUSR1);
     }
-}
-
-/// Get the notification pipe read fd (for Emacs to monitor)
-#[defun]
-fn event_fd(_: &Env) -> Result<Option<i64>> {
-    let pipe = NOTIFY_PIPE.get_or_init(|| {
-        init_notify_pipe().expect("Failed to create notification pipe")
-    });
-    Ok(Some(pipe.0 as i64))
-}
-
-/// Drain the notification pipe (call after processing events)
-#[defun]
-fn drain_events(_: &Env) -> Result<()> {
-    if let Some((read_fd, _)) = NOTIFY_PIPE.get() {
-        let mut buf = [0u8; 256];
-        loop {
-            let n = unsafe {
-                libc::read(*read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-            };
-            if n <= 0 {
-                break;
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Pop the next event from the queue, returning it as a Lisp alist
@@ -166,6 +120,9 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
     };
 
     match event {
+        Event::Ready => {
+            list(vec![cons("event", "ready".into_lisp(env)?)?])
+        }
         Event::New { id, app, output } => {
             let mut items = vec![
                 cons("event", "new".into_lisp(env)?)?,
@@ -339,11 +296,6 @@ fn start(_: &Env) -> Result<bool> {
     // Reset stop flag and event queue
     STOP_REQUESTED.store(false, Ordering::SeqCst);
     event_queue().lock().unwrap().clear();
-
-    // Initialize notification pipe if not already done
-    let _ = NOTIFY_PIPE.get_or_init(|| {
-        init_notify_pipe().expect("Failed to create notification pipe")
-    });
 
     // Spawn compositor thread - frames are created via output_detected events
     // (Emacs receives events and creates frames with ewm--create-frame-for-output)

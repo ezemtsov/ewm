@@ -43,7 +43,6 @@
 (declare-function ewm-stop "ewm-core")
 (declare-function ewm-running "ewm-core")
 (declare-function ewm-pop-event "ewm-core")
-(declare-function ewm-drain-events "ewm-core")
 (declare-function ewm-layout-module "ewm-core")
 (declare-function ewm-views-module "ewm-core")
 (declare-function ewm-hide-module "ewm-core")
@@ -148,54 +147,36 @@ Returns t if loaded successfully, nil otherwise."
 (defvar ewm--module-mode nil
   "Non-nil when running in module mode (compositor in-process).")
 
-(defvar ewm--module-timer nil
-  "Timer for polling module events.")
-
-(defconst ewm--module-poll-interval 0.016
-  "Interval for polling module events (16ms = ~60Hz).")
+(defvar ewm--compositor-ready nil
+  "Non-nil when compositor has signaled it is ready.")
 
 (defun ewm--compositor-active-p ()
   "Return non-nil if compositor is active (module or IPC mode)."
   (or ewm--module-mode
       (and ewm--process (process-live-p ewm--process))))
 
-(defun ewm--start-module-polling ()
-  "Start timer-based event polling for module mode."
-  (ewm--stop-module-polling)
-  (setq ewm--module-timer
-        (run-with-timer 0 ewm--module-poll-interval #'ewm--poll-module-events)))
+(defun ewm--sigusr1-handler ()
+  "Handle SIGUSR1 signal from compositor.
+The compositor sends this signal when events are queued."
+  (interactive)
+  (ewm--process-pending-events))
 
-(defun ewm--stop-module-polling ()
-  "Stop module event polling timer."
-  (when ewm--module-timer
-    (cancel-timer ewm--module-timer)
-    (setq ewm--module-timer nil)))
+(defun ewm--enable-signal-handler ()
+  "Enable SIGUSR1 handler for compositor events."
+  (define-key special-event-map [sigusr1] #'ewm--sigusr1-handler))
 
-(defun ewm--poll-module-events ()
-  "Poll and process events from the module.
-Called periodically by `ewm--module-timer'."
-  (when (and ewm--module-mode
-             (fboundp 'ewm-running)
-             (ewm-running))
-    ;; Process all pending events
-    (while-let ((event (ewm-pop-event)))
-      (ewm--handle-module-event event))
-    ;; Drain the notification pipe
-    (when (fboundp 'ewm-drain-events)
-      (ewm-drain-events))))
+(defun ewm--disable-signal-handler ()
+  "Disable SIGUSR1 handler."
+  (define-key special-event-map [sigusr1] nil))
 
 (defun ewm--process-pending-events ()
   "Process all pending module events synchronously.
-Call this before making focus decisions to ensure state is current.
-With the module architecture, events are in shared memory and can be
-read synchronously, eliminating the need for timer-based debouncing."
+Called by SIGUSR1 handler when compositor queues events."
   (when (and ewm--module-mode
              (fboundp 'ewm-running)
              (ewm-running))
     (while-let ((event (ewm-pop-event)))
-      (ewm--handle-module-event event))
-    (when (fboundp 'ewm-drain-events)
-      (ewm-drain-events))))
+      (ewm--handle-module-event event))))
 
 (defun ewm--alist-to-hash (alist)
   "Convert ALIST to a hash table for compatibility with existing handlers.
@@ -336,6 +317,7 @@ Example:
       ("output_detected" (ewm--handle-output-detected event))
       ("output_disconnected" (ewm--handle-output-disconnected event))
       ("outputs_complete" (ewm--handle-outputs-complete))
+      ("ready" (ewm--handle-ready))
       ("layouts" (ewm--handle-layouts event))
       ("layout-switched" (ewm--handle-layout-switched event))
       ("text-input-activated" (ewm--handle-text-input-activated))
@@ -670,6 +652,12 @@ Applies user output config and enforces frame-output parity."
   ;; Enforce 1:1 output-frame relationship
   (ewm--enforce-frame-output-parity))
 
+(defun ewm--handle-ready ()
+  "Handle ready event from compositor.
+Signals that the compositor is fully initialized."
+  (ewm-log "compositor ready")
+  (setq ewm--compositor-ready t))
+
 (defun ewm--handle-layouts (event)
   "Handle layouts EVENT from compositor.
 Updates internal tracking of available layouts."
@@ -994,26 +982,36 @@ The compositor runs as a thread within the Emacs process."
   ;; Reset state
   (setq ewm--outputs nil)
   (setq ewm--pending-frame-outputs nil)
-  (setq ewm--module-mode nil)  ; Will be set to t after successful start
+  (setq ewm--module-mode nil)
+  (setq ewm--compositor-ready nil)
   ;; Start the compositor
   (ewm-log "Starting compositor in module mode...")
   (if (ewm-start)
       (progn
         (setq ewm--module-mode t)
-        ;; Wait briefly for compositor to initialize
-        (sleep-for 0.5)
+        ;; Enable EWM mode first (needed for frame creation hooks)
+        (ewm-mode 1)
+        ;; Enable signal handler to receive events
+        (ewm--enable-signal-handler)
+        ;; Wait for compositor ready event (with timeout)
+        (let ((timeout 50))  ; 5 seconds max
+          (while (and (> timeout 0)
+                      (not ewm--compositor-ready))
+            (sleep-for 0.1)
+            (ewm--process-pending-events)
+            (cl-decf timeout))
+          (unless ewm--compositor-ready
+            (ewm--disable-signal-handler)
+            (ewm-mode -1)
+            (setq ewm--module-mode nil)
+            (error "Compositor failed to become ready")))
         ;; Set environment for Wayland clients
         (let ((socket-name (format "wayland-ewm-vt%d" (ewm--current-vt))))
           (setenv "WAYLAND_DISPLAY" socket-name)
           (setenv "XDG_SESSION_TYPE" "wayland")
-          ;; Use native Wayland input method protocol for GTK/Qt apps
           (setenv "GTK_IM_MODULE" "wayland")
           (setenv "QT_IM_MODULE" "wayland")
           (ewm-log "Set WAYLAND_DISPLAY=%s" socket-name))
-        ;; Start event polling
-        (ewm--start-module-polling)
-        ;; Enable EWM mode (input handling, layout sync, etc.)
-        (ewm-mode 1)
         (ewm-log "EWM module mode started"))
     (error "Failed to start compositor")))
 
@@ -1021,8 +1019,8 @@ The compositor runs as a thread within the Emacs process."
   "Stop EWM module mode compositor."
   (interactive)
   (when ewm--module-mode
-    ;; Stop event polling first
-    (ewm--stop-module-polling)
+    ;; Disconnect from notification socket first
+    (ewm--disable-signal-handler)
     ;; Request compositor stop
     (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
       (ewm-stop)
@@ -1033,6 +1031,7 @@ The compositor runs as a thread within the Emacs process."
           (cl-decf timeout))))
     ;; Clean up
     (setq ewm--module-mode nil)
+    (setq ewm--compositor-ready nil)
     (ewm-mode -1)
     (ewm-log "EWM module mode stopped")))
 
@@ -1599,25 +1598,21 @@ Saves previous surface to restore on exit."
   (when-let ((state ewm--input-state))
     (setq ewm--pre-minibuffer-surface-id
           (ewm-input-state-last-focused-id state))
-    ;; Immediately focus Emacs frame so keyboard goes to minibuffer
+    ;; Focus Emacs frame so keyboard goes to minibuffer
     (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
       (setf (ewm-input-state-last-focused-id state) frame-surface-id)
       (ewm-focus frame-surface-id)))
-  (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay))
+  (redisplay t)
+  (ewm-layout--refresh))
 
 (defun ewm--on-minibuffer-exit ()
   "Restore focus to previous surface when minibuffer exits."
-  (run-with-timer 0.05 nil #'ewm--refresh-with-redisplay)
   (when (and ewm--pre-minibuffer-surface-id
              ewm--input-state
              (ewm--compositor-active-p))
     (setf (ewm-input-state-last-focused-id ewm--input-state) ewm--pre-minibuffer-surface-id)
     (ewm-focus ewm--pre-minibuffer-surface-id)
-    (setq ewm--pre-minibuffer-surface-id nil)))
-
-(defun ewm--refresh-with-redisplay ()
-  "Force redisplay then refresh layout.
-Ensures window edges are current before calculating positions."
+    (setq ewm--pre-minibuffer-surface-id nil))
   (redisplay t)
   (ewm-layout--refresh))
 
@@ -1684,7 +1679,7 @@ Configures keyboard layouts from `ewm-xkb-layouts' and options from
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
   ;; Stop module mode if active
   (when ewm--module-mode
-    (ewm--stop-module-polling)
+    (ewm--disable-signal-handler)
     (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
       (ewm-stop))
     (setq ewm--module-mode nil)))
