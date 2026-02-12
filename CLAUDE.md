@@ -20,17 +20,15 @@ Use conventional commits without Co-Authored-By lines:
 ### Rust
 - Follow standard Rust conventions
 - Keep named key → keysym mapping in `KeyId::to_keysym()`
-- IPC uses JSON over Unix socket at `$XDG_RUNTIME_DIR/ewm.sock`
 
 ### Emacs Lisp
 - Use character literals for keys: `?\C-x` not `"C-x"`
 - Prefer Emacs built-ins (e.g., `key-parse`) over custom parsing
-- Keep ewm.el compatible with both EWM and regular Emacs sessions
 
 ## Key Design Decisions
+- Module-only mode: compositor runs as thread within Emacs
 - Emacs sends pre-parsed keysyms to compositor (not string notation)
 - Super-key bindings are auto-detected from Emacs keymaps
-- `ewm-connect` is safe to call unconditionally (warns if socket missing)
 
 ## Compositor Design Principles
 
@@ -59,26 +57,18 @@ blocking connection to avoid deadlocks between interfaces.
 
 ## Module Development Workflow
 
-### Debug vs Release Build
-The ewm-core dynamic module can be built in debug or release mode:
-- `cargo build` → `target/debug/libewm_core.so`
-- `cargo build --release` → `target/release/libewm_core.so`
+### Building
+```sh
+cargo build  # builds to compositor/target/debug/libewm_core.so
+```
 
 **Critical**: Emacs cannot hot-reload dynamic modules. Once loaded, the module
 stays in memory until Emacs fully restarts. If you rebuild the module, you MUST
 restart Emacs to load the new version.
 
-### Checking Which Module is Loaded
-- Check `*Messages*` buffer for "Loaded ewm-core (debug/release build) from ..."
-- Run `M-x ewm-module-info` to see the currently loaded module path and build time
-- `ewm--find-module-dir` prefers release over debug if both exist
-
-### Common Pitfall
-Building release while Emacs has debug loaded (or vice versa) means your changes
-won't take effect. Always verify the loaded module matches what you're building:
-1. Build: `cargo build` (debug) or `cargo build --release`
-2. Restart Emacs completely
-3. Check with `M-x ewm-module-info`
+### Module Loading
+The module is loaded from `compositor/target/debug/libewm_core.so` relative to
+`ewm.el`. Set `EWM_MODULE_PATH` environment variable to override.
 
 ## Reference Implementation
 The compositor's DRM backend, screen sharing, and D-Bus integration follow
