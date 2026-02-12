@@ -237,12 +237,9 @@ pub fn release_all_keys(state: &mut Ewm, keyboard: &KeyboardHandle<Ewm>) {
         );
     }
 
-    // Clear focus
+    // Clear focus (focus_changed handles text_input)
     keyboard.set_focus(state, None, serial);
     state.keyboard_focus = None;
-    // Clear text_input focus
-    state.seat.text_input().leave();
-    state.seat.text_input().set_focus(None);
 }
 
 /// Restore focus to a specific surface

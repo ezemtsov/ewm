@@ -328,6 +328,8 @@ pub struct Ewm {
 
     // When true, intercept all keys and send to Emacs for text input
     pub text_input_intercept: bool,
+    // Track text input active state to deduplicate IM relay events
+    pub text_input_active: bool,
 
     // Popup manager for XDG popups
     pub popups: PopupManager,
@@ -419,6 +421,7 @@ impl Ewm {
             text_input_state,
             input_method_state,
             text_input_intercept: false,
+            text_input_active: false,
             popups: PopupManager::default(),
             #[cfg(feature = "screencast")]
             pipewire: None,
@@ -1651,12 +1654,18 @@ impl State {
         for event in events {
             match event {
                 im_relay::ImEvent::Activated => {
-                    info!("Text input activated, notifying Emacs");
-                    self.ewm.queue_event(Event::TextInputActivated);
+                    if !self.ewm.text_input_active {
+                        self.ewm.text_input_active = true;
+                        info!("Text input activated, notifying Emacs");
+                        self.ewm.queue_event(Event::TextInputActivated);
+                    }
                 }
                 im_relay::ImEvent::Deactivated => {
-                    info!("Text input deactivated, notifying Emacs");
-                    self.ewm.queue_event(Event::TextInputDeactivated);
+                    if self.ewm.text_input_active {
+                        self.ewm.text_input_active = false;
+                        info!("Text input deactivated, notifying Emacs");
+                        self.ewm.queue_event(Event::TextInputDeactivated);
+                    }
                 }
             }
         }
