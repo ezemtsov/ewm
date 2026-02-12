@@ -159,10 +159,18 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
 
 ;;; Enable/disable
 
+(defun ewm-input--on-input-method-change ()
+  "Sync focus when input method changes.
+This ensures focus is restored after intercepted key sequences
+like s-SPC r that switch input methods."
+  (ewm-layout--refresh))
+
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
+  (add-hook 'input-method-activate-hook #'ewm-input--on-input-method-change)
+  (add-hook 'input-method-deactivate-hook #'ewm-input--on-input-method-change)
   (advice-add 'select-window :after #'ewm-input--on-select-window)
   (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
 
@@ -170,6 +178,8 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
+  (remove-hook 'input-method-activate-hook #'ewm-input--on-input-method-change)
+  (remove-hook 'input-method-deactivate-hook #'ewm-input--on-input-method-change)
   (advice-remove 'select-window #'ewm-input--on-select-window)
   (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
 

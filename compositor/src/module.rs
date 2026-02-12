@@ -104,6 +104,23 @@ pub fn drain_commands() -> Vec<ModuleCommand> {
     command_queue().lock().unwrap().drain(..).collect()
 }
 
+/// Get the pending focus target, if any.
+/// Called before keyboard event handling to ensure focus is synced.
+pub fn take_pending_focus() -> Option<u32> {
+    let mut queue = command_queue().lock().unwrap();
+    let mut focus_id = None;
+    // Find the last Focus command (most recent wins)
+    queue.retain(|cmd| {
+        if let ModuleCommand::Focus { id } = cmd {
+            focus_id = Some(*id);
+            false // Remove from queue
+        } else {
+            true // Keep other commands
+        }
+    });
+    focus_id
+}
+
 /// Push a command to the queue and wake the compositor.
 fn push_command(cmd: ModuleCommand) {
     command_queue().lock().unwrap().push(cmd);

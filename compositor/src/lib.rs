@@ -1659,11 +1659,13 @@ impl State {
                 });
             }
             ModuleCommand::GetState => {
+                let id_window_keys: Vec<u32> = self.ewm.id_windows.keys().copied().collect();
                 let state = serde_json::json!({
                     "surfaces": self.ewm.surface_info,
                     "emacs_surfaces": self.ewm.emacs_surfaces,
                     "surface_views": self.ewm.surface_views,
                     "focused_surface_id": self.ewm.focused_surface_id,
+                    "id_windows": id_window_keys,
                     "outputs": self.ewm.outputs,
                     "pointer_location": self.ewm.pointer_location,
                     "intercepted_keys": self.ewm.intercepted_keys,

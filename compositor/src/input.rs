@@ -12,7 +12,7 @@ use smithay::{
     wayland::text_input::TextInputSeat,
 };
 
-use crate::{is_kill_combo, Ewm};
+use crate::{is_kill_combo, Ewm, module};
 
 /// Result of processing a keyboard event
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +46,15 @@ pub fn handle_keyboard_event(
 ) -> KeyboardAction {
     let serial = SERIAL_COUNTER.next_serial();
     let is_press = key_state == KeyState::Pressed;
+
+    // Process any pending focus command before handling the key.
+    // This ensures focus changes from Emacs are applied immediately,
+    // avoiding race conditions where keys arrive before focus is synced.
+    if let Some(focus_id) = module::take_pending_focus() {
+        if state.focused_surface_id != focus_id && state.id_windows.contains_key(&focus_id) {
+            state.focus_surface(focus_id, false);
+        }
+    }
 
     // Clone values needed in the filter closure
     let intercepted_keys = state.intercepted_keys.clone();
