@@ -114,8 +114,10 @@ Called by SIGUSR1 handler when compositor queues events."
       (ewm--handle-event event))))
 
 (defgroup ewm nil
-  "Emacs Wayland Manager."
-  :group 'environment)
+  "Emacs Wayland Manager - Wayland apps as Emacs buffers."
+  :link '(emacs-library-link :tag "Library Source" "ewm.el")
+  :group 'environment
+  :prefix "ewm-")
 
 (defcustom ewm-mouse-follows-focus t
   "Whether the mouse pointer follows focus changes.
