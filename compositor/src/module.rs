@@ -16,8 +16,7 @@ use crate::{InterceptedKey, KeyId, SurfaceView};
 // Module Commands (Emacs -> Compositor)
 // ============================================================================
 
-/// Commands that can be sent from Emacs to the compositor via the module interface.
-/// These mirror the IPC Command enum but are sent via direct function calls.
+/// Commands sent from Emacs to the compositor via the module interface.
 #[derive(Debug, Clone)]
 pub enum ModuleCommand {
     Layout { id: u32, x: i32, y: i32, w: u32, h: u32 },
@@ -352,8 +351,7 @@ fn start(_: &Env) -> Result<bool> {
         tracing::info!("Compositor thread starting");
 
         // Catch panics so they don't crash Emacs
-        // No client spawn - frames created by Emacs via output_detected events
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_drm(None)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_drm));
 
         match result {
             Ok(Ok(())) => {

@@ -1,18 +1,14 @@
 [package]
-name = "ewm"
+name = "ewm-core"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0"
-description = "Emacs Wayland Manager - Wayland compositor with Emacs integration"
-
-[[bin]]
-name = "ewm"
-path = "src/main.rs"
+description = "Emacs Wayland Manager - Wayland compositor"
 
 [lib]
 name = "ewm_core"
 path = "src/lib.rs"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1"

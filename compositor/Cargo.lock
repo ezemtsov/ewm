@@ -563,7 +563,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ewm"
+name = "ewm-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",

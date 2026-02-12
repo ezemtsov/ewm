@@ -67,9 +67,8 @@ use smithay::{
 use crate::{
     cursor::CursorBuffer,
     input::{handle_device_added, handle_keyboard_event, KeyboardAction},
-    ipc::setup_ipc_listener,
     render::{collect_render_elements_for_output, process_screencopies_for_output},
-    spawn_client, Ewm, State, OutputInfo, OutputMode, OutputState, RedrawState,
+    Ewm, State, OutputInfo, OutputMode, OutputState, RedrawState,
 };
 
 const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
@@ -1435,10 +1434,9 @@ fn initialize_drm(
     Ok(())
 }
 
-/// Run EWM with DRM/libinput backend
-/// - client: Optional (program, args) to spawn. If None, runs in embedded mode.
-pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting EWM with DRM backend (embedded={})", client.is_none());
+/// Run EWM with DRM/libinput backend (module mode only)
+pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
+    info!("Starting EWM with DRM backend (module mode)");
 
     // Initialize libseat session
     let (session, notifier) = LibSeatSession::new().map_err(|e| {
@@ -1539,9 +1537,6 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
     let mut state = State {
         backend,
         ewm,
-        emacs: None,
-        ipc_stream_token: None,
-        client_process: None,
     };
 
     // Initialize PipeWire and D-Bus for screen sharing
@@ -1935,9 +1930,6 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
             }
         })?;
 
-    // Set up IPC listener (shared code)
-    setup_ipc_listener(&event_loop.handle())?;
-
     info!("EWM DRM backend started (waiting for session activation)");
     info!("VT switching: Ctrl+Alt+F1-F7");
     info!("Kill combo: Super+Shift+E");
@@ -1954,26 +1946,9 @@ pub fn run_drm(client: Option<(String, Vec<String>)>) -> Result<(), Box<dyn std:
         }
     }
 
-    // Spawn client if configured (standalone mode)
-    if let Some((program, program_args)) = client {
-        info!("Spawning client: {} {:?}", program, program_args);
-        match spawn_client(&program, &program_args, &socket_name_str) {
-            Ok(child) => {
-                let pid = child.id();
-                info!("Client spawned with PID {}", pid);
-                state.ewm.set_emacs_pid(pid);
-                state.client_process = Some(child);
-            }
-            Err(e) => {
-                warn!("Failed to spawn client: {:?}", e);
-            }
-        }
-    } else {
-        // Module mode: Emacs is the current process
-        let pid = std::process::id();
-        info!("Module mode: tracking Emacs PID {}", pid);
-        state.ewm.set_emacs_pid(pid);
-    }
+    let pid = std::process::id();
+    info!("Tracking Emacs PID {}", pid);
+    state.ewm.set_emacs_pid(pid);
 
     // Run the event loop with per-frame callback
     event_loop

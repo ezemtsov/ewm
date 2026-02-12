@@ -8,12 +8,27 @@ pub mod dbus;
 pub mod event;
 pub mod im_relay;
 pub mod input;
-pub mod ipc;
 #[cfg(feature = "screencast")]
 pub mod pipewire;
 pub mod protocols;
 pub mod render;
 mod module;
+
+/// Get the current VT (virtual terminal) number.
+/// Returns None if not running on a VT or detection fails.
+pub fn current_vt() -> Option<u32> {
+    std::fs::read_to_string("/sys/class/tty/tty0/active")
+        .ok()
+        .and_then(|s| s.trim().strip_prefix("tty")?.parse().ok())
+}
+
+/// Get a VT-specific suffix for socket names.
+/// Returns "-vt{N}" if on a VT, empty string otherwise.
+pub fn vt_suffix() -> String {
+    current_vt()
+        .map(|vt| format!("-vt{}", vt))
+        .unwrap_or_default()
+}
 
 pub use event::{Event, OutputInfo, OutputMode};
 
@@ -29,7 +44,7 @@ use smithay::{
     output::Output,
     input::{
         keyboard::xkb::keysyms,
-        keyboard::{Layout, ModifiersState},
+        keyboard::ModifiersState,
         Seat, SeatHandler, SeatState,
     },
     reexports::{
@@ -79,9 +94,6 @@ use smithay::{
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::process::Child;
 use std::sync::Arc;
 use std::mem;
 use tracing::{error, info, warn};
@@ -158,57 +170,6 @@ pub struct SurfaceView {
     pub w: u32,
     pub h: u32,
     pub active: bool, // True for the view in the selected Emacs window
-}
-
-/// Commands received from Emacs
-#[derive(Deserialize)]
-#[serde(tag = "cmd")]
-enum Command {
-    #[serde(rename = "layout")]
-    Layout { id: u32, x: i32, y: i32, w: u32, h: u32 },
-    #[serde(rename = "views")]
-    Views { id: u32, views: Vec<SurfaceView> },
-    #[serde(rename = "hide")]
-    Hide { id: u32 },
-    #[serde(rename = "close")]
-    Close { id: u32 },
-    #[serde(rename = "focus")]
-    Focus { id: u32 },
-    #[serde(rename = "warp-pointer")]
-    WarpPointer { x: f64, y: f64 },
-    #[serde(rename = "screenshot")]
-    Screenshot { path: Option<String> },
-    #[serde(rename = "intercept-keys")]
-    InterceptKeys { keys: Vec<InterceptedKey> },
-    #[serde(rename = "configure-output")]
-    ConfigureOutput {
-        name: String,
-        x: Option<i32>,
-        y: Option<i32>,
-        #[allow(dead_code)]
-        width: Option<i32>,
-        #[allow(dead_code)]
-        height: Option<i32>,
-        #[allow(dead_code)]
-        refresh: Option<i32>,
-        #[allow(dead_code)]
-        scale: Option<f64>,
-        enabled: Option<bool>,
-    },
-    #[serde(rename = "assign-output")]
-    AssignOutput { id: u32, output: String },
-    #[serde(rename = "prepare-frame")]
-    PrepareFrame { output: String },
-    #[serde(rename = "configure-xkb")]
-    ConfigureXkb { layouts: String, options: Option<String> },
-    #[serde(rename = "switch-layout")]
-    SwitchLayout { layout: String },
-    #[serde(rename = "get-layouts")]
-    GetLayouts,
-    #[serde(rename = "im-commit")]
-    ImCommit { text: String },
-    #[serde(rename = "text-input-intercept")]
-    TextInputIntercept { enabled: bool },
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -316,13 +277,12 @@ pub struct Ewm {
     pub primary_selection_state: PrimarySelectionState,
     pub seat: Seat<Self>,
 
-    // IPC
+    // Surface tracking
     next_surface_id: u32,
     pub window_ids: HashMap<Window, u32>,
     pub id_windows: HashMap<u32, Window>,
     surface_info: HashMap<u32, SurfaceInfo>,
     pub surface_views: HashMap<u32, Vec<SurfaceView>>,
-    pending_events: Vec<Event>,
 
     // Output
     pub output_size: (i32, i32),
@@ -442,7 +402,6 @@ impl Ewm {
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
             surface_views: HashMap::new(),
-            pending_events: Vec::new(),
             output_size: (800, 600),
             outputs: Vec::new(),
             pointer_location: (0.0, 0.0),
@@ -596,13 +555,9 @@ impl Ewm {
         }
     }
 
-    /// Queue an event to be sent to Emacs (via both IPC and module queue)
+    /// Queue an event to be sent to Emacs via the module queue
     pub(crate) fn queue_event(&mut self, event: Event) {
-        // Push to module queue (for embedded mode)
-        module::push_event(event.clone());
-
-        // Push to IPC queue (for socket mode)
-        self.pending_events.push(event);
+        module::push_event(event);
     }
 
     /// Update text_input focus for input method support.
@@ -857,12 +812,11 @@ impl Ewm {
         event_loop: &LoopHandle<State>,
     ) -> Result<std::ffi::OsString, Box<dyn std::error::Error>> {
         // Automatically derive socket name from current VT for multi-instance support
-        let socket_name = format!("wayland-ewm{}", crate::ipc::vt_suffix());
+        let socket_name = format!("wayland-ewm{}", crate::vt_suffix());
         info!("Creating Wayland socket with name: {}", socket_name);
         let socket = ListeningSocketSource::with_name(&socket_name)?;
         let socket_name = socket.socket_name().to_os_string();
 
-        // Socket listener - uses display_handle from state
         event_loop
             .insert_source(socket, |client, _, state| {
                 if let Err(e) = state
@@ -1376,11 +1330,6 @@ delegate_screencopy!(Ewm);
 pub struct State {
     pub backend: DrmBackendState,
     pub ewm: Ewm,
-    pub emacs: Option<UnixStream>,
-    /// IPC stream registration token (for cleanup on reconnect)
-    pub ipc_stream_token: Option<smithay::reexports::calloop::RegistrationToken>,
-    /// Spawned client process (for standalone mode)
-    pub client_process: Option<std::process::Child>,
 }
 
 impl State {
@@ -1391,14 +1340,6 @@ impl State {
         if crate::module::STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
             info!("Stop requested from Emacs, shutting down");
             self.ewm.stop();
-        }
-
-        // Check if client exited (standalone mode)
-        if let Some(ref mut child) = self.client_process {
-            if let Ok(Some(status)) = child.try_wait() {
-                info!("Client exited with status: {}", status);
-                self.ewm.stop();
-            }
         }
 
         // Process module commands (from Emacs via dynamic module)
@@ -1418,383 +1359,11 @@ impl State {
         // Process IM relay events and send to Emacs
         self.process_im_events();
 
-        // Flush pending events to Emacs
-        self.flush_events();
-
         // Flush Wayland clients
         self.ewm.display_handle.flush_clients().unwrap();
     }
 
-    /// Send an IPC event to Emacs
-    fn send_event(&mut self, event: &Event) {
-        if let Some(ref mut stream) = self.emacs {
-            if let Ok(json) = serde_json::to_string(event) {
-                if writeln!(stream, "{}", json).is_err() {
-                    warn!("Failed to send event to Emacs, disconnecting");
-                    self.emacs = None;
-                } else {
-                    let _ = stream.flush();
-                }
-            }
-        }
-    }
-
-    /// Flush all pending events to Emacs
-    pub fn flush_events(&mut self) {
-        let events: Vec<_> = self.ewm.pending_events.drain(..).collect();
-        for event in events {
-            self.send_event(&event);
-        }
-    }
-
-    /// Send output detected events for all known outputs
-    pub fn send_output_events(&mut self) {
-        let outputs: Vec<_> = self.ewm.outputs.clone();
-        for output in outputs {
-            self.send_event(&Event::OutputDetected(output));
-        }
-        // Signal that all outputs have been sent
-        self.send_event(&Event::OutputsComplete);
-    }
-
-    /// Process IPC commands from a stream
-    pub fn process_commands_from_stream(&mut self, stream: &mut UnixStream) {
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut line = String::new();
-        while reader.read_line(&mut line).unwrap_or(0) > 0 {
-            if let Ok(cmd) = serde_json::from_str::<Command>(&line) {
-                self.handle_command(cmd);
-            }
-            line.clear();
-        }
-    }
-
-    /// Handle a single IPC command
-    fn handle_command(&mut self, cmd: Command) {
-        match cmd {
-            Command::Layout { id, x, y, w, h } => {
-                if let Some(window) = self.ewm.id_windows.get(&id) {
-                    self.ewm.space.map_element(window.clone(), (x, y), true);
-                    self.ewm.space.raise_element(window, true);
-                    window.toplevel().map(|t| {
-                        t.with_pending_state(|state| {
-                            state.size = Some((w as i32, h as i32).into());
-                        });
-                        t.send_configure();
-                    });
-                    self.ewm.queue_redraw_all();
-                    info!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
-                }
-            }
-            Command::Views { id, views } => {
-                if let Some(window) = self.ewm.id_windows.get(&id) {
-                    let primary_view = views.iter().find(|v| v.active).or_else(|| views.first());
-
-                    if let Some(view) = primary_view {
-                        self.ewm
-                            .space
-                            .map_element(window.clone(), (view.x, view.y), true);
-                        self.ewm.space.raise_element(window, true);
-                        window.toplevel().map(|t| {
-                            t.with_pending_state(|state| {
-                                state.size = Some((view.w as i32, view.h as i32).into());
-                            });
-                            t.send_configure();
-                        });
-                    }
-                    self.ewm.surface_views.insert(id, views.clone());
-                    self.ewm.queue_redraw_all();
-                }
-            }
-            Command::Hide { id } => {
-                if let Some(window) = self.ewm.id_windows.get(&id) {
-                    self.ewm
-                        .space
-                        .map_element(window.clone(), (-10000, -10000), false);
-                    self.ewm.surface_views.remove(&id);
-                    self.ewm.queue_redraw_all();
-                    info!("Hide surface {}", id);
-                }
-            }
-            Command::Close { id } => {
-                if let Some(window) = self.ewm.id_windows.get(&id) {
-                    if let Some(toplevel) = window.toplevel() {
-                        toplevel.send_close();
-                        info!("Close surface {} (sent close request)", id);
-                    }
-                }
-            }
-            Command::Focus { id } => {
-                if self.ewm.id_windows.contains_key(&id) {
-                    self.ewm.focus_surface(id, false);
-                    info!("Focus surface {}", id);
-                }
-            }
-            Command::WarpPointer { x, y } => {
-                self.ewm.pointer_location = (x, y);
-                let pointer = self.ewm.seat.get_pointer().unwrap();
-                let serial = SERIAL_COUNTER.next_serial();
-
-                // Find surface under new pointer location
-                let under = self
-                    .ewm
-                    .space
-                    .element_under((x, y))
-                    .and_then(|(window, loc)| {
-                        window.wl_surface().map(|s| {
-                            (
-                                s.into_owned(),
-                                smithay::utils::Point::from((loc.x as f64, loc.y as f64)),
-                            )
-                        })
-                    });
-
-                pointer.motion(
-                    &mut self.ewm,
-                    under,
-                    &smithay::input::pointer::MotionEvent {
-                        location: (x, y).into(),
-                        serial,
-                        time: 0,
-                    },
-                );
-                pointer.frame(&mut self.ewm);
-
-                self.ewm.queue_redraw_all();
-            }
-            Command::Screenshot { path } => {
-                let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
-                info!("Screenshot requested: {}", target);
-                self.ewm.pending_screenshot = Some(target);
-            }
-            Command::InterceptKeys { keys } => {
-                self.ewm.intercepted_keys = keys;
-                info!("Intercepted keys set: {:?}", self.ewm.intercepted_keys);
-            }
-            Command::ConfigureOutput {
-                name,
-                x,
-                y,
-                width,
-                height,
-                refresh,
-                scale: _,
-                enabled,
-            } => {
-                // Find output by name
-                let output = self
-                    .ewm
-                    .space
-                    .outputs()
-                    .find(|o| o.name() == name)
-                    .cloned();
-
-                if let Some(output) = output {
-                    // Handle enable/disable
-                    if let Some(false) = enabled {
-                        // Disable: unmap from space
-                        self.ewm.space.unmap_output(&output);
-                        info!("Disabled output {}", name);
-                    } else {
-                        // Handle mode change if width/height specified
-                        if let (Some(w), Some(h)) = (width, height) {
-                            self.backend.set_mode(&mut self.ewm, &name, w, h, refresh);
-                        }
-
-                        // Only update position if x or y is explicitly provided
-                        if x.is_some() || y.is_some() {
-                            let current_pos = self
-                                .ewm
-                                .space
-                                .output_geometry(&output)
-                                .map(|g| (g.loc.x, g.loc.y))
-                                .unwrap_or((0, 0));
-                            let new_x = x.unwrap_or(current_pos.0);
-                            let new_y = y.unwrap_or(current_pos.1);
-                            let new_pos = (new_x, new_y);
-
-                            self.ewm.space.map_output(&output, new_pos);
-
-                            // Update output's internal position state
-                            output.change_current_state(
-                                None,
-                                None,
-                                None,
-                                Some(new_pos.into()),
-                            );
-
-                            // Update our cached output info
-                            for out_info in &mut self.ewm.outputs {
-                                if out_info.name == name {
-                                    out_info.x = new_x;
-                                    out_info.y = new_y;
-                                }
-                            }
-
-                            // Recalculate total output size
-                            self.ewm.recalculate_output_size();
-
-                            info!("Configured output {} at ({}, {})", name, new_x, new_y);
-                        } else {
-                            info!("Configured output {} (position unchanged)", name);
-                        }
-                    }
-
-                    // Queue redraw
-                    self.ewm.queue_redraw_all();
-                } else {
-                    warn!("Output not found: {}", name);
-                }
-            }
-            Command::AssignOutput { id, output } => {
-                // Find the output by name and get its geometry
-                let output_geo = self
-                    .ewm
-                    .space
-                    .outputs()
-                    .find(|o| o.name() == output)
-                    .and_then(|o| self.ewm.space.output_geometry(o));
-
-                if let Some(geo) = output_geo {
-                    if let Some(window) = self.ewm.id_windows.get(&id) {
-                        // Position surface to fill the output
-                        self.ewm
-                            .space
-                            .map_element(window.clone(), (geo.loc.x, geo.loc.y), true);
-                        self.ewm.space.raise_element(window, true);
-
-                        // Resize to fill output
-                        window.toplevel().map(|t| {
-                            t.with_pending_state(|state| {
-                                state.size = Some((geo.size.w, geo.size.h).into());
-                            });
-                            t.send_configure();
-                        });
-
-                        self.ewm.queue_redraw_all();
-                        info!(
-                            "Assigned surface {} to output {} at ({}, {}) {}x{}",
-                            id, output, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h
-                        );
-                    } else {
-                        warn!("Surface not found: {}", id);
-                    }
-                } else {
-                    warn!("Output not found: {}", output);
-                }
-            }
-            Command::PrepareFrame { output } => {
-                // Queue output for next frame creation
-                self.ewm.pending_frame_outputs.push(output.clone());
-                info!("Prepared frame for output {}", output);
-            }
-            Command::ConfigureXkb { layouts, options } => {
-                // Parse layout names from comma-separated string
-                let layout_names: Vec<String> = layouts
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-
-                if layout_names.is_empty() {
-                    warn!("No valid layouts in configure-xkb");
-                    return;
-                }
-
-                // Build XKB configuration
-                let xkb_config = smithay::input::keyboard::XkbConfig {
-                    layout: &layouts,
-                    options: options.clone(),
-                    ..Default::default()
-                };
-
-                // Reconfigure keyboard with new XKB settings
-                let keyboard = self.ewm.seat.get_keyboard().unwrap();
-                if let Err(e) = keyboard.set_xkb_config(&mut self.ewm, xkb_config) {
-                    error!("Failed to configure XKB: {:?}", e);
-                    return;
-                }
-
-                // Store layout names for name→index lookup
-                self.ewm.xkb_layout_names = layout_names.clone();
-                self.ewm.xkb_current_layout = 0;
-
-                info!(
-                    "Configured XKB layouts: {:?}, options: {:?}",
-                    layout_names,
-                    options
-                );
-
-                // Send layouts event back to Emacs
-                self.ewm.queue_event(Event::Layouts {
-                    layouts: layout_names,
-                    current: 0,
-                });
-            }
-            Command::SwitchLayout { layout } => {
-                // Find index of layout name
-                let index = self
-                    .ewm
-                    .xkb_layout_names
-                    .iter()
-                    .position(|l| l == &layout);
-
-                match index {
-                    Some(idx) => {
-                        // Switch to the layout using Smithay's keyboard API
-                        let keyboard = self.ewm.seat.get_keyboard().unwrap();
-
-                        // Clear focus, switch layout, restore focus
-                        let current_focus = self.ewm.keyboard_focus.clone();
-                        keyboard.set_focus(&mut self.ewm, None, SERIAL_COUNTER.next_serial());
-                        keyboard.with_xkb_state(&mut self.ewm, |mut context| {
-                            context.set_layout(Layout(idx as u32));
-                        });
-                        keyboard.set_focus(&mut self.ewm, current_focus, SERIAL_COUNTER.next_serial());
-
-                        // Update internal state
-                        self.ewm.xkb_current_layout = idx;
-
-                        info!("Switched to layout: {} (index {})", layout, idx);
-
-                        // Emit layout-switched event
-                        self.ewm.queue_event(Event::LayoutSwitched {
-                            layout: layout.clone(),
-                            index: idx,
-                        });
-                    }
-                    None => {
-                        warn!(
-                            "Layout '{}' not found. Available: {:?}",
-                            layout, self.ewm.xkb_layout_names
-                        );
-                    }
-                }
-            }
-            Command::GetLayouts => {
-                // Query current layouts and active index
-                self.ewm.queue_event(Event::Layouts {
-                    layouts: self.ewm.xkb_layout_names.clone(),
-                    current: self.ewm.xkb_current_layout,
-                });
-            }
-            Command::ImCommit { text } => {
-                // Forward text to input method relay for commit
-                if let Some(ref relay) = self.ewm.im_relay {
-                    relay.commit_string(text);
-                } else {
-                    warn!("im-commit received but no IM relay connected");
-                }
-            }
-            Command::TextInputIntercept { enabled } => {
-                info!("Text input intercept: {}", enabled);
-                self.ewm.text_input_intercept = enabled;
-            }
-        }
-    }
-
     /// Handle a module command (from Emacs via dynamic module).
-    /// This mirrors handle_command but uses ModuleCommand enum.
     fn handle_module_command(&mut self, cmd: module::ModuleCommand) {
         use module::ModuleCommand;
         match cmd {
@@ -1809,7 +1378,7 @@ impl State {
                         t.send_configure();
                     });
                     self.ewm.queue_redraw_all();
-                    info!("Module: Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
+                    info!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
                 }
             }
             ModuleCommand::Views { id, views } => {
@@ -1838,21 +1407,21 @@ impl State {
                         .map_element(window.clone(), (-10000, -10000), false);
                     self.ewm.surface_views.remove(&id);
                     self.ewm.queue_redraw_all();
-                    info!("Module: Hide surface {}", id);
+                    info!("Hide surface {}", id);
                 }
             }
             ModuleCommand::Close { id } => {
                 if let Some(window) = self.ewm.id_windows.get(&id) {
                     if let Some(toplevel) = window.toplevel() {
                         toplevel.send_close();
-                        info!("Module: Close surface {} (sent close request)", id);
+                        info!("Close surface {} (sent close request)", id);
                     }
                 }
             }
             ModuleCommand::Focus { id } => {
                 if self.ewm.id_windows.contains_key(&id) {
                     self.ewm.focus_surface(id, false);
-                    info!("Module: Focus surface {}", id);
+                    info!("Focus surface {}", id);
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {
@@ -1885,7 +1454,7 @@ impl State {
             }
             ModuleCommand::Screenshot { path } => {
                 let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
-                info!("Module: Screenshot requested: {}", target);
+                info!("Screenshot requested: {}", target);
                 self.ewm.pending_screenshot = Some(target);
             }
             ModuleCommand::AssignOutput { id, output } => {
@@ -1909,19 +1478,19 @@ impl State {
                         });
                         self.ewm.queue_redraw_all();
                         info!(
-                            "Module: Assigned surface {} to output {} at ({}, {}) {}x{}",
+                            "Assigned surface {} to output {} at ({}, {}) {}x{}",
                             id, output, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h
                         );
                     } else {
-                        warn!("Module: Surface not found: {}", id);
+                        warn!("Surface not found: {}", id);
                     }
                 } else {
-                    warn!("Module: Output not found: {}", output);
+                    warn!("Output not found: {}", output);
                 }
             }
             ModuleCommand::PrepareFrame { output } => {
                 self.ewm.pending_frame_outputs.push(output.clone());
-                info!("Module: Prepared frame for output {}", output);
+                info!("Prepared frame for output {}", output);
             }
             ModuleCommand::ConfigureOutput {
                 name,
@@ -1941,7 +1510,7 @@ impl State {
                 if let Some(output) = output {
                     if let Some(false) = enabled {
                         self.ewm.space.unmap_output(&output);
-                        info!("Module: Disabled output {}", name);
+                        info!("Disabled output {}", name);
                     } else {
                         if let (Some(w), Some(h)) = (width, height) {
                             self.backend.set_mode(&mut self.ewm, &name, w, h, refresh);
@@ -1964,29 +1533,29 @@ impl State {
                                 }
                             }
                             self.ewm.recalculate_output_size();
-                            info!("Module: Configured output {} at ({}, {})", name, new_x, new_y);
+                            info!("Configured output {} at ({}, {})", name, new_x, new_y);
                         } else {
-                            info!("Module: Configured output {} (mode only)", name);
+                            info!("Configured output {} (mode only)", name);
                         }
                     }
                     self.ewm.queue_redraw_all();
                 } else {
-                    warn!("Module: Output not found: {}", name);
+                    warn!("Output not found: {}", name);
                 }
             }
             ModuleCommand::InterceptKeys { keys } => {
                 self.ewm.intercepted_keys = keys;
-                info!("Module: Intercepted keys set: {:?}", self.ewm.intercepted_keys);
+                info!("Intercepted keys set: {:?}", self.ewm.intercepted_keys);
             }
             ModuleCommand::ImCommit { text } => {
                 if let Some(ref relay) = self.ewm.im_relay {
                     relay.commit_string(text);
                 } else {
-                    warn!("Module: im-commit received but no IM relay connected");
+                    warn!("im-commit received but no IM relay connected");
                 }
             }
             ModuleCommand::TextInputIntercept { enabled } => {
-                info!("Module: Text input intercept: {}", enabled);
+                info!("Text input intercept: {}", enabled);
                 self.ewm.text_input_intercept = enabled;
             }
             ModuleCommand::ConfigureXkb { layouts, options } => {
@@ -1996,7 +1565,7 @@ impl State {
                     .filter(|s| !s.is_empty())
                     .collect();
                 if layout_names.is_empty() {
-                    warn!("Module: No valid layouts in configure-xkb");
+                    warn!("No valid layouts in configure-xkb");
                     return;
                 }
                 let xkb_config = smithay::input::keyboard::XkbConfig {
@@ -2006,13 +1575,13 @@ impl State {
                 };
                 let keyboard = self.ewm.seat.get_keyboard().unwrap();
                 if let Err(e) = keyboard.set_xkb_config(&mut self.ewm, xkb_config) {
-                    error!("Module: Failed to configure XKB: {:?}", e);
+                    error!("Failed to configure XKB: {:?}", e);
                     return;
                 }
                 self.ewm.xkb_layout_names = layout_names.clone();
                 self.ewm.xkb_current_layout = 0;
                 info!(
-                    "Module: Configured XKB layouts: {:?}, options: {:?}",
+                    "Configured XKB layouts: {:?}, options: {:?}",
                     layout_names, options
                 );
                 self.ewm.queue_event(Event::Layouts {
@@ -2037,7 +1606,7 @@ impl State {
                         });
                         keyboard.set_focus(&mut self.ewm, current_focus, SERIAL_COUNTER.next_serial());
                         self.ewm.xkb_current_layout = idx;
-                        info!("Module: Switched to layout: {} (index {})", layout, idx);
+                        info!("Switched to layout: {} (index {})", layout, idx);
                         self.ewm.queue_event(Event::LayoutSwitched {
                             layout: layout.clone(),
                             index: idx,
@@ -2045,7 +1614,7 @@ impl State {
                     }
                     None => {
                         warn!(
-                            "Module: Layout '{}' not found. Available: {:?}",
+                            "Layout '{}' not found. Available: {:?}",
                             layout, self.ewm.xkb_layout_names
                         );
                     }
@@ -2081,33 +1650,6 @@ impl State {
             }
         }
     }
-}
-
-pub fn spawn_client(program: &str, args: &[String], wayland_display: &str) -> std::io::Result<Child> {
-    let mut final_args = args.to_vec();
-
-    // If spawning Emacs and EWM_INIT is set, inject -l <path> -f ewm-connect before user args
-    if program == "emacs" || program.ends_with("/emacs") {
-        if let Ok(ewm_init) = std::env::var("EWM_INIT") {
-            info!("Auto-loading EWM from: {}", ewm_init);
-            let mut emacs_args = vec![
-                "-l".to_string(),
-                ewm_init,
-                "-f".to_string(),
-                "ewm-connect".to_string(),
-            ];
-            emacs_args.extend(final_args);
-            final_args = emacs_args;
-        }
-    }
-
-    info!("Spawning: {} {:?}", program, final_args);
-    info!("  WAYLAND_DISPLAY={}", wayland_display);
-
-    std::process::Command::new(program)
-        .args(&final_args)
-        .env("WAYLAND_DISPLAY", wayland_display)
-        .spawn()
 }
 
 // Emacs dynamic module initialization
