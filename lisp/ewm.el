@@ -151,9 +151,8 @@ Returns t if loaded successfully, nil otherwise."
   "Non-nil when compositor has signaled it is ready.")
 
 (defun ewm--compositor-active-p ()
-  "Return non-nil if compositor is active (module or IPC mode)."
-  (or ewm--module-mode
-      (and ewm--process (process-live-p ewm--process))))
+  "Return non-nil if compositor is active."
+  ewm--module-mode)
 
 (defun ewm--sigusr1-handler ()
   "Handle SIGUSR1 signal from compositor.
@@ -196,41 +195,6 @@ EVENT is an alist, which we convert to a hash table for the existing handlers."
     (let ((hash (ewm--alist-to-hash event)))
       (ewm--handle-event hash))))
 
-;;; Debug logging
-
-(defvar ewm-debug-log-file "/tmp/ewm-emacs.log"
-  "File to write EWM debug logs to.")
-
-(defvar ewm-debug-logging nil
-  "When non-nil, write debug messages to `ewm-debug-log-file'.")
-
-(defvar ewm-debug-focus nil
-  "When non-nil, log detailed focus change tracing.")
-
-(defun ewm--log-to-buffer (msg)
-  "Append MSG to *ewm-info* buffer."
-  (let ((buf (get-buffer-create "*ewm-info*")))
-    (with-current-buffer buf
-      (goto-char (point-max))
-      (insert (format-time-string "[%H:%M:%S] ") msg "\n"))))
-
-(defun ewm-log (format-string &rest args)
-  "Log FORMAT-STRING with ARGS to *ewm-info* buffer."
-  (let ((msg (apply #'format format-string args)))
-    (ewm--log-to-buffer msg)
-    (when ewm-debug-logging
-      (with-temp-buffer
-        (insert (format-time-string "[%Y-%m-%d %H:%M:%S] ")
-                msg "\n")
-        (write-region (point-min) (point-max) ewm-debug-log-file t 'silent)))))
-
-(defun ewm--focus-log (source format-string &rest args)
-  "Log focus-related message from SOURCE with FORMAT-STRING and ARGS.
-Only logs when `ewm-debug-focus' is non-nil."
-  (when ewm-debug-focus
-    (let ((msg (format "FOCUS [%s]: %s" source (apply #'format format-string args))))
-      (ewm--log-to-buffer msg))))
-
 ;;; Input state struct (defined early for use in event handlers)
 
 (cl-defstruct (ewm-input-state (:constructor ewm-input-state-create))
@@ -251,9 +215,6 @@ Only logs when `ewm-debug-focus' is non-nil."
 When non-nil, warps the pointer to the center of the focused window."
   :type 'boolean
   :group 'ewm)
-
-(defvar ewm--process nil
-  "Network process for compositor connection.")
 
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to surface info.")
@@ -300,12 +261,6 @@ Example:
 
 ;;; Protocol
 
-(defun ewm--send (cmd)
-  "Send CMD as JSON to compositor."
-  (when (and ewm--process (process-live-p ewm--process))
-    (let ((json (json-serialize cmd)))
-      (process-send-string ewm--process (concat json "\n")))))
-
 (defun ewm--handle-event (event)
   "Handle EVENT from compositor."
   (let ((type (gethash "event" event)))
@@ -322,8 +277,7 @@ Example:
       ("layout-switched" (ewm--handle-layout-switched event))
       ("text-input-activated" (ewm--handle-text-input-activated))
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
-      ("key" (ewm--handle-key event))
-      (_ (ewm-log "unknown event type: %s" type)))))
+      ("key" (ewm--handle-key event)))))
 
 ;;; Event handlers
 
@@ -335,23 +289,17 @@ Adapted from EXWM's behavior."
   :group 'ewm)
 
 (defun ewm--cleanup-orphan-frames ()
-  "Delete frames that have no ewm-output assigned.
-Uses ignore-errors since Emacs won't delete the last visible frame."
-  (ewm-log "cleaning up orphan frames")
+  "Delete frames that have no ewm-output assigned."
   (dolist (f (frame-list))
     (unless (frame-parameter f 'ewm-output)
-      (ewm-log "deleting orphan frame %s" f)
       (ignore-errors (delete-frame f)))))
 
 (defun ewm--assign-pending-frame (id output pending)
   "Assign surface ID to PENDING frame for OUTPUT."
   (let ((frame (cdr pending)))
-    (ewm-log "assigning surface %d to pending frame %s for %s" id frame output)
     (setq ewm--pending-frame-outputs (delete pending ewm--pending-frame-outputs))
     (set-frame-parameter frame 'ewm-output output)
     (set-frame-parameter frame 'ewm-surface-id id)
-    (ewm-log "frame on %s (surface %d) - assignment complete" output id)
-    ;; Clean up orphans once all pending frames are assigned
     (when (null ewm--pending-frame-outputs)
       (ewm--cleanup-orphan-frames))))
 
@@ -369,18 +317,14 @@ Uses ignore-errors since Emacs won't delete the last visible frame."
         (if target-frame
             (with-selected-frame target-frame
               (pop-to-buffer-same-window buf))
-          (pop-to-buffer-same-window buf))))
-    (ewm-log "new surface %d (%s) on %s" id app (or output "current"))))
+          (pop-to-buffer-same-window buf))))))
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
 If there's a pending frame for this output, this is an Emacs frame.
 Otherwise, creates a buffer for external surface."
   (pcase-let (((map ("id" id) ("app" app) ("output" output)) event))
-    (ewm-log "new-surface id=%d app=%s output=%s" id app output)
     (let ((pending (and output (assoc output ewm--pending-frame-outputs))))
-      (ewm-log "pending-frame-outputs=%s, found pending=%s"
-               ewm--pending-frame-outputs pending)
       (if pending
           (ewm--assign-pending-frame id output pending)
         (ewm--create-surface-buffer id app output)))))
@@ -397,14 +341,12 @@ Kills the surface buffer and focuses Emacs."
               (remove-hook 'kill-buffer-query-functions
                            #'ewm--kill-buffer-query-function t))
             (kill-buffer buf)))
-        (remhash id ewm--surfaces)))
-    (ewm-log "closed surface %d" id)))
+        (remhash id ewm--surfaces)))))
 
 (defun ewm--handle-focus (event)
   "Handle focus EVENT from compositor.
 Updates focus tracking and selects the window displaying the surface's buffer."
   (pcase-let (((map ("id" id)) event))
-    (ewm--focus-log "compositor" "received focus event for id=%d" id)
     ;; Always update tracking to match compositor's actual focus
     (when ewm--input-state
       (setf (ewm-input-state-last-focused-id ewm--input-state) id))
@@ -414,8 +356,6 @@ Updates focus tracking and selects the window displaying the surface's buffer."
                   (buf (plist-get info :buffer))
                   ((buffer-live-p buf))
                   (win (get-buffer-window buf t)))
-        (ewm--focus-log "compositor" "selecting window for %s (id=%d)"
-                        (buffer-name buf) id)
         ;; Suppress mouse-follows-focus since this came from a click
         (when ewm--input-state
           (setf (ewm-input-state-compositor-focus ewm--input-state) t))
@@ -480,7 +420,6 @@ Adds the output to `ewm--outputs' and creates a frame if needed."
                                        ewm--outputs))
       ;; Add new output
       (push output-plist ewm--outputs)
-      (ewm-log "output detected: %s at (%d, %d)" name x y)
       ;; Create frame if this output doesn't have one yet
       (unless (ewm--frame-for-output name)
         (ewm--create-frame-for-output name)))))
@@ -500,8 +439,7 @@ Removes the output from `ewm--outputs' and closes its frame."
             (let ((buf (window-buffer window)))
               (with-selected-frame target-frame
                 (switch-to-buffer buf))))))
-      (delete-frame frame))
-    (ewm-log "output disconnected: %s" name)))
+      (delete-frame frame))))
 
 (defun ewm--rename-buffer ()
   "Rename the current surface buffer based on app and title.
@@ -520,99 +458,62 @@ Similar to `exwm-workspace-rename-buffer'."
       (setq name (format "*%s<%d>*" basename (cl-incf counter))))
     (rename-buffer name)))
 
-;;; Commands (dual-mode: IPC or module)
+;;; Commands
 
 (defun ewm-layout (id x y w h)
   "Set surface ID position to X Y and size to W H."
-  (if ewm--module-mode
-      (ewm-layout-module id x y w h)
-    (ewm--send `(:cmd "layout" :id ,id :x ,x :y ,y :w ,w :h ,h))))
+  (ewm-layout-module id x y w h))
 
 (defun ewm-views (id views)
   "Set surface ID to display at multiple VIEWS.
 VIEWS is a vector of plists with :x :y :w :h :active keys.
 The :active view receives input, others are visual copies."
-  (if ewm--module-mode
-      (ewm-views-module id views)
-    (ewm--send `(:cmd "views" :id ,id :views ,views))))
+  (ewm-views-module id views))
 
 (defun ewm-hide (id)
   "Hide surface ID (move offscreen)."
-  (if ewm--module-mode
-      (ewm-hide-module id)
-    (ewm--send `(:cmd "hide" :id ,id))))
+  (ewm-hide-module id))
 
 (defun ewm-close (id)
-  "Request surface ID to close gracefully.
-Sends xdg_toplevel.close to the client."
-  (if ewm--module-mode
-      (ewm-close-module id)
-    (ewm--send `(:cmd "close" :id ,id))))
+  "Request surface ID to close gracefully."
+  (ewm-close-module id))
 
 (defun ewm-focus (id)
   "Focus surface ID."
-  (if ewm--module-mode
-      (ewm-focus-module id)
-    (ewm--send `(:cmd "focus" :id ,id))))
+  (ewm-focus-module id))
 
 (defun ewm-warp-pointer (x y)
   "Warp pointer to absolute position X, Y."
-  (if ewm--module-mode
-      (ewm-warp-pointer-module (float x) (float y))
-    (ewm--send `(:cmd "warp-pointer" :x ,x :y ,y))))
+  (ewm-warp-pointer-module (float x) (float y)))
 
 (defun ewm-screenshot (&optional path)
-  "Take a screenshot of the compositor.
-Saves to PATH, or /tmp/ewm-screenshot.png by default."
+  "Take a screenshot of the compositor."
   (interactive)
-  (let ((target (or path "/tmp/ewm-screenshot.png")))
-    (if ewm--module-mode
-        (ewm-screenshot-module target)
-      (ewm--send `(:cmd "screenshot" :path ,target)))
-    (ewm-log "screenshot requested -> %s" target)))
+  (ewm-screenshot-module (or path "/tmp/ewm-screenshot.png")))
 
 (defun ewm-configure-output (name &rest args)
   "Configure output NAME with ARGS.
 ARGS is a plist with optional keys:
   :x :y - position in global coordinate space
-  :enabled - t or nil to enable/disable the output
-Example:
-  (ewm-configure-output \"DP-1\" :x 1920 :y 0)
-  (ewm-configure-output \"DP-1\" :enabled nil)"
-  (if ewm--module-mode
-      (ewm-configure-output-module
-       name
-       (plist-get args :x)
-       (plist-get args :y)
-       (plist-get args :width)
-       (plist-get args :height)
-       (plist-get args :refresh)
-       (if (plist-member args :enabled)
-           (plist-get args :enabled)
-         :unset))
-    (let ((cmd `(:cmd "configure-output" :name ,name)))
-      (while args
-        (let ((key (pop args))
-              (val (pop args)))
-          (setq cmd (plist-put cmd key val))))
-      (ewm--send cmd))))
+  :enabled - t or nil to enable/disable the output"
+  (ewm-configure-output-module
+   name
+   (plist-get args :x)
+   (plist-get args :y)
+   (plist-get args :width)
+   (plist-get args :height)
+   (plist-get args :refresh)
+   (if (plist-member args :enabled)
+       (plist-get args :enabled)
+     :unset)))
 
 (defun ewm-assign-output (id output)
-  "Assign surface ID to OUTPUT.
-The surface will be positioned and sized to fill the output.
-Example:
-  (ewm-assign-output 1 \"DP-1\")"
-  (if ewm--module-mode
-      (ewm-assign-output-module id output)
-    (ewm--send `(:cmd "assign-output" :id ,id :output ,output))))
+  "Assign surface ID to OUTPUT."
+  (ewm-assign-output-module id output))
 
 (defun ewm-prepare-frame (output)
-  "Tell compositor to assign next frame to OUTPUT.
-Call this before `make-frame' to have the compositor automatically
-assign the new frame's surface to the specified output."
-  (if ewm--module-mode
-      (ewm-prepare-frame-module output)
-    (ewm--send `(:cmd "prepare-frame" :output ,output))))
+  "Tell compositor to assign next frame to OUTPUT."
+  (ewm-prepare-frame-module output))
 
 (defun ewm--get-output-offset (output-name)
   "Return (x . y) offset for OUTPUT-NAME, or (0 . 0) if not found."
@@ -634,7 +535,6 @@ assign the new frame's surface to the specified output."
            (x (plist-get props :x))
            (y (plist-get props :y)))
       (when (or width height)
-        (ewm-log "configuring %s to %dx%d" name width height)
         (ewm-configure-output name
                               :width width
                               :height height
@@ -646,16 +546,12 @@ assign the new frame's surface to the specified output."
   "Handle outputs_complete event.
 Triggered after compositor sends all output_detected events.
 Applies user output config and enforces frame-output parity."
-  (ewm-log "all outputs received (%d)" (length ewm--outputs))
-  ;; Apply user output configuration (mode changes, positioning)
   (ewm--apply-output-config)
-  ;; Enforce 1:1 output-frame relationship
   (ewm--enforce-frame-output-parity))
 
 (defun ewm--handle-ready ()
   "Handle ready event from compositor.
 Signals that the compositor is fully initialized."
-  (ewm-log "compositor ready")
   (setq ewm--compositor-ready t))
 
 (defun ewm--handle-layouts (event)
@@ -663,15 +559,12 @@ Signals that the compositor is fully initialized."
 Updates internal tracking of available layouts."
   (pcase-let (((map ("layouts" layouts) ("current" current)) event))
     (setq ewm--xkb-layouts-configured (append layouts nil))
-    (setq ewm--xkb-current-layout (nth current ewm--xkb-layouts-configured))
-    (ewm-log "layouts configured: %s, current: %s"
-             ewm--xkb-layouts-configured ewm--xkb-current-layout)))
+    (setq ewm--xkb-current-layout (nth current ewm--xkb-layouts-configured))))
 
 (defun ewm--handle-layout-switched (event)
   "Handle layout-switched EVENT from compositor."
   (pcase-let (((map ("layout" layout) ("index" _index)) event))
-    (setq ewm--xkb-current-layout layout)
-    (ewm-log "layout switched to: %s" layout)))
+    (setq ewm--xkb-current-layout layout)))
 
 ;;; Text Input Support (EXWM-XIM equivalent)
 
@@ -681,14 +574,12 @@ Updates internal tracking of available layouts."
 (defun ewm--handle-text-input-activated ()
   "Handle text-input-activated event from compositor.
 Called when a client's text field gains focus."
-  (ewm-log "text input activated")
   (setq ewm-text-input-active t)
   (run-hooks 'ewm-text-input-activated-hook))
 
 (defun ewm--handle-text-input-deactivated ()
   "Handle text-input-deactivated event from compositor.
 Called when a client's text field loses focus."
-  (ewm-log "text input deactivated")
   (setq ewm-text-input-active nil)
   (run-hooks 'ewm-text-input-deactivated-hook))
 
@@ -700,12 +591,8 @@ Use this to enable special input handling modes.")
   "Hook run when a client text field becomes inactive.")
 
 (defun ewm-im-commit (text)
-  "Commit TEXT to the currently focused client text field.
-This is the core function for input method support - any text passed here
-will be inserted into the client's text field (e.g., Firefox URL bar)."
-  (if ewm--module-mode
-      (ewm-im-commit-module text)
-    (ewm--send `(:cmd "im-commit" :text ,text))))
+  "Commit TEXT to the currently focused client text field."
+  (ewm-im-commit-module text))
 
 (defvar ewm-text-input-method nil
   "Input method to use for text input translation.
@@ -772,13 +659,8 @@ client text fields gain/lose focus."
   (ewm-text-input-mode -1))
 
 (defun ewm-text-input-intercept (enabled)
-  "Enable or disable text input key interception.
-When ENABLED, the compositor sends all printable keys to Emacs
-instead of the focused surface. Emacs translates via input method
-and sends back via `ewm-im-commit'."
-  (if ewm--module-mode
-      (ewm-text-input-intercept-module (if (eq enabled :false) nil enabled))
-    (ewm--send `(:cmd "text-input-intercept" :enabled ,enabled))))
+  "Enable or disable text input key interception."
+  (ewm-text-input-intercept-module (if (eq enabled :false) nil enabled)))
 
 (defun ewm--handle-key (event)
   "Handle key event from compositor.
@@ -820,7 +702,6 @@ Called when text-input-intercept is enabled and a printable key is pressed."
   "Create a new frame for OUTPUT-NAME.
 Sends prepare-frame to compositor and creates a pending frame.
 The frame will be fully assigned when the compositor responds."
-  (ewm-log "creating frame for %s" output-name)
   (ewm-prepare-frame output-name)
   (setq ewm--pending-output-for-next-frame output-name)
   ;; Use window-system pgtk for fg-daemon mode (no initial display connection)
@@ -857,33 +738,6 @@ The frame will be fully assigned when the compositor responds."
          (t
           (puthash output frame seen)))))))
 
-;;; Process handling
-
-(defun ewm--filter (proc string)
-  "Process filter for PROC receiving STRING."
-  (let ((buf (process-buffer proc)))
-    (with-current-buffer buf
-      (goto-char (point-max))
-      (insert string)
-      ;; Process complete lines
-      (goto-char (point-min))
-      (while (search-forward "\n" nil t)
-        (let* ((line (buffer-substring (point-min) (1- (point))))
-               (event (condition-case err
-                          (json-parse-string line)
-                        (error
-                         (ewm-log "JSON parse error: %s" err)
-                         nil))))
-          (delete-region (point-min) (point))
-          (when event
-            (ewm--handle-event event)))))))
-
-(defun ewm--sentinel (proc event)
-  "Process sentinel for PROC with EVENT."
-  (ewm-log "connection %s" (string-trim event))
-  (when (not (process-live-p proc))
-    (setq ewm--process nil)))
-
 ;;; Public API
 
 (defun ewm--current-vt ()
@@ -895,48 +749,6 @@ The frame will be fully assigned when the compositor responds."
                           (buffer-string))))))
     (when (string-match "\\`tty\\([0-9]+\\)\\'" active)
       (string-to-number (match-string 1 active)))))
-
-(defun ewm--vt-suffix ()
-  "Return VT-specific suffix for socket names, e.g., \"-vt3\"."
-  (if-let ((vt (ewm--current-vt)))
-      (format "-vt%d" vt)
-    ""))
-
-(defun ewm--default-socket-path ()
-  "Return the default IPC socket path.
-Socket name is automatically derived from current VT number,
-e.g., on VT3: \"ewm-vt3.sock\"."
-  (let* ((runtime-dir (or (getenv "XDG_RUNTIME_DIR") "/tmp"))
-         (socket-name (format "ewm%s.sock" (ewm--vt-suffix))))
-    (expand-file-name socket-name runtime-dir)))
-
-(defun ewm-connect (&optional socket-path)
-  "Connect to compositor at SOCKET-PATH.
-Default path is automatically derived from current VT (e.g., ewm-vt3.sock).
-Safe to call unconditionally - returns nil with a message if connection fails."
-  (interactive)
-  (let ((path (or socket-path (ewm--default-socket-path))))
-    (when (and ewm--process (process-live-p ewm--process))
-      (delete-process ewm--process))
-    ;; Reset outputs and pending assignments
-    (setq ewm--outputs nil)
-    (setq ewm--pending-frame-outputs nil)
-    (condition-case nil
-        (progn
-          (setq ewm--process
-                (make-network-process
-                 :name "ewm"
-                 :buffer (generate-new-buffer " *ewm-input*")
-                 :family 'local
-                 :service path
-                 :filter #'ewm--filter
-                 :sentinel #'ewm--sentinel))
-          ;; Connection succeeded - enable EWM mode
-          (ewm-mode 1)
-          ;; Frame setup is triggered by outputs_complete event from compositor
-          (ewm-log "connected to %s" path))
-      (file-error
-       (ewm-log "connection failed (not running inside EWM?)")))))
 
 (defun ewm--disable-csd ()
   "Disable client-side decorations and bars for all frames.
@@ -955,16 +767,6 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
     (tab-bar-mode -1))
   ;; With no decorations and no bars, CSD height is 0
   (setq ewm-csd-height 0))
-
-(defun ewm-disconnect ()
-  "Disconnect from compositor."
-  (interactive)
-  (ewm-mode -1)
-  (setq ewm-text-input-active nil)
-  (when ewm--process
-    (delete-process ewm--process)
-    (setq ewm--process nil)
-    (ewm-log "disconnected")))
 
 ;;;###autoload
 (defun ewm-start-module ()
@@ -985,7 +787,6 @@ The compositor runs as a thread within the Emacs process."
   (setq ewm--module-mode nil)
   (setq ewm--compositor-ready nil)
   ;; Start the compositor
-  (ewm-log "Starting compositor in module mode...")
   (if (ewm-start)
       (progn
         (setq ewm--module-mode t)
@@ -1010,30 +811,23 @@ The compositor runs as a thread within the Emacs process."
           (setenv "WAYLAND_DISPLAY" socket-name)
           (setenv "XDG_SESSION_TYPE" "wayland")
           (setenv "GTK_IM_MODULE" "wayland")
-          (setenv "QT_IM_MODULE" "wayland")
-          (ewm-log "Set WAYLAND_DISPLAY=%s" socket-name))
-        (ewm-log "EWM module mode started"))
+          (setenv "QT_IM_MODULE" "wayland")))
     (error "Failed to start compositor")))
 
 (defun ewm-stop-module ()
   "Stop EWM module mode compositor."
   (interactive)
   (when ewm--module-mode
-    ;; Disconnect from notification socket first
     (ewm--disable-signal-handler)
-    ;; Request compositor stop
     (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
       (ewm-stop)
-      ;; Wait briefly for compositor to stop
-      (let ((timeout 50))  ; 5 seconds max
+      (let ((timeout 50))
         (while (and (> timeout 0) (ewm-running))
           (sleep-for 0.1)
           (cl-decf timeout))))
-    ;; Clean up
     (setq ewm--module-mode nil)
     (setq ewm--compositor-ready nil)
-    (ewm-mode -1)
-    (ewm-log "EWM module mode stopped")))
+    (ewm-mode -1)))
 
 ;;; Input handling
 ;;
@@ -1143,28 +937,24 @@ Both modes keep focus on the surface so typing works immediately."
   "Switch to char-mode: keys go directly to surface.
 Press a prefix key to return to line-mode."
   (interactive)
-  (ewm-input--update-mode 'char-mode)
-  (ewm-log "char-mode"))
+  (ewm-input--update-mode 'char-mode))
 
 (defun ewm-input-line-mode ()
   "Switch to line-mode: keys go to Emacs."
   (interactive)
-  (ewm-input--update-mode 'line-mode)
-  (ewm-log "line-mode"))
+  (ewm-input--update-mode 'line-mode))
 
 (defun ewm-input-toggle-mode ()
   "Toggle between line-mode and char-mode."
   (interactive)
   (ewm-input--update-mode
-   (if (eq ewm-input--mode 'char-mode) 'line-mode 'char-mode))
-  (ewm-log "%s" ewm-input--mode))
+   (if (eq ewm-input--mode 'char-mode) 'line-mode 'char-mode)))
 
-(defun ewm-input-send-key (key)
-  "Send KEY to the current surface.
-KEY should be a key sequence."
+(defun ewm-input-send-key (_key)
+  "Send KEY to the current surface (not implemented in module mode)."
   (interactive "kKey: ")
-  (when ewm-surface-id
-    (ewm--send `(:cmd "key" :id ,ewm-surface-id :key ,(key-description key)))))
+  ;; TODO: Implement in module if needed
+  nil)
 
 
 (defun ewm-input--warp-pointer-to-window (window)
@@ -1294,11 +1084,7 @@ This allows normal `global-set-key' bindings to work with EWM."
             (puthash spec-key t seen)
             (push spec specs)))))
     ;; Send to compositor
-    (ewm-log "Intercepting %d keys" (length specs))
-    (let ((keys-vec (vconcat (nreverse specs))))
-      (if ewm--module-mode
-          (ewm-intercept-keys-module keys-vec)
-        (ewm--send `(:cmd "intercept-keys" :keys ,keys-vec))))))
+    (ewm-intercept-keys-module (vconcat (nreverse specs)))))
 
 ;;; Surface mode
 
@@ -1315,18 +1101,12 @@ Similar to `exwm-title'.")
 
 (defun ewm--kill-buffer-query-function ()
   "Run in `kill-buffer-query-functions' for surface buffers.
-Sends close request to compositor and prevents immediate buffer kill.
-Buffer will be killed when compositor confirms surface closed.
-Adapted from exwm-manage--kill-buffer-query-function."
-  (if (not ewm-surface-id)
-      t  ; Not a surface buffer, allow kill
-    (if (not (or ewm--module-mode
-                 (and ewm--process (process-live-p ewm--process))))
-        t  ; No connection and not in module mode, allow kill
-      ;; Request graceful close via xdg_toplevel.close
-      (ewm-close ewm-surface-id)
-      ;; Don't kill buffer now; wait for compositor's "close" event
-      nil)))
+Sends close request to compositor and prevents immediate buffer kill."
+  (if (not (and ewm-surface-id ewm--module-mode))
+      t  ; Not a surface buffer or compositor not running
+    ;; Request graceful close via xdg_toplevel.close
+    (ewm-close ewm-surface-id)
+    nil))
 
 (defun ewm-surface-mode-line-mode ()
   "Return mode-line indicator for current input mode."
@@ -1373,79 +1153,6 @@ translated equivalents to the surface."
 
 ;; Apply simulation keys when the mode map is available
 (ewm-input--setup-simulation-keys)
-
-;;; Debug
-
-(defun ewm-debug-layout ()
-  "Show layout debug info for current window.
-Also writes to /tmp/ewm-debug.txt for easy access."
-  (interactive)
-  (let* ((window (selected-window))
-         (frame (selected-frame))
-         (geometry (frame-geometry frame))
-         (abs-edges (window-inside-absolute-pixel-edges window))
-         (rel-edges (window-inside-pixel-edges window))
-         (y-offset (ewm--frame-y-offset frame))
-         (frame-pos (frame-position frame))
-         (frame-outer (alist-get 'outer-edges geometry))
-         (frame-inner (alist-get 'inner-edges geometry))
-         (info (format "Window edges (absolute): %S
-Window edges (relative): %S
-Calculated Y offset: %d
-  - ewm-csd-height: %d
-  - menu-bar: %S
-  - tool-bar: %S
-  - tab-bar: %S
-Frame position: %S
-Frame outer-edges: %S
-Frame inner-edges: %S
-Frame undecorated: %S
-"
-                       abs-edges
-                       rel-edges
-                       y-offset
-                       ewm-csd-height
-                       (alist-get 'menu-bar-size geometry)
-                       (alist-get 'tool-bar-size geometry)
-                       (alist-get 'tab-bar-size geometry)
-                       frame-pos
-                       frame-outer
-                       frame-inner
-                       (frame-parameter frame 'undecorated))))
-    (write-region info nil "/tmp/ewm-debug.txt")
-    (message "Debug saved to /tmp/ewm-debug.txt")))
-
-(defun ewm-debug-surfaces ()
-  "Show which window each surface is mapped to.
-Writes to /tmp/ewm-surfaces.txt for debugging."
-  (interactive)
-  (let ((info "=== Surface Layout Debug ===\n\n")
-        (selected (selected-window)))
-    ;; Show selected window
-    (setq info (concat info (format "Selected window: %s\n\n" selected)))
-    ;; Show all windows and their buffers
-    (setq info (concat info "Windows:\n"))
-    (dolist (window (window-list nil 'no-minibuf))
-      (let* ((buf (window-buffer window))
-             (id (buffer-local-value 'ewm-surface-id buf))
-             (edges (window-inside-absolute-pixel-edges window)))
-        (setq info (concat info (format "  %s%s: %s%s\n    edges: %S\n"
-                                        window
-                                        (if (eq window selected) " *SELECTED*" "")
-                                        (buffer-name buf)
-                                        (if id (format " [surface %d]" id) "")
-                                        edges)))))
-    ;; Show registered surfaces
-    (setq info (concat info "\nRegistered surfaces:\n"))
-    (maphash (lambda (id surface-info)
-               (let ((buf (plist-get surface-info :buffer)))
-                 (setq info (concat info (format "  ID %d: %s (live: %s)\n"
-                                                 id
-                                                 (buffer-name buf)
-                                                 (buffer-live-p buf))))))
-             ewm--surfaces)
-    (write-region info nil "/tmp/ewm-surfaces.txt")
-    (message "Debug written to /tmp/ewm-surfaces.txt")))
 
 ;;; Layout (adapted from EXWM's exwm-layout.el and exwm-core.el)
 
@@ -1512,13 +1219,8 @@ Adapted from exwm-layout--show."
     (ewm-layout id final-x final-y width height)))
 
 (defun ewm-layout--refresh ()
-  "Refresh layout for all surface buffers and sync focus.
-Collects all windows showing each surface and sends multi-view commands.
-Also handles focus: focuses the surface in the selected window, or the
-Emacs frame surface if viewing a regular buffer.
-This is the SINGLE place where focus is synced, avoiding race conditions."
-  (when (or ewm--module-mode
-            (and ewm--process (process-live-p ewm--process)))
+  "Refresh layout for all surface buffers and sync focus."
+  (when ewm--module-mode
     ;; Force redisplay to ensure window sizes are current
     (redisplay t)
     ;; Build a hash table: surface-id -> list of (window . active-p)
@@ -1558,8 +1260,6 @@ This is the SINGLE place where focus is synced, avoiding race conditions."
                (target-id (or surface-id frame-surface-id)))
           (when (and target-id ewm--input-state)
             (unless (eq target-id (ewm-input-state-last-focused-id ewm--input-state))
-              (ewm--focus-log "layout-refresh" "FOCUSING id=%d (was %d)"
-                              target-id (ewm-input-state-last-focused-id ewm--input-state))
               (setf (ewm-input-state-last-focused-id ewm--input-state) target-id)
               (ewm-focus target-id))))))))
 
@@ -1638,23 +1338,9 @@ Catches minibuffer height changes that window-configuration-change misses."
 ;;; Keyboard layout sync
 
 (defun ewm--send-xkb-config ()
-  "Send XKB configuration to compositor.
-Configures keyboard layouts from `ewm-xkb-layouts' and options from
-`ewm-xkb-options'."
-  (when (or ewm--module-mode
-            (and ewm--process (process-live-p ewm--process)))
-    (let ((layouts-str (string-join ewm-xkb-layouts ",")))
-      (if ewm--module-mode
-          (ewm-configure-xkb-module layouts-str ewm-xkb-options)
-        (let ((cmd (if ewm-xkb-options
-                       `(:cmd "configure-xkb"
-                         :layouts ,layouts-str
-                         :options ,ewm-xkb-options)
-                     `(:cmd "configure-xkb"
-                       :layouts ,layouts-str))))
-          (ewm--send cmd)))
-      (ewm-log "sent XKB config: layouts=%s options=%s"
-               layouts-str ewm-xkb-options))))
+  "Send XKB configuration to compositor."
+  (when ewm--module-mode
+    (ewm-configure-xkb-module (string-join ewm-xkb-layouts ",") ewm-xkb-options)))
 
 ;;; Global minor mode
 
