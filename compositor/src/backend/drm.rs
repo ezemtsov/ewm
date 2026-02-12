@@ -362,6 +362,9 @@ impl DrmBackendState {
 
     /// Render a frame to the given output
     fn render_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
+        // Refresh foreign toplevel state before rendering
+        ewm.refresh_foreign_toplevel();
+
         // First pass: check if we should render and extract needed data
         let (should_render, refresh_interval_us, output, render_node) = {
             let Some(device) = &self.device else {

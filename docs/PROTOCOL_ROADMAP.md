@@ -16,24 +16,11 @@ This document outlines Wayland protocols to implement for broader application co
 | `linux-dmabuf` | Done | Efficient buffer sharing |
 | `xdg-output` | Done | Multi-monitor info |
 | `xdg-activation-v1` | Done | Focus requests from apps |
+| `wlr-foreign-toplevel-v1` | Done | Exposes windows to external tools |
 
 ## Priority 1: Desktop Shell Support
 
 These protocols enable desktop shells like DankMaterialShell, waybar extensions, and window overview features.
-
-### wlr-foreign-toplevel-management-v1
-
-**Purpose**: Exposes toplevel windows to external tools (taskbars, window switchers, overview)
-
-**Enables**:
-- DankMaterialShell window list/overview
-- Waybar window modules
-- Window switcher tools (rofi-window)
-- Kill window tools
-
-**Complexity**: Medium - Need to emit events on window create/destroy/focus/title change
-
-**Reference**: [niri/src/handlers/foreign_toplevel.rs](https://github.com/YaLTeR/niri)
 
 ### ext-idle-notify-v1
 

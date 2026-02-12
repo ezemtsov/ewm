@@ -57,7 +57,7 @@ use smithay::{
         wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
-            protocol::wl_surface::WlSurface,
+            protocol::{wl_output::WlOutput, wl_surface::WlSurface},
             Display, DisplayHandle, Resource,
         },
     },
@@ -97,6 +97,9 @@ use smithay::{
             XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
         },
     },
+};
+use crate::protocols::foreign_toplevel::{
+    ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
 };
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use serde::{Deserialize, Serialize};
@@ -348,6 +351,9 @@ pub struct Ewm {
     // XDG activation state (allows apps to request focus)
     pub activation_state: XdgActivationState,
 
+    // Foreign toplevel state (exposes windows to external tools)
+    pub foreign_toplevel_state: ForeignToplevelManagerState,
+
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
@@ -406,6 +412,10 @@ impl Ewm {
         // Initialize xdg-activation for focus requests
         let activation_state = XdgActivationState::new::<Self>(&display_handle);
 
+        // Initialize foreign toplevel management (exposes windows to external tools)
+        let foreign_toplevel_state =
+            ForeignToplevelManagerState::new::<Self, _>(&display_handle, |_| true);
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -444,6 +454,7 @@ impl Ewm {
             layer_shell_state,
             unmapped_layer_surfaces: std::collections::HashSet::new(),
             activation_state,
+            foreign_toplevel_state,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -493,6 +504,51 @@ impl Ewm {
             info!("Stopping event loop");
             signal.stop();
         }
+    }
+
+    /// Refresh foreign toplevel state (notify external tools of window changes)
+    pub fn refresh_foreign_toplevel(&mut self) {
+        use smithay::wayland::seat::WaylandFocus;
+
+        // Collect window info for all non-Emacs surfaces
+        let windows: Vec<WindowInfo> = self
+            .id_windows
+            .iter()
+            .filter(|(id, _)| !self.emacs_surfaces.contains(id))
+            .filter_map(|(&id, window)| {
+                let surface = window.wl_surface()?.into_owned();
+                let info = self.surface_info.get(&id)?;
+                let output = self.find_surface_output(id);
+                Some(WindowInfo {
+                    surface,
+                    title: if info.title.is_empty() {
+                        None
+                    } else {
+                        Some(info.title.clone())
+                    },
+                    app_id: Some(info.app_id.clone()),
+                    output,
+                    is_focused: self.focused_surface_id == id,
+                })
+            })
+            .collect();
+
+        self.foreign_toplevel_state.refresh::<Self>(windows);
+    }
+
+    /// Find the output for a surface (returns Output object)
+    fn find_surface_output(&self, surface_id: u32) -> Option<smithay::output::Output> {
+        let window = self.id_windows.get(&surface_id)?;
+        let window_loc = self.space.element_location(window)?;
+        self.space
+            .outputs()
+            .find(|o| {
+                self.space
+                    .output_geometry(o)
+                    .map(|geo| geo.contains(window_loc))
+                    .unwrap_or(false)
+            })
+            .cloned()
     }
 
     /// Stop a screen cast session properly (PipeWire + D-Bus cleanup)
@@ -1546,6 +1602,47 @@ impl XdgActivationHandler for Ewm {
     }
 }
 delegate_xdg_activation!(Ewm);
+
+// Foreign toplevel management protocol (exposes windows to external tools)
+impl ForeignToplevelHandler for Ewm {
+    fn foreign_toplevel_manager_state(&mut self) -> &mut ForeignToplevelManagerState {
+        &mut self.foreign_toplevel_state
+    }
+
+    fn activate(&mut self, wl_surface: WlSurface) {
+        if let Some(&id) = self
+            .window_ids
+            .iter()
+            .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
+            .map(|(_, id)| id)
+        {
+            self.focus_surface_with_source(id, true, "foreign_toplevel", None);
+            info!("Foreign toplevel: activated surface {}", id);
+        }
+    }
+
+    fn close(&mut self, wl_surface: WlSurface) {
+        if let Some((window, _)) = self
+            .window_ids
+            .iter()
+            .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
+        {
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.send_close();
+                info!("Foreign toplevel: sent close request");
+            }
+        }
+    }
+
+    fn set_fullscreen(&mut self, _wl_surface: WlSurface, _wl_output: Option<WlOutput>) {
+        // EWM doesn't have a fullscreen concept - windows fill Emacs windows
+    }
+
+    fn unset_fullscreen(&mut self, _wl_surface: WlSurface) {
+        // No-op for EWM
+    }
+}
+delegate_foreign_toplevel!(Ewm);
 
 // Screencopy protocol
 impl ScreencopyHandler for Ewm {
