@@ -551,8 +551,8 @@ impl Ewm {
                 let keyboard = self.seat.get_keyboard().unwrap();
                 let focus_surface = surface.into_owned();
                 self.keyboard_focus = Some(focus_surface.clone());
+                // focus_changed handles text_input focus
                 keyboard.set_focus(self, Some(focus_surface.clone()), SERIAL_COUNTER.next_serial());
-                self.update_text_input_focus(Some(&focus_surface), Some(id));
             }
         }
     }

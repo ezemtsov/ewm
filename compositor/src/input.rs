@@ -145,8 +145,8 @@ pub fn handle_keyboard_event(
                 if let Some(surface) = window.wl_surface() {
                     let emacs_surface: WlSurface = surface.into_owned();
                     state.keyboard_focus = Some(emacs_surface.clone());
+                    // focus_changed handles text_input focus
                     keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
-                    state.update_text_input_focus(None, Some(emacs_id));
 
                     // NOTE: We intentionally do NOT send a Focus event here.
                     // The prefix key redirect is temporary for the key sequence,
@@ -187,8 +187,8 @@ pub fn handle_keyboard_event(
             let new_focus = surface.into_owned();
             if state.keyboard_focus.as_ref() != Some(&new_focus) {
                 state.keyboard_focus = Some(new_focus.clone());
+                // focus_changed handles text_input focus
                 keyboard.set_focus(state, Some(new_focus.clone()), serial);
-                state.update_text_input_focus(Some(&new_focus), Some(target_id));
             }
         }
     }
@@ -383,8 +383,8 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::Pointer
             tracing::info!("Click focus: setting focus to surface {:?}", surface.id());
             state.set_focus(id);
             state.keyboard_focus = Some(surface.clone());
+            // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
             keyboard.set_focus(state, Some(surface.clone()), serial);
-            state.update_text_input_focus(Some(&surface), Some(id));
         }
     }
 
@@ -417,8 +417,8 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut Ewm, event: B::PointerAx
     if let Some((id, surface)) = focus_info {
         state.set_focus(id);
         state.keyboard_focus = Some(surface.clone());
+        // focus_changed handles text_input focus
         keyboard.set_focus(state, Some(surface.clone()), serial);
-        state.update_text_input_focus(Some(&surface), Some(id));
     }
 
     let source = event.source();

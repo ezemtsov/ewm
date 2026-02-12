@@ -1836,11 +1836,11 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                             });
 
                         if let Some((id, surface)) = focus_info {
-                            tracing::info!("Click focus: setting text_input focus to surface {:?}", surface.id());
+                            tracing::info!("Click focus: surface {:?}", surface.id());
                             state.ewm.set_focus(id);
                             state.ewm.keyboard_focus = Some(surface.clone());
+                            // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
                             keyboard.set_focus(&mut state.ewm, Some(surface.clone()), serial);
-                            state.ewm.update_text_input_focus(Some(&surface), Some(id));
                         }
                     }
 
@@ -1875,8 +1875,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some((id, surface)) = focus_info {
                         state.ewm.set_focus(id);
                         state.ewm.keyboard_focus = Some(surface.clone());
+                        // focus_changed handles text_input focus
                         keyboard.set_focus(&mut state.ewm, Some(surface.clone()), serial);
-                        state.ewm.update_text_input_focus(Some(&surface), Some(id));
                     }
 
                     let source = event.source();
