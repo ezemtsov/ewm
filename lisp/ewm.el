@@ -576,6 +576,12 @@ The compositor runs as a thread within the Emacs process."
     (setq ewm--compositor-ready nil)
     (ewm-mode -1)))
 
+(defun ewm--kill-emacs-hook ()
+  "Stop compositor gracefully before Emacs exits.
+Ensures the compositor thread is cleanly shut down when Emacs terminates."
+  (when ewm--module-mode
+    (ewm-stop-module)))
+
 ;;; Global minor mode
 
 (defun ewm--mode-enable ()
@@ -587,6 +593,7 @@ The compositor runs as a thread within the Emacs process."
   (ewm--send-xkb-config)
   (ewm-text-input-auto-mode-enable)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
+  (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Resend intercept keys after startup to catch late-loaded bindings
   (unless after-init-time
     (add-hook 'emacs-startup-hook #'ewm--send-intercept-keys)))
@@ -597,6 +604,7 @@ The compositor runs as a thread within the Emacs process."
   (ewm-input--disable)
   (ewm-text-input-auto-mode-disable)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
+  (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Stop module mode if active
   (when ewm--module-mode
     (ewm--disable-signal-handler)
