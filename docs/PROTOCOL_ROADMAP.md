@@ -17,35 +17,10 @@ This document outlines Wayland protocols to implement for broader application co
 | `xdg-output` | Done | Multi-monitor info |
 | `xdg-activation-v1` | Done | Focus requests from apps |
 | `wlr-foreign-toplevel-v1` | Done | Exposes windows to external tools |
+| `ext-session-lock-v1` | Done | Secure screen locking (swaylock) |
+| `ext-idle-notify-v1` | Done | Idle detection (swayidle) |
 
-## Priority 1: Desktop Shell Support
-
-These protocols enable desktop shells like DankMaterialShell, waybar extensions, and window overview features.
-
-### ext-idle-notify-v1
-
-**Purpose**: Notify clients when user is idle (no input for N seconds)
-
-**Enables**:
-- Screen lockers (swaylock)
-- Power management (screen dimming)
-- Status indicators
-
-**Complexity**: Low - Track last input time, notify registered clients
-
-### ext-session-lock-v1
-
-**Purpose**: Secure screen locking protocol
-
-**Enables**:
-- swaylock, waylock
-- Secure session locking
-
-**Complexity**: Medium - Must guarantee lock surface covers screen before confirming
-
-**Reference**: [niri/src/handlers/session_lock.rs](https://github.com/YaLTeR/niri)
-
-## Priority 2: Application Compatibility
+## Priority 1: Application Compatibility
 
 ### pointer-constraints-unstable-v1
 
@@ -92,7 +67,7 @@ These protocols enable desktop shells like DankMaterialShell, waybar extensions,
 
 **Complexity**: Low - Track inhibitors, disable idle timeout when active
 
-## Priority 3: Enhanced Features
+## Priority 2: Enhanced Features
 
 ### fractional-scale-v1
 
@@ -147,7 +122,7 @@ These protocols enable desktop shells like DankMaterialShell, waybar extensions,
 
 **Complexity**: Low
 
-## Priority 4: Workspace Protocols
+## Priority 3: Workspace Protocols
 
 These are lower priority since EWM uses Emacs for workspace management.
 
@@ -172,13 +147,14 @@ These are lower priority since EWM uses Emacs for workspace management.
 
 ### Testing Tools
 
-| Protocol | Test With |
-|----------|-----------|
-| foreign-toplevel | `wlrctl`, DankMaterialShell |
-| idle-notify | `swayidle` |
-| session-lock | `swaylock` |
-| pointer-constraints | `pointer-constraints-demo` |
-| activation | Launch apps from terminal |
+| Protocol | Test With | Status |
+|----------|-----------|--------|
+| foreign-toplevel | `wlrctl`, DankMaterialShell | ✓ |
+| idle-notify | `swayidle` | ✓ |
+| session-lock | `swaylock` | ✓ |
+| activation | Launch apps from terminal | ✓ |
+| pointer-constraints | `pointer-constraints-demo` | TODO |
+| idle-inhibit | Video player, `wayland-info` | TODO |
 
 ## References
 
