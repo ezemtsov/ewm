@@ -2098,6 +2098,22 @@ impl Ewm {
             self.check_lock_complete();
         }
     }
+
+    /// Abort the lock if we failed to render during Locking state.
+    /// This prevents the session from being stuck in an unlockable state.
+    pub fn abort_lock_on_render_failure(&mut self) {
+        if matches!(&self.lock_state, LockState::Locking(_)) {
+            warn!("Aborting session lock due to render failure");
+            // Reset to unlocked - the SessionLocker will be dropped, signaling failure
+            self.lock_state = LockState::Unlocked;
+            // Clear any lock surfaces
+            for state in self.output_state.values_mut() {
+                state.lock_surface = None;
+                state.lock_render_state = LockRenderState::Unlocked;
+            }
+            self.queue_redraw_all();
+        }
+    }
 }
 
 /// Shared state for compositor event loop (passed to all handlers)

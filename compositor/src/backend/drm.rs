@@ -508,6 +508,8 @@ impl DrmBackendState {
                             if let Some(output_state) = ewm.output_state.get_mut(&output) {
                                 output_state.redraw_state = RedrawState::Idle;
                             }
+                            // Abort lock if we failed to queue frame during Locking state
+                            ewm.abort_lock_on_render_failure();
                         }
                     }
                 } else {
@@ -525,6 +527,8 @@ impl DrmBackendState {
                 if let Some(output_state) = ewm.output_state.get_mut(&output) {
                     output_state.redraw_state = RedrawState::Idle;
                 }
+                // Abort lock if we failed to render during Locking state
+                ewm.abort_lock_on_render_failure();
             }
         }
 
