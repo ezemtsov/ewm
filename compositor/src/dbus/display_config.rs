@@ -95,8 +95,10 @@ impl DisplayConfig {
                 preferred_scale: 1.0,
                 supported_scales: vec![1.0, 1.25, 1.5, 2.0],
                 properties: HashMap::from([
-                    ("is-current".to_string(), OwnedValue::try_from(Value::Bool(true)).unwrap()),
-                    ("is-preferred".to_string(), OwnedValue::try_from(Value::Bool(true)).unwrap()),
+                    ("is-current".to_string(), OwnedValue::try_from(Value::Bool(true))
+                        .expect("bool conversion is infallible")),
+                    ("is-preferred".to_string(), OwnedValue::try_from(Value::Bool(true))
+                        .expect("bool conversion is infallible")),
                 ]),
             };
 
@@ -106,11 +108,13 @@ impl DisplayConfig {
             let mut properties = HashMap::new();
             properties.insert(
                 "display-name".to_string(),
-                OwnedValue::try_from(Value::Str(connector.clone().into())).unwrap(),
+                OwnedValue::try_from(Value::Str(connector.clone().into()))
+                    .expect("string conversion is infallible"),
             );
             properties.insert(
                 "is-builtin".to_string(),
-                OwnedValue::try_from(Value::Bool(false)).unwrap(),
+                OwnedValue::try_from(Value::Bool(false))
+                    .expect("bool conversion is infallible"),
             );
 
             monitors.push(Monitor {
@@ -136,7 +140,8 @@ impl DisplayConfig {
         logical_monitors.sort_by(|a, b| a.monitors[0].0.cmp(&b.monitors[0].0));
 
         let properties = HashMap::from([
-            ("layout-mode".to_string(), OwnedValue::try_from(Value::U32(1)).unwrap()),
+            ("layout-mode".to_string(), OwnedValue::try_from(Value::U32(1))
+                .expect("u32 conversion is infallible")),
         ]);
 
         Ok((0, monitors, logical_monitors, properties))
@@ -169,10 +174,11 @@ impl DisplayConfig {
 }
 
 impl Start for DisplayConfig {
-    fn start(self) -> anyhow::Result<Connection> {
-        info!("DisplayConfig::start() - requesting D-Bus name org.gnome.Mutter.DisplayConfig");
+    fn start(self, name_suffix: &str) -> anyhow::Result<Connection> {
+        let name = format!("org.gnome.Mutter.DisplayConfig{}", name_suffix);
+        info!("DisplayConfig::start() - requesting D-Bus name {}", name);
         let conn = zbus::blocking::connection::Builder::session()?
-            .name("org.gnome.Mutter.DisplayConfig")?
+            .name(name.as_str())?
             .serve_at("/org/gnome/Mutter/DisplayConfig", self)?
             .build()?;
         info!("DisplayConfig::start() - D-Bus connection established, unique name: {:?}", conn.unique_name());

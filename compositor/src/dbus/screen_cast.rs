@@ -76,7 +76,8 @@ impl ScreenCast {
     ) -> fdo::Result<OwnedObjectPath> {
         let session_id = SESSION_ID.fetch_add(1, Ordering::SeqCst);
         let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
-        let path = OwnedObjectPath::try_from(path).unwrap();
+        let path = OwnedObjectPath::try_from(path)
+            .expect("D-Bus path from format!() is always valid");
 
         let session = Session::new(
             session_id,
@@ -219,7 +220,8 @@ impl Session {
             "/org/gnome/Mutter/ScreenCast/Stream/u{}",
             stream_id
         );
-        let path = OwnedObjectPath::try_from(path).unwrap();
+        let path = OwnedObjectPath::try_from(path)
+            .expect("D-Bus path from format!() is always valid");
 
         let stream = Stream::new(
             stream_id,
@@ -345,10 +347,11 @@ impl Stream {
 }
 
 impl Start for ScreenCast {
-    fn start(self) -> anyhow::Result<Connection> {
-        info!("ScreenCast::start() - requesting D-Bus name org.gnome.Mutter.ScreenCast");
+    fn start(self, name_suffix: &str) -> anyhow::Result<Connection> {
+        let name = format!("org.gnome.Mutter.ScreenCast{}", name_suffix);
+        info!("ScreenCast::start() - requesting D-Bus name {}", name);
         let conn = zbus::blocking::connection::Builder::session()?
-            .name("org.gnome.Mutter.ScreenCast")?
+            .name(name.as_str())?
             .serve_at("/org/gnome/Mutter/ScreenCast", self)?
             .build()?;
         info!("ScreenCast::start() - D-Bus connection established, unique name: {:?}", conn.unique_name());

@@ -58,10 +58,11 @@ impl ServiceChannel {
 }
 
 impl Start for ServiceChannel {
-    fn start(self) -> anyhow::Result<Connection> {
-        info!("ServiceChannel::start() - requesting D-Bus name org.gnome.Mutter.ServiceChannel");
+    fn start(self, name_suffix: &str) -> anyhow::Result<Connection> {
+        let name = format!("org.gnome.Mutter.ServiceChannel{}", name_suffix);
+        info!("ServiceChannel::start() - requesting D-Bus name {}", name);
         let conn = zbus::blocking::connection::Builder::session()?
-            .name("org.gnome.Mutter.ServiceChannel")?
+            .name(name.as_str())?
             .serve_at("/org/gnome/Mutter/ServiceChannel", self)?
             .build()?;
         info!("ServiceChannel::start() - D-Bus connection established, unique name: {:?}", conn.unique_name());
