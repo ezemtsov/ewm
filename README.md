@@ -27,6 +27,12 @@ The key difference from EXWM: the compositor runs as a separate thread within Em
 - **[EXWM](https://github.com/ch11ng/exwm)** (Emacs side): Buffer-per-window model, prefix key interception, line/char mode switching, automatic focus management
 - **[niri](https://github.com/YaLTeR/niri)** (Compositor side): Backend architecture, Smithay patterns, DRM abstraction
 
+## Requirements
+
+- **Emacs with pgtk**: Must be built with the pure GTK (pgtk) backend for native Wayland support. On NixOS use `emacs-pgtk` or `emacs30-pgtk`.
+- **Mesa/EGL**: Graphics drivers providing `libEGL.so.1`. On NixOS, enable `hardware.graphics.enable = true`.
+- **Run from TTY**: Must launch from a virtual terminal, not inside an existing Wayland/X11 session.
+
 ## Building
 
 ```bash
@@ -76,7 +82,7 @@ The module registers an `ewm` session with your display manager (e.g., ly, gdm).
 Select "EWM" at login to start the compositor.
 
 Module options:
-- `emacsPackage`: Your Emacs package (default: `pkgs.emacs`)
+- `emacsPackage`: Emacs package, must be pgtk build (default: `pkgs.emacs-pgtk`)
 - `initDirectory`: Path to your Emacs config directory
 - `screencast.enable`: Enable screen sharing via PipeWire (default: true)
 

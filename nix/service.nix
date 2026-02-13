@@ -68,7 +68,12 @@ in
       description = "The EWM package to use.";
     };
 
-    emacsPackage = lib.mkPackageOption pkgs "emacs" { };
+    emacsPackage = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.emacs-pgtk;
+      description = "Emacs package to use. Must be a pgtk build for Wayland support.";
+      example = "pkgs.emacs30-pgtk";
+    };
 
     initDirectory = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -91,6 +96,9 @@ in
     services.displayManager.sessionPackages = [ sessionPackage ];
 
     security.polkit.enable = true;
+
+    # Required for DRM backend (provides libEGL, mesa drivers)
+    hardware.graphics.enable = lib.mkDefault true;
 
     services.pipewire = lib.mkIf cfg.screencast.enable {
       enable = lib.mkDefault true;
