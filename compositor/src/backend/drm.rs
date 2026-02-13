@@ -1845,6 +1845,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                             });
 
                         if let Some((id, surface)) = focus_info {
+                            module::record_focus(id, "click", None);
                             tracing::info!("Click focus: surface {:?}", surface.id());
                             state.ewm.set_focus(id);
                             state.ewm.keyboard_focus = Some(surface.clone());
@@ -1882,6 +1883,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                         });
 
                     if let Some((id, surface)) = focus_info {
+                        module::record_focus(id, "scroll", None);
+                        tracing::info!("Scroll focus: surface {:?}", surface.id());
                         state.ewm.set_focus(id);
                         state.ewm.keyboard_focus = Some(surface.clone());
                         // focus_changed handles text_input focus
