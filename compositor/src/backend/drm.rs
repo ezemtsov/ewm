@@ -488,11 +488,20 @@ impl DrmBackendState {
                     match surface.compositor.queue_frame(()) {
                         Ok(()) => {
                             // Transition to WaitingForVBlank
+                            let is_locked = ewm.is_locked();
                             if let Some(output_state) = ewm.output_state.get_mut(&output) {
                                 output_state.redraw_state = RedrawState::WaitingForVBlank { redraw_needed: false };
                                 // Start Tracy frame tracking for VBlank interval
                                 output_state.vblank_tracker.begin_frame();
+
+                                // Mark this output as having rendered a locked frame
+                                if is_locked && output_state.lock_surface.is_some() {
+                                    output_state.lock_render_state = crate::LockRenderState::Locked;
+                                }
                             }
+
+                            // Check if all outputs have rendered locked frames
+                            ewm.check_lock_complete();
                         }
                         Err(err) => {
                             warn!("Error queueing frame: {:?}", err);
@@ -534,6 +543,19 @@ impl DrmBackendState {
             layer.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
         }
         drop(layer_map);
+
+        // Send frame callbacks to lock surface (if any)
+        if let Some(output_state) = ewm.output_state.get(&output) {
+            if let Some(ref lock_surface) = output_state.lock_surface {
+                smithay::desktop::utils::send_frames_surface_tree(
+                    lock_surface.wl_surface(),
+                    &output,
+                    Duration::ZERO,
+                    None,
+                    |_, _| Some(output.clone()),
+                );
+            }
+        }
 
         // Process pending screencopy requests for this output
         if should_process_screencopy {

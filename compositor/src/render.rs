@@ -269,6 +269,27 @@ pub fn collect_render_elements_for_output(
 
     let mut elements: Vec<EwmRenderElement> = Vec::new();
 
+    // If session is locked, render ONLY the lock surface for this output
+    if ewm.is_locked() {
+        if let Some(state) = ewm.output_state.get(output) {
+            if let Some(ref lock_surface) = state.lock_surface {
+                // Render lock surface at (0,0) covering full output
+                let lock_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                    render_elements_from_surface_tree(
+                        renderer,
+                        lock_surface.wl_surface(),
+                        Point::<i32, Physical>::from((0, 0)),
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    );
+                elements.extend(lock_elements.into_iter().map(EwmRenderElement::Surface));
+            }
+        }
+        // Return early - don't render anything else when locked
+        return elements;
+    }
+
     // Output bounds in global logical coordinates
     let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
 

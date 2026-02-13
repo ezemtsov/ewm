@@ -70,9 +70,10 @@ pub use event::{Event, OutputInfo, OutputMode};
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_input_method_manager,
-    delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_seat, delegate_shm,
-    delegate_text_input_manager, delegate_xdg_activation, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_dmabuf,
+    delegate_input_method_manager, delegate_layer_shell, delegate_output, delegate_primary_selection,
+    delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
+    delegate_xdg_activation, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind,
         PopupManager, Space, Window,
@@ -131,6 +132,9 @@ use smithay::{
         xdg_activation::{
             XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
         },
+        session_lock::{
+            LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+        },
     },
 };
 use crate::protocols::foreign_toplevel::{
@@ -177,6 +181,36 @@ impl RedrawState {
     }
 }
 
+/// Session lock state machine for secure screen locking.
+///
+/// Follows the ext-session-lock-v1 protocol requirements:
+/// - Lock is confirmed only after all outputs render a locked frame
+/// - Input is blocked during locking/locked states
+pub enum LockState {
+    /// Session is not locked
+    Unlocked,
+    /// Lock requested, waiting for all outputs to render locked frame
+    Locking(SessionLocker),
+    /// Session is fully locked
+    Locked,
+}
+
+impl Default for LockState {
+    fn default() -> Self {
+        LockState::Unlocked
+    }
+}
+
+/// Per-output lock render state for tracking lock confirmation.
+#[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
+pub enum LockRenderState {
+    /// Output is showing normal content (or not yet rendered locked)
+    #[default]
+    Unlocked,
+    /// Output has rendered a locked frame
+    Locked,
+}
+
 /// Per-output state for redraw synchronization
 pub struct OutputState {
     pub redraw_state: RedrawState,
@@ -184,6 +218,10 @@ pub struct OutputState {
     pub refresh_interval_us: u64,
     /// Tracy frame tracker for VBlank profiling (no-op when feature disabled)
     pub vblank_tracker: VBlankFrameTracker,
+    /// Lock surface for this output (when session is locked)
+    pub lock_surface: Option<LockSurface>,
+    /// Render state for session lock (tracks whether locked frame was rendered)
+    pub lock_render_state: LockRenderState,
 }
 
 impl OutputState {
@@ -193,6 +231,8 @@ impl OutputState {
             redraw_state: RedrawState::Queued,
             refresh_interval_us,
             vblank_tracker: VBlankFrameTracker::new(output_name),
+            lock_surface: None,
+            lock_render_state: LockRenderState::Unlocked,
         }
     }
 }
@@ -203,6 +243,8 @@ impl Default for OutputState {
             redraw_state: RedrawState::Idle,
             refresh_interval_us: 16_667, // ~60Hz default
             vblank_tracker: VBlankFrameTracker::new("default"),
+            lock_surface: None,
+            lock_render_state: LockRenderState::Unlocked,
         }
     }
 }
@@ -410,6 +452,15 @@ pub struct Ewm {
     // Foreign toplevel state (exposes windows to external tools)
     pub foreign_toplevel_state: ForeignToplevelManagerState,
 
+    // Session lock state (ext-session-lock-v1 protocol)
+    pub session_lock_state: SessionLockManagerState,
+    pub lock_state: LockState,
+
+    // TODO: ext-idle-notify-v1 protocol support
+    // IdleNotifierState<D> requires LoopHandle<D> and Seat<D> to match,
+    // but our event loop uses State while handlers use Ewm.
+    // This needs architectural changes to support properly.
+
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
@@ -473,6 +524,9 @@ impl Ewm {
         let foreign_toplevel_state =
             ForeignToplevelManagerState::new::<Self, _>(&display_handle, |_| true);
 
+        // Initialize session lock for screen locking (ext-session-lock-v1)
+        let session_lock_state = SessionLockManagerState::new::<Self, _>(&display_handle, |_| true);
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -515,6 +569,8 @@ impl Ewm {
             working_areas: HashMap::new(),
             activation_state,
             foreign_toplevel_state,
+            session_lock_state,
+            lock_state: LockState::Unlocked,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -1864,6 +1920,152 @@ impl ScreencopyHandler for Ewm {
     }
 }
 delegate_screencopy!(Ewm);
+
+// Session Lock protocol (ext-session-lock-v1) for screen locking
+impl SessionLockHandler for Ewm {
+    fn lock_state(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock_state
+    }
+
+    fn lock(&mut self, confirmation: SessionLocker) {
+        // Refuse if already locking/locked
+        if !matches!(self.lock_state, LockState::Unlocked) {
+            info!("Session lock request ignored: already locking/locked");
+            return;
+        }
+
+        info!("Session lock requested");
+
+        if self.output_state.is_empty() {
+            // No outputs: lock immediately
+            confirmation.lock();
+            self.lock_state = LockState::Locked;
+            info!("Session locked (no outputs)");
+        } else {
+            // Enter Locking state and queue redraw to show locked frame
+            self.lock_state = LockState::Locking(confirmation);
+            // Reset all output lock render states
+            for state in self.output_state.values_mut() {
+                state.lock_render_state = LockRenderState::Unlocked;
+            }
+            self.queue_redraw_all();
+        }
+    }
+
+    fn unlock(&mut self) {
+        info!("Session unlock requested");
+        self.lock_state = LockState::Unlocked;
+
+        // Clear lock surfaces and reset render states
+        for state in self.output_state.values_mut() {
+            state.lock_surface = None;
+            state.lock_render_state = LockRenderState::Unlocked;
+        }
+
+        self.queue_redraw_all();
+        info!("Session unlocked");
+    }
+
+    fn new_surface(&mut self, surface: LockSurface, wl_output: WlOutput) {
+        let Some(output) = Output::from_resource(&wl_output) else {
+            warn!("Lock surface created for unknown output");
+            return;
+        };
+
+        info!("New lock surface for output: {}", output.name());
+
+        // Configure lock surface to cover the entire output
+        configure_lock_surface(&surface, &output);
+
+        // Store in per-output state
+        if let Some(state) = self.output_state.get_mut(&output) {
+            state.lock_surface = Some(surface);
+        }
+
+        self.queue_redraw(&output);
+    }
+}
+delegate_session_lock!(Ewm);
+
+/// Configure a lock surface to cover the full output
+fn configure_lock_surface(surface: &LockSurface, output: &Output) {
+    use smithay::wayland::compositor::with_states;
+    use smithay::wayland::fractional_scale::with_fractional_scale;
+
+    surface.with_pending_state(|states| {
+        let mode = output.current_mode().unwrap();
+        let size = output.current_transform().transform_size(mode.size);
+        states.size = Some(Size::from((size.w as u32, size.h as u32)));
+    });
+
+    let scale = output.current_scale();
+    let transform = output.current_transform();
+    let wl_surface = surface.wl_surface();
+
+    with_states(wl_surface, |data| {
+        // Send preferred scale
+        if let Some(fractional_scale) = with_fractional_scale(data, |fractional| {
+            fractional.preferred_scale()
+        }) {
+            // Already has fractional scale configured
+            let _ = fractional_scale;
+        }
+
+        // Send preferred buffer scale and transform
+        smithay::wayland::compositor::send_surface_state(
+            wl_surface,
+            data,
+            scale.integer_scale(),
+            transform,
+        );
+    });
+
+    surface.send_configure();
+}
+
+
+impl Ewm {
+    /// Check if the session is locked (locking or fully locked)
+    pub fn is_locked(&self) -> bool {
+        matches!(self.lock_state, LockState::Locking(_) | LockState::Locked)
+    }
+
+    /// Check if all outputs have rendered locked frames and confirm lock if so
+    pub fn check_lock_complete(&mut self) {
+        // Check if we're in Locking state and all outputs have rendered
+        let should_confirm = matches!(&self.lock_state, LockState::Locking(_))
+            && self.output_state.values().all(|s| s.lock_render_state == LockRenderState::Locked);
+
+        if should_confirm {
+            // Take ownership of the SessionLocker to call lock()
+            let old_state = mem::replace(&mut self.lock_state, LockState::Locked);
+            if let LockState::Locking(confirmation) = old_state {
+                info!("All outputs rendered locked frame, confirming lock");
+                confirmation.lock();
+            }
+        }
+    }
+
+    /// Get the lock surface for keyboard focus when locked
+    pub fn lock_surface_focus(&self) -> Option<WlSurface> {
+        // Prefer lock surface on output under cursor, then any output
+        let cursor_output = self.output_under_cursor()
+            .and_then(|name| {
+                self.output_state.iter()
+                    .find(|(o, _)| o.name() == name)
+                    .map(|(o, _)| o.clone())
+            });
+
+        let target_output = cursor_output
+            .or_else(|| self.output_state.keys().next().cloned());
+
+        target_output.and_then(|output| {
+            self.output_state.get(&output)?
+                .lock_surface.as_ref()
+                .map(|s| s.wl_surface().clone())
+        })
+    }
+}
 
 /// Shared state for compositor event loop (passed to all handlers)
 ///

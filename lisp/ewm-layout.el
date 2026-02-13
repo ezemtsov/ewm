@@ -60,8 +60,11 @@ This covers various Emacs states where focus needs to stay on Emacs:
       (and overriding-terminal-local-map
            (keymapp overriding-terminal-local-map))))
 
-(defun ewm-layout--refresh ()
-  "Refresh layout for all surface buffers and sync focus."
+(defun ewm-layout--refresh (&optional skip-focus-sync)
+  "Refresh layout for all surface buffers and optionally sync focus.
+When SKIP-FOCUS-SYNC is non-nil, only update views without syncing focus.
+This is used by hooks that fire rapidly during startup or resize operations.
+Focus sync should only happen through the debounced `ewm-input--sync-focus'."
   (when ewm--module-mode
     ;; Force redisplay to ensure window sizes are current
     (redisplay t)
@@ -93,8 +96,8 @@ This covers various Emacs states where focus needs to stay on Emacs:
              ;; Surface not visible - hide it
              (ewm-hide id))))
        ewm--surfaces)
-      ;; Sync focus (unless focus is locked by minibuffer, prefix sequence, etc.)
-      (unless (ewm--focus-locked-p)
+      ;; Sync focus only if not skipped and not locked
+      (unless (or skip-focus-sync (ewm--focus-locked-p))
         (let* ((sel-buf (window-buffer sel-window))
                (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
                (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))
@@ -117,8 +120,9 @@ This covers various Emacs states where focus needs to stay on Emacs:
     `(:x ,final-x :y ,final-y :w ,width :h ,height :active ,(if active-p t :false))))
 
 (defun ewm--window-config-change ()
-  "Hook called when window configuration changes."
-  (ewm-layout--refresh))
+  "Hook called when window configuration changes.
+Updates views only; focus sync happens through debounced path."
+  (ewm-layout--refresh 'skip-focus))
 
 (defvar ewm--pre-minibuffer-surface-id nil
   "Surface ID that was focused before minibuffer opened.")
@@ -138,7 +142,7 @@ Saves previous surface to restore on exit."
   (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
     (ewm-focus frame-surface-id))
   (redisplay t)
-  (ewm-layout--refresh))
+  (ewm-layout--refresh 'skip-focus))
 
 (defun ewm--on-minibuffer-exit ()
   "Restore focus to previous surface when minibuffer exits."
@@ -146,12 +150,13 @@ Saves previous surface to restore on exit."
     (ewm-focus ewm--pre-minibuffer-surface-id)
     (setq ewm--pre-minibuffer-surface-id nil))
   (redisplay t)
-  (ewm-layout--refresh))
+  (ewm-layout--refresh 'skip-focus))
 
 (defun ewm--on-window-size-change (_frame)
   "Refresh layout when window sizes change.
-Catches minibuffer height changes that window-configuration-change misses."
-  (ewm-layout--refresh))
+Catches minibuffer height changes that window-configuration-change misses.
+Updates views only; focus sync happens through debounced path."
+  (ewm-layout--refresh 'skip-focus))
 
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."

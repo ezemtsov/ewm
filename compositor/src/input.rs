@@ -32,6 +32,12 @@ use smithay::{
 
 use crate::{is_kill_combo, Ewm, module};
 
+/// Notify the idle notifier of user activity (if initialized)
+/// TODO: ext-idle-notify-v1 support requires architectural changes
+fn notify_activity(_state: &mut Ewm) {
+    // No-op for now - idle notifier not yet supported
+}
+
 /// Result of processing a keyboard event
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardAction {
@@ -66,6 +72,43 @@ pub fn handle_keyboard_event(
 
     let serial = SERIAL_COUNTER.next_serial();
     let is_press = key_state == KeyState::Pressed;
+
+    // Handle locked state: only allow VT switch, forward everything else to lock surface
+    if state.is_locked() {
+        // Notify idle notifier of activity even when locked
+        notify_activity(state);
+
+        // Check for VT switch first (Ctrl+Alt+F1-F12)
+        let vt_switch = keyboard.input::<Option<i32>, _>(
+            state,
+            keycode.into(),
+            key_state,
+            serial,
+            time,
+            |_, _, handle| {
+                if !is_press {
+                    return FilterResult::Forward;
+                }
+                let modified = handle.modified_sym().raw();
+                if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&modified) {
+                    let vt = (modified - keysyms::KEY_XF86Switch_VT_1 + 1) as i32;
+                    return FilterResult::Intercept(Some(vt));
+                }
+                FilterResult::Forward
+            },
+        );
+
+        if let Some(Some(vt)) = vt_switch {
+            return KeyboardAction::ChangeVt(vt);
+        }
+
+        // Forward input to lock surface
+        if let Some(lock_focus) = state.lock_surface_focus() {
+            keyboard.set_focus(state, Some(lock_focus), serial);
+        }
+
+        return KeyboardAction::Forward;
+    }
 
     // Process any pending focus command before handling the key.
     // This ensures focus changes from Emacs are applied immediately,
@@ -255,6 +298,9 @@ pub fn handle_keyboard_event(
         }
     }
 
+    // Notify idle notifier of user activity
+    notify_activity(state);
+
     KeyboardAction::Forward
 }
 
@@ -343,8 +389,12 @@ pub fn handle_pointer_motion<B: InputBackend>(
     let pointer = state.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
-    // Find surface under pointer (including popups)
-    let under = state.surface_under_point((new_x, new_y).into());
+    // When locked, route pointer to lock surface instead of normal surfaces
+    let under = if state.is_locked() {
+        state.lock_surface_focus().map(|s| (s, (0.0, 0.0).into()))
+    } else {
+        state.surface_under_point((new_x, new_y).into())
+    };
 
     pointer.motion(
         state,
@@ -368,6 +418,10 @@ pub fn handle_pointer_motion<B: InputBackend>(
     );
 
     pointer.frame(state);
+
+    // Notify idle notifier of user activity
+    notify_activity(state);
+
     true // needs redraw
 }
 
@@ -385,8 +439,12 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     let pointer = state.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
-    // Find surface under pointer (including popups)
-    let under = state.surface_under_point(pos);
+    // When locked, route pointer to lock surface instead of normal surfaces
+    let under = if state.is_locked() {
+        state.lock_surface_focus().map(|s| (s, (0.0, 0.0).into()))
+    } else {
+        state.surface_under_point(pos)
+    };
 
     pointer.motion(
         state,
@@ -398,6 +456,10 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
         },
     );
     pointer.frame(state);
+
+    // Notify idle notifier of user activity
+    notify_activity(state);
+
     true // needs redraw
 }
 
@@ -413,21 +475,24 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::Pointer
         ButtonState::Released => ButtonState::Released,
     };
 
-    // Click-to-focus: on button press, focus the surface under pointer
-    if button_state == ButtonState::Pressed {
-        let (px, py) = state.pointer_location;
-        let focus_info = state.space.element_under((px, py)).and_then(|(window, _)| {
-            let id = state.window_ids.get(&window).copied()?;
-            let surface = window.wl_surface()?.into_owned();
-            Some((id, surface))
-        });
+    // When locked, skip click-to-focus and just forward to lock surface
+    if !state.is_locked() {
+        // Click-to-focus: on button press, focus the surface under pointer
+        if button_state == ButtonState::Pressed {
+            let (px, py) = state.pointer_location;
+            let focus_info = state.space.element_under((px, py)).and_then(|(window, _)| {
+                let id = state.window_ids.get(&window).copied()?;
+                let surface = window.wl_surface()?.into_owned();
+                Some((id, surface))
+            });
 
-        if let Some((id, surface)) = focus_info {
-            module::record_focus(id, "click", None);
-            state.set_focus(id);
-            state.keyboard_focus = Some(surface.clone());
-            // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
-            keyboard.set_focus(state, Some(surface.clone()), serial);
+            if let Some((id, surface)) = focus_info {
+                module::record_focus(id, "click", None);
+                state.set_focus(id);
+                state.keyboard_focus = Some(surface.clone());
+                // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
+                keyboard.set_focus(state, Some(surface.clone()), serial);
+            }
         }
     }
 
@@ -441,6 +506,9 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::Pointer
         },
     );
     pointer.frame(state);
+
+    // Notify idle notifier of user activity
+    notify_activity(state);
 }
 
 /// Handle pointer axis (scroll wheel, touchpad scroll)
@@ -450,20 +518,23 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut Ewm, event: B::PointerAx
     let keyboard = state.keyboard.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
-    // Scroll-to-focus: focus the surface under pointer on scroll
-    let (px, py) = state.pointer_location;
-    let focus_info = state.space.element_under((px, py)).and_then(|(window, _)| {
-        let id = state.window_ids.get(&window).copied()?;
-        let surface = window.wl_surface()?.into_owned();
-        Some((id, surface))
-    });
+    // When locked, skip scroll-to-focus
+    if !state.is_locked() {
+        // Scroll-to-focus: focus the surface under pointer on scroll
+        let (px, py) = state.pointer_location;
+        let focus_info = state.space.element_under((px, py)).and_then(|(window, _)| {
+            let id = state.window_ids.get(&window).copied()?;
+            let surface = window.wl_surface()?.into_owned();
+            Some((id, surface))
+        });
 
-    if let Some((id, surface)) = focus_info {
-        module::record_focus(id, "scroll", None);
-        state.set_focus(id);
-        state.keyboard_focus = Some(surface.clone());
-        // focus_changed handles text_input focus
-        keyboard.set_focus(state, Some(surface.clone()), serial);
+        if let Some((id, surface)) = focus_info {
+            module::record_focus(id, "scroll", None);
+            state.set_focus(id);
+            state.keyboard_focus = Some(surface.clone());
+            // focus_changed handles text_input focus
+            keyboard.set_focus(state, Some(surface.clone()), serial);
+        }
     }
 
     let source = event.source();
@@ -510,4 +581,7 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut Ewm, event: B::PointerAx
 
     pointer.axis(state, frame);
     pointer.frame(state);
+
+    // Notify idle notifier of user activity
+    notify_activity(state);
 }
