@@ -509,6 +509,16 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
                 cons("json", json.into_lisp(env)?)?,
             ])
         }
+        Event::WorkingArea { output, x, y, width, height } => {
+            list(vec![
+                cons("event", "working_area".into_lisp(env)?)?,
+                cons("output", output.into_lisp(env)?)?,
+                cons("x", (x as i64).into_lisp(env)?)?,
+                cons("y", (y as i64).into_lisp(env)?)?,
+                cons("width", (width as i64).into_lisp(env)?)?,
+                cons("height", (height as i64).into_lisp(env)?)?,
+            ])
+        }
     }
 }
 

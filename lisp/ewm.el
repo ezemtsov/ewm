@@ -175,7 +175,8 @@ Example:
       ("text-input-activated" (ewm--handle-text-input-activated))
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
       ("key" (ewm--handle-key event))
-      ("state" (ewm--handle-state event)))))
+      ("state" (ewm--handle-state event))
+      ("working_area" (ewm--handle-working-area event)))))
 
 ;;; Event handlers
 
@@ -335,6 +336,17 @@ Displays the compositor state in a buffer for debugging."
         (goto-char (point-min)))
       (when (fboundp 'js-json-mode) (js-json-mode))
       (display-buffer (current-buffer)))))
+
+(defun ewm--handle-working-area (event)
+  "Handle working area change EVENT.
+Called when layer-shell surfaces (panels) claim exclusive zones,
+changing the available area for Emacs frames."
+  (pcase-let (((map ("output" output) ("x" x) ("y" y)
+                     ("width" width) ("height" height)) event))
+    (message "Working area for %s: %dx%d+%d+%d" output width height x y)
+    ;; Frame resize happens automatically via Wayland configure event.
+    ;; Trigger layout refresh to update surface views.
+    (ewm-layout--refresh)))
 
 ;;; Commands
 

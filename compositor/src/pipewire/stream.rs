@@ -51,6 +51,7 @@ enum CastState {
     Ready {
         size: Size<u32, Physical>,
         modifier: Modifier,
+        #[allow(dead_code)] // Stored for potential future use/debugging
         plane_count: i32,
         /// Damage tracker for skip-if-no-damage optimization (lazily initialized)
         damage_tracker: Option<OutputDamageTracker>,

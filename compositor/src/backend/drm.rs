@@ -1008,6 +1008,17 @@ impl DrmBackendState {
         // Send IPC event
         ewm.send_output_detected(output_info);
 
+        // Send initial working area (equals full output initially, before any panels)
+        let working_area = ewm.get_working_area(&output);
+        ewm.working_areas.insert(connector_name.clone(), working_area);
+        ewm.queue_event(crate::event::Event::WorkingArea {
+            output: connector_name.clone(),
+            x: working_area.loc.x,
+            y: working_area.loc.y,
+            width: working_area.size.w,
+            height: working_area.size.h,
+        });
+
         info!("Output connected: {}", connector_name);
 
         Ok(())
@@ -1444,6 +1455,21 @@ fn initialize_drm(
     for output_info in state.ewm.outputs.clone() {
         state.ewm.send_output_detected(output_info);
     }
+
+    // Send initial working_area events (full output, before any panels)
+    for output in state.ewm.space.outputs().cloned().collect::<Vec<_>>() {
+        let working_area = state.ewm.get_working_area(&output);
+        let output_name = output.name();
+        state.ewm.working_areas.insert(output_name.clone(), working_area);
+        state.ewm.queue_event(crate::event::Event::WorkingArea {
+            output: output_name,
+            x: working_area.loc.x,
+            y: working_area.loc.y,
+            width: working_area.size.w,
+            height: working_area.size.h,
+        });
+    }
+
     // Send outputs_complete event followed by ready
     state.ewm.queue_event(crate::event::Event::OutputsComplete);
     state.ewm.queue_event(crate::event::Event::Ready);

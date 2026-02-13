@@ -401,6 +401,9 @@ pub struct Ewm {
     pub layer_shell_state: WlrLayerShellState,
     pub unmapped_layer_surfaces: std::collections::HashSet<WlSurface>,
 
+    // Working area per output (non-exclusive zone from layer-shell surfaces)
+    pub working_areas: HashMap<String, Rectangle<i32, smithay::utils::Logical>>,
+
     // XDG activation state (allows apps to request focus)
     pub activation_state: XdgActivationState,
 
@@ -509,6 +512,7 @@ impl Ewm {
             popups: PopupManager::default(),
             layer_shell_state,
             unmapped_layer_surfaces: std::collections::HashSet::new(),
+            working_areas: HashMap::new(),
             activation_state,
             foreign_toplevel_state,
             #[cfg(feature = "screencast")]
@@ -916,6 +920,111 @@ impl Ewm {
         });
     }
 
+    /// Get the working area for an output (non-exclusive zone from layer surfaces).
+    /// This is the area available for Emacs frames after panels reserve their space.
+    pub fn get_working_area(&self, output: &Output) -> Rectangle<i32, smithay::utils::Logical> {
+        let map = layer_map_for_output(output);
+        map.non_exclusive_zone()
+    }
+
+    /// Update Emacs frames to fit within the working area of an output.
+    /// Called when layer surface exclusive zones change.
+    pub fn update_frames_for_working_area(&mut self, output: &Output) {
+        let working_area = self.get_working_area(output);
+        let output_geo = match self.space.output_geometry(output) {
+            Some(geo) => geo,
+            None => return,
+        };
+
+        // Find Emacs frame surfaces on this output and update their position/size
+        for (&id, window) in &self.id_windows {
+            // Only update Emacs surfaces
+            if !self.emacs_surfaces.contains(&id) {
+                continue;
+            }
+
+            // Check if this window is on the target output by comparing position
+            if let Some(window_loc) = self.space.element_location(window) {
+                if output_geo.contains(window_loc) {
+                    // Reposition to working area origin (relative to output)
+                    let new_pos = (
+                        output_geo.loc.x + working_area.loc.x,
+                        output_geo.loc.y + working_area.loc.y,
+                    );
+
+                    debug!(
+                        "Updating Emacs frame {} position to ({}, {}) size {}x{}",
+                        id, new_pos.0, new_pos.1, working_area.size.w, working_area.size.h
+                    );
+
+                    self.space.map_element(window.clone(), new_pos, false);
+
+                    // Resize to working area
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.with_pending_state(|state| {
+                            state.size = Some(working_area.size);
+                        });
+                        toplevel.send_configure();
+                    }
+                }
+            }
+        }
+
+        // Queue redraw
+        self.queue_redraw(output);
+    }
+
+    /// Check and update working area for an output, sending event if changed.
+    pub fn check_working_area_change(&mut self, output: &Output) {
+        let working_area = self.get_working_area(output);
+        let output_name = output.name();
+
+        // Check if changed
+        let changed = self
+            .working_areas
+            .get(&output_name)
+            .map_or(true, |prev| *prev != working_area);
+
+        if changed {
+            info!(
+                "Working area for {} changed: {}x{}+{}+{}",
+                output_name,
+                working_area.size.w,
+                working_area.size.h,
+                working_area.loc.x,
+                working_area.loc.y
+            );
+
+            self.working_areas.insert(output_name.clone(), working_area);
+
+            // Update Emacs frames to fit new working area
+            self.update_frames_for_working_area(output);
+
+            // Notify Emacs
+            self.queue_event(Event::WorkingArea {
+                output: output_name,
+                x: working_area.loc.x,
+                y: working_area.loc.y,
+                width: working_area.size.w,
+                height: working_area.size.h,
+            });
+        }
+    }
+
+    /// Get working areas as serializable structs for state dump.
+    pub fn get_working_areas_info(&self) -> Vec<crate::event::WorkingAreaInfo> {
+        self.working_areas
+            .iter()
+            .map(|(name, rect)| crate::event::WorkingAreaInfo {
+                output: name.clone(),
+                x: rect.loc.x,
+                y: rect.loc.y,
+                width: rect.size.w,
+                height: rect.size.h,
+            })
+            .collect()
+    }
+
     /// Check if there are pending screencopy requests for any output
     pub fn has_pending_screencopies(&self) -> bool {
         // This is a workaround since we can't easily check the internal state
@@ -1124,6 +1233,10 @@ impl Ewm {
                 layer.layer_surface().send_configure();
             }
             drop(map);
+
+            // Check for working area changes (exclusive zones from panels)
+            self.check_working_area_change(&output);
+
             self.queue_redraw(&output);
         } else {
             // This is a layer-shell subsurface
@@ -1380,12 +1493,18 @@ impl XdgShellHandler for Ewm {
 
         // Position based on surface type
         let position = if let Some(ref output_name) = frame_output {
-            // Emacs frame: position at output origin
+            // Emacs frame: position at working area origin (respects panel exclusive zones)
             self.space
                 .outputs()
                 .find(|o| o.name() == *output_name)
-                .and_then(|o| self.space.output_geometry(o))
-                .map(|geo| (geo.loc.x, geo.loc.y))
+                .map(|o| {
+                    let output_geo = self.space.output_geometry(o).unwrap_or_default();
+                    let working_area = self.get_working_area(o);
+                    (
+                        output_geo.loc.x + working_area.loc.x,
+                        output_geo.loc.y + working_area.loc.y,
+                    )
+                })
                 .unwrap_or((-10000, -10000))
         } else {
             // External app: offscreen, Emacs layout will position
@@ -1393,17 +1512,17 @@ impl XdgShellHandler for Ewm {
         };
         self.space.map_element(window.clone(), position, false);
 
-        // Resize Emacs frames to fill their output
+        // Resize Emacs frames to fill their working area (not full output)
         if let Some(ref output_name) = frame_output {
-            if let Some(geo) = self
+            if let Some(working_area) = self
                 .space
                 .outputs()
                 .find(|o| o.name() == *output_name)
-                .and_then(|o| self.space.output_geometry(o))
+                .map(|o| self.get_working_area(o))
             {
                 window.toplevel().map(|t| {
                     t.with_pending_state(|state| {
-                        state.size = Some((geo.size.w, geo.size.h).into());
+                        state.size = Some(working_area.size);
                     });
                     t.send_configure();
                 });
@@ -1599,7 +1718,13 @@ impl WlrLayerShellHandler for Ewm {
         if let Some((output, layer)) = output {
             let mut map = layer_map_for_output(&output);
             map.unmap_layer(&layer);
+            // Re-arrange after unmapping to recalculate exclusive zones
+            map.arrange();
             drop(map);
+
+            // Check for working area expansion (panel removed)
+            self.check_working_area_change(&output);
+
             self.queue_redraw(&output);
             info!("Layer surface destroyed");
         }
@@ -1761,14 +1886,14 @@ impl State {
         // Process module commands (from Emacs via dynamic module)
         let commands = crate::module::drain_commands();
         if !commands.is_empty() {
-            let start = std::time::Instant::now();
-            let count = commands.len();
+            let _start = std::time::Instant::now();
+            let _count = commands.len();
             for cmd in commands {
                 self.handle_module_command(cmd);
             }
-            let elapsed_us = start.elapsed().as_micros() as f64;
-            crate::tracy_plot!("emacs_cmd_count", count as f64);
-            crate::tracy_plot!("emacs_cmd_time_us", elapsed_us);
+            let _elapsed_us = _start.elapsed().as_micros() as f64;
+            crate::tracy_plot!("emacs_cmd_count", _count as f64);
+            crate::tracy_plot!("emacs_cmd_time_us", _elapsed_us);
         }
 
         // Process pending early imports
@@ -2069,6 +2194,7 @@ impl State {
                     "focused_surface_id": self.ewm.focused_surface_id,
                     "id_windows": id_window_keys,
                     "outputs": self.ewm.outputs,
+                    "working_areas": self.ewm.get_working_areas_info(),
                     "pointer_location": self.ewm.pointer_location,
                     "intercepted_keys": module::get_intercepted_keys(),
                     "emacs_pid": self.ewm.emacs_pid,

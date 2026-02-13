@@ -27,6 +27,16 @@ pub struct OutputInfo {
     pub modes: Vec<OutputMode>,
 }
 
+/// Working area information (area available after layer-shell exclusive zones)
+#[derive(Serialize, Clone, Debug)]
+pub struct WorkingAreaInfo {
+    pub output: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
 /// Events sent from compositor to Emacs.
 ///
 /// Used by both IPC (JSON serialization) and module (direct Lisp conversion).
@@ -84,4 +94,13 @@ pub enum Event {
     /// Compositor state dump (for debugging)
     #[serde(rename = "state")]
     State { json: String },
+    /// Working area changed (due to layer-shell exclusive zones)
+    #[serde(rename = "working_area")]
+    WorkingArea {
+        output: String,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
 }
