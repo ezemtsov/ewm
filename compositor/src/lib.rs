@@ -70,10 +70,12 @@ pub use event::{Event, OutputInfo, OutputMode};
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 
 use smithay::{
+    backend::renderer::element::solid::SolidColorBuffer,
     delegate_compositor, delegate_data_device, delegate_dmabuf,
     delegate_input_method_manager, delegate_layer_shell, delegate_output, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_xdg_activation, delegate_xdg_shell,
+    reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind,
         PopupManager, Space, Window,
@@ -191,8 +193,8 @@ pub enum LockState {
     Unlocked,
     /// Lock requested, waiting for all outputs to render locked frame
     Locking(SessionLocker),
-    /// Session is fully locked
-    Locked,
+    /// Session is fully locked (stores the lock object to detect dead clients)
+    Locked(ExtSessionLockV1),
 }
 
 impl Default for LockState {
@@ -222,18 +224,27 @@ pub struct OutputState {
     pub lock_surface: Option<LockSurface>,
     /// Render state for session lock (tracks whether locked frame was rendered)
     pub lock_render_state: LockRenderState,
+    /// Solid color background for lock screen (shown before lock surface renders)
+    pub lock_color_buffer: SolidColorBuffer,
 }
 
 impl OutputState {
-    /// Create a new OutputState for the given output name.
-    pub fn new(output_name: &str, refresh_interval_us: u64) -> Self {
+    /// Create a new OutputState for the given output name and size.
+    pub fn new(output_name: &str, refresh_interval_us: u64, size: (i32, i32)) -> Self {
         Self {
             redraw_state: RedrawState::Queued,
             refresh_interval_us,
             vblank_tracker: VBlankFrameTracker::new(output_name),
             lock_surface: None,
             lock_render_state: LockRenderState::Unlocked,
+            // Dark gray background for lock screen
+            lock_color_buffer: SolidColorBuffer::new(size, [0.1, 0.1, 0.1, 1.0]),
         }
+    }
+
+    /// Resize the lock color buffer for this output
+    pub fn resize_lock_buffer(&mut self, size: (i32, i32)) {
+        self.lock_color_buffer.resize(size);
     }
 }
 
@@ -245,6 +256,8 @@ impl Default for OutputState {
             vblank_tracker: VBlankFrameTracker::new("default"),
             lock_surface: None,
             lock_render_state: LockRenderState::Unlocked,
+            // Default 1920x1080 lock background (will be resized per output)
+            lock_color_buffer: SolidColorBuffer::new((1920, 1080), [0.1, 0.1, 0.1, 1.0]),
         }
     }
 }
@@ -1928,9 +1941,16 @@ impl SessionLockHandler for Ewm {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
-        // Refuse if already locking/locked
-        if !matches!(self.lock_state, LockState::Unlocked) {
-            info!("Session lock request ignored: already locking/locked");
+        // Check for dead locker client holding the lock
+        if let LockState::Locked(ref lock) = self.lock_state {
+            if lock.is_alive() {
+                info!("Session lock request ignored: already locked with active client");
+                return;
+            }
+            // Previous client died, allow new lock
+            info!("Previous lock client dead, allowing new lock");
+        } else if !matches!(self.lock_state, LockState::Unlocked) {
+            info!("Session lock request ignored: already locking");
             return;
         }
 
@@ -1938,8 +1958,9 @@ impl SessionLockHandler for Ewm {
 
         if self.output_state.is_empty() {
             // No outputs: lock immediately
+            let lock = confirmation.ext_session_lock().clone();
             confirmation.lock();
-            self.lock_state = LockState::Locked;
+            self.lock_state = LockState::Locked(lock);
             info!("Session locked (no outputs)");
         } else {
             // Enter Locking state and queue redraw to show locked frame
@@ -2027,7 +2048,7 @@ fn configure_lock_surface(surface: &LockSurface, output: &Output) {
 impl Ewm {
     /// Check if the session is locked (locking or fully locked)
     pub fn is_locked(&self) -> bool {
-        matches!(self.lock_state, LockState::Locking(_) | LockState::Locked)
+        !matches!(self.lock_state, LockState::Unlocked)
     }
 
     /// Check if all outputs have rendered locked frames and confirm lock if so
@@ -2038,10 +2059,13 @@ impl Ewm {
 
         if should_confirm {
             // Take ownership of the SessionLocker to call lock()
-            let old_state = mem::replace(&mut self.lock_state, LockState::Locked);
+            // Use a temporary Unlocked state (will be replaced immediately)
+            let old_state = mem::replace(&mut self.lock_state, LockState::Unlocked);
             if let LockState::Locking(confirmation) = old_state {
                 info!("All outputs rendered locked frame, confirming lock");
+                let lock = confirmation.ext_session_lock().clone();
                 confirmation.lock();
+                self.lock_state = LockState::Locked(lock);
             }
         }
     }
@@ -2064,6 +2088,15 @@ impl Ewm {
                 .lock_surface.as_ref()
                 .map(|s| s.wl_surface().clone())
         })
+    }
+
+    /// Check lock state after output removal.
+    /// If in Locking state, the removed output no longer needs to render a locked frame.
+    pub fn check_lock_on_output_removed(&mut self) {
+        if matches!(&self.lock_state, LockState::Locking(_)) {
+            // Re-check if all remaining outputs are locked
+            self.check_lock_complete();
+        }
     }
 }
 

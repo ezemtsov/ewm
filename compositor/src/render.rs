@@ -27,6 +27,7 @@ use smithay::{
         renderer::{
             element::{
                 memory::MemoryRenderBufferRenderElement,
+                solid::SolidColorRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 Element, Id, Kind, RenderElement,
             },
@@ -51,10 +52,11 @@ use crate::protocols::screencopy::ScreencopyBuffer;
 use crate::{cursor, Ewm, State};
 
 /// Combined render element type for ewm
-/// This allows rendering both wayland surfaces and cursor images
+/// This allows rendering both wayland surfaces, cursor images, and solid colors
 pub enum EwmRenderElement {
     Surface(WaylandSurfaceRenderElement<GlesRenderer>),
     Cursor(MemoryRenderBufferRenderElement<GlesRenderer>),
+    SolidColor(SolidColorRenderElement),
 }
 
 impl Element for EwmRenderElement {
@@ -62,6 +64,7 @@ impl Element for EwmRenderElement {
         match self {
             EwmRenderElement::Surface(e) => e.id(),
             EwmRenderElement::Cursor(e) => e.id(),
+            EwmRenderElement::SolidColor(e) => e.id(),
         }
     }
 
@@ -69,6 +72,7 @@ impl Element for EwmRenderElement {
         match self {
             EwmRenderElement::Surface(e) => e.current_commit(),
             EwmRenderElement::Cursor(e) => e.current_commit(),
+            EwmRenderElement::SolidColor(e) => e.current_commit(),
         }
     }
 
@@ -76,6 +80,7 @@ impl Element for EwmRenderElement {
         match self {
             EwmRenderElement::Surface(e) => e.geometry(scale),
             EwmRenderElement::Cursor(e) => e.geometry(scale),
+            EwmRenderElement::SolidColor(e) => e.geometry(scale),
         }
     }
 
@@ -83,6 +88,7 @@ impl Element for EwmRenderElement {
         match self {
             EwmRenderElement::Surface(e) => e.src(),
             EwmRenderElement::Cursor(e) => e.src(),
+            EwmRenderElement::SolidColor(e) => e.src(),
         }
     }
 
@@ -90,6 +96,7 @@ impl Element for EwmRenderElement {
         match self {
             EwmRenderElement::Surface(e) => e.transform(),
             EwmRenderElement::Cursor(e) => e.transform(),
+            EwmRenderElement::SolidColor(e) => e.transform(),
         }
     }
 
@@ -97,6 +104,7 @@ impl Element for EwmRenderElement {
         match self {
             EwmRenderElement::Surface(e) => e.kind(),
             EwmRenderElement::Cursor(e) => e.kind(),
+            EwmRenderElement::SolidColor(e) => e.kind(),
         }
     }
 }
@@ -117,6 +125,9 @@ impl RenderElement<GlesRenderer> for EwmRenderElement {
             EwmRenderElement::Cursor(e) => {
                 RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions)
             }
+            EwmRenderElement::SolidColor(e) => {
+                RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions)
+            }
         }
     }
 
@@ -127,6 +138,7 @@ impl RenderElement<GlesRenderer> for EwmRenderElement {
         match self {
             EwmRenderElement::Surface(e) => e.underlying_storage(renderer),
             EwmRenderElement::Cursor(e) => e.underlying_storage(renderer),
+            EwmRenderElement::SolidColor(e) => e.underlying_storage(renderer),
         }
     }
 }
@@ -285,6 +297,17 @@ pub fn collect_render_elements_for_output(
                     );
                 elements.extend(lock_elements.into_iter().map(EwmRenderElement::Surface));
             }
+
+            // Add solid color background behind lock surface
+            // (rendered last = behind everything else)
+            let bg_element = SolidColorRenderElement::from_buffer(
+                &state.lock_color_buffer,
+                (0, 0),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            );
+            elements.push(EwmRenderElement::SolidColor(bg_element));
         }
         // Return early - don't render anything else when locked
         return elements;

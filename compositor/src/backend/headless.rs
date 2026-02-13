@@ -122,7 +122,7 @@ impl HeadlessBackend {
         // Initialize output state in Ewm
         ewm.output_state.insert(
             output.clone(),
-            OutputState::new(name, 16_667), // ~60Hz
+            OutputState::new(name, 16_667, (width as i32, height as i32)), // ~60Hz
         );
 
         let size = Size::from((width, height));
@@ -148,6 +148,7 @@ impl HeadlessBackend {
     pub fn remove_output(&mut self, name: &str, ewm: &mut Ewm) {
         if let Some(virtual_output) = self.outputs.remove(name) {
             ewm.output_state.remove(&virtual_output.output);
+            ewm.check_lock_on_output_removed();
             ewm.space.unmap_output(&virtual_output.output);
             ewm.recalculate_output_size();
             info!("Removed virtual output: {}", name);

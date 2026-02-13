@@ -971,16 +971,17 @@ impl DrmBackendState {
         );
 
         // Initialize output state in Ewm (redraw state, refresh interval)
+        let mode_size = mode.size();
         ewm.output_state.insert(
             output.clone(),
-            OutputState::new(&connector_name, refresh_interval_us),
+            OutputState::new(&connector_name, refresh_interval_us, (mode_size.0 as i32, mode_size.1 as i32)),
         );
 
         // Position this output horizontally after the previous ones
         ewm.space.map_output(&output, (x_offset, 0));
         info!(
             "Mapped output {} at position ({}, 0), size {}x{}",
-            connector_name, x_offset, mode.size().0, mode.size().1
+            connector_name, x_offset, mode_size.0, mode_size.1
         );
 
         // Collect output info for IPC
@@ -1068,6 +1069,9 @@ impl DrmBackendState {
                 }
             }
         }
+
+        // Check if lock can be confirmed (removed output no longer needs to render)
+        ewm.check_lock_on_output_removed();
 
         // Stop any active screen casts for this output
         #[cfg(feature = "screencast")]
@@ -1344,16 +1348,17 @@ fn initialize_drm(
         );
 
         // Initialize output state in Ewm (redraw state, refresh interval)
+        let mode_size = mode.size();
         state.ewm.output_state.insert(
             output.clone(),
-            OutputState::new(&connector_name, refresh_interval_us),
+            OutputState::new(&connector_name, refresh_interval_us, (mode_size.0 as i32, mode_size.1 as i32)),
         );
 
         // Position this output horizontally after the previous ones
         state.ewm.space.map_output(&output, (x_offset, 0));
         info!(
             "Mapped output {} at position ({}, 0), size {}x{}",
-            connector_name, x_offset, mode.size().0, mode.size().1
+            connector_name, x_offset, mode_size.0, mode_size.1
         );
 
         // Collect output info for IPC
