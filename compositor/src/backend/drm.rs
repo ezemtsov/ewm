@@ -201,6 +201,12 @@ impl DrmBackendState {
         self.device.as_ref().map(|d| d.render_node)
     }
 
+    /// Get the GBM device for screencasting (if DRM is initialized)
+    #[cfg(feature = "screencast")]
+    pub fn gbm_device(&self) -> Option<GbmDevice<DrmDeviceFd>> {
+        self.device.as_ref().map(|d| d.gbm.clone())
+    }
+
     /// Check if any output has a redraw queued (checks Ewm output_state)
     pub fn has_queued_redraws(&self, ewm: &Ewm) -> bool {
         ewm.output_state
@@ -1694,7 +1700,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
 
                             // Create PipeWire stream for this output
                             let pw = state.ewm.pipewire.as_ref();
-                            let gbm = state.backend.device.as_ref().map(|d| d.gbm.clone());
+                            let gbm = state.backend.gbm_device();
 
                             if let (Some(pw), Some(gbm)) = (pw, gbm) {
                                 // Find output info

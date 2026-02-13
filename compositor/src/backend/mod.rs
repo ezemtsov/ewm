@@ -123,6 +123,19 @@ impl Backend {
         matches!(self, Backend::Headless(_))
     }
 
+    /// Get the GBM device for screencasting
+    ///
+    /// Returns `None` for headless backend or if DRM is not initialized.
+    #[cfg(feature = "screencast")]
+    pub fn gbm_device(
+        &self,
+    ) -> Option<smithay::backend::allocator::gbm::GbmDevice<smithay::backend::drm::DrmDeviceFd>> {
+        match self {
+            Backend::Drm(drm) => drm.gbm_device(),
+            Backend::Headless(_) => None,
+        }
+    }
+
     /// Set output mode (resolution/refresh)
     ///
     /// Returns true if mode was successfully changed.
