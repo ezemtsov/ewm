@@ -30,7 +30,7 @@ use smithay::{
 };
 use tracing::{debug, info};
 
-use crate::{Ewm, OutputState, RedrawState};
+use crate::{Ewm, State, OutputState, RedrawState};
 
 /// A virtual output for headless testing
 pub struct VirtualOutput {
@@ -113,7 +113,7 @@ impl HeadlessBackend {
         output.set_preferred(mode);
 
         // Create global for Wayland clients
-        output.create_global::<Ewm>(&ewm.display_handle);
+        output.create_global::<State>(&ewm.display_handle);
 
         // Calculate position: place after existing outputs
         let x_offset = ewm.output_size.0;

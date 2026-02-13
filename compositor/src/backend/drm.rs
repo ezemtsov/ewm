@@ -80,6 +80,7 @@ use smithay::{
     wayland::seat::WaylandFocus,
 };
 use crate::{
+    backend::Backend,
     cursor::CursorBuffer,
     input::{handle_device_added, handle_keyboard_event, KeyboardAction},
     module,
@@ -219,7 +220,7 @@ impl DrmBackendState {
     }
 
     /// Handle session pause (VT switch away)
-    fn pause(&mut self, ewm: &mut Ewm) {
+    pub(crate) fn pause(&mut self, ewm: &mut Ewm) {
         debug!("Pausing DRM session");
         self.libinput.suspend();
         if let Some(device) = &mut self.device {
@@ -242,7 +243,7 @@ impl DrmBackendState {
     }
 
     /// Handle session resume (VT switch back)
-    fn resume(&mut self, ewm: &mut Ewm) {
+    pub(crate) fn resume(&mut self, ewm: &mut Ewm) {
         debug!("Resuming DRM session");
         self.paused = false;
 
@@ -262,7 +263,7 @@ impl DrmBackendState {
     }
 
     /// Trigger deferred DRM initialization (called when session becomes active)
-    fn trigger_init(&self) {
+    pub(crate) fn trigger_init(&self) {
         if let Some(sender) = &self.init_sender {
             if let Err(e) = sender.send(DrmMessage::InitializeDrm) {
                 warn!("Failed to send DRM init message: {:?}", e);
@@ -376,7 +377,7 @@ impl DrmBackendState {
     }
 
     /// Render a frame to the given output
-    fn render_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
+    pub(crate) fn render_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
         tracy_span!("render_output");
 
         // Refresh foreign toplevel state before rendering
@@ -704,7 +705,7 @@ impl DrmBackendState {
     }
 
     /// Handle estimated VBlank timer firing
-    fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
+    pub(crate) fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
         let (action, output) = {
             let Some(device) = &self.device else {
                 return;
@@ -910,7 +911,7 @@ impl DrmBackendState {
         };
         output.change_current_state(Some(smithay_mode), Some(Transform::Normal), None, None);
         output.set_preferred(smithay_mode);
-        output.create_global::<Ewm>(display_handle);
+        output.create_global::<State>(display_handle);
 
         // Create DrmCompositor
         let cursor_size = device.drm.cursor_size();
@@ -1139,13 +1140,14 @@ fn initialize_drm(
     display_handle: &smithay::reexports::wayland_server::DisplayHandle,
     event_loop_handle: &LoopHandle<'static, State>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let pending = state.backend.pending.take().ok_or("DRM already initialized")?;
+    let drm_backend = state.backend.as_drm_mut().ok_or("Not a DRM backend")?;
+    let pending = drm_backend.pending.take().ok_or("DRM already initialized")?;
 
     info!("Initializing DRM device (session is now active)");
 
     // Open DRM device via libseat
     let open_flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
-    let session = state.backend.session.as_mut().ok_or("Session not available")?;
+    let session = drm_backend.session.as_mut().ok_or("Session not available")?;
     let fd = session.open(&pending.gpu_path, open_flags)?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
@@ -1191,13 +1193,13 @@ fn initialize_drm(
         {
             let _global = state.ewm
                 .dmabuf_state
-                .create_global_with_default_feedback::<Ewm>(display_handle, &default_feedback);
+                .create_global_with_default_feedback::<State>(display_handle, &default_feedback);
             info!("Dmabuf global created");
         }
     }
 
     // Store display handle for hotplug
-    state.backend.display_handle = Some(display_handle.clone());
+    state.backend.as_drm_mut().unwrap().display_handle = Some(display_handle.clone());
 
     let mut surfaces = HashMap::new();
     let mut x_offset = 0i32;  // Track horizontal position for output placement
@@ -1290,7 +1292,7 @@ fn initialize_drm(
         };
         output.change_current_state(Some(smithay_mode), Some(Transform::Normal), None, None);
         output.set_preferred(smithay_mode);
-        output.create_global::<Ewm>(display_handle);
+        output.create_global::<State>(display_handle);
 
         // Create DrmCompositor
         let cursor_size = drm.cursor_size();
@@ -1427,7 +1429,7 @@ fn initialize_drm(
     );
 
     // Store device state
-    state.backend.device = Some(DrmDeviceState {
+    state.backend.as_drm_mut().unwrap().device = Some(DrmDeviceState {
         drm,
         drm_scanner,
         gbm,
@@ -1443,7 +1445,7 @@ fn initialize_drm(
             crate::tracy_span!("on_vblank");
 
             let mut should_render = false;
-            if let Some(device) = &mut state.backend.device {
+            if let Some(device) = &mut state.backend.as_drm_mut().unwrap().device {
                 if let Some(surface) = device.surfaces.get_mut(&crtc) {
                     match surface.compositor.frame_submitted() {
                         Ok(_) => {}
@@ -1507,7 +1509,8 @@ fn initialize_drm(
     info!("Sent {} output_detected events, compositor ready", state.ewm.outputs.len());
 
     // Trigger initial render - collect CRTCs first, then render
-    let crtcs: Vec<_> = state.backend.device.as_ref()
+    let crtcs: Vec<_> = state.backend.as_drm()
+        .and_then(|drm| drm.device.as_ref())
         .map(|d| d.surfaces.keys().copied().collect())
         .unwrap_or_default();
 
@@ -1537,7 +1540,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create event loop and Wayland display
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
-    let display: Display<Ewm> = Display::new()?;
+    let display: Display<State> = Display::new()?;
     let display_handle = display.handle();
 
     // Initialize Wayland socket - display is moved into event loop source
@@ -1619,7 +1622,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut state = State {
-        backend,
+        backend: Backend::Drm(backend),
         ewm,
     };
 
@@ -1742,7 +1745,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 SessionEvent::ActivateSession => {
                     info!("Session activated");
-                    if state.backend.device.is_none() {
+                    if state.backend.as_drm().map(|d| d.device.is_none()).unwrap_or(false) {
                         info!("First session activation - triggering DRM init");
                         state.backend.trigger_init();
                     } else {
@@ -1751,7 +1754,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         })?;
-    state.backend.session_notifier_token = Some(session_notifier_token);
+    state.backend.as_drm_mut().unwrap().session_notifier_token = Some(session_notifier_token);
 
     // Register UdevBackend for hotplug detection
     let udev_backend = UdevBackend::new(&seat_name)?;
@@ -1808,10 +1811,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     handle_device_added(device);
                 }
                 InputEvent::Keyboard { event: kb_event } => {
-                    let keyboard = state.ewm.keyboard.clone();
                     let action = handle_keyboard_event(
-                        &mut state.ewm,
-                        &keyboard,
+                        state,
                         kb_event.key_code().into(),
                         kb_event.state(),
                         Event::time_msec(&kb_event),
@@ -1846,7 +1847,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     let under = state.ewm.surface_under_point((new_x, new_y).into());
 
                     pointer.motion(
-                        &mut state.ewm,
+                        state,
                         under.clone(),
                         &MotionEvent {
                             location: (new_x, new_y).into(),
@@ -1857,7 +1858,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
 
                     // Send relative motion event (needed by some games/apps)
                     pointer.relative_motion(
-                        &mut state.ewm,
+                        state,
                         under,
                         &RelativeMotionEvent {
                             delta: event.delta(),
@@ -1866,7 +1867,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                         },
                     );
 
-                    pointer.frame(&mut state.ewm);
+                    pointer.frame(state);
 
                     // Queue redraw to update cursor position
                     state.ewm.queue_redraw_all();
@@ -1885,7 +1886,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     let under = state.ewm.surface_under_point(pos);
 
                     pointer.motion(
-                        &mut state.ewm,
+                        state,
                         under,
                         &MotionEvent {
                             location: pos,
@@ -1893,7 +1894,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                             time: event.time_msec(),
                         },
                     );
-                    pointer.frame(&mut state.ewm);
+                    pointer.frame(state);
 
                     // Queue redraw to update cursor position
                     state.ewm.queue_redraw_all();
@@ -1928,12 +1929,12 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                             state.ewm.set_focus(id);
                             state.ewm.keyboard_focus = Some(surface.clone());
                             // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
-                            keyboard.set_focus(&mut state.ewm, Some(surface.clone()), serial);
+                            keyboard.set_focus(state, Some(surface.clone()), serial);
                         }
                     }
 
                     pointer.button(
-                        &mut state.ewm,
+                        state,
                         &ButtonEvent {
                             button: event.button_code(),
                             state: button_state,
@@ -1941,7 +1942,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                             time: event.time_msec(),
                         },
                     );
-                    pointer.frame(&mut state.ewm);
+                    pointer.frame(state);
                 }
                 InputEvent::PointerAxis { event } => {
                     let pointer = state.ewm.pointer.clone();
@@ -1966,7 +1967,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                         state.ewm.set_focus(id);
                         state.ewm.keyboard_focus = Some(surface.clone());
                         // focus_changed handles text_input focus
-                        keyboard.set_focus(&mut state.ewm, Some(surface.clone()), serial);
+                        keyboard.set_focus(state, Some(surface.clone()), serial);
                     }
 
                     let source = event.source();
@@ -2012,8 +2013,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    pointer.axis(&mut state.ewm, frame);
-                    pointer.frame(&mut state.ewm);
+                    pointer.axis(state, frame);
+                    pointer.frame(state);
                 }
                 _ => {}
             }

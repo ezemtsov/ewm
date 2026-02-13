@@ -389,14 +389,14 @@ pub struct Ewm {
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub dmabuf_state: DmabufState,
-    pub seat_state: SeatState<Self>,
+    pub seat_state: SeatState<State>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
-    pub seat: Seat<Self>,
+    pub seat: Seat<State>,
     /// Cached pointer handle (avoids repeated get_pointer().unwrap() on hot paths)
-    pub pointer: PointerHandle<Self>,
+    pub pointer: PointerHandle<State>,
     /// Cached keyboard handle (avoids repeated get_keyboard().unwrap() on hot paths)
-    pub keyboard: KeyboardHandle<Self>,
+    pub keyboard: KeyboardHandle<State>,
 
     // Surface tracking
     next_surface_id: u32,
@@ -503,44 +503,44 @@ pub struct Ewm {
 
 impl Ewm {
     pub fn new(display_handle: DisplayHandle) -> Self {
-        let compositor_state = CompositorState::new::<Self>(&display_handle);
-        let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
-        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
-        let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
+        let compositor_state = CompositorState::new::<State>(&display_handle);
+        let xdg_shell_state = XdgShellState::new::<State>(&display_handle);
+        let xdg_decoration_state = XdgDecorationState::new::<State>(&display_handle);
+        let shm_state = ShmState::new::<State>(&display_handle, vec![]);
         let dmabuf_state = DmabufState::new();
-        let mut seat_state = SeatState::new();
-        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
-        let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
+        let mut seat_state: SeatState<State> = SeatState::new();
+        let data_device_state = DataDeviceState::new::<State>(&display_handle);
+        let primary_selection_state = PrimarySelectionState::new::<State>(&display_handle);
 
-        let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
+        let mut seat: Seat<State> = seat_state.new_wl_seat(&display_handle, "seat0");
         let keyboard = seat.add_keyboard(Default::default(), 200, 25)
             .expect("Failed to add keyboard to seat");
         let pointer = seat.add_pointer();
 
         // Initialize screencopy state before moving display_handle
-        let screencopy_state = ScreencopyManagerState::new::<Self, _>(&display_handle, |_| true);
+        let screencopy_state = ScreencopyManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize output manager with xdg-output protocol support
-        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<State>(&display_handle);
 
         // Initialize text input for input method support
-        let text_input_state = TextInputManagerState::new::<Self>(&display_handle);
+        let text_input_state = TextInputManagerState::new::<State>(&display_handle);
 
         // Initialize input method manager (allows Emacs to act as input method)
-        let input_method_state = InputMethodManagerState::new::<Self, _>(&display_handle, |_| true);
+        let input_method_state = InputMethodManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize layer shell for panels, notifications, etc.
-        let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
+        let layer_shell_state = WlrLayerShellState::new::<State>(&display_handle);
 
         // Initialize xdg-activation for focus requests
-        let activation_state = XdgActivationState::new::<Self>(&display_handle);
+        let activation_state = XdgActivationState::new::<State>(&display_handle);
 
         // Initialize foreign toplevel management (exposes windows to external tools)
         let foreign_toplevel_state =
-            ForeignToplevelManagerState::new::<Self, _>(&display_handle, |_| true);
+            ForeignToplevelManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize session lock for screen locking (ext-session-lock-v1)
-        let session_lock_state = SessionLockManagerState::new::<Self, _>(&display_handle, |_| true);
+        let session_lock_state = SessionLockManagerState::new::<State, _>(&display_handle, |_| true);
 
         Self {
             stop_signal: None,
@@ -562,7 +562,7 @@ impl Ewm {
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
             surface_views: HashMap::new(),
-            output_size: (800, 600),
+            output_size: (0, 0),
             outputs: Vec::new(),
             pointer_location: (0.0, 0.0),
             focused_surface_id: 0,
@@ -665,7 +665,7 @@ impl Ewm {
             })
             .collect();
 
-        self.foreign_toplevel_state.refresh::<Self>(windows);
+        self.foreign_toplevel_state.refresh::<State>(windows);
     }
 
     /// Find the output for a surface (returns Output object)
@@ -749,14 +749,15 @@ impl Ewm {
         }
     }
 
-    /// Focus a surface, updating internal state, keyboard focus, and text input.
-    /// If `notify_emacs` is true, sends Event::Focus to Emacs.
-    pub fn focus_surface(&mut self, id: u32, notify_emacs: bool) {
-        self.focus_surface_with_source(id, notify_emacs, "focus_surface", None);
+    /// Focus a surface, updating internal state only (no keyboard).
+    /// Returns the WlSurface to focus, if any. Caller must update keyboard focus.
+    pub fn focus_surface(&mut self, id: u32, notify_emacs: bool) -> Option<WlSurface> {
+        self.focus_surface_with_source(id, notify_emacs, "focus_surface", None)
     }
 
     /// Focus a surface with source tracking for debugging.
-    pub fn focus_surface_with_source(&mut self, id: u32, notify_emacs: bool, source: &str, context: Option<&str>) {
+    /// Returns the WlSurface to focus, if any. Caller must update keyboard focus.
+    pub fn focus_surface_with_source(&mut self, id: u32, notify_emacs: bool, source: &str, context: Option<&str>) -> Option<WlSurface> {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
         crate::module::set_focused_id(id);
@@ -766,13 +767,12 @@ impl Ewm {
 
         if let Some(window) = self.id_windows.get(&id) {
             if let Some(surface) = window.wl_surface() {
-                let keyboard = self.keyboard.clone();
                 let focus_surface = surface.into_owned();
                 self.keyboard_focus = Some(focus_surface.clone());
-                // focus_changed handles text_input focus
-                keyboard.set_focus(self, Some(focus_surface.clone()), SERIAL_COUNTER.next_serial());
+                return Some(focus_surface);
             }
         }
+        None
     }
 
     /// Queue an event to be sent to Emacs via the module queue
@@ -1106,7 +1106,7 @@ impl Ewm {
     }
 
     /// Unconstrain a popup's position to keep it within screen bounds
-    fn unconstrain_popup(&self, popup: &PopupSurface) {
+    pub fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
@@ -1134,8 +1134,149 @@ impl Ewm {
         });
     }
 
+    /// Handle new toplevel surface from XdgShellHandler
+    pub fn handle_new_toplevel(&mut self, surface: ToplevelSurface) {
+        let id = self.next_surface_id;
+        self.next_surface_id += 1;
+
+        // Check if this surface belongs to the Emacs client
+        let is_emacs = self.is_emacs_client(surface.wl_surface());
+        if is_emacs {
+            info!("Surface {} is an Emacs surface", id);
+            self.emacs_surfaces.insert(id);
+        }
+
+        let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().unwrap().app_id.clone())
+        })
+        .unwrap_or_else(|| {
+            self.get_client_process_name(surface.wl_surface())
+                .unwrap_or_else(|| "unknown".to_string())
+        });
+
+        surface.with_pending_state(|state| {
+            state.size = Some(self.output_size.into());
+            state.states.set(XdgToplevelState::Maximized);
+            state.states.set(XdgToplevelState::Activated);
+        });
+        surface.send_configure();
+
+        let window = Window::new_wayland_window(surface);
+        self.window_ids.insert(window.clone(), id);
+        self.id_windows.insert(id, window.clone());
+
+        // Determine target output
+        let frame_output = module::take_pending_frame_output();
+        let target_output = frame_output.clone().or_else(|| self.active_output());
+
+        // Position based on surface type
+        let position = if let Some(ref output_name) = frame_output {
+            self.space
+                .outputs()
+                .find(|o| o.name() == *output_name)
+                .map(|o| {
+                    let output_geo = self.space.output_geometry(o).unwrap_or_default();
+                    let working_area = self.get_working_area(o);
+                    (
+                        output_geo.loc.x + working_area.loc.x,
+                        output_geo.loc.y + working_area.loc.y,
+                    )
+                })
+                .unwrap_or((-10000, -10000))
+        } else {
+            (-10000, -10000)
+        };
+        self.space.map_element(window.clone(), position, false);
+
+        // Resize Emacs frames to fill their working area
+        if let Some(ref output_name) = frame_output {
+            if let Some(working_area) = self
+                .space
+                .outputs()
+                .find(|o| o.name() == *output_name)
+                .map(|o| self.get_working_area(o))
+            {
+                window.toplevel().map(|t| {
+                    t.with_pending_state(|state| {
+                        state.size = Some(working_area.size);
+                    });
+                    t.send_configure();
+                });
+            }
+        }
+
+        // Initialize surface_info for non-Emacs surfaces
+        if !is_emacs {
+            self.surface_info.insert(
+                id,
+                SurfaceInfo {
+                    app_id: app.clone(),
+                    title: String::new(),
+                },
+            );
+        }
+
+        // Send event to Emacs
+        self.queue_event(Event::New {
+            id,
+            app: app.clone(),
+            output: target_output.clone(),
+        });
+        info!(
+            "New toplevel {} ({}) -> {:?}",
+            id,
+            app,
+            target_output.as_deref().unwrap_or("unknown")
+        );
+    }
+
+    /// Handle toplevel destroyed from XdgShellHandler.
+    /// Returns surface ID to refocus, if any.
+    pub fn handle_toplevel_destroyed(&mut self, surface: ToplevelSurface) -> Option<u32> {
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t == &surface).unwrap_or(false))
+            .cloned();
+
+        if let Some(window) = window {
+            if let Some(id) = self.window_ids.remove(&window) {
+                let was_focused = self.focused_surface_id == id;
+                let output = self.get_surface_output(id);
+
+                self.id_windows.remove(&id);
+                self.surface_info.remove(&id);
+                self.surface_views.remove(&id);
+                self.emacs_surfaces.remove(&id);
+                self.queue_event(Event::Close { id });
+                info!("Toplevel {} destroyed", id);
+
+                self.space.unmap_elem(&window);
+
+                // Return refocus target if needed
+                if was_focused {
+                    return output
+                        .as_ref()
+                        .and_then(|out| {
+                            self.emacs_surfaces
+                                .iter()
+                                .find(|&&eid| self.get_surface_output(eid).as_ref() == Some(out))
+                                .copied()
+                        })
+                        .or(Some(1));
+                }
+            } else {
+                self.space.unmap_elem(&window);
+            }
+        }
+        None
+    }
+
     pub fn init_wayland_listener(
-        display: Display<Ewm>,
+        display: Display<State>,
         event_loop: &LoopHandle<State>,
     ) -> Result<std::ffi::OsString, Box<dyn std::error::Error>> {
         // Automatically derive socket name from current VT for multi-instance support
@@ -1163,7 +1304,7 @@ impl Ewm {
             .insert_source(display_source, |_, display, state| {
                 // SAFETY: we don't drop the display while the event loop is running
                 let display = unsafe { display.get_mut() };
-                if let Err(e) = display.dispatch_clients(&mut state.ewm) {
+                if let Err(e) = display.dispatch_clients(state) {
                     tracing::error!("Wayland dispatch error: {e}");
                 }
                 Ok(PostAction::Continue)
@@ -1334,7 +1475,7 @@ impl ClientData for ClientState {
 }
 
 // Buffer handling
-impl BufferHandler for Ewm {
+impl BufferHandler for State {
     fn buffer_destroyed(
         &mut self,
         _buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
@@ -1343,9 +1484,9 @@ impl BufferHandler for Ewm {
 }
 
 // Compositor protocol
-impl CompositorHandler for Ewm {
+impl CompositorHandler for State {
     fn compositor_state(&mut self) -> &mut CompositorState {
-        &mut self.compositor_state
+        &mut self.ewm.compositor_state
     }
 
     fn client_compositor_state<'a>(
@@ -1361,16 +1502,16 @@ impl CompositorHandler for Ewm {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
         // Queue early import for DRM backend (processed in main loop)
-        self.pending_early_imports.push(surface.clone());
+        self.ewm.pending_early_imports.push(surface.clone());
 
         // Handle layer surface commits
-        if self.handle_layer_surface_commit(surface) {
+        if self.ewm.handle_layer_surface_commit(surface) {
             return;
         }
 
         // Handle popup commits
-        self.popups.commit(surface);
-        if let Some(popup) = self.popups.find_popup(surface) {
+        self.ewm.popups.commit(surface);
+        if let Some(popup) = self.ewm.popups.find_popup(surface) {
             if let PopupKind::Xdg(ref xdg_popup) = popup {
                 if !xdg_popup.is_initial_configure_sent() {
                     xdg_popup.send_configure().expect("initial configure failed");
@@ -1390,10 +1531,10 @@ impl CompositorHandler for Ewm {
         }
 
         // Find the window that owns this root surface
-        let window_and_id = self.space.elements().find_map(|window| {
+        let window_and_id = self.ewm.space.elements().find_map(|window| {
             window.wl_surface().and_then(|ws| {
                 if *ws == root_surface {
-                    self.window_ids.get(window).map(|&id| (window.clone(), id))
+                    self.ewm.window_ids.get(window).map(|&id| (window.clone(), id))
                 } else {
                     None
                 }
@@ -1405,29 +1546,29 @@ impl CompositorHandler for Ewm {
             window.on_commit();
 
             // Queue redraw for all outputs
-            self.queue_redraw_all();
+            self.ewm.queue_redraw_all();
 
             // Check for title/app_id changes (only for toplevels)
-            self.check_surface_info_changes(surface);
+            self.ewm.check_surface_info_changes(surface);
         }
         // For surfaces without a toplevel (popups, layer surfaces, etc.),
         // the parent's commit or other handlers will manage redraw
     }
 }
-delegate_compositor!(Ewm);
+delegate_compositor!(State);
 
 // Shared memory
-impl ShmHandler for Ewm {
+impl ShmHandler for State {
     fn shm_state(&self) -> &ShmState {
-        &self.shm_state
+        &self.ewm.shm_state
     }
 }
-delegate_shm!(Ewm);
+delegate_shm!(State);
 
 // DMA-BUF
-impl DmabufHandler for Ewm {
+impl DmabufHandler for State {
     fn dmabuf_state(&mut self) -> &mut DmabufState {
-        &mut self.dmabuf_state
+        &mut self.ewm.dmabuf_state
     }
 
     fn dmabuf_imported(
@@ -1436,30 +1577,29 @@ impl DmabufHandler for Ewm {
         _dmabuf: smithay::backend::allocator::dmabuf::Dmabuf,
         notifier: ImportNotifier,
     ) {
-        let _ = notifier.successful::<Ewm>();
+        let _ = notifier.successful::<State>();
     }
 }
-delegate_dmabuf!(Ewm);
+delegate_dmabuf!(State);
 
 // Seat / input
-impl SeatHandler for Ewm {
+impl SeatHandler for State {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
     fn seat_state(&mut self) -> &mut SeatState<Self> {
-        &mut self.seat_state
+        &mut self.ewm.seat_state
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-
-        let client = focused.and_then(|s| self.display_handle.get_client(s.id()).ok());
-        set_data_device_focus(&self.display_handle, seat, client.clone());
-        set_primary_focus(&self.display_handle, seat, client);
+        let client = focused.and_then(|s| self.ewm.display_handle.get_client(s.id()).ok());
+        set_data_device_focus(&self.ewm.display_handle, seat, client.clone());
+        set_primary_focus(&self.ewm.display_handle, seat, client);
 
         // Update text_input focus for input method support
-        let surface_id = focused.and_then(|s| self.surface_id(s));
-        self.update_text_input_focus(focused, surface_id);
+        let surface_id = focused.and_then(|s| self.ewm.surface_id(s));
+        self.ewm.update_text_input_focus(focused, surface_id);
     }
 
     fn cursor_image(
@@ -1469,37 +1609,37 @@ impl SeatHandler for Ewm {
     ) {
     }
 }
-delegate_seat!(Ewm);
+delegate_seat!(State);
 
 // Data device / selection
-impl SelectionHandler for Ewm {
+impl SelectionHandler for State {
     type SelectionUserData = ();
 }
-impl ClientDndGrabHandler for Ewm {}
-impl ServerDndGrabHandler for Ewm {}
-impl DataDeviceHandler for Ewm {
+impl ClientDndGrabHandler for State {}
+impl ServerDndGrabHandler for State {}
+impl DataDeviceHandler for State {
     fn data_device_state(&self) -> &DataDeviceState {
-        &self.data_device_state
+        &self.ewm.data_device_state
     }
 }
-delegate_data_device!(Ewm);
+delegate_data_device!(State);
 
-impl PrimarySelectionHandler for Ewm {
+impl PrimarySelectionHandler for State {
     fn primary_selection_state(&self) -> &PrimarySelectionState {
-        &self.primary_selection_state
+        &self.ewm.primary_selection_state
     }
 }
-delegate_primary_selection!(Ewm);
+delegate_primary_selection!(State);
 
 // Output
-impl smithay::wayland::output::OutputHandler for Ewm {}
-delegate_output!(Ewm);
+impl smithay::wayland::output::OutputHandler for State {}
+delegate_output!(State);
 
 // Text Input (for input method support)
-delegate_text_input_manager!(Ewm);
+delegate_text_input_manager!(State);
 
 // Input Method (allows Emacs to act as input method)
-impl InputMethodHandler for Ewm {
+impl InputMethodHandler for State {
     fn new_popup(&mut self, _surface: IMPopupSurface) {
         // Input method popups not supported yet
     }
@@ -1516,157 +1656,31 @@ impl InputMethodHandler for Ewm {
         Rectangle::default()
     }
 }
-delegate_input_method_manager!(Ewm);
+delegate_input_method_manager!(State);
 
 // XDG Shell
-impl XdgShellHandler for Ewm {
+impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.xdg_shell_state
+        &mut self.ewm.xdg_shell_state
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        let id = self.next_surface_id;
-        self.next_surface_id += 1;
-
-        // Check if this surface belongs to the Emacs client
-        let is_emacs = self.is_emacs_client(surface.wl_surface());
-        if is_emacs {
-            info!("Surface {} is an Emacs surface", id);
-            self.emacs_surfaces.insert(id);
-        }
-
-        let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|d| d.lock().unwrap().app_id.clone())
-        })
-        .unwrap_or_else(|| {
-            self.get_client_process_name(surface.wl_surface())
-                .unwrap_or_else(|| "unknown".to_string())
-        });
-
-        surface.with_pending_state(|state| {
-            state.size = Some(self.output_size.into());
-            state.states.set(XdgToplevelState::Maximized);
-            state.states.set(XdgToplevelState::Activated);
-        });
-        surface.send_configure();
-
-        let window = Window::new_wayland_window(surface);
-        self.window_ids.insert(window.clone(), id);
-        self.id_windows.insert(id, window.clone());
-
-        // Determine target output:
-        // 1. Emacs frames: from prepare-frame (synchronous mutex, not command queue)
-        // 2. Other surfaces: from active_output (cursor > focused > first)
-        let frame_output = module::take_pending_frame_output();
-        let target_output = frame_output.clone().or_else(|| self.active_output());
-
-        // Position based on surface type
-        let position = if let Some(ref output_name) = frame_output {
-            // Emacs frame: position at working area origin (respects panel exclusive zones)
-            self.space
-                .outputs()
-                .find(|o| o.name() == *output_name)
-                .map(|o| {
-                    let output_geo = self.space.output_geometry(o).unwrap_or_default();
-                    let working_area = self.get_working_area(o);
-                    (
-                        output_geo.loc.x + working_area.loc.x,
-                        output_geo.loc.y + working_area.loc.y,
-                    )
-                })
-                .unwrap_or((-10000, -10000))
-        } else {
-            // External app: offscreen, Emacs layout will position
-            (-10000, -10000)
-        };
-        self.space.map_element(window.clone(), position, false);
-
-        // Resize Emacs frames to fill their working area (not full output)
-        if let Some(ref output_name) = frame_output {
-            if let Some(working_area) = self
-                .space
-                .outputs()
-                .find(|o| o.name() == *output_name)
-                .map(|o| self.get_working_area(o))
-            {
-                window.toplevel().map(|t| {
-                    t.with_pending_state(|state| {
-                        state.size = Some(working_area.size);
-                    });
-                    t.send_configure();
-                });
-            }
-        }
-
-        // Initialize surface_info for non-Emacs surfaces
-        if !is_emacs {
-            self.surface_info.insert(
-                id,
-                SurfaceInfo {
-                    app_id: app.clone(),
-                    title: String::new(),
-                },
-            );
-        }
-
-        // Send event to Emacs with target output (for all surfaces)
-        self.queue_event(Event::New {
-            id,
-            app: app.clone(),
-            output: target_output.clone(),
-        });
-        info!(
-            "New toplevel {} ({}) -> {:?}",
-            id,
-            app,
-            target_output.as_deref().unwrap_or("unknown")
-        );
+        self.ewm.handle_new_toplevel(surface);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        let window = self
-            .space
-            .elements()
-            .find(|w| w.toplevel().map(|t| t == &surface).unwrap_or(false))
-            .cloned();
-
-        if let Some(window) = window {
-            if let Some(id) = self.window_ids.remove(&window) {
-                // Capture output before removing, in case this was the focused surface
-                let was_focused = self.focused_surface_id == id;
-                let output = self.get_surface_output(id);
-
-                self.id_windows.remove(&id);
-                self.surface_info.remove(&id);
-                self.surface_views.remove(&id);
-                self.emacs_surfaces.remove(&id);
-                self.queue_event(Event::Close { id });
-                info!("Toplevel {} destroyed", id);
-
-                // If destroyed surface had focus, refocus Emacs on same output
-                if was_focused {
-                    let emacs_id = output
-                        .as_ref()
-                        .and_then(|out| {
-                            self.emacs_surfaces
-                                .iter()
-                                .find(|&&eid| self.get_surface_output(eid).as_ref() == Some(out))
-                                .copied()
-                        })
-                        .unwrap_or(1);
-                    self.focus_surface(emacs_id, true);
-                }
+        if let Some(refocus_id) = self.ewm.handle_toplevel_destroyed(surface) {
+            // Refocus to the returned surface
+            if let Some(focus_surface) = self.ewm.focus_surface(refocus_id, true) {
+                let keyboard = self.ewm.keyboard.clone();
+                keyboard.set_focus(self, Some(focus_surface), SERIAL_COUNTER.next_serial());
             }
-            self.space.unmap_elem(&window);
         }
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        self.unconstrain_popup(&surface);
-        if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
+        self.ewm.unconstrain_popup(&surface);
+        if let Err(err) = self.ewm.popups.track_popup(PopupKind::Xdg(surface)) {
             warn!("error tracking popup: {err:?}");
         }
     }
@@ -1682,7 +1696,7 @@ impl XdgShellHandler for Ewm {
             return;
         };
 
-        if let Err(err) = self.popups.grab_popup(root, popup, &self.seat, serial) {
+        if let Err(err) = self.ewm.popups.grab_popup(root, popup, &self.ewm.seat, serial) {
             warn!("error grabbing popup: {err:?}");
         }
     }
@@ -1697,19 +1711,19 @@ impl XdgShellHandler for Ewm {
             state.geometry = positioner.get_geometry();
             state.positioner = positioner;
         });
-        self.unconstrain_popup(&surface);
+        self.ewm.unconstrain_popup(&surface);
         surface.send_repositioned(token);
     }
 
     fn popup_destroyed(&mut self, _surface: PopupSurface) {
         // Queue redraw to clear the popup from screen
-        self.queue_redraw_all();
+        self.ewm.queue_redraw_all();
     }
 }
-delegate_xdg_shell!(Ewm);
+delegate_xdg_shell!(State);
 
 // XDG Decoration
-impl XdgDecorationHandler for Ewm {
+impl XdgDecorationHandler for State {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 
@@ -1734,12 +1748,12 @@ impl XdgDecorationHandler for Ewm {
 
     fn unset_mode(&mut self, _toplevel: ToplevelSurface) {}
 }
-smithay::delegate_xdg_decoration!(Ewm);
+smithay::delegate_xdg_decoration!(State);
 
 // Layer Shell
-impl WlrLayerShellHandler for Ewm {
+impl WlrLayerShellHandler for State {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
-        &mut self.layer_shell_state
+        &mut self.ewm.layer_shell_state
     }
 
     fn new_layer_surface(
@@ -1755,7 +1769,7 @@ impl WlrLayerShellHandler for Ewm {
         let output = if let Some(wl_output) = &wl_output {
             Output::from_resource(wl_output)
         } else {
-            self.space.outputs().next().cloned()
+            self.ewm.space.outputs().next().cloned()
         };
 
         let Some(output) = output else {
@@ -1765,7 +1779,7 @@ impl WlrLayerShellHandler for Ewm {
         };
 
         let wl_surface = surface.wl_surface().clone();
-        self.unmapped_layer_surfaces.insert(wl_surface);
+        self.ewm.unmapped_layer_surfaces.insert(wl_surface);
 
         let mut map = layer_map_for_output(&output);
         map.map_layer(&LayerSurface::new(surface, namespace.clone()))
@@ -1775,10 +1789,10 @@ impl WlrLayerShellHandler for Ewm {
 
     fn layer_destroyed(&mut self, surface: smithay::wayland::shell::wlr_layer::LayerSurface) {
         let wl_surface = surface.wl_surface();
-        self.unmapped_layer_surfaces.remove(wl_surface);
+        self.ewm.unmapped_layer_surfaces.remove(wl_surface);
 
         // Find and unmap the layer surface
-        let output = self.space.outputs().find_map(|o| {
+        let output = self.ewm.space.outputs().find_map(|o| {
             let map = layer_map_for_output(o);
             let layer = map
                 .layers()
@@ -1795,9 +1809,9 @@ impl WlrLayerShellHandler for Ewm {
             drop(map);
 
             // Check for working area expansion (panel removed)
-            self.check_working_area_change(&output);
+            self.ewm.check_working_area_change(&output);
 
-            self.queue_redraw(&output);
+            self.ewm.queue_redraw(&output);
             info!("Layer surface destroyed");
         }
     }
@@ -1807,15 +1821,15 @@ impl WlrLayerShellHandler for Ewm {
         _parent: smithay::wayland::shell::wlr_layer::LayerSurface,
         popup: smithay::wayland::shell::xdg::PopupSurface,
     ) {
-        let _ = self.popups.track_popup(PopupKind::Xdg(popup));
+        let _ = self.ewm.popups.track_popup(PopupKind::Xdg(popup));
     }
 }
-delegate_layer_shell!(Ewm);
+delegate_layer_shell!(State);
 
 // XDG Activation protocol (allows apps to request focus)
-impl XdgActivationHandler for Ewm {
+impl XdgActivationHandler for State {
     fn activation_state(&mut self) -> &mut XdgActivationState {
-        &mut self.activation_state
+        &mut self.ewm.activation_state
     }
 
     fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
@@ -1860,12 +1874,12 @@ impl XdgActivationHandler for Ewm {
 
         if token_data.timestamp.elapsed() < TOKEN_TIMEOUT {
             // Find the surface ID for this WlSurface
-            if let Some(&id) = self.window_ids.iter()
+            if let Some(&id) = self.ewm.window_ids.iter()
                 .find(|(w, _)| w.wl_surface().map(|s| &*s == &surface).unwrap_or(false))
                 .map(|(_, id)| id)
             {
                 // Focus the surface and notify Emacs
-                self.focus_surface_with_source(id, true, "xdg_activation", None);
+                self.ewm.focus_surface_with_source(id, true, "xdg_activation", None);
                 info!("xdg_activation: granted for surface {}", id);
             } else {
                 debug!("xdg_activation: surface not found in window_ids");
@@ -1875,31 +1889,31 @@ impl XdgActivationHandler for Ewm {
         }
 
         // Always remove the token (single-use)
-        self.activation_state.remove_token(&token);
+        self.ewm.activation_state.remove_token(&token);
     }
 }
-delegate_xdg_activation!(Ewm);
+delegate_xdg_activation!(State);
 
 // Foreign toplevel management protocol (exposes windows to external tools)
-impl ForeignToplevelHandler for Ewm {
+impl ForeignToplevelHandler for State {
     fn foreign_toplevel_manager_state(&mut self) -> &mut ForeignToplevelManagerState {
-        &mut self.foreign_toplevel_state
+        &mut self.ewm.foreign_toplevel_state
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {
-        if let Some(&id) = self
+        if let Some(&id) = self.ewm
             .window_ids
             .iter()
             .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
             .map(|(_, id)| id)
         {
-            self.focus_surface_with_source(id, true, "foreign_toplevel", None);
+            self.ewm.focus_surface_with_source(id, true, "foreign_toplevel", None);
             info!("Foreign toplevel: activated surface {}", id);
         }
     }
 
     fn close(&mut self, wl_surface: WlSurface) {
-        if let Some((window, _)) = self
+        if let Some((window, _)) = self.ewm
             .window_ids
             .iter()
             .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
@@ -1919,40 +1933,40 @@ impl ForeignToplevelHandler for Ewm {
         // No-op for EWM
     }
 }
-delegate_foreign_toplevel!(Ewm);
+delegate_foreign_toplevel!(State);
 
 // Screencopy protocol
-impl ScreencopyHandler for Ewm {
+impl ScreencopyHandler for State {
     fn frame(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy) {
         // Queue all screencopy requests for processing during render
         // (both with_damage and immediate requests are handled in the render loop)
-        if let Some(queue) = self.screencopy_state.get_queue_mut(manager) {
+        if let Some(queue) = self.ewm.screencopy_state.get_queue_mut(manager) {
             queue.push(screencopy);
         }
     }
 
     fn screencopy_state(&mut self) -> &mut ScreencopyManagerState {
-        &mut self.screencopy_state
+        &mut self.ewm.screencopy_state
     }
 }
-delegate_screencopy!(Ewm);
+delegate_screencopy!(State);
 
 // Session Lock protocol (ext-session-lock-v1) for screen locking
-impl SessionLockHandler for Ewm {
+impl SessionLockHandler for State {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
-        &mut self.session_lock_state
+        &mut self.ewm.session_lock_state
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
         // Check for dead locker client holding the lock
-        if let LockState::Locked(ref lock) = self.lock_state {
+        if let LockState::Locked(ref lock) = self.ewm.lock_state {
             if lock.is_alive() {
                 info!("Session lock request ignored: already locked with active client");
                 return;
             }
             // Previous client died, allow new lock
             info!("Previous lock client dead, allowing new lock");
-        } else if !matches!(self.lock_state, LockState::Unlocked) {
+        } else if !matches!(self.ewm.lock_state, LockState::Unlocked) {
             info!("Session lock request ignored: already locking");
             return;
         }
@@ -1960,46 +1974,46 @@ impl SessionLockHandler for Ewm {
         info!("Session lock requested");
 
         // Save current focus to restore after unlock
-        if self.focused_surface_id != 0 {
-            self.pre_lock_focus = Some(self.focused_surface_id);
+        if self.ewm.focused_surface_id != 0 {
+            self.ewm.pre_lock_focus = Some(self.ewm.focused_surface_id);
         }
 
-        if self.output_state.is_empty() {
+        if self.ewm.output_state.is_empty() {
             // No outputs: lock immediately
             let lock = confirmation.ext_session_lock().clone();
             confirmation.lock();
-            self.lock_state = LockState::Locked(lock);
+            self.ewm.lock_state = LockState::Locked(lock);
             info!("Session locked (no outputs)");
         } else {
             // Enter Locking state and queue redraw to show locked frame
-            self.lock_state = LockState::Locking(confirmation);
+            self.ewm.lock_state = LockState::Locking(confirmation);
             // Reset all output lock render states
-            for state in self.output_state.values_mut() {
+            for state in self.ewm.output_state.values_mut() {
                 state.lock_render_state = LockRenderState::Unlocked;
             }
-            self.queue_redraw_all();
+            self.ewm.queue_redraw_all();
         }
     }
 
     fn unlock(&mut self) {
         info!("Session unlock requested");
-        self.lock_state = LockState::Unlocked;
+        self.ewm.lock_state = LockState::Unlocked;
 
         // Clear lock surfaces and reset render states
-        for state in self.output_state.values_mut() {
+        for state in self.ewm.output_state.values_mut() {
             state.lock_surface = None;
             state.lock_render_state = LockRenderState::Unlocked;
         }
 
         // Restore focus to the surface that was focused before locking
-        if let Some(id) = self.pre_lock_focus.take() {
-            if self.id_windows.contains_key(&id) {
+        if let Some(id) = self.ewm.pre_lock_focus.take() {
+            if self.ewm.id_windows.contains_key(&id) {
                 info!("Restoring focus to surface {} after unlock", id);
-                self.focus_surface_with_source(id, false, "unlock", None);
+                self.ewm.focus_surface_with_source(id, false, "unlock", None);
             }
         }
 
-        self.queue_redraw_all();
+        self.ewm.queue_redraw_all();
         info!("Session unlocked");
     }
 
@@ -2015,14 +2029,14 @@ impl SessionLockHandler for Ewm {
         configure_lock_surface(&surface, &output);
 
         // Store in per-output state
-        if let Some(state) = self.output_state.get_mut(&output) {
+        if let Some(state) = self.ewm.output_state.get_mut(&output) {
             state.lock_surface = Some(surface);
         }
 
-        self.queue_redraw(&output);
+        self.ewm.queue_redraw(&output);
     }
 }
-delegate_session_lock!(Ewm);
+delegate_session_lock!(State);
 
 /// Configure a lock surface to cover the full output
 fn configure_lock_surface(surface: &LockSurface, output: &Output) {
@@ -2135,8 +2149,9 @@ impl Ewm {
 /// Shared state for compositor event loop (passed to all handlers)
 ///
 /// Note: Display is owned by the event loop (via Generic source), not by State.
+/// The Backend enum allows using either DRM (production) or Headless (testing) backends.
 pub struct State {
-    pub backend: DrmBackendState,
+    pub backend: backend::Backend,
     pub ewm: Ewm,
 }
 
@@ -2272,7 +2287,7 @@ impl State {
                         })
                     });
                 pointer.motion(
-                    &mut self.ewm,
+                    self,
                     under,
                     &smithay::input::pointer::MotionEvent {
                         location: (x, y).into(),
@@ -2280,7 +2295,7 @@ impl State {
                         time: 0,
                     },
                 );
-                pointer.frame(&mut self.ewm);
+                pointer.frame(self);
                 self.ewm.queue_redraw_all();
             }
             ModuleCommand::Screenshot { path } => {
@@ -2400,7 +2415,7 @@ impl State {
                     ..Default::default()
                 };
                 let keyboard = self.ewm.keyboard.clone();
-                if let Err(e) = keyboard.set_xkb_config(&mut self.ewm, xkb_config) {
+                if let Err(e) = keyboard.set_xkb_config(self, xkb_config) {
                     error!("Failed to configure XKB: {:?}", e);
                     return;
                 }
@@ -2426,11 +2441,11 @@ impl State {
                         use smithay::input::keyboard::Layout;
                         let keyboard = self.ewm.keyboard.clone();
                         let current_focus = self.ewm.keyboard_focus.clone();
-                        keyboard.set_focus(&mut self.ewm, None, SERIAL_COUNTER.next_serial());
-                        keyboard.with_xkb_state(&mut self.ewm, |mut context| {
+                        keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+                        keyboard.with_xkb_state(self, |mut context| {
                             context.set_layout(Layout(idx as u32));
                         });
-                        keyboard.set_focus(&mut self.ewm, current_focus, SERIAL_COUNTER.next_serial());
+                        keyboard.set_focus(self, current_focus, SERIAL_COUNTER.next_serial());
                         self.ewm.xkb_current_layout = idx;
                         info!("Switched to layout: {} (index {})", layout, idx);
                         self.ewm.queue_event(Event::LayoutSwitched {

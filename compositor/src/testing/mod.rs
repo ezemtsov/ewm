@@ -40,4 +40,4 @@ mod client;
 mod fixture;
 
 pub use client::{ClientId, ClientManager, ConfigureEvent, TestClient, TestSurface};
-pub use fixture::{Fixture, FixtureState};
+pub use fixture::Fixture;

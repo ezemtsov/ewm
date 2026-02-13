@@ -26,6 +26,7 @@ pub mod headless;
 pub use drm::DrmBackendState;
 pub use headless::HeadlessBackend;
 
+use smithay::reexports::drm::control::crtc;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use crate::Ewm;
 
@@ -120,5 +121,96 @@ impl Backend {
     /// Check if this is a headless backend
     pub fn is_headless(&self) -> bool {
         matches!(self, Backend::Headless(_))
+    }
+
+    /// Set output mode (resolution/refresh)
+    ///
+    /// Returns true if mode was successfully changed.
+    /// Only supported on DRM backend; returns false for headless.
+    pub fn set_mode(&mut self, ewm: &mut Ewm, output_name: &str, width: i32, height: i32, refresh: Option<i32>) -> bool {
+        match self {
+            Backend::Drm(drm) => drm.set_mode(ewm, output_name, width, height, refresh),
+            Backend::Headless(_) => false, // Headless doesn't support mode changes
+        }
+    }
+
+    // --- DRM-specific methods (panic on Headless) ---
+    // These are only called from DRM backend callbacks
+
+    /// Handle session pause (VT switch away)
+    ///
+    /// # Panics
+    /// Panics if called on Headless backend.
+    pub fn pause(&mut self, ewm: &mut Ewm) {
+        match self {
+            Backend::Drm(drm) => drm.pause(ewm),
+            Backend::Headless(_) => panic!("pause() called on Headless backend"),
+        }
+    }
+
+    /// Handle session resume (VT switch back)
+    ///
+    /// # Panics
+    /// Panics if called on Headless backend.
+    pub fn resume(&mut self, ewm: &mut Ewm) {
+        match self {
+            Backend::Drm(drm) => drm.resume(ewm),
+            Backend::Headless(_) => panic!("resume() called on Headless backend"),
+        }
+    }
+
+    /// Trigger deferred DRM initialization
+    ///
+    /// # Panics
+    /// Panics if called on Headless backend.
+    pub fn trigger_init(&self) {
+        match self {
+            Backend::Drm(drm) => drm.trigger_init(),
+            Backend::Headless(_) => panic!("trigger_init() called on Headless backend"),
+        }
+    }
+
+    /// Change to a different VT (virtual terminal)
+    ///
+    /// # Panics
+    /// Panics if called on Headless backend.
+    pub fn change_vt(&mut self, vt: i32) {
+        match self {
+            Backend::Drm(drm) => drm.change_vt(vt),
+            Backend::Headless(_) => panic!("change_vt() called on Headless backend"),
+        }
+    }
+
+    /// Handle udev device change event (monitor hotplug)
+    ///
+    /// # Panics
+    /// Panics if called on Headless backend.
+    pub fn on_device_changed(&mut self, ewm: &mut Ewm) {
+        match self {
+            Backend::Drm(drm) => drm.on_device_changed(ewm),
+            Backend::Headless(_) => panic!("on_device_changed() called on Headless backend"),
+        }
+    }
+
+    /// Render a specific output by CRTC handle
+    ///
+    /// # Panics
+    /// Panics if called on Headless backend.
+    pub fn render_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
+        match self {
+            Backend::Drm(drm) => drm.render_output(crtc, ewm),
+            Backend::Headless(_) => panic!("render_output() called on Headless backend"),
+        }
+    }
+
+    /// Handle estimated VBlank timer firing
+    ///
+    /// # Panics
+    /// Panics if called on Headless backend.
+    pub fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
+        match self {
+            Backend::Drm(drm) => drm.on_estimated_vblank_timer(crtc, ewm),
+            Backend::Headless(_) => panic!("on_estimated_vblank_timer() called on Headless backend"),
+        }
     }
 }
