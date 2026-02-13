@@ -1621,13 +1621,33 @@ impl XdgActivationHandler for Ewm {
         &mut self.activation_state
     }
 
-    fn token_created(&mut self, _token: XdgActivationToken, _data: XdgActivationTokenData) -> bool {
-        // TODO: Implement proper token validation for security.
-        // Currently accepting all tokens. For proper security:
-        // 1. Add ewm-create-activation-token module function
-        // 2. Advise browse-url in Emacs to set XDG_ACTIVATION_TOKEN env var
-        // 3. Validate tokens were created by focused app
-        true
+    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        // Only accept tokens created while the requesting app had keyboard focus.
+        // This prevents apps from stealing focus via xdg_activation.
+        // Reference: niri's implementation in src/handlers/mod.rs
+        let app_id = data.app_id.as_deref().unwrap_or("unknown");
+
+        let Some((serial, seat)) = data.serial else {
+            debug!("xdg_activation: token rejected for {app_id} - no serial provided");
+            return false;
+        };
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            debug!("xdg_activation: token rejected for {app_id} - invalid seat");
+            return false;
+        };
+
+        let keyboard = seat.get_keyboard().unwrap();
+        let valid = keyboard
+            .last_enter()
+            .map(|last_enter| serial.is_no_older_than(&last_enter))
+            .unwrap_or(false);
+
+        if valid {
+            debug!("xdg_activation: token accepted for {app_id}");
+        } else {
+            debug!("xdg_activation: token rejected for {app_id} - serial not from app's focus entry");
+        }
+        valid
     }
 
     fn request_activation(
@@ -2066,6 +2086,13 @@ impl State {
                 });
                 let json = serde_json::to_string_pretty(&state).unwrap_or_default();
                 self.ewm.queue_event(Event::State { json });
+            }
+            ModuleCommand::CreateActivationToken => {
+                // Create an activation token for Emacs to pass to spawned processes
+                let (token, _) = self.ewm.activation_state.create_external_token(None);
+                let token_str = token.as_str().to_string();
+                debug!("Created activation token for Emacs: {}", token_str);
+                module::push_activation_token(token_str);
             }
         }
     }

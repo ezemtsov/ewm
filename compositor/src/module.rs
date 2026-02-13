@@ -190,6 +190,8 @@ pub enum ModuleCommand {
     SwitchLayout { layout: String },
     GetLayouts,
     GetState,
+    /// Request activation token creation (compositor will push to ACTIVATION_TOKEN_POOL)
+    CreateActivationToken,
 }
 
 /// Command queue shared between Emacs thread and compositor
@@ -249,6 +251,53 @@ pub static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
 
 /// Event loop signal for waking the compositor from Emacs thread
 pub static LOOP_SIGNAL: OnceLock<LoopSignal> = OnceLock::new();
+
+// ============================================================================
+// Activation Token Pool (for XDG activation)
+// ============================================================================
+
+/// Pool of pre-generated activation tokens.
+/// Compositor pushes tokens here, Emacs pops them for spawning processes.
+static ACTIVATION_TOKEN_POOL: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+
+fn activation_token_pool() -> &'static Mutex<VecDeque<String>> {
+    ACTIVATION_TOKEN_POOL.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+/// Push an activation token to the pool (called by compositor)
+pub fn push_activation_token(token: String) {
+    activation_token_pool().lock().unwrap().push_back(token);
+}
+
+/// Get an activation token for spawning a process.
+/// Returns a token string that can be set as XDG_ACTIVATION_TOKEN env var.
+/// If the pool is empty, requests one from the compositor and waits briefly.
+#[defun]
+fn create_activation_token(_: &Env) -> Result<Option<String>> {
+    // Try to get from pool first
+    {
+        let mut pool = activation_token_pool().lock().unwrap();
+        if let Some(token) = pool.pop_front() {
+            return Ok(Some(token));
+        }
+    }
+
+    // Pool empty - request token from compositor
+    push_command(ModuleCommand::CreateActivationToken);
+
+    // Wait briefly for compositor to create token (up to 100ms)
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let mut pool = activation_token_pool().lock().unwrap();
+        if let Some(token) = pool.pop_front() {
+            return Ok(Some(token));
+        }
+    }
+
+    // Timeout - compositor might be busy
+    tracing::warn!("Timeout waiting for activation token");
+    Ok(None)
+}
 
 // ============================================================================
 // Focus History (for debugging focus issues)

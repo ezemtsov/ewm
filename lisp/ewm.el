@@ -48,6 +48,7 @@
 (declare-function ewm-get-state-module "ewm-core")
 (declare-function ewm-debug-mode-module "ewm-core")
 (declare-function ewm-debug-mode-p "ewm-core")
+(declare-function ewm-create-activation-token "ewm-core")
 
 ;;; Dynamic module loading
 
@@ -580,6 +581,37 @@ Ensures the compositor thread is cleanly shut down when Emacs terminates."
   (when ewm--module-mode
     (ewm-stop-module)))
 
+;;; Process spawning with activation tokens
+
+(defun ewm--inject-activation-token (orig-fun &rest args)
+  "Advice to inject XDG_ACTIVATION_TOKEN into spawned processes.
+This allows spawned GUI applications to request focus via xdg_activation."
+  (if (and ewm-mode (fboundp 'ewm-create-activation-token))
+      (let ((token (ewm-create-activation-token)))
+        (if token
+            (let ((process-environment
+                   (cons (format "XDG_ACTIVATION_TOKEN=%s" token)
+                         (cons (format "DESKTOP_STARTUP_ID=%s" token)
+                               process-environment))))
+              (apply orig-fun args))
+          ;; Token creation failed, proceed without it
+          (apply orig-fun args)))
+    ;; EWM not active, proceed normally
+    (apply orig-fun args)))
+
+(defconst ewm--process-functions '(start-process make-process call-process)
+  "Process-spawning functions to advise for activation token injection.")
+
+(defun ewm--enable-process-advice ()
+  "Enable automatic activation token injection for spawned processes."
+  (dolist (fn ewm--process-functions)
+    (advice-add fn :around #'ewm--inject-activation-token)))
+
+(defun ewm--disable-process-advice ()
+  "Disable automatic activation token injection."
+  (dolist (fn ewm--process-functions)
+    (advice-remove fn #'ewm--inject-activation-token)))
+
 ;;; Global minor mode
 
 (defun ewm--mode-enable ()
@@ -590,6 +622,7 @@ Ensures the compositor thread is cleanly shut down when Emacs terminates."
   (ewm--send-intercept-keys)
   (ewm--send-xkb-config)
   (ewm-text-input-auto-mode-enable)
+  (ewm--enable-process-advice)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Resend intercept keys after startup to catch late-loaded bindings
@@ -601,6 +634,7 @@ Ensures the compositor thread is cleanly shut down when Emacs terminates."
   (ewm--disable-layout-sync)
   (ewm-input--disable)
   (ewm-text-input-auto-mode-disable)
+  (ewm--disable-process-advice)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Stop module mode if active
