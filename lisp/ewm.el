@@ -252,8 +252,11 @@ Selects the window displaying the surface's buffer, or displays it if hidden."
                   ((buffer-live-p buf)))
         (let ((win (get-buffer-window buf t)))
           (if win
+              ;; Use select-frame instead of select-frame-set-input-focus
+              ;; to avoid triggering xdg_activation which would steal focus
+              ;; back to Emacs. The compositor already set focus correctly.
               (progn
-                (select-frame-set-input-focus (window-frame win))
+                (select-frame (window-frame win))
                 (select-window win))
             ;; Buffer not visible - display it
             (pop-to-buffer-same-window buf)))))))
