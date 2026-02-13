@@ -71,7 +71,7 @@ pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 
 use smithay::{
     backend::renderer::element::solid::SolidColorBuffer,
-    delegate_compositor, delegate_data_device, delegate_dmabuf,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_idle_notify,
     delegate_input_method_manager, delegate_layer_shell, delegate_output, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_xdg_activation, delegate_xdg_shell,
@@ -137,6 +137,7 @@ use smithay::{
         session_lock::{
             LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
         },
+        idle_notify::{IdleNotifierHandler, IdleNotifierState},
     },
 };
 use crate::protocols::foreign_toplevel::{
@@ -471,10 +472,8 @@ pub struct Ewm {
     /// Surface ID that was focused before locking (restored on unlock)
     pub pre_lock_focus: Option<u32>,
 
-    // TODO: ext-idle-notify-v1 protocol support
-    // IdleNotifierState<D> requires LoopHandle<D> and Seat<D> to match,
-    // but our event loop uses State while handlers use Ewm.
-    // This needs architectural changes to support properly.
+    // Idle notify state (ext-idle-notify-v1 protocol)
+    pub idle_notifier_state: IdleNotifierState<State>,
 
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
@@ -502,7 +501,7 @@ pub struct Ewm {
 }
 
 impl Ewm {
-    pub fn new(display_handle: DisplayHandle) -> Self {
+    pub fn new(display_handle: DisplayHandle, loop_handle: LoopHandle<'static, State>) -> Self {
         let compositor_state = CompositorState::new::<State>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<State>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<State>(&display_handle);
@@ -541,6 +540,9 @@ impl Ewm {
 
         // Initialize session lock for screen locking (ext-session-lock-v1)
         let session_lock_state = SessionLockManagerState::new::<State, _>(&display_handle, |_| true);
+
+        // Initialize idle notifier (ext-idle-notify-v1)
+        let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle);
 
         Self {
             stop_signal: None,
@@ -587,6 +589,7 @@ impl Ewm {
             session_lock_state,
             lock_state: LockState::Unlocked,
             pre_lock_focus: None,
+            idle_notifier_state,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -2037,6 +2040,14 @@ impl SessionLockHandler for State {
     }
 }
 delegate_session_lock!(State);
+
+// Idle notify protocol (ext-idle-notify-v1)
+impl IdleNotifierHandler for State {
+    fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
+        &mut self.ewm.idle_notifier_state
+    }
+}
+delegate_idle_notify!(State);
 
 /// Configure a lock surface to cover the full output
 fn configure_lock_surface(surface: &LockSurface, output: &Output) {

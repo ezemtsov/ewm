@@ -32,10 +32,9 @@ use smithay::{
 
 use crate::{is_kill_combo, State, module};
 
-/// Notify the idle notifier of user activity (if initialized)
-/// TODO: ext-idle-notify-v1 support requires architectural changes
-fn notify_activity(_state: &mut State) {
-    // No-op for now - idle notifier not yet supported
+/// Notify the idle notifier of user activity
+fn notify_activity(state: &mut State) {
+    state.ewm.idle_notifier_state.notify_activity(&state.ewm.seat);
 }
 
 /// Result of processing a keyboard event

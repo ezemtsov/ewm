@@ -1581,7 +1581,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
 
-    let mut ewm = Ewm::new(display_handle.clone());
+    let mut ewm = Ewm::new(display_handle.clone(), event_loop.handle());
 
     // Connect input method relay to ourselves
     let socket_path = std::env::var("XDG_RUNTIME_DIR")

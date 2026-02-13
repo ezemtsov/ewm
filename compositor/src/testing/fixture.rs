@@ -46,7 +46,7 @@ impl Fixture {
         let display_handle = display.handle();
 
         // Create compositor state with headless backend
-        let ewm = Ewm::new(display_handle);
+        let ewm = Ewm::new(display_handle, event_loop.handle());
         let backend = Backend::Headless(HeadlessBackend::new());
 
         let state = State { backend, ewm };
