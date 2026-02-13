@@ -1,6 +1,6 @@
 # EWM - Emacs Wayland Manager
 
-> **DISCLAIMER**: This project was vibe-coded together with Claude Code over a weekend as an experiment to see how far I could progress without getting drawn into the details. As a long-time EXWM user, the idea of having a modern Wayland-based EXWM implementation intrigued me a lot, but not enough to spend months implementing everything by hand. With that in mind, I assume a large portion of this code likely requires a proper rewrite by a developer who actually understands Wayland.
+> **Disclaimer**: This project was vibe-coded together with Claude Code over a week as an experiment to see how far I could progress without getting drawn into the details. As a long-time EXWM user, the idea of having a modern Wayland-based EXWM implementation intrigued me a lot, but not enough to spend months implementing everything by hand. With that in mind, please expect possible issues, the project is in active development.
 
 ## Video Demo
 
@@ -39,8 +39,7 @@ cargo build  # builds to compositor/target/debug/libewm_core.so
 From a TTY (not inside an existing Wayland/X11 session):
 
 ```bash
-emacs --fg-daemon
-# Then in Emacs: M-x ewm-start-module
+emacs -Q -l ~/git/ewm/lisp/ewm.el --eval "(ewm-start-module)"
 ```
 
 Or start apps in the compositor:
