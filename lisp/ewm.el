@@ -345,8 +345,11 @@ changing the available area for Emacs frames."
                      ("width" width) ("height" height)) event))
     (message "Working area for %s: %dx%d+%d+%d" output width height x y)
     ;; Frame resize happens automatically via Wayland configure event.
-    ;; Trigger layout refresh to update surface views.
-    (ewm-layout--refresh)))
+    ;; Layout refresh is triggered by window-size-change-functions when
+    ;; the frame actually resizes. Don't call ewm-layout--refresh directly
+    ;; here to avoid focus loops during startup when multiple working area
+    ;; events arrive in quick succession.
+    ))
 
 ;;; Commands
 
