@@ -287,16 +287,11 @@ Updates buffer-local variables and renames the buffer."
       (ewm--create-frame-for-output name))))
 
 (defun ewm--handle-output-disconnected (event)
-  "Handle output disconnected EVENT. Closes its frame."
+  "Handle output disconnected EVENT.
+Deletes the frame for that output. Surface buffers remain in Emacs but are
+hidden by the compositor since no windows display them."
   (pcase-let (((map ("name" name)) event))
     (when-let ((frame (ewm--frame-for-output name)))
-      ;; Move windows to another frame before deletion
-      (let ((target-frame (car (cl-remove frame (frame-list)))))
-        (when target-frame
-          (dolist (window (window-list frame))
-            (let ((buf (window-buffer window)))
-              (with-selected-frame target-frame
-                (switch-to-buffer buf))))))
       (delete-frame frame))))
 
 (defun ewm--rename-buffer ()
