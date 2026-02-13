@@ -1,6 +1,35 @@
 //! EWM - Emacs Wayland Manager
 //!
 //! Wayland compositor core library.
+//!
+//! # Design Invariants
+//!
+//! 1. **Focus ownership**: Only one surface has keyboard focus at a time.
+//!    Focus changes only via explicit commands from Emacs or validated input
+//!    events (click-to-focus, XDG activation). The `focused_surface_id` field
+//!    is the single source of truth for focus state.
+//!
+//! 2. **Surface lifecycle**: Surfaces are assigned monotonically increasing IDs
+//!    starting from 1. ID 0 is reserved for "no surface". IDs are never reused
+//!    within a session. When a surface is destroyed, it's removed from all maps
+//!    and its ID becomes invalid.
+//!
+//! 3. **Redraw state machine**: Each output has independent redraw state:
+//!    `Idle` → `Queued` → `WaitingForVBlank` → `Idle`
+//!    This prevents double-buffering issues and busy-waiting. The state is owned
+//!    by `Ewm::output_state`, not the backend.
+//!
+//! 4. **Emacs ownership**: The compositor runs as a thread within Emacs.
+//!    Emacs controls window layout and focus policy. The compositor handles
+//!    protocol compliance and rendering. This split means:
+//!    - Compositor never initiates focus changes without Emacs consent
+//!    - Layout changes come from Emacs via the command queue
+//!    - Events flow back to Emacs via the event queue
+//!
+//! 5. **Thread safety**: Communication between Emacs and compositor uses
+//!    lock-free queues and atomic flags. The module interface (module.rs)
+//!    provides the synchronization boundary.
+
 pub mod backend;
 pub mod cursor;
 #[cfg(feature = "screencast")]
@@ -13,6 +42,12 @@ pub mod pipewire;
 pub mod protocols;
 pub mod render;
 mod module;
+pub mod tracy;
+pub use tracy::VBlankFrameTracker;
+
+// Testing module is always compiled but only used by tests
+#[doc(hidden)]
+pub mod testing;
 
 /// Get the current VT (virtual terminal) number.
 /// Returns None if not running on a VT or detection fails.
@@ -32,7 +67,7 @@ pub fn vt_suffix() -> String {
 
 pub use event::{Event, OutputInfo, OutputMode};
 
-pub use backend::DrmBackendState;
+pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_input_method_manager,
@@ -44,8 +79,8 @@ use smithay::{
     },
     output::Output,
     input::{
-        keyboard::xkb::keysyms,
-        keyboard::ModifiersState,
+        keyboard::{xkb::keysyms, KeyboardHandle, ModifiersState},
+        pointer::PointerHandle,
         Seat, SeatHandler, SeatState,
     },
     reexports::{
@@ -147,6 +182,19 @@ pub struct OutputState {
     pub redraw_state: RedrawState,
     /// Refresh interval in microseconds (for estimated VBlank timer)
     pub refresh_interval_us: u64,
+    /// Tracy frame tracker for VBlank profiling (no-op when feature disabled)
+    pub vblank_tracker: VBlankFrameTracker,
+}
+
+impl OutputState {
+    /// Create a new OutputState for the given output name.
+    pub fn new(output_name: &str, refresh_interval_us: u64) -> Self {
+        Self {
+            redraw_state: RedrawState::Queued,
+            refresh_interval_us,
+            vblank_tracker: VBlankFrameTracker::new(output_name),
+        }
+    }
 }
 
 impl Default for OutputState {
@@ -154,6 +202,7 @@ impl Default for OutputState {
         Self {
             redraw_state: RedrawState::Idle,
             refresh_interval_us: 16_667, // ~60Hz default
+            vblank_tracker: VBlankFrameTracker::new("default"),
         }
     }
 }
@@ -289,6 +338,10 @@ pub struct Ewm {
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
     pub seat: Seat<Self>,
+    /// Cached pointer handle (avoids repeated get_pointer().unwrap() on hot paths)
+    pub pointer: PointerHandle<Self>,
+    /// Cached keyboard handle (avoids repeated get_keyboard().unwrap() on hot paths)
+    pub keyboard: KeyboardHandle<Self>,
 
     // Surface tracking
     next_surface_id: u32,
@@ -391,8 +444,9 @@ impl Ewm {
         let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
 
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
-        seat.add_keyboard(Default::default(), 200, 25).unwrap();
-        seat.add_pointer();
+        let keyboard = seat.add_keyboard(Default::default(), 200, 25)
+            .expect("Failed to add keyboard to seat");
+        let pointer = seat.add_pointer();
 
         // Initialize screencopy state before moving display_handle
         let screencopy_state = ScreencopyManagerState::new::<Self, _>(&display_handle, |_| true);
@@ -429,6 +483,8 @@ impl Ewm {
             data_device_state,
             primary_selection_state,
             seat,
+            pointer,
+            keyboard,
             next_surface_id: 1,
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
@@ -634,7 +690,7 @@ impl Ewm {
 
         if let Some(window) = self.id_windows.get(&id) {
             if let Some(surface) = window.wl_surface() {
-                let keyboard = self.seat.get_keyboard().unwrap();
+                let keyboard = self.keyboard.clone();
                 let focus_surface = surface.into_owned();
                 self.keyboard_focus = Some(focus_surface.clone());
                 // focus_changed handles text_input focus
@@ -926,7 +982,9 @@ impl Ewm {
             .insert_source(display_source, |_, display, state| {
                 // SAFETY: we don't drop the display while the event loop is running
                 let display = unsafe { display.get_mut() };
-                display.dispatch_clients(&mut state.ewm).unwrap();
+                if let Err(e) = display.dispatch_clients(&mut state.ewm) {
+                    tracing::error!("Wayland dispatch error: {e}");
+                }
                 Ok(PostAction::Continue)
             })
             .expect("Failed to init wayland source");
@@ -1109,7 +1167,9 @@ impl CompositorHandler for Ewm {
         &self,
         client: &'a smithay::reexports::wayland_server::Client,
     ) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor
+        &client.get_data::<ClientState>()
+            .expect("ClientState inserted at connection time")
+            .compositor
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -1679,8 +1739,16 @@ impl State {
         }
 
         // Process module commands (from Emacs via dynamic module)
-        for cmd in crate::module::drain_commands() {
-            self.handle_module_command(cmd);
+        let commands = crate::module::drain_commands();
+        if !commands.is_empty() {
+            let start = std::time::Instant::now();
+            let count = commands.len();
+            for cmd in commands {
+                self.handle_module_command(cmd);
+            }
+            let elapsed_us = start.elapsed().as_micros() as f64;
+            crate::tracy_plot!("emacs_cmd_count", count as f64);
+            crate::tracy_plot!("emacs_cmd_time_us", elapsed_us);
         }
 
         // Process pending early imports
@@ -1696,11 +1764,15 @@ impl State {
         self.process_im_events();
 
         // Flush Wayland clients
-        self.ewm.display_handle.flush_clients().unwrap();
+        if let Err(e) = self.ewm.display_handle.flush_clients() {
+            tracing::warn!("Failed to flush Wayland clients: {e}");
+        }
     }
 
     /// Handle a module command (from Emacs via dynamic module).
     fn handle_module_command(&mut self, cmd: module::ModuleCommand) {
+        tracy_span!("handle_module_command");
+
         use module::ModuleCommand;
         match cmd {
             ModuleCommand::Layout { id, x, y, w, h } => {
@@ -1773,7 +1845,7 @@ impl State {
             ModuleCommand::WarpPointer { x, y } => {
                 self.ewm.pointer_location = (x, y);
                 module::set_pointer_location(x, y);
-                let pointer = self.ewm.seat.get_pointer().unwrap();
+                let pointer = self.ewm.pointer.clone();
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self
                     .ewm
@@ -1915,7 +1987,7 @@ impl State {
                     options: options.clone(),
                     ..Default::default()
                 };
-                let keyboard = self.ewm.seat.get_keyboard().unwrap();
+                let keyboard = self.ewm.keyboard.clone();
                 if let Err(e) = keyboard.set_xkb_config(&mut self.ewm, xkb_config) {
                     error!("Failed to configure XKB: {:?}", e);
                     return;
@@ -1940,7 +2012,7 @@ impl State {
                 match index {
                     Some(idx) => {
                         use smithay::input::keyboard::Layout;
-                        let keyboard = self.ewm.seat.get_keyboard().unwrap();
+                        let keyboard = self.ewm.keyboard.clone();
                         let current_focus = self.ewm.keyboard_focus.clone();
                         keyboard.set_focus(&mut self.ewm, None, SERIAL_COUNTER.next_serial());
                         keyboard.with_xkb_state(&mut self.ewm, |mut context| {

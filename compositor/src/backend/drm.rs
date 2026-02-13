@@ -3,11 +3,26 @@
 //! This module provides the backend for running directly on hardware without
 //! another compositor (like running from a TTY).
 //!
-//! Key insight: DRM master can only be acquired when the session is active.
-//! Session activation happens asynchronously via libseat, so we must defer
-//! all DRM operations until we receive an ActivateSession event.
+//! # Design Invariants
+//!
+//! 1. **Deferred DRM initialization**: DRM master can only be acquired when the
+//!    session is active. Session activation happens asynchronously via libseat,
+//!    so we defer all DRM operations until we receive an ActivateSession event.
+//!
+//! 2. **Field ordering for Drop**: The order of fields in DrmBackendState and
+//!    DrmDeviceState is critical. Surfaces must be dropped before drm/gbm to
+//!    avoid use-after-free. See https://github.com/Smithay/smithay/issues/1102
+//!
+//! 3. **Session notifier cleanup**: The session notifier must be removed from the
+//!    event loop BEFORE the session is dropped. This is essential for embedded
+//!    mode where process exit doesn't clean up resources automatically.
+//!
+//! 4. **Per-output rendering**: Each output has independent redraw state and
+//!    VBlank synchronization. Outputs never share frame timing.
 
 use std::collections::HashMap;
+
+use crate::tracy_span;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -362,6 +377,8 @@ impl DrmBackendState {
 
     /// Render a frame to the given output
     fn render_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
+        tracy_span!("render_output");
+
         // Refresh foreign toplevel state before rendering
         ewm.refresh_foreign_toplevel();
 
@@ -473,6 +490,8 @@ impl DrmBackendState {
                             // Transition to WaitingForVBlank
                             if let Some(output_state) = ewm.output_state.get_mut(&output) {
                                 output_state.redraw_state = RedrawState::WaitingForVBlank { redraw_needed: false };
+                                // Start Tracy frame tracking for VBlank interval
+                                output_state.vblank_tracker.begin_frame();
                             }
                         }
                         Err(err) => {
@@ -704,6 +723,8 @@ impl DrmBackendState {
 
     /// Process all outputs that have queued redraws
     pub(crate) fn redraw_queued_outputs(&mut self, ewm: &mut Ewm) {
+        tracy_span!("redraw_queued_outputs");
+
         let Some(device) = &self.device else {
             return;
         };
@@ -930,10 +951,7 @@ impl DrmBackendState {
         // Initialize output state in Ewm (redraw state, refresh interval)
         ewm.output_state.insert(
             output.clone(),
-            OutputState {
-                redraw_state: RedrawState::Queued,
-                refresh_interval_us,
-            },
+            OutputState::new(&connector_name, refresh_interval_us),
         );
 
         // Position this output horizontally after the previous ones
@@ -1295,10 +1313,7 @@ fn initialize_drm(
         // Initialize output state in Ewm (redraw state, refresh interval)
         state.ewm.output_state.insert(
             output.clone(),
-            OutputState {
-                redraw_state: RedrawState::Queued,
-                refresh_interval_us,
-            },
+            OutputState::new(&connector_name, refresh_interval_us),
         );
 
         // Position this output horizontally after the previous ones
@@ -1382,6 +1397,9 @@ fn initialize_drm(
     // Register DRM event notifier for VBlank
     event_loop_handle.insert_source(drm_notifier, |event, _, state| {
         if let DrmEvent::VBlank(crtc) = event {
+            crate::tracy_frame_mark!();
+            crate::tracy_span!("on_vblank");
+
             let mut should_render = false;
             if let Some(device) = &mut state.backend.device {
                 if let Some(surface) = device.surfaces.get_mut(&crtc) {
@@ -1394,6 +1412,9 @@ fn initialize_drm(
 
                     // Get output state from Ewm
                     if let Some(output_state) = state.ewm.output_state.get_mut(&surface.output) {
+                        // End Tracy frame tracking for VBlank interval
+                        output_state.vblank_tracker.end_frame();
+
                         match &output_state.redraw_state {
                             RedrawState::WaitingForVBlank { redraw_needed } => {
                                 if *redraw_needed {
@@ -1730,7 +1751,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     handle_device_added(device);
                 }
                 InputEvent::Keyboard { event: kb_event } => {
-                    let keyboard = state.ewm.seat.get_keyboard().unwrap();
+                    let keyboard = state.ewm.keyboard.clone();
                     let action = handle_keyboard_event(
                         &mut state.ewm,
                         &keyboard,
@@ -1761,7 +1782,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     state.ewm.pointer_location = (new_x, new_y);
                     module::set_pointer_location(new_x, new_y);
 
-                    let pointer = state.ewm.seat.get_pointer().unwrap();
+                    let pointer = state.ewm.pointer.clone();
                     let serial = SERIAL_COUNTER.next_serial();
 
                     // Find surface under pointer (including popups)
@@ -1800,7 +1821,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     state.ewm.pointer_location = (pos.x, pos.y);
                     module::set_pointer_location(pos.x, pos.y);
 
-                    let pointer = state.ewm.seat.get_pointer().unwrap();
+                    let pointer = state.ewm.pointer.clone();
                     let serial = SERIAL_COUNTER.next_serial();
 
                     // Find surface under pointer (including popups)
@@ -1821,8 +1842,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     state.ewm.queue_redraw_all();
                 }
                 InputEvent::PointerButton { event } => {
-                    let pointer = state.ewm.seat.get_pointer().unwrap();
-                    let keyboard = state.ewm.seat.get_keyboard().unwrap();
+                    let pointer = state.ewm.pointer.clone();
+                    let keyboard = state.ewm.keyboard.clone();
                     let serial = SERIAL_COUNTER.next_serial();
 
                     let button_state = match event.state() {
@@ -1866,8 +1887,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     pointer.frame(&mut state.ewm);
                 }
                 InputEvent::PointerAxis { event } => {
-                    let pointer = state.ewm.seat.get_pointer().unwrap();
-                    let keyboard = state.ewm.seat.get_keyboard().unwrap();
+                    let pointer = state.ewm.pointer.clone();
+                    let keyboard = state.ewm.keyboard.clone();
                     let serial = SERIAL_COUNTER.next_serial();
 
                     // Scroll-to-focus: focus the surface under pointer on scroll

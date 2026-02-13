@@ -100,6 +100,46 @@ isn't being set correctly. Each entry shows:
 - `source`: What triggered the focus change
 - `context`: Additional context (e.g., "keyboard_event" for pending focus)
 
+## Testing
+
+The compositor has a comprehensive test suite using a headless backend.
+
+### Running Tests
+```sh
+cd compositor
+cargo test              # run all 44 tests
+cargo test --test render  # run only render tests
+cargo insta review      # review snapshot changes
+```
+
+### Test Structure
+- `src/testing/` - Test fixture and mock client infrastructure
+- `tests/integration.rs` - Basic fixture tests
+- `tests/protocol/` - Protocol-level tests (xdg_shell, focus, layer_shell, module_interface)
+- `tests/render.rs` - Per-output rendering tests
+
+### Headless Backend
+Tests use `HeadlessBackend` which provides virtual outputs without GPU access.
+This allows running tests in CI environments. Key features:
+- `add_output(name, width, height)` - Create virtual displays
+- `render_count(name)` - Track renders per output for assertions
+- `has_queued_redraws()` - Check redraw state
+
+### Snapshot Testing
+Uses [insta](https://insta.rs/) for snapshot tests. When output changes:
+```sh
+cargo insta review  # interactive review of changes
+cargo insta accept  # accept all changes
+```
+
+### Tracy Profiling
+Build with profiling enabled to analyze performance:
+```sh
+cargo build --features=profile-with-tracy-ondemand
+```
+Key instrumented functions: `redraw_queued_outputs`, `on_vblank`,
+`handle_keyboard_event`, `handle_pointer_*`, `collect_render_elements`.
+
 ## Reference Implementation
 The compositor's DRM backend, screen sharing, and D-Bus integration follow
 patterns from [niri](https://github.com/YaLTeR/niri), a Wayland compositor

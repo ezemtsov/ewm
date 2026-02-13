@@ -2,6 +2,24 @@
 //!
 //! This module provides keyboard and pointer event processing that works
 //! with any Smithay input backend.
+//!
+//! # Design Invariants
+//!
+//! 1. **Key interception**: Super-prefixed bindings are intercepted and redirected to
+//!    Emacs. The intercepted key list comes from Emacs via `ewm-set-intercepted-keys`.
+//!    Keys are matched using raw Latin keysyms to work regardless of XKB layout.
+//!
+//! 2. **Focus synchronization**: Before processing any key, we check for pending focus
+//!    commands from Emacs. This ensures focus changes are applied before the key event,
+//!    avoiding race conditions.
+//!
+//! 3. **Text input intercept**: When `text_input_intercept` is true, all printable keys
+//!    are redirected to Emacs (for input method support in non-Emacs surfaces).
+//!
+//! 4. **VT switching**: Ctrl+Alt+F1-F12 are special keys handled by XKB as
+//!    XF86Switch_VT_N keysyms. We detect these and signal the backend to switch VTs.
+
+use crate::tracy_span;
 
 use smithay::{
     backend::input::KeyState,
@@ -44,6 +62,8 @@ pub fn handle_keyboard_event(
     key_state: KeyState,
     time: u32,
 ) -> KeyboardAction {
+    tracy_span!("handle_keyboard_event");
+
     let serial = SERIAL_COUNTER.next_serial();
     let is_press = key_state == KeyState::Pressed;
 
@@ -309,6 +329,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
     state: &mut Ewm,
     event: B::PointerMotionEvent,
 ) -> bool {
+    tracy_span!("handle_pointer_motion");
     let (current_x, current_y) = state.pointer_location;
     let delta = event.delta();
     let (output_w, output_h) = state.output_size;
@@ -319,7 +340,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
     state.pointer_location = (new_x, new_y);
     module::set_pointer_location(new_x, new_y);
 
-    let pointer = state.seat.get_pointer().unwrap();
+    let pointer = state.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
     // Find surface under pointer (including popups)
@@ -355,12 +376,13 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     state: &mut Ewm,
     event: B::PointerMotionAbsoluteEvent,
 ) -> bool {
+    tracy_span!("handle_pointer_motion_absolute");
     let (output_w, output_h) = state.output_size;
     let pos = event.position_transformed((output_w, output_h).into());
     state.pointer_location = (pos.x, pos.y);
     module::set_pointer_location(pos.x, pos.y);
 
-    let pointer = state.seat.get_pointer().unwrap();
+    let pointer = state.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
     // Find surface under pointer (including popups)
@@ -381,8 +403,9 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
 
 /// Handle pointer button press/release with click-to-focus
 pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::PointerButtonEvent) {
-    let pointer = state.seat.get_pointer().unwrap();
-    let keyboard = state.seat.get_keyboard().unwrap();
+    tracy_span!("handle_pointer_button");
+    let pointer = state.pointer.clone();
+    let keyboard = state.keyboard.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
     let button_state = match event.state() {
@@ -422,8 +445,9 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut Ewm, event: B::Pointer
 
 /// Handle pointer axis (scroll wheel, touchpad scroll)
 pub fn handle_pointer_axis<B: InputBackend>(state: &mut Ewm, event: B::PointerAxisEvent) {
-    let pointer = state.seat.get_pointer().unwrap();
-    let keyboard = state.seat.get_keyboard().unwrap();
+    tracy_span!("handle_pointer_axis");
+    let pointer = state.pointer.clone();
+    let keyboard = state.keyboard.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
     // Scroll-to-focus: focus the surface under pointer on scroll

@@ -2,8 +2,23 @@
 //!
 //! This module provides functions for collecting render elements from
 //! the compositor state, shared between Winit and DRM backends.
+//!
+//! # Design Invariants
+//!
+//! 1. **Per-output rendering**: Elements are collected per-output, not globally.
+//!    Each output only receives elements that intersect with its geometry. This is
+//!    critical for efficient rendering, accurate damage tracking, and screen sharing.
+//!
+//! 2. **Rendering order**: Elements are collected front-to-back:
+//!    Overlay → Cursor → Top → Popups → Windows → Bottom → Background
+//!    This order matches typical desktop compositor layering.
+//!
+//! 3. **View-based rendering**: Surfaces with Emacs-managed views are rendered at
+//!    view positions. Surfaces without views use space positions (for Emacs frames).
 
 use std::ptr;
+
+use crate::tracy_span;
 
 use anyhow::{ensure, Context};
 use smithay::{
@@ -246,6 +261,8 @@ pub fn collect_render_elements_for_output(
     include_cursor: bool,
     output: &Output,
 ) -> Vec<EwmRenderElement> {
+    tracy_span!("collect_render_elements");
+
     use smithay::backend::renderer::element::AsRenderElements;
     use smithay::utils::Logical;
     use smithay::wayland::seat::WaylandFocus;

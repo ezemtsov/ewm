@@ -8,7 +8,8 @@ description = "Emacs Wayland Manager - Wayland compositor"
 [lib]
 name = "ewm_core"
 path = "src/lib.rs"
-crate-type = ["cdylib"]
+# cdylib for Emacs module, rlib for tests
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1"
@@ -75,3 +76,16 @@ version = "0.19"
 [features]
 default = []
 screencast = ["pipewire", "zbus", "async-io"]
+
+# Tracy profiling support
+profile-with-tracy = ["tracy-client/default"]
+profile-with-tracy-ondemand = ["profile-with-tracy", "tracy-client/ondemand"]
+
+[dependencies.tracy-client]
+version = "0.18"
+default-features = false
+optional = true
+
+[dev-dependencies]
+insta = { version = "1.42", features = ["yaml"] }
+proptest = "1.6"

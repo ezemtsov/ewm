@@ -1,0 +1,9 @@
+---
+source: tests/protocol/xdg_shell.rs
+assertion_line: 128
+expression: state
+---
+output_count: 2
+output_size: (5280, 1440)
+focused_surface: 0
+surface_count: 0

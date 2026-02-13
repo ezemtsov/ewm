@@ -1,4 +1,38 @@
 //! Emacs dynamic module interface for EWM
+//!
+//! # Design Invariants
+//!
+//! 1. **Thread safety**: The compositor runs in a separate thread from Emacs.
+//!    Communication uses lock-free queues and atomic flags:
+//!    - `COMMAND_QUEUE`: Emacs → Compositor commands (layouts, focus, etc.)
+//!    - `EVENT_QUEUE`: Compositor → Emacs events (new surfaces, focus changes)
+//!    - Atomic flags for simple state (`FOCUSED_SURFACE_ID`, `IN_PREFIX_SEQUENCE`)
+//!
+//! 2. **No blocking**: Module functions called from Emacs must never block.
+//!    They push to queues and return immediately. The compositor processes
+//!    queues on its event loop.
+//!
+//! 3. **Synchronous state for races**: Some state must be synchronous to avoid
+//!    race conditions:
+//!    - `PENDING_FRAME_OUTPUTS`: Must be read atomically with surface creation
+//!    - `INTERCEPTED_KEYS`: Must be available before first key event
+//!
+//! 4. **Focus debugging**: `FOCUS_HISTORY` records the last 20 focus changes
+//!    with source tracking. Essential for diagnosing focus races where the
+//!    compositor and Emacs disagree about which surface has focus.
+//!
+//! # Why This Design
+//!
+//! Emacs dynamic modules run in the Emacs main thread. The compositor must run
+//! in its own thread to process Wayland events without blocking Emacs. This
+//! creates a producer-consumer relationship:
+//!
+//! - Emacs produces: layout commands, focus requests, key interception config
+//! - Compositor produces: new surface events, title changes, focus notifications
+//!
+//! Lock-free queues provide the necessary synchronization with minimal overhead.
+//! The compositor drains all pending commands at the start of each event loop
+//! iteration, ensuring consistent state.
 
 use emacs::{defun, Env, IntoLisp, Result, Value};
 use std::collections::HashMap;
