@@ -39,8 +39,12 @@ cargo build  # builds to compositor/target/debug/libewm_core.so
 From a TTY (not inside an existing Wayland/X11 session):
 
 ```bash
-emacs -Q -l ~/git/ewm/lisp/ewm.el --eval "(ewm-start-module)"
+emacs --fg-daemon -Q -L ~/git/ewm/lisp -l ewm --eval "(ewm-start-module)"
 ```
+
+The `--fg-daemon` flag is required because EWM creates frames dynamically as
+outputs are discovered. Starting Emacs without initial frames ensures uniform
+handling for all monitors and proper multi-monitor support.
 
 Or start apps in the compositor:
 ```bash
