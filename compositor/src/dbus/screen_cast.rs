@@ -29,17 +29,19 @@ pub enum ScreenCastToCompositor {
 impl std::fmt::Debug for ScreenCastToCompositor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::StartCast { session_id, output_name, .. } => {
-                f.debug_struct("StartCast")
-                    .field("session_id", session_id)
-                    .field("output_name", output_name)
-                    .finish()
-            }
-            Self::StopCast { session_id } => {
-                f.debug_struct("StopCast")
-                    .field("session_id", session_id)
-                    .finish()
-            }
+            Self::StartCast {
+                session_id,
+                output_name,
+                ..
+            } => f
+                .debug_struct("StartCast")
+                .field("session_id", session_id)
+                .field("output_name", output_name)
+                .finish(),
+            Self::StopCast { session_id } => f
+                .debug_struct("StopCast")
+                .field("session_id", session_id)
+                .finish(),
         }
     }
 }
@@ -76,14 +78,10 @@ impl ScreenCast {
     ) -> fdo::Result<OwnedObjectPath> {
         let session_id = SESSION_ID.fetch_add(1, Ordering::SeqCst);
         let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
-        let path = OwnedObjectPath::try_from(path)
-            .expect("D-Bus path from format!() is always valid");
+        let path =
+            OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let session = Session::new(
-            session_id,
-            self.outputs.clone(),
-            self.to_compositor.clone(),
-        );
+        let session = Session::new(session_id, self.outputs.clone(), self.to_compositor.clone());
 
         match server.at(&path, session).await {
             Ok(true) => {
@@ -169,7 +167,10 @@ impl Session {
 
         // Signal that session is closed
         if let Err(err) = Session::closed(&ctxt).await {
-            warn!(session_id = self.id, "failed to emit Closed signal: {err:?}");
+            warn!(
+                session_id = self.id,
+                "failed to emit Closed signal: {err:?}"
+            );
         }
 
         if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StopCast {
@@ -204,7 +205,10 @@ impl Session {
         let output = {
             let outputs = self.outputs.lock().unwrap();
             let available: Vec<_> = outputs.iter().map(|o| o.name.clone()).collect();
-            info!("RecordMonitor: looking for '{}', available: {:?}", connector, available);
+            info!(
+                "RecordMonitor: looking for '{}', available: {:?}",
+                connector, available
+            );
             outputs.iter().find(|o| o.name == connector).cloned()
         };
 
@@ -216,19 +220,11 @@ impl Session {
         };
 
         let stream_id = STREAM_ID.fetch_add(1, Ordering::SeqCst);
-        let path = format!(
-            "/org/gnome/Mutter/ScreenCast/Stream/u{}",
-            stream_id
-        );
-        let path = OwnedObjectPath::try_from(path)
-            .expect("D-Bus path from format!() is always valid");
+        let path = format!("/org/gnome/Mutter/ScreenCast/Stream/u{}", stream_id);
+        let path =
+            OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let stream = Stream::new(
-            stream_id,
-            self.id,
-            output,
-            self.to_compositor.clone(),
-        );
+        let stream = Stream::new(stream_id, self.id, output, self.to_compositor.clone());
 
         // Register stream with D-Bus and get InterfaceRef
         let iface = match server.at(&path, stream.clone()).await {
@@ -243,9 +239,7 @@ impl Session {
                     }
                 }
             }
-            Ok(false) => {
-                return Err(fdo::Error::Failed("stream path already exists".to_owned()))
-            }
+            Ok(false) => return Err(fdo::Error::Failed("stream path already exists".to_owned())),
             Err(err) => {
                 return Err(fdo::Error::Failed(format!(
                     "error creating stream object: {err:?}"
@@ -328,10 +322,7 @@ impl Stream {
     #[zbus(property)]
     async fn parameters(&self) -> HashMap<String, Value<'static>> {
         let mut params = HashMap::new();
-        params.insert(
-            "position".to_string(),
-            Value::new((0i32, 0i32)),
-        );
+        params.insert("position".to_string(), Value::new((0i32, 0i32)));
         params.insert(
             "size".to_string(),
             Value::new((self.output.width, self.output.height)),
@@ -354,7 +345,10 @@ impl Start for ScreenCast {
             .name(name.as_str())?
             .serve_at("/org/gnome/Mutter/ScreenCast", self)?
             .build()?;
-        info!("ScreenCast::start() - D-Bus connection established, unique name: {:?}", conn.unique_name());
+        info!(
+            "ScreenCast::start() - D-Bus connection established, unique name: {:?}",
+            conn.unique_name()
+        );
         Ok(conn)
     }
 }

@@ -14,8 +14,7 @@ use wayland_client::{
     Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols_misc::zwp_input_method_v2::client::{
-    zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
-    zwp_input_method_v2::ZwpInputMethodV2,
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2, zwp_input_method_v2::ZwpInputMethodV2,
 };
 
 /// Events sent from IM relay to main thread
@@ -228,7 +227,11 @@ impl Dispatch<ZwpInputMethodV2, ()> for RelayState {
                 state.serial = state.serial.wrapping_add(1);
                 tracing::trace!("IM relay: done, serial={}", state.serial);
             }
-            Event::SurroundingText { text, cursor, anchor } => {
+            Event::SurroundingText {
+                text,
+                cursor,
+                anchor,
+            } => {
                 tracing::trace!(
                     "IM relay: surrounding_text cursor={} anchor={} text={:?}",
                     cursor,
@@ -237,7 +240,11 @@ impl Dispatch<ZwpInputMethodV2, ()> for RelayState {
                 );
             }
             Event::ContentType { hint, purpose } => {
-                tracing::trace!("IM relay: content_type hint={:?} purpose={:?}", hint, purpose);
+                tracing::trace!(
+                    "IM relay: content_type hint={:?} purpose={:?}",
+                    hint,
+                    purpose
+                );
             }
             Event::TextChangeCause { cause } => {
                 tracing::trace!("IM relay: text_change_cause={:?}", cause);

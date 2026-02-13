@@ -56,7 +56,10 @@ fn test_output_horizontal_layout() {
         second_geo.loc.x,
         first_x + 1920
     );
-    assert_eq!(second_geo.loc.y, 0, "Outputs should be horizontally aligned");
+    assert_eq!(
+        second_geo.loc.y, 0,
+        "Outputs should be horizontally aligned"
+    );
 }
 
 /// Test that pointer location is tracked globally

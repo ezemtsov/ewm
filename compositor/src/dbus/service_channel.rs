@@ -40,9 +40,8 @@ impl ServiceChannel {
         info!("ServiceChannel: open_wayland_service_connection called");
 
         // Create a Unix socket pair
-        let (sock1, sock2) = UnixStream::pair().map_err(|e| {
-            fdo::Error::Failed(format!("Failed to create socket pair: {e}"))
-        })?;
+        let (sock1, sock2) = UnixStream::pair()
+            .map_err(|e| fdo::Error::Failed(format!("Failed to create socket pair: {e}")))?;
 
         // Insert the portal as a Wayland client using the same ClientState type
         // that the compositor uses for all clients (required for proper global binding)
@@ -65,7 +64,10 @@ impl Start for ServiceChannel {
             .name(name.as_str())?
             .serve_at("/org/gnome/Mutter/ServiceChannel", self)?
             .build()?;
-        info!("ServiceChannel::start() - D-Bus connection established, unique name: {:?}", conn.unique_name());
+        info!(
+            "ServiceChannel::start() - D-Bus connection established, unique name: {:?}",
+            conn.unique_name()
+        );
         Ok(conn)
     }
 }

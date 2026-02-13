@@ -5,10 +5,7 @@
 
 use std::time::Duration;
 
-use smithay::reexports::{
-    calloop::EventLoop,
-    wayland_server::Display,
-};
+use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
@@ -174,7 +171,9 @@ impl Fixture {
         }
 
         // Process queued redraws
-        self.state.backend.redraw_queued_outputs(&mut self.state.ewm);
+        self.state
+            .backend
+            .redraw_queued_outputs(&mut self.state.ewm);
 
         // Flush Wayland clients
         self.state.ewm.display_handle.flush_clients().ok();
@@ -186,7 +185,10 @@ impl Fixture {
         match cmd {
             ModuleCommand::Layout { id, x, y, w, h } => {
                 if let Some(window) = self.state.ewm.id_windows.get(&id) {
-                    self.state.ewm.space.map_element(window.clone(), (x, y), true);
+                    self.state
+                        .ewm
+                        .space
+                        .map_element(window.clone(), (x, y), true);
                     self.state.ewm.space.raise_element(window, true);
                     window.toplevel().map(|t| {
                         t.with_pending_state(|state| {
@@ -198,14 +200,21 @@ impl Fixture {
                 }
             }
             ModuleCommand::Focus { id } => {
-                if self.state.ewm.focused_surface_id != id && self.state.ewm.id_windows.contains_key(&id) {
-                    self.state.ewm.focus_surface_with_source(id, false, "test", None);
+                if self.state.ewm.focused_surface_id != id
+                    && self.state.ewm.id_windows.contains_key(&id)
+                {
+                    self.state
+                        .ewm
+                        .focus_surface_with_source(id, false, "test", None);
                 }
             }
             ModuleCommand::Views { id, views } => {
                 if let Some(window) = self.state.ewm.id_windows.get(&id) {
                     if let Some(view) = views.iter().find(|v| v.active).or_else(|| views.first()) {
-                        self.state.ewm.space.map_element(window.clone(), (view.x, view.y), true);
+                        self.state
+                            .ewm
+                            .space
+                            .map_element(window.clone(), (view.x, view.y), true);
                         self.state.ewm.space.raise_element(window, true);
                         window.toplevel().map(|t| {
                             t.with_pending_state(|state| {
@@ -221,7 +230,10 @@ impl Fixture {
             ModuleCommand::Hide { id } => {
                 if self.state.ewm.surface_views.contains_key(&id) {
                     if let Some(window) = self.state.ewm.id_windows.get(&id) {
-                        self.state.ewm.space.map_element(window.clone(), (-10000, -10000), false);
+                        self.state
+                            .ewm
+                            .space
+                            .map_element(window.clone(), (-10000, -10000), false);
                         self.state.ewm.surface_views.remove(&id);
                         self.state.ewm.queue_redraw_all();
                     }

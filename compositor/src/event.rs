@@ -74,7 +74,10 @@ pub enum Event {
     OutputsComplete,
     /// Keyboard layouts available
     #[serde(rename = "layouts")]
-    Layouts { layouts: Vec<String>, current: usize },
+    Layouts {
+        layouts: Vec<String>,
+        current: usize,
+    },
     /// Keyboard layout switched
     #[serde(rename = "layout-switched")]
     LayoutSwitched { layout: String, index: usize },

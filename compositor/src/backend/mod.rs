@@ -26,9 +26,9 @@ pub mod headless;
 pub use drm::DrmBackendState;
 pub use headless::HeadlessBackend;
 
+use crate::Ewm;
 use smithay::reexports::drm::control::crtc;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use crate::Ewm;
 
 /// Backend abstraction enum
 ///
@@ -129,7 +129,8 @@ impl Backend {
     #[cfg(feature = "screencast")]
     pub fn gbm_device(
         &self,
-    ) -> Option<smithay::backend::allocator::gbm::GbmDevice<smithay::backend::drm::DrmDeviceFd>> {
+    ) -> Option<smithay::backend::allocator::gbm::GbmDevice<smithay::backend::drm::DrmDeviceFd>>
+    {
         match self {
             Backend::Drm(drm) => drm.gbm_device(),
             Backend::Headless(_) => None,
@@ -140,7 +141,14 @@ impl Backend {
     ///
     /// Returns true if mode was successfully changed.
     /// Only supported on DRM backend; returns false for headless.
-    pub fn set_mode(&mut self, ewm: &mut Ewm, output_name: &str, width: i32, height: i32, refresh: Option<i32>) -> bool {
+    pub fn set_mode(
+        &mut self,
+        ewm: &mut Ewm,
+        output_name: &str,
+        width: i32,
+        height: i32,
+        refresh: Option<i32>,
+    ) -> bool {
         match self {
             Backend::Drm(drm) => drm.set_mode(ewm, output_name, width, height, refresh),
             Backend::Headless(_) => false, // Headless doesn't support mode changes
@@ -223,7 +231,9 @@ impl Backend {
     pub fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
         match self {
             Backend::Drm(drm) => drm.on_estimated_vblank_timer(crtc, ewm),
-            Backend::Headless(_) => panic!("on_estimated_vblank_timer() called on Headless backend"),
+            Backend::Headless(_) => {
+                panic!("on_estimated_vblank_timer() called on Headless backend")
+            }
         }
     }
 }

@@ -26,6 +26,8 @@ use crate::tracy_span;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[cfg(feature = "screencast")]
+use smithay::utils::Size;
 use smithay::{
     backend::{
         allocator::{
@@ -63,29 +65,27 @@ use smithay::{
     utils::{DeviceFd, Scale, Transform},
     wayland::dmabuf::DmabufFeedbackBuilder,
 };
-#[cfg(feature = "screencast")]
-use smithay::utils::Size;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
-use tracing::{debug, info, warn};
 #[cfg(feature = "screencast")]
 use tracing::trace;
+use tracing::{debug, info, warn};
 
-use smithay::{
-    backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState,
-        PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
-    },
-    input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
-    utils::SERIAL_COUNTER,
-    wayland::seat::WaylandFocus,
-};
 use crate::{
     backend::Backend,
     cursor::CursorBuffer,
     input::{handle_device_added, handle_keyboard_event, KeyboardAction},
     module,
     render::{collect_render_elements_for_output, process_screencopies_for_output},
-    Ewm, State, OutputInfo, OutputMode, OutputState, RedrawState,
+    Ewm, OutputInfo, OutputMode, OutputState, RedrawState, State,
+};
+use smithay::{
+    backend::input::{
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, PointerAxisEvent, PointerButtonEvent,
+        PointerMotionEvent,
+    },
+    input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
+    utils::SERIAL_COUNTER,
+    wayland::seat::WaylandFocus,
 };
 
 const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
@@ -96,12 +96,8 @@ const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
 ];
 
 /// Type alias for our DRM compositor
-type GbmDrmCompositor = DrmCompositor<
-    GbmAllocator<DrmDeviceFd>,
-    GbmDevice<DrmDeviceFd>,
-    (),
-    DrmDeviceFd,
->;
+type GbmDrmCompositor =
+    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmDevice<DrmDeviceFd>, (), DrmDeviceFd>;
 
 /// Per-output surface state (DRM-specific, redraw state is in Ewm::output_state)
 struct OutputSurface {
@@ -235,7 +231,8 @@ impl DrmBackendState {
             for surface in device.surfaces.values() {
                 if let Some(output_state) = ewm.output_state.get_mut(&surface.output) {
                     if let RedrawState::WaitingForEstimatedVBlank(token)
-                    | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = output_state.redraw_state
+                    | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
+                        output_state.redraw_state
                     {
                         if let Some(ref handle) = self.loop_handle {
                             handle.remove(token);
@@ -280,7 +277,11 @@ impl DrmBackendState {
     /// Change to a different VT (virtual terminal)
     /// This is used for Ctrl+Alt+F1-F12 VT switching.
     pub fn change_vt(&mut self, vt: i32) {
-        debug!("change_vt called with vt={}, session={:?}", vt, self.session.is_some());
+        debug!(
+            "change_vt called with vt={}, session={:?}",
+            vt,
+            self.session.is_some()
+        );
         if let Some(ref mut session) = self.session {
             info!("Switching to VT {}", vt);
             if let Err(err) = session.change_vt(vt) {
@@ -292,19 +293,27 @@ impl DrmBackendState {
     }
 }
 
-
 impl DrmBackendState {
-
     /// Set mode for an output by name
     /// Returns true on success, false if output not found or mode change failed
-    pub fn set_mode(&mut self, ewm: &mut Ewm, output_name: &str, width: i32, height: i32, refresh: Option<i32>) -> bool {
+    pub fn set_mode(
+        &mut self,
+        ewm: &mut Ewm,
+        output_name: &str,
+        width: i32,
+        height: i32,
+        refresh: Option<i32>,
+    ) -> bool {
         let Some(device) = &mut self.device else {
             warn!("DRM not initialized, cannot set mode");
             return false;
         };
 
         // Find the surface by output name
-        let surface = device.surfaces.values_mut().find(|s| s.output.name() == output_name);
+        let surface = device
+            .surfaces
+            .values_mut()
+            .find(|s| s.output.name() == output_name);
         let Some(surface) = surface else {
             warn!("Output not found: {}", output_name);
             return false;
@@ -320,9 +329,7 @@ impl DrmBackendState {
         let mode = connector_info
             .modes()
             .iter()
-            .filter(|m| {
-                m.size().0 as i32 == width && m.size().1 as i32 == height
-            })
+            .filter(|m| m.size().0 as i32 == width && m.size().1 as i32 == height)
             .max_by_key(|m| {
                 // Prefer matching refresh rate, otherwise highest refresh
                 if let Some(target_refresh) = refresh {
@@ -334,7 +341,10 @@ impl DrmBackendState {
             });
 
         let Some(mode) = mode.copied() else {
-            warn!("No matching mode found for {}x{} on {}", width, height, output_name);
+            warn!(
+                "No matching mode found for {}x{} on {}",
+                width, height, output_name
+            );
             return false;
         };
 
@@ -358,7 +368,9 @@ impl DrmBackendState {
             refresh: (mode.vrefresh() * 1000) as i32,
         };
         let output = surface.output.clone();
-        surface.output.change_current_state(Some(smithay_mode), None, None, None);
+        surface
+            .output
+            .change_current_state(Some(smithay_mode), None, None, None);
         surface.output.set_preferred(smithay_mode);
 
         // Update refresh interval and queue redraw in Ewm output state
@@ -439,10 +451,7 @@ impl DrmBackendState {
         let output_scale = Scale::from(output.current_scale().fractional_scale());
 
         // Get output geometry in global space
-        let output_geo = ewm
-            .space
-            .output_geometry(&output)
-            .unwrap_or_default();
+        let output_geo = ewm.space.output_geometry(&output).unwrap_or_default();
         let output_pos = output_geo.loc;
         let output_size = output_geo.size;
 
@@ -497,7 +506,9 @@ impl DrmBackendState {
                             // Transition to WaitingForVBlank
                             let is_locked = ewm.is_locked();
                             if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                                output_state.redraw_state = RedrawState::WaitingForVBlank { redraw_needed: false };
+                                output_state.redraw_state = RedrawState::WaitingForVBlank {
+                                    redraw_needed: false,
+                                };
                                 // Start Tracy frame tracking for VBlank interval
                                 output_state.vblank_tracker.begin_frame();
 
@@ -607,11 +618,8 @@ impl DrmBackendState {
             let mut sc_elements = None;
 
             // Collect valid output names to detect orphaned casts
-            let valid_outputs: std::collections::HashSet<String> = ewm
-                .space
-                .outputs()
-                .map(|o| o.name())
-                .collect();
+            let valid_outputs: std::collections::HashSet<String> =
+                ewm.space.outputs().map(|o| o.name()).collect();
 
             for cast in screen_casts.values_mut() {
                 // Skip casts for outputs that no longer exist (orphaned)
@@ -676,7 +684,12 @@ impl DrmBackendState {
     }
 
     /// Queue an estimated VBlank timer when there's no damage
-    fn queue_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &mut Ewm, refresh_interval_us: u64) {
+    fn queue_estimated_vblank_timer(
+        &mut self,
+        crtc: crtc::Handle,
+        ewm: &mut Ewm,
+        refresh_interval_us: u64,
+    ) {
         let Some(handle) = self.loop_handle.clone() else {
             warn!("No loop handle available for estimated VBlank timer");
             return;
@@ -693,7 +706,9 @@ impl DrmBackendState {
         let duration = Duration::from_micros(refresh_interval_us.max(1000));
 
         match handle.insert_source(Timer::from_duration(duration), move |_, _, state| {
-            state.backend.on_estimated_vblank_timer(crtc, &mut state.ewm);
+            state
+                .backend
+                .on_estimated_vblank_timer(crtc, &mut state.ewm);
             TimeoutAction::Drop
         }) {
             Ok(token) => {
@@ -804,19 +819,47 @@ impl DrmBackendState {
 
         for event in scan_result {
             match event {
-                DrmScanEvent::Connected { connector, crtc: Some(crtc) } => {
-                    info!("Connector connected: {:?}-{}", connector.interface(), connector.interface_id());
+                DrmScanEvent::Connected {
+                    connector,
+                    crtc: Some(crtc),
+                } => {
+                    info!(
+                        "Connector connected: {:?}-{}",
+                        connector.interface(),
+                        connector.interface_id()
+                    );
                     added.push((connector, crtc));
                 }
-                DrmScanEvent::Connected { connector, crtc: None } => {
-                    warn!("Connector {:?}-{} has no available CRTC", connector.interface(), connector.interface_id());
+                DrmScanEvent::Connected {
+                    connector,
+                    crtc: None,
+                } => {
+                    warn!(
+                        "Connector {:?}-{} has no available CRTC",
+                        connector.interface(),
+                        connector.interface_id()
+                    );
                 }
-                DrmScanEvent::Disconnected { connector, crtc: Some(crtc) } => {
-                    info!("Connector disconnected: {:?}-{}", connector.interface(), connector.interface_id());
+                DrmScanEvent::Disconnected {
+                    connector,
+                    crtc: Some(crtc),
+                } => {
+                    info!(
+                        "Connector disconnected: {:?}-{}",
+                        connector.interface(),
+                        connector.interface_id()
+                    );
                     removed.push(crtc);
                 }
-                DrmScanEvent::Disconnected { connector, crtc: None } => {
-                    debug!("Connector {:?}-{} disconnected (had no CRTC)", connector.interface(), connector.interface_id());
+                DrmScanEvent::Disconnected {
+                    connector,
+                    crtc: None,
+                } => {
+                    debug!(
+                        "Connector {:?}-{} disconnected (had no CRTC)",
+                        connector.interface(),
+                        connector.interface_id()
+                    );
                 }
             }
         }
@@ -868,7 +911,9 @@ impl DrmBackendState {
         );
 
         // Create DRM surface
-        let drm_surface = device.drm.create_surface(crtc, mode, &[connector.handle()])?;
+        let drm_surface = device
+            .drm
+            .create_surface(crtc, mode, &[connector.handle()])?;
 
         // Create allocator
         let gbm_flags = GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT;
@@ -893,11 +938,7 @@ impl DrmBackendState {
             .collect();
 
         // Create Smithay output
-        let connector_name = format!(
-            "{:?}-{}",
-            connector.interface(),
-            connector.interface_id()
-        );
+        let connector_name = format!("{:?}-{}", connector.interface(), connector.interface_id());
         let output = Output::new(
             connector_name.clone(),
             PhysicalProperties {
@@ -945,7 +986,9 @@ impl DrmBackendState {
                     .filter(|format| format.modifier == Modifier::Invalid)
                     .collect();
 
-                let drm_surface = device.drm.create_surface(crtc, mode, &[connector.handle()])?;
+                let drm_surface = device
+                    .drm
+                    .create_surface(crtc, mode, &[connector.handle()])?;
 
                 DrmCompositor::new(
                     OutputModeSource::Auto(output.clone()),
@@ -985,7 +1028,11 @@ impl DrmBackendState {
         let mode_size = mode.size();
         ewm.output_state.insert(
             output.clone(),
-            OutputState::new(&connector_name, refresh_interval_us, (mode_size.0 as i32, mode_size.1 as i32)),
+            OutputState::new(
+                &connector_name,
+                refresh_interval_us,
+                (mode_size.0 as i32, mode_size.1 as i32),
+            ),
         );
 
         // Position this output horizontally after the previous ones
@@ -1033,7 +1080,12 @@ impl DrmBackendState {
                 height: mode.size().1 as i32,
                 refresh: mode.vrefresh(),
             });
-            info!("Added D-Bus output: {} at ({}, 0) (total: {})", connector_name, x_offset, dbus_outputs.len());
+            info!(
+                "Added D-Bus output: {} at ({}, 0) (total: {})",
+                connector_name,
+                x_offset,
+                dbus_outputs.len()
+            );
         }
 
         // Recalculate output_size
@@ -1044,7 +1096,8 @@ impl DrmBackendState {
 
         // Send initial working area (equals full output initially, before any panels)
         let working_area = ewm.get_working_area(&output);
-        ewm.working_areas.insert(connector_name.clone(), working_area);
+        ewm.working_areas
+            .insert(connector_name.clone(), working_area);
         ewm.queue_event(crate::event::Event::WorkingArea {
             output: connector_name.clone(),
             x: working_area.loc.x,
@@ -1073,7 +1126,7 @@ impl DrmBackendState {
         // Cancel pending timers and remove output state from Ewm
         if let Some(output_state) = ewm.output_state.remove(&surface.output) {
             if let RedrawState::WaitingForEstimatedVBlank(token)
-                | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = output_state.redraw_state
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = output_state.redraw_state
             {
                 if let Some(ref handle) = self.loop_handle {
                     handle.remove(token);
@@ -1147,13 +1200,19 @@ fn initialize_drm(
     event_loop_handle: &LoopHandle<'static, State>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let drm_backend = state.backend.as_drm_mut().ok_or("Not a DRM backend")?;
-    let pending = drm_backend.pending.take().ok_or("DRM already initialized")?;
+    let pending = drm_backend
+        .pending
+        .take()
+        .ok_or("DRM already initialized")?;
 
     info!("Initializing DRM device (session is now active)");
 
     // Open DRM device via libseat
     let open_flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
-    let session = drm_backend.session.as_mut().ok_or("Session not available")?;
+    let session = drm_backend
+        .session
+        .as_mut()
+        .ok_or("Session not available")?;
     let fd = session.open(&pending.gpu_path, open_flags)?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
@@ -1178,9 +1237,11 @@ fn initialize_drm(
     info!("Render node: {:?}", render_node);
 
     // Create GPU manager
-    let api: GbmGlesBackend<GlesRenderer, DrmDeviceFd> =
-        GbmGlesBackend::with_context_priority(smithay::backend::egl::context::ContextPriority::High);
-    let mut gpu_manager: GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>> = GpuManager::new(api)?;
+    let api: GbmGlesBackend<GlesRenderer, DrmDeviceFd> = GbmGlesBackend::with_context_priority(
+        smithay::backend::egl::context::ContextPriority::High,
+    );
+    let mut gpu_manager: GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>> =
+        GpuManager::new(api)?;
     gpu_manager.as_mut().add_node(render_node, gbm.clone())?;
 
     // Bind renderer to Wayland display
@@ -1197,7 +1258,8 @@ fn initialize_drm(
         if let Ok(default_feedback) =
             DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats).build()
         {
-            let _global = state.ewm
+            let _global = state
+                .ewm
                 .dmabuf_state
                 .create_global_with_default_feedback::<State>(display_handle, &default_feedback);
             info!("Dmabuf global created");
@@ -1208,7 +1270,7 @@ fn initialize_drm(
     state.backend.as_drm_mut().unwrap().display_handle = Some(display_handle.clone());
 
     let mut surfaces = HashMap::new();
-    let mut x_offset = 0i32;  // Track horizontal position for output placement
+    let mut x_offset = 0i32; // Track horizontal position for output placement
 
     // Create DrmScanner for connector management (initial scan and hotplug)
     let mut drm_scanner = DrmScanner::new();
@@ -1217,8 +1279,14 @@ fn initialize_drm(
     let scan_result = drm_scanner.scan_connectors(&drm)?;
     for event in scan_result {
         let (connector, crtc) = match event {
-            DrmScanEvent::Connected { connector, crtc: Some(crtc) } => (connector, crtc),
-            DrmScanEvent::Connected { connector, crtc: None } => {
+            DrmScanEvent::Connected {
+                connector,
+                crtc: Some(crtc),
+            } => (connector, crtc),
+            DrmScanEvent::Connected {
+                connector,
+                crtc: None,
+            } => {
                 warn!(
                     "No available CRTC for connector {:?}-{}",
                     connector.interface(),
@@ -1363,7 +1431,11 @@ fn initialize_drm(
         let mode_size = mode.size();
         state.ewm.output_state.insert(
             output.clone(),
-            OutputState::new(&connector_name, refresh_interval_us, (mode_size.0 as i32, mode_size.1 as i32)),
+            OutputState::new(
+                &connector_name,
+                refresh_interval_us,
+                (mode_size.0 as i32, mode_size.1 as i32),
+            ),
         );
 
         // Position this output horizontally after the previous ones
@@ -1388,7 +1460,7 @@ fn initialize_drm(
 
         state.ewm.outputs.push(OutputInfo {
             name: connector_name.clone(),
-            make: "Unknown".to_string(),  // EDID parsing would be needed for real values
+            make: "Unknown".to_string(), // EDID parsing would be needed for real values
             model: "Unknown".to_string(),
             width_mm: physical_size.0 as i32,
             height_mm: physical_size.1 as i32,
@@ -1409,7 +1481,12 @@ fn initialize_drm(
                 height: mode.size().1 as i32,
                 refresh: mode.vrefresh(),
             });
-            info!("Added D-Bus output: {} at ({}, 0) (total: {})", connector_name, x_offset, dbus_outputs.len());
+            info!(
+                "Added D-Bus output: {} at ({}, 0) (total: {})",
+                connector_name,
+                x_offset,
+                dbus_outputs.len()
+            );
         }
 
         // Update x_offset for next output
@@ -1499,7 +1576,10 @@ fn initialize_drm(
     for output in state.ewm.space.outputs().cloned().collect::<Vec<_>>() {
         let working_area = state.ewm.get_working_area(&output);
         let output_name = output.name();
-        state.ewm.working_areas.insert(output_name.clone(), working_area);
+        state
+            .ewm
+            .working_areas
+            .insert(output_name.clone(), working_area);
         state.ewm.queue_event(crate::event::Event::WorkingArea {
             output: output_name,
             x: working_area.loc.x,
@@ -1512,10 +1592,15 @@ fn initialize_drm(
     // Send outputs_complete event followed by ready
     state.ewm.queue_event(crate::event::Event::OutputsComplete);
     state.ewm.queue_event(crate::event::Event::Ready);
-    info!("Sent {} output_detected events, compositor ready", state.ewm.outputs.len());
+    info!(
+        "Sent {} output_detected events, compositor ready",
+        state.ewm.outputs.len()
+    );
 
     // Trigger initial render - collect CRTCs first, then render
-    let crtcs: Vec<_> = state.backend.as_drm()
+    let crtcs: Vec<_> = state
+        .backend
+        .as_drm()
         .and_then(|drm| drm.device.as_ref())
         .map(|d| d.surfaces.keys().copied().collect())
         .unwrap_or_default();
@@ -1655,7 +1740,10 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                 let count = state.ewm.screen_casts.len();
                                 state.ewm.screen_casts.clear();
                                 if count > 0 {
-                                    tracing::info!("Stopped {} screen cast(s) due to PipeWire error", count);
+                                    tracing::info!(
+                                        "Stopped {} screen cast(s) due to PipeWire error",
+                                        count
+                                    );
                                 }
                             }
                         })
@@ -1674,10 +1762,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         use smithay::reexports::calloop::channel::Event as ChannelEvent;
 
         let outputs = state.ewm.dbus_outputs.clone();
-        let (dbus_servers, receiver) = DBusServers::start(
-            outputs,
-            display_handle.clone(),
-        );
+        let (dbus_servers, receiver) = DBusServers::start(outputs, display_handle.clone());
         // Store D-Bus servers to keep connections alive
         state.ewm.dbus_servers = Some(dbus_servers);
 
@@ -1695,8 +1780,16 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             .insert_source(receiver, |event, _, state| {
                 if let ChannelEvent::Msg(msg) = event {
                     match msg {
-                        ScreenCastToCompositor::StartCast { session_id, output_name, signal_ctx } => {
-                            tracing::info!("StartCast: session={}, output={}", session_id, output_name);
+                        ScreenCastToCompositor::StartCast {
+                            session_id,
+                            output_name,
+                            signal_ctx,
+                        } => {
+                            tracing::info!(
+                                "StartCast: session={}, output={}",
+                                session_id,
+                                output_name
+                            );
 
                             // Create PipeWire stream for this output
                             let pw = state.ewm.pipewire.as_ref();
@@ -1704,7 +1797,11 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
 
                             if let (Some(pw), Some(gbm)) = (pw, gbm) {
                                 // Find output info
-                                let output_info = state.ewm.dbus_outputs.lock().unwrap()
+                                let output_info = state
+                                    .ewm
+                                    .dbus_outputs
+                                    .lock()
+                                    .unwrap()
                                     .iter()
                                     .find(|o| o.name == output_name)
                                     .cloned();
@@ -1713,14 +1810,25 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                     use crate::pipewire::stream::Cast;
                                     use smithay::utils::Size;
 
-                                    match Cast::new(pw, gbm, Size::from((info.width, info.height)), info.refresh, output_name.clone(), signal_ctx) {
+                                    match Cast::new(
+                                        pw,
+                                        gbm,
+                                        Size::from((info.width, info.height)),
+                                        info.refresh,
+                                        output_name.clone(),
+                                        signal_ctx,
+                                    ) {
                                         Ok(cast) => {
-                                            tracing::info!("PipeWire stream created, waiting for state change");
+                                            tracing::info!(
+                                                "PipeWire stream created, waiting for state change"
+                                            );
                                             // Store the cast to keep the stream alive
                                             state.ewm.screen_casts.insert(session_id, cast);
                                         }
                                         Err(err) => {
-                                            tracing::warn!("Failed to create PipeWire stream: {err:?}");
+                                            tracing::warn!(
+                                                "Failed to create PipeWire stream: {err:?}"
+                                            );
                                         }
                                     }
                                 }
@@ -1741,44 +1849,50 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Register session notifier and store token for cleanup in Drop
-    let session_notifier_token = event_loop
-        .handle()
-        .insert_source(notifier, |event, _, state| {
-            match event {
+    let session_notifier_token =
+        event_loop
+            .handle()
+            .insert_source(notifier, |event, _, state| match event {
                 SessionEvent::PauseSession => {
                     info!("Session paused (VT switch away)");
                     state.backend.pause(&mut state.ewm);
                 }
                 SessionEvent::ActivateSession => {
                     info!("Session activated");
-                    if state.backend.as_drm().map(|d| d.device.is_none()).unwrap_or(false) {
+                    if state
+                        .backend
+                        .as_drm()
+                        .map(|d| d.device.is_none())
+                        .unwrap_or(false)
+                    {
                         info!("First session activation - triggering DRM init");
                         state.backend.trigger_init();
                     } else {
                         state.backend.resume(&mut state.ewm);
                     }
                 }
-            }
-        })?;
+            })?;
     state.backend.as_drm_mut().unwrap().session_notifier_token = Some(session_notifier_token);
 
     // Register UdevBackend for hotplug detection
     let udev_backend = UdevBackend::new(&seat_name)?;
-    event_loop.handle().insert_source(udev_backend, |event, _, state| {
-        match event {
-            UdevEvent::Changed { device_id: _ } => {
-                // Scan for connector changes
-                state.backend.on_device_changed(&mut state.ewm);
-                state.ewm.queue_redraw_all();
+    event_loop
+        .handle()
+        .insert_source(udev_backend, |event, _, state| {
+            match event {
+                UdevEvent::Changed { device_id: _ } => {
+                    // Scan for connector changes
+                    state.backend.on_device_changed(&mut state.ewm);
+                    state.ewm.queue_redraw_all();
+                }
+                UdevEvent::Added { device_id, path } => {
+                    debug!("UDev device added: {:?} at {:?}", device_id, path);
+                }
+                UdevEvent::Removed { device_id } => {
+                    debug!("UDev device removed: {:?}", device_id);
+                }
             }
-            UdevEvent::Added { device_id, path } => {
-                debug!("UDev device added: {:?} at {:?}", device_id, path);
-            }
-            UdevEvent::Removed { device_id } => {
-                debug!("UDev device removed: {:?}", device_id);
-            }
-        }
-    })?;
+        })?;
 
     // Register channel receiver for deferred DRM initialization
     let display_handle_for_init = display_handle.clone();
@@ -1786,14 +1900,12 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     event_loop
         .handle()
         .insert_source(init_receiver, move |event, _, state| {
-            if let smithay::reexports::calloop::channel::Event::Msg(DrmMessage::InitializeDrm) = event
+            if let smithay::reexports::calloop::channel::Event::Msg(DrmMessage::InitializeDrm) =
+                event
             {
                 info!("Received DRM init message");
-                if let Err(e) = initialize_drm(
-                    state,
-                    &display_handle_for_init,
-                    &event_loop_handle,
-                ) {
+                if let Err(e) = initialize_drm(state, &display_handle_for_init, &event_loop_handle)
+                {
                     warn!("Failed to initialize DRM: {:?}", e);
                 }
             }
@@ -1809,222 +1921,225 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     // Register libinput with event loop (using shared input handlers)
     let libinput_backend = LibinputInputBackend::new(libinput);
     info!("Registering libinput backend with event loop...");
-    let _libinput_token = event_loop
-        .handle()
-        .insert_source(libinput_backend, move |mut event, _, state| {
-            match event {
-                InputEvent::DeviceAdded { ref mut device } => {
-                    handle_device_added(device);
-                }
-                InputEvent::Keyboard { event: kb_event } => {
-                    let action = handle_keyboard_event(
-                        state,
-                        kb_event.key_code().into(),
-                        kb_event.state(),
-                        Event::time_msec(&kb_event),
-                    );
-                    match action {
-                        KeyboardAction::Shutdown => {
-                            info!("Kill combo pressed, shutting down");
-                            state.ewm.stop();
-                        }
-                        KeyboardAction::ChangeVt(vt) => {
-                            state.backend.change_vt(vt);
-                        }
-                        _ => {}
+    let _libinput_token =
+        event_loop
+            .handle()
+            .insert_source(libinput_backend, move |mut event, _, state| {
+                match event {
+                    InputEvent::DeviceAdded { ref mut device } => {
+                        handle_device_added(device);
                     }
-                }
-                InputEvent::PointerMotion { event } => {
-                    // Relative pointer motion (from mice)
-                    let (current_x, current_y) = state.ewm.pointer_location;
-                    let delta = event.delta();
-                    let (output_w, output_h) = state.ewm.output_size;
+                    InputEvent::Keyboard { event: kb_event } => {
+                        let action = handle_keyboard_event(
+                            state,
+                            kb_event.key_code().into(),
+                            kb_event.state(),
+                            Event::time_msec(&kb_event),
+                        );
+                        match action {
+                            KeyboardAction::Shutdown => {
+                                info!("Kill combo pressed, shutting down");
+                                state.ewm.stop();
+                            }
+                            KeyboardAction::ChangeVt(vt) => {
+                                state.backend.change_vt(vt);
+                            }
+                            _ => {}
+                        }
+                    }
+                    InputEvent::PointerMotion { event } => {
+                        // Relative pointer motion (from mice)
+                        let (current_x, current_y) = state.ewm.pointer_location;
+                        let delta = event.delta();
+                        let (output_w, output_h) = state.ewm.output_size;
 
-                    // Calculate new position, clamped to output bounds
-                    let new_x = (current_x + delta.x).clamp(0.0, output_w as f64);
-                    let new_y = (current_y + delta.y).clamp(0.0, output_h as f64);
-                    state.ewm.pointer_location = (new_x, new_y);
-                    module::set_pointer_location(new_x, new_y);
+                        // Calculate new position, clamped to output bounds
+                        let new_x = (current_x + delta.x).clamp(0.0, output_w as f64);
+                        let new_y = (current_y + delta.y).clamp(0.0, output_h as f64);
+                        state.ewm.pointer_location = (new_x, new_y);
+                        module::set_pointer_location(new_x, new_y);
 
-                    let pointer = state.ewm.pointer.clone();
-                    let serial = SERIAL_COUNTER.next_serial();
+                        let pointer = state.ewm.pointer.clone();
+                        let serial = SERIAL_COUNTER.next_serial();
 
-                    // Find surface under pointer (including popups)
-                    let under = state.ewm.surface_under_point((new_x, new_y).into());
+                        // Find surface under pointer (including popups)
+                        let under = state.ewm.surface_under_point((new_x, new_y).into());
 
-                    pointer.motion(
-                        state,
-                        under.clone(),
-                        &MotionEvent {
-                            location: (new_x, new_y).into(),
-                            serial,
-                            time: event.time_msec(),
-                        },
-                    );
+                        pointer.motion(
+                            state,
+                            under.clone(),
+                            &MotionEvent {
+                                location: (new_x, new_y).into(),
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
 
-                    // Send relative motion event (needed by some games/apps)
-                    pointer.relative_motion(
-                        state,
-                        under,
-                        &RelativeMotionEvent {
-                            delta: event.delta(),
-                            delta_unaccel: event.delta_unaccel(),
-                            utime: event.time(),
-                        },
-                    );
+                        // Send relative motion event (needed by some games/apps)
+                        pointer.relative_motion(
+                            state,
+                            under,
+                            &RelativeMotionEvent {
+                                delta: event.delta(),
+                                delta_unaccel: event.delta_unaccel(),
+                                utime: event.time(),
+                            },
+                        );
 
-                    pointer.frame(state);
+                        pointer.frame(state);
 
-                    // Queue redraw to update cursor position
-                    state.ewm.queue_redraw_all();
-                }
-                InputEvent::PointerMotionAbsolute { event } => {
-                    // Absolute pointer motion (from touchpads in absolute mode, tablets)
-                    let (output_w, output_h) = state.ewm.output_size;
-                    let pos = event.position_transformed((output_w, output_h).into());
-                    state.ewm.pointer_location = (pos.x, pos.y);
-                    module::set_pointer_location(pos.x, pos.y);
+                        // Queue redraw to update cursor position
+                        state.ewm.queue_redraw_all();
+                    }
+                    InputEvent::PointerMotionAbsolute { event } => {
+                        // Absolute pointer motion (from touchpads in absolute mode, tablets)
+                        let (output_w, output_h) = state.ewm.output_size;
+                        let pos = event.position_transformed((output_w, output_h).into());
+                        state.ewm.pointer_location = (pos.x, pos.y);
+                        module::set_pointer_location(pos.x, pos.y);
 
-                    let pointer = state.ewm.pointer.clone();
-                    let serial = SERIAL_COUNTER.next_serial();
+                        let pointer = state.ewm.pointer.clone();
+                        let serial = SERIAL_COUNTER.next_serial();
 
-                    // Find surface under pointer (including popups)
-                    let under = state.ewm.surface_under_point(pos);
+                        // Find surface under pointer (including popups)
+                        let under = state.ewm.surface_under_point(pos);
 
-                    pointer.motion(
-                        state,
-                        under,
-                        &MotionEvent {
-                            location: pos,
-                            serial,
-                            time: event.time_msec(),
-                        },
-                    );
-                    pointer.frame(state);
+                        pointer.motion(
+                            state,
+                            under,
+                            &MotionEvent {
+                                location: pos,
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
+                        pointer.frame(state);
 
-                    // Queue redraw to update cursor position
-                    state.ewm.queue_redraw_all();
-                }
-                InputEvent::PointerButton { event } => {
-                    let pointer = state.ewm.pointer.clone();
-                    let keyboard = state.ewm.keyboard.clone();
-                    let serial = SERIAL_COUNTER.next_serial();
+                        // Queue redraw to update cursor position
+                        state.ewm.queue_redraw_all();
+                    }
+                    InputEvent::PointerButton { event } => {
+                        let pointer = state.ewm.pointer.clone();
+                        let keyboard = state.ewm.keyboard.clone();
+                        let serial = SERIAL_COUNTER.next_serial();
 
-                    let button_state = match event.state() {
-                        ButtonState::Pressed => ButtonState::Pressed,
-                        ButtonState::Released => ButtonState::Released,
-                    };
+                        let button_state = match event.state() {
+                            ButtonState::Pressed => ButtonState::Pressed,
+                            ButtonState::Released => ButtonState::Released,
+                        };
 
-                    // Click-to-focus: on button press, focus the surface under pointer
-                    if button_state == ButtonState::Pressed {
+                        // Click-to-focus: on button press, focus the surface under pointer
+                        if button_state == ButtonState::Pressed {
+                            let (px, py) = state.ewm.pointer_location;
+                            // Get surface info before mutating state
+                            let focus_info =
+                                state
+                                    .ewm
+                                    .space
+                                    .element_under((px, py))
+                                    .and_then(|(window, _)| {
+                                        let id = state.ewm.window_ids.get(&window).copied()?;
+                                        let surface = window.wl_surface()?.into_owned();
+                                        Some((id, surface))
+                                    });
+
+                            if let Some((id, surface)) = focus_info {
+                                module::record_focus(id, "click", None);
+                                tracing::info!("Click focus: surface {:?}", surface.id());
+                                state.ewm.set_focus(id);
+                                state.ewm.keyboard_focus = Some(surface.clone());
+                                // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
+                                keyboard.set_focus(state, Some(surface.clone()), serial);
+                            }
+                        }
+
+                        pointer.button(
+                            state,
+                            &ButtonEvent {
+                                button: event.button_code(),
+                                state: button_state,
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
+                        pointer.frame(state);
+                    }
+                    InputEvent::PointerAxis { event } => {
+                        let pointer = state.ewm.pointer.clone();
+                        let keyboard = state.ewm.keyboard.clone();
+                        let serial = SERIAL_COUNTER.next_serial();
+
+                        // Scroll-to-focus: focus the surface under pointer on scroll
                         let (px, py) = state.ewm.pointer_location;
-                        // Get surface info before mutating state
-                        let focus_info = state
-                            .ewm
-                            .space
-                            .element_under((px, py))
-                            .and_then(|(window, _)| {
-                                let id = state.ewm.window_ids.get(&window).copied()?;
-                                let surface = window.wl_surface()?.into_owned();
-                                Some((id, surface))
-                            });
+                        let focus_info =
+                            state
+                                .ewm
+                                .space
+                                .element_under((px, py))
+                                .and_then(|(window, _)| {
+                                    let id = state.ewm.window_ids.get(&window).copied()?;
+                                    let surface = window.wl_surface()?.into_owned();
+                                    Some((id, surface))
+                                });
 
                         if let Some((id, surface)) = focus_info {
-                            module::record_focus(id, "click", None);
-                            tracing::info!("Click focus: surface {:?}", surface.id());
+                            module::record_focus(id, "scroll", None);
+                            tracing::info!("Scroll focus: surface {:?}", surface.id());
                             state.ewm.set_focus(id);
                             state.ewm.keyboard_focus = Some(surface.clone());
-                            // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
+                            // focus_changed handles text_input focus
                             keyboard.set_focus(state, Some(surface.clone()), serial);
                         }
-                    }
 
-                    pointer.button(
-                        state,
-                        &ButtonEvent {
-                            button: event.button_code(),
-                            state: button_state,
-                            serial,
-                            time: event.time_msec(),
-                        },
-                    );
-                    pointer.frame(state);
+                        let source = event.source();
+
+                        // Get scroll amounts (natural scrolling is handled at libinput device level)
+                        let horizontal_amount = event.amount(Axis::Horizontal);
+                        let vertical_amount = event.amount(Axis::Vertical);
+                        let horizontal_v120 = event.amount_v120(Axis::Horizontal);
+                        let vertical_v120 = event.amount_v120(Axis::Vertical);
+
+                        // Compute continuous values, falling back to v120 if no continuous amount
+                        let horizontal = horizontal_amount
+                            .or_else(|| horizontal_v120.map(|v| v / 120.0 * 15.0))
+                            .unwrap_or(0.0);
+                        let vertical = vertical_amount
+                            .or_else(|| vertical_v120.map(|v| v / 120.0 * 15.0))
+                            .unwrap_or(0.0);
+
+                        let mut frame = AxisFrame::new(event.time_msec()).source(source);
+                        if horizontal != 0.0 {
+                            frame = frame.value(Axis::Horizontal, horizontal);
+                            // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
+                            if let Some(v120) = horizontal_v120 {
+                                frame = frame.v120(Axis::Horizontal, v120 as i32);
+                            }
+                        }
+                        if vertical != 0.0 {
+                            frame = frame.value(Axis::Vertical, vertical);
+                            // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
+                            if let Some(v120) = vertical_v120 {
+                                frame = frame.v120(Axis::Vertical, v120 as i32);
+                            }
+                        }
+
+                        // For finger scroll (touchpad), send stop events when scrolling ends
+                        // (libinput sends a final event with amount == Some(0.0))
+                        if source == AxisSource::Finger {
+                            if horizontal_amount == Some(0.0) {
+                                frame = frame.stop(Axis::Horizontal);
+                            }
+                            if vertical_amount == Some(0.0) {
+                                frame = frame.stop(Axis::Vertical);
+                            }
+                        }
+
+                        pointer.axis(state, frame);
+                        pointer.frame(state);
+                    }
+                    _ => {}
                 }
-                InputEvent::PointerAxis { event } => {
-                    let pointer = state.ewm.pointer.clone();
-                    let keyboard = state.ewm.keyboard.clone();
-                    let serial = SERIAL_COUNTER.next_serial();
-
-                    // Scroll-to-focus: focus the surface under pointer on scroll
-                    let (px, py) = state.ewm.pointer_location;
-                    let focus_info = state
-                        .ewm
-                        .space
-                        .element_under((px, py))
-                        .and_then(|(window, _)| {
-                            let id = state.ewm.window_ids.get(&window).copied()?;
-                            let surface = window.wl_surface()?.into_owned();
-                            Some((id, surface))
-                        });
-
-                    if let Some((id, surface)) = focus_info {
-                        module::record_focus(id, "scroll", None);
-                        tracing::info!("Scroll focus: surface {:?}", surface.id());
-                        state.ewm.set_focus(id);
-                        state.ewm.keyboard_focus = Some(surface.clone());
-                        // focus_changed handles text_input focus
-                        keyboard.set_focus(state, Some(surface.clone()), serial);
-                    }
-
-                    let source = event.source();
-
-                    // Get scroll amounts (natural scrolling is handled at libinput device level)
-                    let horizontal_amount = event.amount(Axis::Horizontal);
-                    let vertical_amount = event.amount(Axis::Vertical);
-                    let horizontal_v120 = event.amount_v120(Axis::Horizontal);
-                    let vertical_v120 = event.amount_v120(Axis::Vertical);
-
-                    // Compute continuous values, falling back to v120 if no continuous amount
-                    let horizontal = horizontal_amount
-                        .or_else(|| horizontal_v120.map(|v| v / 120.0 * 15.0))
-                        .unwrap_or(0.0);
-                    let vertical = vertical_amount
-                        .or_else(|| vertical_v120.map(|v| v / 120.0 * 15.0))
-                        .unwrap_or(0.0);
-
-                    let mut frame = AxisFrame::new(event.time_msec()).source(source);
-                    if horizontal != 0.0 {
-                        frame = frame.value(Axis::Horizontal, horizontal);
-                        // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
-                        if let Some(v120) = horizontal_v120 {
-                            frame = frame.v120(Axis::Horizontal, v120 as i32);
-                        }
-                    }
-                    if vertical != 0.0 {
-                        frame = frame.value(Axis::Vertical, vertical);
-                        // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
-                        if let Some(v120) = vertical_v120 {
-                            frame = frame.v120(Axis::Vertical, v120 as i32);
-                        }
-                    }
-
-                    // For finger scroll (touchpad), send stop events when scrolling ends
-                    // (libinput sends a final event with amount == Some(0.0))
-                    if source == AxisSource::Finger {
-                        if horizontal_amount == Some(0.0) {
-                            frame = frame.stop(Axis::Horizontal);
-                        }
-                        if vertical_amount == Some(0.0) {
-                            frame = frame.stop(Axis::Vertical);
-                        }
-                    }
-
-                    pointer.axis(state, frame);
-                    pointer.frame(state);
-                }
-                _ => {}
-            }
-        })?;
+            })?;
 
     info!("EWM DRM backend started (waiting for session activation)");
     info!("VT switching: Ctrl+Alt+F1-F7");
@@ -2033,11 +2148,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     // If session is already active, initialize DRM immediately
     if session_active {
         info!("Session already active, initializing DRM now");
-        if let Err(e) = initialize_drm(
-            &mut state,
-            &display_handle,
-            &event_loop.handle(),
-        ) {
+        if let Err(e) = initialize_drm(&mut state, &display_handle, &event_loop.handle()) {
             return Err(format!("Failed to initialize DRM: {:?}", e).into());
         }
     }

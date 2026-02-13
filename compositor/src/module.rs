@@ -36,9 +36,9 @@
 
 use emacs::{defun, Env, IntoLisp, Result, Value};
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
-use std::collections::VecDeque;
 use std::thread::{self, JoinHandle};
 
 use smithay::reexports::calloop::LoopSignal;
@@ -122,7 +122,10 @@ pub fn set_focused_id(id: u32) {
 
 /// Update output offset (called by compositor)
 pub fn set_output_offset(name: &str, x: i32, y: i32) {
-    output_offsets().lock().unwrap().insert(name.to_string(), (x, y));
+    output_offsets()
+        .lock()
+        .unwrap()
+        .insert(name.to_string(), (x, y));
 }
 
 /// Remove output (called by compositor)
@@ -167,14 +170,37 @@ fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
 /// Commands sent from Emacs to the compositor via the module interface.
 #[derive(Debug, Clone)]
 pub enum ModuleCommand {
-    Layout { id: u32, x: i32, y: i32, w: u32, h: u32 },
-    Views { id: u32, views: Vec<SurfaceView> },
-    Hide { id: u32 },
-    Close { id: u32 },
-    Focus { id: u32 },
-    WarpPointer { x: f64, y: f64 },
-    Screenshot { path: Option<String> },
-    AssignOutput { id: u32, output: String },
+    Layout {
+        id: u32,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+    },
+    Views {
+        id: u32,
+        views: Vec<SurfaceView>,
+    },
+    Hide {
+        id: u32,
+    },
+    Close {
+        id: u32,
+    },
+    Focus {
+        id: u32,
+    },
+    WarpPointer {
+        x: f64,
+        y: f64,
+    },
+    Screenshot {
+        path: Option<String>,
+    },
+    AssignOutput {
+        id: u32,
+        output: String,
+    },
     ConfigureOutput {
         name: String,
         x: Option<i32>,
@@ -184,10 +210,19 @@ pub enum ModuleCommand {
         refresh: Option<i32>,
         enabled: Option<bool>,
     },
-    ImCommit { text: String },
-    TextInputIntercept { enabled: bool },
-    ConfigureXkb { layouts: String, options: Option<String> },
-    SwitchLayout { layout: String },
+    ImCommit {
+        text: String,
+    },
+    TextInputIntercept {
+        enabled: bool,
+    },
+    ConfigureXkb {
+        layouts: String,
+        options: Option<String>,
+    },
+    SwitchLayout {
+        layout: String,
+    },
     GetLayouts,
     GetState,
     /// Request activation token creation (compositor will push to ACTIVATION_TOKEN_POOL)
@@ -393,17 +428,11 @@ fn pop_event(env: &Env) -> Result<Value<'_>> {
 
 /// Convert a Event to a Lisp alist
 fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
-    let cons = |k: &str, v: Value<'a>| -> Result<Value<'a>> {
-        env.call("cons", (k, v))
-    };
-    let list = |items: Vec<Value<'a>>| -> Result<Value<'a>> {
-        env.call("list", items.as_slice())
-    };
+    let cons = |k: &str, v: Value<'a>| -> Result<Value<'a>> { env.call("cons", (k, v)) };
+    let list = |items: Vec<Value<'a>>| -> Result<Value<'a>> { env.call("list", items.as_slice()) };
 
     match event {
-        Event::Ready => {
-            list(vec![cons("event", "ready".into_lisp(env)?)?])
-        }
+        Event::Ready => list(vec![cons("event", "ready".into_lisp(env)?)?]),
         Event::New { id, app, output } => {
             let mut items = vec![
                 cons("event", "new".into_lisp(env)?)?,
@@ -415,36 +444,34 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
             }
             list(items)
         }
-        Event::Close { id } => {
-            list(vec![
-                cons("event", "close".into_lisp(env)?)?,
-                cons("id", (id as i64).into_lisp(env)?)?,
-            ])
-        }
-        Event::Title { id, app, title } => {
-            list(vec![
-                cons("event", "title".into_lisp(env)?)?,
-                cons("id", (id as i64).into_lisp(env)?)?,
-                cons("app", app.into_lisp(env)?)?,
-                cons("title", title.into_lisp(env)?)?,
-            ])
-        }
-        Event::Focus { id } => {
-            list(vec![
-                cons("event", "focus".into_lisp(env)?)?,
-                cons("id", (id as i64).into_lisp(env)?)?,
-            ])
-        }
+        Event::Close { id } => list(vec![
+            cons("event", "close".into_lisp(env)?)?,
+            cons("id", (id as i64).into_lisp(env)?)?,
+        ]),
+        Event::Title { id, app, title } => list(vec![
+            cons("event", "title".into_lisp(env)?)?,
+            cons("id", (id as i64).into_lisp(env)?)?,
+            cons("app", app.into_lisp(env)?)?,
+            cons("title", title.into_lisp(env)?)?,
+        ]),
+        Event::Focus { id } => list(vec![
+            cons("event", "focus".into_lisp(env)?)?,
+            cons("id", (id as i64).into_lisp(env)?)?,
+        ]),
         Event::OutputDetected(info) => {
             // Convert modes to list of alists
-            let modes: Result<Vec<Value<'a>>> = info.modes.iter().map(|m| {
-                list(vec![
-                    cons("width", (m.width as i64).into_lisp(env)?)?,
-                    cons("height", (m.height as i64).into_lisp(env)?)?,
-                    cons("refresh", (m.refresh as i64).into_lisp(env)?)?,
-                    cons("preferred", m.preferred.into_lisp(env)?)?,
-                ])
-            }).collect();
+            let modes: Result<Vec<Value<'a>>> = info
+                .modes
+                .iter()
+                .map(|m| {
+                    list(vec![
+                        cons("width", (m.width as i64).into_lisp(env)?)?,
+                        cons("height", (m.height as i64).into_lisp(env)?)?,
+                        cons("refresh", (m.refresh as i64).into_lisp(env)?)?,
+                        cons("preferred", m.preferred.into_lisp(env)?)?,
+                    ])
+                })
+                .collect();
             let modes_list = env.call("list", modes?.as_slice())?;
 
             list(vec![
@@ -459,20 +486,14 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
                 cons("modes", modes_list)?,
             ])
         }
-        Event::OutputDisconnected { name } => {
-            list(vec![
-                cons("event", "output_disconnected".into_lisp(env)?)?,
-                cons("name", name.into_lisp(env)?)?,
-            ])
-        }
-        Event::OutputsComplete => {
-            list(vec![cons("event", "outputs_complete".into_lisp(env)?)?])
-        }
+        Event::OutputDisconnected { name } => list(vec![
+            cons("event", "output_disconnected".into_lisp(env)?)?,
+            cons("name", name.into_lisp(env)?)?,
+        ]),
+        Event::OutputsComplete => list(vec![cons("event", "outputs_complete".into_lisp(env)?)?]),
         Event::Layouts { layouts, current } => {
-            let layouts_list: Result<Vec<Value<'a>>> = layouts
-                .into_iter()
-                .map(|s| s.into_lisp(env))
-                .collect();
+            let layouts_list: Result<Vec<Value<'a>>> =
+                layouts.into_iter().map(|s| s.into_lisp(env)).collect();
             let layouts_val = env.call("list", layouts_list?.as_slice())?;
             list(vec![
                 cons("event", "layouts".into_lisp(env)?)?,
@@ -480,19 +501,18 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
                 cons("current", (current as i64).into_lisp(env)?)?,
             ])
         }
-        Event::LayoutSwitched { layout, index } => {
-            list(vec![
-                cons("event", "layout-switched".into_lisp(env)?)?,
-                cons("layout", layout.into_lisp(env)?)?,
-                cons("index", (index as i64).into_lisp(env)?)?,
-            ])
-        }
+        Event::LayoutSwitched { layout, index } => list(vec![
+            cons("event", "layout-switched".into_lisp(env)?)?,
+            cons("layout", layout.into_lisp(env)?)?,
+            cons("index", (index as i64).into_lisp(env)?)?,
+        ]),
         Event::TextInputActivated => {
             list(vec![cons("event", "text-input-activated".into_lisp(env)?)?])
         }
-        Event::TextInputDeactivated => {
-            list(vec![cons("event", "text-input-deactivated".into_lisp(env)?)?])
-        }
+        Event::TextInputDeactivated => list(vec![cons(
+            "event",
+            "text-input-deactivated".into_lisp(env)?,
+        )?]),
         Event::Key { keysym, utf8 } => {
             let mut items = vec![
                 cons("event", "key".into_lisp(env)?)?,
@@ -503,22 +523,24 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
             }
             list(items)
         }
-        Event::State { json } => {
-            list(vec![
-                cons("event", "state".into_lisp(env)?)?,
-                cons("json", json.into_lisp(env)?)?,
-            ])
-        }
-        Event::WorkingArea { output, x, y, width, height } => {
-            list(vec![
-                cons("event", "working_area".into_lisp(env)?)?,
-                cons("output", output.into_lisp(env)?)?,
-                cons("x", (x as i64).into_lisp(env)?)?,
-                cons("y", (y as i64).into_lisp(env)?)?,
-                cons("width", (width as i64).into_lisp(env)?)?,
-                cons("height", (height as i64).into_lisp(env)?)?,
-            ])
-        }
+        Event::State { json } => list(vec![
+            cons("event", "state".into_lisp(env)?)?,
+            cons("json", json.into_lisp(env)?)?,
+        ]),
+        Event::WorkingArea {
+            output,
+            x,
+            y,
+            width,
+            height,
+        } => list(vec![
+            cons("event", "working_area".into_lisp(env)?)?,
+            cons("output", output.into_lisp(env)?)?,
+            cons("x", (x as i64).into_lisp(env)?)?,
+            cons("y", (y as i64).into_lisp(env)?)?,
+            cons("width", (width as i64).into_lisp(env)?)?,
+            cons("height", (height as i64).into_lisp(env)?)?,
+        ]),
     }
 }
 
@@ -556,8 +578,8 @@ fn init_logging() {
     static INIT_LOG: Once = Once::new();
     INIT_LOG.call_once(|| {
         let default_filter = "ewm=debug,smithay=warn";
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(default_filter));
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
         // Try journald first, fall back to stderr
         if let Ok(journald) = tracing_journald::layer() {
@@ -567,9 +589,7 @@ fn init_logging() {
                 .init();
         } else {
             // Fallback for systems without journald
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     });
 }
@@ -868,7 +888,10 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
     }
 
     *intercepted_keys().write().unwrap() = parsed_keys;
-    tracing::info!("Intercepted keys set ({} keys)", intercepted_keys().read().unwrap().len());
+    tracing::info!(
+        "Intercepted keys set ({} keys)",
+        intercepted_keys().read().unwrap().len()
+    );
     Ok(())
 }
 

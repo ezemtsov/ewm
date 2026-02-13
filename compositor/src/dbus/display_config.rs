@@ -65,14 +65,17 @@ impl DisplayConfig {
     async fn get_current_state(
         &self,
     ) -> fdo::Result<(
-        u32,                              // serial
-        Vec<Monitor>,                     // monitors
-        Vec<LogicalMonitor>,              // logical_monitors
-        HashMap<String, OwnedValue>,      // properties
+        u32,                         // serial
+        Vec<Monitor>,                // monitors
+        Vec<LogicalMonitor>,         // logical_monitors
+        HashMap<String, OwnedValue>, // properties
     )> {
         info!("DisplayConfig::get_current_state() called");
         let outputs = self.outputs.lock().unwrap();
-        info!("DisplayConfig::get_current_state() - found {} outputs", outputs.len());
+        info!(
+            "DisplayConfig::get_current_state() - found {} outputs",
+            outputs.len()
+        );
 
         let mut monitors = Vec::new();
         let mut logical_monitors = Vec::new();
@@ -95,10 +98,16 @@ impl DisplayConfig {
                 preferred_scale: 1.0,
                 supported_scales: vec![1.0, 1.25, 1.5, 2.0],
                 properties: HashMap::from([
-                    ("is-current".to_string(), OwnedValue::try_from(Value::Bool(true))
-                        .expect("bool conversion is infallible")),
-                    ("is-preferred".to_string(), OwnedValue::try_from(Value::Bool(true))
-                        .expect("bool conversion is infallible")),
+                    (
+                        "is-current".to_string(),
+                        OwnedValue::try_from(Value::Bool(true))
+                            .expect("bool conversion is infallible"),
+                    ),
+                    (
+                        "is-preferred".to_string(),
+                        OwnedValue::try_from(Value::Bool(true))
+                            .expect("bool conversion is infallible"),
+                    ),
                 ]),
             };
 
@@ -113,8 +122,7 @@ impl DisplayConfig {
             );
             properties.insert(
                 "is-builtin".to_string(),
-                OwnedValue::try_from(Value::Bool(false))
-                    .expect("bool conversion is infallible"),
+                OwnedValue::try_from(Value::Bool(false)).expect("bool conversion is infallible"),
             );
 
             monitors.push(Monitor {
@@ -139,10 +147,10 @@ impl DisplayConfig {
         monitors.sort_by(|a, b| a.names.0.cmp(&b.names.0));
         logical_monitors.sort_by(|a, b| a.monitors[0].0.cmp(&b.monitors[0].0));
 
-        let properties = HashMap::from([
-            ("layout-mode".to_string(), OwnedValue::try_from(Value::U32(1))
-                .expect("u32 conversion is infallible")),
-        ]);
+        let properties = HashMap::from([(
+            "layout-mode".to_string(),
+            OwnedValue::try_from(Value::U32(1)).expect("u32 conversion is infallible"),
+        )]);
 
         Ok((0, monitors, logical_monitors, properties))
     }
@@ -181,7 +189,10 @@ impl Start for DisplayConfig {
             .name(name.as_str())?
             .serve_at("/org/gnome/Mutter/DisplayConfig", self)?
             .build()?;
-        info!("DisplayConfig::start() - D-Bus connection established, unique name: {:?}", conn.unique_name());
+        info!(
+            "DisplayConfig::start() - D-Bus connection established, unique name: {:?}",
+            conn.unique_name()
+        );
         Ok(conn)
     }
 }

@@ -38,12 +38,12 @@ use smithay::{
     },
     desktop::{layer_map_for_output, LayerMap, PopupManager},
     output::Output,
-    wayland::shell::wlr_layer::Layer,
     reexports::{
         calloop::LoopHandle,
         wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm::Format},
     },
     utils::{Physical, Point, Rectangle, Scale, Size, Transform},
+    wayland::shell::wlr_layer::Layer,
     wayland::shm,
 };
 use tracing::warn;
@@ -394,10 +394,8 @@ pub fn collect_render_elements_for_output(
         let window_geo = window.geometry();
 
         // Window bounds in global coordinates
-        let window_rect: Rectangle<i32, Logical> = Rectangle::new(
-            loc,
-            Size::from((window_geo.size.w, window_geo.size.h)),
-        );
+        let window_rect: Rectangle<i32, Logical> =
+            Rectangle::new(loc, Size::from((window_geo.size.w, window_geo.size.h)));
 
         // Skip windows that don't intersect with this output
         if !output_rect.overlaps(window_rect) {
@@ -417,7 +415,13 @@ pub fn collect_render_elements_for_output(
     render_layer(&layer_map, Layer::Bottom, renderer, scale, &mut elements);
 
     // 7. Background layer (lowest z-order)
-    render_layer(&layer_map, Layer::Background, renderer, scale, &mut elements);
+    render_layer(
+        &layer_map,
+        Layer::Background,
+        renderer,
+        scale,
+        &mut elements,
+    );
 
     // Collect popups and insert them after the top layer (before windows)
     let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
@@ -437,10 +441,8 @@ pub fn collect_render_elements_for_output(
                 }
 
                 // Offset by output position for rendering
-                let render_loc = Point::from((
-                    popup_loc.x - output_pos.x,
-                    popup_loc.y - output_pos.y,
-                ));
+                let render_loc =
+                    Point::from((popup_loc.x - output_pos.x, popup_loc.y - output_pos.y));
                 let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     render_elements_from_surface_tree(
                         renderer,
@@ -450,8 +452,7 @@ pub fn collect_render_elements_for_output(
                         1.0,
                         Kind::Unspecified,
                     );
-                popup_elements
-                    .extend(render_elements.into_iter().map(EwmRenderElement::Surface));
+                popup_elements.extend(render_elements.into_iter().map(EwmRenderElement::Surface));
             }
         }
     }
@@ -606,10 +607,7 @@ pub fn process_screencopies_for_output(
     let output_transform = output.current_transform();
 
     // Get output geometry
-    let output_geo = ewm
-        .space
-        .output_geometry(output)
-        .unwrap_or_default();
+    let output_geo = ewm.space.output_geometry(output).unwrap_or_default();
     let output_pos = output_geo.loc;
     let output_size = output_geo.size;
 
@@ -658,28 +656,24 @@ pub fn process_screencopies_for_output(
             .collect();
 
         let render_result = match screencopy.buffer() {
-            ScreencopyBuffer::Dmabuf(dmabuf) => {
-                render_to_dmabuf(
-                    renderer,
-                    dmabuf.clone(),
-                    size,
-                    output_scale,
-                    output_transform,
-                    relocated_elements.iter().rev(),
-                )
-                .map(Some)
-            }
-            ScreencopyBuffer::Shm(buffer) => {
-                render_to_shm(
-                    renderer,
-                    buffer,
-                    size,
-                    output_scale,
-                    output_transform,
-                    relocated_elements.iter().rev(),
-                )
-                .map(|_| None)
-            }
+            ScreencopyBuffer::Dmabuf(dmabuf) => render_to_dmabuf(
+                renderer,
+                dmabuf.clone(),
+                size,
+                output_scale,
+                output_transform,
+                relocated_elements.iter().rev(),
+            )
+            .map(Some),
+            ScreencopyBuffer::Shm(buffer) => render_to_shm(
+                renderer,
+                buffer,
+                size,
+                output_scale,
+                output_transform,
+                relocated_elements.iter().rev(),
+            )
+            .map(|_| None),
         };
 
         match render_result {
@@ -689,9 +683,8 @@ pub fn process_screencopies_for_output(
                     // For now, report full damage since we always render
                     // A more sophisticated implementation would track actual damage
                     // Damage is in buffer coordinates (same as Physical for scale=1)
-                    let full_damage: Rectangle<i32, smithay::utils::Buffer> = Rectangle::from_size(
-                        Size::from((size.w, size.h))
-                    );
+                    let full_damage: Rectangle<i32, smithay::utils::Buffer> =
+                        Rectangle::from_size(Size::from((size.w, size.h)));
                     screencopy.damage(std::iter::once(full_damage));
                     trace!("screencopy with_damage: sent full damage");
                 }

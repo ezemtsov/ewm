@@ -101,7 +101,11 @@ fn try_start<I: Start>(iface: I, suffix: &str) -> Option<Connection> {
     info!("Attempting to start D-Bus interface: {}", name);
     match iface.start(suffix) {
         Ok(conn) => {
-            info!("Successfully started D-Bus interface: {} (unique_name: {:?})", name, conn.unique_name());
+            info!(
+                "Successfully started D-Bus interface: {} (unique_name: {:?})",
+                name,
+                conn.unique_name()
+            );
             Some(conn)
         }
         Err(err) => {

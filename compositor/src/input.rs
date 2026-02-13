@@ -30,11 +30,14 @@ use smithay::{
     wayland::text_input::TextInputSeat,
 };
 
-use crate::{is_kill_combo, State, module};
+use crate::{is_kill_combo, module, State};
 
 /// Notify the idle notifier of user activity
 fn notify_activity(state: &mut State) {
-    state.ewm.idle_notifier_state.notify_activity(&state.ewm.seat);
+    state
+        .ewm
+        .idle_notifier_state
+        .notify_activity(&state.ewm.seat);
 }
 
 /// Result of processing a keyboard event
@@ -89,7 +92,9 @@ pub fn handle_keyboard_event(
                     return FilterResult::Forward;
                 }
                 let modified = handle.modified_sym().raw();
-                if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&modified) {
+                if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
+                    .contains(&modified)
+                {
                     let vt = (modified - keysyms::KEY_XF86Switch_VT_1 + 1) as i32;
                     return FilterResult::Intercept(Some(vt));
                 }
@@ -113,8 +118,14 @@ pub fn handle_keyboard_event(
     // This ensures focus changes from Emacs are applied immediately,
     // avoiding race conditions where keys arrive before focus is synced.
     if let Some(focus_id) = module::take_pending_focus() {
-        if state.ewm.focused_surface_id != focus_id && state.ewm.id_windows.contains_key(&focus_id) {
-            state.ewm.focus_surface_with_source(focus_id, false, "pending_focus", Some("keyboard_event"));
+        if state.ewm.focused_surface_id != focus_id && state.ewm.id_windows.contains_key(&focus_id)
+        {
+            state.ewm.focus_surface_with_source(
+                focus_id,
+                false,
+                "pending_focus",
+                Some("keyboard_event"),
+            );
         }
     }
 
@@ -177,12 +188,7 @@ pub fn handle_keyboard_event(
                 return FilterResult::Forward;
             }
 
-            if text_input_intercept
-                && !focus_on_emacs
-                && !mods.ctrl
-                && !mods.alt
-                && !mods.logo
-            {
+            if text_input_intercept && !focus_on_emacs && !mods.ctrl && !mods.alt && !mods.logo {
                 // Text input intercept mode: capture printable keys for Emacs IM processing
                 // Skip if any command modifiers are held (let those go to Emacs via intercept-keys)
                 // Use modified keysym for UTF-8 (includes Shift for uppercase/@/etc)
@@ -287,7 +293,8 @@ pub fn handle_keyboard_event(
         // Notify Emacs of layout change
         if !state.ewm.xkb_layout_names.is_empty() {
             state.ewm.queue_event(crate::Event::LayoutSwitched {
-                layout: state.ewm
+                layout: state
+                    .ewm
                     .xkb_layout_names
                     .get(current_layout)
                     .cloned()
@@ -340,7 +347,8 @@ pub fn restore_focus(state: &mut State, surface_id: u32) {
             state.ewm.keyboard_focus = Some(focus_surface.clone());
             keyboard.set_focus(state, Some(focus_surface.clone()), serial);
             // Update text_input focus
-            state.ewm
+            state
+                .ewm
                 .seat
                 .text_input()
                 .set_focus(Some(focus_surface.clone()));
@@ -392,7 +400,10 @@ pub fn handle_pointer_motion<B: InputBackend>(
 
     // When locked, route pointer to lock surface instead of normal surfaces
     let under = if state.ewm.is_locked() {
-        state.ewm.lock_surface_focus().map(|s| (s, (0.0, 0.0).into()))
+        state
+            .ewm
+            .lock_surface_focus()
+            .map(|s| (s, (0.0, 0.0).into()))
     } else {
         state.ewm.surface_under_point((new_x, new_y).into())
     };
@@ -442,7 +453,10 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
 
     // When locked, route pointer to lock surface instead of normal surfaces
     let under = if state.ewm.is_locked() {
-        state.ewm.lock_surface_focus().map(|s| (s, (0.0, 0.0).into()))
+        state
+            .ewm
+            .lock_surface_focus()
+            .map(|s| (s, (0.0, 0.0).into()))
     } else {
         state.ewm.surface_under_point(pos)
     };
@@ -481,11 +495,15 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
         // Click-to-focus: on button press, focus the surface under pointer
         if button_state == ButtonState::Pressed {
             let (px, py) = state.ewm.pointer_location;
-            let focus_info = state.ewm.space.element_under((px, py)).and_then(|(window, _)| {
-                let id = state.ewm.window_ids.get(&window).copied()?;
-                let surface = window.wl_surface()?.into_owned();
-                Some((id, surface))
-            });
+            let focus_info = state
+                .ewm
+                .space
+                .element_under((px, py))
+                .and_then(|(window, _)| {
+                    let id = state.ewm.window_ids.get(&window).copied()?;
+                    let surface = window.wl_surface()?.into_owned();
+                    Some((id, surface))
+                });
 
             if let Some((id, surface)) = focus_info {
                 module::record_focus(id, "click", None);
@@ -523,11 +541,15 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
     if !state.ewm.is_locked() {
         // Scroll-to-focus: focus the surface under pointer on scroll
         let (px, py) = state.ewm.pointer_location;
-        let focus_info = state.ewm.space.element_under((px, py)).and_then(|(window, _)| {
-            let id = state.ewm.window_ids.get(&window).copied()?;
-            let surface = window.wl_surface()?.into_owned();
-            Some((id, surface))
-        });
+        let focus_info = state
+            .ewm
+            .space
+            .element_under((px, py))
+            .and_then(|(window, _)| {
+                let id = state.ewm.window_ids.get(&window).copied()?;
+                let surface = window.wl_surface()?.into_owned();
+                Some((id, surface))
+            });
 
         if let Some((id, surface)) = focus_info {
             module::record_focus(id, "scroll", None);

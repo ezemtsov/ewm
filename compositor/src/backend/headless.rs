@@ -19,18 +19,15 @@ use std::time::Duration;
 
 use smithay::{
     backend::{
-        egl::{EGLContext, EGLDisplay, native::EGLSurfacelessDisplay},
-        renderer::{
-            damage::OutputDamageTracker,
-            gles::GlesRenderer,
-        },
+        egl::{native::EGLSurfacelessDisplay, EGLContext, EGLDisplay},
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     utils::{Physical, Size, Transform},
 };
 use tracing::{debug, info};
 
-use crate::{Ewm, State, OutputState, RedrawState};
+use crate::{Ewm, OutputState, RedrawState, State};
 
 /// A virtual output for headless testing
 pub struct VirtualOutput {
@@ -141,7 +138,10 @@ impl HeadlessBackend {
         // Recalculate total output size
         ewm.recalculate_output_size();
 
-        info!("Added virtual output: {} ({}x{}) at ({}, 0)", name, width, height, x_offset);
+        info!(
+            "Added virtual output: {} ({}x{}) at ({}, 0)",
+            name, width, height, x_offset
+        );
     }
 
     /// Remove a virtual output by name

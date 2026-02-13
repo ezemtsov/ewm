@@ -41,7 +41,9 @@ impl PipeWire {
 
         let main_loop = MainLoop::new(None).context("error creating PipeWire MainLoop")?;
         let context = Context::new(&main_loop).context("error creating PipeWire Context")?;
-        let core = context.connect(None).context("error connecting to PipeWire")?;
+        let core = context
+            .connect(None)
+            .context("error connecting to PipeWire")?;
 
         // Create channel for fatal error notifications
         let (fatal_error_tx, fatal_error_rx) = channel::channel::<()>();

@@ -37,11 +37,11 @@ pub mod dbus;
 pub mod event;
 pub mod im_relay;
 pub mod input;
+mod module;
 #[cfg(feature = "screencast")]
 pub mod pipewire;
 pub mod protocols;
 pub mod render;
-mod module;
 pub mod tracy;
 pub use tracy::VBlankFrameTracker;
 
@@ -69,23 +69,28 @@ pub use event::{Event, OutputInfo, OutputMode};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 
+use crate::protocols::foreign_toplevel::{
+    ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
+};
+use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
+use serde::{Deserialize, Serialize};
 use smithay::{
     backend::renderer::element::solid::SolidColorBuffer,
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_idle_notify,
-    delegate_input_method_manager, delegate_layer_shell, delegate_output, delegate_primary_selection,
-    delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
-    delegate_xdg_activation, delegate_xdg_shell,
-    reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
+    delegate_input_method_manager, delegate_layer_shell, delegate_output,
+    delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
+    delegate_text_input_manager, delegate_xdg_activation, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind,
         PopupManager, Space, Window,
     },
-    output::Output,
     input::{
         keyboard::{xkb::keysyms, KeyboardHandle, ModifiersState},
         pointer::PointerHandle,
         Seat, SeatHandler, SeatState,
     },
+    output::Output,
+    reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
     reexports::{
         calloop::{
             generic::Generic, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction,
@@ -107,6 +112,11 @@ use smithay::{
             CompositorState,
         },
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+        idle_notify::{IdleNotifierHandler, IdleNotifierState},
+        input_method::{
+            InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface,
+        },
+        output::OutputManagerState,
         seat::WaylandFocus,
         selection::{
             data_device::{
@@ -118,36 +128,24 @@ use smithay::{
             },
             SelectionHandler,
         },
+        session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
+        shell::wlr_layer::{Layer, WlrLayerShellHandler, WlrLayerShellState},
         shell::xdg::{
             decoration::{XdgDecorationHandler, XdgDecorationState},
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
         },
         shm::{ShmHandler, ShmState},
-        output::OutputManagerState,
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
-        input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface},
-        shell::wlr_layer::{
-            Layer, WlrLayerShellHandler, WlrLayerShellState,
-        },
         xdg_activation::{
             XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
         },
-        session_lock::{
-            LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
-        },
-        idle_notify::{IdleNotifierHandler, IdleNotifierState},
     },
 };
-use crate::protocols::foreign_toplevel::{
-    ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
-};
-use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::mem;
+use std::sync::Arc;
 use tracing::{debug, error, info, trace, warn};
 
 /// Redraw state machine for proper VBlank synchronization.
@@ -175,7 +173,9 @@ impl RedrawState {
     pub fn queue_redraw(self) -> Self {
         match self {
             RedrawState::Idle => RedrawState::Queued,
-            RedrawState::WaitingForVBlank { .. } => RedrawState::WaitingForVBlank { redraw_needed: true },
+            RedrawState::WaitingForVBlank { .. } => RedrawState::WaitingForVBlank {
+                redraw_needed: true,
+            },
             RedrawState::WaitingForEstimatedVBlank(token) => {
                 RedrawState::WaitingForEstimatedVBlankAndQueued(token)
             }
@@ -429,7 +429,6 @@ pub struct Ewm {
     // Pending early imports (surfaces that need dmabuf import before rendering)
     pub pending_early_imports: Vec<WlSurface>,
 
-
     // Screencopy protocol state
     pub screencopy_state: ScreencopyManagerState,
 
@@ -512,7 +511,8 @@ impl Ewm {
         let primary_selection_state = PrimarySelectionState::new::<State>(&display_handle);
 
         let mut seat: Seat<State> = seat_state.new_wl_seat(&display_handle, "seat0");
-        let keyboard = seat.add_keyboard(Default::default(), 200, 25)
+        let keyboard = seat
+            .add_keyboard(Default::default(), 200, 25)
             .expect("Failed to add keyboard to seat");
         let pointer = seat.add_pointer();
 
@@ -520,13 +520,15 @@ impl Ewm {
         let screencopy_state = ScreencopyManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize output manager with xdg-output protocol support
-        let output_manager_state = OutputManagerState::new_with_xdg_output::<State>(&display_handle);
+        let output_manager_state =
+            OutputManagerState::new_with_xdg_output::<State>(&display_handle);
 
         // Initialize text input for input method support
         let text_input_state = TextInputManagerState::new::<State>(&display_handle);
 
         // Initialize input method manager (allows Emacs to act as input method)
-        let input_method_state = InputMethodManagerState::new::<State, _>(&display_handle, |_| true);
+        let input_method_state =
+            InputMethodManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize layer shell for panels, notifications, etc.
         let layer_shell_state = WlrLayerShellState::new::<State>(&display_handle);
@@ -539,7 +541,8 @@ impl Ewm {
             ForeignToplevelManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize session lock for screen locking (ext-session-lock-v1)
-        let session_lock_state = SessionLockManagerState::new::<State, _>(&display_handle, |_| true);
+        let session_lock_state =
+            SessionLockManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize idle notifier (ext-idle-notify-v1)
         let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle);
@@ -704,13 +707,11 @@ impl Ewm {
                 let server = conn.object_server();
                 let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
 
-                if let Ok(iface) = server.interface::<_, dbus::screen_cast::Session>(path.as_str()) {
+                if let Ok(iface) = server.interface::<_, dbus::screen_cast::Session>(path.as_str())
+                {
                     async_io::block_on(async {
                         let signal_emitter = iface.signal_emitter().clone();
-                        iface
-                            .get()
-                            .stop(server.inner(), signal_emitter)
-                            .await
+                        iface.get().stop(server.inner(), signal_emitter).await
                     });
                 }
             }
@@ -760,7 +761,13 @@ impl Ewm {
 
     /// Focus a surface with source tracking for debugging.
     /// Returns the WlSurface to focus, if any. Caller must update keyboard focus.
-    pub fn focus_surface_with_source(&mut self, id: u32, notify_emacs: bool, source: &str, context: Option<&str>) -> Option<WlSurface> {
+    pub fn focus_surface_with_source(
+        &mut self,
+        id: u32,
+        notify_emacs: bool,
+        source: &str,
+        context: Option<&str>,
+    ) -> Option<WlSurface> {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
         crate::module::set_focused_id(id);
@@ -814,7 +821,10 @@ impl Ewm {
     pub fn surface_under_point(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
+    ) -> Option<(
+        WlSurface,
+        smithay::utils::Point<f64, smithay::utils::Logical>,
+    )> {
         use smithay::wayland::seat::WaylandFocus;
 
         // Check popups first (they're on top)
@@ -824,8 +834,9 @@ impl Ewm {
                 let window_geo = window.geometry();
 
                 for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
-                    let popup_loc =
-                        (window_loc + window_geo.loc + popup_offset - popup.geometry().loc).to_f64();
+                    let popup_loc = (window_loc + window_geo.loc + popup_offset
+                        - popup.geometry().loc)
+                        .to_f64();
                     let pos_in_popup = pos - popup_loc;
                     let popup_geo = popup.geometry();
 
@@ -841,11 +852,9 @@ impl Ewm {
         }
 
         // Fall back to toplevels
-        self.space.element_under(pos).and_then(|(window, loc)| {
-            window
-                .wl_surface()
-                .map(|s| (s.into_owned(), loc.to_f64()))
-        })
+        self.space
+            .element_under(pos)
+            .and_then(|(window, loc)| window.wl_surface().map(|s| (s.into_owned(), loc.to_f64())))
     }
 
     /// Get the output where a surface is located
@@ -911,7 +920,9 @@ impl Ewm {
         // Check if window has views
         if let Some(views) = self.surface_views.get(&window_id) {
             // Get window geometry for view size
-            let window_size = self.id_windows.get(&window_id)
+            let window_size = self
+                .id_windows
+                .get(&window_id)
                 .map(|w| w.geometry().size)
                 .unwrap_or_else(|| Size::from((100, 100)));
 
@@ -933,10 +944,8 @@ impl Ewm {
             // No views - use window's position in space
             if let Some(loc) = self.space.element_location(window) {
                 let window_geo = window.geometry();
-                let window_rect: Rectangle<i32, Logical> = Rectangle::new(
-                    loc,
-                    Size::from((window_geo.size.w, window_geo.size.h)),
-                );
+                let window_rect: Rectangle<i32, Logical> =
+                    Rectangle::new(loc, Size::from((window_geo.size.w, window_geo.size.h)));
 
                 for output in self.space.outputs() {
                     if let Some(output_geo) = self.space.output_geometry(output) {
@@ -969,15 +978,13 @@ impl Ewm {
     /// Recalculate total output size from current space geometry
     pub fn recalculate_output_size(&mut self) {
         let (total_width, total_height) =
-            self.space
-                .outputs()
-                .fold((0i32, 0i32), |(w, h), output| {
-                    if let Some(geo) = self.space.output_geometry(output) {
-                        (w.max(geo.loc.x + geo.size.w), h.max(geo.loc.y + geo.size.h))
-                    } else {
-                        (w, h)
-                    }
-                });
+            self.space.outputs().fold((0i32, 0i32), |(w, h), output| {
+                if let Some(geo) = self.space.output_geometry(output) {
+                    (w.max(geo.loc.x + geo.size.w), h.max(geo.loc.y + geo.size.h))
+                } else {
+                    (w, h)
+                }
+            });
         self.output_size = (total_width, total_height);
     }
 
@@ -1330,7 +1337,11 @@ impl Ewm {
         let window = self
             .space
             .elements()
-            .find(|w| w.wl_surface().map(|s| s.as_ref() == surface).unwrap_or(false))
+            .find(|w| {
+                w.wl_surface()
+                    .map(|s| s.as_ref() == surface)
+                    .unwrap_or(false)
+            })
             .cloned();
 
         if let Some(window) = window {
@@ -1340,19 +1351,20 @@ impl Ewm {
                     return;
                 }
 
-                let (app_id, title) = smithay::wayland::compositor::with_states(surface, |states| {
-                    states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .map(|d| {
-                            let data = d.lock().unwrap();
-                            (
-                                data.app_id.clone().unwrap_or_default(),
-                                data.title.clone().unwrap_or_default(),
-                            )
-                        })
-                        .unwrap_or_default()
-                });
+                let (app_id, title) =
+                    smithay::wayland::compositor::with_states(surface, |states| {
+                        states
+                            .data_map
+                            .get::<XdgToplevelSurfaceData>()
+                            .map(|d| {
+                                let data = d.lock().unwrap();
+                                (
+                                    data.app_id.clone().unwrap_or_default(),
+                                    data.title.clone().unwrap_or_default(),
+                                )
+                            })
+                            .unwrap_or_default()
+                    });
 
                 let cached = self.surface_info.get(&id);
                 let changed = match cached {
@@ -1496,7 +1508,8 @@ impl CompositorHandler for State {
         &self,
         client: &'a smithay::reexports::wayland_server::Client,
     ) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>()
+        &client
+            .get_data::<ClientState>()
             .expect("ClientState inserted at connection time")
             .compositor
     }
@@ -1517,7 +1530,9 @@ impl CompositorHandler for State {
         if let Some(popup) = self.ewm.popups.find_popup(surface) {
             if let PopupKind::Xdg(ref xdg_popup) = popup {
                 if !xdg_popup.is_initial_configure_sent() {
-                    xdg_popup.send_configure().expect("initial configure failed");
+                    xdg_popup
+                        .send_configure()
+                        .expect("initial configure failed");
                 }
             }
         }
@@ -1537,7 +1552,10 @@ impl CompositorHandler for State {
         let window_and_id = self.ewm.space.elements().find_map(|window| {
             window.wl_surface().and_then(|ws| {
                 if *ws == root_surface {
-                    self.ewm.window_ids.get(window).map(|&id| (window.clone(), id))
+                    self.ewm
+                        .window_ids
+                        .get(window)
+                        .map(|&id| (window.clone(), id))
                 } else {
                     None
                 }
@@ -1699,7 +1717,11 @@ impl XdgShellHandler for State {
             return;
         };
 
-        if let Err(err) = self.ewm.popups.grab_popup(root, popup, &self.ewm.seat, serial) {
+        if let Err(err) = self
+            .ewm
+            .popups
+            .grab_popup(root, popup, &self.ewm.seat, serial)
+        {
             warn!("error grabbing popup: {err:?}");
         }
     }
@@ -1787,7 +1809,11 @@ impl WlrLayerShellHandler for State {
         let mut map = layer_map_for_output(&output);
         map.map_layer(&LayerSurface::new(surface, namespace.clone()))
             .unwrap();
-        info!("New layer surface: namespace={} on output {}", namespace, output.name());
+        info!(
+            "New layer surface: namespace={} on output {}",
+            namespace,
+            output.name()
+        );
     }
 
     fn layer_destroyed(&mut self, surface: smithay::wayland::shell::wlr_layer::LayerSurface) {
@@ -1859,7 +1885,9 @@ impl XdgActivationHandler for State {
         if valid {
             debug!("xdg_activation: token accepted for {app_id}");
         } else {
-            debug!("xdg_activation: token rejected for {app_id} - serial not from app's focus entry");
+            debug!(
+                "xdg_activation: token rejected for {app_id} - serial not from app's focus entry"
+            );
         }
         valid
     }
@@ -1873,22 +1901,32 @@ impl XdgActivationHandler for State {
         use std::time::Duration;
         const TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 
-        debug!("xdg_activation: request_activation called for surface {:?}", surface.id());
+        debug!(
+            "xdg_activation: request_activation called for surface {:?}",
+            surface.id()
+        );
 
         if token_data.timestamp.elapsed() < TOKEN_TIMEOUT {
             // Find the surface ID for this WlSurface
-            if let Some(&id) = self.ewm.window_ids.iter()
+            if let Some(&id) = self
+                .ewm
+                .window_ids
+                .iter()
                 .find(|(w, _)| w.wl_surface().map(|s| &*s == &surface).unwrap_or(false))
                 .map(|(_, id)| id)
             {
                 // Focus the surface and notify Emacs
-                self.ewm.focus_surface_with_source(id, true, "xdg_activation", None);
+                self.ewm
+                    .focus_surface_with_source(id, true, "xdg_activation", None);
                 info!("xdg_activation: granted for surface {}", id);
             } else {
                 debug!("xdg_activation: surface not found in window_ids");
             }
         } else {
-            debug!("xdg_activation: token expired (age={:?})", token_data.timestamp.elapsed());
+            debug!(
+                "xdg_activation: token expired (age={:?})",
+                token_data.timestamp.elapsed()
+            );
         }
 
         // Always remove the token (single-use)
@@ -1904,19 +1942,22 @@ impl ForeignToplevelHandler for State {
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {
-        if let Some(&id) = self.ewm
+        if let Some(&id) = self
+            .ewm
             .window_ids
             .iter()
             .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
             .map(|(_, id)| id)
         {
-            self.ewm.focus_surface_with_source(id, true, "foreign_toplevel", None);
+            self.ewm
+                .focus_surface_with_source(id, true, "foreign_toplevel", None);
             info!("Foreign toplevel: activated surface {}", id);
         }
     }
 
     fn close(&mut self, wl_surface: WlSurface) {
-        if let Some((window, _)) = self.ewm
+        if let Some((window, _)) = self
+            .ewm
             .window_ids
             .iter()
             .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
@@ -2012,7 +2053,8 @@ impl SessionLockHandler for State {
         if let Some(id) = self.ewm.pre_lock_focus.take() {
             if self.ewm.id_windows.contains_key(&id) {
                 info!("Restoring focus to surface {} after unlock", id);
-                self.ewm.focus_surface_with_source(id, false, "unlock", None);
+                self.ewm
+                    .focus_surface_with_source(id, false, "unlock", None);
             }
         }
 
@@ -2066,9 +2108,9 @@ fn configure_lock_surface(surface: &LockSurface, output: &Output) {
 
     with_states(wl_surface, |data| {
         // Send preferred scale
-        if let Some(fractional_scale) = with_fractional_scale(data, |fractional| {
-            fractional.preferred_scale()
-        }) {
+        if let Some(fractional_scale) =
+            with_fractional_scale(data, |fractional| fractional.preferred_scale())
+        {
             // Already has fractional scale configured
             let _ = fractional_scale;
         }
@@ -2085,7 +2127,6 @@ fn configure_lock_surface(surface: &LockSurface, output: &Output) {
     surface.send_configure();
 }
 
-
 impl Ewm {
     /// Check if the session is locked (locking or fully locked)
     pub fn is_locked(&self) -> bool {
@@ -2096,7 +2137,10 @@ impl Ewm {
     pub fn check_lock_complete(&mut self) {
         // Check if we're in Locking state and all outputs have rendered
         let should_confirm = matches!(&self.lock_state, LockState::Locking(_))
-            && self.output_state.values().all(|s| s.lock_render_state == LockRenderState::Locked);
+            && self
+                .output_state
+                .values()
+                .all(|s| s.lock_render_state == LockRenderState::Locked);
 
         if should_confirm {
             // Take ownership of the SessionLocker to call lock()
@@ -2114,19 +2158,20 @@ impl Ewm {
     /// Get the lock surface for keyboard focus when locked
     pub fn lock_surface_focus(&self) -> Option<WlSurface> {
         // Prefer lock surface on output under cursor, then any output
-        let cursor_output = self.output_under_cursor()
-            .and_then(|name| {
-                self.output_state.iter()
-                    .find(|(o, _)| o.name() == name)
-                    .map(|(o, _)| o.clone())
-            });
+        let cursor_output = self.output_under_cursor().and_then(|name| {
+            self.output_state
+                .iter()
+                .find(|(o, _)| o.name() == name)
+                .map(|(o, _)| o.clone())
+        });
 
-        let target_output = cursor_output
-            .or_else(|| self.output_state.keys().next().cloned());
+        let target_output = cursor_output.or_else(|| self.output_state.keys().next().cloned());
 
         target_output.and_then(|output| {
-            self.output_state.get(&output)?
-                .lock_surface.as_ref()
+            self.output_state
+                .get(&output)?
+                .lock_surface
+                .as_ref()
                 .map(|s| s.wl_surface().clone())
         })
     }
@@ -2277,7 +2322,10 @@ impl State {
             ModuleCommand::Focus { id } => {
                 // Skip if already focused
                 if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
-                    if let Some(surface) = self.ewm.focus_surface_with_source(id, false, "emacs_command", None) {
+                    if let Some(surface) =
+                        self.ewm
+                            .focus_surface_with_source(id, false, "emacs_command", None)
+                    {
                         let keyboard = self.ewm.keyboard.clone();
                         keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
                     }
@@ -2357,12 +2405,7 @@ impl State {
                 refresh,
                 enabled,
             } => {
-                let output = self
-                    .ewm
-                    .space
-                    .outputs()
-                    .find(|o| o.name() == name)
-                    .cloned();
+                let output = self.ewm.space.outputs().find(|o| o.name() == name).cloned();
                 if let Some(output) = output {
                     if let Some(false) = enabled {
                         self.ewm.space.unmap_output(&output);
@@ -2374,7 +2417,10 @@ impl State {
                         // Only update position if x or y is explicitly specified
                         if x.is_some() || y.is_some() {
                             // Get current position as default
-                            let current_pos = self.ewm.space.output_geometry(&output)
+                            let current_pos = self
+                                .ewm
+                                .space
+                                .output_geometry(&output)
                                 .map(|g| (g.loc.x, g.loc.y))
                                 .unwrap_or((0, 0));
                             let new_x = x.unwrap_or(current_pos.0);
@@ -2445,11 +2491,7 @@ impl State {
                 });
             }
             ModuleCommand::SwitchLayout { layout } => {
-                let index = self
-                    .ewm
-                    .xkb_layout_names
-                    .iter()
-                    .position(|l| l == &layout);
+                let index = self.ewm.xkb_layout_names.iter().position(|l| l == &layout);
                 match index {
                     Some(idx) => {
                         use smithay::input::keyboard::Layout;
@@ -2522,7 +2564,9 @@ impl State {
     /// Process events from the IM relay and send to Emacs
     pub fn process_im_events(&mut self) {
         // Collect events first to avoid borrow conflict with queue_event
-        let events: Vec<_> = self.ewm.im_relay
+        let events: Vec<_> = self
+            .ewm
+            .im_relay
             .as_ref()
             .map(|relay| relay.event_rx.try_iter().collect())
             .unwrap_or_default();

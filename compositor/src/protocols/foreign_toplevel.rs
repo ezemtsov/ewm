@@ -157,7 +157,8 @@ impl ForeignToplevelManagerState {
                             instance.app_id(new_app_id.to_owned());
                         }
                         if states_changed {
-                            instance.state(data.states.iter().flat_map(|x| x.to_ne_bytes()).collect());
+                            instance
+                                .state(data.states.iter().flat_map(|x| x.to_ne_bytes()).collect());
                         }
                         if output_changed {
                             for wl_output in outputs.drain(..) {
@@ -212,13 +213,11 @@ impl ToplevelData {
     ) where
         D: Dispatch<ZwlrForeignToplevelHandleV1, ()> + 'static,
     {
-        let Ok(toplevel) = client
-            .create_resource::<ZwlrForeignToplevelHandleV1, _, D>(
-                handle,
-                manager.version(),
-                (),
-            )
-        else {
+        let Ok(toplevel) = client.create_resource::<ZwlrForeignToplevelHandleV1, _, D>(
+            handle,
+            manager.version(),
+            (),
+        ) else {
             return;
         };
         manager.toplevel(&toplevel);
