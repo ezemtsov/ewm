@@ -2277,7 +2277,10 @@ impl State {
             ModuleCommand::Focus { id } => {
                 // Skip if already focused
                 if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
-                    self.ewm.focus_surface_with_source(id, false, "emacs_command", None);
+                    if let Some(surface) = self.ewm.focus_surface_with_source(id, false, "emacs_command", None) {
+                        let keyboard = self.ewm.keyboard.clone();
+                        keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
+                    }
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {
