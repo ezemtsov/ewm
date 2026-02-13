@@ -468,6 +468,8 @@ pub struct Ewm {
     // Session lock state (ext-session-lock-v1 protocol)
     pub session_lock_state: SessionLockManagerState,
     pub lock_state: LockState,
+    /// Surface ID that was focused before locking (restored on unlock)
+    pub pre_lock_focus: Option<u32>,
 
     // TODO: ext-idle-notify-v1 protocol support
     // IdleNotifierState<D> requires LoopHandle<D> and Seat<D> to match,
@@ -584,6 +586,7 @@ impl Ewm {
             foreign_toplevel_state,
             session_lock_state,
             lock_state: LockState::Unlocked,
+            pre_lock_focus: None,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -1956,6 +1959,11 @@ impl SessionLockHandler for Ewm {
 
         info!("Session lock requested");
 
+        // Save current focus to restore after unlock
+        if self.focused_surface_id != 0 {
+            self.pre_lock_focus = Some(self.focused_surface_id);
+        }
+
         if self.output_state.is_empty() {
             // No outputs: lock immediately
             let lock = confirmation.ext_session_lock().clone();
@@ -1981,6 +1989,14 @@ impl SessionLockHandler for Ewm {
         for state in self.output_state.values_mut() {
             state.lock_surface = None;
             state.lock_render_state = LockRenderState::Unlocked;
+        }
+
+        // Restore focus to the surface that was focused before locking
+        if let Some(id) = self.pre_lock_focus.take() {
+            if self.id_windows.contains_key(&id) {
+                info!("Restoring focus to surface {} after unlock", id);
+                self.focus_surface_with_source(id, false, "unlock", None);
+            }
         }
 
         self.queue_redraw_all();
