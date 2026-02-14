@@ -243,3 +243,116 @@ every keystroke in some modes), but actual geometry changes are rare.
 | `Hide` | surface ID | `!cached_views.contains(id)` |
 | `Focus` | global | `id == focused_surface_id` |
 | `TextInputIntercept` | global | `state == cached_state` |
+
+## Keyboard Focus Synchronization
+
+### The Two Levels of Focus
+
+EWM tracks focus at two levels that must stay in sync:
+
+1. **Logical focus** (`focused_surface_id`): The compositor's idea of which surface
+   should have input. Updated by clicks, scrolls, xdg_activation, Emacs commands.
+2. **Wayland keyboard focus** (`keyboard.set_focus()`): The actual Wayland protocol
+   state that determines which surface receives key events.
+
+A bug where these diverge is invisible — the surface appears focused (renders with
+focus decorations, Emacs shows its buffer) but keyboard input goes elsewhere.
+
+### Comparison with Niri
+
+[Niri](https://github.com/YaLTeR/niri) uses a fully deferred focus model:
+
+```
+Any focus trigger              refresh() (main loop)
+  activate_window() ──────►  update_keyboard_focus()
+  layout state changes           │
+  queue_redraw_all()             ├─ compute focus from layout state
+                                 ├─ compare with current
+                                 └─ keyboard.set_focus() ← ONLY CALL SITE
+```
+
+- `keyboard.set_focus()` is called in exactly **1 function** (`update_keyboard_focus`)
+- That function is called from exactly **1 place** (`refresh()` in the main loop)
+- All focus triggers (clicks, activation, keybinds) just update layout state
+- Keyboard focus syncs on the next refresh cycle
+
+This is robust: impossible to forget a `keyboard.set_focus()` call, and focus
+naturally settles after all state changes complete (e.g., surface replacement).
+
+### Why EWM Cannot Fully Defer
+
+EWM's `intercept_redirect` path requires **atomic focus + key forwarding**:
+
+1. User presses `C-x` while Firefox has focus
+2. Compositor intercepts the key (not forwarded to Firefox)
+3. Must set Wayland keyboard focus to Emacs **immediately**
+4. Must re-send the key to Emacs **in the same handler**
+
+If step 3 were deferred to a refresh cycle, the key in step 4 would be sent to
+whatever surface currently has Wayland keyboard focus (still Firefox), not Emacs.
+
+Niri doesn't have this constraint because its intercepted keybinds execute
+compositor-internal actions. EWM forwards intercepted keys to a client (Emacs),
+which requires the focus change to happen first.
+
+A second constraint is **layout ownership**. Niri's `update_keyboard_focus()`
+recomputes focus from scratch each cycle because the compositor owns the full
+layout state. In EWM, layout lives in Emacs — the compositor only knows
+`focused_surface_id`. It cannot derive "who should have focus" from layout state;
+it must track focus incrementally.
+
+### Desired Architecture: Hybrid Model
+
+```
+                            ┌──────────────────────────────┐
+                            │    focused_surface_id        │
+                            │    (single source of truth)  │
+                            └──────────┬───────────────────┘
+                                       │
+              ┌────────────────────────┼─────────────────────────┐
+              │ DEFERRED PATH          │  IMMEDIATE PATH         │
+              │                        │                         │
+              │  xdg_activation        │  intercept_redirect     │
+              │  ModuleCommand::Focus  │   (must set focus +     │
+              │  click / scroll        │    re-send key in same  │
+              │  toplevel_destroyed    │    handler)             │
+              │                        │                         │
+              │  Set focused_surface_id│  Set focused_surface_id │
+              │  Set keyboard_focus    │  Set keyboard_focus     │
+              │  Set dirty flag ───┐   │  keyboard.set_focus()   │
+              │                    │   │  Clear dirty flag       │
+              │                    ▼   │                         │
+              │         ┌──────────────┴──┐                      │
+              │         │sync_kbd_focus() │                      │
+              │         │                 │                      │
+              │         │ if dirty:       │                      │
+              │         │   resolve id    │                      │
+              │         │   → WlSurface   │                      │
+              │         │   kbd.set_focus │                      │
+              │         │   dirty = false │                      │
+              │         └─────────────────┘                      │
+              │            Called from:                           │
+              │            • handle_keyboard_event (top)         │
+              │            • after ModuleCommand batch           │
+              │            • main loop tick                      │
+              └──────────────────────────────────────────────────┘
+```
+
+**Deferred path**: Most focus changes set `focused_surface_id` + dirty flag.
+The `sync_keyboard_focus()` function resolves the ID to a `WlSurface` and calls
+`keyboard.set_focus()`. This catches missed syncs and handles surface replacement
+(e.g., Firefox surface 2 → 3) naturally.
+
+**Immediate path**: Only `intercept_redirect` calls `keyboard.set_focus()`
+directly, because it must forward the key in the same handler. It also clears the
+dirty flag to prevent a redundant sync.
+
+### Benefits
+
+1. **Eliminates "forgot to sync" bugs**: New focus-changing code paths only need
+   to set `focused_surface_id` and mark dirty. The sync function handles the rest.
+2. **Handles surface replacement**: If a surface is replaced between focus change
+   and sync, the sync resolves the current `focused_surface_id` (which Emacs has
+   already updated) to the correct `WlSurface`.
+3. **Auditable**: Only 2 call sites for `keyboard.set_focus()` (sync function +
+   intercept_redirect), down from 13.

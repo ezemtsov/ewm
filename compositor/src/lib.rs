@@ -414,6 +414,7 @@ pub struct Ewm {
     pub pointer_location: (f64, f64),
     pub focused_surface_id: u32,
     pub keyboard_focus: Option<WlSurface>,
+    pub keyboard_focus_dirty: bool,
 
     // Emacs client tracking - used to identify which surfaces belong to Emacs
     // vs external applications (for key interception)
@@ -572,6 +573,7 @@ impl Ewm {
             pointer_location: (0.0, 0.0),
             focused_surface_id: 0,
             keyboard_focus: None,
+            keyboard_focus_dirty: false,
             emacs_pid: None,
             emacs_surfaces: std::collections::HashSet::new(),
             pending_screenshot: None,
@@ -741,10 +743,12 @@ impl Ewm {
         self.emacs_surfaces.contains(&self.focused_surface_id)
     }
 
-    /// Set focus to a surface and notify Emacs
+    /// Set focus to a surface and notify Emacs.
+    /// Marks keyboard focus dirty for deferred sync.
     pub fn set_focus(&mut self, id: u32) {
         if id != self.focused_surface_id && id != 0 {
             self.focused_surface_id = id;
+            self.keyboard_focus_dirty = true;
             crate::module::set_focused_id(id);
             // Notify Emacs about focus change (skip Emacs frames, they handle their own focus)
             if !self.emacs_surfaces.contains(&id) {
@@ -753,36 +757,28 @@ impl Ewm {
         }
     }
 
-    /// Focus a surface, updating internal state only (no keyboard).
-    /// Returns the WlSurface to focus, if any. Caller must update keyboard focus.
-    pub fn focus_surface(&mut self, id: u32, notify_emacs: bool) -> Option<WlSurface> {
-        self.focus_surface_with_source(id, notify_emacs, "focus_surface", None)
+    /// Focus a surface, updating internal state only.
+    /// Keyboard focus is synced via deferred sync_keyboard_focus().
+    pub fn focus_surface(&mut self, id: u32, notify_emacs: bool) {
+        self.focus_surface_with_source(id, notify_emacs, "focus_surface", None);
     }
 
     /// Focus a surface with source tracking for debugging.
-    /// Returns the WlSurface to focus, if any. Caller must update keyboard focus.
+    /// Marks keyboard focus dirty for deferred sync via sync_keyboard_focus().
     pub fn focus_surface_with_source(
         &mut self,
         id: u32,
         notify_emacs: bool,
         source: &str,
         context: Option<&str>,
-    ) -> Option<WlSurface> {
+    ) {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
+        self.keyboard_focus_dirty = true;
         crate::module::set_focused_id(id);
         if notify_emacs {
             self.queue_event(Event::Focus { id });
         }
-
-        if let Some(window) = self.id_windows.get(&id) {
-            if let Some(surface) = window.wl_surface() {
-                let focus_surface = surface.into_owned();
-                self.keyboard_focus = Some(focus_surface.clone());
-                return Some(focus_surface);
-            }
-        }
-        None
     }
 
     /// Queue an event to be sent to Emacs via the module queue
@@ -1691,11 +1687,9 @@ impl XdgShellHandler for State {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(refocus_id) = self.ewm.handle_toplevel_destroyed(surface) {
-            // Refocus to the returned surface
-            if let Some(focus_surface) = self.ewm.focus_surface(refocus_id, true) {
-                let keyboard = self.ewm.keyboard.clone();
-                keyboard.set_focus(self, Some(focus_surface), SERIAL_COUNTER.next_serial());
-            }
+            // Refocus to the returned surface (keyboard sync deferred)
+            self.ewm.focus_surface(refocus_id, true);
+            self.sync_keyboard_focus();
         }
     }
 
@@ -1915,7 +1909,7 @@ impl XdgActivationHandler for State {
                 .find(|(w, _)| w.wl_surface().map(|s| &*s == &surface).unwrap_or(false))
                 .map(|(_, id)| id)
             {
-                // Focus the surface and notify Emacs
+                // Focus the surface and notify Emacs (keyboard sync deferred)
                 self.ewm
                     .focus_surface_with_source(id, true, "xdg_activation", None);
                 info!("xdg_activation: granted for surface {}", id);
@@ -2212,6 +2206,38 @@ pub struct State {
 }
 
 impl State {
+    /// Synchronize Wayland keyboard focus with focused_surface_id.
+    ///
+    /// This is the primary mechanism for keeping logical focus (focused_surface_id)
+    /// in sync with Wayland keyboard focus (keyboard.set_focus). Most focus-changing
+    /// code paths just set focused_surface_id + keyboard_focus_dirty=true, and this
+    /// function resolves the actual WlSurface and calls keyboard.set_focus().
+    ///
+    /// Called from: handle_keyboard_event (before filter), after module command
+    /// batch, and main loop tick. The intercept_redirect path is the only code
+    /// that calls keyboard.set_focus() directly (it must be atomic with key
+    /// forwarding).
+    pub fn sync_keyboard_focus(&mut self) {
+        if !self.ewm.keyboard_focus_dirty {
+            return;
+        }
+        self.ewm.keyboard_focus_dirty = false;
+
+        let target_id = self.ewm.focused_surface_id;
+        let new_focus = self
+            .ewm
+            .id_windows
+            .get(&target_id)
+            .and_then(|w| w.wl_surface())
+            .map(|s| s.into_owned());
+
+        if self.ewm.keyboard_focus != new_focus {
+            self.ewm.keyboard_focus = new_focus.clone();
+            let keyboard = self.ewm.keyboard.clone();
+            keyboard.set_focus(self, new_focus, SERIAL_COUNTER.next_serial());
+        }
+    }
+
     /// Per-frame processing callback for the event loop.
     /// Called after each dispatch to handle redraws, events, and client flushing.
     pub fn refresh_and_flush_clients(&mut self) {
@@ -2233,6 +2259,10 @@ impl State {
             crate::tracy_plot!("emacs_cmd_count", _count as f64);
             crate::tracy_plot!("emacs_cmd_time_us", _elapsed_us);
         }
+
+        // Sync keyboard focus after processing module commands.
+        // This catches any focus changes from Emacs commands, xdg_activation, etc.
+        self.sync_keyboard_focus();
 
         // Process pending early imports
         let pending_imports: Vec<_> = self.ewm.pending_early_imports.drain(..).collect();
@@ -2320,15 +2350,10 @@ impl State {
                 }
             }
             ModuleCommand::Focus { id } => {
-                // Skip if already focused
+                // Skip if already focused (keyboard sync deferred to after command batch)
                 if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
-                    if let Some(surface) =
-                        self.ewm
-                            .focus_surface_with_source(id, false, "emacs_command", None)
-                    {
-                        let keyboard = self.ewm.keyboard.clone();
-                        keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
-                    }
+                    self.ewm
+                        .focus_surface_with_source(id, false, "emacs_command", None);
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {

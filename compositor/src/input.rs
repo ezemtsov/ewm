@@ -27,7 +27,6 @@ use smithay::{
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::SERIAL_COUNTER,
     wayland::seat::WaylandFocus,
-    wayland::text_input::TextInputSeat,
 };
 
 use crate::{is_kill_combo, module, State};
@@ -227,15 +226,24 @@ pub fn handle_keyboard_event(
 
     if filter_result.as_ref().map(|(c, _, _)| *c) == Some(1) {
         // Switch focus to the Emacs frame on the same output as the focused surface
+        let keysym_val = filter_result.as_ref().map(|(_, k, _)| *k).unwrap_or(0);
+        tracing::info!(
+            "intercept_redirect: keycode={} keysym=0x{:x} from surface {}",
+            keycode,
+            keysym_val,
+            state.ewm.focused_surface_id
+        );
         if let Some(emacs_id) = state.ewm.get_emacs_surface_for_focused_output() {
-            module::record_focus(emacs_id, "intercept_redirect", Some("prefix_key"));
+            let context = format!("keycode={} keysym=0x{:x}", keycode, keysym_val);
+            module::record_focus(emacs_id, "intercept_redirect", Some(&context));
             state.ewm.focused_surface_id = emacs_id;
+            state.ewm.keyboard_focus_dirty = false; // Immediate path — we sync right here
             crate::module::set_focused_id(emacs_id);
             if let Some(window) = state.ewm.id_windows.get(&emacs_id) {
                 if let Some(surface) = window.wl_surface() {
                     let emacs_surface: WlSurface = surface.into_owned();
                     state.ewm.keyboard_focus = Some(emacs_surface.clone());
-                    // focus_changed handles text_input focus
+                    // Immediate keyboard.set_focus — must happen before re-sending the key
                     keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
 
                     // NOTE: We intentionally do NOT send a Focus event here.
@@ -270,18 +278,8 @@ pub fn handle_keyboard_event(
         return KeyboardAction::RedirectToEmacs;
     }
 
-    // Normal key handling - ensure focus is on the right surface
-    let target_id = state.ewm.focused_surface_id;
-    if let Some(window) = state.ewm.id_windows.get(&target_id) {
-        if let Some(surface) = window.wl_surface() {
-            let new_focus = surface.into_owned();
-            if state.ewm.keyboard_focus.as_ref() != Some(&new_focus) {
-                state.ewm.keyboard_focus = Some(new_focus.clone());
-                // focus_changed handles text_input focus
-                keyboard.set_focus(state, Some(new_focus.clone()), serial);
-            }
-        }
-    }
+    // Normal key handling - ensure Wayland keyboard focus matches focused_surface_id
+    state.sync_keyboard_focus();
 
     // Check if XKB layout changed (e.g., via grp:caps_toggle)
     let current_layout = keyboard.with_xkb_state(state, |context| {
@@ -339,21 +337,11 @@ pub fn release_all_keys(state: &mut State) {
 
 /// Restore focus to a specific surface
 pub fn restore_focus(state: &mut State, surface_id: u32) {
-    let keyboard = state.ewm.keyboard.clone();
-    if let Some(window) = state.ewm.id_windows.get(&surface_id) {
-        if let Some(surface) = window.wl_surface() {
-            let serial = SERIAL_COUNTER.next_serial();
-            let focus_surface = surface.into_owned();
-            state.ewm.keyboard_focus = Some(focus_surface.clone());
-            keyboard.set_focus(state, Some(focus_surface.clone()), serial);
-            // Update text_input focus
-            state
-                .ewm
-                .seat
-                .text_input()
-                .set_focus(Some(focus_surface.clone()));
-            state.ewm.seat.text_input().enter();
-        }
+    if state.ewm.id_windows.contains_key(&surface_id) {
+        state.ewm.focused_surface_id = surface_id;
+        state.ewm.keyboard_focus_dirty = true;
+        crate::module::set_focused_id(surface_id);
+        state.sync_keyboard_focus();
     }
 }
 
@@ -482,7 +470,6 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
 pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::PointerButtonEvent) {
     tracy_span!("handle_pointer_button");
     let pointer = state.ewm.pointer.clone();
-    let keyboard = state.ewm.keyboard.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
     let button_state = match event.state() {
@@ -505,15 +492,16 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
                     Some((id, surface))
                 });
 
-            if let Some((id, surface)) = focus_info {
+            if let Some((id, _surface)) = focus_info {
                 module::record_focus(id, "click", None);
                 state.ewm.set_focus(id);
-                state.ewm.keyboard_focus = Some(surface.clone());
-                // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
-                keyboard.set_focus(state, Some(surface.clone()), serial);
             }
         }
     }
+
+    // Sync keyboard focus before forwarding the button event,
+    // so the correct surface receives any subsequent key events.
+    state.sync_keyboard_focus();
 
     pointer.button(
         state,
@@ -534,8 +522,6 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
 pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::PointerAxisEvent) {
     tracy_span!("handle_pointer_axis");
     let pointer = state.ewm.pointer.clone();
-    let keyboard = state.ewm.keyboard.clone();
-    let serial = SERIAL_COUNTER.next_serial();
 
     // When locked, skip scroll-to-focus
     if !state.ewm.is_locked() {
@@ -551,14 +537,14 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
                 Some((id, surface))
             });
 
-        if let Some((id, surface)) = focus_info {
+        if let Some((id, _surface)) = focus_info {
             module::record_focus(id, "scroll", None);
             state.ewm.set_focus(id);
-            state.ewm.keyboard_focus = Some(surface.clone());
-            // focus_changed handles text_input focus
-            keyboard.set_focus(state, Some(surface.clone()), serial);
         }
     }
+
+    // Sync keyboard focus before forwarding the scroll event.
+    state.sync_keyboard_focus();
 
     let source = event.source();
 

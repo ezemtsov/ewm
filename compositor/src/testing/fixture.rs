@@ -170,6 +170,9 @@ impl Fixture {
             self.handle_module_command(cmd);
         }
 
+        // Sync keyboard focus after module commands (matches production behavior)
+        self.state.sync_keyboard_focus();
+
         // Process queued redraws
         self.state
             .backend

@@ -2020,7 +2020,6 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     InputEvent::PointerButton { event } => {
                         let pointer = state.ewm.pointer.clone();
-                        let keyboard = state.ewm.keyboard.clone();
                         let serial = SERIAL_COUNTER.next_serial();
 
                         let button_state = match event.state() {
@@ -2043,15 +2042,14 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                         Some((id, surface))
                                     });
 
-                            if let Some((id, surface)) = focus_info {
+                            if let Some((id, _surface)) = focus_info {
                                 module::record_focus(id, "click", None);
-                                tracing::info!("Click focus: surface {:?}", surface.id());
                                 state.ewm.set_focus(id);
-                                state.ewm.keyboard_focus = Some(surface.clone());
-                                // keyboard.set_focus triggers SeatHandler::focus_changed which handles text_input
-                                keyboard.set_focus(state, Some(surface.clone()), serial);
                             }
                         }
+
+                        // Sync keyboard focus before forwarding the button event
+                        state.sync_keyboard_focus();
 
                         pointer.button(
                             state,
@@ -2066,8 +2064,6 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     InputEvent::PointerAxis { event } => {
                         let pointer = state.ewm.pointer.clone();
-                        let keyboard = state.ewm.keyboard.clone();
-                        let serial = SERIAL_COUNTER.next_serial();
 
                         // Scroll-to-focus: focus the surface under pointer on scroll
                         let (px, py) = state.ewm.pointer_location;
@@ -2082,14 +2078,13 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                     Some((id, surface))
                                 });
 
-                        if let Some((id, surface)) = focus_info {
+                        if let Some((id, _surface)) = focus_info {
                             module::record_focus(id, "scroll", None);
-                            tracing::info!("Scroll focus: surface {:?}", surface.id());
                             state.ewm.set_focus(id);
-                            state.ewm.keyboard_focus = Some(surface.clone());
-                            // focus_changed handles text_input focus
-                            keyboard.set_focus(state, Some(surface.clone()), serial);
                         }
+
+                        // Sync keyboard focus before forwarding the scroll event
+                        state.sync_keyboard_focus();
 
                         let source = event.source();
 
