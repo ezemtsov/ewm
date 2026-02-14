@@ -147,6 +147,7 @@ use smithay::{
 use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 
 /// Redraw state machine for proper VBlank synchronization.
@@ -634,6 +635,30 @@ impl Ewm {
     pub fn queue_redraw(&mut self, output: &Output) {
         if let Some(state) = self.output_state.get_mut(output) {
             state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+        }
+    }
+
+    /// Send frame callbacks to all surfaces on an output without rendering.
+    /// This allows clients to commit new buffers even when no redraw is needed.
+    pub fn send_frame_callbacks(&self, output: &Output) {
+        for window in self.space.elements() {
+            window.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
+        }
+        let layer_map = smithay::desktop::layer_map_for_output(output);
+        for layer in layer_map.layers() {
+            layer.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
+        }
+        drop(layer_map);
+        if let Some(output_state) = self.output_state.get(output) {
+            if let Some(ref lock_surface) = output_state.lock_surface {
+                smithay::desktop::utils::send_frames_surface_tree(
+                    lock_surface.wl_surface(),
+                    output,
+                    Duration::ZERO,
+                    None,
+                    |_, _| Some(output.clone()),
+                );
+            }
         }
     }
 

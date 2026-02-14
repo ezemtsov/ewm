@@ -68,7 +68,7 @@ use smithay::{
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 #[cfg(feature = "screencast")]
 use tracing::trace;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     backend::Backend,
@@ -554,30 +554,8 @@ impl DrmBackendState {
             self.queue_estimated_vblank_timer(crtc, ewm, refresh_interval_us);
         }
 
-        // Send frame callbacks to clients so they can commit new buffers
-        for window in ewm.space.elements() {
-            window.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
-        }
-
-        // Send frame callbacks to layer surfaces
-        let layer_map = smithay::desktop::layer_map_for_output(&output);
-        for layer in layer_map.layers() {
-            layer.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
-        }
-        drop(layer_map);
-
-        // Send frame callbacks to lock surface (if any)
-        if let Some(output_state) = ewm.output_state.get(&output) {
-            if let Some(ref lock_surface) = output_state.lock_surface {
-                smithay::desktop::utils::send_frames_surface_tree(
-                    lock_surface.wl_surface(),
-                    &output,
-                    Duration::ZERO,
-                    None,
-                    |_, _| Some(output.clone()),
-                );
-            }
-        }
+        // Send frame callbacks to all surfaces so clients can commit new buffers
+        ewm.send_frame_callbacks(&output);
 
         // Process pending screencopy requests for this output
         if should_process_screencopy {
@@ -757,15 +735,10 @@ impl DrmBackendState {
             (action, output)
         };
 
-        // Send frame callbacks if we're going idle (no redraw)
-        if action == Some(false) {
-            for window in ewm.space.elements() {
-                window.send_frame(&output, Duration::ZERO, None, |_, _| Some(output.clone()));
-            }
-        }
-
-        if action == Some(true) {
-            self.render_output(crtc, ewm);
+        match action {
+            Some(false) => ewm.send_frame_callbacks(&output),
+            Some(true) => self.render_output(crtc, ewm),
+            None => {}
         }
     }
 
@@ -1528,45 +1501,60 @@ fn initialize_drm(
                 crate::tracy_frame_mark!();
                 crate::tracy_span!("on_vblank");
 
-                let mut should_render = false;
-                if let Some(device) = &mut state.backend.as_drm_mut().unwrap().device {
-                    if let Some(surface) = device.surfaces.get_mut(&crtc) {
-                        match surface.compositor.frame_submitted() {
-                            Ok(_) => {}
-                            Err(err) => {
-                                warn!("Error marking frame as submitted: {:?}", err);
-                            }
-                        }
+                let (redraw_needed, output) = {
+                    let Some(device) =
+                        &mut state.backend.as_drm_mut().unwrap().device
+                    else {
+                        return;
+                    };
+                    let Some(surface) = device.surfaces.get_mut(&crtc) else {
+                        return;
+                    };
 
-                        // Get output state from Ewm
-                        if let Some(output_state) =
-                            state.ewm.output_state.get_mut(&surface.output)
-                        {
-                            // End Tracy frame tracking for VBlank interval
-                            output_state.vblank_tracker.end_frame();
-
-                            match &output_state.redraw_state {
-                                RedrawState::WaitingForVBlank { redraw_needed } => {
-                                    if *redraw_needed {
-                                        output_state.redraw_state = RedrawState::Queued;
-                                        should_render = true;
-                                    } else {
-                                        output_state.redraw_state = RedrawState::Idle;
-                                    }
-                                }
-                                other => {
-                                    debug!(
-                                        "VBlank received in unexpected state: {:?}",
-                                        other
-                                    );
-                                }
-                            }
+                    match surface.compositor.frame_submitted() {
+                        Ok(_) => {}
+                        Err(err) => {
+                            warn!("Error marking frame as submitted: {:?}", err);
                         }
                     }
-                }
 
-                if should_render {
+                    let output = surface.output.clone();
+                    let Some(output_state) = state.ewm.output_state.get_mut(&output)
+                    else {
+                        return;
+                    };
+
+                    // End Tracy frame tracking for VBlank interval
+                    output_state.vblank_tracker.end_frame();
+
+                    // Use mem::replace like niri: set to Idle, then decide what to do.
+                    // This handles rogue VBlanks that arrive in unexpected states
+                    // (can happen on some hardware after sleep/resume).
+                    let redraw_needed = match std::mem::replace(
+                        &mut output_state.redraw_state,
+                        RedrawState::Idle,
+                    ) {
+                        RedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
+                        other => {
+                            error!(
+                                "unexpected redraw state on VBlank for {} \
+                                 (should be WaitingForVBlank); can happen when \
+                                 resuming from sleep: {:?}",
+                                output.name(),
+                                other
+                            );
+                            true // force redraw to recover
+                        }
+                    };
+
+                    (redraw_needed, output)
+                };
+
+                if redraw_needed {
+                    state.ewm.queue_redraw(&output);
                     state.backend.render_output(crtc, &mut state.ewm);
+                } else {
+                    state.ewm.send_frame_callbacks(&output);
                 }
             }
             DrmEvent::Error(error) => {
@@ -1581,7 +1569,10 @@ fn initialize_drm(
                                 output_state.redraw_state,
                                 RedrawState::WaitingForVBlank { .. }
                             ) {
-                                warn!("Recovering stuck redraw state for {}", output.name());
+                                warn!(
+                                    "Recovering stuck redraw state for {}",
+                                    output.name()
+                                );
                                 output_state.redraw_state = RedrawState::Queued;
                             }
                         }
