@@ -133,6 +133,10 @@ When the compositor starts, Wayland surfaces appear as special buffers. Use stan
 - GPU selection is automatic (no override)
 - Must run from TTY (no nested mode)
 
+## Related Projects
+
+- **[ewm-consult](https://github.com/Kirth/ewm-consult)** - Consult integration for EWM
+
 ## License
 
 GPL-3.0
