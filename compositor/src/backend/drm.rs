@@ -67,8 +67,7 @@ use smithay::{
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 #[cfg(feature = "screencast")]
-use tracing::trace;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     backend::Backend,
@@ -506,6 +505,11 @@ impl DrmBackendState {
                             // Transition to WaitingForVBlank
                             let is_locked = ewm.is_locked();
                             if let Some(output_state) = ewm.output_state.get_mut(&output) {
+                                trace!(
+                                    "{}: {} -> WaitingForVBlank",
+                                    output.name(),
+                                    output_state.redraw_state
+                                );
                                 output_state.redraw_state = RedrawState::WaitingForVBlank {
                                     redraw_needed: false,
                                 };
@@ -522,8 +526,13 @@ impl DrmBackendState {
                             ewm.check_lock_complete();
                         }
                         Err(err) => {
-                            warn!("Error queueing frame: {:?}", err);
+                            warn!("{}: Error queueing frame: {:?}", output.name(), err);
                             if let Some(output_state) = ewm.output_state.get_mut(&output) {
+                                trace!(
+                                    "{}: {} -> Idle (queue_frame error)",
+                                    output.name(),
+                                    output_state.redraw_state
+                                );
                                 output_state.redraw_state = RedrawState::Idle;
                             }
                             // Abort lock if we failed to queue frame during Locking state
@@ -533,6 +542,11 @@ impl DrmBackendState {
                 } else {
                     // No damage - mark that we need to queue estimated vblank timer
                     if let Some(output_state) = ewm.output_state.get_mut(&output) {
+                        trace!(
+                            "{}: {} -> Idle (no damage)",
+                            output.name(),
+                            output_state.redraw_state
+                        );
                         output_state.redraw_state = RedrawState::Idle;
                     }
                     need_estimated_vblank = true;
@@ -541,8 +555,13 @@ impl DrmBackendState {
                 should_process_screencopy = true;
             }
             Err(err) => {
-                warn!("Error rendering frame: {:?}", err);
+                warn!("{}: Error rendering frame: {:?}", output.name(), err);
                 if let Some(output_state) = ewm.output_state.get_mut(&output) {
+                    trace!(
+                        "{}: {} -> Idle (render error)",
+                        output.name(),
+                        output_state.redraw_state
+                    );
                     output_state.redraw_state = RedrawState::Idle;
                 }
                 // Abort lock if we failed to render during Locking state
@@ -691,6 +710,7 @@ impl DrmBackendState {
         }) {
             Ok(token) => {
                 if let Some(output_state) = ewm.output_state.get_mut(&output) {
+                    trace!("{}: Idle -> WaitingForEstVBlank", output.name());
                     output_state.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
                 }
             }
@@ -720,15 +740,21 @@ impl DrmBackendState {
 
             let action = match &output_state.redraw_state {
                 RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
+                    trace!("{}: WaitingForEstVBlank+Queued -> Queued (est. VBlank)", output.name());
                     output_state.redraw_state = RedrawState::Queued;
                     Some(true)
                 }
                 RedrawState::WaitingForEstimatedVBlank(_) => {
+                    trace!("{}: WaitingForEstVBlank -> Idle (est. VBlank)", output.name());
                     output_state.redraw_state = RedrawState::Idle;
                     Some(false)
                 }
                 other => {
-                    debug!("Unexpected state in on_estimated_vblank_timer: {:?}", other);
+                    debug!(
+                        "{}: unexpected state in on_estimated_vblank_timer: {}",
+                        output.name(),
+                        other
+                    );
                     None
                 }
             };
@@ -1530,22 +1556,29 @@ fn initialize_drm(
                     // Use mem::replace like niri: set to Idle, then decide what to do.
                     // This handles rogue VBlanks that arrive in unexpected states
                     // (can happen on some hardware after sleep/resume).
-                    let redraw_needed = match std::mem::replace(
+                    let old_state = std::mem::replace(
                         &mut output_state.redraw_state,
                         RedrawState::Idle,
-                    ) {
-                        RedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
-                        other => {
+                    );
+                    let redraw_needed = match &old_state {
+                        RedrawState::WaitingForVBlank { redraw_needed } => *redraw_needed,
+                        _ => {
                             error!(
                                 "unexpected redraw state on VBlank for {} \
                                  (should be WaitingForVBlank); can happen when \
-                                 resuming from sleep: {:?}",
+                                 resuming from sleep: {}",
                                 output.name(),
-                                other
+                                old_state
                             );
                             true // force redraw to recover
                         }
                     };
+                    trace!(
+                        "{}: {} -> {} (VBlank)",
+                        output.name(),
+                        old_state,
+                        if redraw_needed { "Queued" } else { "Idle" }
+                    );
 
                     (redraw_needed, output)
                 };

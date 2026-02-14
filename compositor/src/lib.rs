@@ -170,6 +170,22 @@ pub enum RedrawState {
     WaitingForEstimatedVBlankAndQueued(RegistrationToken),
 }
 
+impl std::fmt::Display for RedrawState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RedrawState::Idle => write!(f, "Idle"),
+            RedrawState::Queued => write!(f, "Queued"),
+            RedrawState::WaitingForVBlank { redraw_needed } => {
+                write!(f, "WaitingForVBlank(redraw={})", redraw_needed)
+            }
+            RedrawState::WaitingForEstimatedVBlank(_) => write!(f, "WaitingForEstVBlank"),
+            RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
+                write!(f, "WaitingForEstVBlank+Queued")
+            }
+        }
+    }
+}
+
 impl RedrawState {
     /// Transition to request a redraw
     pub fn queue_redraw(self) -> Self {
@@ -2889,6 +2905,12 @@ impl State {
                     "xkb_layouts": self.ewm.xkb_layout_names,
                     "xkb_current_layout": self.ewm.xkb_current_layout,
                     "next_surface_id": self.ewm.next_surface_id,
+                    "redraw_states": self.ewm.output_state.iter().map(|(output, state)| {
+                        serde_json::json!({
+                            "output": output.name(),
+                            "state": state.redraw_state.to_string(),
+                        })
+                    }).collect::<Vec<_>>(),
                     "pending_frame_outputs": module::peek_pending_frame_outputs(),
                     "in_prefix_sequence": module::get_in_prefix_sequence(),
                     // Debug info
