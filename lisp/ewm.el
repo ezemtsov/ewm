@@ -26,57 +26,7 @@
 
 (require 'cl-lib)
 (require 'map)
-
-;; Module function declarations (provided by ewm-core dynamic module)
-(declare-function ewm-start "ewm-core")
-(declare-function ewm-stop "ewm-core")
-(declare-function ewm-running "ewm-core")
-(declare-function ewm-pop-event "ewm-core")
-(declare-function ewm-layout-module "ewm-core")
-(declare-function ewm-views-module "ewm-core")
-(declare-function ewm-hide-module "ewm-core")
-(declare-function ewm-close-module "ewm-core")
-(declare-function ewm-focus-module "ewm-core")
-(declare-function ewm-warp-pointer-module "ewm-core")
-(declare-function ewm-screenshot-module "ewm-core")
-(declare-function ewm-assign-output-module "ewm-core")
-(declare-function ewm-prepare-frame-module "ewm-core")
-(declare-function ewm-configure-output-module "ewm-core")
-(declare-function ewm-get-focused-id "ewm-core")
-(declare-function ewm-get-output-offset "ewm-core")
-(declare-function ewm-get-pointer-location "ewm-core")
-(declare-function ewm-get-state-module "ewm-core")
-(declare-function ewm-debug-mode-module "ewm-core")
-(declare-function ewm-debug-mode-p "ewm-core")
-(declare-function ewm-create-activation-token "ewm-core")
-
-;;; Dynamic module loading
-
-(defconst ewm--module-path
-  (let* ((lisp-dir (file-name-directory (or load-file-name "")))
-         (project-dir (file-name-directory (directory-file-name lisp-dir))))
-    (expand-file-name "compositor/target/debug/libewm_core.so" project-dir))
-  "Path to ewm-core module (debug build relative to ewm.el).")
-
-(defun ewm-load-module ()
-  "Load the ewm-core dynamic module.
-Tries EWM_MODULE_PATH env var first, then debug build relative to ewm.el."
-  (interactive)
-  (if (featurep 'ewm-core)
-      (message "ewm-core already loaded")
-    (let ((path (or (getenv "EWM_MODULE_PATH")
-                    (and (file-exists-p ewm--module-path) ewm--module-path))))
-      (if (and path (file-exists-p path))
-          (condition-case err
-              (progn
-                (module-load path)
-                (message "Loaded ewm-core from %s" path)
-                t)
-            (error
-             (message "Failed to load ewm-core: %s" (error-message-string err))
-             nil))
-        (message "Module not found at %s" (or path ewm--module-path))
-        nil))))
+(require 'ewm-core)
 
 ;;; Module mode (compositor runs in-process)
 
@@ -536,10 +486,6 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
 This is the primary entry point for using EWM from `emacs --daemon' on TTY.
 The compositor runs as a thread within the Emacs process."
   (interactive)
-  ;; Load the module if not already loaded
-  (unless (featurep 'ewm-core)
-    (unless (ewm-load-module)
-      (error "Failed to load ewm-core module")))
   ;; Check if already running
   (when (and (fboundp 'ewm-running) (ewm-running))
     (user-error "EWM compositor is already running"))

@@ -1,6 +1,0 @@
-[Unit]
-Description=EWM session shutdown
-DefaultDependencies=no
-StopWhenUnneeded=true
-Conflicts=graphical-session.target graphical-session-pre.target
-After=graphical-session.target graphical-session-pre.target

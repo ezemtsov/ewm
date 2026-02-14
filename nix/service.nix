@@ -15,11 +15,11 @@ let
 
   ewmPackage = pkgs.callPackage ./default.nix {
     withScreencastSupport = cfg.screencast.enable;
-    inherit (cfg) emacsPackage initDirectory;
+    inherit (cfg) emacsPackage;
   };
 
   # Session script that sets up environment and starts ewm.service
-  ewmSession = pkgs.writeShellScriptBin "ewm-session" ''
+  ewmSession = pkgs.writeShellScript "ewm-session" ''
     # Re-exec through a login shell to get the full NixOS environment
     # (PATH, etc.) before importing it into systemd. Without this,
     # the display manager starts us with a minimal PATH.
@@ -62,20 +62,48 @@ let
   '';
 
   # Wayland session file for display managers
-  sessionPackage = pkgs.runCommand "ewm-session" {
-    passthru.providedSessions = [ "ewm" ];
-  } ''
-    mkdir -p $out/share/wayland-sessions
-    cat > $out/share/wayland-sessions/ewm.desktop << EOF
+  sessionFile = pkgs.writeText "ewm.desktop" ''
     [Desktop Entry]
     Name=EWM
     Comment=Emacs Wayland Manager
-    Exec=${ewmSession}/bin/ewm-session
+    Exec=${ewmSession}
     Type=Application
     DesktopNames=ewm
-    EOF
   '';
 
+  # Launch script that runs EWM in the provided Emacs.
+  launchScript = pkgs.writeShellScript "ewm-launch" ''
+    exec ${cfg.emacsPackage}/bin/emacs \
+      --fg-daemon \
+      --eval "(require 'ewm)" \
+      --eval "(ewm-start-module)" \
+      ${cfg.extraEmacsArgs} "$@"
+  '';
+
+  # verbatim service file to avoid NixOS overriding the environment
+  ewmService = pkgs.writeText "ewm.service" ''
+    [Unit]
+    Description=Emacs Wayland Manager
+    Documentation=https://github.com/ezemtsov/ewm
+    BindsTo=graphical-session.target
+    Before=graphical-session.target
+    Wants=graphical-session-pre.target
+    After=graphical-session-pre.target
+
+    [Service]
+    Slice=session.slice
+    Type=notify
+    ExecStart=/run/current-system/sw/bin/ewm-launch
+  '';
+
+  ewmSystemPackage = pkgs.runCommand "ewm-system"  {
+    passthru.providedSessions = [ "ewm" ];
+  }''
+    install -Dm755 ${launchScript} $out/bin/ewm-launch
+    install -Dm755 ${ewmSession} $out/bin/ewm-session
+    install -Dm644 ${sessionFile} $out/share/wayland-sessions/ewm.desktop
+    install -Dm0644 ${ewmService} $out/share/systemd/user/ewm.service
+  '';
 in
 {
   options.programs.ewm = {
@@ -89,16 +117,22 @@ in
 
     emacsPackage = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.emacs-pgtk;
-      description = "Emacs package to use. Must be a pgtk build for Wayland support.";
+      default = pkgs.emacs-pgtk.pkgs.withPackages(_: [ ewmPackage ]);
+      description = "Emacs package to use. Must be a pgtk build with the EWM package installed.";
       example = "pkgs.emacs30-pgtk";
     };
 
-    initDirectory = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "Emacs init directory (passed as --init-directory).";
-      example = "/etc/nixos/dotfiles/emacs";
+    ewmPackage = lib.mkOption {
+      type = lib.types.package;
+      default = ewmPackage;
+      description = "EWM package to use.";
+    };
+
+    extraEmacsArgs = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "Verbatim Emacs arguments to add to the launch flags.";
+      example = "--no-site-lisp --eval '(foo)'";
     };
 
     screencast.enable = lib.mkEnableOption "screen casting via PipeWire" // {
@@ -107,14 +141,27 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [
-      cfg.package
-      ewmSession
-    ];
-
-    services.displayManager.sessionPackages = [ sessionPackage ];
-
+    environment.systemPackages = [ ewmSystemPackage ];
+    services.displayManager.sessionPackages = [ ewmSystemPackage ];
     security.polkit.enable = true;
+
+    # Shutdown target that explicitly conflicts with graphical-session to force
+    # its shutdown.
+    systemd.user.targets.ewm-session-shutdown = {
+      description = "EWM session shutdown";
+      unitConfig = {
+        DefaultDependencies = false;
+        StopWhenUnneeded = true;
+      };
+      conflicts = [
+        "graphical-session.target"
+        "graphical-session-pre.target"
+      ];
+      after = [
+        "graphical-session.target"
+        "graphical-session-pre.target"
+      ];
+    };
 
     # Required for DRM backend (provides libEGL, mesa drivers)
     hardware.graphics.enable = lib.mkDefault true;
