@@ -3,4 +3,5 @@
 *.log
 *.png
 .direnv/
+result
 \#*\#

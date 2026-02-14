@@ -1766,14 +1766,6 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         // Store D-Bus servers to keep connections alive
         state.ewm.dbus_servers = Some(dbus_servers);
 
-        // Notify systemd we're ready (D-Bus interfaces registered)
-        // This is used when running as a systemd service with Type=notify
-        if let Err(err) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
-            tracing::warn!("Error notifying systemd: {err:?}");
-        } else {
-            tracing::info!("Notified systemd that compositor is ready");
-        }
-
         // Register the receiver to handle D-Bus messages
         event_loop
             .handle()
@@ -1846,6 +1838,14 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Failed to register D-Bus receiver");
 
         tracing::info!("D-Bus ScreenCast server started");
+    }
+
+    // Notify systemd we're ready. This must be outside the #[cfg(feature = "screencast")]
+    // block so it fires unconditionally.
+    if let Err(err) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
+        tracing::warn!("Error notifying systemd: {err:?}");
+    } else {
+        tracing::info!("Notified systemd that compositor is ready");
     }
 
     // Register session notifier and store token for cleanup in Drop
@@ -2171,3 +2171,4 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
