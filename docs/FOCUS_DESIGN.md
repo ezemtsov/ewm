@@ -153,28 +153,41 @@ Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 
 | Event | When Sent | Purpose |
 |-------|-----------|---------|
-| `focus` | External surface clicked/scrolled | Tell Emacs to show surface buffer |
+| `ready` | Compositor fully initialized | Signal Emacs to begin setup |
 | `new` | Surface created | Register new surface with Emacs |
 | `close` | Surface destroyed | Clean up surface buffer |
+| `title` | Surface title changes | Update buffer name |
+| `focus` | External surface clicked/scrolled | Tell Emacs to show surface buffer |
+| `output_detected` | Output connected | Create Emacs frame for output |
+| `output_disconnected` | Output disconnected | Clean up frame |
+| `outputs_complete` | All outputs reported | Trigger initial layout |
+| `text-input-activated` | Text field focused in surface | Enable input method bridge |
+| `text-input-deactivated` | Text field unfocused | Disable input method bridge |
+| `key` | Intercepted key with UTF-8 | Forward key event to Emacs |
+| `state` | Debug state requested | Populate `*ewm-state*` buffer |
+| `working_area` | Layer-shell exclusive zone changes | Adjust frame geometry |
 
 ## Functions
 
 ### Compositor (Rust)
 
-- `set_focus(id)`: Set compositor focus, notify Emacs for external surfaces
+- `set_focus(id)`: Set logical focus, mark keyboard dirty, notify Emacs for external surfaces
+- `focus_surface(id, notify_emacs)`: Wrapper around `focus_surface_with_source`
+- `focus_surface_with_source(id, notify_emacs, source, context)`: Set logical focus with debug tracking
+- `sync_keyboard_focus()`: Resolve `focused_surface_id` → `WlSurface`, call `keyboard.set_focus()` if dirty
 - `get_emacs_surface_for_focused_output()`: Find Emacs frame on same output as focused surface
 
 ### Emacs (ewm.el)
 
 - `ewm-focus(id)`: Request compositor to focus a surface
 - `ewm--handle-focus`: Handle focus event from compositor
-- `ewm-input--focus-debounced`: Debounced focus changes to prevent loops
-- `ewm-input--on-window-buffer-change`: Sync focus when window's buffer changes
-- `ewm-input--on-window-selection-change`: Sync focus when selected window changes
+- `ewm-input--on-post-command`: `post-command-hook` handler, schedules debounced focus sync
+- `ewm-input--sync-focus`: Clears prefix sequence flag, syncs focus if not locked
+- `ewm--focus-locked-p`: Centralized check — returns non-nil during minibuffer, prefix args, prefix key sequences
 
-Note: Focus sync uses `window-buffer-change-functions` and
-`window-selection-change-functions` instead of `buffer-list-update-hook`.
-This avoids spurious focus events from buffer renames (e.g., vterm title updates).
+Note: Focus sync uses `post-command-hook` with a debounced timer (0.01s).
+This lets Emacs "settle" after commands before syncing focus to the compositor,
+avoiding spurious focus events during transient states.
 
 ## Multi-Monitor Behavior
 
@@ -356,3 +369,30 @@ dirty flag to prevent a redundant sync.
    already updated) to the correct `WlSurface`.
 3. **Auditable**: Only 2 call sites for `keyboard.set_focus()` (sync function +
    intercept_redirect), down from 13.
+
+### Why Emacs Must Own Layout
+
+Niri can recompute focus from layout state because the compositor owns the full
+layout: workspace assignments, column ordering, window stacking. Could EWM move
+layout ownership to the compositor for the same robustness?
+
+No — Emacs IS the layout engine:
+
+1. **Window tree**: Emacs's window tree (splits, sizing, ordering) is the layout.
+   Reimplementing `split-window`, `balance-windows`, `display-buffer-alist` in
+   the compositor would duplicate Emacs's window manager without gaining anything.
+
+2. **Buffer ↔ surface mapping**: Emacs decides which buffer shows in which window
+   via `display-buffer-alist`, `pop-to-buffer`, dedicated windows, etc. This
+   mapping is deeply integrated with user configuration.
+
+3. **Tabs**: `tab-bar-mode` multiplexes window configurations. The compositor
+   cannot know which surfaces belong to which tab without Emacs telling it.
+
+4. **User customization**: Users customize layout via Elisp (hooks, advices,
+   `display-buffer-alist` rules). Moving layout to the compositor would require
+   a new configuration language for something Elisp already handles well.
+
+The current model — Emacs owns layout, compositor owns rendering and input —
+matches the natural boundary. The hybrid keyboard focus sync (deferred + dirty
+flag) provides robustness without requiring the compositor to understand layout.
