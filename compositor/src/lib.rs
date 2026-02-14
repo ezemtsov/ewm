@@ -81,8 +81,9 @@ use smithay::{
     delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
     delegate_text_input_manager, delegate_xdg_activation, delegate_xdg_shell,
     desktop::{
-        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind,
-        PopupManager, Space, Window,
+        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
+        LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window,
+        WindowSurfaceType,
     },
     input::{
         keyboard::{xkb::keysyms, KeyboardHandle, ModifiersState},
@@ -104,7 +105,7 @@ use smithay::{
             Display, DisplayHandle, Resource,
         },
     },
-    utils::{Rectangle, Size, SERIAL_COUNTER},
+    utils::{IsAlive, Rectangle, Size, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{
@@ -456,6 +457,8 @@ pub struct Ewm {
     // Layer shell state
     pub layer_shell_state: WlrLayerShellState,
     pub unmapped_layer_surfaces: std::collections::HashSet<WlSurface>,
+    /// Layer surface with OnDemand keyboard interactivity that was clicked
+    pub layer_shell_on_demand_focus: Option<DesktopLayerSurface>,
 
     // Working area per output (non-exclusive zone from layer-shell surfaces)
     pub working_areas: HashMap<String, Rectangle<i32, smithay::utils::Logical>>,
@@ -588,6 +591,7 @@ impl Ewm {
             popups: PopupManager::default(),
             layer_shell_state,
             unmapped_layer_surfaces: std::collections::HashSet::new(),
+            layer_shell_on_demand_focus: None,
             working_areas: HashMap::new(),
             activation_state,
             foreign_toplevel_state,
@@ -781,6 +785,99 @@ impl Ewm {
         }
     }
 
+    /// Update on-demand layer shell keyboard focus.
+    /// If the surface has OnDemand keyboard interactivity, set it as on-demand focus.
+    /// Otherwise, clear on-demand focus. Following niri's focus_layer_surface_if_on_demand.
+    pub fn focus_layer_surface_if_on_demand(
+        &mut self,
+        surface: Option<DesktopLayerSurface>,
+    ) {
+        use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+
+        if let Some(surface) = surface {
+            if surface.cached_state().keyboard_interactivity
+                == KeyboardInteractivity::OnDemand
+            {
+                if self.layer_shell_on_demand_focus.as_ref() != Some(&surface) {
+                    self.layer_shell_on_demand_focus = Some(surface);
+                    self.keyboard_focus_dirty = true;
+                }
+                return;
+            }
+        }
+
+        // Something else got clicked, clear on-demand layer-shell focus
+        if self.layer_shell_on_demand_focus.is_some() {
+            self.layer_shell_on_demand_focus = None;
+            self.keyboard_focus_dirty = true;
+        }
+    }
+
+    /// Resolve layer shell keyboard focus.
+    /// Checks for Exclusive interactivity on Overlay/Top layers first,
+    /// then OnDemand focus, following niri's update_keyboard_focus pattern.
+    fn resolve_layer_keyboard_focus(&self) -> Option<WlSurface> {
+        use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+
+        // Helper: find exclusive focus on a layer
+        let excl_on_layer = |output: &Output, layer: Layer| -> Option<WlSurface> {
+            let map = layer_map_for_output(output);
+            let layers: Vec<_> = map.layers_on(layer).cloned().collect();
+            layers.into_iter().find_map(|surface| {
+                if surface.cached_state().keyboard_interactivity
+                    == KeyboardInteractivity::Exclusive
+                {
+                    Some(surface.wl_surface().clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        // Helper: check if on-demand focus is on a layer
+        let on_demand_on_layer = |output: &Output, layer: Layer| -> Option<WlSurface> {
+            let on_demand = self.layer_shell_on_demand_focus.as_ref()?;
+            let map = layer_map_for_output(output);
+            let layers: Vec<_> = map.layers_on(layer).cloned().collect();
+            layers.into_iter().find_map(|surface| {
+                if &surface == on_demand {
+                    Some(surface.wl_surface().clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        // Check all outputs (typically just one for EWM)
+        for output in self.space.outputs() {
+            // Exclusive Overlay takes highest priority
+            if let Some(s) = excl_on_layer(output, Layer::Overlay) {
+                return Some(s);
+            }
+            // Exclusive Top
+            if let Some(s) = excl_on_layer(output, Layer::Top) {
+                return Some(s);
+            }
+            // OnDemand on any layer
+            for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
+                if let Some(s) = on_demand_on_layer(output, layer) {
+                    return Some(s);
+                }
+            }
+            // Exclusive Bottom/Background (only when no toplevel has focus)
+            if self.focused_surface_id == 0 || self.id_windows.get(&self.focused_surface_id).is_none() {
+                if let Some(s) = excl_on_layer(output, Layer::Bottom) {
+                    return Some(s);
+                }
+                if let Some(s) = excl_on_layer(output, Layer::Background) {
+                    return Some(s);
+                }
+            }
+        }
+
+        None
+    }
+
     /// Queue an event to be sent to Emacs via the module queue
     pub(crate) fn queue_event(&mut self, event: Event) {
         module::push_event(event);
@@ -812,8 +909,91 @@ impl Ewm {
             .map(|(_, &id)| id)
     }
 
-    /// Find the surface under a point, checking popups first (they're on top)
-    /// Returns the surface and its location in global coordinates
+    /// Find the Output at a global logical position.
+    fn output_at(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<&Output> {
+        let point = smithay::utils::Point::from((pos.x as i32, pos.y as i32));
+        self.space
+            .outputs()
+            .find(|o| {
+                self.space
+                    .output_geometry(o)
+                    .map_or(false, |geo| geo.contains(point))
+            })
+            .or_else(|| self.space.outputs().next())
+    }
+
+    /// Check layer surfaces on a specific layer for a surface under the point.
+    /// `pos_within_output` is the point relative to the output origin.
+    /// Returns the WlSurface and its location in global coordinates.
+    fn layer_surface_under(
+        &self,
+        output: &Output,
+        layer: Layer,
+        pos_within_output: smithay::utils::Point<f64, smithay::utils::Logical>,
+        output_pos: smithay::utils::Point<i32, smithay::utils::Logical>,
+    ) -> Option<(
+        WlSurface,
+        smithay::utils::Point<f64, smithay::utils::Logical>,
+    )> {
+        let map = layer_map_for_output(output);
+        let layers: Vec<_> = map.layers_on(layer).rev().cloned().collect();
+        for layer_surface in &layers {
+            let geo = match map.layer_geometry(layer_surface) {
+                Some(g) => g,
+                None => continue,
+            };
+            let layer_pos = geo.loc.to_f64();
+            if let Some((surface, pos_in_layer)) = layer_surface.surface_under(
+                pos_within_output - layer_pos,
+                WindowSurfaceType::ALL,
+            ) {
+                let global_pos = (pos_in_layer + geo.loc).to_f64() + output_pos.to_f64();
+                return Some((surface, global_pos));
+            }
+        }
+        None
+    }
+
+    /// Find the layer surface (desktop type) under a point.
+    /// Used for click-to-focus on layer surfaces with OnDemand keyboard interactivity.
+    pub fn layer_under_point(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<DesktopLayerSurface> {
+        let output = self.output_at(pos)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let pos_within_output = pos - output_geo.loc.to_f64();
+
+        let map = layer_map_for_output(output);
+        // Check in render order: Overlay → Top → Bottom → Background
+        for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
+            let layers: Vec<_> = map.layers_on(layer).rev().cloned().collect();
+            for layer_surface in &layers {
+                let geo = match map.layer_geometry(layer_surface) {
+                    Some(g) => g,
+                    None => continue,
+                };
+                let layer_pos = geo.loc.to_f64();
+                if layer_surface
+                    .surface_under(
+                        pos_within_output - layer_pos,
+                        WindowSurfaceType::ALL,
+                    )
+                    .is_some()
+                {
+                    return Some(layer_surface.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the surface under a point, checking layers and popups in render order.
+    /// Order: Overlay → Top → [window popups] → [toplevels] → Bottom → Background
+    /// Returns the surface and its location in global coordinates.
     pub fn surface_under_point(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -823,7 +1003,28 @@ impl Ewm {
     )> {
         use smithay::wayland::seat::WaylandFocus;
 
-        // Check popups first (they're on top)
+        let output = self.output_at(pos);
+        let output_geo = output.and_then(|o| self.space.output_geometry(o));
+
+        if let (Some(output), Some(geo)) = (output, output_geo) {
+            let pos_within_output = pos - geo.loc.to_f64();
+
+            // 1. Overlay layer (highest)
+            if let Some(result) =
+                self.layer_surface_under(output, Layer::Overlay, pos_within_output, geo.loc)
+            {
+                return Some(result);
+            }
+
+            // 2. Top layer
+            if let Some(result) =
+                self.layer_surface_under(output, Layer::Top, pos_within_output, geo.loc)
+            {
+                return Some(result);
+            }
+        }
+
+        // 3. Window popups
         for window in self.space.elements() {
             if let Some(surface) = window.wl_surface() {
                 let window_loc = self.space.element_location(window).unwrap_or_default();
@@ -847,10 +1048,33 @@ impl Ewm {
             }
         }
 
-        // Fall back to toplevels
-        self.space
+        // 4. Toplevels
+        if let Some(result) = self
+            .space
             .element_under(pos)
             .and_then(|(window, loc)| window.wl_surface().map(|s| (s.into_owned(), loc.to_f64())))
+        {
+            return Some(result);
+        }
+
+        // 5-6. Bottom and Background layers
+        if let (Some(output), Some(geo)) = (output, output_geo) {
+            let pos_within_output = pos - geo.loc.to_f64();
+
+            if let Some(result) =
+                self.layer_surface_under(output, Layer::Bottom, pos_within_output, geo.loc)
+            {
+                return Some(result);
+            }
+
+            if let Some(result) =
+                self.layer_surface_under(output, Layer::Background, pos_within_output, geo.loc)
+            {
+                return Some(result);
+            }
+        }
+
+        None
     }
 
     /// Get the output where a surface is located
@@ -1101,6 +1325,42 @@ impl Ewm {
                 height: rect.size.h,
             })
             .collect()
+    }
+
+    /// Get info about all mapped layer surfaces for state dump.
+    pub fn get_layer_surfaces_info(&self) -> Vec<serde_json::Value> {
+        use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+
+        let mut result = Vec::new();
+        for output in self.space.outputs() {
+            let map = layer_map_for_output(output);
+            for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
+                let layers: Vec<_> = map.layers_on(layer).cloned().collect();
+                for layer_surface in &layers {
+                    let cached = layer_surface.cached_state();
+                    let geo = map.layer_geometry(layer_surface);
+                    let kb_interactivity = match cached.keyboard_interactivity {
+                        KeyboardInteractivity::None => "none",
+                        KeyboardInteractivity::Exclusive => "exclusive",
+                        KeyboardInteractivity::OnDemand => "on_demand",
+                    };
+                    let is_on_demand_focused =
+                        self.layer_shell_on_demand_focus.as_ref() == Some(layer_surface);
+                    result.push(serde_json::json!({
+                        "namespace": layer_surface.namespace(),
+                        "layer": format!("{:?}", layer),
+                        "output": output.name(),
+                        "keyboard_interactivity": kb_interactivity,
+                        "geometry": geo.map(|g| serde_json::json!({
+                            "x": g.loc.x, "y": g.loc.y,
+                            "w": g.size.w, "h": g.size.h,
+                        })),
+                        "on_demand_focused": is_on_demand_focused,
+                    }));
+                }
+            }
+        }
+        result
     }
 
     /// Check if there are pending screencopy requests for any output
@@ -1449,6 +1709,15 @@ impl Ewm {
                     let was_unmapped = self.unmapped_layer_surfaces.remove(surface);
                     if was_unmapped {
                         debug!("Layer surface mapped");
+                        self.keyboard_focus_dirty = true;
+
+                        // Auto-focus newly mapped OnDemand surfaces (following niri #641)
+                        use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+                        if layer.cached_state().keyboard_interactivity
+                            == KeyboardInteractivity::OnDemand
+                        {
+                            self.layer_shell_on_demand_focus = Some(layer.clone());
+                        }
                     }
                 } else {
                     self.unmapped_layer_surfaces.insert(surface.clone());
@@ -1825,11 +2094,18 @@ impl WlrLayerShellHandler for State {
         });
 
         if let Some((output, layer)) = output {
+            // Clear on-demand focus if it was this layer surface
+            if self.ewm.layer_shell_on_demand_focus.as_ref() == Some(&layer) {
+                self.ewm.layer_shell_on_demand_focus = None;
+            }
+
             let mut map = layer_map_for_output(&output);
             map.unmap_layer(&layer);
             // Re-arrange after unmapping to recalculate exclusive zones
             map.arrange();
             drop(map);
+
+            self.ewm.keyboard_focus_dirty = true;
 
             // Check for working area expansion (panel removed)
             self.ewm.check_working_area_change(&output);
@@ -2218,18 +2494,38 @@ impl State {
     /// that calls keyboard.set_focus() directly (it must be atomic with key
     /// forwarding).
     pub fn sync_keyboard_focus(&mut self) {
+        use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+
         if !self.ewm.keyboard_focus_dirty {
             return;
         }
         self.ewm.keyboard_focus_dirty = false;
 
-        let target_id = self.ewm.focused_surface_id;
-        let new_focus = self
-            .ewm
-            .id_windows
-            .get(&target_id)
-            .and_then(|w| w.wl_surface())
-            .map(|s| s.into_owned());
+        // Clean up stale on-demand focus
+        if let Some(surface) = &self.ewm.layer_shell_on_demand_focus {
+            let good = surface.alive()
+                && surface.cached_state().keyboard_interactivity
+                    == KeyboardInteractivity::OnDemand;
+            if !good {
+                self.ewm.layer_shell_on_demand_focus = None;
+            }
+        }
+
+        // Check layer shell surfaces for exclusive/on-demand keyboard focus.
+        // Priority: Exclusive on Overlay/Top, then OnDemand, then toplevel.
+        let layer_focus = self.ewm.resolve_layer_keyboard_focus();
+
+        let new_focus = if let Some(wl_surface) = layer_focus {
+            Some(wl_surface)
+        } else {
+            // Fall back to toplevel focus
+            let target_id = self.ewm.focused_surface_id;
+            self.ewm
+                .id_windows
+                .get(&target_id)
+                .and_then(|w| w.wl_surface())
+                .map(|s| s.into_owned())
+        };
 
         if self.ewm.keyboard_focus != new_focus {
             self.ewm.keyboard_focus = new_focus.clone();
@@ -2550,6 +2846,7 @@ impl State {
             }
             ModuleCommand::GetState => {
                 let id_window_keys: Vec<u32> = self.ewm.id_windows.keys().copied().collect();
+                let layer_surfaces_info = self.ewm.get_layer_surfaces_info();
                 let state = serde_json::json!({
                     "surfaces": self.ewm.surface_info,
                     "emacs_surfaces": self.ewm.emacs_surfaces,
@@ -2558,6 +2855,7 @@ impl State {
                     "id_windows": id_window_keys,
                     "outputs": self.ewm.outputs,
                     "working_areas": self.ewm.get_working_areas_info(),
+                    "layer_surfaces": layer_surfaces_info,
                     "pointer_location": self.ewm.pointer_location,
                     "intercepted_keys": module::get_intercepted_keys(),
                     "emacs_pid": self.ewm.emacs_pid,

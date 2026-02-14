@@ -250,8 +250,8 @@ fn render_layer(
 /// 2. Accurate damage tracking - elements from other outputs don't trigger false damage
 ///
 /// Rendering order (front to back):
-/// 1. Overlay layer (highest z-order)
-/// 2. Cursor
+/// 1. Cursor (highest z-order, always visible)
+/// 2. Overlay layer
 /// 3. Top layer
 /// 4. Popups
 /// 5. Views and windows
@@ -319,10 +319,7 @@ pub fn collect_render_elements_for_output(
     // Get layer map for this output
     let layer_map = layer_map_for_output(output);
 
-    // 1. Overlay layer (highest z-order, renders on top of everything including cursor)
-    render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut elements);
-
-    // 2. Cursor - add if within this output's bounds
+    // 1. Cursor (highest z-order, always visible above all layers)
     if include_cursor {
         let (pointer_x, pointer_y) = ewm.pointer_location;
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
@@ -344,6 +341,9 @@ pub fn collect_render_elements_for_output(
             }
         }
     }
+
+    // 2. Overlay layer (above all content, below cursor)
+    render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut elements);
 
     // 3. Top layer
     render_layer(&layer_map, Layer::Top, renderer, scale, &mut elements);

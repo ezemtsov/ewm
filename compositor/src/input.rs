@@ -482,19 +482,28 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
         // Click-to-focus: on button press, focus the surface under pointer
         if button_state == ButtonState::Pressed {
             let (px, py) = state.ewm.pointer_location;
-            let focus_info = state
-                .ewm
-                .space
-                .element_under((px, py))
-                .and_then(|(window, _)| {
-                    let id = state.ewm.window_ids.get(&window).copied()?;
-                    let surface = window.wl_surface()?.into_owned();
-                    Some((id, surface))
-                });
+            let pos = (px, py).into();
 
-            if let Some((id, _surface)) = focus_info {
-                module::record_focus(id, "click", None);
-                state.ewm.set_focus(id);
+            // Check if a layer surface is under the pointer
+            let layer_under = state.ewm.layer_under_point(pos);
+            let on_layer = layer_under.is_some();
+            state.ewm.focus_layer_surface_if_on_demand(layer_under);
+
+            // If click is on a toplevel (not a layer surface), do normal focus
+            if !on_layer {
+                let focus_info = state
+                    .ewm
+                    .space
+                    .element_under(pos)
+                    .and_then(|(window, _)| {
+                        let id = state.ewm.window_ids.get(&window).copied()?;
+                        Some(id)
+                    });
+
+                if let Some(id) = focus_info {
+                    module::record_focus(id, "click", None);
+                    state.ewm.set_focus(id);
+                }
             }
         }
     }
@@ -527,19 +536,28 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
     if !state.ewm.is_locked() {
         // Scroll-to-focus: focus the surface under pointer on scroll
         let (px, py) = state.ewm.pointer_location;
-        let focus_info = state
-            .ewm
-            .space
-            .element_under((px, py))
-            .and_then(|(window, _)| {
-                let id = state.ewm.window_ids.get(&window).copied()?;
-                let surface = window.wl_surface()?.into_owned();
-                Some((id, surface))
-            });
+        let pos = (px, py).into();
 
-        if let Some((id, _surface)) = focus_info {
-            module::record_focus(id, "scroll", None);
-            state.ewm.set_focus(id);
+        // Check if a layer surface is under the pointer
+        let layer_under = state.ewm.layer_under_point(pos);
+        let on_layer = layer_under.is_some();
+        state.ewm.focus_layer_surface_if_on_demand(layer_under);
+
+        // If scroll is on a toplevel (not a layer surface), do normal focus
+        if !on_layer {
+            let focus_info = state
+                .ewm
+                .space
+                .element_under(pos)
+                .and_then(|(window, _)| {
+                    let id = state.ewm.window_ids.get(&window).copied()?;
+                    Some(id)
+                });
+
+            if let Some(id) = focus_info {
+                module::record_focus(id, "scroll", None);
+                state.ewm.set_focus(id);
+            }
         }
     }
 
