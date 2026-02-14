@@ -1523,44 +1523,70 @@ fn initialize_drm(
 
     // Register DRM event notifier for VBlank
     event_loop_handle.insert_source(drm_notifier, |event, _, state| {
-        if let DrmEvent::VBlank(crtc) = event {
-            crate::tracy_frame_mark!();
-            crate::tracy_span!("on_vblank");
+        match event {
+            DrmEvent::VBlank(crtc) => {
+                crate::tracy_frame_mark!();
+                crate::tracy_span!("on_vblank");
 
-            let mut should_render = false;
-            if let Some(device) = &mut state.backend.as_drm_mut().unwrap().device {
-                if let Some(surface) = device.surfaces.get_mut(&crtc) {
-                    match surface.compositor.frame_submitted() {
-                        Ok(_) => {}
-                        Err(err) => {
-                            warn!("Error marking frame as submitted: {:?}", err);
-                        }
-                    }
-
-                    // Get output state from Ewm
-                    if let Some(output_state) = state.ewm.output_state.get_mut(&surface.output) {
-                        // End Tracy frame tracking for VBlank interval
-                        output_state.vblank_tracker.end_frame();
-
-                        match &output_state.redraw_state {
-                            RedrawState::WaitingForVBlank { redraw_needed } => {
-                                if *redraw_needed {
-                                    output_state.redraw_state = RedrawState::Queued;
-                                    should_render = true;
-                                } else {
-                                    output_state.redraw_state = RedrawState::Idle;
-                                }
+                let mut should_render = false;
+                if let Some(device) = &mut state.backend.as_drm_mut().unwrap().device {
+                    if let Some(surface) = device.surfaces.get_mut(&crtc) {
+                        match surface.compositor.frame_submitted() {
+                            Ok(_) => {}
+                            Err(err) => {
+                                warn!("Error marking frame as submitted: {:?}", err);
                             }
-                            other => {
-                                debug!("VBlank received in unexpected state: {:?}", other);
+                        }
+
+                        // Get output state from Ewm
+                        if let Some(output_state) =
+                            state.ewm.output_state.get_mut(&surface.output)
+                        {
+                            // End Tracy frame tracking for VBlank interval
+                            output_state.vblank_tracker.end_frame();
+
+                            match &output_state.redraw_state {
+                                RedrawState::WaitingForVBlank { redraw_needed } => {
+                                    if *redraw_needed {
+                                        output_state.redraw_state = RedrawState::Queued;
+                                        should_render = true;
+                                    } else {
+                                        output_state.redraw_state = RedrawState::Idle;
+                                    }
+                                }
+                                other => {
+                                    debug!(
+                                        "VBlank received in unexpected state: {:?}",
+                                        other
+                                    );
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if should_render {
-                state.backend.render_output(crtc, &mut state.ewm);
+                if should_render {
+                    state.backend.render_output(crtc, &mut state.ewm);
+                }
+            }
+            DrmEvent::Error(error) => {
+                warn!("DRM error: {error}");
+                // Reset any stuck WaitingForVBlank states to prevent render stalls
+                if let Some(device) = &state.backend.as_drm().unwrap().device {
+                    let outputs: Vec<_> =
+                        device.surfaces.values().map(|s| s.output.clone()).collect();
+                    for output in outputs {
+                        if let Some(output_state) = state.ewm.output_state.get_mut(&output) {
+                            if matches!(
+                                output_state.redraw_state,
+                                RedrawState::WaitingForVBlank { .. }
+                            ) {
+                                warn!("Recovering stuck redraw state for {}", output.name());
+                                output_state.redraw_state = RedrawState::Queued;
+                            }
+                        }
+                    }
+                }
             }
         }
     })?;
