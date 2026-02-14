@@ -635,6 +635,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (ewm--send-xkb-config)
   (ewm-text-input-auto-mode-enable)
   (ewm--enable-process-advice)
+  (ewm-consult--mode-enable)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Resend intercept keys after startup to catch late-loaded bindings
@@ -647,6 +648,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (ewm-input--disable)
   (ewm-text-input-auto-mode-disable)
   (ewm--disable-process-advice)
+  (ewm-consult--mode-disable)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Stop module mode if active
@@ -672,6 +674,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
 (require 'ewm-input)
 (require 'ewm-text-input)
 (require 'ewm-transient)
+(require 'ewm-consult)
 
 (provide 'ewm)
 ;;; ewm.el ends here
