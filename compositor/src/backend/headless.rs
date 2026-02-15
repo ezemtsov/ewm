@@ -115,7 +115,7 @@ impl HeadlessBackend {
         let initial_scale = config
             .as_ref()
             .and_then(|c| c.scale)
-            .map(smithay::output::Scale::Fractional);
+            .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
 
         output.change_current_state(Some(mode), Some(initial_transform), initial_scale, None);
         output.set_preferred(mode);
@@ -269,7 +269,9 @@ impl HeadlessBackend {
         }
 
         // Build final state and apply in one call (no mode changes for headless)
-        let scale = config.scale.map(smithay::output::Scale::Fractional);
+        let scale = config
+            .scale
+            .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
         let transform = config.transform;
         let position = config.position.map(|(x, y)| (x, y).into());
 
@@ -283,7 +285,7 @@ impl HeadlessBackend {
         for out_info in &mut ewm.outputs {
             if out_info.name == output_name {
                 if let Some(scale) = config.scale {
-                    out_info.scale = scale;
+                    out_info.scale = super::closest_representable_scale(scale);
                 }
                 if let Some(transform) = config.transform {
                     out_info.transform = super::transform_to_int(transform);

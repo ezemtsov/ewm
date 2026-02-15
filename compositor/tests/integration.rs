@@ -136,3 +136,33 @@ fn test_working_area_updates_on_scale_change() {
     assert_eq!(wa.size.w, 960);
     assert_eq!(wa.size.h, 540);
 }
+
+/// Test that scale is rounded to nearest N/120 representable value (step 8)
+#[test]
+fn test_scale_rounded_to_representable() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1920, 1080);
+    fixture.dispatch();
+
+    // Configure with non-representable scale 1.3333
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            scale: Some(1.3333),
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+
+    // Read back the effective scale from the output
+    let output = fixture
+        .ewm_ref()
+        .space
+        .outputs()
+        .find(|o| o.name() == "Virtual-1")
+        .unwrap()
+        .clone();
+    let effective = output.current_scale().fractional_scale();
+    // 1.3333 should round to 160/120 = 1.33333...
+    assert!((effective - 160.0 / 120.0).abs() < 1e-10);
+}

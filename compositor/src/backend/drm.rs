@@ -417,7 +417,9 @@ impl DrmBackendState {
             size: (m.size().0 as i32, m.size().1 as i32).into(),
             refresh: (m.vrefresh() * 1000) as i32,
         });
-        let scale = config.scale.map(smithay::output::Scale::Fractional);
+        let scale = config
+            .scale
+            .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
         let transform = config.transform;
         let position = config.position.map(|(x, y)| (x, y).into());
 
@@ -461,7 +463,7 @@ impl DrmBackendState {
                     }
                 }
                 if let Some(scale) = config.scale {
-                    out_info.scale = scale;
+                    out_info.scale = super::closest_representable_scale(scale);
                 }
                 if let Some(transform) = config.transform {
                     out_info.transform = super::transform_to_int(transform);
@@ -1125,7 +1127,7 @@ impl DrmBackendState {
         let initial_scale = config
             .as_ref()
             .and_then(|c| c.scale)
-            .map(smithay::output::Scale::Fractional);
+            .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
         output.change_current_state(
             Some(smithay_mode),
             Some(initial_transform),
@@ -1238,7 +1240,8 @@ impl DrmBackendState {
             })
             .collect();
 
-        let applied_scale = config.as_ref().and_then(|c| c.scale).unwrap_or(1.0);
+        let applied_scale =
+            super::closest_representable_scale(config.as_ref().and_then(|c| c.scale).unwrap_or(1.0));
         let applied_transform = config
             .as_ref()
             .and_then(|c| c.transform)

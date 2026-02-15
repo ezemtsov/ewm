@@ -233,6 +233,14 @@ impl Backend {
     }
 }
 
+/// Round scale to the nearest value representable by the fractional-scale
+/// protocol (precision is N/120). E.g. 1.5 → 180/120 = 1.5 (exact),
+/// 1.3333 → 160/120 = 1.33333... Following niri's `closest_representable_scale`.
+pub fn closest_representable_scale(scale: f64) -> f64 {
+    const FRACTIONAL_SCALE_DENOM: f64 = 120.0;
+    (scale * FRACTIONAL_SCALE_DENOM).round() / FRACTIONAL_SCALE_DENOM
+}
+
 /// Convert integer to Smithay Transform.
 /// 0=Normal, 1=90, 2=180, 3=270, 4=Flipped, 5=Flipped90, 6=Flipped180, 7=Flipped270.
 pub fn int_to_transform(value: i32) -> Transform {
@@ -259,5 +267,26 @@ pub fn transform_to_int(transform: Transform) -> i32 {
         Transform::Flipped90 => 5,
         Transform::Flipped180 => 6,
         Transform::Flipped270 => 7,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_closest_representable_scale() {
+        // Exact values
+        assert_eq!(closest_representable_scale(1.0), 1.0); // 120/120
+        assert_eq!(closest_representable_scale(1.5), 1.5); // 180/120
+        assert_eq!(closest_representable_scale(2.0), 2.0); // 240/120
+        assert_eq!(closest_representable_scale(1.25), 1.25); // 150/120
+
+        // Non-representable values get rounded
+        let rounded = closest_representable_scale(1.77);
+        assert!((rounded - 212.0 / 120.0).abs() < 1e-10); // 212/120
+
+        let rounded = closest_representable_scale(1.3333);
+        assert!((rounded - 160.0 / 120.0).abs() < 1e-10); // 160/120
     }
 }
