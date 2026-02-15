@@ -1274,11 +1274,7 @@ impl Ewm {
         // Find which output contains this window's location
         for output in self.space.outputs() {
             if let Some(geo) = self.space.output_geometry(output) {
-                if window_loc.x >= geo.loc.x
-                    && window_loc.x < geo.loc.x + geo.size.w
-                    && window_loc.y >= geo.loc.y
-                    && window_loc.y < geo.loc.y + geo.size.h
-                {
+                if geo.contains(window_loc) {
                     return Some(output.name());
                 }
             }
