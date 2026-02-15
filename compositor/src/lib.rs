@@ -2480,7 +2480,8 @@ impl WlrLayerShellHandler for State {
         let output = if let Some(wl_output) = &wl_output {
             Output::from_resource(wl_output)
         } else {
-            self.ewm.space.outputs().next().cloned()
+            let name = self.ewm.active_output();
+            name.and_then(|n| self.ewm.space.outputs().find(|o| o.name() == n).cloned())
         };
 
         let Some(output) = output else {
