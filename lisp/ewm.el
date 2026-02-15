@@ -118,6 +118,10 @@ Example:
   \\='((\"DP-1\" :width 2560 :height 1440 :scale 1.5)
     (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0 :transform 0))"
   :type '(alist :key-type string :value-type plist)
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (fboundp 'ewm--apply-output-config)
+           (ewm--apply-output-config)))
   :group 'ewm)
 
 ;;; Protocol
