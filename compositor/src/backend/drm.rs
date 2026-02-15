@@ -58,7 +58,9 @@ use smithay::{
             timer::{TimeoutAction, Timer},
             EventLoop, LoopHandle, RegistrationToken,
         },
-        drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
+        drm::control::{
+            connector, crtc, Device as ControlDevice, Mode as DrmMode, ModeTypeFlags,
+        },
         input::Libinput,
         rustix::fs::OFlags,
         wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle},
@@ -92,6 +94,42 @@ const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
     smithay::backend::allocator::Fourcc::Argb8888,
     smithay::backend::allocator::Fourcc::Abgr8888,
 ];
+
+/// Find a DRM mode matching the requested resolution and optional refresh rate.
+///
+/// `refresh_mhz`: target refresh rate in millihertz (e.g., 60000 for 60Hz).
+/// When multiple modes match the resolution, prefers the one closest to the
+/// target refresh rate (within 2Hz tolerance), otherwise picks the highest.
+fn resolve_drm_mode(
+    modes: &[DrmMode],
+    width: i32,
+    height: i32,
+    refresh_mhz: Option<i32>,
+) -> Option<DrmMode> {
+    modes
+        .iter()
+        .filter(|m| m.size().0 as i32 == width && m.size().1 as i32 == height)
+        .max_by_key(|m| {
+            let mode_mhz = (m.vrefresh() * 1000) as i32;
+            if let Some(target) = refresh_mhz {
+                // Within 2Hz tolerance = 2000 mHz
+                if (mode_mhz - target).abs() < 2000 {
+                    return 1_000_000 + mode_mhz;
+                }
+            }
+            mode_mhz
+        })
+        .copied()
+}
+
+/// Find the preferred DRM mode, falling back to the first available.
+fn preferred_drm_mode(modes: &[DrmMode]) -> Option<DrmMode> {
+    modes
+        .iter()
+        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+        .or_else(|| modes.first())
+        .copied()
+}
 
 /// Type alias for our DRM compositor
 type GbmDrmCompositor =
@@ -292,104 +330,172 @@ impl DrmBackendState {
 }
 
 impl DrmBackendState {
-    /// Set mode for an output by name
-    /// Returns true on success, false if output not found or mode change failed
-    pub fn set_mode(
-        &mut self,
-        ewm: &mut Ewm,
-        output_name: &str,
-        width: i32,
-        height: i32,
-        refresh: Option<i32>,
-    ) -> bool {
-        let Some(device) = &mut self.device else {
-            warn!("DRM not initialized, cannot set mode");
-            return false;
+    /// Apply output configuration for a live output.
+    ///
+    /// Resolves the final state for mode, scale, transform, and position,
+    /// then applies everything in one pass. Updates all bookkeeping:
+    /// OutputInfo, D-Bus outputs, refresh interval, working areas.
+    pub fn apply_output_config(&mut self, ewm: &mut Ewm, output_name: &str) {
+        let config = match ewm.output_config.get(output_name) {
+            Some(c) => c.clone(),
+            None => return,
         };
 
-        // Find the surface by output name
+        let output = ewm
+            .space
+            .outputs()
+            .find(|o| o.name() == output_name)
+            .cloned();
+        let Some(output) = output else {
+            warn!("apply_output_config: output not found: {}", output_name);
+            return;
+        };
+
+        // Handle disabled output
+        if !config.enabled {
+            ewm.space.unmap_output(&output);
+            info!("Disabled output {}", output_name);
+            ewm.queue_redraw_all();
+            return;
+        }
+
+        let Some(device) = &mut self.device else {
+            warn!("DRM not initialized, cannot apply config");
+            return;
+        };
+
+        // Find the DRM surface for this output
         let surface = device
             .surfaces
             .values_mut()
             .find(|s| s.output.name() == output_name);
         let Some(surface) = surface else {
-            warn!("Output not found: {}", output_name);
-            return false;
+            warn!("No DRM surface for output: {}", output_name);
+            return;
         };
 
-        // Get connector info to find available modes
-        let Ok(connector_info) = device.drm.get_connector(surface.connector, false) else {
-            warn!("Failed to get connector info for {}", output_name);
-            return false;
+        // --- Resolve and apply DRM mode ---
+        let new_drm_mode = if let Some((w, h, refresh)) = config.mode {
+            let connector_info = match device.drm.get_connector(surface.connector, false) {
+                Ok(info) => info,
+                Err(e) => {
+                    warn!(
+                        "Failed to get connector info for {}: {:?}",
+                        output_name, e
+                    );
+                    return;
+                }
+            };
+            let resolved = resolve_drm_mode(connector_info.modes(), w, h, refresh);
+            if resolved.is_none() {
+                warn!(
+                    "Configured mode {}x{} not found for {}, keeping current",
+                    w, h, output_name
+                );
+            }
+            resolved
+        } else {
+            None
         };
 
-        // Find matching mode
-        let mode = connector_info
-            .modes()
-            .iter()
-            .filter(|m| m.size().0 as i32 == width && m.size().1 as i32 == height)
-            .max_by_key(|m| {
-                // Prefer matching refresh rate, otherwise highest refresh
-                if let Some(target_refresh) = refresh {
-                    if (m.vrefresh() as i32 - target_refresh).abs() < 2 {
-                        return 1000 + m.vrefresh() as i32;
+        if let Some(drm_mode) = new_drm_mode {
+            if let Err(err) = surface.compositor.use_mode(drm_mode) {
+                warn!("Failed to set mode for {}: {:?}", output_name, err);
+            } else {
+                info!(
+                    "Mode set for {}: {}x{}@{}Hz",
+                    output_name,
+                    drm_mode.size().0,
+                    drm_mode.size().1,
+                    drm_mode.vrefresh()
+                );
+            }
+        }
+
+        // --- Build final Smithay state and apply in one call ---
+        let smithay_mode = new_drm_mode.map(|m| Mode {
+            size: (m.size().0 as i32, m.size().1 as i32).into(),
+            refresh: (m.vrefresh() * 1000) as i32,
+        });
+        let scale = config.scale.map(smithay::output::Scale::Fractional);
+        let transform = config.transform;
+        let position = config.position.map(|(x, y)| (x, y).into());
+
+        output.change_current_state(smithay_mode, transform, scale, position);
+        if let Some(mode) = smithay_mode {
+            output.set_preferred(mode);
+        }
+
+        // Map output at configured position
+        if let Some((x, y)) = config.position {
+            ewm.space.map_output(&output, (x, y));
+        }
+
+        // --- Update refresh interval ---
+        if let Some(drm_mode) = new_drm_mode {
+            let refresh_interval_us = if drm_mode.vrefresh() > 0 {
+                1_000_000 / drm_mode.vrefresh() as u64
+            } else {
+                16_667
+            };
+            if let Some(output_state) = ewm.output_state.get_mut(&output) {
+                output_state.refresh_interval_us = refresh_interval_us;
+            }
+        }
+
+        // --- Update OutputInfo ---
+        for out_info in &mut ewm.outputs {
+            if out_info.name == output_name {
+                if let Some(scale) = config.scale {
+                    out_info.scale = scale;
+                }
+                if let Some(transform) = config.transform {
+                    out_info.transform = super::transform_to_int(transform);
+                }
+                if let Some((x, y)) = config.position {
+                    out_info.x = x;
+                    out_info.y = y;
+                }
+            }
+        }
+
+        // --- Update D-Bus outputs ---
+        #[cfg(feature = "screencast")]
+        {
+            let mut dbus_outputs = ewm.dbus_outputs.lock().unwrap();
+            for dbus_out in dbus_outputs.iter_mut() {
+                if dbus_out.name == output_name {
+                    if let Some(drm_mode) = new_drm_mode {
+                        dbus_out.width = drm_mode.size().0 as i32;
+                        dbus_out.height = drm_mode.size().1 as i32;
+                        dbus_out.refresh = drm_mode.vrefresh();
+                    }
+                    if let Some((x, y)) = config.position {
+                        dbus_out.x = x;
+                        dbus_out.y = y;
                     }
                 }
-                m.vrefresh() as i32
-            });
-
-        let Some(mode) = mode.copied() else {
-            warn!(
-                "No matching mode found for {}x{} on {}",
-                width, height, output_name
-            );
-            return false;
-        };
-
-        info!(
-            "Setting mode for {}: {}x{}@{}Hz",
-            output_name,
-            mode.size().0,
-            mode.size().1,
-            mode.vrefresh()
-        );
-
-        // Apply the mode
-        if let Err(err) = surface.compositor.use_mode(mode) {
-            warn!("Failed to set mode: {:?}", err);
-            return false;
+            }
         }
 
-        // Update Smithay output state
-        let smithay_mode = Mode {
-            size: (mode.size().0 as i32, mode.size().1 as i32).into(),
-            refresh: (mode.vrefresh() * 1000) as i32,
-        };
-        let output = surface.output.clone();
-        surface
-            .output
-            .change_current_state(Some(smithay_mode), None, None, None);
-        surface.output.set_preferred(smithay_mode);
-
-        // Update refresh interval and queue redraw in Ewm output state
-        let refresh_interval_us = if mode.vrefresh() > 0 {
-            1_000_000 / mode.vrefresh() as u64
-        } else {
-            16_667
-        };
-        if let Some(output_state) = ewm.output_state.get_mut(&output) {
-            output_state.refresh_interval_us = refresh_interval_us;
-            output_state.redraw_state = RedrawState::Queued;
+        // --- Update working area offsets ---
+        if let Some((x, y)) = config.position {
+            let wa = ewm
+                .working_areas
+                .get(output_name)
+                .map(|r| (r.loc.x, r.loc.y))
+                .unwrap_or((0, 0));
+            crate::module::set_output_offset(output_name, x + wa.0, y + wa.1);
         }
 
+        // --- Recalculate total output size and queue redraw ---
+        ewm.recalculate_output_size();
+        ewm.queue_redraw_all();
+
         info!(
-            "Mode changed successfully for {}: {}x{}@{}Hz",
-            output_name,
-            mode.size().0,
-            mode.size().1,
-            mode.vrefresh()
+            "Applied config for {}: mode={:?}, scale={:?}, transform={:?}, pos={:?}",
+            output_name, config.mode, config.scale, config.transform, config.position,
         );
-        true
     }
 
     /// Render a frame to the given output
@@ -899,6 +1005,10 @@ impl DrmBackendState {
     }
 
     /// Connect a new output
+    ///
+    /// Creates the DRM surface, Smithay output, and DrmCompositor.
+    /// Reads `ewm.output_config` for mode/scale/transform/position.
+    /// Sends OutputDetected and WorkingArea events to Emacs.
     fn connect_output(
         &mut self,
         connector: connector::Info,
@@ -913,19 +1023,26 @@ impl DrmBackendState {
             return Err("Display handle not available".into());
         };
 
-        // Find preferred mode
-        let mode = connector
-            .modes()
-            .iter()
-            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .or_else(|| connector.modes().first())
-            .copied()
-            .ok_or("No mode available")?;
+        // Build connector name early so we can look up config
+        let connector_name = format!("{:?}-{}", connector.interface(), connector.interface_id());
+        let config = ewm.output_config.get(&connector_name).cloned();
+
+        // Select mode: use configured mode if available, otherwise preferred
+        let mode = if let Some((w, h, refresh)) = config.as_ref().and_then(|c| c.mode) {
+            resolve_drm_mode(connector.modes(), w, h, refresh).unwrap_or_else(|| {
+                warn!(
+                    "Configured mode {}x{} not found for {}, using preferred",
+                    w, h, connector_name
+                );
+                preferred_drm_mode(connector.modes()).unwrap()
+            })
+        } else {
+            preferred_drm_mode(connector.modes()).ok_or("No mode available")?
+        };
 
         info!(
-            "Connecting display: {:?}-{} {}x{}@{}Hz",
-            connector.interface(),
-            connector.interface_id(),
+            "Connecting display: {} {}x{}@{}Hz",
+            connector_name,
             mode.size().0,
             mode.size().1,
             mode.vrefresh()
@@ -959,7 +1076,6 @@ impl DrmBackendState {
             .collect();
 
         // Create Smithay output
-        let connector_name = format!("{:?}-{}", connector.interface(), connector.interface_id());
         let output = Output::new(
             connector_name.clone(),
             PhysicalProperties {
@@ -977,7 +1093,20 @@ impl DrmBackendState {
             size: (mode.size().0 as i32, mode.size().1 as i32).into(),
             refresh: (mode.vrefresh() * 1000) as i32,
         };
-        output.change_current_state(Some(smithay_mode), Some(Transform::Normal), None, None);
+        let initial_transform = config
+            .as_ref()
+            .and_then(|c| c.transform)
+            .unwrap_or(Transform::Normal);
+        let initial_scale = config
+            .as_ref()
+            .and_then(|c| c.scale)
+            .map(smithay::output::Scale::Fractional);
+        output.change_current_state(
+            Some(smithay_mode),
+            Some(initial_transform),
+            initial_scale,
+            None,
+        );
         output.set_preferred(smithay_mode);
         output.create_global::<State>(display_handle);
 
@@ -1033,8 +1162,11 @@ impl DrmBackendState {
             16_667
         };
 
-        // Calculate position: place after existing outputs
-        let x_offset = ewm.output_size.0;
+        // Calculate position: use config or auto horizontal layout
+        let (x_offset, y_offset) = config
+            .as_ref()
+            .and_then(|c| c.position)
+            .unwrap_or((ewm.output_size.0, 0));
 
         device.surfaces.insert(
             crtc,
@@ -1056,12 +1188,17 @@ impl DrmBackendState {
             ),
         );
 
-        // Position this output horizontally after the previous ones
-        ewm.space.map_output(&output, (x_offset, 0));
-        info!(
-            "Mapped output {} at position ({}, 0), size {}x{}",
-            connector_name, x_offset, mode_size.0, mode_size.1
-        );
+        // Check if output should be enabled (skip mapping if disabled)
+        let is_enabled = config.as_ref().map(|c| c.enabled).unwrap_or(true);
+        if is_enabled {
+            ewm.space.map_output(&output, (x_offset, y_offset));
+            info!(
+                "Mapped output {} at position ({}, {}), size {}x{}",
+                connector_name, x_offset, y_offset, mode_size.0, mode_size.1
+            );
+        } else {
+            info!("Output {} connected but disabled by config", connector_name);
+        }
 
         // Collect output info for IPC
         let physical_size = connector.size().unwrap_or((0, 0));
@@ -1076,6 +1213,12 @@ impl DrmBackendState {
             })
             .collect();
 
+        let applied_scale = config.as_ref().and_then(|c| c.scale).unwrap_or(1.0);
+        let applied_transform = config
+            .as_ref()
+            .and_then(|c| c.transform)
+            .unwrap_or(Transform::Normal);
+
         let output_info = OutputInfo {
             name: connector_name.clone(),
             make: "Unknown".to_string(),
@@ -1083,7 +1226,9 @@ impl DrmBackendState {
             width_mm: physical_size.0 as i32,
             height_mm: physical_size.1 as i32,
             x: x_offset,
-            y: 0,
+            y: y_offset,
+            scale: applied_scale,
+            transform: super::transform_to_int(applied_transform),
             modes: output_modes,
         };
 
@@ -1096,15 +1241,16 @@ impl DrmBackendState {
             dbus_outputs.push(crate::dbus::OutputInfo {
                 name: connector_name.clone(),
                 x: x_offset,
-                y: 0,
+                y: y_offset,
                 width: mode.size().0 as i32,
                 height: mode.size().1 as i32,
                 refresh: mode.vrefresh(),
             });
             info!(
-                "Added D-Bus output: {} at ({}, 0) (total: {})",
+                "Added D-Bus output: {} at ({}, {}) (total: {})",
                 connector_name,
                 x_offset,
+                y_offset,
                 dbus_outputs.len()
             );
         }
@@ -1287,260 +1433,67 @@ fn initialize_drm(
         }
     }
 
-    // Store display handle for hotplug
-    state.backend.as_drm_mut().unwrap().display_handle = Some(display_handle.clone());
-
-    let mut surfaces = HashMap::new();
-    let mut x_offset = 0i32; // Track horizontal position for output placement
-
-    // Create DrmScanner for connector management (initial scan and hotplug)
-    let mut drm_scanner = DrmScanner::new();
-
-    // Initial connector scan
-    let scan_result = drm_scanner.scan_connectors(&drm)?;
-    for event in scan_result {
-        let (connector, crtc) = match event {
-            DrmScanEvent::Connected {
-                connector,
-                crtc: Some(crtc),
-            } => (connector, crtc),
-            DrmScanEvent::Connected {
-                connector,
-                crtc: None,
-            } => {
-                warn!(
-                    "No available CRTC for connector {:?}-{}",
-                    connector.interface(),
-                    connector.interface_id()
-                );
-                continue;
-            }
-            DrmScanEvent::Disconnected { .. } => continue, // Skip disconnects on initial scan
-        };
-
-        let connector_info = &connector;
-
-        // Find preferred mode
-        let mode = connector_info
-            .modes()
-            .iter()
-            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .or_else(|| connector_info.modes().first())
-            .copied()
-            .ok_or("No mode available")?;
-
-        info!(
-            "Setting up display: {:?} {}x{}@{}Hz",
-            connector_info.interface(),
-            mode.size().0,
-            mode.size().1,
-            mode.vrefresh()
-        );
-
-        // Create DRM surface
-        let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
-
-        // Create allocator
-        let gbm_flags = GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT;
-        let allocator = GbmAllocator::new(gbm.clone(), gbm_flags);
-
-        // Get render formats from GPU manager
-        let renderer = gpu_manager.single_renderer(&render_node)?;
-        let raw_render_formats = renderer.as_ref().egl_context().dmabuf_render_formats();
-
-        // Filter out problematic modifiers
-        let render_formats: FormatSet = raw_render_formats
-            .iter()
-            .copied()
-            .filter(|format| {
-                !matches!(
-                    format.modifier,
-                    Modifier::I915_y_tiled_ccs
-                        | Modifier::I915_y_tiled_gen12_rc_ccs
-                        | Modifier::I915_y_tiled_gen12_mc_ccs
-                )
-            })
-            .collect();
-
-        // Create Smithay output
-        let connector_name = format!(
-            "{:?}-{}",
-            connector_info.interface(),
-            connector_info.interface_id()
-        );
-        let output = Output::new(
-            connector_name.clone(),
-            PhysicalProperties {
-                size: connector_info
-                    .size()
-                    .map(|(w, h)| (w as i32, h as i32).into())
-                    .unwrap_or_default(),
-                subpixel: Subpixel::Unknown,
-                make: "EWM".into(),
-                model: "DRM".into(),
-            },
-        );
-
-        let smithay_mode = Mode {
-            size: (mode.size().0 as i32, mode.size().1 as i32).into(),
-            refresh: (mode.vrefresh() * 1000) as i32,
-        };
-        output.change_current_state(Some(smithay_mode), Some(Transform::Normal), None, None);
-        output.set_preferred(smithay_mode);
-        output.create_global::<State>(display_handle);
-
-        // Create DrmCompositor
-        let cursor_size = drm.cursor_size();
-        let compositor = match DrmCompositor::new(
-            OutputModeSource::Auto(output.clone()),
-            drm_surface,
-            None,
-            allocator.clone(),
-            gbm.clone(),
-            SUPPORTED_COLOR_FORMATS,
-            render_formats.clone(),
-            cursor_size,
-            Some(gbm.clone()),
-        ) {
-            Ok(c) => c,
-            Err(err) => {
-                warn!(
-                    "Error creating DRM compositor, trying with Invalid modifier: {:?}",
-                    err
-                );
-
-                let fallback_formats: FormatSet = render_formats
-                    .iter()
-                    .copied()
-                    .filter(|format| format.modifier == Modifier::Invalid)
-                    .collect();
-
-                let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
-
-                DrmCompositor::new(
-                    OutputModeSource::Auto(output.clone()),
-                    drm_surface,
-                    None,
-                    allocator,
-                    gbm.clone(),
-                    SUPPORTED_COLOR_FORMATS,
-                    fallback_formats,
-                    cursor_size,
-                    Some(gbm.clone()),
-                )?
-            }
-        };
-
-        info!("DrmCompositor created for {}", connector_name);
-
-        let refresh_interval_us = if mode.vrefresh() > 0 {
-            1_000_000 / mode.vrefresh() as u64
-        } else {
-            16_667
-        };
-
-        surfaces.insert(
-            crtc,
-            OutputSurface {
-                output: output.clone(),
-                compositor,
-                connector: connector.handle(),
-            },
-        );
-
-        // Initialize output state in Ewm (redraw state, refresh interval)
-        let mode_size = mode.size();
-        state.ewm.output_state.insert(
-            output.clone(),
-            OutputState::new(
-                &connector_name,
-                refresh_interval_us,
-                (mode_size.0 as i32, mode_size.1 as i32),
-            ),
-        );
-
-        // Position this output horizontally after the previous ones
-        state.ewm.space.map_output(&output, (x_offset, 0));
-        info!(
-            "Mapped output {} at position ({}, 0), size {}x{}",
-            connector_name, x_offset, mode_size.0, mode_size.1
-        );
-
-        // Collect output info for IPC
-        let physical_size = connector_info.size().unwrap_or((0, 0));
-        let output_modes: Vec<OutputMode> = connector_info
-            .modes()
-            .iter()
-            .map(|m| OutputMode {
-                width: m.size().0 as i32,
-                height: m.size().1 as i32,
-                refresh: (m.vrefresh() * 1000) as i32,
-                preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
-            })
-            .collect();
-
-        state.ewm.outputs.push(OutputInfo {
-            name: connector_name.clone(),
-            make: "Unknown".to_string(), // EDID parsing would be needed for real values
-            model: "Unknown".to_string(),
-            width_mm: physical_size.0 as i32,
-            height_mm: physical_size.1 as i32,
-            x: x_offset,
-            y: 0,
-            modes: output_modes,
+    // Store display handle and device state early so connect_output can use them
+    {
+        let drm_backend = state.backend.as_drm_mut().unwrap();
+        drm_backend.display_handle = Some(display_handle.clone());
+        drm_backend.device = Some(DrmDeviceState {
+            drm,
+            drm_scanner: DrmScanner::new(),
+            gbm,
+            gpu_manager,
+            render_node,
+            surfaces: HashMap::new(),
         });
-
-        // Update D-Bus outputs for screen casting
-        #[cfg(feature = "screencast")]
-        {
-            let mut dbus_outputs = state.ewm.dbus_outputs.lock().unwrap();
-            dbus_outputs.push(crate::dbus::OutputInfo {
-                name: connector_name.clone(),
-                x: x_offset,
-                y: 0,
-                width: mode.size().0 as i32,
-                height: mode.size().1 as i32,
-                refresh: mode.vrefresh(),
-            });
-            info!(
-                "Added D-Bus output: {} at ({}, 0) (total: {})",
-                connector_name,
-                x_offset,
-                dbus_outputs.len()
-            );
-        }
-
-        // Update x_offset for next output
-        x_offset += mode.size().0 as i32;
     }
 
-    // Update output_size to total bounding box (all outputs combined horizontally)
-    // For now, use the rightmost edge as width, and max height
-    let (total_width, max_height) = surfaces.values().fold((0i32, 0i32), |(w, h), surface| {
-        let output_geo = state.ewm.space.output_geometry(&surface.output);
-        if let Some(geo) = output_geo {
-            (w.max(geo.loc.x + geo.size.w), h.max(geo.size.h))
-        } else {
-            (w, h)
+    // Scan connectors (collect results before releasing borrow)
+    let connectors: Vec<_> = {
+        let device = state
+            .backend
+            .as_drm_mut()
+            .unwrap()
+            .device
+            .as_mut()
+            .unwrap();
+        let scan_result = device.drm_scanner.scan_connectors(&device.drm)?;
+        scan_result
+            .into_iter()
+            .filter_map(|event| match event {
+                DrmScanEvent::Connected {
+                    connector,
+                    crtc: Some(crtc),
+                } => Some((connector, crtc)),
+                DrmScanEvent::Connected {
+                    connector,
+                    crtc: None,
+                } => {
+                    warn!(
+                        "No available CRTC for connector {:?}-{}",
+                        connector.interface(),
+                        connector.interface_id()
+                    );
+                    None
+                }
+                DrmScanEvent::Disconnected { .. } => None,
+            })
+            .collect()
+    };
+
+    // Connect each discovered output (reuses hotplug connect_output path)
+    for (connector, crtc) in connectors {
+        let drm_backend = state.backend.as_drm_mut().unwrap();
+        if let Err(err) = drm_backend.connect_output(connector, crtc, &mut state.ewm) {
+            warn!("Failed to connect output during init: {:?}", err);
         }
-    });
-    state.ewm.output_size = (total_width, max_height);
+    }
+
     info!(
         "Total output area: {}x{} ({} outputs)",
-        total_width,
-        max_height,
-        surfaces.len()
+        state.ewm.output_size.0,
+        state.ewm.output_size.1,
+        state.ewm.outputs.len()
     );
-
-    // Store device state
-    state.backend.as_drm_mut().unwrap().device = Some(DrmDeviceState {
-        drm,
-        drm_scanner,
-        gbm,
-        gpu_manager,
-        render_node,
-        surfaces,
-    });
 
     // Register DRM event notifier for VBlank
     event_loop_handle.insert_source(drm_notifier, |event, _, state| {
@@ -1639,29 +1592,8 @@ fn initialize_drm(
 
     info!("DRM initialization complete");
 
-    // Send output_detected events for all outputs
-    for output_info in state.ewm.outputs.clone() {
-        state.ewm.send_output_detected(output_info);
-    }
-
-    // Send initial working_area events (full output, before any panels)
-    for output in state.ewm.space.outputs().cloned().collect::<Vec<_>>() {
-        let working_area = state.ewm.get_working_area(&output);
-        let output_name = output.name();
-        state
-            .ewm
-            .working_areas
-            .insert(output_name.clone(), working_area);
-        state.ewm.queue_event(crate::event::Event::WorkingArea {
-            output: output_name,
-            x: working_area.loc.x,
-            y: working_area.loc.y,
-            width: working_area.size.w,
-            height: working_area.size.h,
-        });
-    }
-
-    // Send outputs_complete event followed by ready
+    // connect_output already sent output_detected and working_area events
+    // for each output. Send the final completion events.
     state.ewm.queue_event(crate::event::Event::OutputsComplete);
     state.ewm.queue_event(crate::event::Event::Ready);
     info!(

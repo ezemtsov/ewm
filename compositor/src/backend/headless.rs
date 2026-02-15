@@ -106,15 +106,29 @@ impl HeadlessBackend {
             size: (width, height).into(),
             refresh: 60_000, // 60Hz
         };
-        output.change_current_state(Some(mode), Some(Transform::Normal), None, None);
+        // Look up stored config for this output
+        let config = ewm.output_config.get(name).cloned();
+        let initial_transform = config
+            .as_ref()
+            .and_then(|c| c.transform)
+            .unwrap_or(Transform::Normal);
+        let initial_scale = config
+            .as_ref()
+            .and_then(|c| c.scale)
+            .map(smithay::output::Scale::Fractional);
+
+        output.change_current_state(Some(mode), Some(initial_transform), initial_scale, None);
         output.set_preferred(mode);
 
         // Create global for Wayland clients
         output.create_global::<State>(&ewm.display_handle);
 
-        // Calculate position: place after existing outputs
-        let x_offset = ewm.output_size.0;
-        ewm.space.map_output(&output, (x_offset, 0));
+        // Calculate position: use config or auto horizontal layout
+        let (x_offset, y_offset) = config
+            .as_ref()
+            .and_then(|c| c.position)
+            .unwrap_or((ewm.output_size.0, 0));
+        ewm.space.map_output(&output, (x_offset, y_offset));
 
         // Initialize output state in Ewm
         ewm.output_state.insert(
@@ -139,8 +153,8 @@ impl HeadlessBackend {
         ewm.recalculate_output_size();
 
         info!(
-            "Added virtual output: {} ({}x{}) at ({}, 0)",
-            name, width, height, x_offset
+            "Added virtual output: {} ({}x{}) at ({}, {})",
+            name, width, height, x_offset, y_offset
         );
     }
 
@@ -218,6 +232,68 @@ impl HeadlessBackend {
         for layer in layer_map.layers() {
             layer.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
         }
+    }
+
+    /// Apply output configuration for a live headless output.
+    ///
+    /// Headless backend supports scale, transform, position, and enabled state.
+    /// Mode changes are not supported (virtual outputs have fixed size).
+    pub fn apply_output_config(&mut self, ewm: &mut Ewm, output_name: &str) {
+        let config = match ewm.output_config.get(output_name) {
+            Some(c) => c.clone(),
+            None => return,
+        };
+
+        let output = ewm
+            .space
+            .outputs()
+            .find(|o| o.name() == output_name)
+            .cloned();
+        let Some(output) = output else {
+            info!("apply_output_config: output not found: {}", output_name);
+            return;
+        };
+
+        // Handle disabled output
+        if !config.enabled {
+            ewm.space.unmap_output(&output);
+            info!("Disabled output {}", output_name);
+            ewm.queue_redraw_all();
+            return;
+        }
+
+        // Build final state and apply in one call (no mode changes for headless)
+        let scale = config.scale.map(smithay::output::Scale::Fractional);
+        let transform = config.transform;
+        let position = config.position.map(|(x, y)| (x, y).into());
+
+        output.change_current_state(None, transform, scale, position);
+
+        if let Some((x, y)) = config.position {
+            ewm.space.map_output(&output, (x, y));
+        }
+
+        // Update OutputInfo
+        for out_info in &mut ewm.outputs {
+            if out_info.name == output_name {
+                if let Some(scale) = config.scale {
+                    out_info.scale = scale;
+                }
+                if let Some(transform) = config.transform {
+                    out_info.transform = super::transform_to_int(transform);
+                }
+                if let Some((x, y)) = config.position {
+                    out_info.x = x;
+                    out_info.y = y;
+                }
+            }
+        }
+
+        if config.position.is_some() {
+            ewm.recalculate_output_size();
+        }
+
+        ewm.queue_redraw_all();
     }
 
     /// Get the renderer (for tests that need to verify rendering)

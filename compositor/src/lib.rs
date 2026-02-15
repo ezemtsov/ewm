@@ -110,7 +110,7 @@ use smithay::{
             Display, DisplayHandle, Resource,
         },
     },
-    utils::{IsAlive, Rectangle, Size, SERIAL_COUNTER},
+    utils::{IsAlive, Rectangle, Size, Transform, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{
@@ -239,6 +239,34 @@ pub enum LockRenderState {
     Unlocked,
     /// Output has rendered a locked frame
     Locked,
+}
+
+/// Desired output configuration (from Emacs).
+/// Stored per output name; looked up on connect and config changes.
+#[derive(Debug, Clone)]
+pub struct OutputConfig {
+    /// Desired video mode (None = use preferred/auto)
+    pub mode: Option<(i32, i32, Option<i32>)>, // (width, height, refresh_mhz)
+    /// Desired position (None = auto horizontal layout)
+    pub position: Option<(i32, i32)>,
+    /// Desired scale (None = 1.0)
+    pub scale: Option<f64>,
+    /// Desired transform (None = Normal)
+    pub transform: Option<Transform>,
+    /// Whether output is enabled (default true)
+    pub enabled: bool,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            mode: None,
+            position: None,
+            scale: None,
+            transform: None,
+            enabled: true,
+        }
+    }
 }
 
 /// Per-output state for redraw synchronization
@@ -464,6 +492,9 @@ pub struct Ewm {
     // Output
     pub output_size: (i32, i32),
     pub outputs: Vec<OutputInfo>,
+    /// Desired output configuration, keyed by output name.
+    /// Looked up when outputs connect; updated by Emacs commands.
+    pub output_config: HashMap<String, OutputConfig>,
 
     // Input
     pub pointer_location: (f64, f64),
@@ -632,6 +663,7 @@ impl Ewm {
             surface_views: HashMap::new(),
             output_size: (0, 0),
             outputs: Vec::new(),
+            output_config: HashMap::new(),
             pointer_location: (0.0, 0.0),
             focused_surface_id: 0,
             keyboard_focus: None,
@@ -2962,51 +2994,41 @@ impl State {
                 width,
                 height,
                 refresh,
+                scale,
+                transform,
                 enabled,
             } => {
-                let output = self.ewm.space.outputs().find(|o| o.name() == name).cloned();
-                if let Some(output) = output {
-                    if let Some(false) = enabled {
-                        self.ewm.space.unmap_output(&output);
-                        info!("Disabled output {}", name);
-                    } else {
-                        if let (Some(w), Some(h)) = (width, height) {
-                            self.backend.set_mode(&mut self.ewm, &name, w, h, refresh);
-                        }
-                        // Only update position if x or y is explicitly specified
-                        if x.is_some() || y.is_some() {
-                            // Get current position as default
-                            let current_pos = self
-                                .ewm
-                                .space
-                                .output_geometry(&output)
-                                .map(|g| (g.loc.x, g.loc.y))
-                                .unwrap_or((0, 0));
-                            let new_x = x.unwrap_or(current_pos.0);
-                            let new_y = y.unwrap_or(current_pos.1);
-                            let new_pos = (new_x, new_y);
-                            self.ewm.space.map_output(&output, new_pos);
-                            output.change_current_state(None, None, None, Some(new_pos.into()));
-                            for out_info in &mut self.ewm.outputs {
-                                if out_info.name == name {
-                                    out_info.x = new_x;
-                                    out_info.y = new_y;
-                                }
-                            }
-                            let wa = self.ewm.working_areas.get(&name)
-                                .map(|r| (r.loc.x, r.loc.y))
-                                .unwrap_or((0, 0));
-                            crate::module::set_output_offset(&name, new_x + wa.0, new_y + wa.1);
-                            self.ewm.recalculate_output_size();
-                            info!("Configured output {} at ({}, {})", name, new_x, new_y);
-                        } else {
-                            info!("Configured output {} (mode only)", name);
-                        }
-                    }
-                    self.ewm.queue_redraw_all();
-                } else {
-                    warn!("Output not found: {}", name);
+                // Update stored config (merge with existing)
+                let config = self.ewm.output_config.entry(name.clone()).or_default();
+                if let (Some(w), Some(h)) = (width, height) {
+                    config.mode = Some((w, h, refresh));
                 }
+                if x.is_some() || y.is_some() {
+                    let current_pos = self
+                        .ewm
+                        .space
+                        .outputs()
+                        .find(|o| o.name() == name)
+                        .and_then(|o| self.ewm.space.output_geometry(o))
+                        .map(|g| (g.loc.x, g.loc.y))
+                        .unwrap_or((0, 0));
+                    config.position = Some((
+                        x.unwrap_or(current_pos.0),
+                        y.unwrap_or(current_pos.1),
+                    ));
+                }
+                if let Some(s) = scale {
+                    config.scale = Some(s);
+                }
+                if let Some(t) = transform {
+                    config.transform = Some(backend::int_to_transform(t));
+                }
+                if let Some(e) = enabled {
+                    config.enabled = e;
+                }
+
+                // Apply the config
+                self.backend.apply_output_config(&mut self.ewm, &name);
             }
             ModuleCommand::ImCommit { text } => {
                 if let Some(ref relay) = self.ewm.im_relay {

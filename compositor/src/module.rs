@@ -210,6 +210,8 @@ pub enum ModuleCommand {
         width: Option<i32>,
         height: Option<i32>,
         refresh: Option<i32>,
+        scale: Option<f64>,
+        transform: Option<i32>,
         enabled: Option<bool>,
     },
     ImCommit {
@@ -487,6 +489,8 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
                 cons("height-mm", (info.height_mm as i64).into_lisp(env)?)?,
                 cons("x", (info.x as i64).into_lisp(env)?)?,
                 cons("y", (info.y as i64).into_lisp(env)?)?,
+                cons("scale", info.scale.into_lisp(env)?)?,
+                cons("transform", (info.transform as i64).into_lisp(env)?)?,
                 cons("modes", modes_list)?,
             ])
         }
@@ -808,6 +812,7 @@ fn prepare_frame_module(_: &Env, output: String) -> Result<()> {
 
 /// Configure output (module mode).
 /// ENABLED should be t, nil, or omitted.
+/// SCALE is a float (e.g. 1.5). TRANSFORM is an integer (0=Normal, 1=90, 2=180, 3=270, 4=Flipped, 5=Flipped90, 6=Flipped180, 7=Flipped270).
 #[defun]
 fn configure_output_module(
     env: &Env,
@@ -817,6 +822,8 @@ fn configure_output_module(
     width: Option<i64>,
     height: Option<i64>,
     refresh: Option<i64>,
+    scale: Option<f64>,
+    transform: Option<i64>,
     enabled: Value<'_>,
 ) -> Result<()> {
     // Convert enabled value: t -> Some(true), nil -> Some(false), unspecified -> None
@@ -841,6 +848,8 @@ fn configure_output_module(
         width: width.map(|v| v as i32),
         height: height.map(|v| v as i32),
         refresh: refresh.map(|v| v as i32),
+        scale,
+        transform: transform.map(|v| v as i32),
         enabled: enabled_opt,
     });
     Ok(())

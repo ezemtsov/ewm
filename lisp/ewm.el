@@ -26,7 +26,12 @@
 
 (require 'cl-lib)
 (require 'map)
-(require 'ewm-core)
+
+(unless (featurep 'ewm-core)
+  (let ((path (getenv "EWM_MODULE_PATH")))
+    (if (and path (file-exists-p path))
+        (module-load path)
+      (require 'ewm-core))))
 
 ;;; Module mode (compositor runs in-process)
 
@@ -95,16 +100,23 @@ register the frame as pending for that output instead of deleting it.")
 (defcustom ewm-output-config nil
   "Output configuration alist.
 Each entry is (OUTPUT-NAME . PLIST) where PLIST can contain:
-  :width    - desired width in pixels
-  :height   - desired height in pixels
-  :refresh  - desired refresh rate in Hz (optional)
-  :x        - horizontal position (optional)
-  :y        - vertical position (optional)
-  :enabled  - whether output is enabled (default t)
+  :width     - desired width in pixels
+  :height    - desired height in pixels
+  :refresh   - desired refresh rate in Hz (optional)
+  :x         - horizontal position (optional)
+  :y         - vertical position (optional)
+  :scale     - fractional scale, e.g. 1.5 (optional)
+  :transform - transform as integer (optional):
+               0=Normal 1=90 2=180 3=270
+               4=Flipped 5=Flipped90 6=Flipped180 7=Flipped270
+  :enabled   - whether output is enabled (default t)
+
+Configuration is stored in the compositor and re-applied when outputs
+reconnect (hot-plug), so values persist across connect/disconnect cycles.
 
 Example:
-  \\='((\"DP-1\" :width 2560 :height 1440)
-    (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0))"
+  \\='((\"DP-1\" :width 2560 :height 1440 :scale 1.5)
+    (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0 :transform 0))"
   :type '(alist :key-type string :value-type plist)
   :group 'ewm)
 
@@ -387,8 +399,11 @@ Check `journalctl --user -t ewm -f' to see debug output."
 (defun ewm-configure-output (name &rest args)
   "Configure output NAME with ARGS.
 ARGS is a plist with optional keys:
-  :x :y - position in global coordinate space
-  :enabled - t or nil to enable/disable the output"
+  :x :y       - position in global coordinate space
+  :width :height :refresh - video mode
+  :scale      - fractional scale (e.g. 1.5)
+  :transform  - transform integer (0=Normal, 1=90, 2=180, 3=270, ...)
+  :enabled    - t or nil to enable/disable the output"
   (ewm-configure-output-module
    name
    (plist-get args :x)
@@ -396,6 +411,8 @@ ARGS is a plist with optional keys:
    (plist-get args :width)
    (plist-get args :height)
    (plist-get args :refresh)
+   (plist-get args :scale)
+   (plist-get args :transform)
    (if (plist-member args :enabled)
        (plist-get args :enabled)
      :unset)))
@@ -421,14 +438,18 @@ ARGS is a plist with optional keys:
            (height (plist-get props :height))
            (refresh (plist-get props :refresh))
            (x (plist-get props :x))
-           (y (plist-get props :y)))
-      (when (or width height)
+           (y (plist-get props :y))
+           (scale (plist-get props :scale))
+           (transform (plist-get props :transform)))
+      (when (or width height scale transform x y)
         (ewm-configure-output name
                               :width width
                               :height height
                               :refresh refresh
                               :x x
-                              :y y)))))
+                              :y y
+                              :scale scale
+                              :transform transform)))))
 
 ;;; Frame management
 

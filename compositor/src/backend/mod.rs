@@ -29,6 +29,7 @@ pub use headless::HeadlessBackend;
 use crate::Ewm;
 use smithay::reexports::drm::control::crtc;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::Transform;
 
 /// Backend abstraction enum
 ///
@@ -137,21 +138,15 @@ impl Backend {
         }
     }
 
-    /// Set output mode (resolution/refresh)
+    /// Apply stored output configuration for the named output.
     ///
-    /// Returns true if mode was successfully changed.
-    /// Only supported on DRM backend; returns false for headless.
-    pub fn set_mode(
-        &mut self,
-        ewm: &mut Ewm,
-        output_name: &str,
-        width: i32,
-        height: i32,
-        refresh: Option<i32>,
-    ) -> bool {
+    /// Looks up `ewm.output_config` and applies mode, scale, transform,
+    /// position, and enabled state in one pass. Called when Emacs sends
+    /// a `ConfigureOutput` command.
+    pub fn apply_output_config(&mut self, ewm: &mut Ewm, output_name: &str) {
         match self {
-            Backend::Drm(drm) => drm.set_mode(ewm, output_name, width, height, refresh),
-            Backend::Headless(_) => false, // Headless doesn't support mode changes
+            Backend::Drm(drm) => drm.apply_output_config(ewm, output_name),
+            Backend::Headless(headless) => headless.apply_output_config(ewm, output_name),
         }
     }
 
@@ -235,5 +230,34 @@ impl Backend {
                 panic!("on_estimated_vblank_timer() called on Headless backend")
             }
         }
+    }
+}
+
+/// Convert integer to Smithay Transform.
+/// 0=Normal, 1=90, 2=180, 3=270, 4=Flipped, 5=Flipped90, 6=Flipped180, 7=Flipped270.
+pub fn int_to_transform(value: i32) -> Transform {
+    match value {
+        1 => Transform::_90,
+        2 => Transform::_180,
+        3 => Transform::_270,
+        4 => Transform::Flipped,
+        5 => Transform::Flipped90,
+        6 => Transform::Flipped180,
+        7 => Transform::Flipped270,
+        _ => Transform::Normal,
+    }
+}
+
+/// Convert Smithay Transform to integer.
+pub fn transform_to_int(transform: Transform) -> i32 {
+    match transform {
+        Transform::Normal => 0,
+        Transform::_90 => 1,
+        Transform::_180 => 2,
+        Transform::_270 => 3,
+        Transform::Flipped => 4,
+        Transform::Flipped90 => 5,
+        Transform::Flipped180 => 6,
+        Transform::Flipped270 => 7,
     }
 }

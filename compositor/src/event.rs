@@ -24,6 +24,8 @@ pub struct OutputInfo {
     pub height_mm: i32,
     pub x: i32,
     pub y: i32,
+    pub scale: f64,
+    pub transform: i32,
     pub modes: Vec<OutputMode>,
 }
 
