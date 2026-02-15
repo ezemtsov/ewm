@@ -70,20 +70,30 @@ EWM provides a NixOS module for easy deployment. Import the module and configure
 {
   imports = [ /path/to/ewm/nix/service.nix ];
 
-  programs.ewm = {
-    enable = true;
-    emacsPackage = pkgs.emacs30-pgtk;
-    initDirectory = /etc/nixos/dotfiles/emacs;
-  };
+  programs.ewm.enable = true;
 }
 ```
 
 The module registers an `ewm` session with your display manager (e.g., ly, gdm).
-Select "EWM" at login to start the compositor.
+Select "EWM" at login to start the compositor. Emacs loads your normal init
+directory (`~/.emacs.d` or `~/.config/emacs`).
+
+To use a custom init directory, different Emacs version, or add extra packages:
+
+```nix
+programs.ewm = {
+  enable = true;
+  extraEmacsArgs = "--init-directory /etc/nixos/dotfiles/emacs";
+  emacsPackage = pkgs.emacs30-pgtk.pkgs.withPackages (epkgs: [
+    config.programs.ewm.ewmPackage
+    epkgs.consult
+  ]);
+};
+```
 
 Module options:
-- `emacsPackage`: Emacs package, must be pgtk build (default: `pkgs.emacs-pgtk`)
-- `initDirectory`: Path to your Emacs config directory
+- `emacsPackage`: Emacs with EWM included (default: `pkgs.emacs-pgtk` with EWM package)
+- `extraEmacsArgs`: Additional Emacs CLI arguments (e.g., `"--no-site-lisp"`)
 - `screencast.enable`: Enable screen sharing via PipeWire (default: true)
 
 ## Emacs Setup
@@ -126,10 +136,13 @@ When the compositor starts, Wayland surfaces appear as special buffers. Use stan
 - Layer-shell protocol (waybar, notifications, etc.)
 - Screen sharing via xdg-desktop-portal (PipeWire DMA-BUF)
 - Input method support (type in any script via Emacs input methods)
+- Clipboard integration with Emacs kill-ring as central hub
+- Screen locking via ext-session-lock-v1 (swaylock)
+- Idle notification via ext-idle-notify-v1 (swayidle)
+- XDG activation (focus requests from apps)
 
 ## Known Limitations
 
-- No screen locking (ext-session-lock-v1)
 - GPU selection is automatic (no override)
 - Must run from TTY (no nested mode)
 
