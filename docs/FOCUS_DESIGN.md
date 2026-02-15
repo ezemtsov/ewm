@@ -396,3 +396,99 @@ No — Emacs IS the layout engine:
 The current model — Emacs owns layout, compositor owns rendering and input —
 matches the natural boundary. The hybrid keyboard focus sync (deferred + dirty
 flag) provides robustness without requiring the compositor to understand layout.
+
+## Session Lock (ext-session-lock-v1)
+
+### Design Principle: Lock as a Mode
+
+Session lock is a **global mode** that overrides normal compositor behavior. It is
+NOT a special surface type — it's a state that changes how every subsystem operates.
+Every subsystem must check lock state at its entry point and branch early, rather
+than sprinkling lock checks throughout normal logic.
+
+Reference: [niri](https://github.com/YaLTeR/niri) treats lock as a priority branch
+in `update_keyboard_focus()`, `commit()`, rendering, and input — the same pattern
+EWM follows.
+
+### State Machine
+
+```
+LockState::Unlocked ──lock()──► LockState::Locking(SessionLocker)
+                                       │
+                          all outputs render locked frame
+                                       │
+                                       ▼
+                                LockState::Locked(ExtSessionLockV1)
+                                       │
+                                   unlock()
+                                       │
+                                       ▼
+                                LockState::Unlocked
+```
+
+`is_locked()` returns true for both `Locking` and `Locked`.
+
+### Subsystems Affected
+
+Lock touches **6 subsystems**. When adding lock-related features, audit all of them:
+
+| Subsystem | Entry point | Lock behavior |
+|-----------|-------------|---------------|
+| **Focus resolution** | `sync_keyboard_focus()` | Priority branch: resolve to `lock_surface_focus()` |
+| **Keyboard input** | `handle_keyboard_event()` | Block all keys except VT switch; forward to lock surface |
+| **Pointer input** | `handle_pointer_motion/button/scroll` | Route to lock surface; skip click/scroll-to-focus |
+| **Rendering** | `collect_render_elements()` | Early return: render only lock surface + background |
+| **Surface commits** | `CompositorHandler::commit()` | Queue redraw for lock surface commits (not in `space.elements()`) |
+| **Frame completion** | DRM `queue_frame` | Track `LockRenderState` per-output; confirm lock when all rendered |
+
+### Focus During Lock
+
+Lock surface focus follows the **deferred path** via `sync_keyboard_focus()`:
+
+```
+new_surface() stores lock surface
+  → sets keyboard_focus_dirty = true
+  → sync_keyboard_focus() runs on next tick
+  → is_locked() = true → resolve to lock_surface_focus()
+  → keyboard.set_focus(lock_surface)
+```
+
+The input handler (`input.rs`) also sets focus directly on each key event as a
+**redundant immediate path** — this handles the race where keys arrive before the
+first sync tick. Both paths set the same target (lock surface), so they don't
+conflict.
+
+### Unlock Focus Restoration
+
+On unlock:
+1. `keyboard_focus` is cleared to `None` (invalidates stale tracking)
+2. `pre_lock_focus` is restored via `focus_surface_with_source()`
+3. `sync_keyboard_focus()` resolves the restored ID to a `WlSurface`
+
+Step 1 is critical: during lock, the input handler's direct `keyboard.set_focus()`
+calls don't update the tracked `keyboard_focus` field. Without clearing it, the
+sync function would see `keyboard_focus == restored_focus` (stale value from
+pre-lock) and skip the actual `keyboard.set_focus()` call, leaving Smithay's
+internal keyboard state pointing at the destroyed lock surface.
+
+### Per-Output State
+
+Each output tracks independently:
+- `lock_surface: Option<LockSurface>` — the lock surface for this output
+- `lock_render_state: LockRenderState` — whether a locked frame has been rendered
+
+Lock is confirmed (`Locking` → `Locked`) only when ALL outputs have
+`lock_render_state == Locked`. This prevents briefly showing unlocked content
+on a slow output.
+
+### Commit Handler: Surface Type Dispatch
+
+`CompositorHandler::commit()` dispatches by surface type in this order:
+1. **Layer surfaces** — `handle_layer_surface_commit()` (early return)
+2. **Popups** — `popups.commit()` + initial configure
+3. **Windows** — `space.elements()` lookup → `on_commit()` + redraw
+4. **Lock surfaces** — `is_locked()` + output scan → redraw
+
+If adding a new surface type, it must be added to this dispatch chain.
+Lock surfaces need special handling because they aren't tracked in
+`space.elements()` — they're stored per-output in `OutputState`.

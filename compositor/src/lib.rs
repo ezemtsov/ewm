@@ -81,7 +81,8 @@ use smithay::{
     delegate_fractional_scale, delegate_idle_notify, delegate_input_method_manager,
     delegate_layer_shell, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
-    delegate_text_input_manager, delegate_xdg_activation, delegate_xdg_shell,
+    delegate_text_input_manager, delegate_viewporter, delegate_xdg_activation,
+    delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
         utils::{
@@ -148,6 +149,7 @@ use smithay::{
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
+        viewporter::ViewporterState,
         xdg_activation::{
             XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
         },
@@ -569,6 +571,10 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub fractional_scale_state: FractionalScaleManagerState,
 
+    // Viewporter protocol (wp-viewporter, required for fractional scale clients)
+    #[allow(dead_code)]
+    pub viewporter_state: ViewporterState,
+
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
@@ -649,6 +655,9 @@ impl Ewm {
         // Initialize fractional scale protocol (wp-fractional-scale-v1)
         let fractional_scale_state = FractionalScaleManagerState::new::<State>(&display_handle);
 
+        // Initialize viewporter (wp-viewporter, required by fractional scale clients)
+        let viewporter_state = ViewporterState::new::<State>(&display_handle);
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -700,6 +709,7 @@ impl Ewm {
             pre_lock_focus: None,
             idle_notifier_state,
             fractional_scale_state,
+            viewporter_state,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -2057,12 +2067,16 @@ impl CompositorHandler for State {
         // Queue early import for DRM backend (processed in main loop)
         self.ewm.pending_early_imports.push(surface.clone());
 
-        // Handle layer surface commits
+        // Surface type dispatch order:
+        // 1. Layer surfaces  2. Popups  3. Windows  4. Lock surfaces
+        // When adding new surface types, add a branch here.
+
+        // 1. Handle layer surface commits
         if self.ewm.handle_layer_surface_commit(surface) {
             return;
         }
 
-        // Handle popup commits
+        // 2. Handle popup commits
         self.ewm.popups.commit(surface);
         if let Some(popup) = self.ewm.popups.find_popup(surface) {
             if let PopupKind::Xdg(ref xdg_popup) = popup {
@@ -2085,7 +2099,7 @@ impl CompositorHandler for State {
             root_surface = parent;
         }
 
-        // Find the window that owns this root surface
+        // 3. Find the window that owns this root surface
         let window_and_id = self.ewm.space.elements().find_map(|window| {
             window.wl_surface().and_then(|ws| {
                 if *ws == root_surface {
@@ -2108,9 +2122,26 @@ impl CompositorHandler for State {
 
             // Check for title/app_id changes (only for toplevels)
             self.ewm.check_surface_info_changes(surface);
+            return;
         }
-        // For surfaces without a toplevel (popups, layer surfaces, etc.),
-        // the parent's commit or other handlers will manage redraw
+
+        // 4. Queue redraw for lock surface commits (not in space.elements())
+        if self.ewm.is_locked() {
+            let output = self
+                .ewm
+                .output_state
+                .iter()
+                .find(|(_, state)| {
+                    state
+                        .lock_surface
+                        .as_ref()
+                        .is_some_and(|ls| ls.wl_surface() == &root_surface)
+                })
+                .map(|(o, _)| o.clone());
+            if let Some(output) = output {
+                self.ewm.queue_redraw(&output);
+            }
+        }
     }
 }
 delegate_compositor!(State);
@@ -2642,6 +2673,9 @@ impl SessionLockHandler for State {
             state.lock_render_state = LockRenderState::Unlocked;
         }
 
+        // Invalidate tracked focus (was on lock surface) to force sync
+        self.ewm.keyboard_focus = None;
+
         // Restore focus to the surface that was focused before locking
         if let Some(id) = self.ewm.pre_lock_focus.take() {
             if self.ewm.id_windows.contains_key(&id) {
@@ -2650,6 +2684,7 @@ impl SessionLockHandler for State {
                     .focus_surface_with_source(id, false, "unlock", None);
             }
         }
+        self.sync_keyboard_focus();
 
         self.ewm.queue_redraw_all();
         info!("Session unlocked");
@@ -2670,6 +2705,9 @@ impl SessionLockHandler for State {
         if let Some(state) = self.ewm.output_state.get_mut(&output) {
             state.lock_surface = Some(surface);
         }
+
+        // Trigger keyboard focus sync to the lock surface
+        self.ewm.keyboard_focus_dirty = true;
 
         self.ewm.queue_redraw(&output);
     }
@@ -2702,6 +2740,9 @@ impl FractionalScaleHandler for State {
     }
 }
 delegate_fractional_scale!(State);
+
+// Viewporter protocol (wp-viewporter, required by fractional scale clients)
+delegate_viewporter!(State);
 
 /// Configure a lock surface to cover the full output
 fn configure_lock_surface(surface: &LockSurface, output: &Output) {
@@ -2827,6 +2868,17 @@ impl State {
             return;
         }
         self.ewm.keyboard_focus_dirty = false;
+
+        // When locked, focus the lock surface
+        if self.ewm.is_locked() {
+            let new_focus = self.ewm.lock_surface_focus();
+            if self.ewm.keyboard_focus != new_focus {
+                self.ewm.keyboard_focus = new_focus.clone();
+                let keyboard = self.ewm.keyboard.clone();
+                keyboard.set_focus(self, new_focus, SERIAL_COUNTER.next_serial());
+            }
+            return;
+        }
 
         // Clean up stale on-demand focus
         if let Some(surface) = &self.ewm.layer_shell_on_demand_focus {
