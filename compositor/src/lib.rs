@@ -75,13 +75,17 @@ use crate::protocols::foreign_toplevel::{
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use serde::{Deserialize, Serialize};
 use smithay::{
-    backend::renderer::element::solid::SolidColorBuffer,
+    backend::renderer::element::{solid::SolidColorBuffer, RenderElementStates},
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_idle_notify,
     delegate_input_method_manager, delegate_layer_shell, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
     delegate_text_input_manager, delegate_xdg_activation, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
+        utils::{
+            send_frames_surface_tree, surface_primary_scanout_output,
+            update_surface_primary_scanout_output,
+        },
         LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window,
         WindowSurfaceType,
     },
@@ -109,8 +113,8 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler,
-            CompositorState,
+            get_parent, is_sync_subsurface, with_surface_tree_downward, CompositorClientState,
+            CompositorHandler, CompositorState, SurfaceData, TraversalAction,
         },
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         idle_notify::{IdleNotifierHandler, IdleNotifierState},
@@ -144,6 +148,7 @@ use smithay::{
         },
     },
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
@@ -245,6 +250,10 @@ pub struct OutputState {
     pub lock_render_state: LockRenderState,
     /// Solid color background for lock screen (shown before lock surface renders)
     pub lock_color_buffer: SolidColorBuffer,
+    /// Monotonically increasing sequence number for frame callback throttling.
+    /// Incremented each VBlank cycle to prevent sending duplicate frame callbacks
+    /// within the same refresh cycle.
+    pub frame_callback_sequence: u32,
 }
 
 impl OutputState {
@@ -258,6 +267,7 @@ impl OutputState {
             lock_render_state: LockRenderState::Unlocked,
             // Dark gray background for lock screen
             lock_color_buffer: SolidColorBuffer::new(size, [0.1, 0.1, 0.1, 1.0]),
+            frame_callback_sequence: 0,
         }
     }
 
@@ -277,6 +287,28 @@ impl Default for OutputState {
             lock_render_state: LockRenderState::Unlocked,
             // Default 1920x1080 lock background (will be resized per output)
             lock_color_buffer: SolidColorBuffer::new((1920, 1080), [0.1, 0.1, 0.1, 1.0]),
+            frame_callback_sequence: 0,
+        }
+    }
+}
+
+/// Frame callback throttle duration (matching niri's value).
+/// Surfaces that haven't received a frame callback within this duration will
+/// get one regardless of the throttling state, as a safety net.
+const FRAME_CALLBACK_THROTTLE: Option<Duration> = Some(Duration::from_millis(995));
+
+/// Per-surface state tracking when the last frame callback was sent.
+/// Used to prevent sending duplicate frame callbacks within the same VBlank cycle,
+/// which would cause clients to re-commit rapidly and overwhelm the display controller.
+struct SurfaceFrameThrottlingState {
+    /// Output and sequence number at which the frame callback was last sent.
+    last_sent_at: RefCell<Option<(Output, u32)>>,
+}
+
+impl Default for SurfaceFrameThrottlingState {
+    fn default() -> Self {
+        Self {
+            last_sent_at: RefCell::new(None),
         }
     }
 }
@@ -654,25 +686,131 @@ impl Ewm {
         }
     }
 
-    /// Send frame callbacks to all surfaces on an output without rendering.
-    /// This allows clients to commit new buffers even when no redraw is needed.
-    pub fn send_frame_callbacks(&self, output: &Output) {
+    /// Update primary scanout output for all surfaces on the given output.
+    /// This tracks which output each surface is primarily displayed on,
+    /// enabling frame callback throttling to prevent duplicate callbacks.
+    pub fn update_primary_scanout_output(
+        &self,
+        output: &Output,
+        render_element_states: &RenderElementStates,
+    ) {
+        // Update windows
         for window in self.space.elements() {
-            window.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
+            window.with_surfaces(|surface, states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    states,
+                    render_element_states,
+                    // Windows are shown on one output at a time
+                    |_, _, output, _| output,
+                );
+            });
         }
-        let layer_map = smithay::desktop::layer_map_for_output(output);
+
+        // Update layer surfaces
+        let layer_map = layer_map_for_output(output);
         for layer in layer_map.layers() {
-            layer.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
+            layer.with_surfaces(|surface, states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    states,
+                    render_element_states,
+                    // Layer surfaces are shown on one output at a time
+                    |_, _, output, _| output,
+                );
+            });
         }
         drop(layer_map);
+
+        // Update lock surfaces
         if let Some(output_state) = self.output_state.get(output) {
             if let Some(ref lock_surface) = output_state.lock_surface {
-                smithay::desktop::utils::send_frames_surface_tree(
+                with_surface_tree_downward(
+                    lock_surface.wl_surface(),
+                    (),
+                    |_, _, _| TraversalAction::DoChildren(()),
+                    |surface, states, _| {
+                        update_surface_primary_scanout_output(
+                            surface,
+                            output,
+                            states,
+                            render_element_states,
+                            |_, _, output, _| output,
+                        );
+                    },
+                    |_, _, _| true,
+                );
+            }
+        }
+    }
+
+    /// Send frame callbacks to surfaces on an output with throttling.
+    /// Uses primary scanout output tracking to avoid sending callbacks to surfaces
+    /// not visible on this output, and frame callback sequence numbers to prevent
+    /// duplicate callbacks within the same VBlank cycle.
+    pub fn send_frame_callbacks(&self, output: &Output) {
+        let sequence = self
+            .output_state
+            .get(output)
+            .map(|s| s.frame_callback_sequence)
+            .unwrap_or(0);
+
+        let should_send = |surface: &WlSurface, states: &SurfaceData| {
+            // Check if this surface's primary scanout output matches
+            let current_primary_output = surface_primary_scanout_output(surface, states);
+            if current_primary_output.as_ref() != Some(output) {
+                return None;
+            }
+
+            // Check throttling: don't send if already sent this cycle
+            let frame_throttling_state = states
+                .data_map
+                .get_or_insert(SurfaceFrameThrottlingState::default);
+            let mut last_sent_at = frame_throttling_state.last_sent_at.borrow_mut();
+
+            if let Some((last_output, last_sequence)) = &*last_sent_at {
+                if last_output == output && *last_sequence == sequence {
+                    return None;
+                }
+            }
+
+            *last_sent_at = Some((output.clone(), sequence));
+            Some(output.clone())
+        };
+
+        let frame_callback_time =
+            crate::protocols::screencopy::get_monotonic_time();
+
+        for window in self.space.elements() {
+            window.send_frame(
+                output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                &should_send,
+            );
+        }
+
+        let layer_map = layer_map_for_output(output);
+        for layer in layer_map.layers() {
+            layer.send_frame(
+                output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                &should_send,
+            );
+        }
+        drop(layer_map);
+
+        if let Some(output_state) = self.output_state.get(output) {
+            if let Some(ref lock_surface) = output_state.lock_surface {
+                send_frames_surface_tree(
                     lock_surface.wl_surface(),
                     output,
-                    Duration::ZERO,
-                    None,
-                    |_, _| Some(output.clone()),
+                    frame_callback_time,
+                    FRAME_CALLBACK_THROTTLE,
+                    &should_send,
                 );
             }
         }
