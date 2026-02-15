@@ -131,6 +131,7 @@ Example:
       ("title" (ewm--handle-title-update event))
       ("focus" (ewm--handle-focus event))
       ("output_detected" (ewm--handle-output-detected event))
+      ("output_config_changed" (ewm--handle-output-config-changed event))
       ("output_disconnected" (ewm--handle-output-disconnected event))
       ("outputs_complete" (ewm--handle-outputs-complete))
       ("ready" (ewm--handle-ready))
@@ -250,6 +251,16 @@ Updates buffer-local variables and renames the buffer."
   (pcase-let (((map ("name" name)) event))
     (unless (ewm--frame-for-output name)
       (ewm--create-frame-for-output name))))
+
+(defun ewm--handle-output-config-changed (event)
+  "Handle output config changed EVENT.
+Runs `ewm-output-config-changed-hook' with the applied configuration."
+  (run-hook-with-args 'ewm-output-config-changed-hook event))
+
+(defvar ewm-output-config-changed-hook nil
+  "Hook run when output configuration is applied.
+Each function receives the event alist with keys:
+  \"name\", \"width\", \"height\", \"refresh\", \"x\", \"y\", \"scale\", \"transform\".")
 
 (defun ewm--handle-output-disconnected (event)
   "Handle output disconnected EVENT.

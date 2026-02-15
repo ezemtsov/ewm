@@ -108,6 +108,18 @@ pub enum Event {
         width: i32,
         height: i32,
     },
+    /// Output configuration applied (after ConfigureOutput command)
+    #[serde(rename = "output_config_changed")]
+    OutputConfigChanged {
+        name: String,
+        width: i32,
+        height: i32,
+        refresh: i32,
+        x: i32,
+        y: i32,
+        scale: f64,
+        transform: i32,
+    },
     /// Clipboard selection changed (Wayland client copied text)
     #[serde(rename = "selection-changed")]
     SelectionChanged { text: String },

@@ -497,6 +497,26 @@ impl DrmBackendState {
         ewm.check_working_area_change(&output);
         ewm.queue_redraw_all();
 
+        // --- Notify Emacs of the applied config ---
+        let current_mode = output.current_mode().unwrap_or(Mode {
+            size: (0, 0).into(),
+            refresh: 0,
+        });
+        let current_geo = ewm
+            .space
+            .output_geometry(&output)
+            .unwrap_or_default();
+        ewm.queue_event(crate::event::Event::OutputConfigChanged {
+            name: output_name.to_string(),
+            width: current_mode.size.w,
+            height: current_mode.size.h,
+            refresh: current_mode.refresh,
+            x: current_geo.loc.x,
+            y: current_geo.loc.y,
+            scale: output.current_scale().fractional_scale(),
+            transform: super::transform_to_int(output.current_transform()),
+        });
+
         info!(
             "Applied config for {}: mode={:?}, scale={:?}, transform={:?}, pos={:?}",
             output_name, config.mode, config.scale, config.transform, config.position,
