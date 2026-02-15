@@ -494,6 +494,9 @@ impl DrmBackendState {
             }
         }
 
+        // --- Notify existing surfaces of scale/transform change ---
+        ewm.send_scale_transform_to_output_surfaces(&output);
+
         // --- Recalculate total output size, working areas, and queue redraw ---
         ewm.recalculate_output_size();
         ewm.check_working_area_change(&output);

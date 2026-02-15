@@ -1,11 +1,14 @@
-//! Coordinate helper utilities for fractional scaling
+//! Coordinate and scaling utilities for fractional scale support
 //!
-//! Following niri's pattern for precise coordinate conversions at fractional scales.
+//! Precise coordinate conversions at fractional scales.
 //! The fractional-scale protocol has N/120 precision, so coordinates must be carefully
 //! rounded to avoid subpixel drift.
 
-use smithay::output::Output;
-use smithay::utils::{Coordinate, Logical, Size};
+use smithay::output::{self, Output};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Coordinate, Logical, Size, Transform};
+use smithay::wayland::compositor::{send_surface_state, SurfaceData};
+use smithay::wayland::fractional_scale::with_fractional_scale;
 
 /// Convert a logical coordinate to physical pixels, rounding to the nearest integer.
 ///
@@ -34,6 +37,24 @@ pub fn output_size(output: &Output) -> Size<f64, Logical> {
     let transform = output.current_transform();
     let mode = output.current_mode().unwrap();
     transform.transform_size(mode.size.to_f64().to_logical(scale))
+}
+
+/// Send both integer and fractional scale + transform to a surface.
+///
+/// Sends integer scale via `send_surface_state` (for legacy clients) and fractional
+/// scale via `with_fractional_scale` (for clients that support wp-fractional-scale-v1).
+/// Must be called whenever a surface needs to know about its output's scale/transform —
+/// on creation, output assignment, and config changes.
+pub fn send_scale_transform(
+    surface: &WlSurface,
+    data: &SurfaceData,
+    scale: output::Scale,
+    transform: Transform,
+) {
+    send_surface_state(surface, data, scale.integer_scale(), transform);
+    with_fractional_scale(data, |fractional| {
+        fractional.set_preferred_scale(scale.fractional_scale());
+    });
 }
 
 #[cfg(test)]

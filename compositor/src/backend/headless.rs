@@ -297,6 +297,9 @@ impl HeadlessBackend {
             }
         }
 
+        // Notify existing surfaces of scale/transform change
+        ewm.send_scale_transform_to_output_surfaces(&output);
+
         ewm.recalculate_output_size();
         ewm.check_working_area_change(&output);
         ewm.queue_redraw_all();

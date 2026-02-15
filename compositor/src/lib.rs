@@ -78,7 +78,7 @@ use serde::{Deserialize, Serialize};
 use smithay::{
     backend::renderer::element::{solid::SolidColorBuffer, RenderElementStates},
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_idle_notify, delegate_input_method_manager,
+    delegate_fractional_scale, delegate_idle_notify, delegate_input_method_manager,
     delegate_layer_shell, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
     delegate_text_input_manager, delegate_xdg_activation, delegate_xdg_shell,
@@ -119,6 +119,7 @@ use smithay::{
             CompositorHandler, CompositorState, SurfaceData, TraversalAction,
         },
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+        fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState},
         idle_notify::{IdleNotifierHandler, IdleNotifierState},
         input_method::{
             InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface,
@@ -564,6 +565,10 @@ pub struct Ewm {
     // Idle notify state (ext-idle-notify-v1 protocol)
     pub idle_notifier_state: IdleNotifierState<State>,
 
+    // Fractional scale protocol (wp-fractional-scale-v1)
+    #[allow(dead_code)]
+    pub fractional_scale_state: FractionalScaleManagerState,
+
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
@@ -641,6 +646,9 @@ impl Ewm {
         // Initialize idle notifier (ext-idle-notify-v1)
         let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle);
 
+        // Initialize fractional scale protocol (wp-fractional-scale-v1)
+        let fractional_scale_state = FractionalScaleManagerState::new::<State>(&display_handle);
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -691,6 +699,7 @@ impl Ewm {
             lock_state: LockState::Unlocked,
             pre_lock_focus: None,
             idle_notifier_state,
+            fractional_scale_state,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -1440,6 +1449,31 @@ impl Ewm {
         });
     }
 
+    /// Notify all surfaces on an output about a scale/transform change.
+    ///
+    /// Iterates windows and layer surfaces on the given output,
+    /// sending both integer and fractional scale via `send_scale_transform`.
+    /// Called from `apply_output_config` after changing an output's scale or transform.
+    pub fn send_scale_transform_to_output_surfaces(&self, output: &Output) {
+        let scale = output.current_scale();
+        let transform = output.current_transform();
+
+        // Notify windows on this output
+        for window in self.space.elements() {
+            window.with_surfaces(|surface, data| {
+                crate::utils::send_scale_transform(surface, data, scale, transform);
+            });
+        }
+
+        // Notify layer surfaces on this output
+        let layer_map = layer_map_for_output(output);
+        for layer in layer_map.layers() {
+            layer.with_surfaces(|surface, data| {
+                crate::utils::send_scale_transform(surface, data, scale, transform);
+            });
+        }
+    }
+
     /// Get the working area for an output (non-exclusive zone from layer surfaces).
     /// This is the area available for Emacs frames after panels reserve their space.
     pub fn get_working_area(&self, output: &Output) -> Rectangle<i32, smithay::utils::Logical> {
@@ -1658,6 +1692,15 @@ impl Ewm {
             state.states.set(XdgToplevelState::Activated);
         });
         surface.send_configure();
+
+        // Send fractional scale and transform to the new surface
+        if let Some(output) = self.space.outputs().next() {
+            let scale = output.current_scale();
+            let transform = output.current_transform();
+            smithay::wayland::compositor::with_states(surface.wl_surface(), |data| {
+                crate::utils::send_scale_transform(surface.wl_surface(), data, scale, transform);
+            });
+        }
 
         let window = Window::new_wayland_window(surface);
         self.window_ids.insert(window.clone(), id);
@@ -2340,7 +2383,14 @@ impl WlrLayerShellHandler for State {
         };
 
         let wl_surface = surface.wl_surface().clone();
-        self.ewm.unmapped_layer_surfaces.insert(wl_surface);
+        self.ewm.unmapped_layer_surfaces.insert(wl_surface.clone());
+
+        // Send fractional scale and transform for this output
+        let scale = output.current_scale();
+        let transform = output.current_transform();
+        smithay::wayland::compositor::with_states(&wl_surface, |data| {
+            crate::utils::send_scale_transform(&wl_surface, data, scale, transform);
+        });
 
         let mut map = layer_map_for_output(&output);
         map.map_layer(&LayerSurface::new(surface, namespace.clone()))
@@ -2634,10 +2684,28 @@ impl IdleNotifierHandler for State {
 }
 delegate_idle_notify!(State);
 
+// Fractional scale protocol (wp-fractional-scale-v1)
+impl FractionalScaleHandler for State {
+    fn new_fractional_scale(
+        &mut self,
+        surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) {
+        // Send the current output's fractional scale to the new surface.
+        // Find which output the surface's toplevel/layer is on.
+        if let Some(output) = self.ewm.space.outputs().next().cloned() {
+            let scale = output.current_scale();
+            let transform = output.current_transform();
+            smithay::wayland::compositor::with_states(&surface, |data| {
+                crate::utils::send_scale_transform(&surface, data, scale, transform);
+            });
+        }
+    }
+}
+delegate_fractional_scale!(State);
+
 /// Configure a lock surface to cover the full output
 fn configure_lock_surface(surface: &LockSurface, output: &Output) {
     use smithay::wayland::compositor::with_states;
-    use smithay::wayland::fractional_scale::with_fractional_scale;
 
     surface.with_pending_state(|states| {
         let mode = output.current_mode().unwrap();
@@ -2650,21 +2718,7 @@ fn configure_lock_surface(surface: &LockSurface, output: &Output) {
     let wl_surface = surface.wl_surface();
 
     with_states(wl_surface, |data| {
-        // Send preferred scale
-        if let Some(fractional_scale) =
-            with_fractional_scale(data, |fractional| fractional.preferred_scale())
-        {
-            // Already has fractional scale configured
-            let _ = fractional_scale;
-        }
-
-        // Send preferred buffer scale and transform
-        smithay::wayland::compositor::send_surface_state(
-            wl_surface,
-            data,
-            scale.integer_scale(),
-            transform,
-        );
+        crate::utils::send_scale_transform(wl_surface, data, scale, transform);
     });
 
     surface.send_configure();

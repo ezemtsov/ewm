@@ -235,7 +235,7 @@ impl Backend {
 
 /// Round scale to the nearest value representable by the fractional-scale
 /// protocol (precision is N/120). E.g. 1.5 → 180/120 = 1.5 (exact),
-/// 1.3333 → 160/120 = 1.33333... Following niri's `closest_representable_scale`.
+/// 1.3333 → 160/120 = 1.33333...
 pub fn closest_representable_scale(scale: f64) -> f64 {
     const FRACTIONAL_SCALE_DENOM: f64 = 120.0;
     (scale * FRACTIONAL_SCALE_DENOM).round() / FRACTIONAL_SCALE_DENOM
