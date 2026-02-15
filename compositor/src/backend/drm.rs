@@ -36,7 +36,7 @@ use smithay::{
             Modifier,
         },
         drm::{
-            compositor::{DrmCompositor, FrameFlags},
+            compositor::{DrmCompositor, FrameFlags, PrimaryPlaneElement},
             DrmDevice, DrmDeviceFd, DrmEvent, DrmNode,
         },
         egl::{EGLDevice, EGLDisplay},
@@ -498,6 +498,21 @@ impl DrmBackendState {
 
         match render_result {
             Ok(result) => {
+                // Wait for GPU completion if the kernel can't handle fencing.
+                // Without this, we may submit a buffer before the GPU has finished
+                // rendering, causing the display controller to show stale content.
+                if result.needs_sync() {
+                    if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element {
+                        if let Err(err) = element.sync.wait() {
+                            warn!("error waiting for frame completion: {err:?}");
+                        }
+                    }
+                }
+
+                // Update primary scanout output tracking (needed for frame callback
+                // throttling). Called regardless of damage, same as niri.
+                ewm.update_primary_scanout_output(&output, &result.states);
+
                 if !result.is_empty {
                     // There's damage to display - queue frame and wait for VBlank
                     match surface.compositor.queue_frame(()) {
@@ -505,6 +520,10 @@ impl DrmBackendState {
                             // Transition to WaitingForVBlank
                             let is_locked = ewm.is_locked();
                             if let Some(output_state) = ewm.output_state.get_mut(&output) {
+                                // Increment sequence for frame callback throttling
+                                output_state.frame_callback_sequence =
+                                    output_state.frame_callback_sequence.wrapping_add(1);
+
                                 trace!(
                                     "{}: {} -> WaitingForVBlank",
                                     output.name(),
@@ -737,6 +756,10 @@ impl DrmBackendState {
             let Some(output_state) = ewm.output_state.get_mut(&output) else {
                 return;
             };
+
+            // Increment sequence for frame callback throttling
+            output_state.frame_callback_sequence =
+                output_state.frame_callback_sequence.wrapping_add(1);
 
             let action = match &output_state.redraw_state {
                 RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
