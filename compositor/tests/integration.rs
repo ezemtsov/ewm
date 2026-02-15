@@ -96,9 +96,9 @@ fn test_output_size_with_y_offset() {
 
     let ewm = fixture.ewm_ref();
     // Width should be 1920 + 1920 = 3840
-    assert_eq!(ewm.output_size.0, 3840);
+    assert_eq!(ewm.output_size.w, 3840);
     // Height should account for y-offset: 500 + 1080 = 1580
-    assert_eq!(ewm.output_size.1, 1580);
+    assert_eq!(ewm.output_size.h, 1580);
 }
 
 /// Test that working area updates after scale change via apply_output_config (step 6)

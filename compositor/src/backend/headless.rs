@@ -127,7 +127,7 @@ impl HeadlessBackend {
         let (x_offset, y_offset) = config
             .as_ref()
             .and_then(|c| c.position)
-            .unwrap_or((ewm.output_size.0, 0));
+            .unwrap_or((ewm.output_size.w, 0));
         ewm.space.map_output(&output, (x_offset, y_offset));
 
         // Initialize output state in Ewm

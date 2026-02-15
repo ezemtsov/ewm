@@ -1193,7 +1193,7 @@ impl DrmBackendState {
         let (x_offset, y_offset) = config
             .as_ref()
             .and_then(|c| c.position)
-            .unwrap_or((ewm.output_size.0, 0));
+            .unwrap_or((ewm.output_size.w, 0));
 
         device.surfaces.insert(
             crtc,
@@ -1505,8 +1505,8 @@ fn initialize_drm(
 
     info!(
         "Total output area: {}x{} ({} outputs)",
-        state.ewm.output_size.0,
-        state.ewm.output_size.1,
+        state.ewm.output_size.w,
+        state.ewm.output_size.h,
         state.ewm.outputs.len()
     );
 
@@ -1970,11 +1970,11 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                         // Relative pointer motion (from mice)
                         let (current_x, current_y) = state.ewm.pointer_location;
                         let delta = event.delta();
-                        let (output_w, output_h) = state.ewm.output_size;
+                        let output_size = state.ewm.output_size;
 
                         // Calculate new position, clamped to output bounds
-                        let new_x = (current_x + delta.x).clamp(0.0, output_w as f64);
-                        let new_y = (current_y + delta.y).clamp(0.0, output_h as f64);
+                        let new_x = (current_x + delta.x).clamp(0.0, output_size.w as f64);
+                        let new_y = (current_y + delta.y).clamp(0.0, output_size.h as f64);
                         state.ewm.pointer_location = (new_x, new_y);
                         module::set_pointer_location(new_x, new_y);
 
@@ -2012,8 +2012,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     InputEvent::PointerMotionAbsolute { event } => {
                         // Absolute pointer motion (from touchpads in absolute mode, tablets)
-                        let (output_w, output_h) = state.ewm.output_size;
-                        let pos = event.position_transformed((output_w, output_h).into());
+                        let output_size = state.ewm.output_size;
+                        let pos = event.position_transformed(output_size);
                         state.ewm.pointer_location = (pos.x, pos.y);
                         module::set_pointer_location(pos.x, pos.y);
 

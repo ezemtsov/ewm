@@ -30,8 +30,8 @@ fn test_output_geometry() {
     let size = ewm.output_size;
 
     // Size should be at least the output size
-    assert!(size.0 >= 1920);
-    assert!(size.1 >= 1080);
+    assert!(size.w >= 1920);
+    assert!(size.h >= 1080);
 }
 
 /// Test multiple outputs are positioned correctly
@@ -41,16 +41,16 @@ fn test_multi_output_layout() {
 
     fixture.add_output("Virtual-1", 1920, 1080);
     fixture.dispatch();
-    let first_width = fixture.ewm_ref().output_size.0;
+    let first_width = fixture.ewm_ref().output_size.w;
 
     fixture.add_output("Virtual-2", 2560, 1440);
     fixture.dispatch();
 
     let ewm = fixture.ewm_ref();
     // Second output should extend the total width
-    assert!(ewm.output_size.0 > first_width);
+    assert!(ewm.output_size.w > first_width);
     // Height should be the max of both
-    assert!(ewm.output_size.1 >= 1440);
+    assert!(ewm.output_size.h >= 1440);
 }
 
 /// Test that output removal updates geometry
@@ -62,13 +62,13 @@ fn test_output_removal_updates_geometry() {
     fixture.add_output("Virtual-2", 1920, 1080);
     fixture.dispatch();
 
-    let size_with_two = fixture.ewm_ref().output_size.0;
+    let size_with_two = fixture.ewm_ref().output_size.w;
 
     fixture.remove_output("Virtual-2");
     fixture.dispatch();
 
     // Width should decrease after removal
-    assert!(fixture.ewm_ref().output_size.0 < size_with_two);
+    assert!(fixture.ewm_ref().output_size.w < size_with_two);
 }
 
 /// Test that the fixture tracks render counts
@@ -118,9 +118,10 @@ fn test_output_state_snapshot() {
 
     let ewm = fixture.ewm_ref();
     let state = format!(
-        "output_count: {}\noutput_size: {:?}\nfocused_surface: {}\nsurface_count: {}",
+        "output_count: {}\noutput_size: ({}, {})\nfocused_surface: {}\nsurface_count: {}",
         fixture.output_count(),
-        ewm.output_size,
+        ewm.output_size.w,
+        ewm.output_size.h,
         ewm.focused_surface_id,
         fixture.surface_count()
     );

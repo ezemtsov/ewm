@@ -303,8 +303,8 @@ mod tests {
         fixture.add_output("test1", 1920, 1080);
         fixture.add_output("test2", 1280, 720);
         // After adding two outputs side by side, total width should be sum
-        let (total_w, total_h) = fixture.ewm().output_size;
-        assert_eq!(total_w, 1920 + 1280);
-        assert_eq!(total_h, 1080); // Height is max of outputs
+        let total_size = fixture.ewm().output_size;
+        assert_eq!(total_size.w, 1920 + 1280);
+        assert_eq!(total_size.h, 1080); // Height is max of outputs
     }
 }

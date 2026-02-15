@@ -43,6 +43,7 @@ pub mod pipewire;
 pub mod protocols;
 pub mod render;
 pub mod tracy;
+pub mod utils;
 pub use tracy::VBlankFrameTracker;
 
 // Testing module is always compiled but only used by tests
@@ -110,7 +111,7 @@ use smithay::{
             Display, DisplayHandle, Resource,
         },
     },
-    utils::{IsAlive, Rectangle, Size, Transform, SERIAL_COUNTER},
+    utils::{IsAlive, Logical, Rectangle, Size, Transform, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{
@@ -490,7 +491,7 @@ pub struct Ewm {
     pub surface_views: HashMap<u32, Vec<SurfaceView>>,
 
     // Output
-    pub output_size: (i32, i32),
+    pub output_size: Size<i32, Logical>,
     pub outputs: Vec<OutputInfo>,
     /// Desired output configuration, keyed by output name.
     /// Looked up when outputs connect; updated by Emacs commands.
@@ -661,7 +662,7 @@ impl Ewm {
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
             surface_views: HashMap::new(),
-            output_size: (0, 0),
+            output_size: Size::from((0, 0)),
             outputs: Vec::new(),
             output_config: HashMap::new(),
             pointer_location: (0.0, 0.0),
@@ -1422,7 +1423,7 @@ impl Ewm {
                     (w, h)
                 }
             });
-        self.output_size = (total_width, total_height);
+        self.output_size = Size::from((total_width, total_height));
     }
 
     /// Send output detected event to Emacs
@@ -1619,7 +1620,7 @@ impl Ewm {
         let window_geo = window.geometry();
 
         // Target rectangle is the full output, adjusted for popup's position in window
-        let mut target = Rectangle::from_size(Size::from(self.output_size));
+        let mut target = Rectangle::from_size(self.output_size);
         target.loc -= window_loc + window_geo.loc;
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
 
@@ -1652,7 +1653,7 @@ impl Ewm {
         });
 
         surface.with_pending_state(|state| {
-            state.size = Some(self.output_size.into());
+            state.size = Some(self.output_size);
             state.states.set(XdgToplevelState::Maximized);
             state.states.set(XdgToplevelState::Activated);
         });

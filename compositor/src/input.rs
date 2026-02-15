@@ -375,11 +375,11 @@ pub fn handle_pointer_motion<B: InputBackend>(
     tracy_span!("handle_pointer_motion");
     let (current_x, current_y) = state.ewm.pointer_location;
     let delta = event.delta();
-    let (output_w, output_h) = state.ewm.output_size;
+    let output_size = state.ewm.output_size;
 
     // Calculate new position, clamped to output bounds
-    let new_x = (current_x + delta.x).clamp(0.0, output_w as f64);
-    let new_y = (current_y + delta.y).clamp(0.0, output_h as f64);
+    let new_x = (current_x + delta.x).clamp(0.0, output_size.w as f64);
+    let new_y = (current_y + delta.y).clamp(0.0, output_size.h as f64);
     state.ewm.pointer_location = (new_x, new_y);
     module::set_pointer_location(new_x, new_y);
 
@@ -431,8 +431,8 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     event: B::PointerMotionAbsoluteEvent,
 ) -> bool {
     tracy_span!("handle_pointer_motion_absolute");
-    let (output_w, output_h) = state.ewm.output_size;
-    let pos = event.position_transformed((output_w, output_h).into());
+    let output_size = state.ewm.output_size;
+    let pos = event.position_transformed(output_size);
     state.ewm.pointer_location = (pos.x, pos.y);
     module::set_pointer_location(pos.x, pos.y);
 
