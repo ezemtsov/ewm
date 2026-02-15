@@ -185,6 +185,9 @@ impl Fixture {
             .backend
             .redraw_queued_outputs(&mut self.state.ewm);
 
+        // Clean up dead elements (output enter/leave managed explicitly)
+        self.state.ewm.cleanup_dead_windows();
+
         // Flush Wayland clients
         self.state.ewm.display_handle.flush_clients().ok();
     }
@@ -200,6 +203,7 @@ impl Fixture {
                         .space
                         .map_element(window.clone(), (x, y), true);
                     self.state.ewm.space.raise_element(window, true);
+                    self.state.ewm.enter_output_for_position(window, (x, y));
                     window.toplevel().map(|t| {
                         t.with_pending_state(|state| {
                             state.size = Some((w as i32, h as i32).into());

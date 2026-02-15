@@ -602,7 +602,7 @@ pub struct Ewm {
 
 impl Ewm {
     pub fn new(display_handle: DisplayHandle, loop_handle: LoopHandle<'static, State>) -> Self {
-        let compositor_state = CompositorState::new::<State>(&display_handle);
+        let compositor_state = CompositorState::new_v6::<State>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<State>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<State>(&display_handle);
         let shm_state = ShmState::new::<State>(&display_handle, vec![]);
@@ -731,6 +731,33 @@ impl Ewm {
             info!("Input method relay connected successfully");
         } else {
             warn!("Failed to connect input method relay");
+        }
+    }
+
+    /// Remove dead windows from the space.
+    /// This replaces Space::refresh() — we manage output enter/leave explicitly
+    /// rather than relying on automatic spatial overlap detection.
+    pub fn cleanup_dead_windows(&mut self) {
+        let dead: Vec<Window> = self.space.elements().filter(|w| !w.alive()).cloned().collect();
+        for w in dead {
+            self.space.unmap_elem(&w);
+        }
+    }
+
+    /// Explicitly associate a window with the output at the given position.
+    /// Sends wl_surface.enter for the matching output and wl_surface.leave for others.
+    pub fn enter_output_for_position(&self, window: &Window, pos: (i32, i32)) {
+        let Some(surface) = window.wl_surface() else {
+            return;
+        };
+        let point = smithay::utils::Point::from(pos);
+        for output in self.space.outputs() {
+            let geo = self.space.output_geometry(output).unwrap_or_default();
+            if geo.contains(point) {
+                output.enter(&surface);
+            } else {
+                output.leave(&surface);
+            }
         }
     }
 
@@ -1711,7 +1738,10 @@ impl Ewm {
         let frame_output = module::take_pending_frame_output();
         let target_output = frame_output.clone().or_else(|| self.active_output());
 
-        // Send fractional scale and transform from the target output
+        // Associate window with target output for scale detection.
+        // Output association is managed explicitly — not via space.refresh().
+        // We send scale info and enter the output before the client's first commit
+        // so it knows the correct scale to render at.
         let scale_output = target_output
             .as_ref()
             .and_then(|name| self.space.outputs().find(|o| o.name() == *name))
@@ -1723,6 +1753,11 @@ impl Ewm {
             window.with_surfaces(|surface, data| {
                 crate::utils::send_scale_transform(surface, data, scale, transform);
             });
+            // Direct output enter — bypasses SpaceElement::output_enter which would
+            // trigger output_update → leave for uncommitted surfaces.
+            if let Some(surface) = window.wl_surface() {
+                output.enter(&surface);
+            }
         }
 
         // Position based on surface type
@@ -2064,6 +2099,29 @@ impl CompositorHandler for State {
             .get_data::<ClientState>()
             .expect("ClientState inserted at connection time")
             .compositor
+    }
+
+    fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
+        // Copy the preferred scale from the root surface to the new subsurface.
+        // This ensures the fractional_scale protocol sends the correct value
+        // when the client later binds it (e.g., Firefox creates fractional_scale
+        // on a subsurface, not the toplevel).
+        let mut root = parent.clone();
+        while let Some(p) = get_parent(&root) {
+            root = p;
+        }
+        let root_scale = smithay::wayland::compositor::with_states(&root, |data| {
+            smithay::wayland::fractional_scale::with_fractional_scale(data, |state| {
+                state.preferred_scale()
+            })
+        });
+        if let Some(scale) = root_scale {
+            smithay::wayland::compositor::with_states(surface, |data| {
+                smithay::wayland::fractional_scale::with_fractional_scale(data, |state| {
+                    state.set_preferred_scale(scale);
+                });
+            });
+        }
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -2943,6 +3001,11 @@ impl State {
         // Process IM relay events and send to Emacs
         self.process_im_events();
 
+        // Clean up dead elements from space.
+        // Output enter/leave is managed explicitly in handle_new_toplevel and
+        // the Layout command, not via automatic spatial overlap detection.
+        self.ewm.cleanup_dead_windows();
+
         // Flush Wayland clients
         if let Err(e) = self.ewm.display_handle.flush_clients() {
             tracing::warn!("Failed to flush Wayland clients: {e}");
@@ -2959,6 +3022,7 @@ impl State {
                 if let Some(window) = self.ewm.id_windows.get(&id) {
                     self.ewm.space.map_element(window.clone(), (x, y), true);
                     self.ewm.space.raise_element(window, true);
+                    self.ewm.enter_output_for_position(window, (x, y));
                     window.toplevel().map(|t| {
                         t.with_pending_state(|state| {
                             state.size = Some((w as i32, h as i32).into());
