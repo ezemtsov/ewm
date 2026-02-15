@@ -13,7 +13,7 @@ let
     pname = "ewm-core";
     version = "0.1.0";
 
-    src = ./../compositor;
+    src = lib.cleanSource ./../compositor;
 
     cargoLock = {
       lockFile = ./../compositor/Cargo.lock;
@@ -69,7 +69,7 @@ in
 emacsPackage.pkgs.trivialBuild {
   pname = "ewm";
   version = "0.1.0";
-  src = ./../lisp;
+  src = lib.cleanSource ./../lisp;
   packageRequires = [ ewm-core ];
   passthru.module = "${./service.nix}";
 
