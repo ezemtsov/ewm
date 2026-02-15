@@ -158,6 +158,13 @@ impl Fixture {
         self.state.ewm.queue_redraw_all();
     }
 
+    /// Apply stored output config for the named output (headless backend)
+    pub fn apply_output_config(&mut self, output_name: &str) {
+        self.state
+            .backend
+            .apply_output_config(&mut self.state.ewm, output_name);
+    }
+
     /// Check if a surface with the given ID exists
     pub fn has_surface(&self, id: u32) -> bool {
         self.state.ewm.id_windows.contains_key(&id)

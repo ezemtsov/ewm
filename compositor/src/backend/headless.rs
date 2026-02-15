@@ -152,6 +152,12 @@ impl HeadlessBackend {
         // Recalculate total output size
         ewm.recalculate_output_size();
 
+        // Register initial working area (full output, no panels yet)
+        let working_area: smithay::utils::Rectangle<i32, smithay::utils::Logical> =
+            smithay::utils::Rectangle::from_size(Size::from((width, height)));
+        ewm.working_areas
+            .insert(name.to_string(), working_area);
+
         info!(
             "Added virtual output: {} ({}x{}) at ({}, {})",
             name, width, height, x_offset, y_offset
@@ -289,10 +295,8 @@ impl HeadlessBackend {
             }
         }
 
-        if config.position.is_some() {
-            ewm.recalculate_output_size();
-        }
-
+        ewm.recalculate_output_size();
+        ewm.check_working_area_change(&output);
         ewm.queue_redraw_all();
     }
 

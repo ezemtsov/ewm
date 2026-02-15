@@ -446,6 +446,20 @@ impl DrmBackendState {
         // --- Update OutputInfo ---
         for out_info in &mut ewm.outputs {
             if out_info.name == output_name {
+                if let Some(drm_mode) = new_drm_mode {
+                    // Update mode list entries to reflect current mode dimensions
+                    for mode_info in &mut out_info.modes {
+                        mode_info.preferred = false;
+                    }
+                    // Mark the applied mode as preferred
+                    if let Some(mode_info) = out_info.modes.iter_mut().find(|m| {
+                        m.width == drm_mode.size().0 as i32
+                            && m.height == drm_mode.size().1 as i32
+                            && m.refresh == (drm_mode.vrefresh() * 1000) as i32
+                    }) {
+                        mode_info.preferred = true;
+                    }
+                }
                 if let Some(scale) = config.scale {
                     out_info.scale = scale;
                 }
@@ -478,18 +492,9 @@ impl DrmBackendState {
             }
         }
 
-        // --- Update working area offsets ---
-        if let Some((x, y)) = config.position {
-            let wa = ewm
-                .working_areas
-                .get(output_name)
-                .map(|r| (r.loc.x, r.loc.y))
-                .unwrap_or((0, 0));
-            crate::module::set_output_offset(output_name, x + wa.0, y + wa.1);
-        }
-
-        // --- Recalculate total output size and queue redraw ---
+        // --- Recalculate total output size, working areas, and queue redraw ---
         ewm.recalculate_output_size();
+        ewm.check_working_area_change(&output);
         ewm.queue_redraw_all();
 
         info!(
@@ -1256,7 +1261,7 @@ impl DrmBackendState {
         }
 
         // Recalculate output_size
-        self.recalculate_output_size(ewm);
+        ewm.recalculate_output_size();
 
         // Send IPC event
         ewm.send_output_detected(output_info);
@@ -1338,25 +1343,12 @@ impl DrmBackendState {
         }
 
         // Recalculate output_size
-        self.recalculate_output_size(ewm);
+        ewm.recalculate_output_size();
 
         // Send IPC event
         ewm.send_output_disconnected(&output_name);
 
         info!("Output disconnected: {}", output_name);
-    }
-
-    /// Recalculate total output size from current surfaces
-    fn recalculate_output_size(&self, ewm: &mut Ewm) {
-        let (total_width, max_height) = ewm.space.outputs().fold((0i32, 0i32), |(w, h), output| {
-            if let Some(geo) = ewm.space.output_geometry(output) {
-                (w.max(geo.loc.x + geo.size.w), h.max(geo.size.h))
-            } else {
-                (w, h)
-            }
-        });
-        ewm.output_size = (total_width, max_height);
-        info!("Total output area: {}x{}", total_width, max_height);
     }
 }
 

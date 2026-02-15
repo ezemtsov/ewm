@@ -411,10 +411,13 @@ pub fn push_event(event: Event) {
     queue.push(event);
     drop(queue); // Release lock before signaling
 
-    // Send SIGUSR1 to wake Emacs event loop
-    // Signal coalescing is fine - Emacs will drain the whole queue
-    unsafe {
-        libc::raise(libc::SIGUSR1);
+    // Send SIGUSR1 to wake Emacs event loop (only when running as module).
+    // In test/standalone mode LOOP_SIGNAL is never set, so skip the signal
+    // to avoid killing the process.
+    if LOOP_SIGNAL.get().is_some() {
+        unsafe {
+            libc::raise(libc::SIGUSR1);
+        }
     }
 }
 

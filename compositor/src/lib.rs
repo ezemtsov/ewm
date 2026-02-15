@@ -1495,6 +1495,8 @@ impl Ewm {
 
     /// Check and update working area for an output, sending event if changed.
     pub fn check_working_area_change(&mut self, output: &Output) {
+        // Re-arrange layer map so it picks up any scale/mode/transform change
+        layer_map_for_output(output).arrange();
         let working_area = self.get_working_area(output);
         let output_name = output.name();
 
