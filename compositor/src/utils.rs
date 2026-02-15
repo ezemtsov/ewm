@@ -7,7 +7,7 @@
 use smithay::output::{self, Output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Coordinate, Logical, Size, Transform};
-use smithay::wayland::compositor::{send_surface_state, SurfaceData};
+use smithay::wayland::compositor::{get_parent, send_surface_state, with_states, SurfaceData};
 use smithay::wayland::fractional_scale::with_fractional_scale;
 
 /// Convert a logical coordinate to physical pixels, rounding to the nearest integer.
@@ -37,6 +37,28 @@ pub fn output_size(output: &Output) -> Size<f64, Logical> {
     let transform = output.current_transform();
     let mode = output.current_mode().unwrap();
     transform.transform_size(mode.size.to_f64().to_logical(scale))
+}
+
+/// Copy preferred fractional scale from a surface's root ancestor.
+///
+/// Walks from `parent` to the root of the surface tree and copies any stored
+/// `preferred_scale` to `surface`. Used for newly created subsurfaces and popups
+/// that need to inherit scale before the client binds `get_fractional_scale`.
+pub fn propagate_preferred_scale(surface: &WlSurface, parent: &WlSurface) {
+    let mut root = parent.clone();
+    while let Some(p) = get_parent(&root) {
+        root = p;
+    }
+    let root_scale = with_states(&root, |data| {
+        with_fractional_scale(data, |state| state.preferred_scale())
+    });
+    if let Some(scale) = root_scale {
+        with_states(surface, |data| {
+            with_fractional_scale(data, |state| {
+                state.set_preferred_scale(scale);
+            });
+        });
+    }
 }
 
 /// Send both integer and fractional scale + transform to a surface.

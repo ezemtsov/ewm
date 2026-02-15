@@ -1671,6 +1671,31 @@ impl Ewm {
         false
     }
 
+    /// Find the output for a popup's root surface (window or layer surface).
+    pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
+        let root = find_popup_root_surface(popup).ok()?;
+        // Check windows
+        if let Some(window) = self
+            .space
+            .elements()
+            .find(|w| w.wl_surface().map(|s| *s == root).unwrap_or(false))
+        {
+            let window_loc = self.space.element_location(window).unwrap_or_default();
+            return self.space.outputs().find(|o| {
+                self.space
+                    .output_geometry(o)
+                    .map(|geo| geo.contains(window_loc))
+                    .unwrap_or(false)
+            });
+        }
+        // Check layer surfaces
+        self.space.outputs().find(|o| {
+            layer_map_for_output(o)
+                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                .is_some()
+        })
+    }
+
     /// Unconstrain a popup's position to keep it within screen bounds
     pub fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
@@ -2102,26 +2127,7 @@ impl CompositorHandler for State {
     }
 
     fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
-        // Copy the preferred scale from the root surface to the new subsurface.
-        // This ensures the fractional_scale protocol sends the correct value
-        // when the client later binds it (e.g., Firefox creates fractional_scale
-        // on a subsurface, not the toplevel).
-        let mut root = parent.clone();
-        while let Some(p) = get_parent(&root) {
-            root = p;
-        }
-        let root_scale = smithay::wayland::compositor::with_states(&root, |data| {
-            smithay::wayland::fractional_scale::with_fractional_scale(data, |state| {
-                state.preferred_scale()
-            })
-        });
-        if let Some(scale) = root_scale {
-            smithay::wayland::compositor::with_states(surface, |data| {
-                smithay::wayland::fractional_scale::with_fractional_scale(data, |state| {
-                    state.set_preferred_scale(scale);
-                });
-            });
-        }
+        crate::utils::propagate_preferred_scale(surface, parent);
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -2144,6 +2150,13 @@ impl CompositorHandler for State {
         if let Some(popup) = self.ewm.popups.find_popup(surface) {
             if let PopupKind::Xdg(ref xdg_popup) = popup {
                 if !xdg_popup.is_initial_configure_sent() {
+                    if let Some(output) = self.ewm.output_for_popup(&popup).cloned() {
+                        let scale = output.current_scale();
+                        let transform = output.current_transform();
+                        smithay::wayland::compositor::with_states(surface, |data| {
+                            crate::utils::send_scale_transform(surface, data, scale, transform);
+                        });
+                    }
                     xdg_popup
                         .send_configure()
                         .expect("initial configure failed");

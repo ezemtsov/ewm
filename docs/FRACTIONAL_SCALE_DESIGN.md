@@ -138,7 +138,8 @@ Scale is sent at every surface lifecycle point:
 | Lifecycle Event | Function | What Happens |
 |----------------|----------|-------------|
 | Toplevel created | `handle_new_toplevel()` | `send_scale_transform` + direct `output.enter()` |
-| Subsurface created | `new_subsurface()` | Copy `preferred_scale` from root surface |
+| Subsurface created | `new_subsurface()` | `propagate_preferred_scale` from root surface |
+| Popup initial commit | `commit()` | `output_for_popup` → `send_scale_transform` |
 | Layer surface created | `new_layer_surface()` | `send_scale_transform` with output's scale |
 | Lock surface created | `configure_lock_surface()` | `send_scale_transform` with output's scale |
 | Output config changed | `apply_output_config()` | `send_scale_transform_to_output_surfaces()` |
@@ -235,26 +236,22 @@ pub fn enter_output_for_position(&self, window: &Window, pos: (i32, i32)) {
 }
 ```
 
-## Subsurface Scale Propagation
+## Child Surface Scale Propagation
 
-### The Firefox Problem
+Subsurfaces and xdg_popups are separate `wl_surface` objects that don't automatically
+inherit scale from their parent. Each needs explicit scale notification.
+
+### Subsurfaces: `propagate_preferred_scale`
 
 Firefox creates `wp_fractional_scale_v1` on a **subsurface**, not the toplevel.
-Firefox uses `wl_output.scale` (from `wl_surface.enter`) for `buffer_scale` (integer)
-but uses `wp_fractional_scale_v1.preferred_scale` for CSS Device Pixel Ratio (DPR).
-Without `preferred_scale` on the subsurface, DPR defaults to 1 even when the output
-is at 1.5x.
+Without `preferred_scale` on the subsurface, Firefox's CSS DPR defaults to 1.
 
-The symptom: Firefox renders at integer scale 2x buffer resolution but CSS layout
-uses DPR=1, producing oversized UI elements at the wrong density.
-
-### Solution: `new_subsurface` Callback
-
-Following niri's pattern, the `CompositorHandler::new_subsurface` callback copies
-`preferred_scale` from the root surface to new subsurfaces:
+The `CompositorHandler::new_subsurface` callback and popup handling both use
+`propagate_preferred_scale()` — a shared helper that walks from parent to root
+surface and copies the stored `preferred_scale`:
 
 ```rust
-fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
+pub fn propagate_preferred_scale(surface: &WlSurface, parent: &WlSurface) {
     let mut root = parent.clone();
     while let Some(p) = get_parent(&root) {
         root = p;
@@ -272,14 +269,45 @@ fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
 }
 ```
 
-This works because:
-1. The root surface already has `preferred_scale` set (from `handle_new_toplevel`)
-2. When Firefox later calls `get_fractional_scale` on the subsurface, Smithay's
-   handler finds the stored value and sends it immediately
-3. No new state tracking is needed — the value is stored in Smithay's per-surface
-   data map
+This stores the value in Smithay's per-surface data map. When the client later
+calls `get_fractional_scale`, Smithay finds the stored value and sends it.
 
-### Debugging Subsurface Issues
+### Popups: `output_for_popup` + `send_scale_transform`
+
+Unlike subsurfaces, xdg_popups also need the full `send_scale_transform` call
+(integer `preferred_buffer_scale` + fractional `preferred_scale`). GTK4 apps
+like nautilus have blurry popups without this.
+
+Scale is sent in `commit()` before the initial configure, matching niri's pattern:
+
+```rust
+// In CompositorHandler::commit()
+if let PopupKind::Xdg(ref xdg_popup) = popup {
+    if !xdg_popup.is_initial_configure_sent() {
+        if let Some(output) = self.ewm.output_for_popup(&popup).cloned() {
+            let scale = output.current_scale();
+            let transform = output.current_transform();
+            with_states(surface, |data| {
+                send_scale_transform(surface, data, scale, transform);
+            });
+        }
+        xdg_popup.send_configure().expect("initial configure failed");
+    }
+}
+```
+
+`output_for_popup` finds the popup's output by resolving root surface → window →
+position → output geometry. It also checks layer surfaces as popup parents:
+
+```rust
+pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
+    let root = find_popup_root_surface(popup).ok()?;
+    // Check windows, then layer surfaces
+    ...
+}
+```
+
+### Debugging Child Surface Issues
 
 If a client shows wrong DPR despite correct output scale:
 
@@ -289,6 +317,8 @@ If a client shows wrong DPR despite correct output scale:
    a subsurface, not the toplevel.
 3. Verify `wl_surface.enter` is sent before the client binds fractional scale.
    Without output enter, there's no integer scale either.
+4. For popups: verify `preferred_buffer_scale` is sent before initial configure.
+   Some toolkits (GTK4) rely on this rather than `wp_fractional_scale_v1`.
 
 ## Runtime Scale Changes
 
@@ -361,6 +391,7 @@ emacsclient --socket-name=vt2 -e '(ewm-configure-output "DP-1" :scale 1.5)'
 | App ignores scale change | `send_scale_transform_to_output_surfaces` not called | Ensure `apply_output_config` notifies surfaces |
 | Cursor offset at fractional scale | Integer truncation in cursor position | Use `to_physical_precise_round(scale)` |
 | Window loses output after hide/show | `space.refresh()` calls `output.leave()` for off-screen windows | Use `cleanup_dead_windows()` instead |
+| GTK4 popup blurry | No `send_scale_transform` before initial configure | `output_for_popup` → `send_scale_transform` in `commit()` |
 | Working area wrong after scale change | `check_working_area_change` not called | Ensure `apply_output_config` calls it after state change |
 
 ### Key Code Locations
@@ -371,7 +402,9 @@ emacsclient --socket-name=vt2 -e '(ewm-configure-output "DP-1" :scale 1.5)'
 | Coordinate helpers | `utils.rs` | `to_physical_precise_round`, `round_logical_in_physical`, `output_size` |
 | Scale rounding | `backend/mod.rs` | `closest_representable_scale()` |
 | Output association | `lib.rs` | `enter_output_for_position()`, `cleanup_dead_windows()` |
-| Subsurface propagation | `lib.rs` | `CompositorHandler::new_subsurface()` |
+| Scale propagation | `utils.rs` | `propagate_preferred_scale()` |
+| Subsurface handler | `lib.rs` | `CompositorHandler::new_subsurface()` |
+| Popup output lookup | `lib.rs` | `output_for_popup()` |
 | Toplevel setup | `lib.rs` | `handle_new_toplevel()` |
 | Bulk notification | `lib.rs` | `send_scale_transform_to_output_surfaces()` |
 | Lock surface | `lib.rs` | `configure_lock_surface()` |
