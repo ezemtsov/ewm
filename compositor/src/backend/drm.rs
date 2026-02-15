@@ -61,7 +61,7 @@ use smithay::{
         drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
-        wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle, Resource},
+        wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle},
     },
     utils::{DeviceFd, Scale, Transform},
     wayland::dmabuf::DmabufFeedbackBuilder,
