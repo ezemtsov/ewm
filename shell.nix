@@ -15,10 +15,10 @@ pkgs.mkShell {
     wayland
 
     # For winit backend
-    xorg.libX11
-    xorg.libXcursor
-    xorg.libXrandr
-    xorg.libXi
+    libx11
+    libxcursor
+    libxrandr
+    libxi
 
     # For DRM/libinput backend (standalone session)
     seatd.dev
@@ -48,10 +48,10 @@ pkgs.mkShell {
     libxkbcommon
     libGL
     wayland
-    xorg.libX11
-    xorg.libXcursor
-    xorg.libXrandr
-    xorg.libXi
+    libx11
+    libxcursor
+    libxrandr
+    libxi
     seatd
     libinput
     systemd  # libudev runtime
