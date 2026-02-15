@@ -19,6 +19,8 @@ This document outlines Wayland protocols to implement for broader application co
 | `wlr-foreign-toplevel-v1` | Done | Exposes windows to external tools |
 | `ext-session-lock-v1` | Done | Secure screen locking (swaylock) |
 | `ext-idle-notify-v1` | Done | Idle detection (swayidle) |
+| `wlr-data-control-v1` | Done | Clipboard access for external tools (wl-copy, cliphist) |
+| `zwp-primary-selection-v1` | Done | Primary (middle-click) selection |
 
 ## Priority 1: Application Compatibility
 
@@ -66,6 +68,18 @@ This document outlines Wayland protocols to implement for broader application co
 - Games
 
 **Complexity**: Low - Track inhibitors, disable idle timeout when active
+
+### ext-data-control-v1
+
+**Purpose**: Standardized clipboard access (replaces wlr-data-control)
+
+**Enables**:
+- DankMaterialShell (quickshell) clipboard integration
+- Future-proof clipboard manager support
+
+**Complexity**: Low - Same pattern as wlr-data-control, already implemented
+
+**Blocked**: Requires Smithay upgrade (0.4 → 0.7+), module added post-`0c2230f`
 
 ## Priority 2: Enhanced Features
 
@@ -153,6 +167,7 @@ These are lower priority since EWM uses Emacs for workspace management.
 | idle-notify | `swayidle` | ✓ |
 | session-lock | `swaylock` | ✓ |
 | activation | Launch apps from terminal | ✓ |
+| data-control | `wl-copy`, `wl-paste`, `cliphist` | ✓ |
 | pointer-constraints | `pointer-constraints-demo` | TODO |
 | idle-inhibit | Video player, `wayland-info` | TODO |
 
