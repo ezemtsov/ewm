@@ -1703,15 +1703,6 @@ impl Ewm {
         });
         surface.send_configure();
 
-        // Send fractional scale and transform to the new surface
-        if let Some(output) = self.space.outputs().next() {
-            let scale = output.current_scale();
-            let transform = output.current_transform();
-            smithay::wayland::compositor::with_states(surface.wl_surface(), |data| {
-                crate::utils::send_scale_transform(surface.wl_surface(), data, scale, transform);
-            });
-        }
-
         let window = Window::new_wayland_window(surface);
         self.window_ids.insert(window.clone(), id);
         self.id_windows.insert(id, window.clone());
@@ -1719,6 +1710,20 @@ impl Ewm {
         // Determine target output
         let frame_output = module::take_pending_frame_output();
         let target_output = frame_output.clone().or_else(|| self.active_output());
+
+        // Send fractional scale and transform from the target output
+        let scale_output = target_output
+            .as_ref()
+            .and_then(|name| self.space.outputs().find(|o| o.name() == *name))
+            .or_else(|| self.space.outputs().next())
+            .cloned();
+        if let Some(output) = scale_output {
+            let scale = output.current_scale();
+            let transform = output.current_transform();
+            window.with_surfaces(|surface, data| {
+                crate::utils::send_scale_transform(surface, data, scale, transform);
+            });
+        }
 
         // Position based on surface type
         let position = if let Some(ref output_name) = frame_output {
@@ -2723,22 +2728,9 @@ impl IdleNotifierHandler for State {
 delegate_idle_notify!(State);
 
 // Fractional scale protocol (wp-fractional-scale-v1)
-impl FractionalScaleHandler for State {
-    fn new_fractional_scale(
-        &mut self,
-        surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-    ) {
-        // Send the current output's fractional scale to the new surface.
-        // Find which output the surface's toplevel/layer is on.
-        if let Some(output) = self.ewm.space.outputs().next().cloned() {
-            let scale = output.current_scale();
-            let transform = output.current_transform();
-            smithay::wayland::compositor::with_states(&surface, |data| {
-                crate::utils::send_scale_transform(&surface, data, scale, transform);
-            });
-        }
-    }
-}
+// Scale is sent from lifecycle-specific handlers (handle_new_toplevel, new_layer_surface,
+// configure_lock_surface, apply_output_config) that know the correct output.
+impl FractionalScaleHandler for State {}
 delegate_fractional_scale!(State);
 
 // Viewporter protocol (wp-viewporter, required by fractional scale clients)

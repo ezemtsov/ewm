@@ -497,6 +497,18 @@ impl DrmBackendState {
         // --- Notify existing surfaces of scale/transform change ---
         ewm.send_scale_transform_to_output_surfaces(&output);
 
+        // --- Resize lock buffer and reconfigure lock surface for new output size ---
+        let output_size = crate::utils::output_size(&output);
+        let is_locked = ewm.is_locked();
+        if let Some(state) = ewm.output_state.get_mut(&output) {
+            state.resize_lock_buffer((output_size.w as i32, output_size.h as i32));
+            if is_locked {
+                if let Some(lock_surface) = &state.lock_surface {
+                    crate::configure_lock_surface(lock_surface, &output);
+                }
+            }
+        }
+
         // --- Recalculate total output size, working areas, and queue redraw ---
         ewm.recalculate_output_size();
         ewm.check_working_area_change(&output);
@@ -1208,13 +1220,13 @@ impl DrmBackendState {
         );
 
         // Initialize output state in Ewm (redraw state, refresh interval)
-        let mode_size = mode.size();
+        let logical_size = crate::utils::output_size(&output);
         ewm.output_state.insert(
             output.clone(),
             OutputState::new(
                 &connector_name,
                 refresh_interval_us,
-                (mode_size.0 as i32, mode_size.1 as i32),
+                (logical_size.w as i32, logical_size.h as i32),
             ),
         );
 
@@ -1224,7 +1236,7 @@ impl DrmBackendState {
             ewm.space.map_output(&output, (x_offset, y_offset));
             info!(
                 "Mapped output {} at position ({}, {}), size {}x{}",
-                connector_name, x_offset, y_offset, mode_size.0, mode_size.1
+                connector_name, x_offset, y_offset, mode.size().0, mode.size().1
             );
         } else {
             info!("Output {} connected but disabled by config", connector_name);

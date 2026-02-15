@@ -325,11 +325,12 @@ pub fn collect_render_elements_for_output(
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
 
         if output_rect.contains(pointer_pos) {
-            // Offset cursor position by output location
-            let cursor_pos: Point<i32, Physical> = Point::from((
-                (pointer_x - cursor::CURSOR_HOTSPOT.0 as f64 - output_pos.x as f64) as i32,
-                (pointer_y - cursor::CURSOR_HOTSPOT.1 as f64 - output_pos.y as f64) as i32,
+            // Offset cursor position by output location (logical → physical)
+            let cursor_logical = Point::from((
+                pointer_x - cursor::CURSOR_HOTSPOT.0 as f64 - output_pos.x as f64,
+                pointer_y - cursor::CURSOR_HOTSPOT.1 as f64 - output_pos.y as f64,
             ));
+            let cursor_pos: Point<i32, Physical> = cursor_logical.to_physical_precise_round(scale);
 
             match cursor_buffer.render_element(renderer, cursor_pos) {
                 Ok(cursor_element) => {
