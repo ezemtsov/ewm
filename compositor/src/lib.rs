@@ -76,8 +76,9 @@ use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyMana
 use serde::{Deserialize, Serialize};
 use smithay::{
     backend::renderer::element::{solid::SolidColorBuffer, RenderElementStates},
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_idle_notify,
-    delegate_input_method_manager, delegate_layer_shell, delegate_output,
+    delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
+    delegate_idle_notify, delegate_input_method_manager,
+    delegate_layer_shell, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
     delegate_text_input_manager, delegate_xdg_activation, delegate_xdg_shell,
     desktop::{
@@ -125,13 +126,15 @@ use smithay::{
         seat::WaylandFocus,
         selection::{
             data_device::{
-                set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
-                ServerDndGrabHandler,
+                request_data_device_client_selection, set_data_device_focus,
+                set_data_device_selection, ClientDndGrabHandler, DataDeviceHandler,
+                DataDeviceState, ServerDndGrabHandler,
             },
             primary_selection::{
                 set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
             },
-            SelectionHandler,
+            wlr_data_control::{DataControlHandler, DataControlState},
+            SelectionHandler, SelectionSource, SelectionTarget,
         },
         session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
         shell::wlr_layer::{Layer, WlrLayerShellHandler, WlrLayerShellState},
@@ -151,6 +154,7 @@ use smithay::{
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem;
+use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
@@ -443,6 +447,7 @@ pub struct Ewm {
     pub seat_state: SeatState<State>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    pub data_control_state: DataControlState,
     pub seat: Seat<State>,
     /// Cached pointer handle (avoids repeated get_pointer().unwrap() on hot paths)
     pub pointer: PointerHandle<State>,
@@ -562,7 +567,11 @@ impl Ewm {
         let mut seat_state: SeatState<State> = SeatState::new();
         let data_device_state = DataDeviceState::new::<State>(&display_handle);
         let primary_selection_state = PrimarySelectionState::new::<State>(&display_handle);
-
+        let data_control_state = DataControlState::new::<State, _>(
+            &display_handle,
+            Some(&primary_selection_state),
+            |_| true,
+        );
         let mut seat: Seat<State> = seat_state.new_wl_seat(&display_handle, "seat0");
         let keyboard = seat
             .add_keyboard(Default::default(), 200, 25)
@@ -612,6 +621,7 @@ impl Ewm {
             seat_state,
             data_device_state,
             primary_selection_state,
+            data_control_state,
             seat,
             pointer,
             keyboard,
@@ -2087,7 +2097,44 @@ delegate_seat!(State);
 
 // Data device / selection
 impl SelectionHandler for State {
-    type SelectionUserData = ();
+    type SelectionUserData = Arc<[u8]>;
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        if ty == SelectionTarget::Clipboard {
+            if let Some(source) = &source {
+                let mime_types = source.mime_types();
+                if mime_types.iter().any(|m| m.contains("text")) {
+                    self.read_client_selection_to_emacs();
+                }
+            }
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        _ty: SelectionTarget,
+        _mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        user_data: &Self::SelectionUserData,
+    ) {
+        let buf = user_data.clone();
+        std::thread::spawn(move || {
+            use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
+            use std::io::Write;
+            if let Err(err) = fcntl_setfl(&fd, OFlags::empty()) {
+                warn!("error clearing flags on selection fd: {err:?}");
+            }
+            if let Err(err) = std::fs::File::from(fd).write_all(&buf) {
+                warn!("error writing selection: {err:?}");
+            }
+        });
+    }
 }
 impl ClientDndGrabHandler for State {}
 impl ServerDndGrabHandler for State {}
@@ -2104,6 +2151,13 @@ impl PrimarySelectionHandler for State {
     }
 }
 delegate_primary_selection!(State);
+
+impl DataControlHandler for State {
+    fn data_control_state(&self) -> &DataControlState {
+        &self.ewm.data_control_state
+    }
+}
+delegate_data_control!(State);
 
 // Output
 impl smithay::wayland::output::OutputHandler for State {}
@@ -3078,6 +3132,51 @@ impl State {
                 debug!("Created activation token for Emacs: {}", token_str);
                 module::push_activation_token(token_str);
             }
+            ModuleCommand::SetSelection { text } => {
+                let data: Arc<[u8]> = Arc::from(text.into_bytes().into_boxed_slice());
+                set_data_device_selection(
+                    &self.ewm.display_handle,
+                    &self.ewm.seat,
+                    vec![
+                        "text/plain;charset=utf-8".into(),
+                        "text/plain".into(),
+                        "UTF8_STRING".into(),
+                    ],
+                    data,
+                );
+                debug!("Selection set from Emacs");
+            }
+        }
+    }
+
+    /// Read clipboard data from the current client selection and forward to Emacs.
+    fn read_client_selection_to_emacs(&mut self) {
+        let (read_end, write_end) = std::os::unix::net::UnixStream::pair()
+            .expect("UnixStream::pair failed");
+
+        let write_fd: OwnedFd = write_end.into();
+
+        let mime = "text/plain;charset=utf-8".to_string();
+        match request_data_device_client_selection(&self.ewm.seat, mime, write_fd) {
+            Ok(()) => {
+                std::thread::spawn(move || {
+                    use std::io::Read;
+                    // Set a read timeout so we don't block forever on misbehaving clients
+                    let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut read_end = read_end;
+                    let mut buf = Vec::new();
+                    if let Err(e) = read_end.read_to_end(&mut buf) {
+                        warn!("error reading client selection: {e:?}");
+                        return;
+                    }
+                    if let Ok(text) = String::from_utf8(buf) {
+                        if !text.is_empty() {
+                            module::push_event(Event::SelectionChanged { text });
+                        }
+                    }
+                });
+            }
+            Err(_) => {}
         }
     }
 

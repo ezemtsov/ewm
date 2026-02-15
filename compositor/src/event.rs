@@ -106,4 +106,7 @@ pub enum Event {
         width: i32,
         height: i32,
     },
+    /// Clipboard selection changed (Wayland client copied text)
+    #[serde(rename = "selection-changed")]
+    SelectionChanged { text: String },
 }

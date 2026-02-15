@@ -229,6 +229,8 @@ pub enum ModuleCommand {
     GetState,
     /// Request activation token creation (compositor will push to ACTIVATION_TOKEN_POOL)
     CreateActivationToken,
+    /// Set clipboard selection from Emacs
+    SetSelection { text: String },
 }
 
 /// Command queue shared between Emacs thread and compositor
@@ -542,6 +544,10 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
             cons("y", (y as i64).into_lisp(env)?)?,
             cons("width", (width as i64).into_lisp(env)?)?,
             cons("height", (height as i64).into_lisp(env)?)?,
+        ]),
+        Event::SelectionChanged { text } => list(vec![
+            cons("event", "selection-changed".into_lisp(env)?)?,
+            cons("text", text.into_lisp(env)?)?,
         ]),
     }
 }
@@ -939,6 +945,13 @@ fn get_layouts_module(_: &Env) -> Result<()> {
 #[defun]
 fn get_state_module(_: &Env) -> Result<()> {
     push_command(ModuleCommand::GetState);
+    Ok(())
+}
+
+/// Set clipboard selection from Emacs (module mode).
+#[defun]
+fn set_selection_module(_: &Env, text: String) -> Result<()> {
+    push_command(ModuleCommand::SetSelection { text });
     Ok(())
 }
 

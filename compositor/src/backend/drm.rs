@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 
 use crate::tracy_span;
+use tracing::{debug, error, info, trace, warn};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -66,8 +67,6 @@ use smithay::{
     wayland::dmabuf::DmabufFeedbackBuilder,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
-#[cfg(feature = "screencast")]
-use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     backend::Backend,

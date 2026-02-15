@@ -126,7 +126,8 @@ Example:
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
       ("key" (ewm--handle-key event))
       ("state" (ewm--handle-state event))
-      ("working_area" (ewm--handle-working-area event)))))
+      ("working_area" (ewm--handle-working-area event))
+      ("selection-changed" (ewm--handle-selection-changed event)))))
 
 ;;; Event handlers
 
@@ -300,6 +301,30 @@ changing the available area for Emacs frames."
     ;; here to avoid focus loops during startup when multiple working area
     ;; events arrive in quick succession.
     ))
+
+;;; Clipboard integration
+
+(defvar ewm--last-selection nil
+  "Last selection text received from compositor, to avoid echo.")
+
+(defvar ewm--saved-interprogram-cut-function nil
+  "Saved value of `interprogram-cut-function' before EWM override.")
+
+(defun ewm--handle-selection-changed (event)
+  "Handle selection-changed EVENT from compositor.
+Push the text onto the kill ring."
+  (let ((text (map-elt event "text")))
+    (when (and text (not (string-empty-p text))
+                (not (equal text (car kill-ring))))
+      (setq ewm--last-selection text)
+      (kill-new text))))
+
+(defun ewm--interprogram-cut-function (text)
+  "Send TEXT to Wayland clipboard via compositor."
+  (when (and (ewm--compositor-active-p)
+             (not (equal text ewm--last-selection)))
+    (setq ewm--last-selection text)
+    (ewm-set-selection-module text)))
 
 ;;; Commands
 
@@ -584,6 +609,8 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (ewm--send-xkb-config)
   (ewm-text-input-auto-mode-enable)
   (ewm--enable-process-advice)
+  (setq ewm--saved-interprogram-cut-function interprogram-cut-function)
+  (setq interprogram-cut-function #'ewm--interprogram-cut-function)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Resend intercept keys after startup to catch late-loaded bindings
@@ -596,6 +623,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (ewm-input--disable)
   (ewm-text-input-auto-mode-disable)
   (ewm--disable-process-advice)
+  (setq interprogram-cut-function ewm--saved-interprogram-cut-function)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Stop module mode if active
