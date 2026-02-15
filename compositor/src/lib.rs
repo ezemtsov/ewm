@@ -1478,12 +1478,21 @@ impl Ewm {
 
             self.working_areas.insert(output_name.clone(), working_area);
 
+            // Update module offset to reflect frame origin (output pos + working area)
+            if let Some(output_geo) = self.space.output_geometry(output) {
+                crate::module::set_output_offset(
+                    &output_name,
+                    output_geo.loc.x + working_area.loc.x,
+                    output_geo.loc.y + working_area.loc.y,
+                );
+            }
+
             // Update Emacs frames to fit new working area
             self.update_frames_for_working_area(output);
 
             // Notify Emacs
             self.queue_event(Event::WorkingArea {
-                output: output_name,
+                output: output_name.clone(),
                 x: working_area.loc.x,
                 y: working_area.loc.y,
                 width: working_area.size.w,
@@ -2934,7 +2943,10 @@ impl State {
                                     out_info.y = new_y;
                                 }
                             }
-                            crate::module::set_output_offset(&name, new_x, new_y);
+                            let wa = self.ewm.working_areas.get(&name)
+                                .map(|r| (r.loc.x, r.loc.y))
+                                .unwrap_or((0, 0));
+                            crate::module::set_output_offset(&name, new_x + wa.0, new_y + wa.1);
                             self.ewm.recalculate_output_size();
                             info!("Configured output {} at ({}, {})", name, new_x, new_y);
                         } else {

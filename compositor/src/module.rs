@@ -120,7 +120,9 @@ pub fn set_focused_id(id: u32) {
     FOCUSED_SURFACE_ID.store(id, Ordering::Relaxed);
 }
 
-/// Update output offset (called by compositor)
+/// Update output offset (called by compositor).
+/// This is the Emacs frame origin in compositor-global coordinates:
+/// output position + working area origin within that output.
 pub fn set_output_offset(name: &str, x: i32, y: i32) {
     output_offsets()
         .lock()
