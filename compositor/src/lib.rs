@@ -161,7 +161,7 @@ use std::mem;
 use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 /// Redraw state machine for proper VBlank synchronization.
 ///
@@ -761,23 +761,6 @@ impl Ewm {
         let dead: Vec<Window> = self.space.elements().filter(|w| !w.alive()).cloned().collect();
         for w in dead {
             self.space.unmap_elem(&w);
-        }
-    }
-
-    /// Explicitly associate a window with the output at the given position.
-    /// Sends wl_surface.enter for the matching output and wl_surface.leave for others.
-    pub fn enter_output_for_position(&self, window: &Window, pos: (i32, i32)) {
-        let Some(surface) = window.wl_surface() else {
-            return;
-        };
-        let point = smithay::utils::Point::from(pos);
-        for output in self.space.outputs() {
-            let geo = self.space.output_geometry(output).unwrap_or_default();
-            if geo.contains(point) {
-                output.enter(&surface);
-            } else {
-                output.leave(&surface);
-            }
         }
     }
 
@@ -3263,60 +3246,6 @@ impl State {
 
         use module::ModuleCommand;
         match cmd {
-            ModuleCommand::Layout { id, x, y, w, h } => {
-                if let Some(window) = self.ewm.id_windows.get(&id) {
-                    self.ewm.space.map_element(window.clone(), (x, y), true);
-                    self.ewm.space.raise_element(window, true);
-                    self.ewm.enter_output_for_position(window, (x, y));
-                    window.toplevel().map(|t| {
-                        t.with_pending_state(|state| {
-                            state.size = Some((w as i32, h as i32).into());
-                        });
-                        t.send_configure();
-                    });
-                    self.ewm.queue_redraw_all();
-                    debug!("Layout surface {} at ({}, {}) {}x{}", id, x, y, w, h);
-                }
-            }
-            ModuleCommand::Views { id, views } => {
-                // Skip if views unchanged
-                if self.ewm.surface_views.get(&id) == Some(&views) {
-                    trace!("Views surface {} unchanged, skipping", id);
-                    return;
-                }
-                trace!("Views surface {} changed: {:?}", id, views);
-                if let Some(window) = self.ewm.id_windows.get(&id) {
-                    let primary_view = views.iter().find(|v| v.active).or_else(|| views.first());
-                    if let Some(view) = primary_view {
-                        self.ewm
-                            .space
-                            .map_element(window.clone(), (view.x, view.y), true);
-                        self.ewm.space.raise_element(window, true);
-                        window.toplevel().map(|t| {
-                            t.with_pending_state(|state| {
-                                state.size = Some((view.w as i32, view.h as i32).into());
-                            });
-                            t.send_configure();
-                        });
-                    }
-                    debug!("Views surface {} ({} views)", id, views.len());
-                    self.ewm.surface_views.insert(id, views);
-                    self.ewm.queue_redraw_all();
-                }
-            }
-            ModuleCommand::Hide { id } => {
-                // Only hide if surface has views (skip if already hidden)
-                if self.ewm.surface_views.contains_key(&id) {
-                    if let Some(window) = self.ewm.id_windows.get(&id) {
-                        self.ewm
-                            .space
-                            .map_element(window.clone(), (-10000, -10000), false);
-                        self.ewm.surface_views.remove(&id);
-                        self.ewm.queue_redraw_all();
-                        debug!("Hide surface {}", id);
-                    }
-                }
-            }
             ModuleCommand::Close { id } => {
                 if let Some(window) = self.ewm.id_windows.get(&id) {
                     if let Some(toplevel) = window.toplevel() {
@@ -3365,37 +3294,6 @@ impl State {
                 let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
                 info!("Screenshot requested: {}", target);
                 self.ewm.pending_screenshot = Some(target);
-            }
-            ModuleCommand::AssignOutput { id, output } => {
-                let output_geo = self
-                    .ewm
-                    .space
-                    .outputs()
-                    .find(|o| o.name() == output)
-                    .and_then(|o| self.ewm.space.output_geometry(o));
-                if let Some(geo) = output_geo {
-                    if let Some(window) = self.ewm.id_windows.get(&id) {
-                        self.ewm
-                            .space
-                            .map_element(window.clone(), (geo.loc.x, geo.loc.y), true);
-                        self.ewm.space.raise_element(window, true);
-                        window.toplevel().map(|t| {
-                            t.with_pending_state(|state| {
-                                state.size = Some((geo.size.w, geo.size.h).into());
-                            });
-                            t.send_configure();
-                        });
-                        self.ewm.queue_redraw_all();
-                        info!(
-                            "Assigned surface {} to output {} at ({}, {}) {}x{}",
-                            id, output, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h
-                        );
-                    } else {
-                        warn!("Surface not found: {}", id);
-                    }
-                } else {
-                    warn!("Output not found: {}", output);
-                }
             }
             ModuleCommand::ConfigureOutput {
                 name,

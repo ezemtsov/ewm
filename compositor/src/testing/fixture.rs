@@ -196,23 +196,6 @@ impl Fixture {
     fn handle_module_command(&mut self, cmd: crate::module::ModuleCommand) {
         use crate::module::ModuleCommand;
         match cmd {
-            ModuleCommand::Layout { id, x, y, w, h } => {
-                if let Some(window) = self.state.ewm.id_windows.get(&id) {
-                    self.state
-                        .ewm
-                        .space
-                        .map_element(window.clone(), (x, y), true);
-                    self.state.ewm.space.raise_element(window, true);
-                    self.state.ewm.enter_output_for_position(window, (x, y));
-                    window.toplevel().map(|t| {
-                        t.with_pending_state(|state| {
-                            state.size = Some((w as i32, h as i32).into());
-                        });
-                        t.send_configure();
-                    });
-                    self.state.ewm.queue_redraw_all();
-                }
-            }
             ModuleCommand::Focus { id } => {
                 if self.state.ewm.focused_surface_id != id
                     && self.state.ewm.id_windows.contains_key(&id)
@@ -220,37 +203,6 @@ impl Fixture {
                     self.state
                         .ewm
                         .focus_surface_with_source(id, false, "test", None);
-                }
-            }
-            ModuleCommand::Views { id, views } => {
-                if let Some(window) = self.state.ewm.id_windows.get(&id) {
-                    if let Some(view) = views.iter().find(|v| v.active).or_else(|| views.first()) {
-                        self.state
-                            .ewm
-                            .space
-                            .map_element(window.clone(), (view.x, view.y), true);
-                        self.state.ewm.space.raise_element(window, true);
-                        window.toplevel().map(|t| {
-                            t.with_pending_state(|state| {
-                                state.size = Some((view.w as i32, view.h as i32).into());
-                            });
-                            t.send_configure();
-                        });
-                    }
-                    self.state.ewm.surface_views.insert(id, views);
-                    self.state.ewm.queue_redraw_all();
-                }
-            }
-            ModuleCommand::Hide { id } => {
-                if self.state.ewm.surface_views.contains_key(&id) {
-                    if let Some(window) = self.state.ewm.id_windows.get(&id) {
-                        self.state
-                            .ewm
-                            .space
-                            .map_element(window.clone(), (-10000, -10000), false);
-                        self.state.ewm.surface_views.remove(&id);
-                        self.state.ewm.queue_redraw_all();
-                    }
                 }
             }
             ModuleCommand::Close { id } => {

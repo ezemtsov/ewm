@@ -355,20 +355,6 @@ Push the text onto the kill ring."
 
 ;;; Commands
 
-(defun ewm-layout (id x y w h)
-  "Set surface ID position to X Y and size to W H."
-  (ewm-layout-module id x y w h))
-
-(defun ewm-views (id views)
-  "Set surface ID to display at multiple VIEWS.
-VIEWS is a vector of plists with :x :y :w :h :active keys.
-The :active view receives input, others are visual copies."
-  (ewm-views-module id views))
-
-(defun ewm-hide (id)
-  "Hide surface ID (move offscreen)."
-  (ewm-hide-module id))
-
 (defun ewm-output-layout (output surfaces)
   "Set declarative layout for OUTPUT.
 SURFACES is a vector of plists with :id :x :y :w :h :active keys.
@@ -437,10 +423,6 @@ ARGS is a plist with optional keys:
    (if (plist-member args :enabled)
        (plist-get args :enabled)
      :unset)))
-
-(defun ewm-assign-output (id output)
-  "Assign surface ID to OUTPUT."
-  (ewm-assign-output-module id output))
 
 (defun ewm-prepare-frame (output)
   "Tell compositor to assign next frame to OUTPUT."

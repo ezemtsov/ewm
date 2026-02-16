@@ -44,7 +44,7 @@ use std::thread::{self, JoinHandle};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::event::Event;
-use crate::{InterceptedKey, KeyId, OutputSurfaceEntry, SurfaceView};
+use crate::{InterceptedKey, KeyId, OutputSurfaceEntry};
 
 // ============================================================================
 // Shared State (read by Emacs, written by compositor)
@@ -172,20 +172,6 @@ fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
 /// Commands sent from Emacs to the compositor via the module interface.
 #[derive(Debug, Clone)]
 pub enum ModuleCommand {
-    Layout {
-        id: u32,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
-    },
-    Views {
-        id: u32,
-        views: Vec<SurfaceView>,
-    },
-    Hide {
-        id: u32,
-    },
     Close {
         id: u32,
     },
@@ -198,10 +184,6 @@ pub enum ModuleCommand {
     },
     Screenshot {
         path: Option<String>,
-    },
-    AssignOutput {
-        id: u32,
-        output: String,
     },
     ConfigureOutput {
         name: String,
@@ -727,64 +709,6 @@ fn socket(_: &Env) -> Result<Option<String>> {
 // Module Command Functions (direct Emacs → Compositor)
 // ============================================================================
 
-/// Set surface position and size (module mode).
-#[defun]
-fn layout_module(_: &Env, id: i64, x: i64, y: i64, w: i64, h: i64) -> Result<()> {
-    push_command(ModuleCommand::Layout {
-        id: id as u32,
-        x: x as i32,
-        y: y as i32,
-        w: w as u32,
-        h: h as u32,
-    });
-    Ok(())
-}
-
-/// Set multiple views for a surface (module mode).
-/// VIEWS is a vector of plists with :x :y :w :h :active keys.
-#[defun]
-fn views_module(env: &Env, id: i64, views: Value<'_>) -> Result<()> {
-    let mut parsed_views = Vec::new();
-
-    // Iterate through the vector of views
-    let len_val: Value = env.call("length", (views,))?;
-    let len: i64 = len_val.into_rust()?;
-    for i in 0..len {
-        let view: Value = env.call("aref", (views, i))?;
-
-        // Extract fields from plist
-        let x_val: Value = env.call("plist-get", (view, env.intern(":x")?))?;
-        let y_val: Value = env.call("plist-get", (view, env.intern(":y")?))?;
-        let w_val: Value = env.call("plist-get", (view, env.intern(":w")?))?;
-        let h_val: Value = env.call("plist-get", (view, env.intern(":h")?))?;
-        let x: i64 = x_val.into_rust()?;
-        let y: i64 = y_val.into_rust()?;
-        let w: i64 = w_val.into_rust()?;
-        let h: i64 = h_val.into_rust()?;
-
-        let active_val: Value = env.call("plist-get", (view, env.intern(":active")?))?;
-        // Active is true unless it's nil or :false
-        let false_sym = env.intern(":false")?;
-        let eq_result: Value = env.call("eq", (active_val, false_sym))?;
-        let is_false = eq_result.is_not_nil();
-        let active = active_val.is_not_nil() && !is_false;
-
-        parsed_views.push(SurfaceView {
-            x: x as i32,
-            y: y as i32,
-            w: w as u32,
-            h: h as u32,
-            active,
-        });
-    }
-
-    push_command(ModuleCommand::Views {
-        id: id as u32,
-        views: parsed_views,
-    });
-    Ok(())
-}
-
 /// Set declarative layout for an output (module mode).
 /// OUTPUT is the output name. SURFACES is a vector of plists with :id :x :y :w :h :active keys.
 /// Coordinates are relative to the output's working area (frame-relative).
@@ -831,13 +755,6 @@ fn output_layout_module(env: &Env, output: String, surfaces: Value<'_>) -> Resul
     Ok(())
 }
 
-/// Hide a surface (module mode).
-#[defun]
-fn hide_module(_: &Env, id: i64) -> Result<()> {
-    push_command(ModuleCommand::Hide { id: id as u32 });
-    Ok(())
-}
-
 /// Request surface to close (module mode).
 #[defun]
 fn close_module(_: &Env, id: i64) -> Result<()> {
@@ -863,16 +780,6 @@ fn warp_pointer_module(_: &Env, x: f64, y: f64) -> Result<()> {
 #[defun]
 fn screenshot_module(_: &Env, path: Option<String>) -> Result<()> {
     push_command(ModuleCommand::Screenshot { path });
-    Ok(())
-}
-
-/// Assign surface to output (module mode).
-#[defun]
-fn assign_output_module(_: &Env, id: i64, output: String) -> Result<()> {
-    push_command(ModuleCommand::AssignOutput {
-        id: id as u32,
-        output,
-    });
     Ok(())
 }
 
