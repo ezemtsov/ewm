@@ -12,10 +12,8 @@
 
 (require 'cl-lib)
 
-(declare-function ewm-views "ewm")
-(declare-function ewm-hide "ewm")
+(declare-function ewm-output-layout "ewm")
 (declare-function ewm-focus "ewm")
-(declare-function ewm--get-output-offset "ewm")
 (declare-function ewm--compositor-active-p "ewm")
 (declare-function ewm-get-focused-id "ewm-core")
 (declare-function ewm-in-prefix-sequence-p "ewm-core")
@@ -68,34 +66,27 @@ Focus sync should only happen through the debounced `ewm-input--sync-focus'."
   (when ewm--module-mode
     ;; Force redisplay to ensure window sizes are current
     (redisplay t)
-    ;; Build a hash table: surface-id -> list of (window . active-p)
-    (let ((surface-windows (make-hash-table :test 'eql))
+    ;; Group surface entries by output
+    (let ((output-surfaces (make-hash-table :test 'equal))
           (sel-window (selected-window))
           (sel-frame (selected-frame)))
-      ;; Collect all windows showing each surface
+      ;; Ensure every output with a frame gets a key (empty = clear layout)
       (dolist (frame (frame-list))
-        (dolist (window (window-list frame 'no-minibuf))
-          (let* ((buf (window-buffer window))
-                 (id (buffer-local-value 'ewm-surface-id buf)))
-            (when id
-              (let ((active-p (eq window sel-window))
-                    (existing (gethash id surface-windows)))
-                (puthash id (cons (cons window active-p) existing) surface-windows))))))
-      ;; Send views or hide for each surface
-      ;; Deduplication happens in compositor (single source of truth)
+        (let ((output (frame-parameter frame 'ewm-output)))
+          (when output
+            (unless (gethash output output-surfaces)
+              (puthash output nil output-surfaces))
+            (dolist (window (window-list frame 'no-minibuf))
+              (let* ((buf (window-buffer window))
+                     (id (buffer-local-value 'ewm-surface-id buf)))
+                (when id
+                  (let ((view (ewm-layout--make-output-view window (eq window sel-window))))
+                    (push `(:id ,id ,@view) (gethash output output-surfaces)))))))))
+      ;; Send per-output declarations
       (maphash
-       (lambda (id _info)
-         (let ((windows (gethash id surface-windows)))
-           (if windows
-               ;; Surface is visible - send views
-               (let ((views (mapcar
-                             (lambda (win-pair)
-                               (ewm-layout--make-view (car win-pair) (cdr win-pair)))
-                             windows)))
-                 (ewm-views id (vconcat views)))
-             ;; Surface not visible - hide it
-             (ewm-hide id))))
-       ewm--surfaces)
+       (lambda (output entries)
+         (ewm-output-layout output (vconcat (nreverse entries))))
+       output-surfaces)
       ;; Sync focus only if not skipped and not locked
       (unless (or skip-focus-sync (ewm--focus-locked-p))
         (let* ((sel-buf (window-buffer sel-window))
@@ -105,19 +96,19 @@ Focus sync should only happen through the debounced `ewm-input--sync-focus'."
           (when (and target-id (not (eq target-id (ewm-get-focused-id))))
             (ewm-focus target-id)))))))
 
-(defun ewm-layout--make-view (window active-p)
-  "Create a view plist for WINDOW with ACTIVE-P flag."
-  (let* ((frame (window-frame window))
-         (output-offset (ewm--get-output-offset (frame-parameter frame 'ewm-output)))
-         (edges (ewm--window-inside-absolute-pixel-edges window))
+(defun ewm-layout--make-output-view (window active-p)
+  "Create a view plist for WINDOW with frame-relative coordinates.
+Returns (:x X :y Y :w W :h H :active ACTIVE-P).
+Coordinates are relative to the output's working area — the compositor
+converts to global positions using output geometry + working area offset."
+  (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
          (x (pop edges))
          (y (pop edges))
          (width (- (pop edges) x))
          (height (- (pop edges) y))
-         (csd-offset (ewm--frame-y-offset frame))
-         (final-x (+ x (car output-offset)))
-         (final-y (+ y csd-offset (cdr output-offset))))
-    `(:x ,final-x :y ,final-y :w ,width :h ,height :active ,(if active-p t :false))))
+         (csd-offset (ewm--frame-y-offset (window-frame window))))
+    `(:x ,x :y ,(+ y csd-offset) :w ,width :h ,height
+      :active ,(if active-p t :false))))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes.
