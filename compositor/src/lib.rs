@@ -1693,11 +1693,30 @@ impl Ewm {
         let scale = output.current_scale();
         let transform = output.current_transform();
 
-        // Notify windows on this output
+        // Notify declared surfaces on this output
+        if let Some(entries) = self.output_layouts.get(&output.name()) {
+            for entry in entries {
+                if let Some(window) = self.id_windows.get(&entry.id) {
+                    window.with_surfaces(|surface, data| {
+                        crate::utils::send_scale_transform(surface, data, scale, transform);
+                    });
+                }
+            }
+        }
+
+        // Notify undeclared windows (Emacs frames) that intersect this output
         for window in self.space.elements() {
-            window.with_surfaces(|surface, data| {
-                crate::utils::send_scale_transform(surface, data, scale, transform);
-            });
+            let window_id = self.window_ids.get(window).copied().unwrap_or(0);
+            if self.surface_outputs.contains_key(&window_id) {
+                continue; // managed by output_layouts, already handled above
+            }
+            let loc = self.space.element_location(window).unwrap_or_default();
+            let output_geo = self.space.output_geometry(output).unwrap_or_default();
+            if output_geo.contains(loc) {
+                window.with_surfaces(|surface, data| {
+                    crate::utils::send_scale_transform(surface, data, scale, transform);
+                });
+            }
         }
 
         // Notify layer surfaces on this output
@@ -1872,12 +1891,20 @@ impl Ewm {
     /// Find the output for a popup's root surface (window or layer surface).
     pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
         let root = find_popup_root_surface(popup).ok()?;
-        // Check windows
+
+        // Check declared surfaces via reverse index
         if let Some(window) = self
             .space
             .elements()
             .find(|w| w.wl_surface().map(|s| *s == root).unwrap_or(false))
         {
+            let window_id = self.window_ids.get(window).copied().unwrap_or(0);
+            if let Some(output_names) = self.surface_outputs.get(&window_id) {
+                if let Some(name) = output_names.iter().next() {
+                    return self.space.outputs().find(|o| o.name() == *name);
+                }
+            }
+            // Fallback: undeclared window — use geometry
             let window_loc = self.space.element_location(window).unwrap_or_default();
             return self.space.outputs().find(|o| {
                 self.space
@@ -1886,6 +1913,7 @@ impl Ewm {
                     .unwrap_or(false)
             });
         }
+
         // Check layer surfaces
         self.space.outputs().find(|o| {
             layer_map_for_output(o)
