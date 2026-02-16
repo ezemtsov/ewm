@@ -369,6 +369,12 @@ The :active view receives input, others are visual copies."
   "Hide surface ID (move offscreen)."
   (ewm-hide-module id))
 
+(defun ewm-output-layout (output surfaces)
+  "Set declarative layout for OUTPUT.
+SURFACES is a vector of plists with :id :x :y :w :h :active keys.
+Coordinates are relative to the output's working area."
+  (ewm-output-layout-module output surfaces))
+
 (defun ewm-close (id)
   "Request surface ID to close gracefully."
   (ewm-close-module id))

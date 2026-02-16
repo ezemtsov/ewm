@@ -44,7 +44,7 @@ use std::thread::{self, JoinHandle};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::event::Event;
-use crate::{InterceptedKey, KeyId, SurfaceView};
+use crate::{InterceptedKey, KeyId, OutputSurfaceEntry, SurfaceView};
 
 // ============================================================================
 // Shared State (read by Emacs, written by compositor)
@@ -233,6 +233,11 @@ pub enum ModuleCommand {
     CreateActivationToken,
     /// Set clipboard selection from Emacs
     SetSelection { text: String },
+    /// Declarative per-output layout
+    OutputLayout {
+        output: String,
+        surfaces: Vec<OutputSurfaceEntry>,
+    },
 }
 
 /// Command queue shared between Emacs thread and compositor
@@ -776,6 +781,52 @@ fn views_module(env: &Env, id: i64, views: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::Views {
         id: id as u32,
         views: parsed_views,
+    });
+    Ok(())
+}
+
+/// Set declarative layout for an output (module mode).
+/// OUTPUT is the output name. SURFACES is a vector of plists with :id :x :y :w :h :active keys.
+/// Coordinates are relative to the output's working area (frame-relative).
+#[defun]
+fn output_layout_module(env: &Env, output: String, surfaces: Value<'_>) -> Result<()> {
+    let mut entries = Vec::new();
+
+    let len_val: Value = env.call("length", (surfaces,))?;
+    let len: i64 = len_val.into_rust()?;
+    for i in 0..len {
+        let entry: Value = env.call("aref", (surfaces, i))?;
+
+        let id_val: Value = env.call("plist-get", (entry, env.intern(":id")?))?;
+        let x_val: Value = env.call("plist-get", (entry, env.intern(":x")?))?;
+        let y_val: Value = env.call("plist-get", (entry, env.intern(":y")?))?;
+        let w_val: Value = env.call("plist-get", (entry, env.intern(":w")?))?;
+        let h_val: Value = env.call("plist-get", (entry, env.intern(":h")?))?;
+        let id: i64 = id_val.into_rust()?;
+        let x: i64 = x_val.into_rust()?;
+        let y: i64 = y_val.into_rust()?;
+        let w: i64 = w_val.into_rust()?;
+        let h: i64 = h_val.into_rust()?;
+
+        let active_val: Value = env.call("plist-get", (entry, env.intern(":active")?))?;
+        let false_sym = env.intern(":false")?;
+        let eq_result: Value = env.call("eq", (active_val, false_sym))?;
+        let is_false = eq_result.is_not_nil();
+        let active = active_val.is_not_nil() && !is_false;
+
+        entries.push(OutputSurfaceEntry {
+            id: id as u32,
+            x: x as i32,
+            y: y as i32,
+            w: w as u32,
+            h: h as u32,
+            active,
+        });
+    }
+
+    push_command(ModuleCommand::OutputLayout {
+        output,
+        surfaces: entries,
     });
     Ok(())
 }

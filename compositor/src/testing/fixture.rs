@@ -260,6 +260,9 @@ impl Fixture {
                     }
                 }
             }
+            ModuleCommand::OutputLayout { output, surfaces } => {
+                self.state.ewm.apply_output_layout(&output, surfaces);
+            }
             // Other commands can be added as needed for testing
             _ => {}
         }
