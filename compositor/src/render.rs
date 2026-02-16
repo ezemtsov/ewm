@@ -316,8 +316,23 @@ pub fn collect_render_elements_for_output(
     // Output bounds in global logical coordinates
     let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
 
-    // Get layer map for this output
-    let layer_map = layer_map_for_output(output);
+    // Collect all layer elements in a tight scope to avoid holding the RefCell
+    // borrow across the rest of the function. layer_map_for_output() returns
+    // RefMut<LayerMap> — calling it again (e.g. via get_working_area) while
+    // this borrow is alive would panic.
+    let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = {
+        let layer_map = layer_map_for_output(output);
+        let mut overlay = Vec::new();
+        let mut top = Vec::new();
+        let mut bottom = Vec::new();
+        let mut bg = Vec::new();
+        render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut overlay);
+        render_layer(&layer_map, Layer::Top, renderer, scale, &mut top);
+        render_layer(&layer_map, Layer::Bottom, renderer, scale, &mut bottom);
+        render_layer(&layer_map, Layer::Background, renderer, scale, &mut bg);
+        (overlay, top, bottom, bg)
+        // layer_map (RefMut) dropped here
+    };
 
     // 1. Cursor (highest z-order, always visible above all layers)
     if include_cursor {
@@ -325,7 +340,6 @@ pub fn collect_render_elements_for_output(
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
 
         if output_rect.contains(pointer_pos) {
-            // Offset cursor position by output location (logical → physical)
             let cursor_logical = Point::from((
                 pointer_x - cursor::CURSOR_HOTSPOT.0 as f64 - output_pos.x as f64,
                 pointer_y - cursor::CURSOR_HOTSPOT.1 as f64 - output_pos.y as f64,
@@ -343,36 +357,25 @@ pub fn collect_render_elements_for_output(
         }
     }
 
-    // 2. Overlay layer (above all content, below cursor)
-    render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut elements);
+    // 2. Overlay layer
+    elements.append(&mut overlay_elems);
 
     // 3. Top layer
-    render_layer(&layer_map, Layer::Top, renderer, scale, &mut elements);
+    elements.append(&mut top_elems);
 
     // Track position for popup insertion (after top layer)
     let popup_insert_pos = elements.len();
 
-    // 4. Render views for surfaces that have view data (from Emacs)
-    // Only include views that intersect with this output
-    for (&id, views) in &ewm.surface_views {
-        if let Some(window) = ewm.id_windows.get(&id) {
-            // Get window size for intersection test
-            let window_geo = window.geometry();
-
-            for view in views.iter() {
-                // View bounds in global coordinates
-                let view_rect: Rectangle<i32, Logical> = Rectangle::new(
-                    Point::from((view.x, view.y)),
-                    Size::from((window_geo.size.w, window_geo.size.h)),
-                );
-
-                // Skip views that don't intersect with this output
-                if !output_rect.overlaps(view_rect) {
-                    continue;
-                }
-
-                // Offset by output position for rendering
-                let location = Point::from((view.x - output_pos.x, view.y - output_pos.y));
+    // 4. Render declared surfaces from output_layouts (authoritative, no intersection test)
+    let working_area = ewm.get_working_area(output);
+    if let Some(entries) = ewm.output_layouts.get(&output.name()) {
+        for entry in entries {
+            if let Some(window) = ewm.id_windows.get(&entry.id) {
+                // Frame-relative → output-local (working_area.loc is relative to output origin)
+                let location = Point::from((
+                    working_area.loc.x + entry.x,
+                    working_area.loc.y + entry.y,
+                ));
                 let loc_physical = location.to_physical_precise_round(scale);
                 let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     window.render_elements(renderer, loc_physical, scale, 1.0);
@@ -381,29 +384,25 @@ pub fn collect_render_elements_for_output(
         }
     }
 
-    // 5. Render surfaces from the space that DON'T have view data (like Emacs frames)
-    // Only include windows that intersect with this output
+    // 5. Render surfaces from the space that are NOT in output_layouts (like Emacs frames)
     for window in ewm.space.elements() {
         let window_id = ewm.window_ids.get(window).copied().unwrap_or(0);
 
-        // Skip surfaces that have views - they're already rendered above
-        if ewm.surface_views.contains_key(&window_id) {
+        // Skip surfaces managed by output_layouts
+        if ewm.surface_outputs.contains_key(&window_id) {
             continue;
         }
 
         let loc = ewm.space.element_location(window).unwrap_or_default();
         let window_geo = window.geometry();
 
-        // Window bounds in global coordinates
         let window_rect: Rectangle<i32, Logical> =
             Rectangle::new(loc, Size::from((window_geo.size.w, window_geo.size.h)));
 
-        // Skip windows that don't intersect with this output
         if !output_rect.overlaps(window_rect) {
             continue;
         }
 
-        // Offset by output position for rendering
         let loc_offset = Point::from((loc.x - output_pos.x, loc.y - output_pos.y));
         let loc_physical = loc_offset.to_physical_precise_round(scale);
 
@@ -412,17 +411,11 @@ pub fn collect_render_elements_for_output(
         elements.extend(window_elements.into_iter().map(EwmRenderElement::Surface));
     }
 
-    // 6. Bottom layer (below windows but above background)
-    render_layer(&layer_map, Layer::Bottom, renderer, scale, &mut elements);
+    // 6. Bottom layer
+    elements.append(&mut bottom_elems);
 
-    // 7. Background layer (lowest z-order)
-    render_layer(
-        &layer_map,
-        Layer::Background,
-        renderer,
-        scale,
-        &mut elements,
-    );
+    // 7. Background layer
+    elements.append(&mut bg_elems);
 
     // Collect popups and insert them after the top layer (before windows)
     let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
@@ -434,14 +427,12 @@ pub fn collect_render_elements_for_output(
             for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
                 let popup_loc = window_loc + window_geo.loc + popup_offset - popup.geometry().loc;
 
-                // Check if popup intersects with this output
                 let popup_rect: Rectangle<i32, Logical> =
                     Rectangle::new(popup_loc, popup.geometry().size);
                 if !output_rect.overlaps(popup_rect) {
                     continue;
                 }
 
-                // Offset by output position for rendering
                 let render_loc =
                     Point::from((popup_loc.x - output_pos.x, popup_loc.y - output_pos.y));
                 let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
@@ -460,9 +451,6 @@ pub fn collect_render_elements_for_output(
 
     // Insert popups after top layer but before windows
     elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
-
-    // Drop the layer map before returning
-    drop(layer_map);
 
     elements
 }
