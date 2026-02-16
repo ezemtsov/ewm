@@ -363,16 +363,6 @@ struct SurfaceInfo {
     title: String,
 }
 
-/// A single view of a surface (position in an Emacs window)
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
-pub struct SurfaceView {
-    pub x: i32,
-    pub y: i32,
-    pub w: u32,
-    pub h: u32,
-    pub active: bool, // True for the view in the selected Emacs window
-}
-
 /// A surface entry in a per-output declarative layout.
 /// Coordinates are relative to the output's working area (frame-relative).
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -503,9 +493,6 @@ pub struct Ewm {
     pub window_ids: HashMap<Window, u32>,
     pub id_windows: HashMap<u32, Window>,
     surface_info: HashMap<u32, SurfaceInfo>,
-    pub surface_views: HashMap<u32, Vec<SurfaceView>>,
-
-    // Per-output declarative layout (Step 1: additive, used alongside surface_views)
     /// Declared layout per output: output_name → entries
     pub output_layouts: HashMap<String, Vec<OutputSurfaceEntry>>,
     /// Reverse index: surface_id → set of output names it appears on
@@ -696,7 +683,6 @@ impl Ewm {
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
-            surface_views: HashMap::new(),
             output_layouts: HashMap::new(),
             surface_outputs: HashMap::new(),
             output_size: Size::from((0, 0)),
@@ -768,8 +754,7 @@ impl Ewm {
     ///
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
-    /// and scale notification. The compat shim rebuilds `surface_views` so
-    /// existing rendering code works unchanged.
+    /// and scale notification.
     pub fn apply_output_layout(&mut self, output_name: &str, entries: Vec<OutputSurfaceEntry>) {
         // 1. Find the output
         let output = match self.space.outputs().find(|o| o.name() == output_name) {
@@ -806,15 +791,11 @@ impl Ewm {
                 outputs.remove(output_name);
                 if outputs.is_empty() {
                     self.surface_outputs.remove(&id);
-                    // Park offscreen and remove views
+                    // Park offscreen (no outputs left)
                     if let Some(window) = self.id_windows.get(&id) {
                         self.space
                             .map_element(window.clone(), (-10000, -10000), false);
                     }
-                    self.surface_views.remove(&id);
-                } else {
-                    // Still on other outputs — rebuild compat shim
-                    self.rebuild_surface_views_for(id);
                 }
             }
         }
@@ -880,12 +861,7 @@ impl Ewm {
         self.output_layouts
             .insert(output_name.to_string(), entries);
 
-        // 9. Rebuild compat shim for all affected surfaces
-        for &id in &new_ids {
-            self.rebuild_surface_views_for(id);
-        }
-
-        // 10. Queue redraw for just this output
+        // 9. Queue redraw for just this output
         self.queue_redraw(&output);
 
         debug!(
@@ -893,53 +869,6 @@ impl Ewm {
             output_name,
             new_ids.len()
         );
-    }
-
-    /// Rebuild `surface_views[surface_id]` from all `output_layouts` that mention
-    /// this surface. This produces identical `SurfaceView` content as if Views
-    /// commands had been sent, so existing rendering code works unchanged.
-    fn rebuild_surface_views_for(&mut self, surface_id: u32) {
-        let output_names: Vec<String> = match self.surface_outputs.get(&surface_id) {
-            Some(names) => names.iter().cloned().collect(),
-            None => {
-                self.surface_views.remove(&surface_id);
-                return;
-            }
-        };
-
-        let mut views = Vec::new();
-        for output_name in &output_names {
-            let output = self.space.outputs().find(|o| o.name() == *output_name);
-            let output = match output {
-                Some(o) => o.clone(),
-                None => continue,
-            };
-            let output_geo = match self.space.output_geometry(&output) {
-                Some(geo) => geo,
-                None => continue,
-            };
-            let working_area = self.get_working_area(&output);
-
-            if let Some(entries) = self.output_layouts.get(output_name) {
-                for entry in entries {
-                    if entry.id == surface_id {
-                        views.push(SurfaceView {
-                            x: output_geo.loc.x + working_area.loc.x + entry.x,
-                            y: output_geo.loc.y + working_area.loc.y + entry.y,
-                            w: entry.w,
-                            h: entry.h,
-                            active: entry.active,
-                        });
-                    }
-                }
-            }
-        }
-
-        if views.is_empty() {
-            self.surface_views.remove(&surface_id);
-        } else {
-            self.surface_views.insert(surface_id, views);
-        }
     }
 
     /// Queue a redraw for all outputs
@@ -1575,56 +1504,6 @@ impl Ewm {
             .or_else(|| self.space.outputs().next().map(|o| o.name()))
     }
 
-    /// Get all outputs that a window intersects with (considering views)
-    #[allow(dead_code)]
-    fn outputs_for_window(&self, window_id: u32) -> Vec<Output> {
-        use smithay::utils::{Logical, Point, Rectangle, Size};
-
-        let mut outputs = Vec::new();
-
-        // Check if window has views
-        if let Some(views) = self.surface_views.get(&window_id) {
-            // Get window geometry for view size
-            let window_size = self
-                .id_windows
-                .get(&window_id)
-                .map(|w| w.geometry().size)
-                .unwrap_or_else(|| Size::from((100, 100)));
-
-            for view in views {
-                let view_rect: Rectangle<i32, Logical> = Rectangle::new(
-                    Point::from((view.x, view.y)),
-                    Size::from((window_size.w, window_size.h)),
-                );
-
-                for output in self.space.outputs() {
-                    if let Some(output_geo) = self.space.output_geometry(output) {
-                        if output_geo.overlaps(view_rect) && !outputs.contains(output) {
-                            outputs.push(output.clone());
-                        }
-                    }
-                }
-            }
-        } else if let Some(window) = self.id_windows.get(&window_id) {
-            // No views - use window's position in space
-            if let Some(loc) = self.space.element_location(window) {
-                let window_geo = window.geometry();
-                let window_rect: Rectangle<i32, Logical> =
-                    Rectangle::new(loc, Size::from((window_geo.size.w, window_geo.size.h)));
-
-                for output in self.space.outputs() {
-                    if let Some(output_geo) = self.space.output_geometry(output) {
-                        if output_geo.overlaps(window_rect) {
-                            outputs.push(output.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        outputs
-    }
-
     /// Find the Emacs surface on the same output as the focused surface
     pub fn get_emacs_surface_for_focused_output(&self) -> Option<u32> {
         let focused_output = self.get_focused_output()?;
@@ -2071,7 +1950,6 @@ impl Ewm {
 
                 self.id_windows.remove(&id);
                 self.surface_info.remove(&id);
-                self.surface_views.remove(&id);
                 self.surface_outputs.remove(&id);
                 // Remove from all output layouts
                 for entries in self.output_layouts.values_mut() {
@@ -3421,7 +3299,6 @@ impl State {
                 let state = serde_json::json!({
                     "surfaces": self.ewm.surface_info,
                     "emacs_surfaces": self.ewm.emacs_surfaces,
-                    "surface_views": self.ewm.surface_views,
                     "output_layouts": self.ewm.output_layouts,
                     "surface_outputs": self.ewm.surface_outputs,
                     "focused_surface_id": self.ewm.focused_surface_id,

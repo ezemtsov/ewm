@@ -94,7 +94,7 @@ fn test_initial_space_empty() {
     assert!(ewm.window_ids.is_empty());
 }
 
-/// Test that surface views map is empty initially
+/// Test that output layouts map is empty initially
 #[test]
 fn test_initial_views_empty() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
@@ -103,8 +103,8 @@ fn test_initial_views_empty() {
 
     let ewm = fixture.ewm_ref();
 
-    // No surface views initially
-    assert!(ewm.surface_views.is_empty());
+    // No output layouts initially
+    assert!(ewm.output_layouts.is_empty());
 }
 
 /// Test that damage tracking is initialized per output
