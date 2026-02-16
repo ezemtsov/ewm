@@ -784,6 +784,19 @@ impl Ewm {
         })
     }
 
+    /// Find the active output layout entry for a surface.
+    ///
+    /// Scans all output_layouts for an active entry matching the given surface ID.
+    /// Returns the output name and entry if found.
+    fn active_output_for_surface(&self, id: u32) -> Option<(&str, &OutputSurfaceEntry)> {
+        for (output_name, entries) in &self.output_layouts {
+            if let Some(entry) = entries.iter().find(|e| e.id == id && e.active) {
+                return Some((output_name.as_str(), entry));
+            }
+        }
+        None
+    }
+
     /// Get the global position of a window.
     ///
     /// For layout surfaces (managed via output_layouts): uses the active entry's
@@ -799,41 +812,32 @@ impl Ewm {
 
         // Layout surface: find active entry across all output_layouts
         if self.surface_outputs.contains_key(&id) {
-            for (output_name, entries) in &self.output_layouts {
-                if let Some(entry) = entries.iter().find(|e| e.id == id && e.active) {
-                    let output = self
-                        .space
-                        .outputs()
-                        .find(|o| o.name() == *output_name)?;
-                    let output_geo = self.space.output_geometry(output)?;
-                    let working_area = {
-                        let map = layer_map_for_output(output);
-                        map.non_exclusive_zone()
-                    };
-                    return Some(Point::from((
-                        output_geo.loc.x + working_area.loc.x + entry.x,
-                        output_geo.loc.y + working_area.loc.y + entry.y,
-                    )));
-                }
-            }
-            // No active entry — surface is inactive on all outputs
-            return None;
+            let (output_name, entry) = self.active_output_for_surface(id)?;
+            let output = self
+                .space
+                .outputs()
+                .find(|o| o.name() == output_name)?;
+            let output_geo = self.space.output_geometry(output)?;
+            let working_area = {
+                let map = layer_map_for_output(output);
+                map.non_exclusive_zone()
+            };
+            return Some(Point::from((
+                output_geo.loc.x + working_area.loc.x + entry.x,
+                output_geo.loc.y + working_area.loc.y + entry.y,
+            )));
         }
 
         // Non-layout surface (Emacs frame): use space position
         self.space.element_location(window)
     }
 
-    /// Hit-test layout surfaces under a global position.
-    ///
-    /// Checks output_layouts entries on the pointer's output, handling stretched
-    /// views by scaling pointer coords to match the window's actual geometry.
-    pub fn layout_surface_under(
+    /// Find the topmost layout entry containing `pos`, returning the entry
+    /// and its global (x, y) origin.
+    fn layout_entry_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
-        use smithay::utils::Point;
-
+    ) -> Option<(&OutputSurfaceEntry, i32, i32)> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = {
@@ -847,43 +851,56 @@ impl Ewm {
             let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
             let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
 
-            let pos_in_entry_x = pos.x - entry_x as f64;
-            let pos_in_entry_y = pos.y - entry_y as f64;
-
-            if pos_in_entry_x < 0.0
-                || pos_in_entry_y < 0.0
-                || pos_in_entry_x >= entry.w as f64
-                || pos_in_entry_y >= entry.h as f64
+            if pos.x >= entry_x as f64
+                && pos.y >= entry_y as f64
+                && pos.x < (entry_x + entry.w as i32) as f64
+                && pos.y < (entry_y + entry.h as i32) as f64
             {
-                continue;
+                return Some((entry, entry_x, entry_y));
             }
+        }
+        None
+    }
 
-            let window = self.id_windows.get(&entry.id)?;
-            let window_geo = window.geometry();
+    /// Hit-test layout surfaces under a global position.
+    ///
+    /// Checks output_layouts entries on the pointer's output, handling stretched
+    /// views by scaling pointer coords to match the window's actual geometry.
+    pub fn layout_surface_under(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
+        use smithay::utils::Point;
 
-            // Scale pointer coords from entry space to window space (handles stretch)
-            let scale_x = if entry.w > 0 {
-                window_geo.size.w as f64 / entry.w as f64
-            } else {
-                1.0
-            };
-            let scale_y = if entry.h > 0 {
-                window_geo.size.h as f64 / entry.h as f64
-            } else {
-                1.0
-            };
-            let pos_in_window = Point::from((
-                pos_in_entry_x * scale_x,
-                pos_in_entry_y * scale_y,
-            ));
+        let (entry, entry_x, entry_y) = self.layout_entry_under(pos)?;
+        let window = self.id_windows.get(&entry.id)?;
+        let window_geo = window.geometry();
 
-            if let Some((_surface, _)) =
-                window.surface_under(pos_in_window, WindowSurfaceType::ALL)
-            {
-                // Return the entry's global position (not window_geo-scaled)
-                let global_loc = Point::from((entry_x as f64, entry_y as f64));
-                return Some((window.wl_surface()?.into_owned(), global_loc));
-            }
+        let pos_in_entry_x = pos.x - entry_x as f64;
+        let pos_in_entry_y = pos.y - entry_y as f64;
+
+        // Scale pointer coords from entry space to window space (handles stretch)
+        let scale_x = if entry.w > 0 {
+            window_geo.size.w as f64 / entry.w as f64
+        } else {
+            1.0
+        };
+        let scale_y = if entry.h > 0 {
+            window_geo.size.h as f64 / entry.h as f64
+        } else {
+            1.0
+        };
+        let pos_in_window = Point::from((
+            pos_in_entry_x * scale_x,
+            pos_in_entry_y * scale_y,
+        ));
+
+        if window
+            .surface_under(pos_in_window, WindowSurfaceType::ALL)
+            .is_some()
+        {
+            let global_loc = Point::from((entry_x as f64, entry_y as f64));
+            return Some((window.wl_surface()?.into_owned(), global_loc));
         }
         None
     }
@@ -895,28 +912,7 @@ impl Ewm {
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) -> Option<u32> {
-        let output = self.output_at(pos)?;
-        let output_geo = self.space.output_geometry(output)?;
-        let working_area = {
-            let map = layer_map_for_output(output);
-            map.non_exclusive_zone()
-        };
-        let entries = self.output_layouts.get(&output.name())?;
-
-        // Iterate in reverse (last = topmost)
-        for entry in entries.iter().rev() {
-            let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
-            let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
-
-            if pos.x >= entry_x as f64
-                && pos.y >= entry_y as f64
-                && pos.x < (entry_x + entry.w as i32) as f64
-                && pos.y < (entry_y + entry.h as i32) as f64
-            {
-                return Some(entry.id);
-            }
-        }
-        None
+        self.layout_entry_under(pos).map(|(entry, _, _)| entry.id)
     }
 
     /// Apply a declarative per-output layout.
@@ -1205,10 +1201,8 @@ impl Ewm {
     fn find_surface_output(&self, surface_id: u32) -> Option<smithay::output::Output> {
         // Layout surfaces: prefer the output where this surface is active
         if self.surface_outputs.contains_key(&surface_id) {
-            for (output_name, entries) in &self.output_layouts {
-                if entries.iter().any(|e| e.id == surface_id && e.active) {
-                    return self.space.outputs().find(|o| o.name() == *output_name).cloned();
-                }
+            if let Some((name, _)) = self.active_output_for_surface(surface_id) {
+                return self.space.outputs().find(|o| o.name() == name).cloned();
             }
             // No active entry — return any output that has it
             if let Some(output_names) = self.surface_outputs.get(&surface_id) {
@@ -1618,42 +1612,13 @@ impl Ewm {
         None
     }
 
-    /// Get the output where a surface is located
-    fn get_surface_output(&self, surface_id: u32) -> Option<String> {
-        // Layout surfaces: prefer the output where this surface is active
-        if self.surface_outputs.contains_key(&surface_id) {
-            for (output_name, entries) in &self.output_layouts {
-                if entries.iter().any(|e| e.id == surface_id && e.active) {
-                    return Some(output_name.clone());
-                }
-            }
-            // No active entry — return any output that has it
-            if let Some(output_names) = self.surface_outputs.get(&surface_id) {
-                if let Some(name) = output_names.iter().next() {
-                    return Some(name.clone());
-                }
-            }
-        }
-        // Non-layout surfaces (Emacs frames): use space geometry
-        let window = self.id_windows.get(&surface_id)?;
-        let window_loc = self.space.element_location(window)?;
-        for output in self.space.outputs() {
-            if let Some(geo) = self.space.output_geometry(output) {
-                if geo.contains(window_loc) {
-                    return Some(output.name());
-                }
-            }
-        }
-        // Fallback to first output
-        self.space.outputs().next().map(|o| o.name())
-    }
-
     /// Get the output where the focused surface is located
     fn get_focused_output(&self) -> Option<String> {
         if self.focused_surface_id == 0 {
             return None;
         }
-        self.get_surface_output(self.focused_surface_id)
+        self.find_surface_output(self.focused_surface_id)
+            .map(|o| o.name())
     }
 
     /// Get the output under the cursor position
@@ -1686,7 +1651,9 @@ impl Ewm {
 
         // Find an Emacs surface on the same output
         for &emacs_id in &self.emacs_surfaces {
-            if self.get_surface_output(emacs_id) == Some(focused_output.clone()) {
+            if self.find_surface_output(emacs_id).map(|o| o.name()).as_ref()
+                == Some(&focused_output)
+            {
                 return Some(emacs_id);
             }
         }
@@ -1932,7 +1899,11 @@ impl Ewm {
 
         // Check windows (layout surfaces + Emacs frames)
         if let Some((window, id)) = self.find_window_by_surface(&root) {
-            // Layout surface: use surface_outputs
+            // Layout surface: prefer the active output
+            if let Some((name, _)) = self.active_output_for_surface(id) {
+                return self.space.outputs().find(|o| o.name() == name);
+            }
+            // Fallback: any output from surface_outputs
             if let Some(output_names) = self.surface_outputs.get(&id) {
                 if let Some(name) = output_names.iter().next() {
                     return self.space.outputs().find(|o| o.name() == *name);
@@ -1971,8 +1942,12 @@ impl Ewm {
         let window_loc = self.window_global_position(&window).unwrap_or_default();
         let window_geo = window.geometry();
 
-        // Target rectangle is the full output, adjusted for popup's position in window
-        let mut target = Rectangle::from_size(self.output_size);
+        // Target rectangle is the popup's output, adjusted for popup's position in window
+        let output = self.output_for_popup(&PopupKind::Xdg(popup.clone()));
+        let output_geo = output
+            .and_then(|o| self.space.output_geometry(o))
+            .unwrap_or_else(|| Rectangle::from_size(self.output_size));
+        let mut target = output_geo;
         target.loc -= window_loc + window_geo.loc;
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
 
@@ -2113,7 +2088,7 @@ impl Ewm {
 
         if let Some((id, window)) = window {
             let was_focused = self.focused_surface_id == id;
-            let output = self.get_surface_output(id);
+            let output = self.find_surface_output(id).map(|o| o.name());
 
             self.window_ids.remove(&window);
             self.id_windows.remove(&id);
@@ -2137,7 +2112,12 @@ impl Ewm {
                     .and_then(|out| {
                         self.emacs_surfaces
                             .iter()
-                            .find(|&&eid| self.get_surface_output(eid).as_ref() == Some(out))
+                            .find(|&&eid| {
+                                self.find_surface_output(eid)
+                                    .map(|o| o.name())
+                                    .as_ref()
+                                    == Some(out)
+                            })
                             .copied()
                     })
                     .or(Some(1));
