@@ -621,8 +621,10 @@ This allows spawned GUI applications to request focus via xdg_activation."
     ;; EWM not active, proceed normally
     (apply orig-fun args)))
 
-(defconst ewm--process-functions '(start-process make-process call-process)
-  "Process-spawning functions to advise for activation token injection.")
+(defconst ewm--process-functions '(start-process make-process)
+  "Process-spawning functions to advise for activation token injection.
+Only async functions need tokens — `call-process' is synchronous and
+used for CLI tools (git, grep, etc.) that never consume activation tokens.")
 
 (defun ewm--enable-process-advice ()
   "Enable automatic activation token injection for spawned processes."
