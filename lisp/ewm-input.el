@@ -195,18 +195,22 @@ Short enough to be imperceptible, long enough for Emacs to settle.")
   "Timer for debounced focus sync.")
 
 (defun ewm-input--sync-focus ()
-  "Actually sync focus after debounce delay."
+  "Actually sync focus after debounce delay.
+Only syncs compositor focus — layout refresh is handled by
+`window-configuration-change-hook' and `window-size-change-functions'."
   (setq ewm-input--focus-timer nil)
   ;; Always clear the prefix sequence flag - the debounced timer means
   ;; the user's command completed (even if we're now in minibuffer etc.)
   (ewm-clear-prefix-sequence)
-  ;; Check other conditions (NOT prefix sequence - we just cleared it)
-  (unless (or (active-minibuffer-window)
-              (> (minibuffer-depth) 0)
-              prefix-arg
-              (and overriding-terminal-local-map
-                   (keymapp overriding-terminal-local-map)))
-    (ewm-layout--refresh)))
+  ;; Sync compositor focus to match selected window
+  (when (and ewm--module-mode
+             (not (ewm--focus-locked-p)))
+    (let* ((sel-buf (window-buffer (selected-window)))
+           (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
+           (frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id))
+           (target-id (or surface-id frame-surface-id)))
+      (when (and target-id (not (eq target-id (ewm-get-focused-id))))
+        (ewm-focus target-id)))))
 
 (defun ewm-input--on-post-command ()
   "Schedule debounced focus sync after command completes."
