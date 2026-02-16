@@ -168,14 +168,11 @@ this event instead of using arbitrary sleep delays:
 All `*-module` functions push to command queue:
 
 ```elisp
-(ewm-layout-module id x y w h)
 (ewm-focus-module id)
-(ewm-hide-module id)
 (ewm-close-module id)
-(ewm-views-module id views-vector)
+(ewm-output-layout-module output surfaces-vector)
 (ewm-warp-pointer-module x y)
 (ewm-screenshot-module &optional path)
-(ewm-assign-output-module id output-name)
 (ewm-configure-output-module name &key x y width height refresh enabled)
 (ewm-intercept-keys-module keys-vector)
 (ewm-im-commit-module text)

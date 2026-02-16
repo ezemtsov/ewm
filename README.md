@@ -128,7 +128,7 @@ When the compositor starts, Wayland surfaces appear as special buffers. Use stan
 
 - Wayland surfaces as Emacs buffers
 - Automatic layout synchronization
-- Multi-view rendering (same surface in multiple windows)
+- Per-output declarative layout (surfaces can span multiple outputs)
 - Prefix key interception (compositor forwards to Emacs)
 - Line/char mode (like EXWM)
 - Client-side decoration auto-disable
@@ -140,6 +140,7 @@ When the compositor starts, Wayland surfaces appear as special buffers. Use stan
 - Screen locking via ext-session-lock-v1 (swaylock)
 - Idle notification via ext-idle-notify-v1 (swayidle)
 - XDG activation (focus requests from apps)
+- Fractional output scaling (1.25x, 1.5x, etc.)
 
 ## Known Limitations
 

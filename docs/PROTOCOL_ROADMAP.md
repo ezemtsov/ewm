@@ -21,6 +21,8 @@ This document outlines Wayland protocols to implement for broader application co
 | `ext-idle-notify-v1` | Done | Idle detection (swayidle) |
 | `wlr-data-control-v1` | Done | Clipboard access for external tools (wl-copy, cliphist) |
 | `zwp-primary-selection-v1` | Done | Primary (middle-click) selection |
+| `wp-fractional-scale-v1` | Done | Fractional output scaling (1.25x, 1.5x, etc.) |
+| `wp-viewporter` | Done | Buffer scaling/cropping |
 
 ## Priority 1: Application Compatibility
 
@@ -82,16 +84,6 @@ This document outlines Wayland protocols to implement for broader application co
 **Blocked**: Requires Smithay upgrade (0.4 → 0.7+), module added post-`0c2230f`
 
 ## Priority 2: Enhanced Features
-
-### fractional-scale-v1
-
-**Purpose**: Non-integer scale factors (1.25x, 1.5x, etc.)
-
-**Enables**:
-- Better HiDPI support
-- Per-monitor scaling
-
-**Complexity**: Medium - Requires careful coordinate handling
 
 ### cursor-shape-v1
 

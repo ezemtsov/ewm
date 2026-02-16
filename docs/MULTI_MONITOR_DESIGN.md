@@ -69,7 +69,7 @@ Emacs calls module functions directly (no serialization needed):
 ```elisp
 (ewm-configure-output name &key x y width height refresh enabled)
 (ewm-prepare-frame output)     ; Register pending frame for output
-(ewm-assign-output id output)  ; Move surface to output
+(ewm-output-layout output surfaces)  ; Declare per-output surface layout
 ```
 
 ## Emacs Frame Lifecycle
@@ -90,8 +90,8 @@ Emacs calls module functions directly (no serialization needed):
 2. Compositor assigns to active output (cursor/focus based)
 3. Compositor pushes new event with { id, app, output }
 4. Emacs receives via SIGUSR1, creates buffer for surface
-5. If different output desired: Emacs calls (ewm-assign-output id output)
-6. Compositor moves surface to requested output
+5. Emacs includes surface in next OutputLayout declaration for the target output
+6. Compositor positions and displays the surface
 ```
 
 ## Startup Flow
@@ -158,8 +158,8 @@ ewm--outputs                        ; list of detected outputs
 ;; Reposition an output
 (ewm-configure-output "DP-1" :x 1920 :y 0)
 
-;; Assign non-Emacs surface to output
-(ewm-assign-output 42 "DP-1")
+;; Declare surface layout for an output
+(ewm-output-layout "DP-1" surfaces-vector)
 ```
 
 ## Per-Output Rendering

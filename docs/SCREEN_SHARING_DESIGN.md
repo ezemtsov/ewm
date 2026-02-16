@@ -113,8 +113,8 @@ Only elements intersecting the output geometry are included, preventing false da
 
 ### Per-Output Redraw Tracking
 
-- `queue_redraw_for_output()` queues redraw only for affected output
-- `outputs_for_window()` determines which outputs a window intersects
+- `queue_redraw(&output)` queues redraw only for the affected output
+- `output_layouts` / `surface_outputs` determine which surfaces appear on which outputs
 - Surface commits only trigger redraws on relevant outputs
 
 ### DMA-BUF Zero-Copy

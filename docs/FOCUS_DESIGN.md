@@ -208,52 +208,34 @@ The input-to-focus model was chosen over alternatives:
 
 ## Layout Synchronization
 
-### Single Source of Truth
+### Per-Output Declarative Layout
 
-Layout updates (Views/Hide commands) use a single-cache architecture where the
-compositor is the source of truth:
+Emacs sends one `OutputLayout` command per output — a complete declaration of
+what's visible on that output with frame-relative coordinates. The compositor
+materializes it via `apply_output_layout`, which is the single entry point for
+positioning, output association, and scale notification.
 
 ```
-Emacs (stateless)              │  Compositor (cache)
+Emacs                          │  Compositor
                                │
 ewm-layout--refresh            │
-  └─ compute views for surface │
-  └─ ewm-views(id, views) ────►│  if views == cached[id]:
-                               │    skip (unchanged)
-                               │  else:
-                               │    cached[id] = views
-                               │    apply layout
+  └─ compute layout per output │
+  └─ ewm-output-layout ───────►│  apply_output_layout(output, entries)
+                               │    ├─ diff old vs new surface sets
+                               │    ├─ output.enter/leave as needed
+                               │    ├─ send scale/transform
+                               │    └─ queue_redraw(&output)
 ```
 
-### Why Single Cache?
+Each `OutputLayout` replaces the previous layout for that output. The compositor
+diffs surface ID sets to send `wl_surface.enter`/`leave` incrementally.
 
-The dynamic module runs in-process, so IPC cost is negligible (just copying
-a few integers). The expensive part is Emacs's `redisplay` and window
-traversal, which happens regardless of caching.
+### Deduplication
 
-Alternative approaches and why they were rejected:
-
-1. **Dual caching** (Emacs + compositor): Risk of cache divergence, more
-   complex code, no meaningful performance benefit.
-
-2. **Emacs-only cache**: Compositor becomes stateless, but if Emacs cache
-   corrupts, compositor has no way to detect or recover.
-
-3. **Compositor-only cache** (current): Single source of truth, impossible
-   to desync, simple Emacs code.
-
-### Deduplication Stats
-
-In practice, ~70% of Views calls are filtered as duplicates. This happens
-because Emacs triggers `window-configuration-change-hook` frequently (on
-every keystroke in some modes), but actual geometry changes are rare.
-
-### Commands with Deduplication
+`Focus` and `TextInputIntercept` commands still deduplicate:
 
 | Command | Cache Key | Skip Condition |
 |---------|-----------|----------------|
-| `Views` | surface ID | `views == cached_views[id]` |
-| `Hide` | surface ID | `!cached_views.contains(id)` |
 | `Focus` | global | `id == focused_surface_id` |
 | `TextInputIntercept` | global | `state == cached_state` |
 

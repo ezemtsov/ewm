@@ -143,7 +143,7 @@ Scale is sent at every surface lifecycle point:
 | Layer surface created | `new_layer_surface()` | `send_scale_transform` with output's scale |
 | Lock surface created | `configure_lock_surface()` | `send_scale_transform` with output's scale |
 | Output config changed | `apply_output_config()` | `send_scale_transform_to_output_surfaces()` |
-| Window repositioned | Layout command | `enter_output_for_position()` (output enter/leave) |
+| Window repositioned | `OutputLayout` command | `apply_output_layout()` (output enter/leave + scale) |
 
 ### FractionalScaleHandler
 
@@ -218,20 +218,23 @@ if let Some(output) = scale_output {
 }
 ```
 
-**2. Layout positioning** (Layout command): When Emacs positions a window,
-`enter_output_for_position` sends enter/leave based on the window's coordinates:
+**2. Layout positioning** (`OutputLayout` command): When Emacs sends a per-output
+layout declaration, `apply_output_layout` diffs old vs new surface ID sets and
+sends `output.enter()`/`output.leave()` + scale/transform for each change:
 
 ```rust
-pub fn enter_output_for_position(&self, window: &Window, pos: (i32, i32)) {
-    let Some(surface) = window.wl_surface() else { return; };
-    let point = Point::from(pos);
-    for output in self.space.outputs() {
-        let geo = self.space.output_geometry(output).unwrap_or_default();
-        if geo.contains(point) {
-            output.enter(&surface);
-        } else {
-            output.leave(&surface);
-        }
+// In apply_output_layout():
+// Surfaces added to this output get enter + scale
+for &id in &added {
+    if let Some(window) = self.id_windows.get(&id) {
+        output.enter(&surface);
+        send_scale_transform(surface, data, scale, transform);
+    }
+}
+// Surfaces removed from this output get leave
+for &id in &removed {
+    if let Some(window) = self.id_windows.get(&id) {
+        output.leave(&surface);
     }
 }
 ```
@@ -401,7 +404,7 @@ emacsclient --socket-name=vt2 -e '(ewm-configure-output "DP-1" :scale 1.5)'
 | Scale notification | `utils.rs` | `send_scale_transform()` |
 | Coordinate helpers | `utils.rs` | `to_physical_precise_round`, `round_logical_in_physical`, `output_size` |
 | Scale rounding | `backend/mod.rs` | `closest_representable_scale()` |
-| Output association | `lib.rs` | `enter_output_for_position()`, `cleanup_dead_windows()` |
+| Output association | `lib.rs` | `apply_output_layout()`, `cleanup_dead_windows()` |
 | Scale propagation | `utils.rs` | `propagate_preferred_scale()` |
 | Subsurface handler | `lib.rs` | `CompositorHandler::new_subsurface()` |
 | Popup output lookup | `lib.rs` | `output_for_popup()` |
@@ -425,5 +428,6 @@ The implementation follows niri's patterns. Key reference files in `~/git/niri/`
 
 Key divergence from niri: niri's windows are not in a global space, so
 `space.refresh()` is safe. EWM keeps windows in `Space` for hit-testing but manages
-output association explicitly via `enter_output_for_position` and direct
-`output.enter()` calls, with `cleanup_dead_windows()` replacing `space.refresh()`.
+output association explicitly via `apply_output_layout` (for layout surfaces) and
+direct `output.enter()` calls (for Emacs frames at creation), with
+`cleanup_dead_windows()` replacing `space.refresh()`.
