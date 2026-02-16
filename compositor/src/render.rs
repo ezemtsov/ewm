@@ -27,11 +27,16 @@ use smithay::{
         renderer::{
             element::{
                 memory::MemoryRenderBufferRenderElement,
+                render_elements,
                 solid::SolidColorRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-                Element, Id, Kind, RenderElement,
+                utils::{
+                    constrain_render_elements, ConstrainAlign, ConstrainScaleBehavior,
+                    CropRenderElement, RelocateRenderElement, RescaleRenderElement,
+                },
+                Kind, RenderElement,
             },
-            gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
+            gles::{GlesRenderer, GlesTexture},
             sync::SyncPoint,
             Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Unbind,
         },
@@ -51,96 +56,15 @@ use tracing::warn;
 use crate::protocols::screencopy::ScreencopyBuffer;
 use crate::{cursor, Ewm, State};
 
-/// Combined render element type for ewm
-/// This allows rendering both wayland surfaces, cursor images, and solid colors
-pub enum EwmRenderElement {
-    Surface(WaylandSurfaceRenderElement<GlesRenderer>),
-    Cursor(MemoryRenderBufferRenderElement<GlesRenderer>),
-    SolidColor(SolidColorRenderElement),
-}
-
-impl Element for EwmRenderElement {
-    fn id(&self) -> &Id {
-        match self {
-            EwmRenderElement::Surface(e) => e.id(),
-            EwmRenderElement::Cursor(e) => e.id(),
-            EwmRenderElement::SolidColor(e) => e.id(),
-        }
-    }
-
-    fn current_commit(&self) -> smithay::backend::renderer::utils::CommitCounter {
-        match self {
-            EwmRenderElement::Surface(e) => e.current_commit(),
-            EwmRenderElement::Cursor(e) => e.current_commit(),
-            EwmRenderElement::SolidColor(e) => e.current_commit(),
-        }
-    }
-
-    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        match self {
-            EwmRenderElement::Surface(e) => e.geometry(scale),
-            EwmRenderElement::Cursor(e) => e.geometry(scale),
-            EwmRenderElement::SolidColor(e) => e.geometry(scale),
-        }
-    }
-
-    fn src(&self) -> Rectangle<f64, smithay::utils::Buffer> {
-        match self {
-            EwmRenderElement::Surface(e) => e.src(),
-            EwmRenderElement::Cursor(e) => e.src(),
-            EwmRenderElement::SolidColor(e) => e.src(),
-        }
-    }
-
-    fn transform(&self) -> smithay::utils::Transform {
-        match self {
-            EwmRenderElement::Surface(e) => e.transform(),
-            EwmRenderElement::Cursor(e) => e.transform(),
-            EwmRenderElement::SolidColor(e) => e.transform(),
-        }
-    }
-
-    fn kind(&self) -> Kind {
-        match self {
-            EwmRenderElement::Surface(e) => e.kind(),
-            EwmRenderElement::Cursor(e) => e.kind(),
-            EwmRenderElement::SolidColor(e) => e.kind(),
-        }
-    }
-}
-
-impl RenderElement<GlesRenderer> for EwmRenderElement {
-    fn draw(
-        &self,
-        frame: &mut GlesFrame<'_>,
-        src: Rectangle<f64, smithay::utils::Buffer>,
-        dst: Rectangle<i32, Physical>,
-        damage: &[Rectangle<i32, Physical>],
-        opaque_regions: &[Rectangle<i32, Physical>],
-    ) -> Result<(), GlesError> {
-        match self {
-            EwmRenderElement::Surface(e) => {
-                RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions)
-            }
-            EwmRenderElement::Cursor(e) => {
-                RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions)
-            }
-            EwmRenderElement::SolidColor(e) => {
-                RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions)
-            }
-        }
-    }
-
-    fn underlying_storage(
-        &self,
-        renderer: &mut GlesRenderer,
-    ) -> Option<smithay::backend::renderer::element::UnderlyingStorage<'_>> {
-        match self {
-            EwmRenderElement::Surface(e) => e.underlying_storage(renderer),
-            EwmRenderElement::Cursor(e) => e.underlying_storage(renderer),
-            EwmRenderElement::SolidColor(e) => e.underlying_storage(renderer),
-        }
-    }
+// Combined render element type for ewm.
+// Generated via Smithay's `render_elements!` macro, which auto-derives
+// `Element`, `RenderElement<GlesRenderer>`, and `From` impls for each variant.
+render_elements! {
+    pub EwmRenderElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Constrained=CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
+    Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+    SolidColor=SolidColorRenderElement,
 }
 
 /// Render layer surfaces on a specific layer to element list.
@@ -302,10 +226,37 @@ pub fn collect_render_elements_for_output(
                     working_area.loc.x + entry.x,
                     working_area.loc.y + entry.y,
                 ));
-                let loc_physical = location.to_physical_precise_round(scale);
+                let loc_physical: Point<i32, Physical> =
+                    location.to_physical_precise_round(scale);
                 let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     window.render_elements(renderer, loc_physical, scale, 1.0);
-                elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
+                let entry_size: Size<i32, Physical> =
+                    Size::from((entry.w as i32, entry.h as i32))
+                        .to_physical_precise_round(scale);
+
+                if entry.active {
+                    // Active view: configure matches entry, render directly
+                    elements
+                        .extend(view_elements.into_iter().map(EwmRenderElement::Surface));
+                } else {
+                    // Inactive view: stretch buffer to fill entry bounds.
+                    // Use window's committed geometry as reference size.
+                    let constrain = Rectangle::new(loc_physical, entry_size);
+                    let buf_size = window.geometry().size.to_physical_precise_round(scale);
+                    let reference = Rectangle::new(loc_physical, buf_size);
+                    elements.extend(
+                        constrain_render_elements(
+                            view_elements,
+                            loc_physical,
+                            constrain,
+                            reference,
+                            ConstrainScaleBehavior::Stretch,
+                            ConstrainAlign::TOP | ConstrainAlign::LEFT,
+                            scale,
+                        )
+                        .map(EwmRenderElement::Constrained),
+                    );
+                }
             }
         }
     }

@@ -58,6 +58,30 @@ This covers various Emacs states where focus needs to stay on Emacs:
       (and overriding-terminal-local-map
            (keymapp overriding-terminal-local-map))))
 
+(defun ewm-layout--send-layouts ()
+  "Build and send per-output layout declarations.
+Groups surface entries by output and sends them to the compositor.
+The `active' flag is set for the entry matching `selected-window'."
+  (let ((output-surfaces (make-hash-table :test 'equal))
+        (sel-window (selected-window)))
+    ;; Ensure every output with a frame gets a key (empty = clear layout)
+    (dolist (frame (frame-list))
+      (let ((output (frame-parameter frame 'ewm-output)))
+        (when output
+          (unless (gethash output output-surfaces)
+            (puthash output nil output-surfaces))
+          (dolist (window (window-list frame 'no-minibuf))
+            (let* ((buf (window-buffer window))
+                   (id (buffer-local-value 'ewm-surface-id buf)))
+              (when id
+                (let ((view (ewm-layout--make-output-view window (eq window sel-window))))
+                  (push `(:id ,id ,@view) (gethash output output-surfaces)))))))))
+    ;; Send per-output declarations
+    (maphash
+     (lambda (output entries)
+       (ewm-output-layout output (vconcat (nreverse entries))))
+     output-surfaces)))
+
 (defun ewm-layout--refresh (&optional skip-focus-sync)
   "Refresh layout for all surface buffers and optionally sync focus.
 When SKIP-FOCUS-SYNC is non-nil, only update views without syncing focus.
@@ -66,35 +90,17 @@ Focus sync should only happen through the debounced `ewm-input--sync-focus'."
   (when ewm--module-mode
     ;; Force redisplay to ensure window sizes are current
     (redisplay t)
-    ;; Group surface entries by output
-    (let ((output-surfaces (make-hash-table :test 'equal))
-          (sel-window (selected-window))
-          (sel-frame (selected-frame)))
-      ;; Ensure every output with a frame gets a key (empty = clear layout)
-      (dolist (frame (frame-list))
-        (let ((output (frame-parameter frame 'ewm-output)))
-          (when output
-            (unless (gethash output output-surfaces)
-              (puthash output nil output-surfaces))
-            (dolist (window (window-list frame 'no-minibuf))
-              (let* ((buf (window-buffer window))
-                     (id (buffer-local-value 'ewm-surface-id buf)))
-                (when id
-                  (let ((view (ewm-layout--make-output-view window (eq window sel-window))))
-                    (push `(:id ,id ,@view) (gethash output output-surfaces)))))))))
-      ;; Send per-output declarations
-      (maphash
-       (lambda (output entries)
-         (ewm-output-layout output (vconcat (nreverse entries))))
-       output-surfaces)
-      ;; Sync focus only if not skipped and not locked
-      (unless (or skip-focus-sync (ewm--focus-locked-p))
-        (let* ((sel-buf (window-buffer sel-window))
-               (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
-               (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))
-               (target-id (or surface-id frame-surface-id)))
-          (when (and target-id (not (eq target-id (ewm-get-focused-id))))
-            (ewm-focus target-id)))))))
+    (ewm-layout--send-layouts)
+    ;; Sync focus only if not skipped and not locked
+    (unless (or skip-focus-sync (ewm--focus-locked-p))
+      (let* ((sel-window (selected-window))
+             (sel-frame (selected-frame))
+             (sel-buf (window-buffer sel-window))
+             (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
+             (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))
+             (target-id (or surface-id frame-surface-id)))
+        (when (and target-id (not (eq target-id (ewm-get-focused-id))))
+          (ewm-focus target-id))))))
 
 (defun ewm-layout--make-output-view (window active-p)
   "Create a view plist for WINDOW with frame-relative coordinates.

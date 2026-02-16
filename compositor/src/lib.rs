@@ -845,21 +845,26 @@ impl Ewm {
             }
         }
 
-        // 7. Configure: send size to each entry's toplevel
-        for entry in &entries {
-            if let Some(window) = self.id_windows.get(&entry.id) {
-                window.toplevel().map(|t| {
-                    t.with_pending_state(|state| {
-                        state.size = Some((entry.w as i32, entry.h as i32).into());
-                    });
-                    t.send_configure();
-                });
-            }
-        }
-
-        // 8. Store the layout
+        // 7. Store the layout
         self.output_layouts
             .insert(output_name.to_string(), entries);
+
+        // 8. Configure: only surfaces active on THIS output
+        // (surfaces active elsewhere were configured when that layout was applied)
+        if let Some(entries) = self.output_layouts.get(output_name) {
+            for entry in entries {
+                if entry.active {
+                    if let Some(window) = self.id_windows.get(&entry.id) {
+                        window.toplevel().map(|t| {
+                            t.with_pending_state(|state| {
+                                state.size = Some((entry.w as i32, entry.h as i32).into());
+                            });
+                            t.send_configure();
+                        });
+                    }
+                }
+            }
+        }
 
         // 9. Queue redraw for just this output
         self.queue_redraw(&output);
