@@ -744,10 +744,179 @@ impl Ewm {
     /// This replaces Space::refresh() — we manage output enter/leave explicitly
     /// rather than relying on automatic spatial overlap detection.
     pub fn cleanup_dead_windows(&mut self) {
+        // Clean Emacs frames from space
         let dead: Vec<Window> = self.space.elements().filter(|w| !w.alive()).cloned().collect();
         for w in dead {
             self.space.unmap_elem(&w);
         }
+
+        // Clean dead layout surfaces from id_windows
+        let dead_ids: Vec<u32> = self
+            .id_windows
+            .iter()
+            .filter(|(_, w)| !w.alive())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in dead_ids {
+            if let Some(window) = self.id_windows.remove(&id) {
+                self.window_ids.remove(&window);
+            }
+            self.surface_outputs.remove(&id);
+            for entries in self.output_layouts.values_mut() {
+                entries.retain(|e| e.id != id);
+            }
+            self.surface_info.remove(&id);
+            self.emacs_surfaces.remove(&id);
+            self.queue_event(Event::Close { id });
+        }
+    }
+
+    /// Find a window by its root WlSurface, returning the window and its ID.
+    pub fn find_window_by_surface(&self, surface: &WlSurface) -> Option<(Window, u32)> {
+        self.id_windows.iter().find_map(|(&id, window)| {
+            window.wl_surface().and_then(|ws| {
+                if *ws == *surface {
+                    Some((window.clone(), id))
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
+    /// Get the global position of a window.
+    ///
+    /// For layout surfaces (managed via output_layouts): uses the active entry's
+    /// position relative to the output's working area.
+    /// For non-layout surfaces (Emacs frames): uses space.element_location().
+    pub fn window_global_position(
+        &self,
+        window: &Window,
+    ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
+        use smithay::utils::Point;
+
+        let id = self.window_ids.get(window).copied()?;
+
+        // Layout surface: find active entry across all output_layouts
+        if self.surface_outputs.contains_key(&id) {
+            for (output_name, entries) in &self.output_layouts {
+                if let Some(entry) = entries.iter().find(|e| e.id == id && e.active) {
+                    let output = self
+                        .space
+                        .outputs()
+                        .find(|o| o.name() == *output_name)?;
+                    let output_geo = self.space.output_geometry(output)?;
+                    let working_area = {
+                        let map = layer_map_for_output(output);
+                        map.non_exclusive_zone()
+                    };
+                    return Some(Point::from((
+                        output_geo.loc.x + working_area.loc.x + entry.x,
+                        output_geo.loc.y + working_area.loc.y + entry.y,
+                    )));
+                }
+            }
+            // No active entry — surface is inactive on all outputs
+            return None;
+        }
+
+        // Non-layout surface (Emacs frame): use space position
+        self.space.element_location(window)
+    }
+
+    /// Hit-test layout surfaces under a global position.
+    ///
+    /// Checks output_layouts entries on the pointer's output, handling stretched
+    /// views by scaling pointer coords to match the window's actual geometry.
+    pub fn layout_surface_under(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
+        use smithay::utils::Point;
+
+        let output = self.output_at(pos)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let working_area = {
+            let map = layer_map_for_output(output);
+            map.non_exclusive_zone()
+        };
+        let entries = self.output_layouts.get(&output.name())?;
+
+        // Iterate in reverse (last = topmost in render order)
+        for entry in entries.iter().rev() {
+            let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
+            let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
+
+            let pos_in_entry_x = pos.x - entry_x as f64;
+            let pos_in_entry_y = pos.y - entry_y as f64;
+
+            if pos_in_entry_x < 0.0
+                || pos_in_entry_y < 0.0
+                || pos_in_entry_x >= entry.w as f64
+                || pos_in_entry_y >= entry.h as f64
+            {
+                continue;
+            }
+
+            let window = self.id_windows.get(&entry.id)?;
+            let window_geo = window.geometry();
+
+            // Scale pointer coords from entry space to window space (handles stretch)
+            let scale_x = if entry.w > 0 {
+                window_geo.size.w as f64 / entry.w as f64
+            } else {
+                1.0
+            };
+            let scale_y = if entry.h > 0 {
+                window_geo.size.h as f64 / entry.h as f64
+            } else {
+                1.0
+            };
+            let pos_in_window = Point::from((
+                pos_in_entry_x * scale_x,
+                pos_in_entry_y * scale_y,
+            ));
+
+            if let Some((_surface, _)) =
+                window.surface_under(pos_in_window, WindowSurfaceType::ALL)
+            {
+                // Return the entry's global position (not window_geo-scaled)
+                let global_loc = Point::from((entry_x as f64, entry_y as f64));
+                return Some((window.wl_surface()?.into_owned(), global_loc));
+            }
+        }
+        None
+    }
+
+    /// Hit-test layout surfaces under a global position, returning the surface ID.
+    ///
+    /// Simpler than layout_surface_under — just rectangle containment, no subsurface precision.
+    pub fn layout_surface_id_under(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<u32> {
+        let output = self.output_at(pos)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let working_area = {
+            let map = layer_map_for_output(output);
+            map.non_exclusive_zone()
+        };
+        let entries = self.output_layouts.get(&output.name())?;
+
+        // Iterate in reverse (last = topmost)
+        for entry in entries.iter().rev() {
+            let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
+            let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
+
+            if pos.x >= entry_x as f64
+                && pos.y >= entry_y as f64
+                && pos.x < (entry_x + entry.w as i32) as f64
+                && pos.y < (entry_y + entry.h as i32) as f64
+            {
+                return Some(entry.id);
+            }
+        }
+        None
     }
 
     /// Apply a declarative per-output layout.
@@ -764,12 +933,6 @@ impl Ewm {
                 return;
             }
         };
-
-        let output_geo = match self.space.output_geometry(&output) {
-            Some(geo) => geo,
-            None => return,
-        };
-        let working_area = self.get_working_area(&output);
 
         // 2. Diff old vs new surface IDs
         let old_ids: HashSet<u32> = self
@@ -791,11 +954,6 @@ impl Ewm {
                 outputs.remove(output_name);
                 if outputs.is_empty() {
                     self.surface_outputs.remove(&id);
-                    // Park offscreen (no outputs left)
-                    if let Some(window) = self.id_windows.get(&id) {
-                        self.space
-                            .map_element(window.clone(), (-10000, -10000), false);
-                    }
                 }
             }
         }
@@ -825,27 +983,7 @@ impl Ewm {
                 .insert(output_name.to_string());
         }
 
-        // 6. Space mapping: for each unique surface, find active (or first) entry
-        let mut seen: HashSet<u32> = HashSet::new();
-        for entry in &entries {
-            if !seen.insert(entry.id) {
-                continue; // Already mapped this surface
-            }
-            if let Some(window) = self.id_windows.get(&entry.id) {
-                // Find the active entry for this surface, or fall back to first
-                let active_entry = entries
-                    .iter()
-                    .find(|e| e.id == entry.id && e.active)
-                    .unwrap_or(entry);
-                let global_x = output_geo.loc.x + working_area.loc.x + active_entry.x;
-                let global_y = output_geo.loc.y + working_area.loc.y + active_entry.y;
-                self.space
-                    .map_element(window.clone(), (global_x, global_y), true);
-                self.space.raise_element(window, true);
-            }
-        }
-
-        // 7. Store the layout
+        // 6. Store the layout
         self.output_layouts
             .insert(output_name.to_string(), entries);
 
@@ -898,8 +1036,8 @@ impl Ewm {
         output: &Output,
         render_element_states: &RenderElementStates,
     ) {
-        // Update windows
-        for window in self.space.elements() {
+        // Update windows (all windows, including layout surfaces not in Space)
+        for window in self.id_windows.values() {
             window.with_surfaces(|surface, states| {
                 update_surface_primary_scanout_output(
                     surface,
@@ -987,7 +1125,7 @@ impl Ewm {
         let frame_callback_time =
             crate::protocols::screencopy::get_monotonic_time();
 
-        for window in self.space.elements() {
+        for window in self.id_windows.values() {
             window.send_frame(
                 output,
                 frame_callback_time,
@@ -1065,6 +1203,21 @@ impl Ewm {
 
     /// Find the output for a surface (returns Output object)
     fn find_surface_output(&self, surface_id: u32) -> Option<smithay::output::Output> {
+        // Layout surfaces: prefer the output where this surface is active
+        if self.surface_outputs.contains_key(&surface_id) {
+            for (output_name, entries) in &self.output_layouts {
+                if entries.iter().any(|e| e.id == surface_id && e.active) {
+                    return self.space.outputs().find(|o| o.name() == *output_name).cloned();
+                }
+            }
+            // No active entry — return any output that has it
+            if let Some(output_names) = self.surface_outputs.get(&surface_id) {
+                if let Some(name) = output_names.iter().next() {
+                    return self.space.outputs().find(|o| o.name() == *name).cloned();
+                }
+            }
+        }
+        // Non-layout surfaces (Emacs frames): use space geometry
         let window = self.id_windows.get(&surface_id)?;
         let window_loc = self.space.element_location(window)?;
         self.space
@@ -1407,10 +1560,10 @@ impl Ewm {
             }
         }
 
-        // 3. Window popups
-        for window in self.space.elements() {
+        // 3. Window popups (check all windows, including layout surfaces)
+        for window in self.id_windows.values() {
             if let Some(surface) = window.wl_surface() {
-                let window_loc = self.space.element_location(window).unwrap_or_default();
+                let window_loc = self.window_global_position(window).unwrap_or_default();
                 let window_geo = window.geometry();
 
                 for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
@@ -1431,7 +1584,12 @@ impl Ewm {
             }
         }
 
-        // 4. Toplevels
+        // 4. Layout surfaces (output_layouts-managed)
+        if let Some(result) = self.layout_surface_under(pos) {
+            return Some(result);
+        }
+
+        // 5. Emacs frames (still in Space)
         if let Some(result) = self
             .space
             .element_under(pos)
@@ -1462,10 +1620,23 @@ impl Ewm {
 
     /// Get the output where a surface is located
     fn get_surface_output(&self, surface_id: u32) -> Option<String> {
+        // Layout surfaces: prefer the output where this surface is active
+        if self.surface_outputs.contains_key(&surface_id) {
+            for (output_name, entries) in &self.output_layouts {
+                if entries.iter().any(|e| e.id == surface_id && e.active) {
+                    return Some(output_name.clone());
+                }
+            }
+            // No active entry — return any output that has it
+            if let Some(output_names) = self.surface_outputs.get(&surface_id) {
+                if let Some(name) = output_names.iter().next() {
+                    return Some(name.clone());
+                }
+            }
+        }
+        // Non-layout surfaces (Emacs frames): use space geometry
         let window = self.id_windows.get(&surface_id)?;
         let window_loc = self.space.element_location(window)?;
-
-        // Find which output contains this window's location
         for output in self.space.outputs() {
             if let Some(geo) = self.space.output_geometry(output) {
                 if geo.contains(window_loc) {
@@ -1759,20 +1930,16 @@ impl Ewm {
     pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
         let root = find_popup_root_surface(popup).ok()?;
 
-        // Check declared surfaces via reverse index
-        if let Some(window) = self
-            .space
-            .elements()
-            .find(|w| w.wl_surface().map(|s| *s == root).unwrap_or(false))
-        {
-            let window_id = self.window_ids.get(window).copied().unwrap_or(0);
-            if let Some(output_names) = self.surface_outputs.get(&window_id) {
+        // Check windows (layout surfaces + Emacs frames)
+        if let Some((window, id)) = self.find_window_by_surface(&root) {
+            // Layout surface: use surface_outputs
+            if let Some(output_names) = self.surface_outputs.get(&id) {
                 if let Some(name) = output_names.iter().next() {
                     return self.space.outputs().find(|o| o.name() == *name);
                 }
             }
-            // Fallback: undeclared window — use geometry
-            let window_loc = self.space.element_location(window).unwrap_or_default();
+            // Emacs frame: use space geometry
+            let window_loc = self.space.element_location(&window).unwrap_or_default();
             return self.space.outputs().find(|o| {
                 self.space
                     .output_geometry(o)
@@ -1796,16 +1963,12 @@ impl Ewm {
         };
 
         // Find the window that owns this popup
-        let Some(window) = self
-            .space
-            .elements()
-            .find(|w| w.wl_surface().map(|s| *s == root).unwrap_or(false))
-        else {
+        let Some((window, _id)) = self.find_window_by_surface(&root) else {
             return;
         };
 
         // Get window location in global coordinates
-        let window_loc = self.space.element_location(window).unwrap_or_default();
+        let window_loc = self.window_global_position(&window).unwrap_or_default();
         let window_geo = window.geometry();
 
         // Target rectangle is the full output, adjusted for popup's position in window
@@ -1878,9 +2041,11 @@ impl Ewm {
             }
         }
 
-        // Position based on surface type
-        let position = if let Some(ref output_name) = frame_output {
-            self.space
+        // Only map Emacs frames into the space — layout surfaces are
+        // positioned exclusively via output_layouts.
+        if let Some(ref output_name) = frame_output {
+            let position = self
+                .space
                 .outputs()
                 .find(|o| o.name() == *output_name)
                 .map(|o| {
@@ -1891,11 +2056,9 @@ impl Ewm {
                         output_geo.loc.y + working_area.loc.y,
                     )
                 })
-                .unwrap_or((-10000, -10000))
-        } else {
-            (-10000, -10000)
-        };
-        self.space.map_element(window.clone(), position, false);
+                .unwrap_or((-10000, -10000));
+            self.space.map_element(window.clone(), position, false);
+        }
 
         // Resize Emacs frames to fill their working area
         if let Some(ref output_name) = frame_output {
@@ -1943,43 +2106,41 @@ impl Ewm {
     /// Returns surface ID to refocus, if any.
     pub fn handle_toplevel_destroyed(&mut self, surface: ToplevelSurface) -> Option<u32> {
         let window = self
-            .space
-            .elements()
-            .find(|w| w.toplevel().map(|t| t == &surface).unwrap_or(false))
-            .cloned();
+            .id_windows
+            .iter()
+            .find(|(_, w)| w.toplevel().map(|t| t == &surface).unwrap_or(false))
+            .map(|(&id, w)| (id, w.clone()));
 
-        if let Some(window) = window {
-            if let Some(id) = self.window_ids.remove(&window) {
-                let was_focused = self.focused_surface_id == id;
-                let output = self.get_surface_output(id);
+        if let Some((id, window)) = window {
+            let was_focused = self.focused_surface_id == id;
+            let output = self.get_surface_output(id);
 
-                self.id_windows.remove(&id);
-                self.surface_info.remove(&id);
-                self.surface_outputs.remove(&id);
-                // Remove from all output layouts
-                for entries in self.output_layouts.values_mut() {
-                    entries.retain(|e| e.id != id);
-                }
-                self.emacs_surfaces.remove(&id);
-                self.queue_event(Event::Close { id });
-                info!("Toplevel {} destroyed", id);
+            self.window_ids.remove(&window);
+            self.id_windows.remove(&id);
+            self.surface_info.remove(&id);
+            self.surface_outputs.remove(&id);
+            // Remove from all output layouts
+            for entries in self.output_layouts.values_mut() {
+                entries.retain(|e| e.id != id);
+            }
+            self.emacs_surfaces.remove(&id);
+            self.queue_event(Event::Close { id });
+            info!("Toplevel {} destroyed", id);
 
-                self.space.unmap_elem(&window);
+            // Unmap from space (no-op if not in space)
+            self.space.unmap_elem(&window);
 
-                // Return refocus target if needed
-                if was_focused {
-                    return output
-                        .as_ref()
-                        .and_then(|out| {
-                            self.emacs_surfaces
-                                .iter()
-                                .find(|&&eid| self.get_surface_output(eid).as_ref() == Some(out))
-                                .copied()
-                        })
-                        .or(Some(1));
-                }
-            } else {
-                self.space.unmap_elem(&window);
+            // Return refocus target if needed
+            if was_focused {
+                return output
+                    .as_ref()
+                    .and_then(|out| {
+                        self.emacs_surfaces
+                            .iter()
+                            .find(|&&eid| self.get_surface_output(eid).as_ref() == Some(out))
+                            .copied()
+                    })
+                    .or(Some(1));
             }
         }
         None
@@ -2034,63 +2195,52 @@ impl Ewm {
     }
 
     fn check_surface_info_changes(&mut self, surface: &WlSurface) {
-        let window = self
-            .space
-            .elements()
-            .find(|w| {
-                w.wl_surface()
-                    .map(|s| s.as_ref() == surface)
-                    .unwrap_or(false)
-            })
-            .cloned();
+        let Some((_window, id)) = self.find_window_by_surface(surface) else {
+            return;
+        };
 
-        if let Some(window) = window {
-            if let Some(&id) = self.window_ids.get(&window) {
-                // Skip title change events for Emacs surfaces
-                if self.emacs_surfaces.contains(&id) {
-                    return;
-                }
+        // Skip title change events for Emacs surfaces
+        if self.emacs_surfaces.contains(&id) {
+            return;
+        }
 
-                let (app_id, title) =
-                    smithay::wayland::compositor::with_states(surface, |states| {
-                        states
-                            .data_map
-                            .get::<XdgToplevelSurfaceData>()
-                            .map(|d| {
-                                let data = d.lock().unwrap();
-                                (
-                                    data.app_id.clone().unwrap_or_default(),
-                                    data.title.clone().unwrap_or_default(),
-                                )
-                            })
-                            .unwrap_or_default()
-                    });
+        let (app_id, title) = smithay::wayland::compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .map(|d| {
+                    let data = d.lock().unwrap();
+                    (
+                        data.app_id.clone().unwrap_or_default(),
+                        data.title.clone().unwrap_or_default(),
+                    )
+                })
+                .unwrap_or_default()
+        });
 
-                let cached = self.surface_info.get(&id);
-                let changed = match cached {
-                    Some(info) => info.app_id != app_id || info.title != title,
-                    None => true,
-                };
+        let cached = self.surface_info.get(&id);
+        let changed = match cached {
+            Some(info) => info.app_id != app_id || info.title != title,
+            None => true,
+        };
 
-                if changed && (!app_id.is_empty() || !title.is_empty()) {
-                    info!(
-                        "Surface {} info changed: app='{}' title='{}'",
-                        id, app_id, title
-                    );
-                    self.surface_info.insert(
-                        id,
-                        SurfaceInfo {
-                            app_id: app_id.clone(),
-                            title: title.clone(),
-                        },
-                    );
-                    self.queue_event(Event::Title {
-                        id,
-                        app: app_id,
-                        title,
-                    });
-                }
-            }
+        if changed && (!app_id.is_empty() || !title.is_empty()) {
+            info!(
+                "Surface {} info changed: app='{}' title='{}'",
+                id, app_id, title
+            );
+            self.surface_info.insert(
+                id,
+                SurfaceInfo {
+                    app_id: app_id.clone(),
+                    title: title.clone(),
+                },
+            );
+            self.queue_event(Event::Title {
+                id,
+                app: app_id,
+                title,
+            });
         }
     }
 
@@ -2273,18 +2423,7 @@ impl CompositorHandler for State {
         }
 
         // 3. Find the window that owns this root surface
-        let window_and_id = self.ewm.space.elements().find_map(|window| {
-            window.wl_surface().and_then(|ws| {
-                if *ws == root_surface {
-                    self.ewm
-                        .window_ids
-                        .get(window)
-                        .map(|&id| (window.clone(), id))
-                } else {
-                    None
-                }
-            })
-        });
+        let window_and_id = self.ewm.find_window_by_surface(&root_surface);
 
         if let Some((window, _id)) = window_and_id {
             // Call on_commit only for this specific window
@@ -3151,16 +3290,7 @@ impl State {
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self
                     .ewm
-                    .space
-                    .element_under((x, y))
-                    .and_then(|(window, loc)| {
-                        window.wl_surface().map(|s| {
-                            (
-                                s.into_owned(),
-                                smithay::utils::Point::from((loc.x as f64, loc.y as f64)),
-                            )
-                        })
-                    });
+                    .surface_under_point(smithay::utils::Point::from((x, y)));
                 pointer.motion(
                     self,
                     under,
@@ -3358,6 +3488,23 @@ impl State {
             }
             ModuleCommand::OutputLayout { output, surfaces } => {
                 self.ewm.apply_output_layout(&output, surfaces);
+                // Re-evaluate pointer focus after layout change
+                let (px, py) = self.ewm.pointer_location;
+                let under = self
+                    .ewm
+                    .surface_under_point(smithay::utils::Point::from((px, py)));
+                let pointer = self.ewm.pointer.clone();
+                let serial = SERIAL_COUNTER.next_serial();
+                pointer.motion(
+                    self,
+                    under,
+                    &smithay::input::pointer::MotionEvent {
+                        location: (px, py).into(),
+                        serial,
+                        time: 0,
+                    },
+                );
+                pointer.frame(self);
             }
         }
     }

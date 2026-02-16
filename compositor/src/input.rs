@@ -491,13 +491,18 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
 
             // If click is on a toplevel (not a layer surface), do normal focus
             if !on_layer {
+                // Check layout surfaces first, then Emacs frames in space
                 let focus_info = state
                     .ewm
-                    .space
-                    .element_under(pos)
-                    .and_then(|(window, _)| {
-                        let id = state.ewm.window_ids.get(&window).copied()?;
-                        Some(id)
+                    .layout_surface_id_under(pos)
+                    .or_else(|| {
+                        state
+                            .ewm
+                            .space
+                            .element_under(pos)
+                            .and_then(|(window, _)| {
+                                state.ewm.window_ids.get(&window).copied()
+                            })
                     });
 
                 if let Some(id) = focus_info {
@@ -545,13 +550,18 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
 
         // If scroll is on a toplevel (not a layer surface), do normal focus
         if !on_layer {
+            // Check layout surfaces first, then Emacs frames in space
             let focus_info = state
                 .ewm
-                .space
-                .element_under(pos)
-                .and_then(|(window, _)| {
-                    let id = state.ewm.window_ids.get(&window).copied()?;
-                    Some(id)
+                .layout_surface_id_under(pos)
+                .or_else(|| {
+                    state
+                        .ewm
+                        .space
+                        .element_under(pos)
+                        .and_then(|(window, _)| {
+                            state.ewm.window_ids.get(&window).copied()
+                        })
                 });
 
             if let Some(id) = focus_info {

@@ -296,9 +296,9 @@ pub fn collect_render_elements_for_output(
 
     // Collect popups and insert them after the top layer (before windows)
     let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
-    for window in ewm.space.elements() {
+    for window in ewm.id_windows.values() {
         if let Some(surface) = window.wl_surface() {
-            let window_loc = ewm.space.element_location(window).unwrap_or_default();
+            let window_loc = ewm.window_global_position(window).unwrap_or_default();
             let window_geo = window.geometry();
 
             for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {

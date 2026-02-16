@@ -229,7 +229,7 @@ impl HeadlessBackend {
         );
 
         // Send frame callbacks to clients
-        for window in ewm.space.elements() {
+        for window in ewm.id_windows.values() {
             window.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
         }
 
