@@ -40,8 +40,20 @@ XKB supports multiple layouts via "groups" (indexed 0, 1, 2...). Switching
 between groups is fast (no keymap recompilation). XKB options like
 `grp:caps_toggle` work natively.
 
-When redirecting intercepted keys to Emacs, the compositor switches to
-the base layout (index 0) to ensure keybindings work correctly.
+#### Layout preservation during key interception
+
+When an intercepted key (e.g., `s-d`, `C-x`) redirects focus to Emacs, the
+compositor temporarily switches to the base layout (index 0) so Emacs
+receives Latin keysyms for keybinding dispatch. The layout is restored
+immediately after the key is forwarded — no persistent change occurs.
+
+For prefix sequences (`C-x ...`), the same temporary reset is applied to
+each subsequent key while the sequence is active, using the existing
+`in_prefix_sequence` flag. Once the sequence completes and focus returns
+to the external surface, the user's chosen layout is intact.
+
+This is implemented entirely with local variables in `handle_keyboard_event`
+— no cross-function state needed.
 
 ## Text Input (Emacs IM in External Apps)
 
