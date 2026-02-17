@@ -44,7 +44,7 @@ use std::thread::{self, JoinHandle};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::event::Event;
-use crate::{InterceptedKey, KeyId, OutputSurfaceEntry};
+use crate::{InterceptedKey, KeyId, LayoutEntry};
 
 // ============================================================================
 // Shared State (read by Emacs, written by compositor)
@@ -218,7 +218,7 @@ pub enum ModuleCommand {
     /// Declarative per-output layout
     OutputLayout {
         output: String,
-        surfaces: Vec<OutputSurfaceEntry>,
+        surfaces: Vec<LayoutEntry>,
     },
 }
 
@@ -710,7 +710,7 @@ fn socket(_: &Env) -> Result<Option<String>> {
 // ============================================================================
 
 /// Set declarative layout for an output (module mode).
-/// OUTPUT is the output name. SURFACES is a vector of plists with :id :x :y :w :h :active keys.
+/// OUTPUT is the output name. SURFACES is a vector of plists with :id :x :y :w :h :primary keys.
 /// Coordinates are relative to the output's working area (frame-relative).
 #[defun]
 fn output_layout_module(env: &Env, output: String, surfaces: Value<'_>) -> Result<()> {
@@ -732,19 +732,19 @@ fn output_layout_module(env: &Env, output: String, surfaces: Value<'_>) -> Resul
         let w: i64 = w_val.into_rust()?;
         let h: i64 = h_val.into_rust()?;
 
-        let active_val: Value = env.call("plist-get", (entry, env.intern(":active")?))?;
+        let primary_val: Value = env.call("plist-get", (entry, env.intern(":primary")?))?;
         let false_sym = env.intern(":false")?;
-        let eq_result: Value = env.call("eq", (active_val, false_sym))?;
+        let eq_result: Value = env.call("eq", (primary_val, false_sym))?;
         let is_false = eq_result.is_not_nil();
-        let active = active_val.is_not_nil() && !is_false;
+        let primary = primary_val.is_not_nil() && !is_false;
 
-        entries.push(OutputSurfaceEntry {
+        entries.push(LayoutEntry {
             id: id as u32,
             x: x as i32,
             y: y as i32,
             w: w as u32,
             h: h as u32,
-            active,
+            primary,
         });
     }
 

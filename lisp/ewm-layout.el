@@ -61,8 +61,8 @@ This covers various Emacs states where focus needs to stay on Emacs:
 (defun ewm-layout--send-layouts ()
   "Build and send per-output layout declarations.
 Groups surface entries by output and sends them to the compositor.
-The `active' flag controls configure + direct rendering vs stretching.
-A surface is active when it appears in only one window, or when it
+The `primary' flag controls configure + direct rendering vs stretching.
+A surface is primary when it appears in only one window, or when it
 appears in multiple windows and this entry is the selected one."
   (let ((output-surfaces (make-hash-table :test 'equal))
         (surface-counts (make-hash-table :test 'eql))
@@ -79,12 +79,12 @@ appears in multiple windows and this entry is the selected one."
               (when id
                 (puthash id (1+ (gethash id surface-counts 0)) surface-counts)
                 (push (list output id window) window-entries)))))))
-    ;; Build entries with correct active flags
+    ;; Build entries with correct primary flags
     (pcase-dolist (`(,output ,id ,window) (nreverse window-entries))
-      ;; Active when sole view of this surface, or selected among multiple
-      (let* ((active-p (or (= 1 (gethash id surface-counts 1))
-                           (eq window sel-window)))
-             (view (ewm-layout--make-output-view window active-p)))
+      ;; Primary when sole view of this surface, or selected among multiple
+      (let* ((primary-p (or (= 1 (gethash id surface-counts 1))
+                            (eq window sel-window)))
+             (view (ewm-layout--make-output-view window primary-p)))
         (push `(:id ,id ,@view) (gethash output output-surfaces))))
     ;; Send per-output declarations
     (maphash
@@ -112,9 +112,9 @@ Focus sync should only happen through the debounced `ewm-input--sync-focus'."
         (when (and target-id (not (eq target-id (ewm-get-focused-id))))
           (ewm-focus target-id))))))
 
-(defun ewm-layout--make-output-view (window active-p)
+(defun ewm-layout--make-output-view (window primary-p)
   "Create a view plist for WINDOW with frame-relative coordinates.
-Returns (:x X :y Y :w W :h H :active ACTIVE-P).
+Returns (:x X :y Y :w W :h H :primary PRIMARY-P).
 Coordinates are relative to the output's working area — the compositor
 converts to global positions using output geometry + working area offset."
   (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
@@ -124,7 +124,7 @@ converts to global positions using output geometry + working area offset."
          (height (- (pop edges) y))
          (csd-offset (ewm--frame-y-offset (window-frame window))))
     `(:x ,x :y ,(+ y csd-offset) :w ,width :h ,height
-      :active ,(if active-p t :false))))
+      :primary ,(if primary-p t :false))))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes.

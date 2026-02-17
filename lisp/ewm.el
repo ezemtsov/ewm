@@ -357,7 +357,7 @@ Push the text onto the kill ring."
 
 (defun ewm-output-layout (output surfaces)
   "Set declarative layout for OUTPUT.
-SURFACES is a vector of plists with :id :x :y :w :h :active keys.
+SURFACES is a vector of plists with :id :x :y :w :h :primary keys.
 Coordinates are relative to the output's working area."
   (ewm-output-layout-module output surfaces))
 

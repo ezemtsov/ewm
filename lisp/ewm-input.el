@@ -202,7 +202,7 @@ Used to detect inter-frame focus changes that require layout updates.")
 (defun ewm-input--sync-focus ()
   "Actually sync focus after debounce delay.
 Syncs compositor focus.  When the selected frame changed, also re-sends
-layouts to update active flags (needed for multi-output surfaces)."
+layouts to update primary flags (needed for multi-output surfaces)."
   (setq ewm-input--focus-timer nil)
   ;; Always clear the prefix sequence flag - the debounced timer means
   ;; the user's command completed (even if we're now in minibuffer etc.)
@@ -218,7 +218,7 @@ layouts to update active flags (needed for multi-output surfaces)."
       (when (and target-id (not (eq target-id (ewm-get-focused-id))))
         (ewm-focus target-id)
         ;; Re-send layouts only on inter-frame focus change —
-        ;; that's when active flags for multi-output surfaces change.
+        ;; that's when primary flags for multi-output surfaces change.
         (unless (eq cur-frame ewm-input--last-focus-frame)
           (ewm-layout--send-layouts)))
       (setq ewm-input--last-focus-frame cur-frame))))

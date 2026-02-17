@@ -363,16 +363,16 @@ struct SurfaceInfo {
     title: String,
 }
 
-/// A surface entry in a per-output declarative layout.
+/// An entry in a per-output declarative layout.
 /// Coordinates are relative to the output's working area (frame-relative).
 #[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct OutputSurfaceEntry {
+pub struct LayoutEntry {
     pub id: u32,
     pub x: i32,
     pub y: i32,
     pub w: u32,
     pub h: u32,
-    pub active: bool,
+    pub primary: bool,
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -494,7 +494,7 @@ pub struct Ewm {
     pub id_windows: HashMap<u32, Window>,
     surface_info: HashMap<u32, SurfaceInfo>,
     /// Declared layout per output: output_name → entries
-    pub output_layouts: HashMap<String, Vec<OutputSurfaceEntry>>,
+    pub output_layouts: HashMap<String, Vec<LayoutEntry>>,
     /// Reverse index: surface_id → set of output names it appears on
     pub surface_outputs: HashMap<u32, HashSet<String>>,
 
@@ -784,13 +784,13 @@ impl Ewm {
         })
     }
 
-    /// Find the active output layout entry for a surface.
+    /// Find the primary output layout entry for a surface.
     ///
-    /// Scans all output_layouts for an active entry matching the given surface ID.
+    /// Scans all output_layouts for a primary entry matching the given surface ID.
     /// Returns the output name and entry if found.
-    fn active_output_for_surface(&self, id: u32) -> Option<(&str, &OutputSurfaceEntry)> {
+    fn primary_output_for_surface(&self, id: u32) -> Option<(&str, &LayoutEntry)> {
         for (output_name, entries) in &self.output_layouts {
-            if let Some(entry) = entries.iter().find(|e| e.id == id && e.active) {
+            if let Some(entry) = entries.iter().find(|e| e.id == id && e.primary) {
                 return Some((output_name.as_str(), entry));
             }
         }
@@ -799,7 +799,7 @@ impl Ewm {
 
     /// Get the global position of a window.
     ///
-    /// For layout surfaces (managed via output_layouts): uses the active entry's
+    /// For layout surfaces (managed via output_layouts): uses the primary entry's
     /// position relative to the output's working area.
     /// For non-layout surfaces (Emacs frames): uses space.element_location().
     pub fn window_global_position(
@@ -810,9 +810,9 @@ impl Ewm {
 
         let id = self.window_ids.get(window).copied()?;
 
-        // Layout surface: find active entry across all output_layouts
+        // Layout surface: find primary entry across all output_layouts
         if self.surface_outputs.contains_key(&id) {
-            let (output_name, entry) = self.active_output_for_surface(id)?;
+            let (output_name, entry) = self.primary_output_for_surface(id)?;
             let output = self
                 .space
                 .outputs()
@@ -837,7 +837,7 @@ impl Ewm {
     fn layout_entry_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<(&OutputSurfaceEntry, i32, i32)> {
+    ) -> Option<(&LayoutEntry, i32, i32)> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = {
@@ -920,7 +920,7 @@ impl Ewm {
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
     /// and scale notification.
-    pub fn apply_output_layout(&mut self, output_name: &str, entries: Vec<OutputSurfaceEntry>) {
+    pub fn apply_output_layout(&mut self, output_name: &str, entries: Vec<LayoutEntry>) {
         // 1. Find the output
         let output = match self.space.outputs().find(|o| o.name() == output_name) {
             Some(o) => o.clone(),
@@ -979,21 +979,21 @@ impl Ewm {
         self.output_layouts
             .insert(output_name.to_string(), entries);
 
-        // 8. Configure active surfaces: size + scale from this output.
-        // wp_fractional_scale_v1 is per-surface, so the active output's scale
+        // 8. Configure primary surfaces: size + scale from this output.
+        // wp_fractional_scale_v1 is per-surface, so the primary output's scale
         // is the canonical one — the client renders at this scale.
-        let active_scale = output.current_scale();
-        let active_transform = output.current_transform();
+        let output_scale = output.current_scale();
+        let output_transform = output.current_transform();
         if let Some(entries) = self.output_layouts.get(output_name) {
             for entry in entries {
-                if entry.active {
+                if entry.primary {
                     if let Some(window) = self.id_windows.get(&entry.id) {
                         window.with_surfaces(|s, data| {
                             crate::utils::send_scale_transform(
                                 s,
                                 data,
-                                active_scale,
-                                active_transform,
+                                output_scale,
+                                output_transform,
                             );
                         });
                         window.toplevel().map(|t| {
@@ -1206,12 +1206,12 @@ impl Ewm {
 
     /// Find the output for a surface (returns Output object)
     fn find_surface_output(&self, surface_id: u32) -> Option<smithay::output::Output> {
-        // Layout surfaces: prefer the output where this surface is active
+        // Layout surfaces: prefer the output where this surface is primary
         if self.surface_outputs.contains_key(&surface_id) {
-            if let Some((name, _)) = self.active_output_for_surface(surface_id) {
+            if let Some((name, _)) = self.primary_output_for_surface(surface_id) {
                 return self.space.outputs().find(|o| o.name() == name).cloned();
             }
-            // No active entry — return any output that has it
+            // No primary entry — return any output that has it
             if let Some(output_names) = self.surface_outputs.get(&surface_id) {
                 if let Some(name) = output_names.iter().next() {
                     return self.space.outputs().find(|o| o.name() == *name).cloned();
@@ -1906,8 +1906,8 @@ impl Ewm {
 
         // Check windows (layout surfaces + Emacs frames)
         if let Some((window, id)) = self.find_window_by_surface(&root) {
-            // Layout surface: prefer the active output
-            if let Some((name, _)) = self.active_output_for_surface(id) {
+            // Layout surface: prefer the primary output
+            if let Some((name, _)) = self.primary_output_for_surface(id) {
                 return self.space.outputs().find(|o| o.name() == name);
             }
             // Fallback: any output from surface_outputs

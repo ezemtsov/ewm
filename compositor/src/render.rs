@@ -233,12 +233,12 @@ pub fn collect_render_elements_for_output(
                     Size::from((entry.w as i32, entry.h as i32))
                         .to_physical_precise_round(scale);
 
-                if entry.active {
-                    // Active view: configure matches entry, render directly
+                if entry.primary {
+                    // Primary view: configure matches entry, render directly
                     elements
                         .extend(view_elements.into_iter().map(EwmRenderElement::Surface));
                 } else {
-                    // Inactive view: stretch buffer to fill entry bounds.
+                    // Non-primary view: stretch buffer to fill entry bounds.
                     // Inline the rescale→relocate→crop pipeline instead of using
                     // constrain_render_elements, which has a bug: it scales
                     // reference.loc around (0,0) via Rectangle::upscale(), creating
