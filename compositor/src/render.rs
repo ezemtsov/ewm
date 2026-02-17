@@ -31,8 +31,7 @@ use smithay::{
                 solid::SolidColorRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 utils::{
-                    constrain_render_elements, ConstrainAlign, ConstrainScaleBehavior,
-                    CropRenderElement, RelocateRenderElement, RescaleRenderElement,
+                    CropRenderElement, RescaleRenderElement,
                 },
                 Kind, RenderElement,
             },
@@ -62,7 +61,7 @@ use crate::{cursor, Ewm, State};
 render_elements! {
     pub EwmRenderElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
-    Constrained=CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
+    Constrained=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     SolidColor=SolidColorRenderElement,
 }
@@ -240,21 +239,33 @@ pub fn collect_render_elements_for_output(
                         .extend(view_elements.into_iter().map(EwmRenderElement::Surface));
                 } else {
                     // Inactive view: stretch buffer to fill entry bounds.
-                    // Use window's committed geometry as reference size.
+                    // Inline the rescale→relocate→crop pipeline instead of using
+                    // constrain_render_elements, which has a bug: it scales
+                    // reference.loc around (0,0) via Rectangle::upscale(), creating
+                    // a spurious offset of reference.loc * (1 - element_scale) when
+                    // reference.loc is non-zero (i.e., working area has a Y offset
+                    // from layer shell panels like waybar).
                     let constrain = Rectangle::new(loc_physical, entry_size);
-                    let buf_size = window.geometry().size.to_physical_precise_round(scale);
-                    let reference = Rectangle::new(loc_physical, buf_size);
+                    let buf_size: Size<i32, Physical> =
+                        window.geometry().size.to_physical_precise_round(scale);
+                    let element_scale = Scale::from((
+                        entry_size.w as f64 / buf_size.w as f64,
+                        entry_size.h as f64 / buf_size.h as f64,
+                    ));
                     elements.extend(
-                        constrain_render_elements(
-                            view_elements,
-                            loc_physical,
-                            constrain,
-                            reference,
-                            ConstrainScaleBehavior::Stretch,
-                            ConstrainAlign::TOP | ConstrainAlign::LEFT,
-                            scale,
-                        )
-                        .map(EwmRenderElement::Constrained),
+                        view_elements
+                            .into_iter()
+                            .map(|e| {
+                                RescaleRenderElement::from_element(
+                                    e,
+                                    loc_physical,
+                                    element_scale,
+                                )
+                            })
+                            .filter_map(|e| {
+                                CropRenderElement::from_element(e, scale, constrain)
+                            })
+                            .map(EwmRenderElement::Constrained),
                     );
                 }
             }
