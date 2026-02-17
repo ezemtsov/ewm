@@ -61,21 +61,31 @@ This covers various Emacs states where focus needs to stay on Emacs:
 (defun ewm-layout--send-layouts ()
   "Build and send per-output layout declarations.
 Groups surface entries by output and sends them to the compositor.
-The `active' flag is set for the entry matching `selected-window'."
+The `active' flag controls configure + direct rendering vs stretching.
+A surface is active when it appears in only one window, or when it
+appears in multiple windows and this entry is the selected one."
   (let ((output-surfaces (make-hash-table :test 'equal))
+        (surface-counts (make-hash-table :test 'eql))
+        (window-entries nil)
         (sel-window (selected-window)))
-    ;; Ensure every output with a frame gets a key (empty = clear layout)
+    ;; Collect entries and count per-surface occurrences
     (dolist (frame (frame-list))
       (let ((output (frame-parameter frame 'ewm-output)))
         (when output
           (unless (gethash output output-surfaces)
             (puthash output nil output-surfaces))
           (dolist (window (window-list frame 'no-minibuf))
-            (let* ((buf (window-buffer window))
-                   (id (buffer-local-value 'ewm-surface-id buf)))
+            (let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
               (when id
-                (let ((view (ewm-layout--make-output-view window (eq window sel-window))))
-                  (push `(:id ,id ,@view) (gethash output output-surfaces)))))))))
+                (puthash id (1+ (gethash id surface-counts 0)) surface-counts)
+                (push (list output id window) window-entries)))))))
+    ;; Build entries with correct active flags
+    (pcase-dolist (`(,output ,id ,window) (nreverse window-entries))
+      ;; Active when sole view of this surface, or selected among multiple
+      (let* ((active-p (or (= 1 (gethash id surface-counts 1))
+                           (eq window sel-window)))
+             (view (ewm-layout--make-output-view window active-p)))
+        (push `(:id ,id ,@view) (gethash output output-surfaces))))
     ;; Send per-output declarations
     (maphash
      (lambda (output entries)
