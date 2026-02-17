@@ -74,19 +74,10 @@ use crate::{
     backend::Backend,
     cursor::CursorBuffer,
     input::{handle_device_added, handle_keyboard_event, KeyboardAction},
-    module,
     render::{collect_render_elements_for_output, process_screencopies_for_output},
     Ewm, OutputInfo, OutputMode, OutputState, RedrawState, State,
 };
-use smithay::{
-    backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, PointerAxisEvent, PointerButtonEvent,
-        PointerMotionEvent,
-    },
-    input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
-    utils::SERIAL_COUNTER,
-    wayland::seat::WaylandFocus,
-};
+
 
 const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
     smithay::backend::allocator::Fourcc::Xrgb8888,
@@ -1982,189 +1973,26 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     InputEvent::PointerMotion { event } => {
-                        // Relative pointer motion (from mice)
-                        let (current_x, current_y) = state.ewm.pointer_location;
-                        let delta = event.delta();
-                        let output_size = state.ewm.output_size;
-
-                        // Calculate new position, clamped to output bounds
-                        let new_x = (current_x + delta.x).clamp(0.0, output_size.w as f64);
-                        let new_y = (current_y + delta.y).clamp(0.0, output_size.h as f64);
-                        state.ewm.pointer_location = (new_x, new_y);
-                        module::set_pointer_location(new_x, new_y);
-
-                        let pointer = state.ewm.pointer.clone();
-                        let serial = SERIAL_COUNTER.next_serial();
-
-                        // Find surface under pointer (including popups)
-                        let under = state.ewm.surface_under_point((new_x, new_y).into());
-
-                        pointer.motion(
-                            state,
-                            under.clone(),
-                            &MotionEvent {
-                                location: (new_x, new_y).into(),
-                                serial,
-                                time: event.time_msec(),
-                            },
+                        crate::input::handle_pointer_motion::<LibinputInputBackend>(
+                            state, event,
                         );
-
-                        // Send relative motion event (needed by some games/apps)
-                        pointer.relative_motion(
-                            state,
-                            under,
-                            &RelativeMotionEvent {
-                                delta: event.delta(),
-                                delta_unaccel: event.delta_unaccel(),
-                                utime: event.time(),
-                            },
-                        );
-
-                        pointer.frame(state);
-
-                        // Queue redraw to update cursor position
                         state.ewm.queue_redraw_all();
                     }
                     InputEvent::PointerMotionAbsolute { event } => {
-                        // Absolute pointer motion (from touchpads in absolute mode, tablets)
-                        let output_size = state.ewm.output_size;
-                        let pos = event.position_transformed(output_size);
-                        state.ewm.pointer_location = (pos.x, pos.y);
-                        module::set_pointer_location(pos.x, pos.y);
-
-                        let pointer = state.ewm.pointer.clone();
-                        let serial = SERIAL_COUNTER.next_serial();
-
-                        // Find surface under pointer (including popups)
-                        let under = state.ewm.surface_under_point(pos);
-
-                        pointer.motion(
-                            state,
-                            under,
-                            &MotionEvent {
-                                location: pos,
-                                serial,
-                                time: event.time_msec(),
-                            },
+                        crate::input::handle_pointer_motion_absolute::<LibinputInputBackend>(
+                            state, event,
                         );
-                        pointer.frame(state);
-
-                        // Queue redraw to update cursor position
                         state.ewm.queue_redraw_all();
                     }
                     InputEvent::PointerButton { event } => {
-                        let pointer = state.ewm.pointer.clone();
-                        let serial = SERIAL_COUNTER.next_serial();
-
-                        let button_state = match event.state() {
-                            ButtonState::Pressed => ButtonState::Pressed,
-                            ButtonState::Released => ButtonState::Released,
-                        };
-
-                        // Click-to-focus: on button press, focus the surface under pointer
-                        if button_state == ButtonState::Pressed {
-                            let (px, py) = state.ewm.pointer_location;
-                            // Get surface info before mutating state
-                            let focus_info =
-                                state
-                                    .ewm
-                                    .space
-                                    .element_under((px, py))
-                                    .and_then(|(window, _)| {
-                                        let id = state.ewm.window_ids.get(&window).copied()?;
-                                        let surface = window.wl_surface()?.into_owned();
-                                        Some((id, surface))
-                                    });
-
-                            if let Some((id, _surface)) = focus_info {
-                                module::record_focus(id, "click", None);
-                                state.ewm.set_focus(id);
-                            }
-                        }
-
-                        // Sync keyboard focus before forwarding the button event
-                        state.sync_keyboard_focus();
-
-                        pointer.button(
-                            state,
-                            &ButtonEvent {
-                                button: event.button_code(),
-                                state: button_state,
-                                serial,
-                                time: event.time_msec(),
-                            },
+                        crate::input::handle_pointer_button::<LibinputInputBackend>(
+                            state, event,
                         );
-                        pointer.frame(state);
                     }
                     InputEvent::PointerAxis { event } => {
-                        let pointer = state.ewm.pointer.clone();
-
-                        // Scroll-to-focus: focus the surface under pointer on scroll
-                        let (px, py) = state.ewm.pointer_location;
-                        let focus_info =
-                            state
-                                .ewm
-                                .space
-                                .element_under((px, py))
-                                .and_then(|(window, _)| {
-                                    let id = state.ewm.window_ids.get(&window).copied()?;
-                                    let surface = window.wl_surface()?.into_owned();
-                                    Some((id, surface))
-                                });
-
-                        if let Some((id, _surface)) = focus_info {
-                            module::record_focus(id, "scroll", None);
-                            state.ewm.set_focus(id);
-                        }
-
-                        // Sync keyboard focus before forwarding the scroll event
-                        state.sync_keyboard_focus();
-
-                        let source = event.source();
-
-                        // Get scroll amounts (natural scrolling is handled at libinput device level)
-                        let horizontal_amount = event.amount(Axis::Horizontal);
-                        let vertical_amount = event.amount(Axis::Vertical);
-                        let horizontal_v120 = event.amount_v120(Axis::Horizontal);
-                        let vertical_v120 = event.amount_v120(Axis::Vertical);
-
-                        // Compute continuous values, falling back to v120 if no continuous amount
-                        let horizontal = horizontal_amount
-                            .or_else(|| horizontal_v120.map(|v| v / 120.0 * 15.0))
-                            .unwrap_or(0.0);
-                        let vertical = vertical_amount
-                            .or_else(|| vertical_v120.map(|v| v / 120.0 * 15.0))
-                            .unwrap_or(0.0);
-
-                        let mut frame = AxisFrame::new(event.time_msec()).source(source);
-                        if horizontal != 0.0 {
-                            frame = frame.value(Axis::Horizontal, horizontal);
-                            // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
-                            if let Some(v120) = horizontal_v120 {
-                                frame = frame.v120(Axis::Horizontal, v120 as i32);
-                            }
-                        }
-                        if vertical != 0.0 {
-                            frame = frame.value(Axis::Vertical, vertical);
-                            // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
-                            if let Some(v120) = vertical_v120 {
-                                frame = frame.v120(Axis::Vertical, v120 as i32);
-                            }
-                        }
-
-                        // For finger scroll (touchpad), send stop events when scrolling ends
-                        // (libinput sends a final event with amount == Some(0.0))
-                        if source == AxisSource::Finger {
-                            if horizontal_amount == Some(0.0) {
-                                frame = frame.stop(Axis::Horizontal);
-                            }
-                            if vertical_amount == Some(0.0) {
-                                frame = frame.stop(Axis::Vertical);
-                            }
-                        }
-
-                        pointer.axis(state, frame);
-                        pointer.frame(state);
+                        crate::input::handle_pointer_axis::<LibinputInputBackend>(
+                            state, event,
+                        );
                     }
                     _ => {}
                 }
