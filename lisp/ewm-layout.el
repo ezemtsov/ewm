@@ -38,11 +38,6 @@ This version correctly handles tab-lines on Emacs prior to v31."
     #'window-inside-absolute-pixel-edges)
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
-(defun ewm--frame-y-offset (&optional _frame)
-  "Return Y offset for CSD (always 0 with no decorations).
-Internal bars are already reflected in `window-inside-absolute-pixel-edges'."
-  0)
-
 (defun ewm--focus-locked-p ()
   "Return non-nil if focus should not be synced to surfaces.
 This covers various Emacs states where focus needs to stay on Emacs:
@@ -108,9 +103,8 @@ converts to global positions using output geometry + working area offset."
          (x (pop edges))
          (y (pop edges))
          (width (- (pop edges) x))
-         (height (- (pop edges) y))
-         (csd-offset (ewm--frame-y-offset (window-frame window))))
-    `(:x ,x :y ,(+ y csd-offset) :w ,width :h ,height
+         (height (- (pop edges) y)))
+    `(:x ,x :y ,y :w ,width :h ,height
       :primary ,(if primary-p t :false))))
 
 (defun ewm--window-config-change ()

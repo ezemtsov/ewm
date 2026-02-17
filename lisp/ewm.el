@@ -531,7 +531,9 @@ Sets frames to undecorated mode and removes bars since EWM manages windows direc
   (when (bound-and-true-p tool-bar-mode)
     (tool-bar-mode -1))
   (when (bound-and-true-p tab-bar-mode)
-    (tab-bar-mode -1)))
+    (tab-bar-mode -1))
+  (when (bound-and-true-p scroll-bar-mode)
+    (scroll-bar-mode -1)))
 
 ;;;###autoload
 (defun ewm-start-module ()

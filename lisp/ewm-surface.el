@@ -53,6 +53,9 @@ In char-mode, keys go directly to the surface.
 \\[ewm-input-toggle-mode] - toggle input mode"
   (setq buffer-read-only t)
   (setq-local cursor-type nil)
+  (setq-local left-fringe-width 0)
+  (setq-local right-fringe-width 0)
+  (setq-local show-trailing-whitespace nil)
   ;; Set up mode line to show input mode
   (setq mode-name '("EWM" (:eval (ewm-surface-mode-line-mode))))
   ;; Kill buffer -> close window (like EXWM)
