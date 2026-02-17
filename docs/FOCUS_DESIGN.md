@@ -22,9 +22,13 @@ EWM has a unique focus model that bridges Wayland compositor focus with Emacs fr
 ### Input-to-Focus
 
 Any input action (click OR scroll) focuses the surface under the pointer:
-1. Compositor sets `focused_surface_id` to the surface under pointer
-2. If it's an external surface, sends `Focus { id }` event to Emacs
-3. Emacs shows the surface's buffer and selects its window
+1. Compositor calls `set_focus(id, true, "click"/"scroll", None)`
+2. Always sends `Focus { id }` event to Emacs (no deduplication by ID)
+3. Emacs finds the correct window for that surface and selects it
+
+Sending Focus on every click/scroll (even when `id == focused_surface_id`) is
+essential for multi-window surfaces: the same surface may be visible in multiple
+Emacs windows, so Emacs needs the event to select the window under the pointer.
 
 This unified model means:
 - Scrolling a surface focuses it (keyboard focus follows)
@@ -157,7 +161,7 @@ Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 | `new` | Surface created | Register new surface with Emacs |
 | `close` | Surface destroyed | Clean up surface buffer |
 | `title` | Surface title changes | Update buffer name |
-| `focus` | External surface clicked/scrolled | Tell Emacs to show surface buffer |
+| `focus` | External surface clicked/scrolled (always sent) | Tell Emacs to select the window under pointer |
 | `output_detected` | Output connected | Create Emacs frame for output |
 | `output_disconnected` | Output disconnected | Clean up frame |
 | `outputs_complete` | All outputs reported | Trigger initial layout |
@@ -171,23 +175,23 @@ Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 
 ### Compositor (Rust)
 
-- `set_focus(id)`: Set logical focus, mark keyboard dirty, notify Emacs for external surfaces
-- `focus_surface(id, notify_emacs)`: Wrapper around `focus_surface_with_source`
-- `focus_surface_with_source(id, notify_emacs, source, context)`: Set logical focus with debug tracking
+- `set_focus(id, notify_emacs, source, context)`: Single entry point for all focus changes. Sets logical focus, marks keyboard dirty, optionally sends Focus event to Emacs. Debug source/context tracked in focus history.
 - `sync_keyboard_focus()`: Resolve `focused_surface_id` → `WlSurface`, call `keyboard.set_focus()` if dirty
 - `get_emacs_surface_for_focused_output()`: Find Emacs frame on same output as focused surface
 
-### Emacs (ewm.el)
+### Emacs (ewm.el / ewm-input.el / ewm-layout.el)
 
-- `ewm-focus(id)`: Request compositor to focus a surface
-- `ewm--handle-focus`: Handle focus event from compositor
+- `ewm-focus(id)`: Request compositor to focus a surface (ModuleCommand::Focus)
+- `ewm--handle-focus(event)`: Handle Focus event from compositor. Finds the correct window using `ewm-input--pointer-in-window-p` when multiple windows show the same buffer.
 - `ewm-input--on-post-command`: `post-command-hook` handler, schedules debounced focus sync
-- `ewm-input--sync-focus`: Clears prefix sequence flag, syncs focus if not locked
+- `ewm-input--sync-focus`: Clears prefix sequence flag, syncs compositor focus if not locked. Does NOT send layouts — layout sync is handled separately.
 - `ewm--focus-locked-p`: Centralized check — returns non-nil during minibuffer, prefix args, prefix key sequences
+- `ewm--on-window-selection-change`: `window-selection-change-functions` handler, sends layouts whenever selected window changes (covers keyboard navigation, click-to-focus, and programmatic selection)
 
-Note: Focus sync uses `post-command-hook` with a debounced timer (0.01s).
-This lets Emacs "settle" after commands before syncing focus to the compositor,
-avoiding spurious focus events during transient states.
+Note: Focus sync and layout sync are decoupled. Focus sync uses `post-command-hook`
+with a debounced timer (0.01s). Layout sync uses `window-selection-change-functions`
+which fires whenever selected-window changes, ensuring primary flags are always
+up to date regardless of how focus changed.
 
 ## Multi-Monitor Behavior
 
@@ -205,6 +209,42 @@ The input-to-focus model was chosen over alternatives:
 2. **Full focus-follows-mouse (hover = focus)**: Too aggressive, causes focus changes during casual mouse movement.
 
 3. **Input-to-focus (current)**: Simple unified model where any interaction (click or scroll) activates that location. Matches user intent: "I'm interacting here, so this is active."
+
+## Multi-Window Surface Focus
+
+A single surface (e.g., Firefox) can be displayed in multiple Emacs windows
+simultaneously (e.g., visible on two monitors). This creates a challenge:
+`focused_surface_id` is the same regardless of which window the user clicks.
+
+### Compositor Side
+
+Click and scroll handlers call `set_focus(id, true, "click"/"scroll", None)` on
+every interaction, even when `id == focused_surface_id`. This ensures Emacs
+always receives a Focus event and can select the correct window.
+
+### Emacs Side
+
+`ewm--handle-focus` resolves the Focus event to the correct Emacs window:
+
+1. Get all windows showing the surface's buffer via `get-buffer-window-list`
+2. Use `ewm-input--pointer-in-window-p` to find the window under the pointer
+3. Fall back to `get-buffer-window` if no pointer match (e.g., programmatic focus)
+
+### Primary Flag
+
+Each layout entry has a `primary` flag that controls two things:
+1. **Configure**: Only primary entries send `send_configure()` with the entry's size + scale
+2. **Rendering**: Primary entries render directly; non-primary entries stretch the client's buffer
+
+The primary flag is set in `ewm-layout--send-layouts`:
+- `true` when the surface appears in only one window
+- `true` when the surface appears in multiple windows and this is `selected-window`
+- `false` for non-selected copies of multi-window surfaces
+
+Layout updates (including primary flags) are triggered by
+`window-selection-change-functions`, which fires whenever `selected-window`
+changes — regardless of whether the change came from keyboard navigation,
+click-to-focus, or programmatic selection.
 
 ## Layout Synchronization
 
@@ -232,11 +272,17 @@ diffs surface ID sets to send `wl_surface.enter`/`leave` incrementally.
 
 ### Deduplication
 
-`Focus` and `TextInputIntercept` commands still deduplicate:
+Click/scroll `Focus` events are **not** deduplicated — they always notify Emacs,
+because the same surface ID may appear in multiple Emacs windows and Emacs needs
+the event to select the correct one.
+
+`ModuleCommand::Focus` (from Emacs) still deduplicates by ID in the fixture/test
+path to avoid redundant focus changes.
+
+`TextInputIntercept` deduplicates:
 
 | Command | Cache Key | Skip Condition |
 |---------|-----------|----------------|
-| `Focus` | global | `id == focused_surface_id` |
 | `TextInputIntercept` | global | `state == cached_state` |
 
 ## Keyboard Focus Synchronization
@@ -309,8 +355,12 @@ it must track focus incrementally.
               │                        │                         │
               │  xdg_activation        │  intercept_redirect     │
               │  ModuleCommand::Focus  │   (must set focus +     │
-              │  click / scroll        │    re-send key in same  │
-              │  toplevel_destroyed    │    handler)             │
+              │  toplevel_destroyed    │    re-send key in same  │
+              │                        │    handler)             │
+              │                        │                         │
+              │                        │  click / scroll         │
+              │                        │   (always notify Emacs  │
+              │                        │    for multi-window)    │
               │                        │                         │
               │  Set focused_surface_id│  Set focused_surface_id │
               │  Set keyboard_focus    │  Set keyboard_focus     │
@@ -444,7 +494,7 @@ conflict.
 
 On unlock:
 1. `keyboard_focus` is cleared to `None` (invalidates stale tracking)
-2. `pre_lock_focus` is restored via `focus_surface_with_source()`
+2. `pre_lock_focus` is restored via `set_focus()`
 3. `sync_keyboard_focus()` resolves the restored ID to a `WlSurface`
 
 Step 1 is critical: during lock, the input handler's direct `keyboard.set_focus()`

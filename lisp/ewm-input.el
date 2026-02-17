@@ -34,8 +34,6 @@
 (declare-function ewm-warp-pointer "ewm")
 (declare-function ewm-focus "ewm")
 (declare-function ewm--get-output-offset "ewm")
-(declare-function ewm-layout--refresh "ewm-layout")
-(declare-function ewm-layout--send-layouts "ewm-layout")
 
 (defvar ewm-surface-id)
 (defvar ewm--module-mode)
@@ -195,33 +193,22 @@ Short enough to be imperceptible, long enough for Emacs to settle.")
 (defvar ewm-input--focus-timer nil
   "Timer for debounced focus sync.")
 
-(defvar ewm-input--last-focus-frame nil
-  "Frame that had focus during the last sync.
-Used to detect inter-frame focus changes that require layout updates.")
-
 (defun ewm-input--sync-focus ()
-  "Actually sync focus after debounce delay.
-Syncs compositor focus.  When the selected frame changed, also re-sends
-layouts to update primary flags (needed for multi-output surfaces)."
+  "Sync compositor focus after debounce delay.
+Layout updates (including primary flags) are handled by
+`window-selection-change-functions'."
   (setq ewm-input--focus-timer nil)
   ;; Always clear the prefix sequence flag - the debounced timer means
   ;; the user's command completed (even if we're now in minibuffer etc.)
   (ewm-clear-prefix-sequence)
-  ;; Sync compositor focus to match selected window
   (when (and ewm--module-mode
              (not (ewm--focus-locked-p)))
-    (let* ((cur-frame (selected-frame))
-           (sel-buf (window-buffer (selected-window)))
+    (let* ((sel-buf (window-buffer (selected-window)))
            (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
-           (frame-surface-id (frame-parameter cur-frame 'ewm-surface-id))
+           (frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id))
            (target-id (or surface-id frame-surface-id)))
       (when (and target-id (not (eq target-id (ewm-get-focused-id))))
-        (ewm-focus target-id)
-        ;; Re-send layouts only on inter-frame focus change —
-        ;; that's when primary flags for multi-output surfaces change.
-        (unless (eq cur-frame ewm-input--last-focus-frame)
-          (ewm-layout--send-layouts)))
-      (setq ewm-input--last-focus-frame cur-frame))))
+        (ewm-focus target-id)))))
 
 (defun ewm-input--on-post-command ()
   "Schedule debounced focus sync after command completes."

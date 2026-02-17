@@ -214,13 +214,17 @@ Kills the surface buffer."
 
 (defun ewm--handle-focus (event)
   "Handle focus EVENT from compositor.
-Selects the window displaying the surface's buffer, or displays it if hidden."
+Selects the window displaying the surface's buffer, or displays it if hidden.
+When multiple windows show the same buffer, picks the one under the pointer."
   (pcase-let (((map ("id" id)) event))
     ;; Select window unless minibuffer is active
     (unless (ewm--minibuffer-active-p)
       (when-let* ((buf (gethash id ewm--surfaces))
                   ((buffer-live-p buf)))
-        (let ((win (get-buffer-window buf t)))
+        ;; For multi-window buffers, prefer the window under the pointer
+        (let ((win (or (cl-find-if #'ewm-input--pointer-in-window-p
+                                   (get-buffer-window-list buf nil t))
+                       (get-buffer-window buf t))))
           (if win
               ;; Use select-frame instead of select-frame-set-input-focus
               ;; to avoid triggering xdg_activation which would steal focus

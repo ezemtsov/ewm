@@ -202,7 +202,7 @@ impl Fixture {
                 {
                     self.state
                         .ewm
-                        .focus_surface_with_source(id, false, "test", None);
+                        .set_focus(id, false, "test", None);
                 }
             }
             ModuleCommand::Close { id } => {

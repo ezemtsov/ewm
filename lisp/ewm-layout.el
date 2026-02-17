@@ -92,25 +92,12 @@ appears in multiple windows and this entry is the selected one."
        (ewm-output-layout output (vconcat (nreverse entries))))
      output-surfaces)))
 
-(defun ewm-layout--refresh (&optional skip-focus-sync)
-  "Refresh layout for all surface buffers and optionally sync focus.
-When SKIP-FOCUS-SYNC is non-nil, only update views without syncing focus.
-This is used by hooks that fire rapidly during startup or resize operations.
-Focus sync should only happen through the debounced `ewm-input--sync-focus'."
+(defun ewm-layout--refresh ()
+  "Force redisplay to ensure window sizes are current, then send layouts.
+Focus sync happens through the debounced `ewm-input--sync-focus'."
   (when ewm--module-mode
-    ;; Force redisplay to ensure window sizes are current
     (redisplay t)
-    (ewm-layout--send-layouts)
-    ;; Sync focus only if not skipped and not locked
-    (unless (or skip-focus-sync (ewm--focus-locked-p))
-      (let* ((sel-window (selected-window))
-             (sel-frame (selected-frame))
-             (sel-buf (window-buffer sel-window))
-             (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
-             (frame-surface-id (frame-parameter sel-frame 'ewm-surface-id))
-             (target-id (or surface-id frame-surface-id)))
-        (when (and target-id (not (eq target-id (ewm-get-focused-id))))
-          (ewm-focus target-id))))))
+    (ewm-layout--send-layouts)))
 
 (defun ewm-layout--make-output-view (window primary-p)
   "Create a view plist for WINDOW with frame-relative coordinates.
@@ -129,7 +116,7 @@ converts to global positions using output geometry + working area offset."
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes.
 Updates views only; focus sync happens through debounced path."
-  (ewm-layout--refresh 'skip-focus))
+  (ewm-layout--refresh))
 
 (defvar ewm--pre-minibuffer-surface-id nil
   "Surface ID that was focused before minibuffer opened.")
@@ -148,27 +135,31 @@ Saves previous surface to restore on exit."
   (setq ewm--pre-minibuffer-surface-id (ewm-get-focused-id))
   (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
     (ewm-focus frame-surface-id))
-  (redisplay t)
-  (ewm-layout--refresh 'skip-focus))
+  (ewm-layout--refresh))
 
 (defun ewm--on-minibuffer-exit ()
   "Restore focus to previous surface when minibuffer exits."
   (when (and ewm--pre-minibuffer-surface-id (ewm--compositor-active-p))
     (ewm-focus ewm--pre-minibuffer-surface-id)
     (setq ewm--pre-minibuffer-surface-id nil))
-  (redisplay t)
-  (ewm-layout--refresh 'skip-focus))
+  (ewm-layout--refresh))
 
 (defun ewm--on-window-size-change (_frame)
   "Refresh layout when window sizes change.
 Catches minibuffer height changes that window-configuration-change misses.
 Updates views only; focus sync happens through debounced path."
-  (ewm-layout--refresh 'skip-focus))
+  (ewm-layout--refresh))
+
+(defun ewm--on-window-selection-change (_frame)
+  "Update layouts when selected window changes.
+Primary flag depends on selected-window, so re-send layouts."
+  (ewm-layout--send-layouts))
 
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."
   (add-hook 'window-configuration-change-hook #'ewm--window-config-change)
   (add-hook 'window-size-change-functions #'ewm--on-window-size-change)
+  (add-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
   (add-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
   (add-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
 
@@ -176,6 +167,7 @@ Updates views only; focus sync happens through debounced path."
   "Disable automatic layout sync."
   (remove-hook 'window-configuration-change-hook #'ewm--window-config-change)
   (remove-hook 'window-size-change-functions #'ewm--on-window-size-change)
+  (remove-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
   (remove-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
   (remove-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
 

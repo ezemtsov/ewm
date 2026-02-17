@@ -119,7 +119,7 @@ pub fn handle_keyboard_event(
     if let Some(focus_id) = module::take_pending_focus() {
         if state.ewm.focused_surface_id != focus_id && state.ewm.id_windows.contains_key(&focus_id)
         {
-            state.ewm.focus_surface_with_source(
+            state.ewm.set_focus(
                 focus_id,
                 false,
                 "pending_focus",
@@ -506,8 +506,7 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
                     });
 
                 if let Some(id) = focus_info {
-                    module::record_focus(id, "click", None);
-                    state.ewm.set_focus(id);
+                    state.ewm.set_focus(id, true, "click", None);
                 }
             }
         }
@@ -565,8 +564,7 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
                 });
 
             if let Some(id) = focus_info {
-                module::record_focus(id, "scroll", None);
-                state.ewm.set_focus(id);
+                state.ewm.set_focus(id, true, "scroll", None);
             }
         }
     }

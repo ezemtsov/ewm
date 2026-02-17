@@ -899,7 +899,14 @@ impl Ewm {
             .surface_under(pos_in_window, WindowSurfaceType::ALL)
             .is_some()
         {
-            let global_loc = Point::from((entry_x as f64, entry_y as f64));
+            // Adjust location so Smithay sends surface-space coordinates.
+            // For stretched (non-primary) entries, entry size != buffer size,
+            // so we offset the location to compensate for the scale factor.
+            // For primary entries (scale=1.0), this reduces to (entry_x, entry_y).
+            let global_loc = Point::from((
+                pos.x - pos_in_window.x,
+                pos.y - pos_in_window.y,
+            ));
             return Some((window.wl_surface()?.into_owned(), global_loc));
         }
         None
@@ -1286,27 +1293,9 @@ impl Ewm {
 
     /// Set focus to a surface and notify Emacs.
     /// Marks keyboard focus dirty for deferred sync.
-    pub fn set_focus(&mut self, id: u32) {
-        if id != self.focused_surface_id && id != 0 {
-            self.focused_surface_id = id;
-            self.keyboard_focus_dirty = true;
-            crate::module::set_focused_id(id);
-            // Notify Emacs about focus change (skip Emacs frames, they handle their own focus)
-            if !self.emacs_surfaces.contains(&id) {
-                self.queue_event(Event::Focus { id });
-            }
-        }
-    }
-
-    /// Focus a surface, updating internal state only.
-    /// Keyboard focus is synced via deferred sync_keyboard_focus().
-    pub fn focus_surface(&mut self, id: u32, notify_emacs: bool) {
-        self.focus_surface_with_source(id, notify_emacs, "focus_surface", None);
-    }
-
     /// Focus a surface with source tracking for debugging.
     /// Marks keyboard focus dirty for deferred sync via sync_keyboard_focus().
-    pub fn focus_surface_with_source(
+    pub fn set_focus(
         &mut self,
         id: u32,
         notify_emacs: bool,
@@ -2603,7 +2592,7 @@ impl XdgShellHandler for State {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(refocus_id) = self.ewm.handle_toplevel_destroyed(surface) {
             // Refocus to the returned surface (keyboard sync deferred)
-            self.ewm.focus_surface(refocus_id, true);
+            self.ewm.set_focus(refocus_id, true, "toplevel_destroyed", None);
             self.sync_keyboard_focus();
         }
     }
@@ -2841,7 +2830,7 @@ impl XdgActivationHandler for State {
             {
                 // Focus the surface and notify Emacs (keyboard sync deferred)
                 self.ewm
-                    .focus_surface_with_source(id, true, "xdg_activation", None);
+                    .set_focus(id, true, "xdg_activation", None);
                 info!("xdg_activation: granted for surface {}", id);
             } else {
                 debug!("xdg_activation: surface not found in window_ids");
@@ -2874,7 +2863,7 @@ impl ForeignToplevelHandler for State {
             .map(|(_, id)| id)
         {
             self.ewm
-                .focus_surface_with_source(id, true, "foreign_toplevel", None);
+                .set_focus(id, true, "foreign_toplevel", None);
             info!("Foreign toplevel: activated surface {}", id);
         }
     }
@@ -2981,7 +2970,7 @@ impl SessionLockHandler for State {
             if self.ewm.id_windows.contains_key(&id) {
                 info!("Restoring focus to surface {} after unlock", id);
                 self.ewm
-                    .focus_surface_with_source(id, false, "unlock", None);
+                    .set_focus(id, false, "unlock", None);
             }
         }
         self.sync_keyboard_focus();
@@ -3267,7 +3256,7 @@ impl State {
                 // Skip if already focused (keyboard sync deferred to after command batch)
                 if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
                     self.ewm
-                        .focus_surface_with_source(id, false, "emacs_command", None);
+                        .set_focus(id, false, "emacs_command", None);
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {
