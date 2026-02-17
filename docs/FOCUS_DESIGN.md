@@ -74,13 +74,12 @@ Initialization:
 
 Runtime:
   Prefix key intercepted → compositor sets IN_PREFIX_SEQUENCE=true
-  Other sync paths check ewm--focus-locked-p → see flag=true → skip sync
-  Debounced sync timer fires → clears flag → refreshes layout
+  post-command-hook fires → ewm-input--sync-focus clears flag → syncs focus
 ```
 
 Key insight: Compositor only SETS the flag true on prefix keys, never clears it.
-The debounced `ewm-input--sync-focus` always clears the flag first (avoiding
-circular dependency), then checks other conditions before refreshing.
+`ewm-input--sync-focus` (called synchronously from `post-command-hook`) always
+clears the flag first, then checks other conditions before syncing focus.
 
 #### Implementation
 
@@ -108,18 +107,15 @@ circular dependency), then checks other conditions before refreshing.
 #### Critical Design Decisions
 
 1. **Don't clear flag on non-prefix intercepts**: If user presses C-x then s-left
-   (an intercepted non-prefix key), the flag must stay true. Only the debounced
-   sync timer clears it.
+   (an intercepted non-prefix key), the flag must stay true. Only
+   `post-command-hook` (after the full command completes) clears it.
 
-2. **Centralized focus lock check**: Multiple code paths call `ewm-layout--refresh`:
-   - `window-configuration-change-hook` (which-key popup)
-   - `window-size-change-functions`
-   - `minibuffer-setup-hook` / `minibuffer-exit-hook`
+2. **Synchronous focus sync**: `ewm-input--sync-focus` runs directly from
+   `post-command-hook` — no timer or debouncing. This works because
+   `post-command-hook` only fires after complete commands, not mid-sequence.
+   Layout sync is decoupled via `window-selection-change-functions`.
 
-   All these paths check `ewm--focus-locked-p` (which includes prefix sequence
-   check) before syncing focus.
-
-3. **Debounced sync clears flag first**: `ewm-input--sync-focus` always clears
+3. **Clear flag before checking**: `ewm-input--sync-focus` always clears
    the prefix sequence flag before checking other conditions. This avoids a
    circular dependency where the flag could never be cleared because the check
    itself prevented clearing.
@@ -183,13 +179,12 @@ Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 
 - `ewm-focus(id)`: Request compositor to focus a surface (ModuleCommand::Focus)
 - `ewm--handle-focus(event)`: Handle Focus event from compositor. Finds the correct window using `ewm-input--pointer-in-window-p` when multiple windows show the same buffer.
-- `ewm-input--on-post-command`: `post-command-hook` handler, schedules debounced focus sync
-- `ewm-input--sync-focus`: Clears prefix sequence flag, syncs compositor focus if not locked. Does NOT send layouts — layout sync is handled separately.
+- `ewm-input--sync-focus`: `post-command-hook` handler. Clears prefix sequence flag, syncs compositor focus if not locked. Runs synchronously (no timer). Does NOT send layouts — layout sync is handled separately.
 - `ewm--focus-locked-p`: Centralized check — returns non-nil during minibuffer, prefix args, prefix key sequences
 - `ewm--on-window-selection-change`: `window-selection-change-functions` handler, sends layouts whenever selected window changes (covers keyboard navigation, click-to-focus, and programmatic selection)
 
-Note: Focus sync and layout sync are decoupled. Focus sync uses `post-command-hook`
-with a debounced timer (0.01s). Layout sync uses `window-selection-change-functions`
+Note: Focus sync and layout sync are decoupled. Focus sync runs synchronously
+from `post-command-hook`. Layout sync uses `window-selection-change-functions`
 which fires whenever selected-window changes, ensuring primary flags are always
 up to date regardless of how focus changed.
 

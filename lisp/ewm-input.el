@@ -177,29 +177,23 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
         (setq ewm--mff-last-window window)
         (ewm-input--warp-pointer-to-window window)))))
 
-;;; Focus sync (debounced)
+;;; Focus sync
 ;;
-;; Focus is synced after commands complete, with a short debounce delay.
-;; This lets Emacs "settle" before syncing, naturally handling:
-;; - Popup windows (transient, which-key, etc.)
-;; - Prefix key sequences
-;; - Rapid command sequences
-;; This is the same approach EXWM uses.
-
-(defconst ewm-input--focus-delay 0.01
-  "Delay in seconds before syncing focus.
-Short enough to be imperceptible, long enough for Emacs to settle.")
-
-(defvar ewm-input--focus-timer nil
-  "Timer for debounced focus sync.")
+;; Focus is synced synchronously in post-command-hook.  Layout updates are
+;; handled separately by window-selection-change-functions, so this hook
+;; only needs to clear the prefix sequence flag and sync compositor focus.
+;;
+;; No timer is needed because:
+;; - post-command-hook fires after full commands complete (not mid-sequence)
+;; - Prefix key sequences (C-x ...) don't trigger post-command-hook until
+;;   the sequence finishes, so ewm--focus-locked-p handles them naturally
+;; - Layout sync is decoupled — popup windows (which-key, transient) trigger
+;;   window-configuration-change-hook → layout update, not focus sync
 
 (defun ewm-input--sync-focus ()
-  "Sync compositor focus after debounce delay.
+  "Sync compositor focus after command completes.
 Layout updates (including primary flags) are handled by
 `window-selection-change-functions'."
-  (setq ewm-input--focus-timer nil)
-  ;; Always clear the prefix sequence flag - the debounced timer means
-  ;; the user's command completed (even if we're now in minibuffer etc.)
   (ewm-clear-prefix-sequence)
   (when (and ewm--module-mode
              (not (ewm--focus-locked-p)))
@@ -210,19 +204,10 @@ Layout updates (including primary flags) are handled by
       (when (and target-id (not (eq target-id (ewm-get-focused-id))))
         (ewm-focus target-id)))))
 
-(defun ewm-input--on-post-command ()
-  "Schedule debounced focus sync after command completes."
-  (when ewm-input--focus-timer
-    (cancel-timer ewm-input--focus-timer))
-  ;; Schedule debounced sync - let sync-focus decide when to clear the flag
-  (setq ewm-input--focus-timer
-        (run-with-timer ewm-input--focus-delay nil
-                        #'ewm-input--sync-focus)))
-
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
-  (add-hook 'post-command-hook #'ewm-input--on-post-command)
+  (add-hook 'post-command-hook #'ewm-input--sync-focus)
   ;; Mouse-follows-focus hooks
   (advice-add 'select-window :after #'ewm-input--on-select-window)
   (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
@@ -230,10 +215,7 @@ Layout updates (including primary flags) are handled by
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
-  (when ewm-input--focus-timer
-    (cancel-timer ewm-input--focus-timer)
-    (setq ewm-input--focus-timer nil))
-  (remove-hook 'post-command-hook #'ewm-input--on-post-command)
+  (remove-hook 'post-command-hook #'ewm-input--sync-focus)
   (advice-remove 'select-window #'ewm-input--on-select-window)
   (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
 
