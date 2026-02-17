@@ -133,6 +133,21 @@ pub fn handle_keyboard_event(
     let focus_on_emacs = state.ewm.is_focus_on_emacs();
     let text_input_intercept = state.ewm.text_input_intercept;
 
+    // During a prefix sequence (C-x ...), Emacs needs Latin keysyms for
+    // keybinding dispatch. Temporarily set base layout for this key event,
+    // then restore immediately after. No persistent state needed.
+    let prefix_saved_layout =
+        if module::get_in_prefix_sequence() && focus_on_emacs && state.ewm.xkb_current_layout != 0
+        {
+            let saved = state.ewm.xkb_current_layout;
+            keyboard.with_xkb_state(state, |mut context| {
+                context.set_layout(smithay::input::keyboard::Layout(0));
+            });
+            Some(saved)
+        } else {
+            None
+        };
+
     // Process key with filter to detect intercepted keys and kill combo
     let filter_result = keyboard.input::<(u8, u32, Option<String>), _>(
         state,
@@ -204,6 +219,13 @@ pub fn handle_keyboard_event(
         },
     );
 
+    // Restore layout after prefix sequence temp reset
+    if let Some(saved) = prefix_saved_layout {
+        keyboard.with_xkb_state(state, |mut context| {
+            context.set_layout(smithay::input::keyboard::Layout(saved as u32));
+        });
+    }
+
     // Determine action from filter result
     if let Some((code, keysym, ref utf8)) = filter_result {
         match code {
@@ -253,17 +275,17 @@ pub fn handle_keyboard_event(
                     // sequence completes (race condition with C-x left/right etc).
                     // Emacs frames handle their own focus via Wayland protocol.
 
-                    // Switch to base layout (index 0) when redirecting to Emacs
-                    // This ensures Emacs keybindings work correctly
-                    if state.ewm.xkb_current_layout != 0 && !state.ewm.xkb_layout_names.is_empty() {
+                    // Temporarily switch to base layout so the re-sent key
+                    // produces Latin keysyms for Emacs keybindings.
+                    // Restored immediately after — no persistent layout change.
+                    let saved_layout = state.ewm.xkb_current_layout;
+                    if saved_layout != 0 && !state.ewm.xkb_layout_names.is_empty() {
                         keyboard.with_xkb_state(state, |mut context| {
                             context.set_layout(smithay::input::keyboard::Layout(0));
                         });
-                        state.ewm.xkb_current_layout = 0;
-                        tracing::info!("Switched to base layout for Emacs redirect");
                     }
 
-                    // Re-send the key to Emacs
+                    // Re-send the key to Emacs (sees layout 0)
                     keyboard.input::<(), _>(
                         state,
                         keycode.into(),
@@ -272,6 +294,15 @@ pub fn handle_keyboard_event(
                         time,
                         |_, _, _| FilterResult::Forward,
                     );
+
+                    // Restore layout — external surface keeps its layout
+                    if saved_layout != 0 {
+                        keyboard.with_xkb_state(state, |mut context| {
+                            context.set_layout(smithay::input::keyboard::Layout(
+                                saved_layout as u32,
+                            ));
+                        });
+                    }
                 }
             }
         }
