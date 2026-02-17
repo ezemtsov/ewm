@@ -954,17 +954,13 @@ impl Ewm {
             }
         }
 
-        // 4. Handle newly added surfaces (new - old): enter + scale
+        // 4. Handle newly added surfaces (new - old): enter only.
+        // Scale is sent in step 8 for active surfaces — the active output's
+        // scale is the canonical one (wp_fractional_scale_v1 is per-surface).
         for &id in new_ids.difference(&old_ids) {
             if let Some(window) = self.id_windows.get(&id) {
                 if let Some(surface) = window.wl_surface() {
                     output.enter(&surface);
-                    // Send scale/transform for this output
-                    let scale = output.current_scale();
-                    let transform = output.current_transform();
-                    window.with_surfaces(|s, data| {
-                        crate::utils::send_scale_transform(s, data, scale, transform);
-                    });
                 }
             } else {
                 warn!("apply_output_layout: surface {} not found", id);
@@ -983,12 +979,23 @@ impl Ewm {
         self.output_layouts
             .insert(output_name.to_string(), entries);
 
-        // 8. Configure: only surfaces active on THIS output
-        // (surfaces active elsewhere were configured when that layout was applied)
+        // 8. Configure active surfaces: size + scale from this output.
+        // wp_fractional_scale_v1 is per-surface, so the active output's scale
+        // is the canonical one — the client renders at this scale.
+        let active_scale = output.current_scale();
+        let active_transform = output.current_transform();
         if let Some(entries) = self.output_layouts.get(output_name) {
             for entry in entries {
                 if entry.active {
                     if let Some(window) = self.id_windows.get(&entry.id) {
+                        window.with_surfaces(|s, data| {
+                            crate::utils::send_scale_transform(
+                                s,
+                                data,
+                                active_scale,
+                                active_transform,
+                            );
+                        });
                         window.toplevel().map(|t| {
                             t.with_pending_state(|state| {
                                 state.size = Some((entry.w as i32, entry.h as i32).into());
