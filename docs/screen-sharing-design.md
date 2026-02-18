@@ -71,9 +71,13 @@ taken via `mem::take` to avoid borrow conflicts with element collection.
 
 **`stream.rs`** — `Cast` struct for video streaming:
 - DMA-BUF buffer allocation via GBM device
-- Format negotiation with SPA pod builder
+- Format negotiation with SPA pod builder (DONT_FIXATE + dual modifier offer)
+- 3-state machine: `ResizePending` → `ConfirmationPending` → `Ready`
+- Non-blocking GPU sync via fence FD export + calloop source
 - Damage-based frame skipping via `OutputDamageTracker`
-- Frame rate limiting (~30fps cap)
+- Timer-based scheduled redraws stored on Cast (cancellable)
+- Refresh rate renegotiation via `set_refresh()`
+- Linear modifier fallback when tiled exports produce multi-FD buffers
 
 ### D-Bus Interfaces (`compositor/src/dbus/`)
 
@@ -87,10 +91,12 @@ taken via `mem::take` to avoid borrow conflicts with element collection.
 - Provides `GetCurrentState()` with monitor info
 
 **`service_channel.rs`** — `org.gnome.Mutter.ServiceChannel`:
-- Portal compatibility interface
+- Provides Wayland connection to xdg-desktop-portal-gnome
+- Creates Unix socket pair, inserts portal as Wayland client
 
 Each D-Bus interface uses its own blocking connection to avoid deadlocks
-between interfaces.
+between interfaces. Names registered with `AllowReplacement | ReplaceExisting`
+so the active session always takes over.
 
 ### Session Lifecycle
 
@@ -114,16 +120,49 @@ D-Bus Thread                          Compositor (calloop)
      │    │                                  │ Disconnect PipeWire stream
 ```
 
+### Cast State Machine
+
+```
+ResizePending ──→ ConfirmationPending ──→ Ready
+    ↑                                       │
+    └───────── output resize ───────────────┘
+```
+
+- **ResizePending**: Initial state and after output resize. Waiting for
+  PipeWire to negotiate format at the requested size.
+- **ConfirmationPending**: Modifier fixated (DONT_FIXATE was set, multiple
+  modifiers offered). Waiting for PipeWire to confirm the chosen format.
+  During fixation, both the fixated format and original all-modifiers format
+  are offered as fallback.
+- **Ready**: Format confirmed, streaming. Holds the `OutputDamageTracker`.
+
+### Non-Blocking GPU Sync
+
+After rendering to a PipeWire DMA-BUF, `queue_after_sync()` avoids blocking
+the compositor thread:
+
+1. Export a fence FD from the `SyncPoint`
+2. Register a calloop `Generic` source that triggers when the GPU is done
+3. `queue_completed_buffers()` drains finished buffers in order
+
+If fence export fails (pre-signalled or export error), the buffer is queued
+immediately with a signalled SyncPoint to avoid getting stuck.
+
+`rendering_buffers` (shared via `Rc<RefCell>`) tracks in-flight buffers.
+The `remove_buffer` PipeWire callback cleans entries when PipeWire reclaims
+a buffer.
+
 ### Rendering
 
 Screencast rendering runs in `DrmBackendState::post_render()`, called from
 `Ewm::redraw()` after the main frame is submitted. For each active cast on
 the output:
 
-1. Frame rate check — skip if too soon since last frame
+1. `check_time_and_schedule()` — skip if too soon, schedule timer redraw
 2. Element collection — lazy, shared across all casts for the same output
 3. Render to PipeWire DMA-BUF buffer via `dequeue_buffer_and_render()`
-4. Update `last_frame_time`
+4. Non-blocking queue via `queue_after_sync()`
+5. Update `last_frame_time`
 
 ## DMA-BUF Feedback
 
@@ -175,10 +214,18 @@ Core error listener detects connection loss (EPIPE):
 2. Fatal error channel notifies compositor
 3. All screencasts cleared
 
+### Modifier Fallback
+
+Intel tiled modifiers (e.g., I915_FORMAT_MOD_Y_TILED) can produce multi-FD
+GBM buffers that Smithay's `export()` doesn't support. `find_preferred_modifier()`
+falls back to `Modifier::Linear` when the initial export fails, which always
+produces single-FD buffers.
+
 ### Clean Shutdown
 
-`Drop` impl for `Cast` explicitly disconnects PipeWire stream, ensuring clean
-disconnection even if `stop()` is not called.
+`Drop` impl for `Cast` cancels any scheduled redraw timer and explicitly
+disconnects the PipeWire stream, ensuring clean disconnection even if `stop()`
+is not called.
 
 ## Output Naming
 
@@ -186,6 +233,30 @@ EWM uses full DRM connector names matching Smithay's `connector.interface()`:
 - `DisplayPort-1` (not `DP-1`)
 - `EmbeddedDisplayPort-1` (not `eDP-1`)
 - `HDMI-A-1`
+
+## Portal Configuration
+
+EWM implements `org.gnome.Mutter.ScreenCast` (the GNOME D-Bus interface), so
+the portal backend must be `xdg-desktop-portal-gnome` — not `xdg-desktop-portal-wlr`
+which uses `wlr-screencopy`.
+
+The NixOS module (`nix/service.nix`) configures:
+- `xdg.portal.config.ewm` routes ScreenCast to `gnome`
+- `extraPortals` includes `xdg-desktop-portal-gnome` and `xdg-desktop-portal-gtk`
+
+### Startup Race Condition
+
+`xdg-desktop-portal-gnome` needs `org.gnome.Mutter.ServiceChannel` to be
+registered on D-Bus when it starts. If the portal is D-Bus-activated before
+the compositor registers its names (e.g., triggered by
+`dbus-update-activation-environment` in the session script), the portal falls
+back to "Non-compatible display server, exposing settings only" and ScreenCast
+is unavailable.
+
+EWM uses `Type=notify` with `sd_notify(READY=1)` sent after D-Bus registration,
+so systemd-ordered services wait. But D-Bus activation bypasses systemd ordering.
+If the portal starts too early, restart it: `systemctl --user restart
+xdg-desktop-portal-gnome.service`.
 
 ## Feature Flag
 
