@@ -1197,11 +1197,11 @@ impl DrmBackendState {
             return;
         };
 
-        // Scan for connector changes
+        // DrmScanner will preserve any existing connector-CRTC mapping.
         let scan_result = match device.drm_scanner.scan_connectors(&device.drm) {
             Ok(x) => x,
             Err(err) => {
-                warn!("Error scanning connectors: {:?}", err);
+                warn!("error scanning connectors: {:?}", err);
                 return;
             }
         };
@@ -1216,43 +1216,18 @@ impl DrmBackendState {
                     crtc: Some(crtc),
                 } => {
                     info!(
-                        "Connector connected: {}-{}",
+                        "connector connected: {}-{}",
                         connector.interface().as_str(),
                         connector.interface_id()
                     );
                     added.push((connector, crtc));
                 }
-                DrmScanEvent::Connected {
-                    connector,
-                    crtc: None,
-                } => {
-                    warn!(
-                        "Connector {}-{} has no available CRTC",
-                        connector.interface().as_str(),
-                        connector.interface_id()
-                    );
-                }
                 DrmScanEvent::Disconnected {
-                    connector,
-                    crtc: Some(crtc),
+                    crtc: Some(crtc), ..
                 } => {
-                    info!(
-                        "Connector disconnected: {}-{}",
-                        connector.interface().as_str(),
-                        connector.interface_id()
-                    );
                     removed.push(crtc);
                 }
-                DrmScanEvent::Disconnected {
-                    connector,
-                    crtc: None,
-                } => {
-                    debug!(
-                        "Connector {}-{} disconnected (had no CRTC)",
-                        connector.interface().as_str(),
-                        connector.interface_id()
-                    );
-                }
+                _ => (),
             }
         }
 
@@ -1260,21 +1235,62 @@ impl DrmBackendState {
             return;
         }
 
-        // Process disconnections first
+        let mut changed = false;
+
+        // Process disconnections first.
         for crtc in removed {
             self.disconnect_output(crtc, ewm);
+            changed = true;
         }
 
-        // Process new connections
+        // Re-acquire device reference after disconnections (borrow was
+        // consumed by disconnect_output).
+        let Some(device) = &self.device else {
+            return;
+        };
+
+        // Skip laptop panels when the lid is closed and an external monitor
+        // is present (mirrors on_lid_state_changed logic). Without this,
+        // udev Changed events after lid-close re-report the panel as
+        // Connected, causing a connect/disconnect cycle every second.
+        let disable_laptop_panels =
+            self.lid_closed && self.has_external_monitor(ewm);
+
+        // Process new connections, skipping CRTCs that already have a
+        // surface (guards against spurious scanner re-reports).
+        let added: Vec<_> = added
+            .into_iter()
+            .filter(|(connector, crtc)| {
+                if device.surfaces.contains_key(crtc) {
+                    return false;
+                }
+                if disable_laptop_panels {
+                    let name = format!(
+                        "{}-{}",
+                        connector.interface().as_str(),
+                        connector.interface_id()
+                    );
+                    if crate::is_laptop_panel(&name) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
         for (connector, crtc) in added {
             if let Err(err) = self.connect_output(connector, crtc, ewm) {
-                warn!("Failed to connect output: {:?}", err);
+                warn!("failed to connect output: {:?}", err);
+            } else {
+                changed = true;
             }
         }
 
         // Signal Emacs that output topology is settled so it can
         // re-sync layout, focus, and frame-output parity.
-        ewm.queue_event(crate::event::Event::OutputsComplete);
+        if changed {
+            ewm.queue_event(crate::event::Event::OutputsComplete);
+        }
     }
 
     /// Connect a new output

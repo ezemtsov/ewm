@@ -248,7 +248,8 @@ pub fn refresh<'a, D>(
         };
 
         // Ensure group exists.
-        if !workspace_state.groups.contains_key(output_name) {
+        let group_is_new = !workspace_state.groups.contains_key(output_name);
+        if group_is_new {
             let mut group = GroupData {
                 output: output.clone(),
                 instances: Vec::new(),
@@ -290,6 +291,13 @@ pub fn refresh<'a, D>(
                     ws.state = new_state;
                     for inst in &ws.instances {
                         inst.state(new_state);
+                    }
+                    changed = true;
+                }
+                // Re-associate with new group after output reconnect.
+                if group_is_new {
+                    if let Some(group) = workspace_state.groups.get(output_name) {
+                        send_workspace_enter(&group.instances, &ws.instances);
                     }
                     changed = true;
                 }
