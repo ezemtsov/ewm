@@ -75,7 +75,7 @@ emacsPackage.pkgs.trivialBuild {
   meta = {
     description = "Emacs Wayland Manager - Wayland compositor for Emacs";
     homepage = "https://github.com/ezemtsov/ewm";
-    license = lib.licenses.gpl3Only;
+    license = lib.licenses.gpl3Plus;
     platforms = lib.platforms.linux;
     mainProgram = "ewm-emacs";
   };

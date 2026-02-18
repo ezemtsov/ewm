@@ -1,6 +1,7 @@
 //! org.gnome.Mutter.DisplayConfig D-Bus interface implementation
 //!
-//! This interface is used by xdg-desktop-portal-gnome to enumerate monitors.
+//! Based on niri's `dbus/mutter_display_config.rs`. This interface is used
+//! by xdg-desktop-portal-gnome to enumerate monitors.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

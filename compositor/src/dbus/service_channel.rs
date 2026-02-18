@@ -1,7 +1,7 @@
 //! org.gnome.Mutter.ServiceChannel D-Bus interface
 //!
-//! This interface allows xdg-desktop-portal-gnome to connect as a Wayland client
-//! to the compositor.
+//! Based on niri's `dbus/mutter_service_channel.rs`. This interface allows
+//! xdg-desktop-portal-gnome to connect as a Wayland client to the compositor.
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;

@@ -1,7 +1,8 @@
 //! wlr-screencopy protocol implementation
 //!
-//! This module provides support for the wlr-screencopy-unstable-v1 protocol,
-//! which allows clients like `grim` to capture screenshots.
+//! Ported from niri's screencopy protocol implementation. Provides support for
+//! the wlr-screencopy-unstable-v1 protocol, allowing clients like `grim` to
+//! capture screenshots.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +16,6 @@ use smithay::backend::renderer::sync::SyncPoint;
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
-use smithay::reexports::rustix::time::{clock_gettime, ClockId};
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::{
     Flags, ZwlrScreencopyFrameV1,
 };
@@ -32,13 +32,9 @@ use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
 use smithay::wayland::{dmabuf, shm};
 use tracing::trace;
 
-const VERSION: u32 = 3;
+pub use crate::utils::get_monotonic_time;
 
-/// Get monotonic time for timestamps
-pub fn get_monotonic_time() -> Duration {
-    let ts = clock_gettime(ClockId::Monotonic);
-    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
-}
+const VERSION: u32 = 3;
 
 /// Queue of pending screencopy requests for an output
 pub struct ScreencopyQueue {

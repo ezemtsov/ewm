@@ -1,5 +1,8 @@
 //! D-Bus interfaces for xdg-desktop-portal integration
 //!
+//! Based on niri's D-Bus integration architecture (per-interface blocking
+//! connections, `Start` trait, `DBusServers` pattern).
+//!
 //! Implements:
 //! - org.gnome.Mutter.ScreenCast for screen sharing
 //! - org.gnome.Mutter.DisplayConfig for monitor enumeration

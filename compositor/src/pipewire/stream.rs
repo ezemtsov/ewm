@@ -1,6 +1,7 @@
 //! PipeWire video stream for screen casting
 //!
-//! This module implements PipeWire video streaming for screen sharing.
+//! Based on niri's PipeWire stream implementation (`screencasting/pw_utils.rs`).
+//! Implements PipeWire video streaming for screen sharing.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

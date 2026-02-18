@@ -1,7 +1,8 @@
 //! PipeWire integration for screen sharing
 //!
-//! This module provides PipeWire support for screen casting via the
-//! org.gnome.Mutter.ScreenCast D-Bus interface.
+//! Based on niri's PipeWire integration (`screencasting/pw_utils.rs`). Provides
+//! PipeWire support for screen casting via the org.gnome.Mutter.ScreenCast D-Bus
+//! interface.
 
 pub mod stream;
 

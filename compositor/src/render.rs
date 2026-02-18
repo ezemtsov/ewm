@@ -1,7 +1,9 @@
 //! Shared render element collection
 //!
 //! This module provides functions for collecting render elements from
-//! the compositor state, shared between Winit and DRM backends.
+//! the compositor state, shared between DRM and headless backends.
+//! Render utility functions (`render_to_dmabuf`, `render_to_shm`,
+//! `render_elements_impl`) are ported from niri.
 //!
 //! # Design Invariants
 //!
