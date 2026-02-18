@@ -38,6 +38,7 @@ use smithay::{
         },
         drm::{
             compositor::{DrmCompositor, FrameFlags, PrimaryPlaneElement},
+            exporter::gbm::GbmFramebufferExporter,
             DrmDevice, DrmDeviceFd, DrmEvent, DrmNode,
         },
         egl::{EGLDevice, EGLDisplay},
@@ -124,7 +125,7 @@ fn preferred_drm_mode(modes: &[DrmMode]) -> Option<DrmMode> {
 
 /// Type alias for our DRM compositor
 type GbmDrmCompositor =
-    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmDevice<DrmDeviceFd>, (), DrmDeviceFd>;
+    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
 /// Per-output surface state (DRM-specific, redraw state is in Ewm::output_state)
 struct OutputSurface {
@@ -1119,6 +1120,7 @@ impl DrmBackendState {
                 subpixel: Subpixel::Unknown,
                 make: "EWM".into(),
                 model: "DRM".into(),
+                serial_number: String::new(),
             },
         );
 
@@ -1150,7 +1152,7 @@ impl DrmBackendState {
             drm_surface,
             None,
             allocator.clone(),
-            device.gbm.clone(),
+            GbmFramebufferExporter::new(device.gbm.clone(), device.render_node.into()),
             SUPPORTED_COLOR_FORMATS,
             render_formats.clone(),
             cursor_size,
@@ -1178,7 +1180,7 @@ impl DrmBackendState {
                     drm_surface,
                     None,
                     allocator,
-                    device.gbm.clone(),
+                    GbmFramebufferExporter::new(device.gbm.clone(), device.render_node.into()),
                     SUPPORTED_COLOR_FORMATS,
                     fallback_formats,
                     cursor_size,

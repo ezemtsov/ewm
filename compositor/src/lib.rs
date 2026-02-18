@@ -93,6 +93,7 @@ use smithay::{
         WindowSurfaceType,
     },
     input::{
+        dnd::DndGrabHandler,
         keyboard::{xkb::keysyms, KeyboardHandle, ModifiersState},
         pointer::PointerHandle,
         Seat, SeatHandler, SeatState,
@@ -130,8 +131,8 @@ use smithay::{
         selection::{
             data_device::{
                 request_data_device_client_selection, set_data_device_focus,
-                set_data_device_selection, ClientDndGrabHandler, DataDeviceHandler,
-                DataDeviceState, ServerDndGrabHandler,
+                set_data_device_selection, DataDeviceHandler,
+                DataDeviceState, WaylandDndGrabHandler,
             },
             primary_selection::{
                 set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
@@ -2529,25 +2530,25 @@ impl SelectionHandler for State {
         });
     }
 }
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
+impl WaylandDndGrabHandler for State {}
+impl DndGrabHandler for State {}
 impl DataDeviceHandler for State {
-    fn data_device_state(&self) -> &DataDeviceState {
-        &self.ewm.data_device_state
+    fn data_device_state(&mut self) -> &mut DataDeviceState {
+        &mut self.ewm.data_device_state
     }
 }
 delegate_data_device!(State);
 
 impl PrimarySelectionHandler for State {
-    fn primary_selection_state(&self) -> &PrimarySelectionState {
-        &self.ewm.primary_selection_state
+    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
+        &mut self.ewm.primary_selection_state
     }
 }
 delegate_primary_selection!(State);
 
 impl DataControlHandler for State {
-    fn data_control_state(&self) -> &DataControlState {
-        &self.ewm.data_control_state
+    fn data_control_state(&mut self) -> &mut DataControlState {
+        &mut self.ewm.data_control_state
     }
 }
 delegate_data_control!(State);

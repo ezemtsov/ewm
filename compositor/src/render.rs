@@ -35,9 +35,9 @@ use smithay::{
                 },
                 Kind, RenderElement,
             },
-            gles::{GlesRenderer, GlesTexture},
+            gles::{GlesRenderer, GlesTarget, GlesTexture},
             sync::SyncPoint,
-            Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Unbind,
+            Bind, Color32F, ExportMem, Frame, Offscreen, Renderer,
         },
     },
     desktop::{layer_map_for_output, LayerMap, PopupManager},
@@ -346,7 +346,7 @@ pub fn collect_render_elements_for_output(
 /// Render elements to a dmabuf buffer for screencopy
 pub fn render_to_dmabuf(
     renderer: &mut GlesRenderer,
-    dmabuf: Dmabuf,
+    mut dmabuf: Dmabuf,
     size: Size<i32, Physical>,
     scale: Scale<f64>,
     transform: Transform,
@@ -356,8 +356,8 @@ pub fn render_to_dmabuf(
         dmabuf.width() == size.w as u32 && dmabuf.height() == size.h as u32,
         "invalid buffer size"
     );
-    renderer.bind(dmabuf).context("error binding dmabuf")?;
-    render_elements_to_buffer(renderer, size, scale, transform, elements)
+    let mut target = renderer.bind(&mut dmabuf).context("error binding dmabuf")?;
+    render_elements_impl(renderer, &mut target, size, scale, transform, elements)
 }
 
 /// Render elements to an SHM buffer for screencopy
@@ -381,20 +381,25 @@ pub fn render_to_shm(
 
         // Render to a texture first
         let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
-        let texture: GlesTexture = renderer
+        let mut texture: GlesTexture = renderer
             .create_buffer(Fourcc::Xrgb8888, buffer_size)
             .context("error creating texture")?;
 
-        renderer
-            .bind(texture.clone())
-            .context("error binding texture")?;
+        {
+            let mut target = renderer
+                .bind(&mut texture)
+                .context("error binding texture")?;
 
-        // Render elements (don't unbind yet - we need to copy the framebuffer)
-        let _ = render_elements_no_unbind(renderer, size, scale, transform, elements)?;
+            // Render elements
+            let _ = render_elements_impl(renderer, &mut target, size, scale, transform, elements)?;
+        }
 
-        // Download the result
+        // Download the result (re-bind to get framebuffer for copy)
+        let target = renderer
+            .bind(&mut texture)
+            .context("error binding texture for copy")?;
         let mapping = renderer
-            .copy_framebuffer(Rectangle::from_size(buffer_size), Fourcc::Xrgb8888)
+            .copy_framebuffer(&target, Rectangle::from_size(buffer_size), Fourcc::Xrgb8888)
             .context("error copying framebuffer")?;
 
         let bytes = renderer
@@ -405,19 +410,15 @@ pub fn render_to_shm(
             ptr::copy_nonoverlapping(bytes.as_ptr(), shm_buffer.cast(), shm_len);
         }
 
-        // Now unbind
-        if let Err(err) = renderer.unbind() {
-            warn!("error unbinding after rendering: {:?}", err);
-        }
-
         Ok(())
     })
     .context("expected shm buffer, but didn't get one")?
 }
 
-/// Shared rendering logic - renders elements but does NOT unbind
-fn render_elements_no_unbind(
+/// Shared rendering logic - renders elements to a bound target
+fn render_elements_impl(
     renderer: &mut GlesRenderer,
+    target: &mut GlesTarget,
     size: Size<i32, Physical>,
     scale: Scale<f64>,
     transform: Transform,
@@ -427,7 +428,7 @@ fn render_elements_no_unbind(
     let output_rect = Rectangle::from_size(transform.transform_size(size));
 
     let mut frame = renderer
-        .render(size, transform)
+        .render(target, size, transform)
         .context("error starting frame")?;
 
     frame
@@ -447,23 +448,6 @@ fn render_elements_no_unbind(
     }
 
     frame.finish().context("error finishing frame")
-}
-
-/// Shared rendering logic for screencopy (renders and unbinds)
-fn render_elements_to_buffer(
-    renderer: &mut GlesRenderer,
-    size: Size<i32, Physical>,
-    scale: Scale<f64>,
-    transform: Transform,
-    elements: impl Iterator<Item = impl RenderElement<GlesRenderer>>,
-) -> anyhow::Result<SyncPoint> {
-    let sync = render_elements_no_unbind(renderer, size, scale, transform, elements)?;
-
-    if let Err(err) = renderer.unbind() {
-        warn!("error unbinding after rendering: {:?}", err);
-    }
-
-    Ok(sync)
 }
 
 /// Process pending screencopy requests for a specific output

@@ -73,11 +73,11 @@ macro_rules! tracy_frame_mark {
 #[macro_export]
 #[cfg(feature = "profile-with-tracy")]
 macro_rules! tracy_plot {
-    ($name:expr, $value:expr) => {
+    ($name:expr, $value:expr) => {{
         static PLOT: std::sync::OnceLock<tracy_client::PlotName> = std::sync::OnceLock::new();
         let name = PLOT.get_or_init(|| tracy_client::plot_name!($name));
         tracy_client::Client::running().map(|c| c.plot(*name, $value as f64));
-    };
+    }};
 }
 
 #[macro_export]

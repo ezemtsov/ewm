@@ -99,6 +99,7 @@ impl HeadlessBackend {
                 subpixel: Subpixel::Unknown,
                 make: "EWM".into(),
                 model: "Virtual".into(),
+                serial_number: String::new(),
             },
         );
 

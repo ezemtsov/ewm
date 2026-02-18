@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use pipewire::context::Context;
-use pipewire::core::{Core, PW_ID_CORE};
-use pipewire::main_loop::MainLoop;
+use pipewire::context::ContextRc;
+use pipewire::core::{CoreRc, PW_ID_CORE};
+use pipewire::main_loop::MainLoopRc;
 use smithay::reexports::calloop::channel::{self, Channel};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
@@ -22,8 +22,8 @@ use tracing::{error, info, warn};
 
 /// PipeWire state
 pub struct PipeWire {
-    _context: Context,
-    pub core: Core,
+    _context: ContextRc,
+    pub core: CoreRc,
     pub token: RegistrationToken,
     /// Channel to receive fatal error notifications (Option so it can be taken)
     pub fatal_error_rx: Option<Channel<()>>,
@@ -39,10 +39,10 @@ impl PipeWire {
     ) -> anyhow::Result<Self> {
         info!("Initializing PipeWire");
 
-        let main_loop = MainLoop::new(None).context("error creating PipeWire MainLoop")?;
-        let context = Context::new(&main_loop).context("error creating PipeWire Context")?;
+        let main_loop = MainLoopRc::new(None).context("error creating PipeWire MainLoop")?;
+        let context = ContextRc::new(&main_loop, None).context("error creating PipeWire Context")?;
         let core = context
-            .connect(None)
+            .connect_rc(None)
             .context("error connecting to PipeWire")?;
 
         // Create channel for fatal error notifications
@@ -70,7 +70,7 @@ impl PipeWire {
         mem::forget(listener);
 
         // Wrapper to get the fd from MainLoop
-        struct MainLoopFd(MainLoop);
+        struct MainLoopFd(MainLoopRc);
         impl AsFd for MainLoopFd {
             fn as_fd(&self) -> BorrowedFd<'_> {
                 self.0.loop_().fd()

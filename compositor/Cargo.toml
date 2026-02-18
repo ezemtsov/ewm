@@ -12,58 +12,57 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-anyhow = "1"
-libc = "0.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0.100"
+libc = "0.2.180"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tracing = { version = "0.1.44", features = ["max_level_trace", "release_max_level_debug"] }
+tracing-subscriber = { version = "=0.3.19", features = ["env-filter"] }
 tracing-journald = "0.3"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"
-rev = "0c2230f858580b52d628087d6dae1795278b8756"
+rev = "ae14fa12f6ee3fc4dd4c766ffb21848f991a6a18"
 default-features = false
 features = [
     "backend_drm",
+    "backend_egl",
     "backend_gbm",
     "backend_libinput",
     "backend_udev",
     "backend_session_libseat",
     "desktop",
-    "renderer_glow",
+    "renderer_gl",
     "renderer_multi",
     "use_system_lib",
     "wayland_frontend",
-    "wayland-protocols-wlr",
 ]
 
 [dependencies.smithay-drm-extras]
 git = "https://github.com/Smithay/smithay.git"
-rev = "0c2230f858580b52d628087d6dae1795278b8756"
+rev = "ae14fa12f6ee3fc4dd4c766ffb21848f991a6a18"
 default-features = false
 
 # PipeWire for screen sharing (optional)
 [dependencies.pipewire]
-git = "https://gitlab.freedesktop.org/pipewire/pipewire-rs.git"
-rev = "86df39190c0ab67444666a42908f7e8c1344e24a"
+version = "0.9.2"
 optional = true
 features = ["v0_3_33"]
 
 [dependencies.zbus]
-version = "5.3"
+version = "5.13.0"
 optional = true
 
 [dependencies.async-io]
-version = "2"
+version = "2.6.0"
 optional = true
 
 [dependencies.sd-notify]
-version = "0.4"
+version = "0.4.5"
 
 # Wayland client (for self-connecting as input method)
 [dependencies.wayland-client]
-version = "0.31"
+version = "0.31.12"
 
 [dependencies.wayland-protocols-misc]
 version = "0.3"
@@ -82,10 +81,10 @@ profile-with-tracy = ["tracy-client/default"]
 profile-with-tracy-ondemand = ["profile-with-tracy", "tracy-client/ondemand"]
 
 [dependencies.tracy-client]
-version = "0.18"
+version = "0.18.4"
 default-features = false
 optional = true
 
 [dev-dependencies]
-insta = { version = "1.42", features = ["yaml"] }
-proptest = "1.6"
+insta = { version = "1.46.0", features = ["yaml"] }
+proptest = "1.9.0"

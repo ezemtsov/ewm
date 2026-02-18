@@ -18,8 +18,7 @@ let
     cargoLock = {
       lockFile = ./../compositor/Cargo.lock;
       outputHashes = {
-        "smithay-0.4.0" = "sha256-M7fv3Y54cMv6uQcyVtt984AKxIIgfHJZidQnSLZ/C7o=";
-        "pipewire-0.8.0" = "sha256-kp5x5QhmgEqCrt7xDRfMFGoTK5IXOuvW2yOW02B8Ftk=";
+        "smithay-0.7.0" = "sha256-By+gqymYHqlrcLzy6J90i2utsxsmr1SP17jodA8apig=";
       };
     };
 

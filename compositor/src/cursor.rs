@@ -7,8 +7,7 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::Renderer;
+use smithay::backend::renderer::gles::{GlesError, GlesRenderer};
 use smithay::utils::{Physical, Point, Transform};
 
 /// Fallback cursor image data (64x64 RGBA)
@@ -47,7 +46,7 @@ impl CursorBuffer {
         &self,
         renderer: &mut GlesRenderer,
         position: Point<i32, Physical>,
-    ) -> Result<MemoryRenderBufferRenderElement<GlesRenderer>, <GlesRenderer as Renderer>::Error>
+    ) -> Result<MemoryRenderBufferRenderElement<GlesRenderer>, GlesError>
     {
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,

@@ -9,7 +9,7 @@ use std::os::fd::AsRawFd;
 use std::rc::Rc;
 
 use anyhow::Context as _;
-use pipewire::properties::Properties;
+use pipewire::properties::PropertiesBox;
 use pipewire::spa::buffer::DataType;
 use pipewire::spa::param::format::{FormatProperties, MediaSubtype, MediaType};
 use pipewire::spa::param::format_utils::parse_format;
@@ -22,7 +22,7 @@ use pipewire::spa::sys::*;
 use pipewire::spa::utils::{
     Choice, ChoiceEnum, ChoiceFlags, Direction, Fraction, Rectangle, SpaTypes,
 };
-use pipewire::stream::{Stream, StreamFlags, StreamListener, StreamState};
+use pipewire::stream::{Stream, StreamFlags, StreamListener, StreamRc, StreamState};
 use std::time::Duration;
 
 use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
@@ -62,7 +62,7 @@ enum CastState {
 
 /// A screen cast session
 pub struct Cast {
-    pub stream: Stream,
+    pub stream: StreamRc,
     _listener: StreamListener<()>,
     pub is_active: Rc<Cell<bool>>,
     pub size: Size<u32, Physical>,
@@ -91,8 +91,12 @@ impl Cast {
     ) -> anyhow::Result<Self> {
         let size = Size::from((size.w as u32, size.h as u32));
 
-        let stream = Stream::new(&pipewire.core, "ewm-screen-cast", Properties::new())
-            .context("error creating PipeWire stream")?;
+        let stream = StreamRc::new(
+            pipewire.core.clone(),
+            "ewm-screen-cast",
+            PropertiesBox::new(),
+        )
+        .context("error creating PipeWire stream")?;
 
         let node_id = Rc::new(Cell::new(None));
         let is_active = Rc::new(Cell::new(false));
@@ -112,7 +116,7 @@ impl Cast {
         let listener =
             stream
                 .add_local_listener_with_user_data(())
-                .state_changed(move |stream, (), old, new| {
+                .state_changed(move |stream: &Stream, (), old, new| {
                     debug!("PipeWire stream state: {old:?} -> {new:?}");
 
                     match new {
@@ -157,7 +161,7 @@ impl Cast {
                     let state = state_clone.clone();
                     let gbm = gbm_clone.clone();
                     let min_time_between_frames = min_time_between_frames_clone.clone();
-                    move |stream, (), id, pod| {
+                    move |stream: &Stream, (), id, pod| {
                         if ParamType::from_raw(id) != ParamType::Format {
                             return;
                         }
