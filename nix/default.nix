@@ -8,12 +8,17 @@ let
   inherit (pkgs) rustPlatform pkg-config;
   inherit (pkgs) libdrm libgbm libglvnd libinput libxkbcommon pipewire seatd systemd wayland;
 
+  gitTrackedFiles = lib.fileset.gitTracked ./..;
+
   # Rust compositor core - only rebuilds when compositor/ changes
   ewm-core = rustPlatform.buildRustPackage {
     pname = "ewm-core";
     version = "0.1.0";
 
-    src = lib.cleanSource ./../compositor;
+    src = lib.fileset.toSource {
+      root = ./../compositor;
+      fileset = lib.fileset.intersection gitTrackedFiles ./../compositor;
+    };
 
     cargoLock = {
       lockFile = ./../compositor/Cargo.lock;
@@ -68,7 +73,10 @@ in
 emacsPackage.pkgs.trivialBuild {
   pname = "ewm";
   version = "0.1.0";
-  src = lib.cleanSource ./../lisp;
+  src = lib.fileset.toSource {
+    root = ./../lisp;
+    fileset = lib.fileset.intersection gitTrackedFiles ./../lisp;
+  };
   packageRequires = [ ewm-core ];
   passthru.module = "${./service.nix}";
 
