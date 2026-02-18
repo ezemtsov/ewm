@@ -28,7 +28,6 @@ use pipewire::spa::utils::{
 };
 use pipewire::stream::{Stream, StreamFlags, StreamListener, StreamRc, StreamState};
 use pipewire::sys::pw_buffer;
-
 use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
 use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::Fourcc;
@@ -36,7 +35,11 @@ use smithay::backend::drm::DrmDeviceFd;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::output::OutputModeSource;
+use smithay::backend::renderer::sync::SyncPoint;
+use smithay::output::{Output, OutputModeSource};
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use smithay::reexports::gbm::Modifier;
 use smithay::utils::{Physical, Scale, Size, Transform};
 use tracing::{debug, info, trace, warn};
@@ -44,6 +47,7 @@ use zbus::object_server::SignalEmitter;
 
 use super::PipeWire;
 use crate::dbus::screen_cast;
+use crate::State;
 
 /// Allowance for frame timing - if delay is below this, proceed anyway
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
@@ -94,8 +98,11 @@ impl CastState {
 
 /// A screen cast session
 pub struct Cast {
-    pub stream: StreamRc,
+    event_loop: LoopHandle<'static, State>,
+    pub session_id: usize,
+    // Listener is dropped before Stream to prevent a use-after-free.
     _listener: StreamListener<()>,
+    pub stream: StreamRc,
     pub is_active: Rc<Cell<bool>>,
     pub size: Size<u32, Physical>,
     pub node_id: Rc<Cell<Option<u32>>>,
@@ -117,12 +124,21 @@ pub struct Cast {
     render_formats: Vec<i64>,
     /// Output refresh rate for renegotiation on resize
     refresh: u32,
+    /// Timer token for scheduled redraw (cancelled on next frame or cast stop)
+    scheduled_redraw: Option<RegistrationToken>,
+    /// Buffers dequeued from PipeWire awaiting GPU render completion.
+    /// Stored oldest-first; completed buffers are queued back in order.
+    /// Shared with PipeWire callbacks (remove_buffer cleans up on buffer removal).
+    rendering_buffers: Rc<RefCell<Vec<(NonNull<pw_buffer>, SyncPoint)>>>,
 }
 
 impl Cast {
     /// Create a new screen cast stream
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pipewire: &PipeWire,
+        event_loop: LoopHandle<'static, State>,
+        session_id: usize,
         gbm: GbmDevice<DrmDeviceFd>,
         size: Size<i32, Physical>,
         refresh: u32,
@@ -146,10 +162,13 @@ impl Cast {
         let dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>> = Rc::new(RefCell::new(HashMap::new()));
         let min_time_between_frames = Rc::new(Cell::new(Duration::ZERO));
         let had_error = Rc::new(Cell::new(false));
+        let rendering_bufs: Rc<RefCell<Vec<(NonNull<pw_buffer>, SyncPoint)>>> =
+            Rc::new(RefCell::new(Vec::new()));
 
         let node_id_clone = node_id.clone();
         let is_active_clone = is_active.clone();
         let had_error_clone = had_error.clone();
+        let rendering_bufs_clone = rendering_bufs.clone();
 
         let state_clone = state.clone();
         let gbm_clone = gbm.clone();
@@ -203,6 +222,7 @@ impl Cast {
                     let had_error = had_error.clone();
                     let gbm = gbm_clone.clone();
                     let min_time_between_frames = min_time_between_frames_clone.clone();
+                    let param_render_formats = render_formats.clone();
                     move |stream: &Stream, (), id, pod| {
                         if ParamType::from_raw(id) != ParamType::Format {
                             return;
@@ -307,12 +327,20 @@ impl Cast {
                                 };
                                 drop(state_ref);
 
-                                let format_obj =
+                                // Offer fixated format first, original as fallback
+                                let fixated_obj =
                                     make_video_params_fixated(format_size, refresh, modifier);
+                                let fallback_obj = make_video_params(
+                                    format_size,
+                                    refresh,
+                                    &param_render_formats,
+                                );
                                 let mut b1 = Vec::new();
-                                let pod1 = make_pod(&mut b1, format_obj);
+                                let pod1 = make_pod(&mut b1, fixated_obj);
+                                let mut b2 = Vec::new();
+                                let pod2 = make_pod(&mut b2, fallback_obj);
 
-                                if let Err(err) = stream.update_params(&mut [pod1]) {
+                                if let Err(err) = stream.update_params(&mut [pod1, pod2]) {
                                     warn!("error updating format params: {err:?}");
                                 }
                                 return;
@@ -418,7 +446,9 @@ impl Cast {
                     let state = state_clone.clone();
                     let dmabufs = dmabufs.clone();
                     let gbm = gbm_clone.clone();
-                    move |_stream, (), buffer| {
+                    let add_buf_event_loop = event_loop.clone();
+                    let add_buf_output_name = output_name.clone();
+                    move |stream, (), buffer| {
                         let state_ref = state.borrow();
                         let CastState::Ready { size, modifier, .. } = &*state_ref else {
                             trace!("add_buffer but not ready yet");
@@ -462,12 +492,38 @@ impl Cast {
                             let fd = (*(*spa_buffer).datas).fd;
                             dmabufs.borrow_mut().insert(fd, dmabuf);
                         }
+
+                        // During size re-negotiation, force a redraw once we got a newly sized buffer.
+                        if dmabufs.borrow().len() == 1
+                            && stream.state() == StreamState::Streaming
+                        {
+                            let output_name = add_buf_output_name.clone();
+                            let _ = add_buf_event_loop.insert_source(
+                                Timer::from_duration(Duration::ZERO),
+                                move |_, _, state| {
+                                    let output = state
+                                        .ewm
+                                        .space
+                                        .outputs()
+                                        .find(|o| o.name() == output_name)
+                                        .cloned();
+                                    if let Some(output) = output {
+                                        state.ewm.queue_redraw(&output);
+                                    }
+                                    TimeoutAction::Drop
+                                },
+                            );
+                        }
                     }
                 })
                 .remove_buffer({
                     let dmabufs = dmabufs.clone();
+                    let rendering_bufs = rendering_bufs_clone.clone();
                     move |_stream, (), buffer| {
                         trace!("remove_buffer");
+                        rendering_bufs
+                            .borrow_mut()
+                            .retain(|(buf, _)| buf.as_ptr() != buffer);
                         unsafe {
                             let spa_buffer = (*buffer).buffer;
                             let spa_data = (*spa_buffer).datas;
@@ -498,8 +554,10 @@ impl Cast {
         info!("PipeWire stream created for size {:?}", size);
 
         Ok(Self {
-            stream,
+            event_loop,
+            session_id,
             _listener: listener,
+            stream,
             is_active,
             size,
             node_id,
@@ -513,6 +571,8 @@ impl Cast {
             cursor_mode,
             render_formats,
             refresh,
+            scheduled_redraw: None,
+            rendering_buffers: rendering_bufs,
         })
     }
 
@@ -607,6 +667,130 @@ impl Cast {
         }
     }
 
+    /// Check frame timing and schedule a redraw if too early.
+    /// Returns true if the frame was delayed (caller should skip rendering).
+    pub fn check_time_and_schedule(
+        &mut self,
+        output: &Output,
+        target_frame_time: Duration,
+    ) -> bool {
+        let delay = self.compute_extra_delay(target_frame_time);
+        if delay >= CAST_DELAY_ALLOWANCE {
+            trace!("delay >= allowance, scheduling redraw");
+            self.schedule_redraw(output.clone(), target_frame_time + delay);
+            true
+        } else {
+            self.remove_scheduled_redraw();
+            false
+        }
+    }
+
+    /// Schedule a timer-based redraw for this cast's output.
+    fn schedule_redraw(&mut self, output: Output, target_time: Duration) {
+        if self.scheduled_redraw.is_some() {
+            return;
+        }
+
+        let now = crate::utils::get_monotonic_time();
+        let duration = target_time.saturating_sub(now);
+        let timer = Timer::from_duration(duration);
+        let token = self
+            .event_loop
+            .insert_source(timer, move |_, _, state| {
+                if state.ewm.output_state.contains_key(&output) {
+                    state.ewm.queue_redraw(&output);
+                }
+                TimeoutAction::Drop
+            })
+            .unwrap();
+        self.scheduled_redraw = Some(token);
+    }
+
+    /// Cancel any pending scheduled redraw.
+    fn remove_scheduled_redraw(&mut self) {
+        if let Some(token) = self.scheduled_redraw.take() {
+            self.event_loop.remove(token);
+        }
+    }
+
+    /// Queue a rendered buffer back to PipeWire after GPU sync completes.
+    ///
+    /// If the sync fence FD can be exported, registers a calloop source that
+    /// triggers when the GPU is done. Otherwise queues immediately.
+    unsafe fn queue_after_sync(&mut self, pw_buffer: NonNull<pw_buffer>, sync_point: SyncPoint) {
+        let mut sync_point = sync_point;
+        let sync_fd = match sync_point.export() {
+            Some(sync_fd) => Some(sync_fd),
+            None => {
+                // Either pre-signalled (no wait needed) or export failed.
+                // Queue immediately rather than risk getting stuck.
+                sync_point = SyncPoint::signaled();
+                None
+            }
+        };
+
+        self.rendering_buffers
+            .borrow_mut()
+            .push((pw_buffer, sync_point));
+
+        match sync_fd {
+            None => {
+                trace!("sync_fd is None, queueing completed buffers");
+                self.queue_completed_buffers();
+            }
+            Some(sync_fd) => {
+                trace!("scheduling buffer to queue after GPU sync");
+                let session_id = self.session_id;
+                let source = Generic::new(sync_fd, Interest::READ, Mode::OneShot);
+                self.event_loop
+                    .insert_source(source, move |_, _, state| {
+                        if let Some(cast) = state.ewm.screen_casts.get_mut(&session_id) {
+                            cast.queue_completed_buffers();
+                        }
+                        Ok(PostAction::Remove)
+                    })
+                    .unwrap();
+            }
+        }
+    }
+
+    /// Queue all completed (GPU-done) buffers back to PipeWire in order.
+    fn queue_completed_buffers(&self) {
+        let mut bufs = self.rendering_buffers.borrow_mut();
+
+        // Queue buffers in order up to the first still-rendering one.
+        let first_in_progress = bufs
+            .iter()
+            .position(|(_, sync)| !sync.is_reached())
+            .unwrap_or(bufs.len());
+
+        for (buffer, _) in bufs.drain(..first_in_progress) {
+            trace!("queueing completed buffer");
+            unsafe {
+                self.stream.queue_raw_buffer(buffer.as_ptr());
+            }
+        }
+    }
+
+    /// Update the stream's refresh rate (renegotiate if changed).
+    pub fn set_refresh(&mut self, refresh: u32) {
+        if self.refresh == refresh {
+            return;
+        }
+
+        debug!("cast FPS changed, updating stream FPS");
+        self.refresh = refresh;
+
+        let size = self.state.borrow().expected_format_size();
+        let obj = make_video_params(size, refresh, &self.render_formats);
+        let mut buffer = Vec::new();
+        let params = make_pod(&mut buffer, obj);
+
+        if let Err(err) = self.stream.update_params(&mut [params]) {
+            warn!("error updating stream params for refresh: {err:?}");
+        }
+    }
+
     /// Dequeue a buffer, render to it, and queue it back.
     /// Returns true if a frame was rendered.
     pub fn dequeue_buffer_and_render<E>(
@@ -688,13 +872,8 @@ impl Cast {
                 elements.iter().rev(),
             ) {
                 Ok(sync_point) => {
-                    // Wait for GPU to finish before PipeWire consumes the buffer
-                    if let Err(err) = sync_point.wait() {
-                        warn!("error waiting for render sync: {err:?}");
-                    }
-
                     mark_buffer_as_good(spa_buf, &mut self.sequence_counter);
-                    self.stream.queue_raw_buffer(pw_buffer.as_ptr());
+                    self.queue_after_sync(pw_buffer, sync_point);
                     true
                 }
                 Err(err) => {
@@ -943,6 +1122,7 @@ fn allocate_dmabuf(
 
 impl Drop for Cast {
     fn drop(&mut self) {
+        self.remove_scheduled_redraw();
         info!(output = %self.output_name, "Disconnecting PipeWire stream");
         if let Err(err) = self.stream.disconnect() {
             warn!(output = %self.output_name, "Error disconnecting PipeWire stream: {err:?}");

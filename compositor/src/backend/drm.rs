@@ -613,6 +613,7 @@ impl DrmBackendState {
             for cast in ewm.screen_casts.values_mut() {
                 if cast.output_name == output_name {
                     cast.ensure_size(physical_size, refresh);
+                    cast.set_refresh(refresh);
                 }
             }
         }
@@ -944,7 +945,6 @@ impl DrmBackendState {
 
             let mut screen_casts = std::mem::take(&mut ewm.screen_casts);
             let mut sc_elements = None;
-            let mut min_scheduled_delay = Duration::MAX;
             let mut errored_sessions = Vec::new();
 
             let valid_outputs: std::collections::HashSet<String> =
@@ -971,10 +971,8 @@ impl DrmBackendState {
                     continue;
                 }
 
-                let delay = cast.frame_delay(target_frame_time);
-                if !delay.is_zero() {
-                    trace!(?delay, "PipeWire frame delayed, scheduling redraw");
-                    min_scheduled_delay = min_scheduled_delay.min(delay);
+                // Check frame timing — schedules a timer redraw if too early
+                if cast.check_time_and_schedule(output, target_frame_time) {
                     continue;
                 }
 
@@ -1022,20 +1020,6 @@ impl DrmBackendState {
             for session_id in errored_sessions {
                 warn!(session_id, "stopping errored screen cast");
                 ewm.stop_cast(session_id);
-            }
-
-            // Schedule a timer-based redraw for delayed casts
-            if min_scheduled_delay < Duration::MAX {
-                if let Some(ref handle) = self.loop_handle {
-                    let output_clone = output.clone();
-                    let _ = handle.insert_source(
-                        Timer::from_duration(min_scheduled_delay),
-                        move |_, _, state| {
-                            state.ewm.queue_redraw(&output_clone);
-                            TimeoutAction::Drop
-                        },
-                    );
-                }
             }
         }
     }
@@ -2086,8 +2070,16 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                     use crate::pipewire::stream::Cast;
                                     use smithay::utils::Size;
 
+                                    let event_loop_handle = state
+                                        .backend
+                                        .as_drm()
+                                        .and_then(|drm| drm.loop_handle.clone())
+                                        .expect("loop_handle must exist for screencast");
+
                                     match Cast::new(
                                         pw,
+                                        event_loop_handle,
+                                        session_id,
                                         gbm,
                                         Size::from((info.width, info.height)),
                                         info.refresh,
