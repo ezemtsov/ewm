@@ -101,7 +101,7 @@ use smithay::{
         pointer::PointerHandle,
         Seat, SeatHandler, SeatState,
     },
-    output::Output,
+    output::{Output, PhysicalProperties, Subpixel},
     reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
     reexports::{
         calloop::{
@@ -1365,6 +1365,60 @@ impl Ewm {
                     frame_callback_time,
                     FRAME_CALLBACK_THROTTLE,
                     &should_send,
+                );
+            }
+        }
+    }
+
+    /// Fallback frame callback sender — safety net for stuck surfaces.
+    ///
+    /// Sends frame callbacks to ALL surfaces regardless of output, bypassing
+    /// primary scanout output matching. The `FRAME_CALLBACK_THROTTLE` (995ms)
+    /// prevents busy-looping since it won't re-send if a callback was already
+    /// sent recently through the normal path.
+    pub fn send_frame_callbacks_on_fallback_timer(&self) {
+        // Bogus output — the should_send closure returns None so the output
+        // is never used for matching, but send_frame requires a reference.
+        let output = Output::new(
+            String::new(),
+            PhysicalProperties {
+                size: Size::from((0, 0)),
+                subpixel: Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        );
+
+        let frame_callback_time = crate::protocols::screencopy::get_monotonic_time();
+
+        for window in self.id_windows.values() {
+            window.send_frame(
+                &output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                |_, _| None,
+            );
+        }
+
+        for (out, state) in self.output_state.iter() {
+            let layer_map = layer_map_for_output(out);
+            for layer in layer_map.layers() {
+                layer.send_frame(
+                    out,
+                    frame_callback_time,
+                    FRAME_CALLBACK_THROTTLE,
+                    |_, _| None,
+                );
+            }
+
+            if let Some(ref lock_surface) = state.lock_surface {
+                send_frames_surface_tree(
+                    lock_surface.wl_surface(),
+                    out,
+                    frame_callback_time,
+                    FRAME_CALLBACK_THROTTLE,
+                    |_, _| None,
                 );
             }
         }

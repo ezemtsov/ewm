@@ -1968,6 +1968,20 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             })?;
     state.backend.as_drm_mut().unwrap().session_notifier_token = Some(session_notifier_token);
 
+    // Fallback frame callback timer — safety net for surfaces that somehow
+    // didn't receive frame callbacks through the normal render path.
+    // Fires every second and sends callbacks to all surfaces unconditionally,
+    // relying on FRAME_CALLBACK_THROTTLE (995ms) to prevent busy-looping.
+    event_loop
+        .handle()
+        .insert_source(
+            Timer::from_duration(Duration::from_secs(1)),
+            |_, _, state| {
+                state.ewm.send_frame_callbacks_on_fallback_timer();
+                TimeoutAction::ToDuration(Duration::from_secs(1))
+            },
+        )?;
+
     // Register UdevBackend for hotplug detection
     let udev_backend = UdevBackend::new(&seat_name)?;
     event_loop
