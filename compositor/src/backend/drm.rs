@@ -599,6 +599,24 @@ impl DrmBackendState {
             }
         }
 
+        // --- Notify screen casts of size change ---
+        #[cfg(feature = "screencast")]
+        if new_drm_mode.is_some() || config.scale.is_some() {
+            let physical_size = output
+                .current_mode()
+                .map(|m| Size::from((m.size.w, m.size.h)))
+                .unwrap_or_else(|| Size::from((1920i32, 1080i32)));
+            let refresh = output
+                .current_mode()
+                .map(|m| (m.refresh / 1000) as u32)
+                .unwrap_or(60);
+            for cast in ewm.screen_casts.values_mut() {
+                if cast.output_name == output_name {
+                    cast.ensure_size(physical_size, refresh);
+                }
+            }
+        }
+
         // --- Recalculate total output size, working areas, and queue redraw ---
         ewm.recalculate_output_size();
         ewm.check_working_area_change(&output);
@@ -926,13 +944,20 @@ impl DrmBackendState {
 
             let mut screen_casts = std::mem::take(&mut ewm.screen_casts);
             let mut sc_elements = None;
+            let mut min_scheduled_delay = Duration::MAX;
+            let mut errored_sessions = Vec::new();
 
             let valid_outputs: std::collections::HashSet<String> =
                 ewm.space.outputs().map(|o| o.name()).collect();
 
-            for cast in screen_casts.values_mut() {
+            for (session_id, cast) in screen_casts.iter_mut() {
                 if !valid_outputs.contains(&cast.output_name) {
                     trace!(output = %cast.output_name, "skipping orphaned cast");
+                    continue;
+                }
+
+                if cast.has_error() {
+                    errored_sessions.push(*session_id);
                     continue;
                 }
 
@@ -940,10 +965,20 @@ impl DrmBackendState {
                     continue;
                 }
 
-                if cast.should_skip_frame(target_frame_time) {
-                    trace!("PipeWire frame too soon, skipping");
+                // Check resize pending state
+                if cast.is_resize_pending() {
+                    trace!("cast is resize pending, skipping");
                     continue;
                 }
+
+                let delay = cast.frame_delay(target_frame_time);
+                if !delay.is_zero() {
+                    trace!(?delay, "PipeWire frame delayed, scheduling redraw");
+                    min_scheduled_delay = min_scheduled_delay.min(delay);
+                    continue;
+                }
+
+                let include_cursor = cast.cursor_mode != 0;
 
                 let elements = sc_elements.get_or_insert_with(|| {
                     let Some(device) = &mut self.device else {
@@ -959,7 +994,7 @@ impl DrmBackendState {
                         &self.cursor_buffer,
                         output_pos,
                         output_size,
-                        true,
+                        include_cursor,
                         output,
                     )
                 });
@@ -982,6 +1017,26 @@ impl DrmBackendState {
             }
 
             ewm.screen_casts = screen_casts;
+
+            // Stop errored casts
+            for session_id in errored_sessions {
+                warn!(session_id, "stopping errored screen cast");
+                ewm.stop_cast(session_id);
+            }
+
+            // Schedule a timer-based redraw for delayed casts
+            if min_scheduled_delay < Duration::MAX {
+                if let Some(ref handle) = self.loop_handle {
+                    let output_clone = output.clone();
+                    let _ = handle.insert_source(
+                        Timer::from_duration(min_scheduled_delay),
+                        move |_, _, state| {
+                            state.ewm.queue_redraw(&output_clone);
+                            TimeoutAction::Drop
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -1979,12 +2034,38 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                             session_id,
                             output_name,
                             signal_ctx,
+                            cursor_mode,
                         } => {
                             tracing::info!(
-                                "StartCast: session={}, output={}",
+                                "StartCast: session={}, output={}, cursor_mode={}",
                                 session_id,
-                                output_name
+                                output_name,
+                                cursor_mode,
                             );
+
+                            // Extract XRGB8888 modifiers from render formats
+                            let render_formats: Vec<i64> = state
+                                .backend
+                                .as_drm_mut()
+                                .and_then(|drm| drm.device.as_mut())
+                                .map(|device| {
+                                    let Ok(renderer) =
+                                        device.gpu_manager.single_renderer(&device.render_node)
+                                    else {
+                                        return vec![u64::from(Modifier::Linear) as i64];
+                                    };
+                                    renderer
+                                        .as_ref()
+                                        .egl_context()
+                                        .dmabuf_render_formats()
+                                        .iter()
+                                        .filter(|f| {
+                                            f.code == smithay::backend::allocator::Fourcc::Xrgb8888
+                                        })
+                                        .map(|f| u64::from(f.modifier) as i64)
+                                        .collect()
+                                })
+                                .unwrap_or_else(|| vec![u64::from(Modifier::Linear) as i64]);
 
                             // Create PipeWire stream for this output
                             let pw = state.ewm.pipewire.as_ref();
@@ -2012,6 +2093,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                         info.refresh,
                                         output_name.clone(),
                                         signal_ctx,
+                                        render_formats,
+                                        cursor_mode,
                                     ) {
                                         Ok(cast) => {
                                             tracing::info!(

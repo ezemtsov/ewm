@@ -1,13 +1,16 @@
 //! PipeWire video stream for screen casting
 //!
-//! Based on niri's PipeWire stream implementation (`screencasting/pw_utils.rs`).
+//! Ported from niri's PipeWire stream implementation (`screencasting/pw_utils.rs`).
 //! Implements PipeWire video streaming for screen sharing.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::mem::size_of;
 use std::os::fd::AsRawFd;
+use std::ptr::NonNull;
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use pipewire::properties::PropertiesBox;
@@ -24,7 +27,7 @@ use pipewire::spa::utils::{
     Choice, ChoiceEnum, ChoiceFlags, Direction, Fraction, Rectangle, SpaTypes,
 };
 use pipewire::stream::{Stream, StreamFlags, StreamListener, StreamRc, StreamState};
-use std::time::Duration;
+use pipewire::sys::pw_buffer;
 
 use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
 use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
@@ -54,10 +57,14 @@ enum CastState {
     Ready {
         size: Size<u32, Physical>,
         modifier: Modifier,
-        #[allow(dead_code)] // Stored for potential future use/debugging
+        #[allow(dead_code)]
         plane_count: i32,
         /// Damage tracker for skip-if-no-damage optimization (lazily initialized)
         damage_tracker: Option<OutputDamageTracker>,
+    },
+    /// Output size changed, waiting for PipeWire to renegotiate
+    ResizePending {
+        new_size: Size<u32, Physical>,
     },
 }
 
@@ -78,6 +85,14 @@ pub struct Cast {
     min_time_between_frames: Rc<Cell<Duration>>,
     /// Flag indicating a fatal error occurred (e.g., signal emission failed)
     had_error: Rc<Cell<bool>>,
+    /// Frame sequence counter for SPA_META_Header
+    sequence_counter: u64,
+    /// Cursor mode: 0=Hidden, 1=Embedded, 2=Metadata
+    pub cursor_mode: u32,
+    /// Render formats (modifier list) for renegotiation on resize
+    render_formats: Vec<i64>,
+    /// Output refresh rate for renegotiation on resize
+    refresh: u32,
 }
 
 impl Cast {
@@ -89,6 +104,8 @@ impl Cast {
         refresh: u32,
         output_name: String,
         signal_ctx: SignalEmitter<'static>,
+        render_formats: Vec<i64>,
+        cursor_mode: u32,
     ) -> anyhow::Result<Self> {
         let size = Size::from((size.w as u32, size.h as u32));
 
@@ -137,7 +154,6 @@ impl Cast {
 
                                     if let Err(err) = res {
                                         warn!("Error sending PipeWireStreamAdded: {err:?}");
-                                        // Mark as errored - client won't be able to connect
                                         had_error_clone.set(true);
                                     } else {
                                         info!("PipeWireStreamAdded signal emitted successfully");
@@ -225,7 +241,6 @@ impl Cast {
                                     return;
                                 };
 
-                                // Try to find a working modifier via test allocation
                                 let fourcc = Fourcc::Xrgb8888;
                                 let (modifier, plane_count) = match find_preferred_modifier(
                                     &gbm,
@@ -249,7 +264,6 @@ impl Cast {
                                     damage_tracker: None,
                                 };
 
-                                // Update params with fixated modifier
                                 let format_obj =
                                     make_video_params_fixated(format_size, refresh, modifier);
                                 let mut b1 = Vec::new();
@@ -288,7 +302,7 @@ impl Cast {
                             damage_tracker: None,
                         };
 
-                        // Set buffer params
+                        // Set buffer params + meta header
                         let buffer_obj = pod::object!(
                             SpaTypes::ObjectParamBuffers,
                             ParamType::Buffers,
@@ -297,7 +311,7 @@ impl Cast {
                                 pod::Value::Choice(ChoiceValue::Int(Choice(
                                     ChoiceFlags::empty(),
                                     ChoiceEnum::Range {
-                                        default: 16,
+                                        default: 8,
                                         min: 2,
                                         max: 16
                                     }
@@ -319,10 +333,25 @@ impl Cast {
                             ),
                         );
 
+                        let meta_header_obj = pod::object!(
+                            SpaTypes::ObjectParamMeta,
+                            ParamType::Meta,
+                            Property::new(
+                                SPA_PARAM_META_type,
+                                pod::Value::Id(pipewire::spa::utils::Id(SPA_META_Header)),
+                            ),
+                            Property::new(
+                                SPA_PARAM_META_size,
+                                pod::Value::Int(size_of::<spa_meta_header>() as i32),
+                            ),
+                        );
+
                         let mut b1 = Vec::new();
                         let pod1 = make_pod(&mut b1, buffer_obj);
+                        let mut b2 = Vec::new();
+                        let pod2 = make_pod(&mut b2, meta_header_obj);
 
-                        if let Err(err) = stream.update_params(&mut [pod1]) {
+                        if let Err(err) = stream.update_params(&mut [pod1, pod2]) {
                             warn!("error updating buffer params: {err:?}");
                         }
                     }
@@ -366,6 +395,10 @@ impl Cast {
                                 (*spa_data).maxsize = 1;
                                 (*spa_data).fd = fd.as_raw_fd() as i64;
                                 (*spa_data).flags = SPA_DATA_FLAG_READWRITE;
+
+                                let chunk = (*spa_data).chunk;
+                                (*chunk).stride = dmabuf.strides().nth(i).unwrap_or(0) as i32;
+                                (*chunk).offset = dmabuf.offsets().nth(i).unwrap_or(0);
                             }
 
                             let fd = (*(*spa_buffer).datas).fd;
@@ -390,9 +423,9 @@ impl Cast {
                 .register()
                 .context("error registering stream listener")?;
 
-        // Create format parameters with Linear modifier for simplicity
+        // Create format parameters with available modifiers
         let mut buffer = Vec::new();
-        let obj = make_video_params(size, refresh);
+        let obj = make_video_params(size, refresh, &render_formats);
         let params = make_pod(&mut buffer, obj);
 
         stream
@@ -418,6 +451,10 @@ impl Cast {
             last_frame_time: Duration::ZERO,
             min_time_between_frames,
             had_error,
+            sequence_counter: 0,
+            cursor_mode,
+            render_formats,
+            refresh,
         })
     }
 
@@ -431,23 +468,54 @@ impl Cast {
         self.had_error.get()
     }
 
+    /// Check if the cast is waiting for PipeWire to renegotiate after a size change
+    pub fn is_resize_pending(&self) -> bool {
+        matches!(*self.state.borrow(), CastState::ResizePending { .. })
+    }
+
+    /// Handle output size change by renegotiating with PipeWire.
+    pub fn ensure_size(&mut self, new_size: Size<i32, Physical>, refresh: u32) {
+        let new_size = Size::from((new_size.w as u32, new_size.h as u32));
+
+        {
+            let state = self.state.borrow();
+            match &*state {
+                CastState::Ready { size, .. } if *size == new_size => return,
+                CastState::ResizePending { new_size: pending } if *pending == new_size => return,
+                _ => {}
+            }
+        }
+
+        info!(
+            output = %self.output_name,
+            ?new_size,
+            "output size changed, renegotiating PipeWire stream"
+        );
+
+        self.size = new_size;
+        self.refresh = refresh;
+        *self.state.borrow_mut() = CastState::ResizePending { new_size };
+
+        let obj = make_video_params(new_size, refresh, &self.render_formats);
+        let mut buffer = Vec::new();
+        let params = make_pod(&mut buffer, obj);
+
+        if let Err(err) = self.stream.update_params(&mut [params]) {
+            warn!("error updating stream params for resize: {err:?}");
+        }
+    }
+
     /// Compute extra delay needed before capturing next frame.
-    /// Returns Duration::ZERO if frame can be captured now.
     fn compute_extra_delay(&self, target_frame_time: Duration) -> Duration {
         let last = self.last_frame_time;
         let min = self.min_time_between_frames.get();
 
         if last.is_zero() {
-            trace!(
-                ?target_frame_time,
-                ?last,
-                "last is zero, recording first frame"
-            );
+            trace!(?target_frame_time, ?last, "last is zero, recording first frame");
             return Duration::ZERO;
         }
 
         if target_frame_time < last {
-            // Record frame with a warning; in case it was an overflow this will fix it.
             warn!(
                 ?target_frame_time,
                 ?last,
@@ -462,8 +530,7 @@ impl Cast {
             trace!(
                 ?target_frame_time,
                 ?last,
-                "frame is too soon: min={min:?}, delay={:?}",
-                delay
+                "frame is too soon: min={min:?}, delay={delay:?}",
             );
             return delay;
         }
@@ -471,9 +538,15 @@ impl Cast {
         Duration::ZERO
     }
 
-    /// Returns true if frame should be skipped (too soon based on frame rate).
-    pub fn should_skip_frame(&self, target_frame_time: Duration) -> bool {
-        self.compute_extra_delay(target_frame_time) >= CAST_DELAY_ALLOWANCE
+    /// Returns the delay before the next frame can be captured.
+    /// Duration::ZERO means the frame can be captured now.
+    pub fn frame_delay(&self, target_frame_time: Duration) -> Duration {
+        let delay = self.compute_extra_delay(target_frame_time);
+        if delay < CAST_DELAY_ALLOWANCE {
+            Duration::ZERO
+        } else {
+            delay
+        }
     }
 
     /// Dequeue a buffer, render to it, and queue it back.
@@ -504,14 +577,11 @@ impl Cast {
             return false;
         };
 
-        // Use the negotiated size from CastState to match dmabuf dimensions
         let size = Size::from((ready_size.w as i32, ready_size.h as i32));
 
-        // Initialize or reset damage tracker if needed
         let dt = damage_tracker
             .get_or_insert_with(|| OutputDamageTracker::new(size, scale, Transform::Normal));
 
-        // Check if scale changed (size change creates new Ready state)
         let OutputModeSource::Static { scale: t_scale, .. } = dt.mode() else {
             unreachable!();
         };
@@ -519,7 +589,6 @@ impl Cast {
             *dt = OutputDamageTracker::new(size, scale, Transform::Normal);
         }
 
-        // Check damage - skip if none
         let (damage, _states) = dt.damage_output(1, elements).unwrap();
         if damage.is_none() {
             trace!("no damage, skipping PipeWire frame");
@@ -533,52 +602,111 @@ impl Cast {
 
         drop(state);
 
-        let Some(mut buffer) = self.stream.dequeue_buffer() else {
+        // Use raw buffer API for direct spa_buffer access (following niri)
+        let pw_buffer = unsafe { NonNull::new(self.stream.dequeue_raw_buffer()) };
+        let Some(pw_buffer) = pw_buffer else {
             trace!("no available buffer in pw stream");
             return false;
         };
 
-        let fd = buffer.datas_mut()[0].as_raw().fd;
-        let dmabufs = self.dmabufs.borrow();
-        let Some(dmabuf) = dmabufs.get(&fd) else {
-            warn!("dmabuf not found for fd {}", fd);
-            return false;
-        };
+        unsafe {
+            let spa_buf = (*pw_buffer.as_ptr()).buffer;
+            let fd = (*(*spa_buf).datas).fd;
+            let dmabufs = self.dmabufs.borrow();
+            let Some(dmabuf) = dmabufs.get(&fd) else {
+                warn!("dmabuf not found for fd {}", fd);
+                return_unused_buffer(&self.stream, pw_buffer);
+                return false;
+            };
+            let dmabuf = dmabuf.clone();
+            drop(dmabufs);
 
-        // Render to the dmabuf
-        if let Err(err) = crate::render::render_to_dmabuf(
-            renderer,
-            dmabuf.clone(),
-            size,
-            scale,
-            Transform::Normal,
-            elements.iter().rev(),
-        ) {
-            warn!("error rendering to dmabuf: {err:?}");
-            return false;
+            match crate::render::render_to_dmabuf(
+                renderer,
+                dmabuf,
+                size,
+                scale,
+                Transform::Normal,
+                elements.iter().rev(),
+            ) {
+                Ok(sync_point) => {
+                    // Wait for GPU to finish before PipeWire consumes the buffer
+                    if let Err(err) = sync_point.wait() {
+                        warn!("error waiting for render sync: {err:?}");
+                    }
+
+                    mark_buffer_as_good(spa_buf, &mut self.sequence_counter);
+                    self.stream.queue_raw_buffer(pw_buffer.as_ptr());
+                    true
+                }
+                Err(err) => {
+                    warn!("error rendering to dmabuf: {err:?}");
+                    return_unused_buffer(&self.stream, pw_buffer);
+                    false
+                }
+            }
         }
-
-        // Update buffer chunk metadata
-        for (data, (stride, offset)) in buffer
-            .datas_mut()
-            .iter_mut()
-            .zip(dmabuf.strides().zip(dmabuf.offsets()))
-        {
-            let chunk = data.chunk_mut();
-            *chunk.size_mut() = 1; // Size is set to 1 for DMA-BUF chunks
-            *chunk.stride_mut() = stride as i32;
-            *chunk.offset_mut() = offset;
-        }
-
-        trace!("frame rendered to pw stream");
-        true
     }
 }
 
-/// Create video format parameters with Linear modifier
-fn make_video_params(size: Size<u32, Physical>, refresh: u32) -> pod::Object {
-    // Use Linear modifier for simplicity
-    let linear = u64::from(Modifier::Linear) as i64;
+/// Mark a buffer as corrupted and queue it back to avoid starving PipeWire's pool.
+unsafe fn return_unused_buffer(stream: &StreamRc, buf: NonNull<pw_buffer>) {
+    let buf = buf.as_ptr();
+    let spa_buf = (*buf).buffer;
+    let chunk = (*(*spa_buf).datas).chunk;
+    // Some consumers check for size == 0 instead of the CORRUPTED flag.
+    (*chunk).size = 0;
+    (*chunk).flags = SPA_CHUNK_FLAG_CORRUPTED as i32;
+
+    if let Some(header) = find_meta_header(spa_buf) {
+        let header = header.as_ptr();
+        (*header).flags = SPA_META_HEADER_FLAG_CORRUPTED;
+    }
+
+    stream.queue_raw_buffer(buf);
+}
+
+/// Mark buffer as successfully rendered with sequence metadata.
+unsafe fn mark_buffer_as_good(spa_buf: *mut spa_buffer, sequence: &mut u64) {
+    let chunk = (*(*spa_buf).datas).chunk;
+    // OBS checks for size != 0 as a workaround, so set to 1.
+    (*chunk).size = 1;
+    (*chunk).flags = SPA_CHUNK_FLAG_NONE as i32;
+
+    *sequence = sequence.wrapping_add(1);
+    if let Some(header) = find_meta_header(spa_buf) {
+        let header = header.as_ptr();
+        (*header).pts = crate::utils::get_monotonic_time().as_nanos() as i64;
+        (*header).flags = 0;
+        (*header).seq = *sequence;
+        (*header).dts_offset = 0;
+    }
+}
+
+/// Find the SPA_META_Header in a spa_buffer.
+unsafe fn find_meta_header(buffer: *mut spa_buffer) -> Option<NonNull<spa_meta_header>> {
+    let p = spa_buffer_find_meta_data(buffer, SPA_META_Header, size_of::<spa_meta_header>()).cast();
+    NonNull::new(p)
+}
+
+/// Create video format parameters with available modifiers.
+/// Sets DONT_FIXATE only when multiple modifiers are offered.
+fn make_video_params(
+    size: Size<u32, Physical>,
+    refresh: u32,
+    render_formats: &[i64],
+) -> pod::Object {
+    let default = render_formats
+        .first()
+        .copied()
+        .unwrap_or(u64::from(Modifier::Linear) as i64);
+    let alternatives: Vec<i64> = render_formats.to_vec();
+
+    let dont_fixate = if alternatives.len() > 1 {
+        PropertyFlags::DONT_FIXATE
+    } else {
+        PropertyFlags::empty()
+    };
 
     pod::object!(
         SpaTypes::ObjectParamFormat,
@@ -588,12 +716,12 @@ fn make_video_params(size: Size<u32, Physical>, refresh: u32) -> pod::Object {
         pod::property!(FormatProperties::VideoFormat, Id, VideoFormat::BGRx),
         Property {
             key: FormatProperties::VideoModifier.as_raw(),
-            flags: PropertyFlags::MANDATORY,
+            flags: PropertyFlags::MANDATORY | dont_fixate,
             value: pod::Value::Choice(ChoiceValue::Long(Choice(
                 ChoiceFlags::empty(),
                 ChoiceEnum::Enum {
-                    default: linear,
-                    alternatives: vec![linear],
+                    default,
+                    alternatives,
                 }
             )))
         },
@@ -628,7 +756,7 @@ fn make_video_params(size: Size<u32, Physical>, refresh: u32) -> pod::Object {
     )
 }
 
-/// Create fixated video format params
+/// Create fixated video format params (single modifier, no DONT_FIXATE)
 fn make_video_params_fixated(
     size: Size<u32, Physical>,
     refresh: u32,

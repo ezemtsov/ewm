@@ -21,6 +21,7 @@ pub enum ScreenCastToCompositor {
         session_id: usize,
         output_name: String,
         signal_ctx: SignalEmitter<'static>,
+        cursor_mode: u32,
     },
     StopCast {
         session_id: usize,
@@ -76,14 +77,24 @@ impl ScreenCast {
     async fn create_session(
         &self,
         #[zbus(object_server)] server: &ObjectServer,
-        _properties: HashMap<&str, Value<'_>>,
+        properties: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<OwnedObjectPath> {
         let session_id = SESSION_ID.fetch_add(1, Ordering::SeqCst);
         let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let session = Session::new(session_id, self.outputs.clone(), self.to_compositor.clone());
+        // Parse cursor-mode: 0=Hidden, 1=Embedded (default), 2=Metadata
+        let cursor_mode = properties
+            .get("cursor-mode")
+            .and_then(|v| match v {
+                Value::U32(m) => Some(*m),
+                _ => None,
+            })
+            .unwrap_or(1); // Default to Embedded
+        debug!("Session {} cursor_mode={}", session_id, cursor_mode);
+
+        let session = Session::new(session_id, self.outputs.clone(), self.to_compositor.clone(), cursor_mode);
 
         match server.at(&path, session).await {
             Ok(true) => {
@@ -119,6 +130,7 @@ pub struct Session {
     to_compositor: Sender<ScreenCastToCompositor>,
     streams: Arc<Mutex<Vec<StreamInfo>>>,
     stopped: Arc<AtomicBool>,
+    cursor_mode: u32,
 }
 
 impl Session {
@@ -126,6 +138,7 @@ impl Session {
         id: usize,
         outputs: Arc<Mutex<Vec<OutputInfo>>>,
         to_compositor: Sender<ScreenCastToCompositor>,
+        cursor_mode: u32,
     ) -> Self {
         Self {
             id,
@@ -133,6 +146,7 @@ impl Session {
             to_compositor,
             streams: Arc::new(Mutex::new(Vec::new())),
             stopped: Arc::new(AtomicBool::new(false)),
+            cursor_mode,
         }
     }
 }
@@ -151,6 +165,7 @@ impl Session {
                 self.id,
                 stream_info.output_name.clone(),
                 stream_info.iface.signal_emitter().clone(),
+                self.cursor_mode,
             );
         }
     }
@@ -302,17 +317,18 @@ impl Stream {
         }
     }
 
-    fn start(&self, session_id: usize, output_name: String, signal_ctx: SignalEmitter<'static>) {
+    fn start(&self, session_id: usize, output_name: String, signal_ctx: SignalEmitter<'static>, cursor_mode: u32) {
         if self.was_started.swap(true, Ordering::SeqCst) {
             return;
         }
 
-        info!("Stream {} starting for output {}", self.id, output_name);
+        info!("Stream {} starting for output {} (cursor_mode={})", self.id, output_name, cursor_mode);
 
         if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StartCast {
             session_id,
             output_name,
             signal_ctx,
+            cursor_mode,
         }) {
             warn!("Failed to send StartCast: {err:?}");
         }
@@ -340,17 +356,18 @@ impl Stream {
 }
 
 impl Start for ScreenCast {
-    fn start(self, name_suffix: &str) -> anyhow::Result<Connection> {
-        let name = format!("org.gnome.Mutter.ScreenCast{}", name_suffix);
-        info!("ScreenCast::start() - requesting D-Bus name {}", name);
-        let conn = zbus::blocking::connection::Builder::session()?
-            .name(name.as_str())?
-            .serve_at("/org/gnome/Mutter/ScreenCast", self)?
-            .build()?;
-        info!(
-            "ScreenCast::start() - D-Bus connection established, unique name: {:?}",
-            conn.unique_name()
-        );
+    fn start(self) -> anyhow::Result<Connection> {
+        use zbus::fdo::RequestNameFlags;
+
+        let conn = zbus::blocking::Connection::session()?;
+        let flags = RequestNameFlags::AllowReplacement
+            | RequestNameFlags::ReplaceExisting
+            | RequestNameFlags::DoNotQueue;
+
+        conn.object_server()
+            .at("/org/gnome/Mutter/ScreenCast", self)?;
+        conn.request_name_with_flags("org.gnome.Mutter.ScreenCast", flags)?;
+
         Ok(conn)
     }
 }

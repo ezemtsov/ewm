@@ -173,7 +173,7 @@ impl DisplayConfig {
 
     #[zbus(property)]
     fn apply_monitors_config_allowed(&self) -> bool {
-        false // Read-only for now
+        true
     }
 
     #[zbus(property)]
@@ -183,17 +183,18 @@ impl DisplayConfig {
 }
 
 impl Start for DisplayConfig {
-    fn start(self, name_suffix: &str) -> anyhow::Result<Connection> {
-        let name = format!("org.gnome.Mutter.DisplayConfig{}", name_suffix);
-        info!("DisplayConfig::start() - requesting D-Bus name {}", name);
-        let conn = zbus::blocking::connection::Builder::session()?
-            .name(name.as_str())?
-            .serve_at("/org/gnome/Mutter/DisplayConfig", self)?
-            .build()?;
-        info!(
-            "DisplayConfig::start() - D-Bus connection established, unique name: {:?}",
-            conn.unique_name()
-        );
+    fn start(self) -> anyhow::Result<Connection> {
+        use zbus::fdo::RequestNameFlags;
+
+        let conn = zbus::blocking::Connection::session()?;
+        let flags = RequestNameFlags::AllowReplacement
+            | RequestNameFlags::ReplaceExisting
+            | RequestNameFlags::DoNotQueue;
+
+        conn.object_server()
+            .at("/org/gnome/Mutter/DisplayConfig", self)?;
+        conn.request_name_with_flags("org.gnome.Mutter.DisplayConfig", flags)?;
+
         Ok(conn)
     }
 }
