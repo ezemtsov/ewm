@@ -906,16 +906,23 @@ impl Ewm {
         let pos_in_entry_x = pos.x - entry_x as f64;
         let pos_in_entry_y = pos.y - entry_y as f64;
 
-        // Scale pointer coords from entry space to window space (handles stretch)
-        let scale_x = if entry.w > 0 {
-            window_geo.size.w as f64 / entry.w as f64
+        // Scale pointer coords from entry space to window space.
+        // Primary entries render at native buffer size (no stretch), so no scaling needed.
+        // Non-primary entries have their buffer stretched to fill entry bounds.
+        let (scale_x, scale_y) = if entry.primary {
+            (1.0, 1.0)
         } else {
-            1.0
-        };
-        let scale_y = if entry.h > 0 {
-            window_geo.size.h as f64 / entry.h as f64
-        } else {
-            1.0
+            let sx = if entry.w > 0 {
+                window_geo.size.w as f64 / entry.w as f64
+            } else {
+                1.0
+            };
+            let sy = if entry.h > 0 {
+                window_geo.size.h as f64 / entry.h as f64
+            } else {
+                1.0
+            };
+            (sx, sy)
         };
         let pos_in_window = Point::from((
             pos_in_entry_x * scale_x,
