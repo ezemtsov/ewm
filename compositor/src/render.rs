@@ -455,7 +455,10 @@ fn render_elements_impl(
 /// Process pending screencopy requests for a specific output
 ///
 /// This should be called after rendering the main frame for an output.
-/// It renders the screen content to any pending screencopy buffers.
+/// Uses per-queue damage tracking: each screencopy client gets its own
+/// damage tracker, so only actual changes since that client's last capture
+/// are reported. When `with_damage` is set and there's no damage, the
+/// request stays in the queue until the next redraw.
 pub fn process_screencopies_for_output(
     ewm: &mut Ewm,
     renderer: &mut GlesRenderer,
@@ -463,7 +466,10 @@ pub fn process_screencopies_for_output(
     cursor_buffer: &cursor::CursorBuffer,
     event_loop: &LoopHandle<'static, State>,
 ) {
+    use smithay::backend::renderer::damage::OutputDamageTracker;
     use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
+    use smithay::output::OutputModeSource;
+    use std::cell::OnceCell;
     use tracing::trace;
 
     let output_scale = Scale::from(output.current_scale().fractional_scale());
@@ -474,39 +480,51 @@ pub fn process_screencopies_for_output(
     let output_pos = output_geo.loc;
     let output_size = output_geo.size;
 
-    // Collect pending screencopies for this output
-    let mut pending = Vec::new();
-    for queue in ewm.screencopy_state.queues_mut() {
-        let (_damage_tracker, maybe_screencopy) = queue.split();
-        if let Some(screencopy) = maybe_screencopy {
-            if screencopy.output() == output {
-                pending.push(queue.pop());
-            }
+    // Take screencopy state to avoid borrow conflict with element collection
+    let mut screencopy_state = std::mem::take(&mut ewm.screencopy_state);
+    let elements = OnceCell::new();
+
+    screencopy_state.with_queues_mut(|queue| {
+        let (damage_tracker, maybe_screencopy) = queue.split();
+        let Some(screencopy) = maybe_screencopy else {
+            return;
+        };
+        if screencopy.output() != output {
+            return;
         }
-    }
 
-    if pending.is_empty() {
-        return;
-    }
+        // Lazily collect render elements (shared across all queues for this output)
+        let elements = elements.get_or_init(|| {
+            collect_render_elements_for_output(
+                ewm,
+                renderer,
+                output_scale,
+                cursor_buffer,
+                output_pos,
+                output_size,
+                true, // include_cursor
+                output,
+            )
+        });
 
-    // Collect render elements for this specific output
-    let elements = collect_render_elements_for_output(
-        ewm,
-        renderer,
-        output_scale,
-        cursor_buffer,
-        output_pos,
-        output_size,
-        true, // include_cursor
-        output,
-    );
-
-    for screencopy in pending {
         let size = screencopy.buffer_size();
-        let region_loc = screencopy.region_loc();
         let with_damage = screencopy.with_damage();
 
+        // Ensure damage tracker matches current output mode
+        let OutputModeSource::Static {
+            size: last_size,
+            scale: last_scale,
+            transform: last_transform,
+        } = damage_tracker.mode().clone()
+        else {
+            unreachable!("screencopy damage tracker must have static mode");
+        };
+        if size != last_size || output_scale != last_scale || output_transform != last_transform {
+            *damage_tracker = OutputDamageTracker::new(size, output_scale, output_transform);
+        }
+
         // Offset elements for region capture
+        let region_loc = screencopy.region_loc();
         let relocated_elements: Vec<_> = elements
             .iter()
             .map(|element| {
@@ -517,6 +535,13 @@ pub fn process_screencopies_for_output(
                 )
             })
             .collect();
+
+        // Compute damage against this queue's tracker
+        let damages = damage_tracker.damage_output(1, &relocated_elements).unwrap().0;
+        if with_damage && damages.is_none() {
+            trace!("screencopy: no damage, waiting for next redraw");
+            return;
+        }
 
         let render_result = match screencopy.buffer() {
             ScreencopyBuffer::Dmabuf(dmabuf) => render_to_dmabuf(
@@ -541,22 +566,131 @@ pub fn process_screencopies_for_output(
 
         match render_result {
             Ok(sync) => {
-                // Send damage info if requested (with_damage=true)
                 if with_damage {
-                    // For now, report full damage since we always render
-                    // A more sophisticated implementation would track actual damage
-                    // Damage is in buffer coordinates (same as Physical for scale=1)
-                    let full_damage: Rectangle<i32, smithay::utils::Buffer> =
-                        Rectangle::from_size(Size::from((size.w, size.h)));
-                    screencopy.damage(std::iter::once(full_damage));
-                    trace!("screencopy with_damage: sent full damage");
+                    if let Some(damages) = damages {
+                        // Convert Physical → Buffer coordinates
+                        let physical_size = output_transform.transform_size(size);
+                        let buffer_damages = damages.iter().map(|dmg| {
+                            dmg.to_logical(1).to_buffer(
+                                1,
+                                output_transform.invert(),
+                                &physical_size.to_logical(1),
+                            )
+                        });
+                        screencopy.damage(buffer_damages);
+                    }
                 }
-                screencopy.submit_after_sync(false, sync, event_loop);
+                queue.pop().submit_after_sync(false, sync, event_loop);
             }
             Err(err) => {
+                // Reset damage tracker so next attempt reports full damage
+                *damage_tracker = OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
+                queue.pop();
                 warn!("Error rendering for screencopy: {:?}", err);
-                // screencopy will be dropped and client notified of failure
             }
+        }
+    });
+
+    ewm.screencopy_state = screencopy_state;
+}
+
+/// Render a screencopy request immediately (without damage tracking).
+///
+/// Used for `Copy` requests (not `CopyWithDamage`) which should be served
+/// as soon as possible without waiting for the next output redraw cycle.
+/// Still updates the per-queue damage tracker so subsequent `CopyWithDamage`
+/// calls correctly track damage relative to this rendered frame.
+pub fn render_screencopy_immediate(
+    ewm: &mut Ewm,
+    renderer: &mut GlesRenderer,
+    manager: &smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+    screencopy: crate::protocols::screencopy::Screencopy,
+    cursor_buffer: &cursor::CursorBuffer,
+    event_loop: &LoopHandle<'static, State>,
+) {
+    use smithay::backend::renderer::damage::OutputDamageTracker;
+    use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
+    use smithay::output::OutputModeSource;
+
+    let output = screencopy.output().clone();
+    let output_scale = Scale::from(output.current_scale().fractional_scale());
+    let output_transform = output.current_transform();
+    let output_geo = ewm.space.output_geometry(&output).unwrap_or_default();
+
+    let elements = collect_render_elements_for_output(
+        ewm,
+        renderer,
+        output_scale,
+        cursor_buffer,
+        output_geo.loc,
+        output_geo.size,
+        true,
+        &output,
+    );
+
+    let size = screencopy.buffer_size();
+    let region_loc = screencopy.region_loc();
+
+    let relocated_elements: Vec<_> = elements
+        .iter()
+        .map(|element| {
+            RelocateRenderElement::from_element(
+                element,
+                region_loc.upscale(-1),
+                Relocate::Relative,
+            )
+        })
+        .collect();
+
+    // Update the per-queue damage tracker so subsequent CopyWithDamage calls
+    // correctly track damage relative to this rendered frame.
+    if let Some(queue) = ewm.screencopy_state.get_queue_mut(manager) {
+        let (damage_tracker, _) = queue.split();
+        let OutputModeSource::Static {
+            size: last_size,
+            scale: last_scale,
+            transform: last_transform,
+        } = damage_tracker.mode().clone()
+        else {
+            unreachable!("screencopy damage tracker must have static mode");
+        };
+        if size != last_size || output_scale != last_scale || output_transform != last_transform {
+            *damage_tracker = OutputDamageTracker::new(size, output_scale, output_transform);
+        }
+        let _ = damage_tracker.damage_output(1, &relocated_elements);
+    }
+
+    let render_result = match screencopy.buffer() {
+        ScreencopyBuffer::Dmabuf(dmabuf) => render_to_dmabuf(
+            renderer,
+            dmabuf.clone(),
+            size,
+            output_scale,
+            output_transform,
+            relocated_elements.iter().rev(),
+        )
+        .map(Some),
+        ScreencopyBuffer::Shm(buffer) => render_to_shm(
+            renderer,
+            buffer,
+            size,
+            output_scale,
+            output_transform,
+            relocated_elements.iter().rev(),
+        )
+        .map(|_| None),
+    };
+
+    match render_result {
+        Ok(sync) => {
+            screencopy.submit_after_sync(false, sync, event_loop);
+        }
+        Err(err) => {
+            if let Some(queue) = ewm.screencopy_state.get_queue_mut(manager) {
+                let (damage_tracker, _) = queue.split();
+                *damage_tracker = OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
+            }
+            warn!("Error rendering for screencopy: {:?}", err);
         }
     }
 }

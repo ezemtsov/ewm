@@ -3212,10 +3212,26 @@ delegate_foreign_toplevel!(State);
 // Screencopy protocol
 impl ScreencopyHandler for State {
     fn frame(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy) {
-        // Queue all screencopy requests for processing during render
-        // (both with_damage and immediate requests are handled in the render loop)
-        if let Some(queue) = self.ewm.screencopy_state.get_queue_mut(manager) {
-            queue.push(screencopy);
+        if screencopy.with_damage() {
+            // CopyWithDamage: queue for processing during output redraw,
+            // where per-queue damage tracking can skip no-change frames.
+            if let Some(queue) = self.ewm.screencopy_state.get_queue_mut(manager) {
+                queue.push(screencopy);
+            }
+        } else {
+            // Copy: render immediately without waiting for the next redraw cycle.
+            let manager = manager.clone();
+            let State { backend, ewm } = self;
+            backend.with_renderer(|renderer, cursor_buffer, event_loop| {
+                crate::render::render_screencopy_immediate(
+                    ewm,
+                    renderer,
+                    &manager,
+                    screencopy,
+                    cursor_buffer,
+                    event_loop,
+                );
+            });
         }
     }
 

@@ -857,6 +857,28 @@ impl DrmBackendState {
         }
     }
 
+    /// Run a closure with renderer, cursor buffer, and event loop handle.
+    ///
+    /// Used for immediate screencopy rendering outside the per-output render loop.
+    pub fn with_renderer<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut GlesRenderer, &crate::cursor::CursorBuffer, &LoopHandle<'static, State>),
+    {
+        let Some(ref event_loop) = self.loop_handle else {
+            return;
+        };
+        let event_loop = event_loop.clone();
+        let Some(device) = &mut self.device else {
+            return;
+        };
+        let render_node = device.render_node;
+        let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
+            warn!("Failed to get renderer for with_renderer");
+            return;
+        };
+        f(renderer.as_mut(), &self.cursor_buffer, &event_loop);
+    }
+
     /// Process post-render work: screencopy and screencast for an output.
     pub(crate) fn post_render(
         &mut self,

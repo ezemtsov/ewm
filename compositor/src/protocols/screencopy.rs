@@ -130,6 +130,16 @@ impl ScreencopyManagerState {
     pub fn queues_mut(&mut self) -> impl Iterator<Item = &mut ScreencopyQueue> {
         self.queues.values_mut()
     }
+
+    /// Iterate all queues with a closure, then clean up dead managers.
+    pub fn with_queues_mut(&mut self, mut f: impl FnMut(&mut ScreencopyQueue)) {
+        for queue in self.queues.values_mut() {
+            f(queue);
+        }
+        // Clean up dead managers with empty queues
+        self.queues
+            .retain(|k, v| k.is_alive() || !v.screencopies.is_empty());
+    }
 }
 
 impl<D> GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData, D>

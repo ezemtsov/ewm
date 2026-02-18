@@ -94,6 +94,24 @@ impl Backend {
         }
     }
 
+    /// Run a closure with renderer, cursor buffer, and event loop handle.
+    ///
+    /// Used for immediate screencopy rendering outside the per-output render loop.
+    /// No-op for headless backend.
+    pub fn with_renderer<F>(&mut self, f: F)
+    where
+        F: FnOnce(
+            &mut smithay::backend::renderer::gles::GlesRenderer,
+            &crate::cursor::CursorBuffer,
+            &smithay::reexports::calloop::LoopHandle<'static, crate::State>,
+        ),
+    {
+        match self {
+            Backend::Drm(drm) => drm.with_renderer(f),
+            Backend::Headless(_) => {}
+        }
+    }
+
     /// Check if any output has a redraw queued
     pub fn has_queued_redraws(&self, ewm: &Ewm) -> bool {
         match self {
