@@ -379,10 +379,13 @@ impl DrmBackendState {
                 }
                 surface.compositor.reset_buffers();
             }
-
-            // Queue redraws for all outputs to resume rendering
-            ewm.queue_redraw_all();
         }
+
+        // Re-scan connectors to detect monitors added/removed during VT switch
+        self.on_device_changed(ewm);
+
+        // Queue redraws for all outputs to resume rendering
+        ewm.queue_redraw_all();
     }
 
     /// Trigger deferred DRM initialization (called when session becomes active)
