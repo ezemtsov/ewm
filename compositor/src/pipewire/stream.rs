@@ -821,12 +821,21 @@ fn find_preferred_modifier(
 
     let (buffer, modifier) = allocate_buffer(gbm, size, fourcc, &modifiers)?;
 
-    let dmabuf = buffer
-        .export()
-        .context("error exporting GBM buffer as dmabuf")?;
-    let plane_count = dmabuf.num_planes();
-
-    Ok((modifier, plane_count))
+    match buffer.export() {
+        Ok(dmabuf) => Ok((modifier, dmabuf.num_planes())),
+        Err(err) if modifiers.len() > 1 => {
+            // Tiled modifiers can produce multi-FD buffers that Smithay can't export.
+            // Fall back to Linear which always produces a single FD.
+            debug!("export failed with {modifier:?}: {err}, falling back to Linear");
+            let linear = &[u64::from(Modifier::Linear) as i64];
+            let (buffer, modifier) = allocate_buffer(gbm, size, fourcc, linear)?;
+            let dmabuf = buffer
+                .export()
+                .context("error exporting GBM buffer as dmabuf")?;
+            Ok((modifier, dmabuf.num_planes()))
+        }
+        Err(err) => Err(err).context("error exporting GBM buffer as dmabuf"),
+    }
 }
 
 fn allocate_buffer(
