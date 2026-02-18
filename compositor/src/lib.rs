@@ -85,12 +85,14 @@ use smithay::{
     delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
     delegate_text_input_manager, delegate_viewporter, delegate_xdg_activation,
     delegate_xdg_shell,
+    backend::renderer::element::utils::select_dmabuf_feedback,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
         utils::{
-            send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
-            surface_primary_scanout_output, take_presentation_feedback_surface_tree,
-            update_surface_primary_scanout_output, OutputPresentationFeedback,
+            send_dmabuf_feedback_surface_tree, send_frames_surface_tree,
+            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
+            take_presentation_feedback_surface_tree, update_surface_primary_scanout_output,
+            OutputPresentationFeedback,
         },
         LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window,
         WindowSurfaceType,
@@ -1238,6 +1240,65 @@ impl Ewm {
                         );
                     },
                     |_, _, _| true,
+                );
+            }
+        }
+    }
+
+    /// Send DMA-BUF feedback to clients, telling them which formats/modifiers
+    /// the compositor can scanout directly vs. which require GPU composition.
+    pub fn send_dmabuf_feedbacks(
+        &self,
+        output: &Output,
+        feedback: &backend::drm::SurfaceDmabufFeedback,
+        render_element_states: &RenderElementStates,
+    ) {
+        for window in self.id_windows.values() {
+            window.send_dmabuf_feedback(
+                output,
+                |_, _| Some(output.clone()),
+                |surface, _| {
+                    select_dmabuf_feedback(
+                        surface,
+                        render_element_states,
+                        &feedback.render,
+                        &feedback.scanout,
+                    )
+                },
+            );
+        }
+
+        let layer_map = layer_map_for_output(output);
+        for layer in layer_map.layers() {
+            layer.send_dmabuf_feedback(
+                output,
+                |_, _| Some(output.clone()),
+                |surface, _| {
+                    select_dmabuf_feedback(
+                        surface,
+                        render_element_states,
+                        &feedback.render,
+                        &feedback.scanout,
+                    )
+                },
+            );
+        }
+        drop(layer_map);
+
+        if let Some(output_state) = self.output_state.get(output) {
+            if let Some(ref lock_surface) = output_state.lock_surface {
+                send_dmabuf_feedback_surface_tree(
+                    lock_surface.wl_surface(),
+                    output,
+                    |_, _| Some(output.clone()),
+                    |surface, _| {
+                        select_dmabuf_feedback(
+                            surface,
+                            render_element_states,
+                            &feedback.render,
+                            &feedback.scanout,
+                        )
+                    },
                 );
             }
         }

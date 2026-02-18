@@ -68,11 +68,12 @@ use smithay::{
         wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle},
     },
     utils::{DeviceFd, Scale, Transform},
-    wayland::dmabuf::DmabufFeedbackBuilder,
+    wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 use smithay::desktop::utils::OutputPresentationFeedback;
+use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::wayland::presentation::Refresh;
 
@@ -120,6 +121,60 @@ fn resolve_drm_mode(
         .copied()
 }
 
+/// Build per-surface DMA-BUF feedback with scanout tranche hints.
+///
+/// Creates two feedback sets: `render` (default compositing path) and `scanout`
+/// (direct scanout via primary/overlay planes). Clients that allocate DMA-BUFs
+/// in scanout-compatible formats can skip GPU composition entirely.
+fn build_surface_dmabuf_feedback(
+    compositor: &GbmDrmCompositor,
+    render_formats: FormatSet,
+    render_node: DrmNode,
+) -> Result<SurfaceDmabufFeedback, std::io::Error> {
+    let surface = compositor.surface();
+    let planes = surface.planes();
+
+    let primary_plane_formats = surface.plane_info().formats.clone();
+    let primary_or_overlay_formats: FormatSet = primary_plane_formats
+        .iter()
+        .chain(planes.overlay.iter().flat_map(|p| p.formats.iter()))
+        .copied()
+        .collect();
+
+    // Limit scanout formats to those we can also render — ensures a fallback path
+    let primary_scanout_formats: Vec<_> = primary_plane_formats
+        .intersection(&render_formats)
+        .copied()
+        .collect();
+    let overlay_scanout_formats: Vec<_> = primary_or_overlay_formats
+        .intersection(&render_formats)
+        .copied()
+        .collect();
+
+    let builder = DmabufFeedbackBuilder::new(render_node.dev_id(), render_formats);
+
+    // Scanout feedback: prefer primary-plane formats, then overlay-plane formats
+    let scanout = builder
+        .clone()
+        .add_preference_tranche(
+            render_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_scanout_formats,
+        )
+        .add_preference_tranche(
+            render_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            overlay_scanout_formats,
+        )
+        .build()?;
+
+    // Render feedback: just the default tranche (no scanout hints).
+    // Single-GPU: render == scanout since same device handles both.
+    let render = scanout.clone();
+
+    Ok(SurfaceDmabufFeedback { render, scanout })
+}
+
 /// Find the preferred DRM mode, falling back to the first available.
 fn preferred_drm_mode(modes: &[DrmMode]) -> Option<DrmMode> {
     modes
@@ -148,6 +203,16 @@ struct OutputSurface {
     connector: connector::Handle,
     /// Throttles buggy drivers that deliver VBlanks too early
     vblank_throttle: VBlankThrottle,
+    /// DMA-BUF feedback for direct scanout hints to clients
+    dmabuf_feedback: Option<SurfaceDmabufFeedback>,
+}
+
+/// Per-surface DMA-BUF feedback: render path vs direct scanout path.
+/// Clients use this to allocate buffers in formats the compositor can
+/// scanout directly, avoiding GPU composition copies.
+pub struct SurfaceDmabufFeedback {
+    pub render: DmabufFeedback,
+    pub scanout: DmabufFeedback,
 }
 
 /// Message to trigger deferred DRM initialization
@@ -659,6 +724,11 @@ impl DrmBackendState {
 
                 // Update primary scanout output tracking (for frame callback throttling)
                 ewm.update_primary_scanout_output(output, &result.states);
+
+                // Send DMA-BUF feedback to clients (scanout hints for direct display)
+                if let Some(feedback) = surface.dmabuf_feedback.as_ref() {
+                    ewm.send_dmabuf_feedbacks(output, feedback, &result.states);
+                }
 
                 if !result.is_empty {
                     // Collect presentation feedback from surfaces before queueing
@@ -1287,6 +1357,19 @@ impl DrmBackendState {
             connector_name.clone(),
         );
 
+        // Build per-surface DMA-BUF feedback (scanout hints for clients)
+        let dmabuf_feedback = match build_surface_dmabuf_feedback(
+            &compositor,
+            render_formats.clone(),
+            device.render_node,
+        ) {
+            Ok(feedback) => Some(feedback),
+            Err(err) => {
+                warn!("Failed to build surface DMA-BUF feedback: {:?}", err);
+                None
+            }
+        };
+
         device.surfaces.insert(
             crtc,
             OutputSurface {
@@ -1294,6 +1377,7 @@ impl DrmBackendState {
                 compositor,
                 connector: connector.handle(),
                 vblank_throttle,
+                dmabuf_feedback,
             },
         );
 
