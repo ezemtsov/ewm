@@ -81,10 +81,12 @@ appears in multiple windows and this entry is the selected one."
                             (eq window sel-window)))
              (view (ewm-layout--make-output-view window primary-p)))
         (push `(:id ,id ,@view) (gethash output output-surfaces))))
-    ;; Send per-output declarations
+    ;; Send per-output declarations with tab state
     (maphash
      (lambda (output entries)
-       (ewm-output-layout output (vconcat (nreverse entries))))
+       (ewm-output-layout output
+                          (vconcat (nreverse entries))
+                          (ewm-layout--collect-tabs output)))
      output-surfaces)))
 
 (defun ewm-layout--refresh ()
@@ -148,6 +150,22 @@ Updates views only; focus sync happens through debounced path."
   "Update layouts when selected window changes.
 Primary flag depends on selected-window, so re-send layouts."
   (ewm-layout--send-layouts))
+
+(defun ewm-layout--collect-tabs (output)
+  "Collect tab state for OUTPUT as a vector of plists.
+Each element is a plist with :name and :active keys."
+  (let ((frame (cl-find-if (lambda (f)
+                             (equal (frame-parameter f 'ewm-output) output))
+                           (frame-list))))
+    (if frame
+        (let ((tabs (funcall tab-bar-tabs-function frame)))
+          (vconcat
+           (mapcar (lambda (tab)
+                     (let ((name (alist-get 'name tab)))
+                       (list :name (or name "")
+                             :active (if (eq (car tab) 'current-tab) t :false))))
+                   tabs)))
+      (vector))))
 
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."

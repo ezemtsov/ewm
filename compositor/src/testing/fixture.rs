@@ -180,6 +180,13 @@ impl Fixture {
         // Sync keyboard focus after module commands (matches production behavior)
         self.state.sync_keyboard_focus();
 
+        // Refresh workspace protocol state (pull model)
+        crate::protocols::workspace::refresh::<crate::State>(
+            &mut self.state.ewm.workspace_state,
+            &self.state.ewm.output_workspaces,
+            self.state.ewm.space.outputs(),
+        );
+
         // Process queued redraws
         self.state
             .ewm
@@ -212,8 +219,9 @@ impl Fixture {
                     }
                 }
             }
-            ModuleCommand::OutputLayout { output, surfaces } => {
+            ModuleCommand::OutputLayout { output, surfaces, tabs } => {
                 self.state.ewm.apply_output_layout(&output, surfaces);
+                self.state.ewm.output_workspaces.insert(output, tabs);
             }
             // Other commands can be added as needed for testing
             _ => {}

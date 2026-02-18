@@ -144,7 +144,8 @@ Example:
       ("key" (ewm--handle-key event))
       ("state" (ewm--handle-state event))
       ("working_area" (ewm--handle-working-area event))
-      ("selection-changed" (ewm--handle-selection-changed event)))))
+      ("selection-changed" (ewm--handle-selection-changed event))
+      ("activate_workspace" (ewm--handle-activate-workspace event)))))
 
 ;;; Event handlers
 
@@ -357,13 +358,24 @@ Push the text onto the kill ring."
     (setq ewm--last-selection text)
     (ewm-set-selection-module text)))
 
+(defun ewm--handle-activate-workspace (event)
+  "Handle activate_workspace EVENT from compositor.
+Switch to the requested tab on the appropriate frame."
+  (let* ((output (map-elt event "output"))
+         (tab-index (map-elt event "tab_index"))
+         (frame (ewm--frame-for-output output)))
+    (when frame
+      (with-selected-frame frame
+        (tab-bar-select-tab tab-index)))))
+
 ;;; Commands
 
-(defun ewm-output-layout (output surfaces)
+(defun ewm-output-layout (output surfaces tabs)
   "Set declarative layout for OUTPUT.
 SURFACES is a vector of plists with :id :x :y :w :h :primary keys.
+TABS is a vector of booleans (t for active tab, nil for inactive).
 Coordinates are relative to the output's working area."
-  (ewm-output-layout-module output surfaces))
+  (ewm-output-layout-module output surfaces tabs))
 
 (defun ewm-close (id)
   "Request surface ID to close gracefully."

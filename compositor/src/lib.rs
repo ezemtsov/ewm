@@ -76,6 +76,7 @@ use crate::protocols::foreign_toplevel::{
     ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
 };
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
+use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
 use serde::{Deserialize, Serialize};
 use smithay::{
     backend::renderer::element::{solid::SolidColorBuffer, RenderElementStates},
@@ -512,6 +513,8 @@ pub struct Ewm {
     surface_info: HashMap<u32, SurfaceInfo>,
     /// Declared layout per output: output_name → entries
     pub output_layouts: HashMap<String, Vec<LayoutEntry>>,
+    /// Per-output workspace (tab) state from Emacs: output_name → tab info
+    pub output_workspaces: HashMap<String, Vec<module::TabInfo>>,
     /// Reverse index: surface_id → set of output names it appears on
     pub surface_outputs: HashMap<u32, HashSet<String>>,
 
@@ -579,6 +582,9 @@ pub struct Ewm {
 
     // Foreign toplevel state (exposes windows to external tools)
     pub foreign_toplevel_state: ForeignToplevelManagerState,
+
+    // Workspace state (ext-workspace-v1: exposes Emacs tabs to external tools)
+    pub workspace_state: WorkspaceManagerState,
 
     // Session lock state (ext-session-lock-v1 protocol)
     pub session_lock_state: SessionLockManagerState,
@@ -671,6 +677,10 @@ impl Ewm {
         let foreign_toplevel_state =
             ForeignToplevelManagerState::new::<State, _>(&display_handle, |_| true);
 
+        // Initialize workspace management (ext-workspace-v1: Emacs tabs as workspaces)
+        let workspace_state =
+            WorkspaceManagerState::new::<State, _>(&display_handle, |_| true);
+
         // Initialize session lock for screen locking (ext-session-lock-v1)
         let session_lock_state =
             SessionLockManagerState::new::<State, _>(&display_handle, |_| true);
@@ -710,6 +720,7 @@ impl Ewm {
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
             output_layouts: HashMap::new(),
+            output_workspaces: HashMap::new(),
             surface_outputs: HashMap::new(),
             output_size: Size::from((0, 0)),
             outputs: Vec::new(),
@@ -736,6 +747,7 @@ impl Ewm {
             working_areas: HashMap::new(),
             activation_state,
             foreign_toplevel_state,
+            workspace_state,
             session_lock_state,
             lock_state: LockState::Unlocked,
             pre_lock_focus: None,
@@ -2877,7 +2889,19 @@ impl DataControlHandler for State {
 delegate_data_control!(State);
 
 // Output
-impl smithay::wayland::output::OutputHandler for State {}
+impl smithay::wayland::output::OutputHandler for State {
+    fn output_bound(
+        &mut self,
+        output: Output,
+        wl_output: smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) {
+        crate::protocols::workspace::on_output_bound(
+            &mut self.ewm.workspace_state,
+            &output,
+            &wl_output,
+        );
+    }
+}
 delegate_output!(State);
 
 // Text Input (for input method support)
@@ -3215,6 +3239,21 @@ impl ForeignToplevelHandler for State {
     }
 }
 delegate_foreign_toplevel!(State);
+
+// Workspace protocol (ext-workspace-v1: Emacs tabs as workspaces)
+impl WorkspaceHandler for State {
+    fn workspace_manager_state(&mut self) -> &mut WorkspaceManagerState {
+        &mut self.ewm.workspace_state
+    }
+
+    fn activate_workspace(&mut self, output: String, tab_index: usize) {
+        module::push_event(Event::ActivateWorkspace {
+            output,
+            tab_index,
+        });
+    }
+}
+delegate_workspace!(State);
 
 // Screencopy protocol
 impl ScreencopyHandler for State {
@@ -3558,6 +3597,13 @@ impl State {
         // This catches any focus changes from Emacs commands, xdg_activation, etc.
         self.sync_keyboard_focus();
 
+        // Refresh workspace protocol state (pull model: diff source of truth vs mirrors).
+        crate::protocols::workspace::refresh::<State>(
+            &mut self.ewm.workspace_state,
+            &self.ewm.output_workspaces,
+            self.ewm.space.outputs(),
+        );
+
         // Process pending early imports
         let pending_imports: Vec<_> = self.ewm.pending_early_imports.drain(..).collect();
         for surface in pending_imports {
@@ -3754,6 +3800,7 @@ impl State {
                     "surfaces": self.ewm.surface_info,
                     "emacs_surfaces": self.ewm.emacs_surfaces,
                     "output_layouts": self.ewm.output_layouts,
+                    "output_workspaces": self.ewm.output_workspaces,
                     "surface_outputs": self.ewm.surface_outputs,
                     "focused_surface_id": self.ewm.focused_surface_id,
                     "id_windows": id_window_keys,
@@ -3805,7 +3852,7 @@ impl State {
                 );
                 debug!("Selection set from Emacs");
             }
-            ModuleCommand::OutputLayout { output, surfaces } => {
+            ModuleCommand::OutputLayout { output, surfaces, tabs } => {
                 self.ewm.apply_output_layout(&output, surfaces);
                 // Re-evaluate pointer focus after layout change
                 let (px, py) = self.ewm.pointer_location;
@@ -3824,6 +3871,9 @@ impl State {
                     },
                 );
                 pointer.frame(self);
+
+                // Store tab state (source of truth for workspace::refresh)
+                self.ewm.output_workspaces.insert(output, tabs);
             }
         }
     }

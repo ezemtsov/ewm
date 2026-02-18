@@ -214,12 +214,22 @@ pub enum ModuleCommand {
     /// Request activation token creation (compositor will push to ACTIVATION_TOKEN_POOL)
     CreateActivationToken,
     /// Set clipboard selection from Emacs
-    SetSelection { text: String },
-    /// Declarative per-output layout
+    SetSelection {
+        text: String,
+    },
+    /// Declarative per-output layout (includes workspace tab state)
     OutputLayout {
         output: String,
         surfaces: Vec<LayoutEntry>,
+        tabs: Vec<TabInfo>,
     },
+}
+
+/// Tab info sent from Emacs for workspace protocol
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TabInfo {
+    pub name: String,
+    pub active: bool,
 }
 
 /// Command queue shared between Emacs thread and compositor
@@ -563,6 +573,11 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
             cons("event", "selection-changed".into_lisp(env)?)?,
             cons("text", text.into_lisp(env)?)?,
         ]),
+        Event::ActivateWorkspace { output, tab_index } => list(vec![
+            cons("event", "activate_workspace".into_lisp(env)?)?,
+            cons("output", output.into_lisp(env)?)?,
+            cons("tab_index", (tab_index as i64).into_lisp(env)?)?,
+        ]),
     }
 }
 
@@ -711,9 +726,15 @@ fn socket(_: &Env) -> Result<Option<String>> {
 
 /// Set declarative layout for an output (module mode).
 /// OUTPUT is the output name. SURFACES is a vector of plists with :id :x :y :w :h :primary keys.
+/// TABS is a vector of plists (each a vector [:name NAME :active ACTIVE]).
 /// Coordinates are relative to the output's working area (frame-relative).
 #[defun]
-fn output_layout_module(env: &Env, output: String, surfaces: Value<'_>) -> Result<()> {
+fn output_layout_module(
+    env: &Env,
+    output: String,
+    surfaces: Value<'_>,
+    tabs: Value<'_>,
+) -> Result<()> {
     let mut entries = Vec::new();
 
     let len_val: Value = env.call("length", (surfaces,))?;
@@ -748,9 +769,29 @@ fn output_layout_module(env: &Env, output: String, surfaces: Value<'_>) -> Resul
         });
     }
 
+    let mut parsed_tabs = Vec::new();
+    let tabs_len_val: Value = env.call("length", (tabs,))?;
+    let tabs_len: i64 = tabs_len_val.into_rust()?;
+    let false_sym = env.intern(":false")?;
+
+    for i in 0..tabs_len {
+        let tab: Value = env.call("aref", (tabs, i))?;
+
+        let name_val: Value = env.call("plist-get", (tab, env.intern(":name")?))?;
+        let name: String = name_val.into_rust().unwrap_or_default();
+
+        let active_val: Value = env.call("plist-get", (tab, env.intern(":active")?))?;
+        let eq_result: Value = env.call("eq", (active_val, false_sym))?;
+        let is_false = eq_result.is_not_nil();
+        let active = active_val.is_not_nil() && !is_false;
+
+        parsed_tabs.push(TabInfo { name, active });
+    }
+
     push_command(ModuleCommand::OutputLayout {
         output,
         surfaces: entries,
+        tabs: parsed_tabs,
     });
     Ok(())
 }
