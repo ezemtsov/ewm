@@ -35,6 +35,7 @@ pub mod cursor;
 #[cfg(feature = "screencast")]
 pub mod dbus;
 pub mod event;
+pub mod frame_clock;
 pub mod im_relay;
 pub mod input;
 mod module;
@@ -44,6 +45,7 @@ pub mod protocols;
 pub mod render;
 pub mod tracy;
 pub mod utils;
+pub mod vblank_throttle;
 pub use tracy::VBlankFrameTracker;
 
 // Testing module is always compiled but only used by tests
@@ -86,8 +88,9 @@ use smithay::{
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
         utils::{
-            send_frames_surface_tree, surface_primary_scanout_output,
-            update_surface_primary_scanout_output,
+            send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
+            surface_primary_scanout_output, take_presentation_feedback_surface_tree,
+            update_surface_primary_scanout_output, OutputPresentationFeedback,
         },
         LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window,
         WindowSurfaceType,
@@ -277,8 +280,12 @@ impl Default for OutputConfig {
 /// Per-output state for redraw synchronization
 pub struct OutputState {
     pub redraw_state: RedrawState,
-    /// Refresh interval in microseconds (for estimated VBlank timer)
-    pub refresh_interval_us: u64,
+    /// Frame clock for accurate VBlank prediction (replaces raw refresh_interval_us)
+    pub frame_clock: frame_clock::FrameClock,
+    /// Whether unfinished animations remain on this output.
+    /// When true, VBlank and estimated VBlank handlers queue another redraw
+    /// even if `redraw_needed` is false, keeping animations pumping.
+    pub unfinished_animations_remain: bool,
     /// Tracy frame tracker for VBlank profiling (no-op when feature disabled)
     pub vblank_tracker: VBlankFrameTracker,
     /// Lock surface for this output (when session is locked)
@@ -296,9 +303,15 @@ pub struct OutputState {
 impl OutputState {
     /// Create a new OutputState for the given output name and size.
     pub fn new(output_name: &str, refresh_interval_us: u64, size: (i32, i32)) -> Self {
+        let refresh_interval = if refresh_interval_us > 0 {
+            Some(Duration::from_micros(refresh_interval_us))
+        } else {
+            None
+        };
         Self {
             redraw_state: RedrawState::Queued,
-            refresh_interval_us,
+            frame_clock: frame_clock::FrameClock::new(refresh_interval),
+            unfinished_animations_remain: false,
             vblank_tracker: VBlankFrameTracker::new(output_name),
             lock_surface: None,
             lock_render_state: LockRenderState::Unlocked,
@@ -318,7 +331,8 @@ impl Default for OutputState {
     fn default() -> Self {
         Self {
             redraw_state: RedrawState::Idle,
-            refresh_interval_us: 16_667, // ~60Hz default
+            frame_clock: frame_clock::FrameClock::new(Some(Duration::from_micros(16_667))),
+            unfinished_animations_remain: false,
             vblank_tracker: VBlankFrameTracker::new("default"),
             lock_surface: None,
             lock_render_state: LockRenderState::Unlocked,
@@ -329,7 +343,7 @@ impl Default for OutputState {
     }
 }
 
-/// Frame callback throttle duration (matching niri's value).
+/// Frame callback throttle duration.
 /// Surfaces that haven't received a frame callback within this duration will
 /// get one regardless of the throttling state, as a safety net.
 const FRAME_CALLBACK_THROTTLE: Option<Duration> = Some(Duration::from_millis(995));
@@ -581,6 +595,10 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub viewporter_state: ViewporterState,
 
+    // Presentation time protocol (wp-presentation-time)
+    #[allow(dead_code)]
+    pub presentation_state: smithay::wayland::presentation::PresentationState,
+
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
     pub pipewire: Option<pipewire::PipeWire>,
@@ -664,6 +682,11 @@ impl Ewm {
         // Initialize viewporter (wp-viewporter, required by fractional scale clients)
         let viewporter_state = ViewporterState::new::<State>(&display_handle);
 
+        // Initialize presentation time protocol (wp-presentation-time)
+        // Clock ID 1 = CLOCK_MONOTONIC
+        let presentation_state =
+            smithay::wayland::presentation::PresentationState::new::<State>(&display_handle, 1);
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -717,6 +740,7 @@ impl Ewm {
             idle_notifier_state,
             fractional_scale_state,
             viewporter_state,
+            presentation_state,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -1039,6 +1063,123 @@ impl Ewm {
         }
     }
 
+    /// Process all outputs that have queued redraws.
+    ///
+    /// This lives on Ewm (not the backend) because
+    /// output_state is owned by Ewm. The backend only provides a render() method.
+    pub fn redraw_queued_outputs(&mut self, backend: &mut backend::Backend) {
+        tracy_span!("redraw_queued_outputs");
+
+        // Use while-let with find() so outputs queued during
+        // rendering (e.g., by VBlank handlers) are picked up in the same pass.
+        while let Some(output) = self
+            .output_state
+            .iter()
+            .find(|(_, state)| {
+                matches!(
+                    state.redraw_state,
+                    RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+                )
+            })
+            .map(|(output, _)| output.clone())
+        {
+            self.redraw(backend, &output);
+        }
+    }
+
+    /// Orchestrate a single output redraw.
+    ///
+    /// Orchestrate a single output redraw:
+    /// 1. Get target presentation time from frame clock
+    /// 2. Call backend.render() → RenderResult
+    /// 3. Handle state transitions based on result
+    /// 4. Update lock render state
+    /// 5. Send frame callbacks
+    /// 6. Process screencopy/screencast via backend
+    fn redraw(&mut self, backend: &mut backend::Backend, output: &Output) {
+        tracy_span!("ewm_redraw");
+
+        // Verify our invariant and get target presentation time
+        let target_presentation_time = {
+            let Some(state) = self.output_state.get(output) else {
+                return;
+            };
+            debug_assert!(matches!(
+                state.redraw_state,
+                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+            ));
+            state.frame_clock.next_presentation_time()
+        };
+
+        // Refresh foreign toplevel state before rendering
+        self.refresh_foreign_toplevel();
+
+        // Render via backend
+        let res = backend.render(self, output, target_presentation_time);
+
+        // Handle state transitions based on render result
+        let is_locked = self.is_locked();
+        if let Some(state) = self.output_state.get_mut(output) {
+            match res {
+                backend::RenderResult::Submitted => {
+                    // DRM backend transitions to WaitingForVBlank inside render().
+                    // Headless backend doesn't, so catch any leftover Queued state.
+                    if matches!(
+                        state.redraw_state,
+                        RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+                    ) {
+                        state.redraw_state = RedrawState::Idle;
+                    }
+                }
+                backend::RenderResult::NoDamage => {
+                    // No frame submitted; DRM backend queues estimated VBlank timer
+                    // inside render(). Headless just goes Idle.
+                    if matches!(
+                        state.redraw_state,
+                        RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+                    ) {
+                        state.redraw_state = RedrawState::Idle;
+                    }
+                }
+                backend::RenderResult::Skipped => {
+                    // Preserve estimated vblank timer if one exists, otherwise go Idle
+                    state.redraw_state =
+                        if let RedrawState::WaitingForEstimatedVBlank(token)
+                        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
+                            state.redraw_state
+                        {
+                            RedrawState::WaitingForEstimatedVBlank(token)
+                        } else {
+                            RedrawState::Idle
+                        };
+                }
+            }
+
+            // Update lock render state on successful render
+            if res != backend::RenderResult::Skipped
+                && is_locked
+                && state.lock_surface.is_some()
+            {
+                state.lock_render_state = LockRenderState::Locked;
+            }
+        }
+
+        // Check lock confirmation requirements
+        if res != backend::RenderResult::Skipped {
+            self.check_lock_complete();
+        } else {
+            self.abort_lock_on_render_failure();
+        }
+
+        // Send frame callbacks
+        self.send_frame_callbacks(output);
+
+        // Process screencopy and screencast via backend
+        if res != backend::RenderResult::Skipped {
+            backend.post_render(self, output);
+        }
+    }
+
     /// Update primary scanout output for all surfaces on the given output.
     /// This tracks which output each surface is primarily displayed on,
     /// enabling frame callback throttling to prevent duplicate callbacks.
@@ -1097,6 +1238,63 @@ impl Ewm {
                 );
             }
         }
+    }
+
+    /// Collect presentation feedback callbacks from all surfaces on this output.
+    ///
+    /// Drains pending `wp_presentation_feedback` callbacks from each surface's
+    /// cached state, filtering to surfaces whose primary scanout matches this output.
+    /// The collected feedback is passed through `queue_frame()` and delivered in the
+    /// VBlank handler via `feedback.presented()`.
+    pub fn take_presentation_feedbacks(
+        &self,
+        output: &Output,
+        render_element_states: &RenderElementStates,
+    ) -> OutputPresentationFeedback {
+        let mut feedback = OutputPresentationFeedback::new(output);
+
+        // Collect from windows
+        for window in self.id_windows.values() {
+            window.take_presentation_feedback(
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    surface_presentation_feedback_flags_from_states(surface, render_element_states)
+                },
+            );
+        }
+
+        // Collect from layer surfaces
+        let layer_map = layer_map_for_output(output);
+        for layer in layer_map.layers() {
+            layer.take_presentation_feedback(
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    surface_presentation_feedback_flags_from_states(surface, render_element_states)
+                },
+            );
+        }
+        drop(layer_map);
+
+        // Collect from lock surface
+        if let Some(output_state) = self.output_state.get(output) {
+            if let Some(ref lock_surface) = output_state.lock_surface {
+                take_presentation_feedback_surface_tree(
+                    lock_surface.wl_surface(),
+                    &mut feedback,
+                    surface_primary_scanout_output,
+                    |surface, _| {
+                        surface_presentation_feedback_flags_from_states(
+                            surface,
+                            render_element_states,
+                        )
+                    },
+                );
+            }
+        }
+
+        feedback
     }
 
     /// Send frame callbacks to surfaces on an output with throttling.
@@ -1314,7 +1512,7 @@ impl Ewm {
 
     /// Update on-demand layer shell keyboard focus.
     /// If the surface has OnDemand keyboard interactivity, set it as on-demand focus.
-    /// Otherwise, clear on-demand focus. Following niri's focus_layer_surface_if_on_demand.
+    /// Otherwise, clear on-demand focus.
     pub fn focus_layer_surface_if_on_demand(
         &mut self,
         surface: Option<DesktopLayerSurface>,
@@ -1342,7 +1540,7 @@ impl Ewm {
 
     /// Resolve layer shell keyboard focus.
     /// Checks for Exclusive interactivity on Overlay/Top layers first,
-    /// then OnDemand focus, following niri's update_keyboard_focus pattern.
+    /// then OnDemand focus.
     fn resolve_layer_keyboard_focus(&self) -> Option<WlSurface> {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
@@ -2222,7 +2420,7 @@ impl Ewm {
     }
 
     /// Handle commit for layer surfaces. Returns true if this was a layer surface.
-    /// Following niri's layer_shell_handle_commit pattern.
+    /// Handle layer shell surface commit.
     pub fn handle_layer_surface_commit(&mut self, surface: &WlSurface) -> bool {
         use smithay::backend::renderer::utils::with_renderer_surface_state;
         use smithay::desktop::WindowSurfaceType;
@@ -2282,7 +2480,7 @@ impl Ewm {
                         debug!("Layer surface mapped");
                         self.keyboard_focus_dirty = true;
 
-                        // Auto-focus newly mapped OnDemand surfaces (following niri #641)
+                        // Auto-focus newly mapped OnDemand surfaces
                         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
                         if layer.cached_state().keyboard_interactivity
                             == KeyboardInteractivity::OnDemand
@@ -2778,7 +2976,7 @@ impl XdgActivationHandler for State {
     fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
         // Only accept tokens created while the requesting app had keyboard focus.
         // This prevents apps from stealing focus via xdg_activation.
-        // Reference: niri's implementation in src/handlers/mod.rs
+        // Handle XDG activation token
         let app_id = data.app_id.as_deref().unwrap_or("unknown");
 
         let Some((serial, seat)) = data.serial else {
@@ -3018,6 +3216,9 @@ delegate_idle_notify!(State);
 impl FractionalScaleHandler for State {}
 delegate_fractional_scale!(State);
 
+// Presentation time protocol (wp-presentation-time)
+smithay::delegate_presentation!(State);
+
 // Viewporter protocol (wp-viewporter, required by fractional scale clients)
 delegate_viewporter!(State);
 
@@ -3223,7 +3424,7 @@ impl State {
         }
 
         // Process any queued redraws
-        self.backend.redraw_queued_outputs(&mut self.ewm);
+        self.ewm.redraw_queued_outputs(&mut self.backend);
 
         // Process IM relay events and send to Emacs
         self.process_im_events();

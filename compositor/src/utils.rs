@@ -1,14 +1,23 @@
-//! Coordinate and scaling utilities for fractional scale support
+//! Coordinate, scaling, and timing utilities
 //!
 //! Precise coordinate conversions at fractional scales.
 //! The fractional-scale protocol has N/120 precision, so coordinates must be carefully
 //! rounded to avoid subpixel drift.
 
+use std::time::Duration;
+
 use smithay::output::{self, Output};
+use smithay::reexports::rustix::time::{clock_gettime, ClockId};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Coordinate, Logical, Size, Transform};
 use smithay::wayland::compositor::{get_parent, send_surface_state, with_states, SurfaceData};
 use smithay::wayland::fractional_scale::with_fractional_scale;
+
+/// Get monotonic time for timestamps and frame scheduling.
+pub fn get_monotonic_time() -> Duration {
+    let ts = clock_gettime(ClockId::Monotonic);
+    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
 
 /// Convert a logical coordinate to physical pixels, rounding to the nearest integer.
 ///

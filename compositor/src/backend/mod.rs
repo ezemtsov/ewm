@@ -27,9 +27,24 @@ pub use drm::DrmBackendState;
 pub use headless::HeadlessBackend;
 
 use crate::Ewm;
-use smithay::reexports::drm::control::crtc;
+use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Transform;
+use std::time::Duration;
+
+/// Result of a backend render operation.
+///
+/// The backend only handles the GPU/DRM render, and `Ewm::redraw()`
+/// orchestrates state transitions based on the result.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RenderResult {
+    /// The frame was submitted to the backend for presentation.
+    Submitted,
+    /// Rendering succeeded, but there was no damage.
+    NoDamage,
+    /// The frame was not rendered/submitted, due to an error or otherwise.
+    Skipped,
+}
 
 /// Backend abstraction enum
 ///
@@ -50,11 +65,32 @@ pub enum Backend {
 }
 
 impl Backend {
-    /// Process all outputs that have queued redraws
-    pub fn redraw_queued_outputs(&mut self, ewm: &mut Ewm) {
+    /// Render a single output. Returns the render result.
+    ///
+    /// This only handles the GPU/DRM render. State transitions, frame callbacks,
+    /// screencopy, and screencast are handled by `Ewm::redraw()`.
+    pub fn render(
+        &mut self,
+        ewm: &mut Ewm,
+        output: &Output,
+        target_presentation_time: Duration,
+    ) -> RenderResult {
         match self {
-            Backend::Drm(drm) => drm.redraw_queued_outputs(ewm),
-            Backend::Headless(headless) => headless.redraw_queued_outputs(ewm),
+            Backend::Drm(drm) => drm.render(ewm, output, target_presentation_time),
+            Backend::Headless(headless) => headless.render(ewm, output),
+        }
+    }
+
+    /// Process post-render work for an output (screencopy, screencast).
+    ///
+    /// Called by `Ewm::redraw()` after a successful render. Requires backend-specific
+    /// renderer access, so it lives here rather than on Ewm.
+    pub fn post_render(&mut self, ewm: &mut Ewm, output: &Output) {
+        match self {
+            Backend::Drm(drm) => drm.post_render(ewm, output),
+            Backend::Headless(_) => {
+                // No post-render work for headless
+            }
         }
     }
 
@@ -208,29 +244,6 @@ impl Backend {
         }
     }
 
-    /// Render a specific output by CRTC handle
-    ///
-    /// # Panics
-    /// Panics if called on Headless backend.
-    pub fn render_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
-        match self {
-            Backend::Drm(drm) => drm.render_output(crtc, ewm),
-            Backend::Headless(_) => panic!("render_output() called on Headless backend"),
-        }
-    }
-
-    /// Handle estimated VBlank timer firing
-    ///
-    /// # Panics
-    /// Panics if called on Headless backend.
-    pub fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
-        match self {
-            Backend::Drm(drm) => drm.on_estimated_vblank_timer(crtc, ewm),
-            Backend::Headless(_) => {
-                panic!("on_estimated_vblank_timer() called on Headless backend")
-            }
-        }
-    }
 }
 
 /// Round scale to the nearest value representable by the fractional-scale

@@ -182,8 +182,8 @@ impl Fixture {
 
         // Process queued redraws
         self.state
-            .backend
-            .redraw_queued_outputs(&mut self.state.ewm);
+            .ewm
+            .redraw_queued_outputs(&mut self.state.backend);
 
         // Clean up dead elements (output enter/leave managed explicitly)
         self.state.ewm.cleanup_dead_windows();

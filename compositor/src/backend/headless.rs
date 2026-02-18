@@ -15,7 +15,6 @@
 //!    keyboard/pointer handling without real hardware.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use smithay::{
     backend::{
@@ -183,45 +182,19 @@ impl HeadlessBackend {
             .any(|s| matches!(s.redraw_state, RedrawState::Queued))
     }
 
-    /// Process all outputs that have queued redraws
+    /// Render a single output in headless mode.
     ///
-    /// In headless mode, we don't actually render to a display, but we:
-    /// 1. Collect render elements (validates the render pipeline)
-    /// 2. Track damage (for screencopy/screencast testing)
-    /// 3. Increment render counts (for test assertions)
-    /// 4. Send frame callbacks to clients
-    pub fn redraw_queued_outputs(&mut self, ewm: &mut Ewm) {
-        let queued_outputs: Vec<String> = self
-            .outputs
-            .iter()
-            .filter(|(name, _)| {
-                ewm.space
-                    .outputs()
-                    .find(|o| o.name() == **name)
-                    .and_then(|o| ewm.output_state.get(o))
-                    .map(|s| matches!(s.redraw_state, RedrawState::Queued))
-                    .unwrap_or(false)
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        for name in queued_outputs {
-            self.render_output(&name, ewm);
-        }
-    }
-
-    /// Render a single output
-    fn render_output(&mut self, name: &str, ewm: &mut Ewm) {
-        let Some(virtual_output) = self.outputs.get_mut(name) else {
-            return;
+    /// In headless mode, we don't render to a real display — we just track
+    /// render counts for test assertions. Returns Submitted unconditionally.
+    pub fn render(
+        &mut self,
+        _ewm: &mut Ewm,
+        output: &smithay::output::Output,
+    ) -> super::RenderResult {
+        let name = output.name();
+        let Some(virtual_output) = self.outputs.get_mut(&name) else {
+            return super::RenderResult::Skipped;
         };
-
-        let output = &virtual_output.output;
-
-        // Mark output as rendered
-        if let Some(output_state) = ewm.output_state.get_mut(output) {
-            output_state.redraw_state = RedrawState::Idle;
-        }
 
         virtual_output.render_count += 1;
         debug!(
@@ -229,16 +202,7 @@ impl HeadlessBackend {
             virtual_output.render_count, name
         );
 
-        // Send frame callbacks to clients
-        for window in ewm.id_windows.values() {
-            window.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
-        }
-
-        // Send frame callbacks to layer surfaces
-        let layer_map = smithay::desktop::layer_map_for_output(output);
-        for layer in layer_map.layers() {
-            layer.send_frame(output, Duration::ZERO, None, |_, _| Some(output.clone()));
-        }
+        super::RenderResult::Submitted
     }
 
     /// Apply output configuration for a live headless output.

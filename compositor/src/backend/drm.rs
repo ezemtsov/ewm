@@ -40,7 +40,7 @@ use smithay::{
         drm::{
             compositor::{DrmCompositor, FrameFlags, PrimaryPlaneElement},
             exporter::gbm::GbmFramebufferExporter,
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode,
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
         },
         egl::{EGLDevice, EGLDisplay},
         input::{Event, InputEvent, KeyboardKeyEvent},
@@ -72,11 +72,16 @@ use smithay::{
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
+use smithay::desktop::utils::OutputPresentationFeedback;
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
+use smithay::wayland::presentation::Refresh;
+
 use crate::{
     backend::Backend,
     cursor::CursorBuffer,
     input::{handle_device_added, handle_keyboard_event, KeyboardAction},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
+    vblank_throttle::VBlankThrottle,
     Ewm, OutputInfo, OutputMode, OutputState, RedrawState, State,
 };
 
@@ -124,9 +129,16 @@ fn preferred_drm_mode(modes: &[DrmMode]) -> Option<DrmMode> {
         .copied()
 }
 
+/// Data passed through `queue_frame()` → `frame_submitted()` for presentation feedback.
+type FrameData = (OutputPresentationFeedback, Duration);
+
 /// Type alias for our DRM compositor
-type GbmDrmCompositor =
-    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+type GbmDrmCompositor = DrmCompositor<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    FrameData,
+    DrmDeviceFd,
+>;
 
 /// Per-output surface state (DRM-specific, redraw state is in Ewm::output_state)
 struct OutputSurface {
@@ -134,6 +146,8 @@ struct OutputSurface {
     compositor: GbmDrmCompositor,
     /// Connector handle for mode lookups
     connector: connector::Handle,
+    /// Throttles buggy drivers that deliver VBlanks too early
+    vblank_throttle: VBlankThrottle,
 }
 
 /// Message to trigger deferred DRM initialization
@@ -289,6 +303,18 @@ impl DrmBackendState {
             } else {
                 info!("DRM device activated successfully (DRM master acquired)");
             }
+
+            // Reset DRM compositor state on all surfaces. After a session resume
+            // the compositor needs to re-read hardware state and do a full damage
+            // repaint. Without this, stale buffer references from before the pause
+            // can cause rendering artifacts.
+            for surface in device.surfaces.values_mut() {
+                if let Err(err) = surface.compositor.reset_state() {
+                    warn!("Error resetting DrmCompositor state: {:?}", err);
+                }
+                surface.compositor.reset_buffers();
+            }
+
             // Queue redraws for all outputs to resume rendering
             ewm.queue_redraw_all();
         }
@@ -426,15 +452,18 @@ impl DrmBackendState {
             ewm.space.map_output(&output, (x, y));
         }
 
-        // --- Update refresh interval ---
+        // --- Update frame clock refresh interval ---
         if let Some(drm_mode) = new_drm_mode {
-            let refresh_interval_us = if drm_mode.vrefresh() > 0 {
-                1_000_000 / drm_mode.vrefresh() as u64
+            let refresh_interval = if drm_mode.vrefresh() > 0 {
+                Some(std::time::Duration::from_micros(
+                    1_000_000 / drm_mode.vrefresh() as u64,
+                ))
             } else {
-                16_667
+                None
             };
             if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                output_state.refresh_interval_us = refresh_interval_us;
+                output_state.frame_clock =
+                    crate::frame_clock::FrameClock::new(refresh_interval);
             }
         }
 
@@ -534,74 +563,57 @@ impl DrmBackendState {
     }
 
     /// Render a frame to the given output
-    pub(crate) fn render_output(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
-        tracy_span!("render_output");
+    /// Render a single output via DRM. Returns the render result.
+    ///
+    /// This only handles the GPU render + DRM queue. State transitions, frame
+    /// callbacks, screencopy, and screencast are handled by `Ewm::redraw()`.
+    pub(crate) fn render(
+        &mut self,
+        ewm: &mut Ewm,
+        output: &smithay::output::Output,
+        target_presentation_time: Duration,
+    ) -> super::RenderResult {
+        tracy_span!("drm_render");
 
-        // Refresh foreign toplevel state before rendering
-        ewm.refresh_foreign_toplevel();
-
-        // First pass: check if we should render and extract needed data
-        let (should_render, refresh_interval_us, output, render_node) = {
-            let Some(device) = &self.device else {
-                return;
-            };
-
-            let Some(surface) = device.surfaces.get(&crtc) else {
-                return;
-            };
-
-            // Get output state from Ewm
-            let Some(output_state) = ewm.output_state.get(&surface.output) else {
-                debug!("No output state for {:?}", surface.output.name());
-                return;
-            };
-
-            // Only render if we're in a queued state
-            let should_render = matches!(
-                output_state.redraw_state,
-                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-            );
-            if !should_render {
-                debug!("Skipping render: state={:?}", output_state.redraw_state);
-                return;
-            }
-
-            if self.paused || !device.drm.is_active() {
-                debug!(
-                    "Skipping render: paused={} drm_active={}",
-                    self.paused,
-                    device.drm.is_active()
-                );
-                return;
-            }
-
-            (
-                should_render,
-                output_state.refresh_interval_us,
-                surface.output.clone(),
-                device.render_node,
-            )
+        let Some(device) = &self.device else {
+            return super::RenderResult::Skipped;
         };
 
-        if !should_render {
-            return;
+        // Find CRTC for this output
+        let Some((&crtc, _)) = device
+            .surfaces
+            .iter()
+            .find(|(_, s)| s.output == *output)
+        else {
+            return super::RenderResult::Skipped;
+        };
+
+        if self.paused || !device.drm.is_active() {
+            debug!(
+                "Skipping render: paused={} drm_active={}",
+                self.paused,
+                device.drm.is_active()
+            );
+            return super::RenderResult::Skipped;
         }
+
+        let render_node = device.render_node;
 
         let output_scale = Scale::from(output.current_scale().fractional_scale());
 
         // Get output geometry in global space
-        let output_geo = ewm.space.output_geometry(&output).unwrap_or_default();
+        let output_geo = ewm.space.output_geometry(output).unwrap_or_default();
         let output_pos = output_geo.loc;
         let output_size = output_geo.size;
 
         // Get a renderer from the GPU manager
         let Some(device) = &mut self.device else {
-            return;
+            return super::RenderResult::Skipped;
         };
 
         let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
             warn!("Failed to get renderer from GPU manager");
-            return;
+            return super::RenderResult::Skipped;
         };
 
         // Collect render elements for this specific output
@@ -613,16 +625,16 @@ impl DrmBackendState {
             output_pos,
             output_size,
             true, // include_cursor
-            &output,
+            output,
         );
 
         // Frame flags for proper plane scanout
         let flags =
             FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
 
-        // Render the frame - need to get surface mutably
+        // Render the frame
         let Some(surface) = device.surfaces.get_mut(&crtc) else {
-            return;
+            return super::RenderResult::Skipped;
         };
 
         let render_result = surface.compositor.render_frame::<_, _>(
@@ -632,15 +644,11 @@ impl DrmBackendState {
             flags,
         );
 
-        // Track if we need to process screencopy after releasing the surface borrow
-        let mut should_process_screencopy = false;
-        let mut need_estimated_vblank = false;
+        let mut rv = super::RenderResult::Skipped;
 
         match render_result {
             Ok(result) => {
                 // Wait for GPU completion if the kernel can't handle fencing.
-                // Without this, we may submit a buffer before the GPU has finished
-                // rendering, causing the display controller to show stale content.
                 if result.needs_sync() {
                     if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element {
                         if let Err(err) = element.sync.wait() {
@@ -649,202 +657,75 @@ impl DrmBackendState {
                     }
                 }
 
-                // Update primary scanout output tracking (needed for frame callback
-                // throttling). Called regardless of damage, same as niri.
-                ewm.update_primary_scanout_output(&output, &result.states);
+                // Update primary scanout output tracking (for frame callback throttling)
+                ewm.update_primary_scanout_output(output, &result.states);
 
                 if !result.is_empty {
-                    // There's damage to display - queue frame and wait for VBlank
-                    match surface.compositor.queue_frame(()) {
+                    // Collect presentation feedback from surfaces before queueing
+                    let presentation_feedbacks =
+                        ewm.take_presentation_feedbacks(output, &result.states);
+                    let frame_data = (presentation_feedbacks, target_presentation_time);
+
+                    // Queue frame to DRM with presentation feedback data
+                    match surface.compositor.queue_frame(frame_data) {
                         Ok(()) => {
-                            // Transition to WaitingForVBlank
-                            let is_locked = ewm.is_locked();
-                            if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                                // Increment sequence for frame callback throttling
-                                output_state.frame_callback_sequence =
-                                    output_state.frame_callback_sequence.wrapping_add(1);
+                            let output_state = ewm.output_state.get_mut(output).unwrap();
+                            // Increment sequence for frame callback throttling
+                            output_state.frame_callback_sequence =
+                                output_state.frame_callback_sequence.wrapping_add(1);
 
-                                trace!(
-                                    "{}: {} -> WaitingForVBlank",
-                                    output.name(),
-                                    output_state.redraw_state
-                                );
-                                output_state.redraw_state = RedrawState::WaitingForVBlank {
-                                    redraw_needed: false,
-                                };
-                                // Start Tracy frame tracking for VBlank interval
-                                output_state.vblank_tracker.begin_frame();
+                            trace!(
+                                "{}: {} -> WaitingForVBlank",
+                                output.name(),
+                                output_state.redraw_state
+                            );
 
-                                // Mark this output as having rendered a locked frame
-                                if is_locked && output_state.lock_surface.is_some() {
-                                    output_state.lock_render_state = crate::LockRenderState::Locked;
+                            // Remove estimated vblank timer if one was active
+                            if let RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
+                                output_state.redraw_state
+                            {
+                                if let Some(ref handle) = self.loop_handle {
+                                    handle.remove(token);
                                 }
                             }
 
-                            // Check if all outputs have rendered locked frames
-                            ewm.check_lock_complete();
+                            output_state.redraw_state = RedrawState::WaitingForVBlank {
+                                redraw_needed: false,
+                            };
+                            output_state.vblank_tracker.begin_frame();
+
+                            rv = super::RenderResult::Submitted;
                         }
                         Err(err) => {
                             warn!("{}: Error queueing frame: {:?}", output.name(), err);
-                            if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                                trace!(
-                                    "{}: {} -> Idle (queue_frame error)",
-                                    output.name(),
-                                    output_state.redraw_state
-                                );
-                                output_state.redraw_state = RedrawState::Idle;
-                            }
-                            // Abort lock if we failed to queue frame during Locking state
-                            ewm.abort_lock_on_render_failure();
                         }
                     }
                 } else {
-                    // No damage - mark that we need to queue estimated vblank timer
-                    if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                        trace!(
-                            "{}: {} -> Idle (no damage)",
-                            output.name(),
-                            output_state.redraw_state
-                        );
-                        output_state.redraw_state = RedrawState::Idle;
-                    }
-                    need_estimated_vblank = true;
+                    rv = super::RenderResult::NoDamage;
                 }
-
-                should_process_screencopy = true;
             }
             Err(err) => {
                 warn!("{}: Error rendering frame: {:?}", output.name(), err);
-                if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                    trace!(
-                        "{}: {} -> Idle (render error)",
-                        output.name(),
-                        output_state.redraw_state
-                    );
-                    output_state.redraw_state = RedrawState::Idle;
-                }
-                // Abort lock if we failed to render during Locking state
-                ewm.abort_lock_on_render_failure();
             }
         }
 
-        if need_estimated_vblank {
-            self.queue_estimated_vblank_timer(crtc, ewm, refresh_interval_us);
+        // Queue estimated VBlank timer when no frame was submitted
+        if rv != super::RenderResult::Submitted {
+            self.queue_estimated_vblank_timer(output, ewm, target_presentation_time);
         }
 
-        // Send frame callbacks to all surfaces so clients can commit new buffers
-        ewm.send_frame_callbacks(&output);
-
-        // Process pending screencopy requests for this output
-        if should_process_screencopy {
-            if let Some(ref event_loop) = self.loop_handle {
-                // Get renderer again for screencopy
-                let Some(device) = &mut self.device else {
-                    return;
-                };
-                let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
-                    return;
-                };
-                process_screencopies_for_output(
-                    ewm,
-                    renderer.as_mut(),
-                    &output,
-                    &self.cursor_buffer,
-                    event_loop,
-                );
-            }
-        }
-
-        // Render to active screen casts for this output
-        #[cfg(feature = "screencast")]
-        if should_process_screencopy {
-            use crate::protocols::screencopy::get_monotonic_time;
-
-            // Physical size for PipeWire buffer
-            let output_size_physical = output
-                .current_mode()
-                .map(|m| Size::from((m.size.w, m.size.h)))
-                .unwrap_or_else(|| Size::from((1920, 1080)));
-
-            // Get current time for frame rate limiting
-            let target_frame_time = get_monotonic_time();
-
-            // Use mem::take pattern to avoid borrow conflicts
-            let mut screen_casts = std::mem::take(&mut ewm.screen_casts);
-            let mut sc_elements = None;
-
-            // Collect valid output names to detect orphaned casts
-            let valid_outputs: std::collections::HashSet<String> =
-                ewm.space.outputs().map(|o| o.name()).collect();
-
-            for cast in screen_casts.values_mut() {
-                // Skip casts for outputs that no longer exist (orphaned)
-                if !valid_outputs.contains(&cast.output_name) {
-                    trace!(output = %cast.output_name, "skipping orphaned cast");
-                    continue;
-                }
-
-                if !cast.is_streaming() || cast.output_name != output.name() {
-                    continue;
-                }
-
-                // Frame rate limiting - skip if too soon
-                if cast.should_skip_frame(target_frame_time) {
-                    trace!("PipeWire frame too soon, skipping");
-                    continue;
-                }
-
-                // Lazily collect elements for this output on first active cast
-                let elements = sc_elements.get_or_insert_with(|| {
-                    let Some(device) = &mut self.device else {
-                        return Vec::new();
-                    };
-                    let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
-                        return Vec::new();
-                    };
-                    // Collect elements only for this output
-                    collect_render_elements_for_output(
-                        ewm,
-                        renderer.as_mut(),
-                        output_scale,
-                        &self.cursor_buffer,
-                        output_pos,
-                        output_size,
-                        true, // include_cursor
-                        &output,
-                    )
-                });
-
-                // Get renderer for rendering to screen cast
-                let Some(device) = &mut self.device else {
-                    break;
-                };
-                let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
-                    break;
-                };
-
-                // Render frame to the screen cast (includes damage-based skipping)
-                if cast.dequeue_buffer_and_render(
-                    renderer.as_mut(),
-                    elements,
-                    output_size_physical,
-                    output_scale,
-                ) {
-                    // Update last_frame_time on successful render
-                    cast.last_frame_time = target_frame_time;
-                }
-            }
-
-            ewm.screen_casts = screen_casts;
-        }
+        rv
     }
 
-    /// Queue an estimated VBlank timer when there's no damage
+    /// Queue an estimated VBlank timer when no frame was submitted.
+    ///
+    /// Uses the target presentation time from FrameClock for accurate timing,
+    /// falling back to refresh interval if target has already passed.
     fn queue_estimated_vblank_timer(
         &mut self,
-        crtc: crtc::Handle,
+        output: &smithay::output::Output,
         ewm: &mut Ewm,
-        refresh_interval_us: u64,
+        target_presentation_time: Duration,
     ) {
         let Some(handle) = self.loop_handle.clone() else {
             warn!("No loop handle available for estimated VBlank timer");
@@ -854,106 +735,303 @@ impl DrmBackendState {
         let Some(device) = &self.device else {
             return;
         };
-        let Some(surface) = device.surfaces.get(&crtc) else {
+        // Find CRTC for this output
+        let Some((&crtc, _)) = device.surfaces.iter().find(|(_, s)| s.output == *output) else {
             return;
         };
-        let output = surface.output.clone();
 
-        let duration = Duration::from_micros(refresh_interval_us.max(1000));
+        let Some(output_state) = ewm.output_state.get_mut(output) else {
+            return;
+        };
+
+        // Check if there's already an estimated vblank timer
+        match &output_state.redraw_state {
+            RedrawState::WaitingForEstimatedVBlank(_)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
+                // Already have a timer, don't create another
+                return;
+            }
+            _ => {}
+        }
+
+        let now = crate::utils::get_monotonic_time();
+        let mut duration = target_presentation_time.saturating_sub(now);
+
+        // Don't set a zero timer — frame callbacks are sent right after render anyway
+        if duration.is_zero() {
+            duration = output_state
+                .frame_clock
+                .refresh_interval()
+                .unwrap_or(Duration::from_micros(16_667));
+        }
+
+        trace!("{}: queueing estimated vblank timer to fire in {duration:?}", output.name());
 
         match handle.insert_source(Timer::from_duration(duration), move |_, _, state| {
-            state
-                .backend
-                .on_estimated_vblank_timer(crtc, &mut state.ewm);
+            if let Some(drm) = state.backend.as_drm_mut() {
+                drm.on_estimated_vblank_timer(crtc, &mut state.ewm);
+            }
             TimeoutAction::Drop
         }) {
             Ok(token) => {
-                if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                    trace!("{}: Idle -> WaitingForEstVBlank", output.name());
-                    output_state.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
-                }
+                trace!("{}: Idle -> WaitingForEstVBlank", output.name());
+                output_state.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
             }
             Err(err) => {
                 warn!("Failed to insert estimated VBlank timer: {:?}", err);
-                if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                    output_state.redraw_state = RedrawState::Idle;
+                output_state.redraw_state = RedrawState::Idle;
+            }
+        }
+    }
+
+    /// Process post-render work: screencopy and screencast for an output.
+    pub(crate) fn post_render(
+        &mut self,
+        ewm: &mut Ewm,
+        output: &smithay::output::Output,
+    ) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        let render_node = device.render_node;
+
+        // Process pending screencopy requests
+        if let Some(ref event_loop) = self.loop_handle {
+            let Some(device) = &mut self.device else {
+                return;
+            };
+            let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
+                return;
+            };
+            process_screencopies_for_output(
+                ewm,
+                renderer.as_mut(),
+                output,
+                &self.cursor_buffer,
+                event_loop,
+            );
+        }
+
+        // Render to active screen casts
+        #[cfg(feature = "screencast")]
+        {
+            use crate::utils::get_monotonic_time;
+
+            let output_scale = Scale::from(output.current_scale().fractional_scale());
+            let output_geo = ewm.space.output_geometry(output).unwrap_or_default();
+            let output_pos = output_geo.loc;
+            let output_size = output_geo.size;
+
+            let output_size_physical = output
+                .current_mode()
+                .map(|m| Size::from((m.size.w, m.size.h)))
+                .unwrap_or_else(|| Size::from((1920, 1080)));
+
+            let target_frame_time = get_monotonic_time();
+
+            let mut screen_casts = std::mem::take(&mut ewm.screen_casts);
+            let mut sc_elements = None;
+
+            let valid_outputs: std::collections::HashSet<String> =
+                ewm.space.outputs().map(|o| o.name()).collect();
+
+            for cast in screen_casts.values_mut() {
+                if !valid_outputs.contains(&cast.output_name) {
+                    trace!(output = %cast.output_name, "skipping orphaned cast");
+                    continue;
+                }
+
+                if !cast.is_streaming() || cast.output_name != output.name() {
+                    continue;
+                }
+
+                if cast.should_skip_frame(target_frame_time) {
+                    trace!("PipeWire frame too soon, skipping");
+                    continue;
+                }
+
+                let elements = sc_elements.get_or_insert_with(|| {
+                    let Some(device) = &mut self.device else {
+                        return Vec::new();
+                    };
+                    let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
+                        return Vec::new();
+                    };
+                    collect_render_elements_for_output(
+                        ewm,
+                        renderer.as_mut(),
+                        output_scale,
+                        &self.cursor_buffer,
+                        output_pos,
+                        output_size,
+                        true,
+                        output,
+                    )
+                });
+
+                let Some(device) = &mut self.device else {
+                    break;
+                };
+                let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
+                    break;
+                };
+
+                if cast.dequeue_buffer_and_render(
+                    renderer.as_mut(),
+                    elements,
+                    output_size_physical,
+                    output_scale,
+                ) {
+                    cast.last_frame_time = target_frame_time;
                 }
             }
+
+            ewm.screen_casts = screen_casts;
         }
     }
 
     /// Handle estimated VBlank timer firing
     pub(crate) fn on_estimated_vblank_timer(&mut self, crtc: crtc::Handle, ewm: &mut Ewm) {
-        let (action, output) = {
-            let Some(device) = &self.device else {
-                return;
-            };
-            let Some(surface) = device.surfaces.get(&crtc) else {
-                return;
-            };
-            let output = surface.output.clone();
-
-            let Some(output_state) = ewm.output_state.get_mut(&output) else {
-                return;
-            };
-
-            // Increment sequence for frame callback throttling
-            output_state.frame_callback_sequence =
-                output_state.frame_callback_sequence.wrapping_add(1);
-
-            let action = match &output_state.redraw_state {
-                RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
-                    trace!("{}: WaitingForEstVBlank+Queued -> Queued (est. VBlank)", output.name());
-                    output_state.redraw_state = RedrawState::Queued;
-                    Some(true)
-                }
-                RedrawState::WaitingForEstimatedVBlank(_) => {
-                    trace!("{}: WaitingForEstVBlank -> Idle (est. VBlank)", output.name());
-                    output_state.redraw_state = RedrawState::Idle;
-                    Some(false)
-                }
-                other => {
-                    debug!(
-                        "{}: unexpected state in on_estimated_vblank_timer: {}",
-                        output.name(),
-                        other
-                    );
-                    None
-                }
-            };
-            (action, output)
-        };
-
-        match action {
-            Some(false) => ewm.send_frame_callbacks(&output),
-            Some(true) => self.render_output(crtc, ewm),
-            None => {}
-        }
-    }
-
-    /// Process all outputs that have queued redraws
-    pub(crate) fn redraw_queued_outputs(&mut self, ewm: &mut Ewm) {
-        tracy_span!("redraw_queued_outputs");
-
         let Some(device) = &self.device else {
             return;
         };
+        let Some(surface) = device.surfaces.get(&crtc) else {
+            return;
+        };
+        let output = surface.output.clone();
 
-        // Find crtcs for outputs that have queued redraws
-        let queued_crtcs: Vec<crtc::Handle> = device
-            .surfaces
-            .iter()
-            .filter(|(_, surface)| {
-                ewm.output_state
-                    .get(&surface.output)
-                    .map(|s| matches!(s.redraw_state, RedrawState::Queued))
-                    .unwrap_or(false)
-            })
-            .map(|(crtc, _)| *crtc)
-            .collect();
+        let Some(output_state) = ewm.output_state.get_mut(&output) else {
+            return;
+        };
 
-        for crtc in queued_crtcs {
-            self.render_output(crtc, ewm);
+        // Increment sequence for frame callback throttling
+        output_state.frame_callback_sequence =
+            output_state.frame_callback_sequence.wrapping_add(1);
+
+        match std::mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
+            RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
+                trace!("{}: WaitingForEstVBlank+Queued -> Queued (est. VBlank)", output.name());
+                output_state.redraw_state = RedrawState::Queued;
+                // Will be picked up by next redraw_queued_outputs
+            }
+            RedrawState::WaitingForEstimatedVBlank(_) => {
+                trace!("{}: WaitingForEstVBlank -> Idle (est. VBlank)", output.name());
+                // Already set to Idle above
+                if output_state.unfinished_animations_remain {
+                    ewm.queue_redraw(&output);
+                } else {
+                    ewm.send_frame_callbacks(&output);
+                }
+            }
+            other => {
+                debug!(
+                    "{}: unexpected state in on_estimated_vblank_timer: {}",
+                    output.name(),
+                    other
+                );
+            }
+        }
+    }
+
+    /// Process a VBlank event for a CRTC.
+    ///
+    /// Handles: frame_submitted with presentation feedback, FrameClock update,
+    /// redraw state transitions, and queuing the next redraw or sending frame callbacks.
+    pub(crate) fn process_vblank(
+        &mut self,
+        crtc: crtc::Handle,
+        meta: DrmEventMetadata,
+        ewm: &mut Ewm,
+    ) {
+        let now = crate::utils::get_monotonic_time();
+
+        let presentation_time = match meta.time {
+            DrmEventTime::Monotonic(time) if !time.is_zero() => time,
+            _ => now,
+        };
+
+        let Some(device) = &mut self.device else {
+            return;
+        };
+        let Some(surface) = device.surfaces.get_mut(&crtc) else {
+            return;
+        };
+
+        // Mark the last frame as submitted and process presentation feedback
+        match surface.compositor.frame_submitted() {
+            Ok(Some((mut feedback, target_presentation_time))) => {
+                let output = surface.output.clone();
+                let refresh_interval = ewm
+                    .output_state
+                    .get(&output)
+                    .and_then(|s| s.frame_clock.refresh_interval());
+
+                let refresh = match refresh_interval {
+                    Some(r) => Refresh::Fixed(r),
+                    None => Refresh::Unknown,
+                };
+                let seq = meta.sequence as u64;
+                let mut flags = wp_presentation_feedback::Kind::Vsync
+                    | wp_presentation_feedback::Kind::HwCompletion;
+                if matches!(meta.time, DrmEventTime::Monotonic(t) if !t.is_zero()) {
+                    flags.insert(wp_presentation_feedback::Kind::HwClock);
+                }
+                feedback.presented::<_, smithay::utils::Monotonic>(
+                    presentation_time,
+                    refresh,
+                    seq,
+                    flags,
+                );
+                let _ = target_presentation_time; // available for Tracy plots
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!("Error marking frame as submitted: {:?}", err);
+            }
+        }
+
+        let output = surface.output.clone();
+        let Some(output_state) = ewm.output_state.get_mut(&output) else {
+            return;
+        };
+
+        // End Tracy frame tracking
+        output_state.vblank_tracker.end_frame();
+
+        // Record presentation time in frame clock
+        output_state.frame_clock.presented(presentation_time);
+
+        // Set to Idle, then decide what to do based on redraw_needed.
+        // This handles rogue VBlanks that arrive in unexpected states
+        // (can happen on some hardware after sleep/resume).
+        let old_state =
+            std::mem::replace(&mut output_state.redraw_state, RedrawState::Idle);
+        let redraw_needed = match &old_state {
+            RedrawState::WaitingForVBlank { redraw_needed } => *redraw_needed,
+            _ => {
+                error!(
+                    "unexpected redraw state on VBlank for {} \
+                     (should be WaitingForVBlank); can happen when \
+                     resuming from sleep: {}",
+                    output.name(),
+                    old_state
+                );
+                true // force redraw to recover
+            }
+        };
+        trace!(
+            "{}: {} -> {} (VBlank)",
+            output.name(),
+            old_state,
+            if redraw_needed { "Queued" } else { "Idle" }
+        );
+
+        let animations_remain = output_state.unfinished_animations_remain;
+
+        if redraw_needed || animations_remain {
+            ewm.queue_redraw(&output);
+        } else {
+            ewm.send_frame_callbacks(&output);
         }
     }
 
@@ -1204,12 +1282,18 @@ impl DrmBackendState {
             .and_then(|c| c.position)
             .unwrap_or((ewm.output_size.w, 0));
 
+        let vblank_throttle = VBlankThrottle::new(
+            self.loop_handle.clone().unwrap(),
+            connector_name.clone(),
+        );
+
         device.surfaces.insert(
             crtc,
             OutputSurface {
                 output: output.clone(),
                 compositor,
                 connector: connector.handle(),
+                vblank_throttle,
             },
         );
 
@@ -1520,74 +1604,65 @@ fn initialize_drm(
     );
 
     // Register DRM event notifier for VBlank
-    event_loop_handle.insert_source(drm_notifier, |event, _, state| {
+    event_loop_handle.insert_source(drm_notifier, |event, metadata, state| {
         match event {
             DrmEvent::VBlank(crtc) => {
                 crate::tracy_frame_mark!();
                 crate::tracy_span!("on_vblank");
 
-                let (redraw_needed, output) = {
-                    let Some(device) =
-                        &mut state.backend.as_drm_mut().unwrap().device
+                let now = crate::utils::get_monotonic_time();
+
+                // Extract presentation time from DRM metadata
+                let meta = metadata.take().unwrap_or(DrmEventMetadata {
+                    time: DrmEventTime::Monotonic(Duration::ZERO),
+                    sequence: 0,
+                });
+                let presentation_time = match meta.time {
+                    DrmEventTime::Monotonic(time) => time,
+                    DrmEventTime::Realtime(_) => Duration::ZERO,
+                };
+                let time = if presentation_time.is_zero() {
+                    now
+                } else {
+                    presentation_time
+                };
+
+                // Throttle buggy drivers that deliver VBlanks too early
+                {
+                    let Some(device) = &mut state.backend.as_drm_mut().unwrap().device
                     else {
                         return;
                     };
                     let Some(surface) = device.surfaces.get_mut(&crtc) else {
                         return;
                     };
+                    let refresh_interval = state
+                        .ewm
+                        .output_state
+                        .get(&surface.output)
+                        .and_then(|s| s.frame_clock.refresh_interval());
 
-                    match surface.compositor.frame_submitted() {
-                        Ok(_) => {}
-                        Err(err) => {
-                            warn!("Error marking frame as submitted: {:?}", err);
-                        }
+                    let seq = meta.sequence;
+                    if surface.vblank_throttle.throttle(
+                        refresh_interval,
+                        time,
+                        move |state| {
+                            // Re-enter on_vblank with zeroed time (throttled)
+                            let meta = DrmEventMetadata {
+                                sequence: seq,
+                                time: DrmEventTime::Monotonic(Duration::ZERO),
+                            };
+                            let drm = state.backend.as_drm_mut().unwrap();
+                            drm.process_vblank(crtc, meta, &mut state.ewm);
+                        },
+                    ) {
+                        return; // Throttled — deferred via timer
                     }
-
-                    let output = surface.output.clone();
-                    let Some(output_state) = state.ewm.output_state.get_mut(&output)
-                    else {
-                        return;
-                    };
-
-                    // End Tracy frame tracking for VBlank interval
-                    output_state.vblank_tracker.end_frame();
-
-                    // Use mem::replace like niri: set to Idle, then decide what to do.
-                    // This handles rogue VBlanks that arrive in unexpected states
-                    // (can happen on some hardware after sleep/resume).
-                    let old_state = std::mem::replace(
-                        &mut output_state.redraw_state,
-                        RedrawState::Idle,
-                    );
-                    let redraw_needed = match &old_state {
-                        RedrawState::WaitingForVBlank { redraw_needed } => *redraw_needed,
-                        _ => {
-                            error!(
-                                "unexpected redraw state on VBlank for {} \
-                                 (should be WaitingForVBlank); can happen when \
-                                 resuming from sleep: {}",
-                                output.name(),
-                                old_state
-                            );
-                            true // force redraw to recover
-                        }
-                    };
-                    trace!(
-                        "{}: {} -> {} (VBlank)",
-                        output.name(),
-                        old_state,
-                        if redraw_needed { "Queued" } else { "Idle" }
-                    );
-
-                    (redraw_needed, output)
-                };
-
-                if redraw_needed {
-                    state.ewm.queue_redraw(&output);
-                    state.backend.render_output(crtc, &mut state.ewm);
-                } else {
-                    state.ewm.send_frame_callbacks(&output);
                 }
+
+                // Process the VBlank normally
+                let drm = state.backend.as_drm_mut().unwrap();
+                drm.process_vblank(crtc, meta, &mut state.ewm);
             }
             DrmEvent::Error(error) => {
                 warn!("DRM error: {error}");
@@ -1625,17 +1700,8 @@ fn initialize_drm(
         state.ewm.outputs.len()
     );
 
-    // Trigger initial render - collect CRTCs first, then render
-    let crtcs: Vec<_> = state
-        .backend
-        .as_drm()
-        .and_then(|drm| drm.device.as_ref())
-        .map(|d| d.surfaces.keys().copied().collect())
-        .unwrap_or_default();
-
-    for crtc in crtcs {
-        state.backend.render_output(crtc, &mut state.ewm);
-    }
+    // Trigger initial render via redraw_queued_outputs (all outputs start in Queued state)
+    state.ewm.redraw_queued_outputs(&mut state.backend);
 
     Ok(())
 }
