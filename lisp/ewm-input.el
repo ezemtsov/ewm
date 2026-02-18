@@ -26,6 +26,14 @@
 
 (require 'cl-lib)
 
+(defvar ewm-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "<XF86WakeUp>") #'ignore)
+    map)
+  "Keymap for `ewm-mode'.
+Users can override bindings, e.g.:
+  (define-key ewm-mode-map (kbd \"<XF86WakeUp>\") #\\='my-resume-hook)")
+
 (declare-function ewm-intercept-keys-module "ewm-core")
 (declare-function ewm-configure-xkb-module "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")

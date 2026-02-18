@@ -268,6 +268,8 @@ pub struct DrmBackendState {
     /// Pending initialization data - Some until DRM is initialized
     pending: Option<DrmPendingInit>,
     paused: bool,
+    /// Whether the laptop lid is currently closed (from libinput switch events)
+    pub lid_closed: bool,
     /// Token for session notifier - must be removed before session drops
     session_notifier_token: Option<RegistrationToken>,
     // SAFETY: Fields below are dropped in declaration order.
@@ -381,11 +383,27 @@ impl DrmBackendState {
             }
         }
 
-        // Re-scan connectors to detect monitors added/removed during VT switch
+        // Re-scan connectors to detect monitors added/removed during VT switch.
+        // If topology changed, on_device_changed sends OutputsComplete.
         self.on_device_changed(ewm);
+
+        // Reactivate monitors in case they were deactivated (e.g., lid closed)
+        ewm.activate_monitors();
+
+        // If lid was closed during suspend, ensure laptop panel stays off
+        if self.lid_closed {
+            self.on_lid_state_changed(ewm);
+        }
 
         // Queue redraws for all outputs to resume rendering
         ewm.queue_redraw_all();
+
+        // Reset idle timer so we don't immediately trigger idle timeout after wake
+        ewm.idle_notifier_state.notify_activity(&ewm.seat);
+
+        // Always notify Emacs so it re-syncs layout and focus after resume,
+        // even if no output topology changed.
+        ewm.queue_event(crate::event::Event::OutputsComplete);
     }
 
     /// Trigger deferred DRM initialization (called when session becomes active)
@@ -1198,8 +1216,8 @@ impl DrmBackendState {
                     crtc: Some(crtc),
                 } => {
                     info!(
-                        "Connector connected: {:?}-{}",
-                        connector.interface(),
+                        "Connector connected: {}-{}",
+                        connector.interface().as_str(),
                         connector.interface_id()
                     );
                     added.push((connector, crtc));
@@ -1209,8 +1227,8 @@ impl DrmBackendState {
                     crtc: None,
                 } => {
                     warn!(
-                        "Connector {:?}-{} has no available CRTC",
-                        connector.interface(),
+                        "Connector {}-{} has no available CRTC",
+                        connector.interface().as_str(),
                         connector.interface_id()
                     );
                 }
@@ -1219,8 +1237,8 @@ impl DrmBackendState {
                     crtc: Some(crtc),
                 } => {
                     info!(
-                        "Connector disconnected: {:?}-{}",
-                        connector.interface(),
+                        "Connector disconnected: {}-{}",
+                        connector.interface().as_str(),
                         connector.interface_id()
                     );
                     removed.push(crtc);
@@ -1230,12 +1248,16 @@ impl DrmBackendState {
                     crtc: None,
                 } => {
                     debug!(
-                        "Connector {:?}-{} disconnected (had no CRTC)",
-                        connector.interface(),
+                        "Connector {}-{} disconnected (had no CRTC)",
+                        connector.interface().as_str(),
                         connector.interface_id()
                     );
                 }
             }
+        }
+
+        if added.is_empty() && removed.is_empty() {
+            return;
         }
 
         // Process disconnections first
@@ -1249,6 +1271,10 @@ impl DrmBackendState {
                 warn!("Failed to connect output: {:?}", err);
             }
         }
+
+        // Signal Emacs that output topology is settled so it can
+        // re-sync layout, focus, and frame-output parity.
+        ewm.queue_event(crate::event::Event::OutputsComplete);
     }
 
     /// Connect a new output
@@ -1271,7 +1297,7 @@ impl DrmBackendState {
         };
 
         // Build connector name early so we can look up config
-        let connector_name = format!("{:?}-{}", connector.interface(), connector.interface_id());
+        let connector_name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
         let config = ewm.output_config.get(&connector_name).cloned();
 
         // Select mode: use configured mode if available, otherwise preferred
@@ -1614,6 +1640,67 @@ impl DrmBackendState {
 
         info!("Output disconnected: {}", output_name);
     }
+
+    /// Handle lid open/close by disconnecting or reconnecting the laptop panel.
+    ///
+    /// When closed with an external monitor: disconnect laptop panel only.
+    /// When closed without external: deactivate all monitors.
+    /// When opened: re-scan connectors to reconnect laptop panel.
+    pub fn on_lid_state_changed(&mut self, ewm: &mut Ewm) {
+        if self.lid_closed {
+            if self.has_external_monitor(ewm) {
+                // Disconnect laptop panel outputs, keep external displays
+                let Some(device) = &self.device else { return };
+                let to_disconnect: Vec<crtc::Handle> = device
+                    .surfaces
+                    .iter()
+                    .filter(|(_, surface)| crate::is_laptop_panel(&surface.output.name()))
+                    .map(|(crtc, _)| *crtc)
+                    .collect();
+                for crtc in to_disconnect {
+                    self.disconnect_output(crtc, ewm);
+                }
+            }
+
+            // If no outputs remain (no external monitor), deactivate all
+            if ewm.outputs.is_empty() {
+                ewm.deactivate_monitors();
+            }
+        } else {
+            // Lid opened: reconnect laptop panels that the scanner still knows
+            // about but that we disconnected. on_device_changed() won't help
+            // here because the scanner sees no state change (the connector was
+            // physically connected the whole time).
+            let Some(device) = &self.device else { return };
+            let to_connect: Vec<(connector::Info, crtc::Handle)> = device
+                .drm_scanner
+                .crtcs()
+                .filter(|(conn, _)| conn.state() == connector::State::Connected)
+                .filter(|(_, crtc)| !device.surfaces.contains_key(crtc))
+                .filter(|(conn, _)| {
+                    let name = format!(
+                        "{}-{}",
+                        conn.interface().as_str(),
+                        conn.interface_id()
+                    );
+                    crate::is_laptop_panel(&name)
+                })
+                .map(|(conn, crtc)| (conn.clone(), crtc))
+                .collect();
+            for (connector, crtc) in to_connect {
+                if let Err(err) = self.connect_output(connector, crtc, ewm) {
+                    warn!("Failed to reconnect laptop panel: {:?}", err);
+                }
+            }
+            ewm.activate_monitors();
+        }
+
+        ewm.queue_event(crate::event::Event::OutputsComplete);
+    }
+
+    fn has_external_monitor(&self, ewm: &Ewm) -> bool {
+        ewm.outputs.iter().any(|o| !crate::is_laptop_panel(&o.name))
+    }
 }
 
 /// Initialize DRM device and set up outputs
@@ -1725,8 +1812,8 @@ fn initialize_drm(
                     crtc: None,
                 } => {
                     warn!(
-                        "No available CRTC for connector {:?}-{}",
-                        connector.interface(),
+                        "No available CRTC for connector {}-{}",
+                        connector.interface().as_str(),
                         connector.interface_id()
                     );
                     None
@@ -1947,6 +2034,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             seat_name: seat_name.clone(),
         }),
         paused: false,
+        lid_closed: false,
         session_notifier_token: None, // Set after registering notifier
         init_sender: Some(init_sender),
         loop_handle: Some(event_loop.handle()),
@@ -2260,6 +2348,21 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                         crate::input::handle_pointer_axis::<LibinputInputBackend>(
                             state, event,
                         );
+                    }
+                    InputEvent::SwitchToggle { event } => {
+                        use smithay::backend::input::{
+                            Switch, SwitchState,
+                            SwitchToggleEvent as SwitchEvt,
+                        };
+                        if SwitchEvt::<LibinputInputBackend>::switch(&event)
+                            == Some(Switch::Lid)
+                        {
+                            let is_closed =
+                                SwitchEvt::<LibinputInputBackend>::state(&event)
+                                    == SwitchState::On;
+                            info!("Lid {}", if is_closed { "closed" } else { "opened" });
+                            state.handle_lid_state(is_closed);
+                        }
                     }
                     _ => {}
                 }

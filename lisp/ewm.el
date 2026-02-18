@@ -83,8 +83,6 @@ When non-nil, warps the pointer to the center of the focused window."
 (defvar ewm--mff-last-window nil
   "Last window for mouse-follows-focus, to avoid redundant warps.")
 
-(declare-function ewm--handle-focus "ewm-focus")
-
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to buffer.")
 
@@ -125,6 +123,14 @@ Example:
          (when (fboundp 'ewm--apply-output-config)
            (ewm--apply-output-config)))
   :group 'ewm)
+
+;; Load submodules (before event handlers that reference them)
+(require 'ewm-surface)
+(require 'ewm-focus)
+(require 'ewm-layout)
+(require 'ewm-input)
+(require 'ewm-text-input)
+(require 'ewm-transient)
 
 ;;; Protocol
 
@@ -274,10 +280,13 @@ Similar to `exwm-workspace-rename-buffer'."
 
 (defun ewm--handle-outputs-complete ()
   "Handle outputs_complete event.
-Triggered after compositor sends all output_detected events.
-Applies user output config and enforces frame-output parity."
+Sent after startup enumeration, hotplug, and session resume.
+Applies user output config, enforces frame-output parity, then
+re-syncs layout and focus with the compositor."
   (ewm--apply-output-config)
-  (ewm--enforce-frame-output-parity))
+  (ewm--enforce-frame-output-parity)
+  (ewm-layout--refresh)
+  (ewm--sync-focus))
 
 (defun ewm--handle-ready ()
   "Handle ready event from compositor.
@@ -654,18 +663,11 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
   "Global minor mode for EWM compositor integration."
   :global t
   :lighter " EWM"
+  :keymap ewm-mode-map
   :group 'ewm
   (if ewm-mode
       (ewm--mode-enable)
     (ewm--mode-disable)))
-
-;; Load submodules
-(require 'ewm-surface)
-(require 'ewm-focus)
-(require 'ewm-layout)
-(require 'ewm-input)
-(require 'ewm-text-input)
-(require 'ewm-transient)
 
 (provide 'ewm)
 ;;; ewm.el ends here

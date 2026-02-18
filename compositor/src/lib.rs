@@ -68,6 +68,11 @@ pub fn vt_suffix() -> String {
         .unwrap_or_default()
 }
 
+/// Returns true for embedded laptop panel connectors (eDP, LVDS, DSI).
+pub fn is_laptop_panel(connector_name: &str) -> bool {
+    matches!(connector_name.get(..4), Some("eDP-" | "LVDS" | "DSI-"))
+}
+
 pub use event::{Event, OutputInfo, OutputMode};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
@@ -542,6 +547,10 @@ pub struct Ewm {
     // Per-output state (redraw state machine)
     pub output_state: HashMap<Output, OutputState>,
 
+    /// Whether monitors are active (rendering allowed).
+    /// Set to false when all screens are off (e.g., lid closed with no external display).
+    pub monitors_active: bool,
+
     // Pending early imports (surfaces that need dmabuf import before rendering)
     pub pending_early_imports: Vec<WlSurface>,
 
@@ -733,6 +742,7 @@ impl Ewm {
             emacs_surfaces: std::collections::HashSet::new(),
             pending_screenshot: None,
             output_state: HashMap::new(),
+            monitors_active: true,
             pending_early_imports: Vec::new(),
             screencopy_state,
             output_manager_state,
@@ -1084,12 +1094,35 @@ impl Ewm {
         }
     }
 
+    /// Deactivate all monitors (e.g., lid closed with no external display).
+    /// Prevents rendering while screens are off.
+    pub fn deactivate_monitors(&mut self) {
+        if self.monitors_active {
+            info!("Monitors deactivated");
+            self.monitors_active = false;
+        }
+    }
+
+    /// Reactivate monitors (e.g., lid opened, or session resume).
+    /// Queues redraws for all outputs.
+    pub fn activate_monitors(&mut self) {
+        if !self.monitors_active {
+            info!("Monitors activated");
+            self.monitors_active = true;
+            self.queue_redraw_all();
+        }
+    }
+
     /// Process all outputs that have queued redraws.
     ///
     /// This lives on Ewm (not the backend) because
     /// output_state is owned by Ewm. The backend only provides a render() method.
     pub fn redraw_queued_outputs(&mut self, backend: &mut backend::Backend) {
         tracy_span!("redraw_queued_outputs");
+
+        if !self.monitors_active {
+            return;
+        }
 
         // Use while-let with find() so outputs queued during
         // rendering (e.g., by VBlank handlers) are picked up in the same pass.
@@ -3906,6 +3939,21 @@ impl State {
                 });
             }
             Err(_) => {}
+        }
+    }
+
+    /// Handle lid open/close from libinput switch events.
+    ///
+    /// Delegates to DrmBackendState::on_lid_state_changed() which disconnects
+    /// the laptop panel when closed (if external monitor exists) or re-scans
+    /// connectors when opened.
+    pub fn handle_lid_state(&mut self, is_closed: bool) {
+        if let Some(drm) = self.backend.as_drm_mut() {
+            if drm.lid_closed == is_closed {
+                return;
+            }
+            drm.lid_closed = is_closed;
+            drm.on_lid_state_changed(&mut self.ewm);
         }
     }
 
