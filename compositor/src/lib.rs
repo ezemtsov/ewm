@@ -1155,12 +1155,15 @@ impl Ewm {
                 }
             }
 
-            // Update lock render state on successful render
-            if res != backend::RenderResult::Skipped
-                && is_locked
-                && state.lock_surface.is_some()
-            {
-                state.lock_render_state = LockRenderState::Locked;
+            // Update lock render state on every successful render.
+            // Setting both Locked and Unlocked prevents stale state if
+            // the session transitions between locked and unlocked.
+            if res != backend::RenderResult::Skipped {
+                state.lock_render_state = if is_locked {
+                    LockRenderState::Locked
+                } else {
+                    LockRenderState::Unlocked
+                };
             }
         }
 
