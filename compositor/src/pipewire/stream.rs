@@ -48,12 +48,22 @@ use crate::dbus::screen_cast;
 /// Allowance for frame timing - if delay is below this, proceed anyway
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 
-/// Cast state machine
+/// Cast state machine: ResizePending → ConfirmationPending → Ready
 #[derive(Debug)]
 enum CastState {
-    /// Waiting for format negotiation
-    Pending,
-    /// Format negotiated, ready to stream
+    /// Waiting for PipeWire to negotiate format at the requested size.
+    /// This is both the initial state and the state after output resize.
+    ResizePending {
+        pending_size: Size<u32, Physical>,
+    },
+    /// Modifier fixated, waiting for PipeWire to confirm the chosen format.
+    /// Only entered when DONT_FIXATE was set (multiple modifiers offered).
+    ConfirmationPending {
+        size: Size<u32, Physical>,
+        modifier: Modifier,
+        plane_count: i32,
+    },
+    /// Format confirmed, ready to stream.
     Ready {
         size: Size<u32, Physical>,
         modifier: Modifier,
@@ -62,10 +72,24 @@ enum CastState {
         /// Damage tracker for skip-if-no-damage optimization (lazily initialized)
         damage_tracker: Option<OutputDamageTracker>,
     },
-    /// Output size changed, waiting for PipeWire to renegotiate
-    ResizePending {
-        new_size: Size<u32, Physical>,
-    },
+}
+
+impl CastState {
+    fn pending_size(&self) -> Option<Size<u32, Physical>> {
+        match self {
+            CastState::ResizePending { pending_size } => Some(*pending_size),
+            CastState::ConfirmationPending { size, .. } => Some(*size),
+            CastState::Ready { .. } => None,
+        }
+    }
+
+    fn expected_format_size(&self) -> Size<u32, Physical> {
+        match self {
+            CastState::ResizePending { pending_size } => *pending_size,
+            CastState::ConfirmationPending { size, .. } => *size,
+            CastState::Ready { size, .. } => *size,
+        }
+    }
 }
 
 /// A screen cast session
@@ -118,7 +142,7 @@ impl Cast {
 
         let node_id = Rc::new(Cell::new(None));
         let is_active = Rc::new(Cell::new(false));
-        let state = Rc::new(RefCell::new(CastState::Pending));
+        let state = Rc::new(RefCell::new(CastState::ResizePending { pending_size: size }));
         let dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>> = Rc::new(RefCell::new(HashMap::new()));
         let min_time_between_frames = Rc::new(Cell::new(Duration::ZERO));
         let had_error = Rc::new(Cell::new(false));
@@ -176,6 +200,7 @@ impl Cast {
                 })
                 .param_changed({
                     let state = state_clone.clone();
+                    let had_error = had_error.clone();
                     let gbm = gbm_clone.clone();
                     let min_time_between_frames = min_time_between_frames_clone.clone();
                     move |stream: &Stream, (), id, pod| {
@@ -204,6 +229,20 @@ impl Cast {
                         }
                         debug!("PipeWire format: {format:?}");
 
+                        let format_size = Size::from((format.size().width, format.size().height));
+
+                        // Validate format size against expected size
+                        let mut state_ref = state.borrow_mut();
+                        if format_size != state_ref.expected_format_size() {
+                            if !matches!(&*state_ref, CastState::ResizePending { .. }) {
+                                warn!("unexpected format size, stopping cast");
+                                had_error.set(true);
+                                return;
+                            }
+                            debug!("wrong size during resize, waiting");
+                            return;
+                        }
+
                         // Extract max framerate and compute min_time_between_frames
                         let max_frame_rate = format.max_framerate();
                         if max_frame_rate.num > 0 {
@@ -214,8 +253,6 @@ impl Cast {
                             min_time_between_frames.set(min_frame_time);
                             debug!("min_time_between_frames set to {:?}", min_frame_time);
                         }
-
-                        let format_size = Size::from((format.size().width, format.size().height));
 
                         // Check if modifier needs fixation
                         let object = pod.as_object().unwrap();
@@ -233,11 +270,13 @@ impl Cast {
                                     )
                                 else {
                                     warn!("wrong modifier property type");
+                                    had_error.set(true);
                                     return;
                                 };
 
                                 let ChoiceEnum::Enum { alternatives, .. } = modifiers.1 else {
                                     warn!("wrong modifier choice type");
+                                    had_error.set(true);
                                     return;
                                 };
 
@@ -251,18 +290,22 @@ impl Cast {
                                     Ok(x) => x,
                                     Err(err) => {
                                         warn!("couldn't find preferred modifier: {err:?}");
+                                        had_error.set(true);
                                         return;
                                     }
                                 };
 
-                                debug!("Found modifier: {modifier:?}, plane_count: {plane_count}");
+                                debug!(
+                                    "modifier fixated: {modifier:?}, plane_count: {plane_count}, \
+                                     moving to confirmation pending"
+                                );
 
-                                *state.borrow_mut() = CastState::Ready {
+                                *state_ref = CastState::ConfirmationPending {
                                     size: format_size,
                                     modifier,
                                     plane_count: plane_count as i32,
-                                    damage_tracker: None,
                                 };
+                                drop(state_ref);
 
                                 let format_obj =
                                     make_video_params_fixated(format_size, refresh, modifier);
@@ -276,31 +319,46 @@ impl Cast {
                             }
                         }
 
-                        // Modifier is already fixated, set buffer params
+                        // Modifier is already fixated — verify it matches if we're confirming
                         let modifier = Modifier::from(format.modifier());
-                        let fourcc = Fourcc::Xrgb8888;
-
-                        let (_, plane_count) = match find_preferred_modifier(
-                            &gbm,
-                            format_size,
-                            fourcc,
-                            vec![format.modifier() as i64],
-                        ) {
-                            Ok(x) => x,
-                            Err(err) => {
-                                warn!("test allocation failed: {err:?}");
-                                return;
+                        let plane_count = match &*state_ref {
+                            CastState::ConfirmationPending {
+                                modifier: expected_mod,
+                                plane_count,
+                                ..
+                            } if *expected_mod == modifier => {
+                                debug!("modifier confirmed, moving to ready");
+                                *plane_count
+                            }
+                            _ => {
+                                // First negotiation with single modifier, or modifier changed.
+                                // Do a test allocation to validate.
+                                let fourcc = Fourcc::Xrgb8888;
+                                let (_, pc) = match find_preferred_modifier(
+                                    &gbm,
+                                    format_size,
+                                    fourcc,
+                                    vec![format.modifier() as i64],
+                                ) {
+                                    Ok(x) => x,
+                                    Err(err) => {
+                                        warn!("test allocation failed: {err:?}");
+                                        had_error.set(true);
+                                        return;
+                                    }
+                                };
+                                debug!("ready with modifier: {modifier:?}, plane_count: {pc}");
+                                pc as i32
                             }
                         };
 
-                        debug!("Ready with modifier: {modifier:?}, plane_count: {plane_count}");
-
-                        *state.borrow_mut() = CastState::Ready {
+                        *state_ref = CastState::Ready {
                             size: format_size,
                             modifier,
-                            plane_count: plane_count as i32,
+                            plane_count,
                             damage_tracker: None,
                         };
+                        drop(state_ref);
 
                         // Set buffer params + meta header
                         let buffer_obj = pod::object!(
@@ -319,7 +377,7 @@ impl Cast {
                             ),
                             Property::new(
                                 SPA_PARAM_BUFFERS_blocks,
-                                pod::Value::Int(plane_count as i32)
+                                pod::Value::Int(plane_count)
                             ),
                             Property::new(
                                 SPA_PARAM_BUFFERS_dataType,
@@ -468,9 +526,9 @@ impl Cast {
         self.had_error.get()
     }
 
-    /// Check if the cast is waiting for PipeWire to renegotiate after a size change
+    /// Check if the cast is not yet ready to render
     pub fn is_resize_pending(&self) -> bool {
-        matches!(*self.state.borrow(), CastState::ResizePending { .. })
+        !matches!(*self.state.borrow(), CastState::Ready { .. })
     }
 
     /// Handle output size change by renegotiating with PipeWire.
@@ -481,7 +539,7 @@ impl Cast {
             let state = self.state.borrow();
             match &*state {
                 CastState::Ready { size, .. } if *size == new_size => return,
-                CastState::ResizePending { new_size: pending } if *pending == new_size => return,
+                _ if state.pending_size() == Some(new_size) => return,
                 _ => {}
             }
         }
@@ -494,7 +552,7 @@ impl Cast {
 
         self.size = new_size;
         self.refresh = refresh;
-        *self.state.borrow_mut() = CastState::ResizePending { new_size };
+        *self.state.borrow_mut() = CastState::ResizePending { pending_size: new_size };
 
         let obj = make_video_params(new_size, refresh, &self.render_formats);
         let mut buffer = Vec::new();
