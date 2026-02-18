@@ -13,10 +13,8 @@
 (require 'cl-lib)
 
 (declare-function ewm-output-layout "ewm")
-(declare-function ewm-focus "ewm")
 (declare-function ewm--compositor-active-p "ewm")
-(declare-function ewm-get-focused-id "ewm-core")
-(declare-function ewm-in-prefix-sequence-p "ewm-core")
+(declare-function ewm--sync-focus "ewm-focus")
 
 (defvar ewm--module-mode)
 (defvar ewm--surfaces)
@@ -37,21 +35,6 @@ This version correctly handles tab-lines on Emacs prior to v31."
           edges))
     #'window-inside-absolute-pixel-edges)
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
-
-(defun ewm--focus-locked-p ()
-  "Return non-nil if focus should not be synced to surfaces.
-This covers various Emacs states where focus needs to stay on Emacs:
-- Minibuffer is active
-- In a prefix key sequence (compositor flag)
-- Emacs is reading a key sequence (overriding-terminal-local-map)
-- Universal argument pending (prefix-arg)"
-  (or (active-minibuffer-window)
-      (> (minibuffer-depth) 0)
-      prefix-arg
-      (ewm-in-prefix-sequence-p)
-      ;; Emacs sets this during key sequence reading (isearch, read-key, etc.)
-      (and overriding-terminal-local-map
-           (keymapp overriding-terminal-local-map))))
 
 (defun ewm-layout--send-layouts ()
   "Build and send per-output layout declarations.
@@ -90,8 +73,7 @@ appears in multiple windows and this entry is the selected one."
      output-surfaces)))
 
 (defun ewm-layout--refresh ()
-  "Force redisplay to ensure window sizes are current, then send layouts.
-Focus sync happens through the debounced `ewm-input--sync-focus'."
+  "Force redisplay to ensure window sizes are current, then send layouts."
   (when ewm--module-mode
     (redisplay t)
     (ewm-layout--send-layouts)))
@@ -110,46 +92,29 @@ converts to global positions using output geometry + working area offset."
       :primary ,(if primary-p t :false))))
 
 (defun ewm--window-config-change ()
-  "Hook called when window configuration changes.
-Updates views only; focus sync happens through debounced path."
+  "Hook called when window configuration changes."
   (ewm-layout--refresh))
-
-(defvar ewm--pre-minibuffer-surface-id nil
-  "Surface ID that was focused before minibuffer opened.")
-
-(defun ewm--minibuffer-active-p ()
-  "Return non-nil if minibuffer is currently active.
-More reliable than tracking with hooks since it checks actual state."
-  (or (active-minibuffer-window)
-      (> (minibuffer-depth) 0)
-      ;; Also check if current buffer is a minibuffer
-      (minibufferp)))
 
 (defun ewm--on-minibuffer-setup ()
-  "Focus Emacs frame when minibuffer activates.
-Saves previous surface to restore on exit."
-  (setq ewm--pre-minibuffer-surface-id (ewm-get-focused-id))
-  (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
-    (ewm-focus frame-surface-id))
-  (ewm-layout--refresh))
+  "Refresh layout and resolve focus when minibuffer activates."
+  (ewm-layout--refresh)
+  (ewm--sync-focus))
 
 (defun ewm--on-minibuffer-exit ()
-  "Restore focus to previous surface when minibuffer exits."
-  (when (and ewm--pre-minibuffer-surface-id (ewm--compositor-active-p))
-    (ewm-focus ewm--pre-minibuffer-surface-id)
-    (setq ewm--pre-minibuffer-surface-id nil))
-  (ewm-layout--refresh))
+  "Refresh layout and resolve focus when minibuffer exits."
+  (ewm-layout--refresh)
+  (ewm--sync-focus))
 
 (defun ewm--on-window-size-change (_frame)
   "Refresh layout when window sizes change.
-Catches minibuffer height changes that window-configuration-change misses.
-Updates views only; focus sync happens through debounced path."
+Catches minibuffer height changes that window-configuration-change misses."
   (ewm-layout--refresh))
 
 (defun ewm--on-window-selection-change (_frame)
-  "Update layouts when selected window changes.
+  "Update layouts and resolve focus when selected window changes.
 Primary flag depends on selected-window, so re-send layouts."
-  (ewm-layout--send-layouts))
+  (ewm-layout--send-layouts)
+  (ewm--sync-focus))
 
 (defun ewm-layout--collect-tabs (output)
   "Collect tab state for OUTPUT as a vector of plists.
@@ -167,11 +132,18 @@ Each element is a plist with :name and :active keys."
                    tabs)))
       (vector))))
 
+(defun ewm--on-window-buffer-change (_frame)
+  "Resolve focus when a buffer changes within a window.
+Catches `switch-to-buffer' and similar operations that change the displayed
+buffer without changing the selected window."
+  (ewm--sync-focus))
+
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."
   (add-hook 'window-configuration-change-hook #'ewm--window-config-change)
   (add-hook 'window-size-change-functions #'ewm--on-window-size-change)
   (add-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
+  (add-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change)
   (add-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
   (add-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
 
@@ -180,6 +152,7 @@ Each element is a plist with :name and :active keys."
   (remove-hook 'window-configuration-change-hook #'ewm--window-config-change)
   (remove-hook 'window-size-change-functions #'ewm--on-window-size-change)
   (remove-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
+  (remove-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change)
   (remove-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
   (remove-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
 

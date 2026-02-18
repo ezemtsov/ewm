@@ -29,10 +29,8 @@
 (declare-function ewm-intercept-keys-module "ewm-core")
 (declare-function ewm-configure-xkb-module "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
-(declare-function ewm-in-prefix-sequence-p "ewm-core")
 (declare-function ewm-clear-prefix-sequence "ewm-core")
 (declare-function ewm-warp-pointer "ewm")
-(declare-function ewm-focus "ewm")
 (declare-function ewm--get-output-offset "ewm")
 
 (defvar ewm-surface-id)
@@ -99,10 +97,10 @@ keys via XGrabKey.  In EWM/Wayland, we achieve similar behavior by:
 - Line-mode: surface has focus, compositor intercepts prefix keys
 - Char-mode: surface has focus, no interception (same as line-mode for now)
 
-Both modes keep focus on the surface so typing works immediately."
+Both modes keep focus on the surface so typing works immediately.
+Focus is managed by `ewm--sync-focus' through window change hooks."
   (when ewm-surface-id
     (setq ewm-input--mode mode)
-    (ewm-focus ewm-surface-id)
     (force-mode-line-update)))
 
 (defun ewm-input-char-mode ()
@@ -177,37 +175,23 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
         (setq ewm--mff-last-window window)
         (ewm-input--warp-pointer-to-window window)))))
 
-;;; Focus sync
+;;; Prefix sequence clearing
 ;;
-;; Focus is synced synchronously in post-command-hook.  Layout updates are
-;; handled separately by window-selection-change-functions, so this hook
-;; only needs to clear the prefix sequence flag and sync compositor focus.
-;;
-;; No timer is needed because:
-;; - post-command-hook fires after full commands complete (not mid-sequence)
-;; - Prefix key sequences (C-x ...) don't trigger post-command-hook until
-;;   the sequence finishes, so ewm--focus-locked-p handles them naturally
-;; - Layout sync is decoupled — popup windows (which-key, transient) trigger
-;;   window-configuration-change-hook → layout update, not focus sync
+;; post-command-hook clears the compositor's prefix-sequence flag after each
+;; command completes.  Focus resolution is handled entirely by window/buffer
+;; change hooks through `ewm--sync-focus'.
 
-(defun ewm-input--sync-focus ()
-  "Sync compositor focus after command completes.
-Layout updates (including primary flags) are handled by
-`window-selection-change-functions'."
-  (ewm-clear-prefix-sequence)
-  (when (and ewm--module-mode
-             (not (ewm--focus-locked-p)))
-    (let* ((sel-buf (window-buffer (selected-window)))
-           (surface-id (buffer-local-value 'ewm-surface-id sel-buf))
-           (frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id))
-           (target-id (or surface-id frame-surface-id)))
-      (when (and target-id (not (eq target-id (ewm-get-focused-id))))
-        (ewm-focus target-id)))))
+(defun ewm-input--clear-prefix ()
+  "Clear compositor prefix-sequence flag after command completes.
+Skip during SIGUSR1 handling — the signal handler runs as a command,
+but clearing prefix state in that context is meaningless."
+  (unless (eq this-command 'ewm--sigusr1-handler)
+    (ewm-clear-prefix-sequence)))
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
-  (add-hook 'post-command-hook #'ewm-input--sync-focus)
+  (add-hook 'post-command-hook #'ewm-input--clear-prefix)
   ;; Mouse-follows-focus hooks
   (advice-add 'select-window :after #'ewm-input--on-select-window)
   (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
@@ -215,7 +199,7 @@ Layout updates (including primary flags) are handled by
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
-  (remove-hook 'post-command-hook #'ewm-input--sync-focus)
+  (remove-hook 'post-command-hook #'ewm-input--clear-prefix)
   (advice-remove 'select-window #'ewm-input--on-select-window)
   (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
 

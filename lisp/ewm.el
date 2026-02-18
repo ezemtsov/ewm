@@ -83,6 +83,8 @@ When non-nil, warps the pointer to the center of the focused window."
 (defvar ewm--mff-last-window nil
   "Last window for mouse-follows-focus, to avoid redundant warps.")
 
+(declare-function ewm--handle-focus "ewm-focus")
+
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to buffer.")
 
@@ -179,17 +181,14 @@ Adapted from EXWM's behavior."
       (ewm-surface-mode)
       (setq-local ewm-surface-id id)
       (setq-local ewm-surface-app app))
-    ;; Display on target frame if configured
+    ;; Display on target frame if configured.
+    ;; select-frame + pop-to-buffer changes selected-window, which triggers
+    ;; window-selection-change-functions → ewm--sync-focus naturally.
     (when ewm-manage-focus-new-surface
       (let ((target-frame (ewm--frame-for-output output)))
-        (if target-frame
-            (with-selected-frame target-frame
-              (pop-to-buffer-same-window buf))
-          (pop-to-buffer-same-window buf)))
-      ;; Explicitly focus the new surface.
-      ;; We can't rely on layout sync because with-selected-frame restores
-      ;; the previous frame selection, so selected-window won't be this buffer.
-      (ewm-focus id))))
+        (when target-frame
+          (select-frame target-frame))
+        (pop-to-buffer-same-window buf)))))
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
@@ -212,29 +211,6 @@ Kills the surface buffer."
                        #'ewm--kill-buffer-query-function t))
         (kill-buffer buf))
       (remhash id ewm--surfaces))))
-
-(defun ewm--handle-focus (event)
-  "Handle focus EVENT from compositor.
-Selects the window displaying the surface's buffer, or displays it if hidden.
-When multiple windows show the same buffer, picks the one under the pointer."
-  (pcase-let (((map ("id" id)) event))
-    ;; Select window unless minibuffer is active
-    (unless (ewm--minibuffer-active-p)
-      (when-let* ((buf (gethash id ewm--surfaces))
-                  ((buffer-live-p buf)))
-        ;; For multi-window buffers, prefer the window under the pointer
-        (let ((win (or (cl-find-if #'ewm-input--pointer-in-window-p
-                                   (get-buffer-window-list buf nil t))
-                       (get-buffer-window buf t))))
-          (if win
-              ;; Use select-frame instead of select-frame-set-input-focus
-              ;; to avoid triggering xdg_activation which would steal focus
-              ;; back to Emacs. The compositor already set focus correctly.
-              (progn
-                (select-frame (window-frame win))
-                (select-window win))
-            ;; Buffer not visible - display it
-            (pop-to-buffer-same-window buf)))))))
 
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.
@@ -380,10 +356,6 @@ Coordinates are relative to the output's working area."
 (defun ewm-close (id)
   "Request surface ID to close gracefully."
   (ewm-close-module id))
-
-(defun ewm-focus (id)
-  "Focus surface ID."
-  (ewm-focus-module id))
 
 (defun ewm-warp-pointer (x y)
   "Warp pointer to absolute position X, Y."
@@ -689,6 +661,7 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
 
 ;; Load submodules
 (require 'ewm-surface)
+(require 'ewm-focus)
 (require 'ewm-layout)
 (require 'ewm-input)
 (require 'ewm-text-input)

@@ -11,7 +11,6 @@
 ;;; Code:
 
 (declare-function ewm-close "ewm")
-(declare-function ewm-focus "ewm")
 
 (defvar ewm--module-mode)
 (defvar ewm-input--mode)
