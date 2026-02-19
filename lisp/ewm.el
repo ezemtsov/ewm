@@ -33,6 +33,21 @@
         (module-load path)
       (require 'ewm-core))))
 
+;;; Logging
+
+(defvar ewm--debug nil
+  "Non-nil when EWM debug mode is active.")
+
+(defun ewm--log (format-string &rest args)
+  "Log a message to the *ewm-log* buffer when debug mode is active.
+FORMAT-STRING and ARGS are passed to `format'."
+  (when ewm--debug
+    (let ((buf (get-buffer-create "*ewm-log*")))
+      (with-current-buffer buf
+        (goto-char (point-max))
+        (insert (format-time-string "[%H:%M:%S] ")
+                (apply #'format format-string args) "\n")))))
+
 ;;; Module mode (compositor runs in-process)
 
 (defvar ewm--module-mode nil
@@ -311,7 +326,7 @@ Called when layer-shell surfaces (panels) claim exclusive zones,
 changing the available area for Emacs frames."
   (pcase-let (((map ("output" output) ("x" x) ("y" y)
                      ("width" width) ("height" height)) event))
-    (message "Working area for %s: %dx%d+%d+%d" output width height x y)
+    (ewm--log "Working area for %s: %dx%d+%d+%d" output width height x y)
     ;; Frame resize happens automatically via Wayland configure event.
     ;; Layout refresh is triggered by window-size-change-functions when
     ;; the frame actually resizes. Don't call ewm-layout--refresh directly
@@ -380,7 +395,7 @@ Coordinates are relative to the output's working area."
 State will be displayed in *ewm-state* buffer when received."
   (interactive)
   (ewm-get-state-module)
-  (message "Requested compositor state..."))
+  (ewm--log "Requested compositor state..."))
 
 (defun ewm-debug-mode (&optional enable)
   "Toggle compositor debug mode for verbose logging.
@@ -398,6 +413,7 @@ Check `journalctl --user -t ewm -f' to see debug output."
          (if enable
              (ewm-debug-mode-module (> (prefix-numeric-value enable) 0))
            (ewm-debug-mode-module nil))))
+    (setq ewm--debug new-state)
     (message "EWM debug mode: %s" (if new-state "ENABLED" "disabled"))))
 
 (defun ewm-configure-output (name &rest args)
