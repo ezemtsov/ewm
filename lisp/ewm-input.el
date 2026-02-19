@@ -29,9 +29,20 @@
 (defvar ewm-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<XF86WakeUp>") #'ignore)
+    ;; Window navigation (super + arrows)
+    (define-key map (kbd "s-<left>") #'windmove-left)
+    (define-key map (kbd "s-<right>") #'windmove-right)
+    (define-key map (kbd "s-<down>") #'windmove-down)
+    (define-key map (kbd "s-<up>") #'windmove-up)
+    ;; Tab/workspace management
+    (define-key map (kbd "s-t") #'tab-new)
+    (define-key map (kbd "s-w") #'tab-close)
+    (dotimes (i 9)
+      (define-key map (kbd (format "s-%d" (1+ i))) #'tab-bar-select-tab))
     map)
   "Keymap for `ewm-mode'.
-Users can override bindings, e.g.:
+Default super-key bindings for window management.
+Users can override or add bindings, e.g.:
   (define-key ewm-mode-map (kbd \"<XF86WakeUp>\") #\\='my-resume-hook)")
 
 (declare-function ewm-intercept-keys-module "ewm-core")
@@ -72,6 +83,7 @@ Properties:
 
 Omitted properties use device defaults."
   :type 'plist
+  :initialize 'custom-initialize-default
   :set (lambda (sym val)
          (set-default sym val)
          (when ewm--module-mode
@@ -90,6 +102,7 @@ Properties:
 
 Omitted properties use device defaults."
   :type 'plist
+  :initialize 'custom-initialize-default
   :set (lambda (sym val)
          (set-default sym val)
          (when ewm--module-mode
@@ -348,14 +361,15 @@ This allows normal `global-set-key' bindings to work with EWM."
               (unless (gethash spec-key seen)
                 (puthash spec-key t seen)
                 (push spec specs)))))))
-    ;; Scan global-map for keys with configured modifiers
+    ;; Scan keymaps for keys with configured modifiers
     (when ewm-intercept-modifiers
-      (dolist (spec (ewm--scan-keymap-for-modifiers
-                     (current-global-map) ewm-intercept-modifiers))
-        (let ((spec-key (format "%S" spec)))
-          (unless (gethash spec-key seen)
-            (puthash spec-key t seen)
-            (push spec specs)))))
+      (dolist (keymap (list ewm-mode-map (current-global-map)))
+        (dolist (spec (ewm--scan-keymap-for-modifiers
+                       keymap ewm-intercept-modifiers))
+          (let ((spec-key (format "%S" spec)))
+            (unless (gethash spec-key seen)
+              (puthash spec-key t seen)
+              (push spec specs))))))
     ;; Send to compositor
     (ewm-intercept-keys-module (vconcat (nreverse specs)))))
 
