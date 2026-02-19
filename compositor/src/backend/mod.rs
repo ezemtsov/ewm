@@ -262,6 +262,19 @@ impl Backend {
         }
     }
 
+    /// Re-apply libinput configuration to all connected devices.
+    /// No-op for headless backend.
+    pub fn reapply_libinput_config(
+        &mut self,
+        touchpad_config: &crate::input::TouchpadConfig,
+        mouse_config: &crate::input::MouseConfig,
+    ) {
+        match self {
+            Backend::Drm(drm) => drm.reapply_libinput_config(touchpad_config, mouse_config),
+            Backend::Headless(_) => {}
+        }
+    }
+
 }
 
 /// Round scale to the nearest value representable by the fractional-scale

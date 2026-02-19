@@ -124,6 +124,74 @@ When the compositor starts, Wayland surfaces appear as special buffers. Use stan
 - `C-x 2`, `C-x 3` - split windows (surfaces follow)
 - `C-x 0`, `C-x 1` - close/maximize windows
 
+## Configuration
+
+### Output
+
+Configure display modes and positions via `ewm-output-config`:
+
+```elisp
+(setq ewm-output-config
+      '(("DP-1" :width 2560 :height 1440 :scale 1.0)
+        ("eDP-1" :width 1920 :height 1200 :scale 1.25 :x 0 :y 0)))
+```
+
+| Property     | Type    | Description                                            |
+|--------------|---------|--------------------------------------------------------|
+| `:width`     | integer | Horizontal resolution in pixels                        |
+| `:height`    | integer | Vertical resolution in pixels                          |
+| `:refresh`   | integer | Refresh rate in Hz                                     |
+| `:x`         | integer | Horizontal position in global coordinate space         |
+| `:y`         | integer | Vertical position in global coordinate space           |
+| `:scale`     | float   | Fractional scale (e.g. 1.25, 1.5, 2.0)                |
+| `:transform` | integer | 0=Normal 1=90 2=180 3=270 4=Flipped 5-7=Flipped+rot   |
+| `:enabled`   | boolean | Whether the output is enabled (default t)              |
+
+### Touchpad
+
+Configure via `ewm-touchpad-config`. All properties are optional; omitted
+properties use the device default.
+
+```elisp
+(setq ewm-touchpad-config
+      '(:natural-scroll t :tap t :dwt t))
+```
+
+| Property            | Type   | Description                                         |
+|---------------------|--------|-----------------------------------------------------|
+| `:natural-scroll`   | bool   | Invert scroll direction (content follows fingers)   |
+| `:tap`              | bool   | Tap-to-click                                        |
+| `:dwt`              | bool   | Disable touchpad while typing                       |
+| `:accel-speed`      | float  | Pointer acceleration, -1.0 (slowest) to 1.0 (fastest) |
+| `:accel-profile`    | string | `"flat"` (linear) or `"adaptive"` (acceleration curve) |
+| `:click-method`     | string | `"button-areas"` or `"clickfinger"`                 |
+| `:scroll-method`    | string | `"two-finger"`, `"edge"`, `"on-button-down"`, `"no-scroll"` |
+| `:left-handed`      | bool   | Swap left/right buttons                             |
+| `:middle-emulation` | bool   | Emulate middle button from simultaneous L+R click   |
+| `:tap-button-map`   | string | `"left-right-middle"` or `"left-middle-right"`      |
+
+### Mouse
+
+Configure via `ewm-mouse-config`. Same defaults-if-omitted behavior.
+
+```elisp
+(setq ewm-mouse-config
+      '(:accel-profile "flat"))
+```
+
+| Property            | Type   | Description                                         |
+|---------------------|--------|-----------------------------------------------------|
+| `:natural-scroll`   | bool   | Invert scroll direction                             |
+| `:accel-speed`      | float  | Pointer acceleration, -1.0 to 1.0                   |
+| `:accel-profile`    | string | `"flat"` or `"adaptive"`                            |
+| `:scroll-method`    | string | `"two-finger"`, `"edge"`, `"on-button-down"`, `"no-scroll"` |
+| `:left-handed`      | bool   | Swap left/right buttons                             |
+| `:middle-emulation` | bool   | Emulate middle button from simultaneous L+R click   |
+
+All input settings take effect immediately when set (via `customize-variable`
+or `setq` + `ewm--send-touchpad-config` / `ewm--send-mouse-config`). New
+devices receive the current configuration on hotplug.
+
 ## Current Features
 
 - Wayland surfaces as Emacs buffers

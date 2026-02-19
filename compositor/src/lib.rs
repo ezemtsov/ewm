@@ -541,6 +541,10 @@ pub struct Ewm {
     pub keyboard_focus: Option<WlSurface>,
     pub keyboard_focus_dirty: bool,
 
+    // Libinput device configuration
+    pub touchpad_config: input::TouchpadConfig,
+    pub mouse_config: input::MouseConfig,
+
     // Emacs client tracking - used to identify which surfaces belong to Emacs
     // vs external applications (for key interception)
     pub emacs_pid: Option<u32>,
@@ -743,6 +747,8 @@ impl Ewm {
             focused_surface_id: 0,
             keyboard_focus: None,
             keyboard_focus_dirty: false,
+            touchpad_config: input::TouchpadConfig::default(),
+            mouse_config: input::MouseConfig::default(),
             emacs_pid: None,
             emacs_surfaces: std::collections::HashSet::new(),
             pending_screenshot: None,
@@ -3932,6 +3938,70 @@ impl State {
 
                 // Store tab state (source of truth for workspace::refresh)
                 self.ewm.output_workspaces.insert(output, tabs);
+            }
+            ModuleCommand::ConfigureTouchpad {
+                natural_scroll,
+                tap,
+                dwt,
+                accel_speed,
+                accel_profile,
+                click_method,
+                scroll_method,
+                left_handed,
+                middle_emulation,
+                tap_button_map,
+            } => {
+                self.ewm.touchpad_config = input::TouchpadConfig {
+                    natural_scroll,
+                    tap,
+                    dwt,
+                    accel_speed,
+                    accel_profile: accel_profile
+                        .as_deref()
+                        .and_then(input::parse_accel_profile),
+                    click_method: click_method
+                        .as_deref()
+                        .and_then(input::parse_click_method),
+                    scroll_method: scroll_method
+                        .as_deref()
+                        .and_then(input::parse_scroll_method),
+                    left_handed,
+                    middle_emulation,
+                    tap_button_map: tap_button_map
+                        .as_deref()
+                        .and_then(input::parse_tap_button_map),
+                };
+                info!("Touchpad config updated: {:?}", self.ewm.touchpad_config);
+                self.backend.reapply_libinput_config(
+                    &self.ewm.touchpad_config,
+                    &self.ewm.mouse_config,
+                );
+            }
+            ModuleCommand::ConfigureMouse {
+                natural_scroll,
+                accel_speed,
+                accel_profile,
+                scroll_method,
+                left_handed,
+                middle_emulation,
+            } => {
+                self.ewm.mouse_config = input::MouseConfig {
+                    natural_scroll,
+                    accel_speed,
+                    accel_profile: accel_profile
+                        .as_deref()
+                        .and_then(input::parse_accel_profile),
+                    scroll_method: scroll_method
+                        .as_deref()
+                        .and_then(input::parse_scroll_method),
+                    left_handed,
+                    middle_emulation,
+                };
+                info!("Mouse config updated: {:?}", self.ewm.mouse_config);
+                self.backend.reapply_libinput_config(
+                    &self.ewm.touchpad_config,
+                    &self.ewm.mouse_config,
+                );
             }
         }
     }

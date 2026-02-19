@@ -80,7 +80,7 @@ use smithay::wayland::presentation::Refresh;
 use crate::{
     backend::Backend,
     cursor::CursorBuffer,
-    input::{handle_device_added, handle_keyboard_event, KeyboardAction},
+    input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
     vblank_throttle::VBlankThrottle,
     Ewm, OutputInfo, OutputMode, OutputState, RedrawState, State,
@@ -272,6 +272,8 @@ pub struct DrmBackendState {
     pub lid_closed: bool,
     /// Token for session notifier - must be removed before session drops
     session_notifier_token: Option<RegistrationToken>,
+    /// Connected libinput devices for re-applying configuration on change
+    libinput_devices: std::collections::HashSet<smithay::reexports::input::Device>,
     // SAFETY: Fields below are dropped in declaration order.
     // device must drop before session (surfaces → drm → libseat).
     // See https://github.com/Smithay/smithay/issues/1102
@@ -430,6 +432,17 @@ impl DrmBackendState {
             }
         } else {
             warn!("Cannot change VT: no session");
+        }
+    }
+
+    /// Re-apply libinput settings to all connected devices.
+    pub fn reapply_libinput_config(
+        &mut self,
+        touchpad_config: &crate::input::TouchpadConfig,
+        mouse_config: &crate::input::MouseConfig,
+    ) {
+        for mut device in self.libinput_devices.iter().cloned() {
+            crate::input::apply_libinput_settings(&mut device, touchpad_config, mouse_config);
         }
     }
 }
@@ -2056,6 +2069,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         loop_handle: Some(event_loop.handle()),
         cursor_buffer: CursorBuffer::new(),
         display_handle: None, // Set during initialize_drm
+        libinput_devices: std::collections::HashSet::new(),
     };
 
     let mut state = State {
@@ -2323,7 +2337,14 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             .insert_source(libinput_backend, move |mut event, _, state| {
                 match event {
                     InputEvent::DeviceAdded { ref mut device } => {
-                        handle_device_added(device);
+                        apply_libinput_settings(
+                            device,
+                            &state.ewm.touchpad_config,
+                            &state.ewm.mouse_config,
+                        );
+                        if let Backend::Drm(drm) = &mut state.backend {
+                            drm.libinput_devices.insert(device.clone());
+                        }
                     }
                     InputEvent::Keyboard { event: kb_event } => {
                         let action = handle_keyboard_event(
@@ -2378,6 +2399,11 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                     == SwitchState::On;
                             info!("Lid {}", if is_closed { "closed" } else { "opened" });
                             state.handle_lid_state(is_closed);
+                        }
+                    }
+                    InputEvent::DeviceRemoved { ref device } => {
+                        if let Backend::Drm(drm) = &mut state.backend {
+                            drm.libinput_devices.remove(device);
                         }
                     }
                     _ => {}

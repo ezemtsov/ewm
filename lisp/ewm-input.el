@@ -36,6 +36,8 @@ Users can override bindings, e.g.:
 
 (declare-function ewm-intercept-keys-module "ewm-core")
 (declare-function ewm-configure-xkb-module "ewm-core")
+(declare-function ewm-configure-touchpad-module "ewm-core")
+(declare-function ewm-configure-mouse-module "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-clear-prefix-sequence "ewm-core")
 (declare-function ewm-in-prefix-sequence-p "ewm-core")
@@ -51,6 +53,74 @@ Users can override bindings, e.g.:
 (defgroup ewm-input nil
   "EWM input handling."
   :group 'ewm)
+
+;;; Libinput device configuration
+
+(defcustom ewm-touchpad-config nil
+  "Touchpad configuration plist.
+Properties:
+  :natural-scroll BOOL  - Invert scroll direction
+  :tap BOOL             - Tap-to-click
+  :dwt BOOL             - Disable while typing
+  :accel-speed FLOAT    - Pointer acceleration (-1.0 to 1.0)
+  :accel-profile STRING - \"flat\" or \"adaptive\"
+  :click-method STRING  - \"button-areas\" or \"clickfinger\"
+  :scroll-method STRING - \"no-scroll\", \"two-finger\", \"edge\", \"on-button-down\"
+  :left-handed BOOL     - Swap left/right buttons
+  :middle-emulation BOOL - Emulate middle button
+  :tap-button-map STRING - \"left-right-middle\" or \"left-middle-right\"
+
+Omitted properties use device defaults."
+  :type 'plist
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when ewm--module-mode
+           (ewm--send-touchpad-config)))
+  :group 'ewm-input)
+
+(defcustom ewm-mouse-config nil
+  "Mouse configuration plist.
+Properties:
+  :natural-scroll BOOL  - Invert scroll direction
+  :accel-speed FLOAT    - Pointer acceleration (-1.0 to 1.0)
+  :accel-profile STRING - \"flat\" or \"adaptive\"
+  :scroll-method STRING - \"no-scroll\", \"two-finger\", \"edge\", \"on-button-down\"
+  :left-handed BOOL     - Swap left/right buttons
+  :middle-emulation BOOL - Emulate middle button
+
+Omitted properties use device defaults."
+  :type 'plist
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when ewm--module-mode
+           (ewm--send-mouse-config)))
+  :group 'ewm-input)
+
+(defun ewm--send-touchpad-config ()
+  "Send touchpad configuration to compositor."
+  (when ewm--module-mode
+    (ewm-configure-touchpad-module
+     (plist-get ewm-touchpad-config :natural-scroll)
+     (plist-get ewm-touchpad-config :tap)
+     (plist-get ewm-touchpad-config :dwt)
+     (plist-get ewm-touchpad-config :accel-speed)
+     (plist-get ewm-touchpad-config :accel-profile)
+     (plist-get ewm-touchpad-config :click-method)
+     (plist-get ewm-touchpad-config :scroll-method)
+     (plist-get ewm-touchpad-config :left-handed)
+     (plist-get ewm-touchpad-config :middle-emulation)
+     (plist-get ewm-touchpad-config :tap-button-map))))
+
+(defun ewm--send-mouse-config ()
+  "Send mouse configuration to compositor."
+  (when ewm--module-mode
+    (ewm-configure-mouse-module
+     (plist-get ewm-mouse-config :natural-scroll)
+     (plist-get ewm-mouse-config :accel-speed)
+     (plist-get ewm-mouse-config :accel-profile)
+     (plist-get ewm-mouse-config :scroll-method)
+     (plist-get ewm-mouse-config :left-handed)
+     (plist-get ewm-mouse-config :middle-emulation))))
 
 ;;; Keyboard layout configuration
 

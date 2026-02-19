@@ -223,6 +223,28 @@ pub enum ModuleCommand {
         surfaces: Vec<LayoutEntry>,
         tabs: Vec<TabInfo>,
     },
+    /// Configure touchpad devices
+    ConfigureTouchpad {
+        natural_scroll: Option<bool>,
+        tap: Option<bool>,
+        dwt: Option<bool>,
+        accel_speed: Option<f64>,
+        accel_profile: Option<String>,
+        click_method: Option<String>,
+        scroll_method: Option<String>,
+        left_handed: Option<bool>,
+        middle_emulation: Option<bool>,
+        tap_button_map: Option<String>,
+    },
+    /// Configure mouse devices
+    ConfigureMouse {
+        natural_scroll: Option<bool>,
+        accel_speed: Option<f64>,
+        accel_profile: Option<String>,
+        scroll_method: Option<String>,
+        left_handed: Option<bool>,
+        middle_emulation: Option<bool>,
+    },
 }
 
 /// Tab info sent from Emacs for workspace protocol
@@ -984,6 +1006,60 @@ fn get_state_module(_: &Env) -> Result<()> {
 #[defun]
 fn set_selection_module(_: &Env, text: String) -> Result<()> {
     push_command(ModuleCommand::SetSelection { text });
+    Ok(())
+}
+
+/// Configure touchpad devices (module mode).
+/// All arguments are optional; nil means "use device default".
+#[defun]
+fn configure_touchpad_module(
+    _: &Env,
+    natural_scroll: Option<Value<'_>>,
+    tap: Option<Value<'_>>,
+    dwt: Option<Value<'_>>,
+    accel_speed: Option<f64>,
+    accel_profile: Option<String>,
+    click_method: Option<String>,
+    scroll_method: Option<String>,
+    left_handed: Option<Value<'_>>,
+    middle_emulation: Option<Value<'_>>,
+    tap_button_map: Option<String>,
+) -> Result<()> {
+    push_command(ModuleCommand::ConfigureTouchpad {
+        natural_scroll: natural_scroll.map(|v| v.is_not_nil()),
+        tap: tap.map(|v| v.is_not_nil()),
+        dwt: dwt.map(|v| v.is_not_nil()),
+        accel_speed,
+        accel_profile,
+        click_method,
+        scroll_method,
+        left_handed: left_handed.map(|v| v.is_not_nil()),
+        middle_emulation: middle_emulation.map(|v| v.is_not_nil()),
+        tap_button_map,
+    });
+    Ok(())
+}
+
+/// Configure mouse devices (module mode).
+/// All arguments are optional; nil means "use device default".
+#[defun]
+fn configure_mouse_module(
+    _: &Env,
+    natural_scroll: Option<Value<'_>>,
+    accel_speed: Option<f64>,
+    accel_profile: Option<String>,
+    scroll_method: Option<String>,
+    left_handed: Option<Value<'_>>,
+    middle_emulation: Option<Value<'_>>,
+) -> Result<()> {
+    push_command(ModuleCommand::ConfigureMouse {
+        natural_scroll: natural_scroll.map(|v| v.is_not_nil()),
+        accel_speed,
+        accel_profile,
+        scroll_method,
+        left_handed: left_handed.map(|v| v.is_not_nil()),
+        middle_emulation: middle_emulation.map(|v| v.is_not_nil()),
+    });
     Ok(())
 }
 

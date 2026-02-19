@@ -385,16 +385,254 @@ use smithay::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend,
         PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
-    backend::libinput::LibinputInputBackend,
     input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
 };
 
-/// Configure a newly added libinput device
-pub fn handle_device_added(device: &mut <LibinputInputBackend as InputBackend>::Device) {
-    // Enable natural scrolling for touchpads
-    if device.config_tap_finger_count() > 0 {
-        let _ = device.config_scroll_set_natural_scroll_enabled(true);
-        tracing::info!("Enabled natural scroll for touchpad: {:?}", device.name());
+// ============================================================================
+// Libinput device configuration
+// ============================================================================
+
+use smithay::reexports::input as libinput;
+
+#[derive(Clone, Copy, Debug)]
+pub enum AccelProfile {
+    Flat,
+    Adaptive,
+}
+
+impl From<AccelProfile> for libinput::AccelProfile {
+    fn from(p: AccelProfile) -> Self {
+        match p {
+            AccelProfile::Flat => libinput::AccelProfile::Flat,
+            AccelProfile::Adaptive => libinput::AccelProfile::Adaptive,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ClickMethod {
+    ButtonAreas,
+    Clickfinger,
+}
+
+impl From<ClickMethod> for libinput::ClickMethod {
+    fn from(m: ClickMethod) -> Self {
+        match m {
+            ClickMethod::ButtonAreas => libinput::ClickMethod::ButtonAreas,
+            ClickMethod::Clickfinger => libinput::ClickMethod::Clickfinger,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ScrollMethod {
+    NoScroll,
+    TwoFinger,
+    Edge,
+    OnButtonDown,
+}
+
+impl From<ScrollMethod> for libinput::ScrollMethod {
+    fn from(m: ScrollMethod) -> Self {
+        match m {
+            ScrollMethod::NoScroll => libinput::ScrollMethod::NoScroll,
+            ScrollMethod::TwoFinger => libinput::ScrollMethod::TwoFinger,
+            ScrollMethod::Edge => libinput::ScrollMethod::Edge,
+            ScrollMethod::OnButtonDown => libinput::ScrollMethod::OnButtonDown,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TapButtonMap {
+    LeftRightMiddle,
+    LeftMiddleRight,
+}
+
+impl From<TapButtonMap> for libinput::TapButtonMap {
+    fn from(m: TapButtonMap) -> Self {
+        match m {
+            TapButtonMap::LeftRightMiddle => libinput::TapButtonMap::LeftRightMiddle,
+            TapButtonMap::LeftMiddleRight => libinput::TapButtonMap::LeftMiddleRight,
+        }
+    }
+}
+
+/// Touchpad configuration. `None` fields use device defaults.
+#[derive(Default, Clone, Debug)]
+pub struct TouchpadConfig {
+    pub natural_scroll: Option<bool>,
+    pub tap: Option<bool>,
+    pub dwt: Option<bool>,
+    pub accel_speed: Option<f64>,
+    pub accel_profile: Option<AccelProfile>,
+    pub click_method: Option<ClickMethod>,
+    pub scroll_method: Option<ScrollMethod>,
+    pub left_handed: Option<bool>,
+    pub middle_emulation: Option<bool>,
+    pub tap_button_map: Option<TapButtonMap>,
+}
+
+/// Mouse configuration. `None` fields use device defaults.
+#[derive(Default, Clone, Debug)]
+pub struct MouseConfig {
+    pub natural_scroll: Option<bool>,
+    pub accel_speed: Option<f64>,
+    pub accel_profile: Option<AccelProfile>,
+    pub scroll_method: Option<ScrollMethod>,
+    pub left_handed: Option<bool>,
+    pub middle_emulation: Option<bool>,
+}
+
+/// Apply libinput settings to a device based on its category.
+///
+/// Device detection follows the same logic as niri/Mutter:
+/// - Touchpad: `config_tap_finger_count() > 0`
+/// - Trackball/trackpoint: udev properties `ID_INPUT_TRACKBALL` / `ID_INPUT_POINTINGSTICK`
+/// - Mouse: has Pointer capability and is not touchpad/trackball/trackpoint
+pub fn apply_libinput_settings(
+    device: &mut libinput::Device,
+    touchpad_config: &TouchpadConfig,
+    mouse_config: &MouseConfig,
+) {
+    let is_touchpad = device.config_tap_finger_count() > 0;
+
+    if is_touchpad {
+        let c = touchpad_config;
+        tracing::debug!("Configuring touchpad: {}", device.name());
+
+        let _ = device.config_scroll_set_natural_scroll_enabled(
+            c.natural_scroll
+                .unwrap_or_else(|| device.config_scroll_default_natural_scroll_enabled()),
+        );
+        let _ = device
+            .config_tap_set_enabled(c.tap.unwrap_or_else(|| device.config_tap_default_enabled()));
+        let _ = device
+            .config_dwt_set_enabled(c.dwt.unwrap_or_else(|| device.config_dwt_default_enabled()));
+        let _ = device.config_accel_set_speed(
+            c.accel_speed
+                .unwrap_or_else(|| device.config_accel_default_speed()),
+        );
+        let _ = device.config_left_handed_set(
+            c.left_handed
+                .unwrap_or_else(|| device.config_left_handed_default()),
+        );
+        let _ = device.config_middle_emulation_set_enabled(
+            c.middle_emulation
+                .unwrap_or_else(|| device.config_middle_emulation_default_enabled()),
+        );
+
+        if let Some(profile) = c.accel_profile {
+            let _ = device.config_accel_set_profile(profile.into());
+        } else if let Some(default) = device.config_accel_default_profile() {
+            let _ = device.config_accel_set_profile(default);
+        }
+
+        if let Some(method) = c.click_method {
+            let _ = device.config_click_set_method(method.into());
+        } else if let Some(default) = device.config_click_default_method() {
+            let _ = device.config_click_set_method(default);
+        }
+
+        if let Some(method) = c.scroll_method {
+            let _ = device.config_scroll_set_method(method.into());
+        } else if let Some(default) = device.config_scroll_default_method() {
+            let _ = device.config_scroll_set_method(default);
+        }
+
+        if let Some(map) = c.tap_button_map {
+            let _ = device.config_tap_set_button_map(map.into());
+        } else if let Some(default) = device.config_tap_default_button_map() {
+            let _ = device.config_tap_set_button_map(default);
+        }
+
+        return;
+    }
+
+    // Detect trackball/trackpoint via udev properties (same as niri/Mutter)
+    let mut is_trackball = false;
+    let mut is_trackpoint = false;
+    if let Some(udev_device) = unsafe { device.udev_device() } {
+        is_trackball = udev_device.property_value("ID_INPUT_TRACKBALL").is_some();
+        is_trackpoint = udev_device
+            .property_value("ID_INPUT_POINTINGSTICK")
+            .is_some();
+    }
+
+    let is_mouse = device.has_capability(libinput::DeviceCapability::Pointer)
+        && !is_trackball
+        && !is_trackpoint;
+
+    if is_mouse {
+        let c = mouse_config;
+        tracing::debug!("Configuring mouse: {}", device.name());
+
+        let _ = device.config_scroll_set_natural_scroll_enabled(
+            c.natural_scroll
+                .unwrap_or_else(|| device.config_scroll_default_natural_scroll_enabled()),
+        );
+        let _ = device.config_accel_set_speed(
+            c.accel_speed
+                .unwrap_or_else(|| device.config_accel_default_speed()),
+        );
+        let _ = device.config_left_handed_set(
+            c.left_handed
+                .unwrap_or_else(|| device.config_left_handed_default()),
+        );
+        let _ = device.config_middle_emulation_set_enabled(
+            c.middle_emulation
+                .unwrap_or_else(|| device.config_middle_emulation_default_enabled()),
+        );
+
+        if let Some(profile) = c.accel_profile {
+            let _ = device.config_accel_set_profile(profile.into());
+        } else if let Some(default) = device.config_accel_default_profile() {
+            let _ = device.config_accel_set_profile(default);
+        }
+
+        if let Some(method) = c.scroll_method {
+            let _ = device.config_scroll_set_method(method.into());
+        } else if let Some(default) = device.config_scroll_default_method() {
+            let _ = device.config_scroll_set_method(default);
+        }
+    }
+}
+
+/// Parse an acceleration profile string.
+pub fn parse_accel_profile(s: &str) -> Option<AccelProfile> {
+    match s {
+        "flat" => Some(AccelProfile::Flat),
+        "adaptive" => Some(AccelProfile::Adaptive),
+        _ => None,
+    }
+}
+
+/// Parse a click method string.
+pub fn parse_click_method(s: &str) -> Option<ClickMethod> {
+    match s {
+        "button-areas" => Some(ClickMethod::ButtonAreas),
+        "clickfinger" => Some(ClickMethod::Clickfinger),
+        _ => None,
+    }
+}
+
+/// Parse a scroll method string.
+pub fn parse_scroll_method(s: &str) -> Option<ScrollMethod> {
+    match s {
+        "no-scroll" => Some(ScrollMethod::NoScroll),
+        "two-finger" => Some(ScrollMethod::TwoFinger),
+        "edge" => Some(ScrollMethod::Edge),
+        "on-button-down" => Some(ScrollMethod::OnButtonDown),
+        _ => None,
+    }
+}
+
+/// Parse a tap button map string.
+pub fn parse_tap_button_map(s: &str) -> Option<TapButtonMap> {
+    match s {
+        "left-right-middle" => Some(TapButtonMap::LeftRightMiddle),
+        "left-middle-right" => Some(TapButtonMap::LeftMiddleRight),
+        _ => None,
     }
 }
 
