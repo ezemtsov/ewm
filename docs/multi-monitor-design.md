@@ -120,6 +120,35 @@ The compositor uses UdevBackend to detect monitor connect/disconnect events at r
 
 This uniformity means no special cases for "first output" vs "hotplugged output".
 
+## Lid Switch and Session Resume
+
+### Lid Close
+
+When the laptop lid is closed, the compositor receives a libinput `SwitchToggle`
+event. Behavior depends on whether an external monitor is connected:
+
+- **With external display**: The laptop panel (identified by `eDP` prefix) is
+  disconnected — its output is removed and Emacs closes the frame, moving windows
+  to remaining outputs. The external display continues working normally.
+- **Without external display**: All monitors are deactivated (blanked). The
+  session remains running and will resume when the lid opens.
+
+### Lid Open
+
+Re-scans DRM connectors to discover outputs. If the laptop panel reappears, the
+standard `OutputDetected` → frame creation path runs.
+
+### Session Suspend/Resume
+
+`PauseSession`/`ActivateSession` events from logind handle system suspend:
+
+- **Resume**: Activates monitors, re-scans connectors (handles displays
+  added/removed while suspended), redraws all outputs, sends `OutputsComplete`
+  to Emacs.
+- `OutputsComplete` is the universal "output topology settled" signal — it fires
+  on startup, hotplug, and resume. Emacs uses it to apply output config, enforce
+  frame parity, refresh layouts, and sync focus.
+
 ## Failure Modes
 
 | Failure | Behavior |

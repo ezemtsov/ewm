@@ -238,7 +238,13 @@ is current before layout refresh:
 - `compositor/src/module.rs` - Dynamic module FFI, queues, defuns
 - `compositor/src/lib.rs` - Compositor core
 - `compositor/src/event.rs` - Event enum shared with module
-- `lisp/ewm.el` - Elisp integration, event handling
+- `lisp/ewm.el` - Main module initialization, event dispatch
+- `lisp/ewm-focus.el` - Bidirectional focus synchronization
+- `lisp/ewm-input.el` - Input handling, intercepted keys, prefix sequences
+- `lisp/ewm-layout.el` - Per-output layout declaration and refresh
+- `lisp/ewm-surface.el` - Surface ↔ buffer mapping
+- `lisp/ewm-text-input.el` - Input method bridge
+- `lisp/ewm-transient.el` - Transient menus
 
 ## References
 
