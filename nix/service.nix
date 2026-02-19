@@ -68,7 +68,7 @@ let
   # Wayland session file for display managers
   sessionFile = pkgs.writeText "ewm.desktop" ''
     [Desktop Entry]
-    Name=EWM
+    Name=ewm
     Comment=Emacs Wayland Manager
     Exec=${ewmSession}
     Type=Application

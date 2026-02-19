@@ -73,7 +73,7 @@ EWM provides a NixOS module for easy deployment. Import the module and configure
 ```
 
 The module registers an `ewm` session with your display manager (e.g., ly, gdm).
-Select "EWM" at login to start the compositor. Emacs loads your normal init
+Select "ewm" at login to start the compositor. Emacs loads your normal init
 directory (`~/.emacs.d` or `~/.config/emacs`).
 
 To use a custom init directory, different Emacs version, or add extra packages:
