@@ -52,10 +52,8 @@ The `--fg-daemon` flag is required because EWM creates frames dynamically as
 outputs are discovered. Starting Emacs without initial frames ensures uniform
 handling for all monitors and proper multi-monitor support.
 
-Or start apps in the compositor:
-```bash
-WAYLAND_DISPLAY=wayland-ewm foot
-```
+Launch applications with `s-d` (`ewm-launch-app`), which presents a
+completing-read list of installed XDG desktop applications.
 
 **Kill combo**: `Super+Shift+E` exits the compositor.
 
