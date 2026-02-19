@@ -851,18 +851,6 @@ impl Ewm {
         None
     }
 
-    /// Find the primary (largest) output layout entry for a surface.
-    ///
-    /// Used for configure size + scale decisions.
-    fn primary_output_for_surface(&self, id: u32) -> Option<(&str, &LayoutEntry)> {
-        for (output_name, entries) in &self.output_layouts {
-            if let Some(entry) = entries.iter().find(|e| e.id == id && e.primary) {
-                return Some((output_name.as_str(), entry));
-            }
-        }
-        None
-    }
-
     /// Get the global position of a window.
     ///
     /// For layout surfaces (managed via output_layouts): uses the primary entry's
@@ -876,11 +864,9 @@ impl Ewm {
 
         let id = self.window_ids.get(window).copied()?;
 
-        // Layout surface: prefer focused entry, fall back to primary
+        // Layout surface: use focused entry for output association
         if self.surface_outputs.contains_key(&id) {
-            let (output_name, entry) = self
-                .focused_output_for_surface(id)
-                .or_else(|| self.primary_output_for_surface(id))?;
+            let (output_name, entry) = self.focused_output_for_surface(id)?;
             let output = self
                 .space
                 .outputs()
@@ -1622,12 +1608,9 @@ impl Ewm {
 
     /// Find the output for a surface (returns Output object)
     fn find_surface_output(&self, surface_id: u32) -> Option<smithay::output::Output> {
-        // Layout surfaces: prefer focused output, fall back to primary, then any
+        // Layout surfaces: prefer focused output, then any
         if self.surface_outputs.contains_key(&surface_id) {
-            if let Some((name, _)) = self
-                .focused_output_for_surface(surface_id)
-                .or_else(|| self.primary_output_for_surface(surface_id))
-            {
+            if let Some((name, _)) = self.focused_output_for_surface(surface_id) {
                 return self.space.outputs().find(|o| o.name() == name).cloned();
             }
             if let Some(output_names) = self.surface_outputs.get(&surface_id) {
@@ -2306,11 +2289,8 @@ impl Ewm {
 
         // Check windows (layout surfaces + Emacs frames)
         if let Some((window, id)) = self.find_window_by_surface(&root) {
-            // Layout surface: prefer focused output, fall back to primary
-            if let Some((name, _)) = self
-                .focused_output_for_surface(id)
-                .or_else(|| self.primary_output_for_surface(id))
-            {
+            // Layout surface: prefer focused output
+            if let Some((name, _)) = self.focused_output_for_surface(id) {
                 return self.space.outputs().find(|o| o.name() == name);
             }
             // Fallback: any output from surface_outputs
