@@ -8,9 +8,9 @@ https://github.com/user-attachments/assets/d1c19772-532e-4b99-8c21-0ecba6e598c5
 
 ## What is EWM?
 
-EWM brings EXWM-like workflows to Wayland. Wayland applications appear as Emacs buffers, letting you switch between code and apps with `C-x b`, organize windows with your familiar Emacs commands, and keep everything responsive even when Emacs is busy evaluating.
+EWM is a Wayland compositor that runs inside Emacs. Wayland applications appear as Emacs buffers, letting you switch between code and apps with `C-x b`, organize windows with your familiar Emacs commands, and keep everything responsive even when Emacs is busy evaluating.
 
-The key difference from EXWM: the compositor runs as a separate thread within Emacs (via a dynamic module), so applications never freeze waiting for Elisp evaluation.
+The compositor runs as a separate thread within Emacs (via a dynamic module), so applications never freeze waiting for Elisp evaluation.
 
 ```
 ┌─ Emacs Process ────────────────────────────────────────────┐
@@ -111,8 +111,8 @@ Load `ewm.el` in your Emacs:
 
 Then start the compositor with `M-x ewm-start-module`.
 
-Unlike EXWM's `exwm-input-global-keys`, you don't need separate configuration.
-All bindings in `ewm-mode-map` are automatically intercepted by the compositor.
+All bindings in `ewm-mode-map` are automatically intercepted by the compositor —
+no separate keybinding configuration is needed.
 
 ### Default Keybindings
 
@@ -205,7 +205,7 @@ libinput list-devices                         # system-wide
 - Automatic layout synchronization
 - Per-output declarative layout (surfaces can span multiple outputs)
 - Prefix key interception (compositor forwards to Emacs)
-- Line/char mode (like EXWM)
+- Line/char mode (pass all keys to app, or only specific ones)
 - Client-side decoration auto-disable
 - DRM backend with multi-monitor support (hotplug, per-output Emacs frames)
 - Layer-shell protocol (waybar, notifications, etc.)
