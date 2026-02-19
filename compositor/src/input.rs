@@ -458,9 +458,39 @@ impl From<TapButtonMap> for libinput::TapButtonMap {
     }
 }
 
-/// Touchpad configuration. `None` fields use device defaults.
-#[derive(Default, Clone, Debug)]
-pub struct TouchpadConfig {
+/// Input device type for configuration matching.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceType {
+    Touchpad,
+    Mouse,
+    Trackball,
+    Trackpoint,
+}
+
+impl DeviceType {
+    /// Parse from string (Elisp symbol name).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "touchpad" => Some(DeviceType::Touchpad),
+            "mouse" => Some(DeviceType::Mouse),
+            "trackball" => Some(DeviceType::Trackball),
+            "trackpoint" => Some(DeviceType::Trackpoint),
+            _ => None,
+        }
+    }
+}
+
+/// A single input configuration entry — either a type default or device-specific.
+///
+/// Type defaults have `device: None` and `device_type: Some(...)`.
+/// Device-specific overrides have `device: Some("name")` and optional `device_type`.
+#[derive(Clone, Debug, Default)]
+pub struct InputConfigEntry {
+    /// None = type default, Some("device name") = device-specific override
+    pub device: Option<String>,
+    /// Required for type defaults, optional for device overrides (auto-detected)
+    pub device_type: Option<DeviceType>,
+    // All possible settings (superset of touchpad + mouse)
     pub natural_scroll: Option<bool>,
     pub tap: Option<bool>,
     pub dwt: Option<bool>,
@@ -473,83 +503,17 @@ pub struct TouchpadConfig {
     pub tap_button_map: Option<TapButtonMap>,
 }
 
-/// Mouse configuration. `None` fields use device defaults.
-#[derive(Default, Clone, Debug)]
-pub struct MouseConfig {
-    pub natural_scroll: Option<bool>,
-    pub accel_speed: Option<f64>,
-    pub accel_profile: Option<AccelProfile>,
-    pub scroll_method: Option<ScrollMethod>,
-    pub left_handed: Option<bool>,
-    pub middle_emulation: Option<bool>,
-}
-
-/// Apply libinput settings to a device based on its category.
+/// Detect the type of a libinput device.
 ///
-/// Device detection follows the same logic as niri/Mutter:
+/// Detection follows the same logic as niri/Mutter:
 /// - Touchpad: `config_tap_finger_count() > 0`
 /// - Trackball/trackpoint: udev properties `ID_INPUT_TRACKBALL` / `ID_INPUT_POINTINGSTICK`
 /// - Mouse: has Pointer capability and is not touchpad/trackball/trackpoint
-pub fn apply_libinput_settings(
-    device: &mut libinput::Device,
-    touchpad_config: &TouchpadConfig,
-    mouse_config: &MouseConfig,
-) {
-    let is_touchpad = device.config_tap_finger_count() > 0;
-
-    if is_touchpad {
-        let c = touchpad_config;
-        tracing::debug!("Configuring touchpad: {}", device.name());
-
-        let _ = device.config_scroll_set_natural_scroll_enabled(
-            c.natural_scroll
-                .unwrap_or_else(|| device.config_scroll_default_natural_scroll_enabled()),
-        );
-        let _ = device
-            .config_tap_set_enabled(c.tap.unwrap_or_else(|| device.config_tap_default_enabled()));
-        let _ = device
-            .config_dwt_set_enabled(c.dwt.unwrap_or_else(|| device.config_dwt_default_enabled()));
-        let _ = device.config_accel_set_speed(
-            c.accel_speed
-                .unwrap_or_else(|| device.config_accel_default_speed()),
-        );
-        let _ = device.config_left_handed_set(
-            c.left_handed
-                .unwrap_or_else(|| device.config_left_handed_default()),
-        );
-        let _ = device.config_middle_emulation_set_enabled(
-            c.middle_emulation
-                .unwrap_or_else(|| device.config_middle_emulation_default_enabled()),
-        );
-
-        if let Some(profile) = c.accel_profile {
-            let _ = device.config_accel_set_profile(profile.into());
-        } else if let Some(default) = device.config_accel_default_profile() {
-            let _ = device.config_accel_set_profile(default);
-        }
-
-        if let Some(method) = c.click_method {
-            let _ = device.config_click_set_method(method.into());
-        } else if let Some(default) = device.config_click_default_method() {
-            let _ = device.config_click_set_method(default);
-        }
-
-        if let Some(method) = c.scroll_method {
-            let _ = device.config_scroll_set_method(method.into());
-        } else if let Some(default) = device.config_scroll_default_method() {
-            let _ = device.config_scroll_set_method(default);
-        }
-
-        if let Some(map) = c.tap_button_map {
-            let _ = device.config_tap_set_button_map(map.into());
-        } else if let Some(default) = device.config_tap_default_button_map() {
-            let _ = device.config_tap_set_button_map(default);
-        }
-
-        return;
+fn detect_device_type(device: &libinput::Device) -> Option<DeviceType> {
+    if device.config_tap_finger_count() > 0 {
+        return Some(DeviceType::Touchpad);
     }
 
-    // Detect trackball/trackpoint via udev properties (same as niri/Mutter)
     let mut is_trackball = false;
     let mut is_trackpoint = false;
     if let Some(udev_device) = unsafe { device.udev_device() } {
@@ -559,41 +523,131 @@ pub fn apply_libinput_settings(
             .is_some();
     }
 
-    let is_mouse = device.has_capability(libinput::DeviceCapability::Pointer)
-        && !is_trackball
-        && !is_trackpoint;
+    if is_trackball {
+        Some(DeviceType::Trackball)
+    } else if is_trackpoint {
+        Some(DeviceType::Trackpoint)
+    } else if device.has_capability(libinput::DeviceCapability::Pointer) {
+        Some(DeviceType::Mouse)
+    } else {
+        None
+    }
+}
 
-    if is_mouse {
-        let c = mouse_config;
-        tracing::debug!("Configuring mouse: {}", device.name());
+/// Resolve a config value: device-specific → type-default → hardware default.
+macro_rules! resolve {
+    ($device_cfg:expr, $type_cfg:expr, $field:ident, $default:expr) => {
+        $device_cfg
+            .and_then(|c| c.$field)
+            .or_else(|| $type_cfg.and_then(|c| c.$field))
+            .unwrap_or_else(|| $default)
+    };
+}
 
-        let _ = device.config_scroll_set_natural_scroll_enabled(
-            c.natural_scroll
-                .unwrap_or_else(|| device.config_scroll_default_natural_scroll_enabled()),
-        );
-        let _ = device.config_accel_set_speed(
-            c.accel_speed
-                .unwrap_or_else(|| device.config_accel_default_speed()),
-        );
-        let _ = device.config_left_handed_set(
-            c.left_handed
-                .unwrap_or_else(|| device.config_left_handed_default()),
-        );
-        let _ = device.config_middle_emulation_set_enabled(
-            c.middle_emulation
-                .unwrap_or_else(|| device.config_middle_emulation_default_enabled()),
-        );
+/// Resolve an optional config value (for enum settings with Option defaults).
+macro_rules! resolve_opt {
+    ($device_cfg:expr, $type_cfg:expr, $field:ident, $default:expr) => {
+        $device_cfg
+            .and_then(|c| c.$field)
+            .or_else(|| $type_cfg.and_then(|c| c.$field))
+            .map(Into::into)
+            .or_else(|| $default)
+    };
+}
 
-        if let Some(profile) = c.accel_profile {
-            let _ = device.config_accel_set_profile(profile.into());
-        } else if let Some(default) = device.config_accel_default_profile() {
-            let _ = device.config_accel_set_profile(default);
+/// Apply libinput settings to a device using 3-level cascade:
+/// device-specific config → type-default config → hardware default.
+pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputConfigEntry]) {
+    let detected_type = match detect_device_type(device) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let device_name = device.name().to_owned();
+    let device_cfg = configs
+        .iter()
+        .find(|c| c.device.as_deref() == Some(device_name.as_str()));
+    let type_cfg = configs.iter().find(|c| {
+        c.device.is_none() && c.device_type == Some(detected_type)
+    });
+
+    tracing::debug!("Configuring {:?}: {}", detected_type, device_name);
+
+    // Settings common to all pointer devices
+    let _ = device.config_scroll_set_natural_scroll_enabled(resolve!(
+        device_cfg,
+        type_cfg,
+        natural_scroll,
+        device.config_scroll_default_natural_scroll_enabled()
+    ));
+    let _ = device.config_accel_set_speed(resolve!(
+        device_cfg,
+        type_cfg,
+        accel_speed,
+        device.config_accel_default_speed()
+    ));
+    let _ = device.config_left_handed_set(resolve!(
+        device_cfg,
+        type_cfg,
+        left_handed,
+        device.config_left_handed_default()
+    ));
+    let _ = device.config_middle_emulation_set_enabled(resolve!(
+        device_cfg,
+        type_cfg,
+        middle_emulation,
+        device.config_middle_emulation_default_enabled()
+    ));
+
+    if let Some(profile) = resolve_opt!(
+        device_cfg,
+        type_cfg,
+        accel_profile,
+        device.config_accel_default_profile()
+    ) {
+        let _ = device.config_accel_set_profile(profile);
+    }
+
+    if let Some(method) = resolve_opt!(
+        device_cfg,
+        type_cfg,
+        scroll_method,
+        device.config_scroll_default_method()
+    ) {
+        let _ = device.config_scroll_set_method(method);
+    }
+
+    // Touchpad-specific settings
+    if detected_type == DeviceType::Touchpad {
+        let _ = device.config_tap_set_enabled(resolve!(
+            device_cfg,
+            type_cfg,
+            tap,
+            device.config_tap_default_enabled()
+        ));
+        let _ = device.config_dwt_set_enabled(resolve!(
+            device_cfg,
+            type_cfg,
+            dwt,
+            device.config_dwt_default_enabled()
+        ));
+
+        if let Some(method) = resolve_opt!(
+            device_cfg,
+            type_cfg,
+            click_method,
+            device.config_click_default_method()
+        ) {
+            let _ = device.config_click_set_method(method);
         }
 
-        if let Some(method) = c.scroll_method {
-            let _ = device.config_scroll_set_method(method.into());
-        } else if let Some(default) = device.config_scroll_default_method() {
-            let _ = device.config_scroll_set_method(default);
+        if let Some(map) = resolve_opt!(
+            device_cfg,
+            type_cfg,
+            tap_button_map,
+            device.config_tap_default_button_map()
+        ) {
+            let _ = device.config_tap_set_button_map(map);
         }
     }
 }

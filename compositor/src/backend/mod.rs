@@ -264,13 +264,9 @@ impl Backend {
 
     /// Re-apply libinput configuration to all connected devices.
     /// No-op for headless backend.
-    pub fn reapply_libinput_config(
-        &mut self,
-        touchpad_config: &crate::input::TouchpadConfig,
-        mouse_config: &crate::input::MouseConfig,
-    ) {
+    pub fn reapply_libinput_config(&mut self, configs: &[crate::input::InputConfigEntry]) {
         match self {
-            Backend::Drm(drm) => drm.reapply_libinput_config(touchpad_config, mouse_config),
+            Backend::Drm(drm) => drm.reapply_libinput_config(configs),
             Backend::Headless(_) => {}
         }
     }

@@ -436,13 +436,9 @@ impl DrmBackendState {
     }
 
     /// Re-apply libinput settings to all connected devices.
-    pub fn reapply_libinput_config(
-        &mut self,
-        touchpad_config: &crate::input::TouchpadConfig,
-        mouse_config: &crate::input::MouseConfig,
-    ) {
+    pub fn reapply_libinput_config(&mut self, configs: &[crate::input::InputConfigEntry]) {
         for mut device in self.libinput_devices.iter().cloned() {
-            crate::input::apply_libinput_settings(&mut device, touchpad_config, mouse_config);
+            crate::input::apply_libinput_settings(&mut device, configs);
         }
     }
 }
@@ -2337,11 +2333,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             .insert_source(libinput_backend, move |mut event, _, state| {
                 match event {
                     InputEvent::DeviceAdded { ref mut device } => {
-                        apply_libinput_settings(
-                            device,
-                            &state.ewm.touchpad_config,
-                            &state.ewm.mouse_config,
-                        );
+                        apply_libinput_settings(device, &state.ewm.input_configs);
                         if let Backend::Drm(drm) = &mut state.backend {
                             drm.libinput_devices.insert(device.clone());
                         }

@@ -147,50 +147,46 @@ Configure display modes and positions via `ewm-output-config`:
 | `:transform` | integer | 0=Normal 1=90 2=180 3=270 4=Flipped 5-7=Flipped+rot   |
 | `:enabled`   | boolean | Whether the output is enabled (default t)              |
 
-### Touchpad
+### Input Devices
 
-Configure via `ewm-touchpad-config`. All properties are optional; omitted
-properties use the device default.
-
-```elisp
-(setq ewm-touchpad-config
-      '(:natural-scroll t :tap t :dwt t))
-```
-
-| Property            | Type   | Description                                         |
-|---------------------|--------|-----------------------------------------------------|
-| `:natural-scroll`   | bool   | Invert scroll direction (content follows fingers)   |
-| `:tap`              | bool   | Tap-to-click                                        |
-| `:dwt`              | bool   | Disable touchpad while typing                       |
-| `:accel-speed`      | float  | Pointer acceleration, -1.0 (slowest) to 1.0 (fastest) |
-| `:accel-profile`    | string | `"flat"` (linear) or `"adaptive"` (acceleration curve) |
-| `:click-method`     | string | `"button-areas"` or `"clickfinger"`                 |
-| `:scroll-method`    | string | `"two-finger"`, `"edge"`, `"on-button-down"`, `"no-scroll"` |
-| `:left-handed`      | bool   | Swap left/right buttons                             |
-| `:middle-emulation` | bool   | Emulate middle button from simultaneous L+R click   |
-| `:tap-button-map`   | string | `"left-right-middle"` or `"left-middle-right"`      |
-
-### Mouse
-
-Configure via `ewm-mouse-config`. Same defaults-if-omitted behavior.
+Configure touchpad, mouse, trackball, and trackpoint via `ewm-input-config`.
+Each entry is keyed by device type (symbol) or device name (string for
+per-device overrides). Omitted properties use the device default.
 
 ```elisp
-(setq ewm-mouse-config
-      '(:accel-profile "flat"))
+(setq ewm-input-config
+      '((touchpad :natural-scroll t :tap t :dwt t)
+        (mouse :accel-profile "flat")
+        (trackpoint :accel-speed 0.5)
+        ;; Per-device override (exact name from libinput)
+        ("ELAN0676:00 04F3:3195 Touchpad" :tap nil :accel-speed -0.2)))
 ```
 
-| Property            | Type   | Description                                         |
-|---------------------|--------|-----------------------------------------------------|
-| `:natural-scroll`   | bool   | Invert scroll direction                             |
-| `:accel-speed`      | float  | Pointer acceleration, -1.0 to 1.0                   |
-| `:accel-profile`    | string | `"flat"` or `"adaptive"`                            |
-| `:scroll-method`    | string | `"two-finger"`, `"edge"`, `"on-button-down"`, `"no-scroll"` |
-| `:left-handed`      | bool   | Swap left/right buttons                             |
-| `:middle-emulation` | bool   | Emulate middle button from simultaneous L+R click   |
+Device-specific entries override type defaults for matching properties.
+The resolution order is: device-specific > type default > hardware default.
 
-All input settings take effect immediately when set (via `customize-variable`
-or `setq` + `ewm--send-touchpad-config` / `ewm--send-mouse-config`). New
-devices receive the current configuration on hotplug.
+| Property            | Type   | Description                                         | Applies to       |
+|---------------------|--------|-----------------------------------------------------|------------------|
+| `:natural-scroll`   | bool   | Invert scroll direction                             | all              |
+| `:accel-speed`      | float  | Pointer acceleration, -1.0 to 1.0                   | all              |
+| `:accel-profile`    | string | `"flat"` or `"adaptive"`                            | all              |
+| `:scroll-method`    | string | `"two-finger"`, `"edge"`, `"on-button-down"`, `"no-scroll"` | all   |
+| `:left-handed`      | bool   | Swap left/right buttons                             | all              |
+| `:middle-emulation` | bool   | Emulate middle button from simultaneous L+R click   | all              |
+| `:tap`              | bool   | Tap-to-click                                        | touchpad         |
+| `:dwt`              | bool   | Disable touchpad while typing                       | touchpad         |
+| `:click-method`     | string | `"button-areas"` or `"clickfinger"`                 | touchpad         |
+| `:tap-button-map`   | string | `"left-right-middle"` or `"left-middle-right"`      | touchpad         |
+
+Settings take effect immediately when set (via `customize-variable` or
+`setq` followed by `ewm--send-input-config`). New devices receive
+the current configuration on hotplug. Invalid keys or values signal an error.
+
+To find device names for per-device overrides:
+```bash
+journalctl --user -t ewm | grep Configuring  # from compositor logs
+libinput list-devices                         # system-wide
+```
 
 ## Current Features
 

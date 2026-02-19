@@ -223,27 +223,9 @@ pub enum ModuleCommand {
         surfaces: Vec<LayoutEntry>,
         tabs: Vec<TabInfo>,
     },
-    /// Configure touchpad devices
-    ConfigureTouchpad {
-        natural_scroll: Option<bool>,
-        tap: Option<bool>,
-        dwt: Option<bool>,
-        accel_speed: Option<f64>,
-        accel_profile: Option<String>,
-        click_method: Option<String>,
-        scroll_method: Option<String>,
-        left_handed: Option<bool>,
-        middle_emulation: Option<bool>,
-        tap_button_map: Option<String>,
-    },
-    /// Configure mouse devices
-    ConfigureMouse {
-        natural_scroll: Option<bool>,
-        accel_speed: Option<f64>,
-        accel_profile: Option<String>,
-        scroll_method: Option<String>,
-        left_handed: Option<bool>,
-        middle_emulation: Option<bool>,
+    /// Configure input devices (unified)
+    ConfigureInput {
+        configs: Vec<crate::input::InputConfigEntry>,
     },
 }
 
@@ -1009,57 +991,116 @@ fn set_selection_module(_: &Env, text: String) -> Result<()> {
     Ok(())
 }
 
-/// Configure touchpad devices (module mode).
-/// All arguments are optional; nil means "use device default".
+/// Configure input devices (module mode).
+/// CONFIGS is a vector of plists, each with :device :type and setting properties.
 #[defun]
-fn configure_touchpad_module(
-    _: &Env,
-    natural_scroll: Option<Value<'_>>,
-    tap: Option<Value<'_>>,
-    dwt: Option<Value<'_>>,
-    accel_speed: Option<f64>,
-    accel_profile: Option<String>,
-    click_method: Option<String>,
-    scroll_method: Option<String>,
-    left_handed: Option<Value<'_>>,
-    middle_emulation: Option<Value<'_>>,
-    tap_button_map: Option<String>,
-) -> Result<()> {
-    push_command(ModuleCommand::ConfigureTouchpad {
-        natural_scroll: natural_scroll.map(|v| v.is_not_nil()),
-        tap: tap.map(|v| v.is_not_nil()),
-        dwt: dwt.map(|v| v.is_not_nil()),
-        accel_speed,
-        accel_profile,
-        click_method,
-        scroll_method,
-        left_handed: left_handed.map(|v| v.is_not_nil()),
-        middle_emulation: middle_emulation.map(|v| v.is_not_nil()),
-        tap_button_map,
-    });
-    Ok(())
-}
+fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
+    use crate::input;
 
-/// Configure mouse devices (module mode).
-/// All arguments are optional; nil means "use device default".
-#[defun]
-fn configure_mouse_module(
-    _: &Env,
-    natural_scroll: Option<Value<'_>>,
-    accel_speed: Option<f64>,
-    accel_profile: Option<String>,
-    scroll_method: Option<String>,
-    left_handed: Option<Value<'_>>,
-    middle_emulation: Option<Value<'_>>,
-) -> Result<()> {
-    push_command(ModuleCommand::ConfigureMouse {
-        natural_scroll: natural_scroll.map(|v| v.is_not_nil()),
-        accel_speed,
-        accel_profile,
-        scroll_method,
-        left_handed: left_handed.map(|v| v.is_not_nil()),
-        middle_emulation: middle_emulation.map(|v| v.is_not_nil()),
-    });
+    let len: i64 = env.call("length", (configs,))?.into_rust()?;
+    let mut entries = Vec::new();
+
+    for i in 0..len {
+        let plist: Value = env.call("aref", (configs, i))?;
+        let mut entry = input::InputConfigEntry::default();
+
+        // Walk plist key/value pairs. The match arms ARE the schema:
+        // unknown keys hit the _ arm → error, wrong types → error.
+        let mut rest = plist;
+        while rest.is_not_nil() {
+            let key: String =
+                env.call("symbol-name", (env.call("car", (rest,))?,))?.into_rust()?;
+            let val: Value = env.call("cadr", (rest,))?;
+
+            match key.as_str() {
+                ":device" => {
+                    if val.is_not_nil() {
+                        entry.device = Some(val.into_rust()?);
+                    }
+                }
+                ":type" => {
+                    if val.is_not_nil() {
+                        let s: String = val.into_rust()?;
+                        match input::DeviceType::parse(&s) {
+                            Some(dt) => entry.device_type = Some(dt),
+                            None => env.signal(
+                                "error",
+                                (format!("Invalid :type \"{s}\", expected: touchpad, mouse, trackball, trackpoint"),),
+                            )?,
+                        }
+                    }
+                }
+                ":natural-scroll" => entry.natural_scroll = Some(val.is_not_nil()),
+                ":tap" => entry.tap = Some(val.is_not_nil()),
+                ":dwt" => entry.dwt = Some(val.is_not_nil()),
+                ":left-handed" => entry.left_handed = Some(val.is_not_nil()),
+                ":middle-emulation" => entry.middle_emulation = Some(val.is_not_nil()),
+                ":accel-speed" => {
+                    if val.is_not_nil() {
+                        entry.accel_speed = Some(val.into_rust()?);
+                    }
+                }
+                ":accel-profile" => {
+                    if val.is_not_nil() {
+                        let s: String = val.into_rust()?;
+                        match input::parse_accel_profile(&s) {
+                            Some(v) => entry.accel_profile = Some(v),
+                            None => env.signal(
+                                "error",
+                                (format!("Invalid :accel-profile \"{s}\", expected: flat, adaptive"),),
+                            )?,
+                        }
+                    }
+                }
+                ":click-method" => {
+                    if val.is_not_nil() {
+                        let s: String = val.into_rust()?;
+                        match input::parse_click_method(&s) {
+                            Some(v) => entry.click_method = Some(v),
+                            None => env.signal(
+                                "error",
+                                (format!("Invalid :click-method \"{s}\", expected: button-areas, clickfinger"),),
+                            )?,
+                        }
+                    }
+                }
+                ":scroll-method" => {
+                    if val.is_not_nil() {
+                        let s: String = val.into_rust()?;
+                        match input::parse_scroll_method(&s) {
+                            Some(v) => entry.scroll_method = Some(v),
+                            None => env.signal(
+                                "error",
+                                (format!("Invalid :scroll-method \"{s}\", expected: no-scroll, two-finger, edge, on-button-down"),),
+                            )?,
+                        }
+                    }
+                }
+                ":tap-button-map" => {
+                    if val.is_not_nil() {
+                        let s: String = val.into_rust()?;
+                        match input::parse_tap_button_map(&s) {
+                            Some(v) => entry.tap_button_map = Some(v),
+                            None => env.signal(
+                                "error",
+                                (format!("Invalid :tap-button-map \"{s}\", expected: left-right-middle, left-middle-right"),),
+                            )?,
+                        }
+                    }
+                }
+                _ => env.signal(
+                    "error",
+                    (format!("Unknown input config key {key}"),),
+                )?,
+            }
+
+            rest = env.call("cddr", (rest,))?;
+        }
+
+        entries.push(entry);
+    }
+
+    push_command(ModuleCommand::ConfigureInput { configs: entries });
     Ok(())
 }
 
