@@ -1150,6 +1150,10 @@ fn list_xdg_apps<'a>(env: &'a Env) -> Result<Value<'a>> {
     let mut result: Value<'a> = ().into_lisp(env)?;
 
     for app in gio::AppInfo::all() {
+        if !app.should_show() {
+            continue;
+        }
+
         let name = app.name();
         let commandline = match app.commandline() {
             Some(c) => c.to_string_lossy().to_string(),
