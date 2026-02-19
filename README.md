@@ -106,18 +106,30 @@ Load `ewm.el` in your Emacs:
   :custom
   ;; Optional: configure output modes
   (ewm-output-config '(("DP-1" :width 2560 :height 1440)))
-  :bind
-  ;; Super-key bindings are auto-detected by EWM
-  ("s-d" . consult-buffer)
-  ("s-<left>" . windmove-left)
-  ("s-<right>" . windmove-right))
+  :bind (:map ewm-mode-map
+         ;; Override defaults with your preferred commands
+         ("s-d" . consult-buffer)))
 ```
 
 Then start the compositor with `M-x ewm-start-module`.
 
 Unlike EXWM's `exwm-input-global-keys`, you don't need separate configuration.
-Just use normal `:bind` or `global-set-key` - EWM scans your keymaps and
-automatically intercepts keys with the super modifier.
+All bindings in `ewm-mode-map` are automatically intercepted by the compositor.
+
+### Default Keybindings
+
+`ewm-mode` provides sensible defaults via `ewm-mode-map`. Override any
+binding with `:bind (:map ewm-mode-map ...)` in `use-package`.
+
+| Key           | Command                     | Description              |
+|---------------|-----------------------------|--------------------------|
+| `s-<left>`    | `windmove-left`             | Focus window left        |
+| `s-<right>`   | `windmove-right`            | Focus window right       |
+| `s-<down>`    | `windmove-down`             | Focus window below       |
+| `s-<up>`      | `windmove-up`               | Focus window above       |
+| `s-t`         | `tab-new`                   | New workspace tab        |
+| `s-w`         | `tab-close`                 | Close workspace tab      |
+| `s-1`..`s-9`  | `ewm-tab-select-or-return`  | Switch to tab N          |
 
 When the compositor starts, Wayland surfaces appear as special buffers. Use standard Emacs commands:
 - `C-x b` - switch between apps and regular buffers

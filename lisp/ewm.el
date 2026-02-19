@@ -654,10 +654,7 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
   (setq ewm--saved-interprogram-cut-function interprogram-cut-function)
   (setq interprogram-cut-function #'ewm--interprogram-cut-function)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
-  (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
-  ;; Resend intercept keys after startup to catch late-loaded bindings
-  (unless after-init-time
-    (add-hook 'emacs-startup-hook #'ewm--send-intercept-keys)))
+  (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
 
 (defun ewm--mode-disable ()
   "Disable EWM integration."
