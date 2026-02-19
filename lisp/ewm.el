@@ -639,6 +639,20 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
   (dolist (fn ewm--process-functions)
     (advice-remove fn #'ewm--inject-activation-token)))
 
+;;; Application launcher
+
+(defun ewm-launch-app ()
+  "Launch an XDG desktop application via `completing-read'."
+  (interactive)
+  (let* ((apps (ewm-list-xdg-apps))
+         (names (mapcar #'car apps))
+         (name (completing-read "Launch app: " names nil t))
+         (cmd (cdr (assoc name apps)))
+         ;; Strip XDG field codes (%u, %f, %U, %F, etc.)
+         (cmd (replace-regexp-in-string "%[uUfFdDnNickvm]" "" cmd))
+         (cmd (string-trim cmd)))
+    (start-process-shell-command name nil cmd)))
+
 ;;; Global minor mode
 
 (defun ewm--mode-enable ()

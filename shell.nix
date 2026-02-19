@@ -13,6 +13,7 @@ pkgs.mkShell {
     libxkbcommon
     libGL
     wayland
+    glib.dev # For GIO (XDG app enumeration)
 
     # For winit backend
     libx11

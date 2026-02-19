@@ -43,6 +43,8 @@ Reads the digit from `last-command-event' for i3-style back-and-forth."
     (define-key map (kbd "s-<right>") #'windmove-right)
     (define-key map (kbd "s-<down>") #'windmove-down)
     (define-key map (kbd "s-<up>") #'windmove-up)
+    ;; Application launcher
+    (define-key map (kbd "s-d") #'ewm-launch-app)
     ;; Tab/workspace management
     (define-key map (kbd "s-t") #'tab-new)
     (define-key map (kbd "s-w") #'tab-close)

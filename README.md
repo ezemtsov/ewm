@@ -127,6 +127,7 @@ binding with `:bind (:map ewm-mode-map ...)` in `use-package`.
 | `s-<right>`   | `windmove-right`            | Focus window right       |
 | `s-<down>`    | `windmove-down`             | Focus window below       |
 | `s-<up>`      | `windmove-up`               | Focus window above       |
+| `s-d`         | `ewm-launch-app`            | Launch XDG application   |
 | `s-t`         | `tab-new`                   | New workspace tab        |
 | `s-w`         | `tab-close`                 | Close workspace tab      |
 | `s-1`..`s-9`  | `ewm-tab-select-or-return`  | Switch to tab N          |

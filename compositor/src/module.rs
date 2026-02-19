@@ -1139,3 +1139,27 @@ fn clear_prefix_sequence(_: &Env) -> Result<()> {
     IN_PREFIX_SEQUENCE.store(false, Ordering::Relaxed);
     Ok(())
 }
+
+/// List installed XDG desktop applications.
+/// Returns an alist of (name . commandline) for apps that have a command.
+/// Runs synchronously in the Emacs thread (GIO just reads .desktop files).
+#[defun]
+fn list_xdg_apps<'a>(env: &'a Env) -> Result<Value<'a>> {
+    use gio::prelude::*;
+
+    let mut result: Value<'a> = ().into_lisp(env)?;
+
+    for app in gio::AppInfo::all() {
+        let name = app.name();
+        let commandline = match app.commandline() {
+            Some(c) => c.to_string_lossy().to_string(),
+            None => continue,
+        };
+
+        let pair = env.call("cons", (name.as_str(), commandline.as_str()))?;
+        result = env.call("cons", (pair, result))?;
+    }
+
+    result = env.call("nreverse", (result,))?;
+    Ok(result)
+}

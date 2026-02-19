@@ -68,6 +68,10 @@ version = "0.31.12"
 version = "0.3"
 features = ["client"]
 
+# GIO for XDG desktop app enumeration
+[dependencies.gio]
+version = "0.20"
+
 # Emacs dynamic module support
 [dependencies.emacs]
 version = "0.19"
