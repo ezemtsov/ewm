@@ -38,6 +38,8 @@ Users can override bindings, e.g.:
 (declare-function ewm-configure-xkb-module "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-clear-prefix-sequence "ewm-core")
+(declare-function ewm-in-prefix-sequence-p "ewm-core")
+(declare-function ewm--sync-focus "ewm-focus")
 (declare-function ewm-warp-pointer "ewm")
 (declare-function ewm--get-output-offset "ewm")
 
@@ -183,18 +185,24 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
         (setq ewm--mff-last-window window)
         (ewm-input--warp-pointer-to-window window)))))
 
-;;; Prefix sequence clearing
+;;; Prefix sequence completion
 ;;
-;; post-command-hook clears the compositor's prefix-sequence flag after each
-;; command completes.  Focus resolution is handled entirely by window/buffer
-;; change hooks through `ewm--sync-focus'.
+;; When a prefix key (C-x, s-SPC, etc.) is intercepted from an external
+;; surface, the compositor redirects focus to Emacs and sets the prefix flag.
+;; After the command sequence completes, we clear the flag and restore focus.
+;; Window/buffer change hooks also call `ewm--sync-focus', but commands that
+;; complete without changing windows (e.g. layout switch via s-SPC e) need
+;; this post-command path to restore focus to the pre-intercept surface.
 
 (defun ewm-input--clear-prefix ()
-  "Clear compositor prefix-sequence flag after command completes.
-Skip during SIGUSR1 handling — the signal handler runs as a command,
-but clearing prefix state in that context is meaningless."
+  "Complete prefix sequence: clear flag and restore compositor focus.
+Only acts when a prefix sequence was active.  Skipped during SIGUSR1
+handling — the signal handler runs as a command but is not a real
+user action."
   (unless (eq this-command 'ewm--sigusr1-handler)
-    (ewm-clear-prefix-sequence)))
+    (when (ewm-in-prefix-sequence-p)
+      (ewm-clear-prefix-sequence)
+      (ewm--sync-focus))))
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
