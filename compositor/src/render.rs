@@ -235,25 +235,44 @@ pub fn collect_render_elements_for_output(
                     Size::from((entry.w as i32, entry.h as i32))
                         .to_physical_precise_round(scale);
 
+                // Crop to entry bounds — clients may render larger than configured
+                // (e.g. Electron apps with a minimum window size).
+                let constrain = Rectangle::new(loc_physical, entry_size);
+
                 if entry.primary {
-                    // Primary view: configure matches entry, render directly
-                    elements
-                        .extend(view_elements.into_iter().map(EwmRenderElement::Surface));
+                    // Primary view: render at native size, crop to entry.
+                    elements.extend(
+                        view_elements
+                            .into_iter()
+                            .map(|e| {
+                                RescaleRenderElement::from_element(
+                                    e,
+                                    loc_physical,
+                                    Scale::from(1.0),
+                                )
+                            })
+                            .filter_map(|e| {
+                                CropRenderElement::from_element(e, scale, constrain)
+                            })
+                            .map(EwmRenderElement::Constrained),
+                    );
                 } else {
-                    // Non-primary view: stretch buffer to fill entry bounds.
-                    // Inline the rescale→relocate→crop pipeline instead of using
+                    // Non-primary view: stretch buffer to fill entry bounds, then crop.
+                    // Inline the rescale+crop pipeline instead of using
                     // constrain_render_elements, which has a bug: it scales
                     // reference.loc around (0,0) via Rectangle::upscale(), creating
                     // a spurious offset of reference.loc * (1 - element_scale) when
                     // reference.loc is non-zero (i.e., working area has a Y offset
                     // from layer shell panels like waybar).
-                    let constrain = Rectangle::new(loc_physical, entry_size);
                     let buf_size: Size<i32, Physical> =
                         window.geometry().size.to_physical_precise_round(scale);
-                    let element_scale = Scale::from((
+                    // Uniform scale (fill): pick the larger factor to fully cover
+                    // the entry, preserving aspect ratio. The crop trims overflow.
+                    let uniform = f64::max(
                         entry_size.w as f64 / buf_size.w as f64,
                         entry_size.h as f64 / buf_size.h as f64,
-                    ));
+                    );
+                    let element_scale = Scale::from(uniform);
                     elements.extend(
                         view_elements
                             .into_iter()

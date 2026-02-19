@@ -39,14 +39,14 @@ This version correctly handles tab-lines on Emacs prior to v31."
 (defun ewm-layout--send-layouts ()
   "Build and send per-output layout declarations.
 Groups surface entries by output and sends them to the compositor.
-The `primary' flag controls configure + direct rendering vs stretching.
-A surface is primary when it appears in only one window, or when it
-appears in multiple windows and this entry is the selected one."
+The `focused' flag marks the selected-window entry for each surface.
+The compositor uses it for focus routing and popup placement.
+The compositor independently computes which entry is `primary'
+\(largest area) for configure size and rendering decisions."
   (let ((output-surfaces (make-hash-table :test 'equal))
-        (surface-counts (make-hash-table :test 'eql))
         (window-entries nil)
         (sel-window (selected-window)))
-    ;; Collect entries and count per-surface occurrences
+    ;; Collect entries
     (dolist (frame (frame-list))
       (let ((output (frame-parameter frame 'ewm-output)))
         (when output
@@ -55,14 +55,11 @@ appears in multiple windows and this entry is the selected one."
           (dolist (window (window-list frame 'no-minibuf))
             (let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
               (when id
-                (puthash id (1+ (gethash id surface-counts 0)) surface-counts)
                 (push (list output id window) window-entries)))))))
-    ;; Build entries with correct primary flags
+    ;; Build entries — mark selected-window as focused
     (pcase-dolist (`(,output ,id ,window) (nreverse window-entries))
-      ;; Primary when sole view of this surface, or selected among multiple
-      (let* ((primary-p (or (= 1 (gethash id surface-counts 1))
-                            (eq window sel-window)))
-             (view (ewm-layout--make-output-view window primary-p)))
+      (let* ((focused-p (eq window sel-window))
+             (view (ewm-layout--make-output-view window focused-p)))
         (push `(:id ,id ,@view) (gethash output output-surfaces))))
     ;; Send per-output declarations with tab state
     (maphash
@@ -78,9 +75,9 @@ appears in multiple windows and this entry is the selected one."
     (redisplay t)
     (ewm-layout--send-layouts)))
 
-(defun ewm-layout--make-output-view (window primary-p)
+(defun ewm-layout--make-output-view (window focused-p)
   "Create a view plist for WINDOW with frame-relative coordinates.
-Returns (:x X :y Y :w W :h H :primary PRIMARY-P).
+Returns (:x X :y Y :w W :h H :focused FOCUSED-P).
 Coordinates are relative to the output's working area — the compositor
 converts to global positions using output geometry + working area offset."
   (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
@@ -89,7 +86,7 @@ converts to global positions using output geometry + working area offset."
          (width (- (pop edges) x))
          (height (- (pop edges) y)))
     `(:x ,x :y ,y :w ,width :h ,height
-      :primary ,(if primary-p t :false))))
+      :focused ,(if focused-p t :false))))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes."

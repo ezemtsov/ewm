@@ -395,6 +395,11 @@ pub struct LayoutEntry {
     pub y: i32,
     pub w: u32,
     pub h: u32,
+    /// Selected/active view — sent by Emacs (selected-window).
+    /// Determines output association for focus routing, popups, etc.
+    pub focused: bool,
+    /// Largest view per surface — computed by compositor from entry dimensions.
+    /// Drives send_configure() size + scale and native-size rendering.
     pub primary: bool,
 }
 
@@ -833,10 +838,22 @@ impl Ewm {
         })
     }
 
-    /// Find the primary output layout entry for a surface.
+    /// Find the focused output layout entry for a surface.
     ///
-    /// Scans all output_layouts for a primary entry matching the given surface ID.
-    /// Returns the output name and entry if found.
+    /// Scans all output_layouts for a focused entry matching the given surface ID.
+    /// Used for output association (focus routing, popups).
+    fn focused_output_for_surface(&self, id: u32) -> Option<(&str, &LayoutEntry)> {
+        for (output_name, entries) in &self.output_layouts {
+            if let Some(entry) = entries.iter().find(|e| e.id == id && e.focused) {
+                return Some((output_name.as_str(), entry));
+            }
+        }
+        None
+    }
+
+    /// Find the primary (largest) output layout entry for a surface.
+    ///
+    /// Used for configure size + scale decisions.
     fn primary_output_for_surface(&self, id: u32) -> Option<(&str, &LayoutEntry)> {
         for (output_name, entries) in &self.output_layouts {
             if let Some(entry) = entries.iter().find(|e| e.id == id && e.primary) {
@@ -859,9 +876,11 @@ impl Ewm {
 
         let id = self.window_ids.get(window).copied()?;
 
-        // Layout surface: find primary entry across all output_layouts
+        // Layout surface: prefer focused entry, fall back to primary
         if self.surface_outputs.contains_key(&id) {
-            let (output_name, entry) = self.primary_output_for_surface(id)?;
+            let (output_name, entry) = self
+                .focused_output_for_surface(id)
+                .or_else(|| self.primary_output_for_surface(id))?;
             let output = self
                 .space
                 .outputs()
@@ -929,26 +948,23 @@ impl Ewm {
         let pos_in_entry_y = pos.y - entry_y as f64;
 
         // Scale pointer coords from entry space to window space.
-        // Primary entries render at native buffer size (no stretch), so no scaling needed.
-        // Non-primary entries have their buffer stretched to fill entry bounds.
-        let (scale_x, scale_y) = if entry.primary {
-            (1.0, 1.0)
+        // Primary entries crop overflow but don't rescale, so mapping is 1:1.
+        // Non-primary entries use uniform fill+crop: the buffer is scaled by
+        // max(entry/buf) to fully cover the entry, then cropped. The pointer
+        // inverse is min(buf/entry) applied uniformly to both axes.
+        let pointer_scale = if entry.primary {
+            1.0
+        } else if entry.w > 0 && entry.h > 0 {
+            f64::min(
+                window_geo.size.w as f64 / entry.w as f64,
+                window_geo.size.h as f64 / entry.h as f64,
+            )
         } else {
-            let sx = if entry.w > 0 {
-                window_geo.size.w as f64 / entry.w as f64
-            } else {
-                1.0
-            };
-            let sy = if entry.h > 0 {
-                window_geo.size.h as f64 / entry.h as f64
-            } else {
-                1.0
-            };
-            (sx, sy)
+            1.0
         };
         let pos_in_window = Point::from((
-            pos_in_entry_x * scale_x,
-            pos_in_entry_y * scale_y,
+            pos_in_entry_x * pointer_scale,
+            pos_in_entry_y * pointer_scale,
         ));
 
         if window
@@ -1041,6 +1057,30 @@ impl Ewm {
         // 6. Store the layout
         self.output_layouts
             .insert(output_name.to_string(), entries);
+
+        // 7. Compute primary flags: largest area per surface across all outputs.
+        {
+            let mut best_area: HashMap<u32, u64> = HashMap::new();
+            // First pass: find the largest area per surface
+            for entries in self.output_layouts.values() {
+                for entry in entries {
+                    let area = entry.w as u64 * entry.h as u64;
+                    best_area
+                        .entry(entry.id)
+                        .and_modify(|a| *a = (*a).max(area))
+                        .or_insert(area);
+                }
+            }
+            // Second pass: mark primary on the matching entry
+            let mut assigned: HashSet<u32> = HashSet::new();
+            for entries in self.output_layouts.values_mut() {
+                for entry in entries.iter_mut() {
+                    let dominated = best_area.get(&entry.id).copied().unwrap_or(0);
+                    let area = entry.w as u64 * entry.h as u64;
+                    entry.primary = area == dominated && assigned.insert(entry.id);
+                }
+            }
+        }
 
         // 8. Configure primary surfaces: size + scale from this output.
         // wp_fractional_scale_v1 is per-surface, so the primary output's scale
@@ -1582,12 +1622,14 @@ impl Ewm {
 
     /// Find the output for a surface (returns Output object)
     fn find_surface_output(&self, surface_id: u32) -> Option<smithay::output::Output> {
-        // Layout surfaces: prefer the output where this surface is primary
+        // Layout surfaces: prefer focused output, fall back to primary, then any
         if self.surface_outputs.contains_key(&surface_id) {
-            if let Some((name, _)) = self.primary_output_for_surface(surface_id) {
+            if let Some((name, _)) = self
+                .focused_output_for_surface(surface_id)
+                .or_else(|| self.primary_output_for_surface(surface_id))
+            {
                 return self.space.outputs().find(|o| o.name() == name).cloned();
             }
-            // No primary entry — return any output that has it
             if let Some(output_names) = self.surface_outputs.get(&surface_id) {
                 if let Some(name) = output_names.iter().next() {
                     return self.space.outputs().find(|o| o.name() == *name).cloned();
@@ -2264,8 +2306,11 @@ impl Ewm {
 
         // Check windows (layout surfaces + Emacs frames)
         if let Some((window, id)) = self.find_window_by_surface(&root) {
-            // Layout surface: prefer the primary output
-            if let Some((name, _)) = self.primary_output_for_surface(id) {
+            // Layout surface: prefer focused output, fall back to primary
+            if let Some((name, _)) = self
+                .focused_output_for_surface(id)
+                .or_else(|| self.primary_output_for_surface(id))
+            {
                 return self.space.outputs().find(|o| o.name() == name);
             }
             // Fallback: any output from surface_outputs

@@ -753,11 +753,11 @@ fn output_layout_module(
         let w: i64 = w_val.into_rust()?;
         let h: i64 = h_val.into_rust()?;
 
-        let primary_val: Value = env.call("plist-get", (entry, env.intern(":primary")?))?;
+        let focused_val: Value = env.call("plist-get", (entry, env.intern(":focused")?))?;
         let false_sym = env.intern(":false")?;
-        let eq_result: Value = env.call("eq", (primary_val, false_sym))?;
+        let eq_result: Value = env.call("eq", (focused_val, false_sym))?;
         let is_false = eq_result.is_not_nil();
-        let primary = primary_val.is_not_nil() && !is_false;
+        let focused = focused_val.is_not_nil() && !is_false;
 
         entries.push(LayoutEntry {
             id: id as u32,
@@ -765,7 +765,8 @@ fn output_layout_module(
             y: y as i32,
             w: w as u32,
             h: h as u32,
-            primary,
+            focused,
+            primary: false, // computed by apply_output_layout
         });
     }
 
