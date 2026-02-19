@@ -26,6 +26,19 @@
 
 (require 'cl-lib)
 
+(defun ewm-tab-select-or-return ()
+  "Select tab by number, or switch to recent if already on that tab.
+Reads the digit from `last-command-event' for i3-style back-and-forth."
+  (interactive)
+  (let* ((key (event-basic-type last-command-event))
+         (tab (if (and (characterp key) (>= key ?1) (<= key ?9))
+                  (- key ?0)
+                0))
+         (current (1+ (tab-bar--current-tab-index))))
+    (if (eq tab current)
+        (tab-recent)
+      (tab-bar-select-tab tab))))
+
 (defvar ewm-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<XF86WakeUp>") #'ignore)
@@ -38,7 +51,7 @@
     (define-key map (kbd "s-t") #'tab-new)
     (define-key map (kbd "s-w") #'tab-close)
     (dotimes (i 9)
-      (define-key map (kbd (format "s-%d" (1+ i))) #'tab-bar-select-tab))
+      (define-key map (kbd (format "s-%d" (1+ i))) #'ewm-tab-select-or-return))
     map)
   "Keymap for `ewm-mode'.
 Default super-key bindings for window management.
