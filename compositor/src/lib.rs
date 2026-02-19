@@ -1204,39 +1204,18 @@ impl Ewm {
         // Handle state transitions based on render result
         let is_locked = self.is_locked();
         if let Some(state) = self.output_state.get_mut(output) {
-            match res {
-                backend::RenderResult::Submitted => {
-                    // DRM backend transitions to WaitingForVBlank inside render().
-                    // Headless backend doesn't, so catch any leftover Queued state.
-                    if matches!(
-                        state.redraw_state,
-                        RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-                    ) {
-                        state.redraw_state = RedrawState::Idle;
-                    }
-                }
-                backend::RenderResult::NoDamage => {
-                    // No frame submitted; DRM backend queues estimated VBlank timer
-                    // inside render(). Headless just goes Idle.
-                    if matches!(
-                        state.redraw_state,
-                        RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-                    ) {
-                        state.redraw_state = RedrawState::Idle;
-                    }
-                }
-                backend::RenderResult::Skipped => {
-                    // Preserve estimated vblank timer if one exists, otherwise go Idle
-                    state.redraw_state =
-                        if let RedrawState::WaitingForEstimatedVBlank(token)
-                        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
-                            state.redraw_state
-                        {
-                            RedrawState::WaitingForEstimatedVBlank(token)
-                        } else {
-                            RedrawState::Idle
-                        };
-                }
+            if res == backend::RenderResult::Skipped {
+                // Preserve estimated vblank timer if one exists, otherwise go Idle.
+                // Submitted and NoDamage state transitions are owned by each backend's render().
+                state.redraw_state =
+                    if let RedrawState::WaitingForEstimatedVBlank(token)
+                    | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
+                        state.redraw_state
+                    {
+                        RedrawState::WaitingForEstimatedVBlank(token)
+                    } else {
+                        RedrawState::Idle
+                    };
             }
 
             // Update lock render state on every successful render.

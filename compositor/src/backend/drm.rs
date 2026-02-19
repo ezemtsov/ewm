@@ -789,9 +789,6 @@ impl DrmBackendState {
                     match surface.compositor.queue_frame(frame_data) {
                         Ok(()) => {
                             let output_state = ewm.output_state.get_mut(output).unwrap();
-                            // Increment sequence for frame callback throttling
-                            output_state.frame_callback_sequence =
-                                output_state.frame_callback_sequence.wrapping_add(1);
 
                             trace!(
                                 "{}: {} -> WaitingForVBlank",
@@ -799,18 +796,24 @@ impl DrmBackendState {
                                 output_state.redraw_state
                             );
 
-                            // Remove estimated vblank timer if one was active
-                            if let RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
-                                output_state.redraw_state
-                            {
-                                if let Some(ref handle) = self.loop_handle {
-                                    handle.remove(token);
+                            let new_state = RedrawState::WaitingForVBlank {
+                                redraw_needed: false,
+                            };
+                            match std::mem::replace(
+                                &mut output_state.redraw_state,
+                                new_state,
+                            ) {
+                                RedrawState::Idle => unreachable!(),
+                                RedrawState::Queued => (),
+                                RedrawState::WaitingForVBlank { .. } => unreachable!(),
+                                RedrawState::WaitingForEstimatedVBlank(_) => unreachable!(),
+                                RedrawState::WaitingForEstimatedVBlankAndQueued(token) => {
+                                    self.loop_handle.as_ref().unwrap().remove(token);
                                 }
                             }
 
-                            output_state.redraw_state = RedrawState::WaitingForVBlank {
-                                redraw_needed: false,
-                            };
+                            output_state.frame_callback_sequence =
+                                output_state.frame_callback_sequence.wrapping_add(1);
                             output_state.vblank_tracker.begin_frame();
 
                             rv = super::RenderResult::Submitted;
@@ -863,14 +866,15 @@ impl DrmBackendState {
             return;
         };
 
-        // Check if there's already an estimated vblank timer
-        match &output_state.redraw_state {
-            RedrawState::WaitingForEstimatedVBlank(_)
-            | RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
-                // Already have a timer, don't create another
+        match std::mem::take(&mut output_state.redraw_state) {
+            RedrawState::Idle => unreachable!(),
+            RedrawState::Queued => (),
+            RedrawState::WaitingForVBlank { .. } => unreachable!(),
+            RedrawState::WaitingForEstimatedVBlank(token)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => {
+                output_state.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
                 return;
             }
-            _ => {}
         }
 
         let now = crate::utils::get_monotonic_time();
@@ -886,21 +890,15 @@ impl DrmBackendState {
 
         trace!("{}: queueing estimated vblank timer to fire in {duration:?}", output.name());
 
-        match handle.insert_source(Timer::from_duration(duration), move |_, _, state| {
-            if let Some(drm) = state.backend.as_drm_mut() {
-                drm.on_estimated_vblank_timer(crtc, &mut state.ewm);
-            }
-            TimeoutAction::Drop
-        }) {
-            Ok(token) => {
-                trace!("{}: Idle -> WaitingForEstVBlank", output.name());
-                output_state.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
-            }
-            Err(err) => {
-                warn!("Failed to insert estimated VBlank timer: {:?}", err);
-                output_state.redraw_state = RedrawState::Idle;
-            }
-        }
+        let token = handle
+            .insert_source(Timer::from_duration(duration), move |_, _, state| {
+                if let Some(drm) = state.backend.as_drm_mut() {
+                    drm.on_estimated_vblank_timer(crtc, &mut state.ewm);
+                }
+                TimeoutAction::Drop
+            })
+            .unwrap();
+        output_state.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
     }
 
     /// Run a closure with renderer, cursor buffer, and event loop handle.
@@ -1070,27 +1068,20 @@ impl DrmBackendState {
             output_state.frame_callback_sequence.wrapping_add(1);
 
         match std::mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
+            RedrawState::Idle => unreachable!(),
+            RedrawState::Queued => unreachable!(),
+            RedrawState::WaitingForVBlank { .. } => unreachable!(),
+            RedrawState::WaitingForEstimatedVBlank(_) => (),
             RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
-                trace!("{}: WaitingForEstVBlank+Queued -> Queued (est. VBlank)", output.name());
                 output_state.redraw_state = RedrawState::Queued;
-                // Will be picked up by next redraw_queued_outputs
+                return;
             }
-            RedrawState::WaitingForEstimatedVBlank(_) => {
-                trace!("{}: WaitingForEstVBlank -> Idle (est. VBlank)", output.name());
-                // Already set to Idle above
-                if output_state.unfinished_animations_remain {
-                    ewm.queue_redraw(&output);
-                } else {
-                    ewm.send_frame_callbacks(&output);
-                }
-            }
-            other => {
-                debug!(
-                    "{}: unexpected state in on_estimated_vblank_timer: {}",
-                    output.name(),
-                    other
-                );
-            }
+        }
+
+        if output_state.unfinished_animations_remain {
+            ewm.queue_redraw(&output);
+        } else {
+            ewm.send_frame_callbacks(&output);
         }
     }
 
@@ -1117,16 +1108,46 @@ impl DrmBackendState {
         let Some(surface) = device.surfaces.get_mut(&crtc) else {
             return;
         };
+        let output = surface.output.clone();
 
-        // Mark the last frame as submitted and process presentation feedback
+        let Some(output_state) = ewm.output_state.get_mut(&output) else {
+            return;
+        };
+
+        // End Tracy frame tracking
+        output_state.vblank_tracker.end_frame();
+
+        // Transition state BEFORE frame_submitted(). frame_submitted() may
+        // submit a queued frame (generating another VBlank), so the state
+        // machine must be settled first.
+        let redraw_needed = match std::mem::replace(
+            &mut output_state.redraw_state,
+            RedrawState::Idle,
+        ) {
+            RedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
+            state @ (RedrawState::Idle
+            | RedrawState::Queued
+            | RedrawState::WaitingForEstimatedVBlank(_)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => {
+                error!(
+                    "{}: unexpected redraw state on VBlank \
+                     (should be WaitingForVBlank); can happen when \
+                     resuming from sleep or powering on monitors: {}",
+                    output.name(),
+                    state
+                );
+                true
+            }
+        };
+
+        // Record presentation time in frame clock
+        output_state.frame_clock.presented(presentation_time);
+
+        // Mark the last frame as submitted and process presentation feedback.
+        // This may submit a queued frame internally (generating another VBlank).
+        let refresh_interval = output_state.frame_clock.refresh_interval();
         match surface.compositor.frame_submitted() {
             Ok(Some((mut feedback, target_presentation_time))) => {
-                let output = surface.output.clone();
-                let refresh_interval = ewm
-                    .output_state
-                    .get(&output)
-                    .and_then(|s| s.frame_clock.refresh_interval());
-
                 let refresh = match refresh_interval {
                     Some(r) => Refresh::Fixed(r),
                     None => Refresh::Unknown,
@@ -1151,45 +1172,7 @@ impl DrmBackendState {
             }
         }
 
-        let output = surface.output.clone();
-        let Some(output_state) = ewm.output_state.get_mut(&output) else {
-            return;
-        };
-
-        // End Tracy frame tracking
-        output_state.vblank_tracker.end_frame();
-
-        // Record presentation time in frame clock
-        output_state.frame_clock.presented(presentation_time);
-
-        // Set to Idle, then decide what to do based on redraw_needed.
-        // This handles rogue VBlanks that arrive in unexpected states
-        // (can happen on some hardware after sleep/resume).
-        let old_state =
-            std::mem::replace(&mut output_state.redraw_state, RedrawState::Idle);
-        let redraw_needed = match &old_state {
-            RedrawState::WaitingForVBlank { redraw_needed } => *redraw_needed,
-            _ => {
-                error!(
-                    "unexpected redraw state on VBlank for {} \
-                     (should be WaitingForVBlank); can happen when \
-                     resuming from sleep: {}",
-                    output.name(),
-                    old_state
-                );
-                true // force redraw to recover
-            }
-        };
-        trace!(
-            "{}: {} -> {} (VBlank)",
-            output.name(),
-            old_state,
-            if redraw_needed { "Queued" } else { "Idle" }
-        );
-
-        let animations_remain = output_state.unfinished_animations_remain;
-
-        if redraw_needed || animations_remain {
+        if redraw_needed || output_state.unfinished_animations_remain {
             ewm.queue_redraw(&output);
         } else {
             ewm.send_frame_callbacks(&output);

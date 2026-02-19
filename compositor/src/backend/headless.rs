@@ -188,13 +188,18 @@ impl HeadlessBackend {
     /// render counts for test assertions. Returns Submitted unconditionally.
     pub fn render(
         &mut self,
-        _ewm: &mut Ewm,
+        ewm: &mut Ewm,
         output: &smithay::output::Output,
     ) -> super::RenderResult {
         let name = output.name();
         let Some(virtual_output) = self.outputs.get_mut(&name) else {
             return super::RenderResult::Skipped;
         };
+
+        // Headless has no VBlank or timers, so transition directly to Idle
+        if let Some(output_state) = ewm.output_state.get_mut(output) {
+            output_state.redraw_state = RedrawState::Idle;
+        }
 
         virtual_output.render_count += 1;
         debug!(
