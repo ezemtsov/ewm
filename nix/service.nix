@@ -178,7 +178,7 @@ in
     services.dbus.enable = true;
 
     environment.sessionVariables = {
-      MOZ_ENABLE_WAYLAND = "1";
+      NIXOS_OZONE_WL = lib.mkDefault 1;
     };
 
     # Recommended for Wayland compositors
@@ -189,14 +189,10 @@ in
     xdg.portal = {
       enable = lib.mkDefault true;
       wlr.enable = lib.mkDefault true;
-      extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
+      extraPortals = [ pkgs.xdg-desktop-portal-gnome pkgs.xdg-desktop-portal-gtk ];
       # Portal configuration for EWM
       config.ewm = {
-        default = [ "gtk" ];
-        "org.freedesktop.impl.portal.ScreenCast" = "wlr";
-        "org.freedesktop.impl.portal.Screenshot" = "wlr";
-        # Inhibit portal doesn't work with wlr, use none to avoid issues
-        "org.freedesktop.impl.portal.Inhibit" = "none";
+        default = [ "gnome" "gtk" ];
       };
     };
 
