@@ -39,7 +39,7 @@ This unified model means:
 
 When a Super-key binding is pressed while focus is on an external surface:
 1. Compositor intercepts the key (doesn't forward to surface)
-2. Finds the Emacs frame on the **same output as the focused surface**
+2. Finds the Emacs frame on the **same output as the focused surface** (via `focused_output_for_surface()`)
 3. Switches keyboard focus to that Emacs frame
 4. Forwards the key to Emacs
 
@@ -185,7 +185,7 @@ Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 
 Note: Focus sync and layout sync are decoupled. Focus sync runs synchronously
 from `post-command-hook`. Layout sync uses `window-selection-change-functions`
-which fires whenever selected-window changes, ensuring primary flags are always
+which fires whenever selected-window changes, ensuring focused flags are always
 up to date regardless of how focus changed.
 
 ## Multi-Monitor Behavior
@@ -225,18 +225,29 @@ always receives a Focus event and can select the correct window.
 2. Use `ewm-input--pointer-in-window-p` to find the window under the pointer
 3. Fall back to `get-buffer-window` if no pointer match (e.g., programmatic focus)
 
-### Primary Flag
+### Focused and Primary Flags
 
-Each layout entry has a `primary` flag that controls two things:
-1. **Configure**: Only primary entries send `send_configure()` with the entry's size + scale
-2. **Rendering**: Primary entries render directly; non-primary entries stretch the client's buffer
+Each layout entry has two independent flags:
 
-The primary flag is set in `ewm-layout--send-layouts`:
-- `true` when the surface appears in only one window
-- `true` when the surface appears in multiple windows and this is `selected-window`
-- `false` for non-selected copies of multi-window surfaces
+**`focused`** (Emacs → compositor): Marks the entry for `selected-window`. Set by
+Emacs in `ewm-layout--send-layouts`. Used for **output association** — focus
+routing, intercept redirect, popup placement. The compositor uses
+`focused_output_for_surface()` to find the output where the user is interacting.
 
-Layout updates (including primary flags) are triggered by
+**`primary`** (compositor-computed): Marks the entry with the largest pixel area
+for a given surface across all outputs. Computed in `apply_output_layout` step 7
+by scanning all `output_layouts`. Used for **configure and rendering** — only
+primary entries send `send_configure()` with their size + scale; primary entries
+render at native size (with crop for client min-size overflow); non-primary
+entries use uniform fill+crop preserving aspect ratio.
+
+These flags are independent because the selected window is not necessarily the
+largest. For example, Firefox may be focused in a small sidebar on eDP-1 but
+have its primary (largest) view on DP-2. Focus routing must go to eDP-1 (where
+the user is working), while configure must use DP-2's dimensions (the largest
+area for rendering).
+
+Layout updates (including focused flags) are triggered by
 `window-selection-change-functions`, which fires whenever `selected-window`
 changes — regardless of whether the change came from keyboard navigation,
 click-to-focus, or programmatic selection.
@@ -259,6 +270,8 @@ ewm-layout--refresh            │
                                │    ├─ diff old vs new surface sets
                                │    ├─ output.enter/leave as needed
                                │    ├─ send scale/transform
+                               │    ├─ compute primary flags (largest area)
+                               │    ├─ configure primary surfaces
                                │    └─ queue_redraw(&output)
 ```
 

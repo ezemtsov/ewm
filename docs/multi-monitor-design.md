@@ -38,11 +38,11 @@ Each physical output maps to one Emacs frame. Emacs manages all windows within f
 All output configuration (positioning, scale) is controlled via `ewm.el`, not hardcoded in the compositor. This allows user-friendly configuration through Emacs customization.
 
 ### Active Output (Not Primary)
-Following niri's pattern, there is no static "primary" output. Instead, the **active output** is dynamic:
+There is no static "primary" output. Instead, the **active output** is dynamic:
 - The output containing the cursor, or
 - The output with the focused Emacs frame
 
-New non-Emacs surfaces appear on the active output. This is intuitive: windows open where you're currently working.
+New non-Emacs surfaces appear on the active output. Windows open where you're currently working.
 
 ### Explicit Frame Creation
 Emacs frames are created with an explicit target output. No "show then reassign" logic needed for frames. The compositor assigns the frame to the requested output immediately.
@@ -195,7 +195,7 @@ fn active_output(&self) -> &Output {
 }
 ```
 
-This follows niri's pattern: windows open where you're working, not on a static "primary".
+Windows open where you're working, not on a static "primary" output.
 
 ## Troubleshooting
 

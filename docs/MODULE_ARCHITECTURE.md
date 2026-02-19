@@ -246,4 +246,4 @@ is current before layout refresh:
 
 ## Related Documents
 
-- [FOCUS_DESIGN.md](FOCUS_DESIGN.md) - Focus handling and prefix key sequences
+- [focus-design.md](focus-design.md) - Focus handling and prefix key sequences

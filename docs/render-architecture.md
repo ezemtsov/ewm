@@ -113,7 +113,7 @@ Key fields:
 - `frame_clock`: Tracks last presentation time and refresh interval, predicts next VBlank via `next_presentation_time()`
 - `unfinished_animations_remain`: When true, VBlank and estimated VBlank handlers queue another redraw even if `redraw_needed` is false, keeping animations pumping without explicit `queue_redraw()` calls from animation code
 - `frame_callback_sequence`: Monotonically increasing counter incremented each VBlank cycle, used to prevent sending duplicate frame callbacks within the same refresh cycle
-- `lock_surface` / `lock_render_state` / `lock_color_buffer`: Session lock per-output state (see `FOCUS_DESIGN.md`)
+- `lock_surface` / `lock_render_state` / `lock_color_buffer`: Session lock per-output state (see `focus-design.md`)
 
 ### Redraw State Machine
 
