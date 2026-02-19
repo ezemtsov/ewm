@@ -13,9 +13,13 @@
 let
   cfg = config.programs.ewm;
 
+  # Extract the unwrapped emacs for building (withPackages results carry
+  # a passthru .emacs pointing to the base package).
+  baseEmacs = cfg.emacsPackage.emacs or cfg.emacsPackage;
+
   ewmPackage = pkgs.callPackage ./default.nix {
     withScreencastSupport = cfg.screencast.enable;
-    inherit (cfg) emacsPackage;
+    emacsPackage = baseEmacs;
   };
 
   # Session script that sets up environment and starts ewm.service
@@ -117,8 +121,8 @@ in
 
     emacsPackage = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.emacs-pgtk.pkgs.withPackages(_: [ ewmPackage ]);
-      description = "Emacs package to use. Must be a pgtk build with the EWM package installed.";
+      default = pkgs.emacs-pgtk.pkgs.withPackages (_: [ ewmPackage ]);
+      description = "Emacs package to use. Must be a pgtk build with the EWM package available.";
       example = "pkgs.emacs30-pgtk";
     };
 
