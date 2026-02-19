@@ -70,9 +70,8 @@ The compositor independently computes which entry is `primary'
      output-surfaces)))
 
 (defun ewm-layout--refresh ()
-  "Force redisplay to ensure window sizes are current, then send layouts."
+  "Send current window layouts to the compositor."
   (when ewm--module-mode
-    (redisplay t)
     (ewm-layout--send-layouts)))
 
 (defun ewm-layout--make-output-view (window focused-p)
