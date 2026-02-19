@@ -97,6 +97,7 @@ let
     [Service]
     Slice=session.slice
     Type=notify
+    WorkingDirectory=%h
     ExecStart=/run/current-system/sw/bin/ewm-launch
   '';
 
