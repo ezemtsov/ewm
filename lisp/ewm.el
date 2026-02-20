@@ -172,13 +172,6 @@ Example:
 
 ;;; Event handlers
 
-(defcustom ewm-manage-focus-new-surface t
-  "Whether to automatically focus new surfaces.
-When non-nil, new surface buffers are displayed and selected.
-Adapted from EXWM's behavior."
-  :type 'boolean
-  :group 'ewm)
-
 (defun ewm--cleanup-orphan-frames ()
   "Delete frames that have no ewm-output assigned."
   (dolist (f (frame-list))
@@ -202,11 +195,10 @@ Adapted from EXWM's behavior."
       (ewm-surface-mode)
       (setq-local ewm-surface-id id)
       (setq-local ewm-surface-app app))
-    ;; Display on target frame if configured.
+    ;; Display on target frame unless minibuffer is active.
     ;; select-frame + pop-to-buffer changes selected-window, which triggers
     ;; window-selection-change-functions → ewm--sync-focus naturally.
-    (when (and ewm-manage-focus-new-surface
-               (not (ewm--minibuffer-active-p)))
+    (unless (ewm--minibuffer-active-p)
       (let ((target-frame (ewm--frame-for-output output)))
         (when target-frame
           (select-frame target-frame))
