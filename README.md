@@ -35,29 +35,23 @@ The compositor runs as a separate thread within Emacs (via a dynamic module), so
 - **Mesa/EGL**: Graphics drivers providing `libEGL.so.1`. On NixOS, enable `hardware.graphics.enable = true`.
 - **Run from TTY**: Must launch from a virtual terminal, not inside an existing Wayland/X11 session.
 
-## Building
+## Running from Source
+
+Build the compositor module and launch Emacs from a TTY (not inside an existing
+Wayland/X11 session):
 
 ```bash
 cd compositor
-cargo build  # builds to compositor/target/debug/libewm_core.so
+cargo build --features=screencast
+EWM_MODULE_PATH=$(pwd)/target/debug/libewm_core.so \
+  emacs --fg-daemon -L ../lisp -l ewm -f ewm-start-module
 ```
 
-## Running
+`--fg-daemon` is required — EWM creates frames dynamically as outputs are
+discovered, so Emacs must start without initial frames. Add `--init-directory`
+to point at your config if it's not in the default location.
 
-From a TTY (not inside an existing Wayland/X11 session):
-
-```bash
-emacs --fg-daemon -Q -L ~/git/ewm/lisp -l ewm --eval "(ewm-start-module)"
-```
-
-The `--fg-daemon` flag is required because EWM creates frames dynamically as
-outputs are discovered. Starting Emacs without initial frames ensures uniform
-handling for all monitors and proper multi-monitor support.
-
-Launch applications with `s-d` (`ewm-launch-app`), which presents a
-completing-read list of installed XDG desktop applications.
-
-**Kill combo**: `Super+Shift+E` exits the compositor.
+Launch applications with `s-d` (`ewm-launch-app`). **Kill combo**: `Super+Shift+E`.
 
 ## NixOS Setup
 
