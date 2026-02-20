@@ -20,11 +20,6 @@ The compositor runs as a separate thread within Emacs (via a dynamic module), so
 └────────────────────────────────────────────────────────────┘
 ```
 
-## Inspirations
-
-- **[EXWM](https://github.com/ch11ng/exwm)** (Emacs side): Buffer-per-window model, prefix key interception, line/char mode switching, automatic focus management
-- **[niri](https://github.com/YaLTeR/niri)** (Compositor side): Backend architecture, Smithay patterns, DRM abstraction
-
 ## Requirements
 
 - **Emacs with pgtk**: Must be built with the pure GTK (pgtk) backend for native Wayland support. On NixOS use `emacs-pgtk` or `emacs30-pgtk`.
@@ -217,6 +212,11 @@ libinput list-devices                         # system-wide
 ## Related Projects
 
 - **[ewm-consult](https://github.com/Kirth/ewm-consult)** - Consult integration for EWM
+
+## Inspirations
+
+- **[EXWM](https://github.com/ch11ng/exwm)** (Emacs side): Buffer-per-window model, prefix key interception, line/char mode switching, automatic focus management
+- **[niri](https://github.com/YaLTeR/niri)** (Compositor side): Backend architecture, Smithay patterns, DRM abstraction
 
 ## License
 
