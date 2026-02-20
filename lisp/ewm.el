@@ -205,7 +205,8 @@ Adapted from EXWM's behavior."
     ;; Display on target frame if configured.
     ;; select-frame + pop-to-buffer changes selected-window, which triggers
     ;; window-selection-change-functions → ewm--sync-focus naturally.
-    (when ewm-manage-focus-new-surface
+    (when (and ewm-manage-focus-new-surface
+               (not (ewm--minibuffer-active-p)))
       (let ((target-frame (ewm--frame-for-output output)))
         (when target-frame
           (select-frame target-frame))
@@ -361,12 +362,13 @@ Push the text onto the kill ring."
 (defun ewm--handle-activate-workspace (event)
   "Handle activate_workspace EVENT from compositor.
 Switch to the requested tab on the appropriate frame."
-  (let* ((output (map-elt event "output"))
-         (tab-index (map-elt event "tab_index"))
-         (frame (ewm--frame-for-output output)))
-    (when frame
-      (with-selected-frame frame
-        (tab-bar-select-tab tab-index)))))
+  (unless (ewm--minibuffer-active-p)
+    (let* ((output (map-elt event "output"))
+           (tab-index (map-elt event "tab_index"))
+           (frame (ewm--frame-for-output output)))
+      (when frame
+        (with-selected-frame frame
+          (tab-bar-select-tab tab-index))))))
 
 ;;; Commands
 
