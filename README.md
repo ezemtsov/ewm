@@ -4,10 +4,6 @@
 
 > **Disclaimer**: Writing a Wayland compositor from scratch is a staggering amount of work. I wanted to switch from EXWM as soon as possible, so the initial bootstrap was done with Claude, which helped a lot in reverse-engineering the brilliant [niri](https://github.com/YaLTeR/niri) codebase and surgically extracting the pieces relevant to EWM. Inherently, this means the codebase still needs validation and cleanup, which is the current priority.
 
-## Video Demo
-
-https://github.com/user-attachments/assets/d1c19772-532e-4b99-8c21-0ecba6e598c5
-
 ## What is EWM?
 
 EWM is a Wayland compositor that runs inside Emacs. Wayland applications appear as Emacs buffers, letting you switch between code and apps with `C-x b`, organize windows with your familiar Emacs commands, and keep everything responsive even when Emacs is busy evaluating.
