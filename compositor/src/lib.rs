@@ -537,6 +537,8 @@ pub struct Ewm {
 
     // Input
     pub pointer_location: (f64, f64),
+    /// Last output the pointer was on, for per-output cursor redraw.
+    pointer_output: Option<Output>,
     pub focused_surface_id: u32,
     pub keyboard_focus: Option<WlSurface>,
     pub keyboard_focus_dirty: bool,
@@ -743,6 +745,7 @@ impl Ewm {
             outputs: Vec::new(),
             output_config: HashMap::new(),
             pointer_location: (0.0, 0.0),
+            pointer_output: None,
             focused_surface_id: 0,
             keyboard_focus: None,
             keyboard_focus_dirty: false,
@@ -1124,6 +1127,25 @@ impl Ewm {
         }
     }
 
+    /// Queue a redraw for outputs overlapping the cursor.
+    /// Redraws the output the pointer is currently on, plus the previous
+    /// output if the pointer crossed a boundary.
+    pub fn queue_redraw_for_pointer(&mut self) {
+        let pos = smithay::utils::Point::from(self.pointer_location);
+        let current = self.output_at(pos).cloned();
+        let prev = self.pointer_output.take();
+
+        if let Some(ref prev) = prev {
+            if current.as_ref() != Some(prev) {
+                self.queue_redraw(prev);
+            }
+        }
+        if let Some(ref output) = current {
+            self.queue_redraw(output);
+        }
+        self.pointer_output = current;
+    }
+
     /// Deactivate all monitors (e.g., lid closed with no external display).
     /// Prevents rendering while screens are off.
     pub fn deactivate_monitors(&mut self) {
@@ -1228,6 +1250,11 @@ impl Ewm {
                     LockRenderState::Unlocked
                 };
             }
+
+            // Compute whether animations need another frame on this output.
+            // When true, VBlank handlers queue another redraw to keep animations pumping.
+            // TODO: check resize/crossfade animations, animated cursor, layer surface animations
+            state.unfinished_animations_remain = false;
         }
 
         // Check lock confirmation requirements
@@ -2778,14 +2805,26 @@ impl CompositorHandler for State {
         // 3. Find the window that owns this root surface
         let window_and_id = self.ewm.find_window_by_surface(&root_surface);
 
-        if let Some((window, _id)) = window_and_id {
-            // Call on_commit only for this specific window
+        if let Some((window, id)) = window_and_id {
             window.on_commit();
 
-            // Queue redraw for all outputs
-            self.ewm.queue_redraw_all();
+            // Queue redraw for outputs showing this surface
+            if let Some(output_names) = self.ewm.surface_outputs.get(&id) {
+                let outputs: Vec<_> = self
+                    .ewm
+                    .space
+                    .outputs()
+                    .filter(|o| output_names.contains(&o.name()))
+                    .cloned()
+                    .collect();
+                for output in outputs {
+                    self.ewm.queue_redraw(&output);
+                }
+            } else {
+                // Non-layout surface (Emacs frame): redraw all as fallback
+                self.ewm.queue_redraw_all();
+            }
 
-            // Check for title/app_id changes (only for toplevels)
             self.ewm.check_surface_info_changes(surface);
             return;
         }
@@ -3707,7 +3746,7 @@ impl State {
                     },
                 );
                 pointer.frame(self);
-                self.ewm.queue_redraw_all();
+                self.ewm.queue_redraw_for_pointer();
             }
             ModuleCommand::Screenshot { path } => {
                 let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());

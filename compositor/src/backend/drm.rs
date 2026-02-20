@@ -2343,13 +2343,13 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                         crate::input::handle_pointer_motion::<LibinputInputBackend>(
                             state, event,
                         );
-                        state.ewm.queue_redraw_all();
+                        state.ewm.queue_redraw_for_pointer();
                     }
                     InputEvent::PointerMotionAbsolute { event } => {
                         crate::input::handle_pointer_motion_absolute::<LibinputInputBackend>(
                             state, event,
                         );
-                        state.ewm.queue_redraw_all();
+                        state.ewm.queue_redraw_for_pointer();
                     }
                     InputEvent::PointerButton { event } => {
                         crate::input::handle_pointer_button::<LibinputInputBackend>(
