@@ -74,12 +74,12 @@ Initialization:
 
 Runtime:
   Prefix key intercepted → compositor sets IN_PREFIX_SEQUENCE=true
-  post-command-hook fires → ewm-input--sync-focus clears flag → syncs focus
+  post-command-hook fires → ewm-input--clear-prefix clears flag → syncs focus
 ```
 
 Key insight: Compositor only SETS the flag true on prefix keys, never clears it.
-`ewm-input--sync-focus` (called synchronously from `post-command-hook`) always
-clears the flag first, then checks other conditions before syncing focus.
+`ewm-input--clear-prefix` (called synchronously from `post-command-hook`) clears
+the flag and calls `ewm--sync-focus` to restore focus to the pre-intercept surface.
 
 #### Implementation
 
@@ -91,17 +91,25 @@ clears the flag first, then checks other conditions before syncing focus.
 
 **Elisp side:**
 - `ewm--event-to-intercept-spec` adds `:is-prefix` based on `(keymapp (key-binding ...))`
-- `ewm--focus-locked-p` - centralized check for all focus sync paths:
+- `ewm--focus-target` computes the surface ID that should have focus, returning
+  `nil` to suppress sync during prefix sequences, prefix args, or transient maps.
+- `ewm--minibuffer-active-p` guards event handlers that must not steal focus from
+  the minibuffer (Focus, New surface, ActivateWorkspace).
+
+Focus suppression in `ewm--focus-target`:
 
 ```elisp
-(defun ewm--focus-locked-p ()
-  "Return non-nil if focus should not be synced to surfaces."
-  (or (active-minibuffer-window)
-      (> (minibuffer-depth) 0)
-      prefix-arg
+(cond
+ ((or prefix-arg
       (ewm-in-prefix-sequence-p)
       (and overriding-terminal-local-map
-           (keymapp overriding-terminal-local-map))))
+           (keymapp overriding-terminal-local-map)))
+  nil)  ; suppress — don't change focus
+ ((ewm--minibuffer-active-p)
+  (frame-parameter (selected-frame) 'ewm-surface-id))
+ (t
+  (or (buffer-local-value 'ewm-surface-id ...)
+      (frame-parameter (selected-frame) 'ewm-surface-id))))
 ```
 
 #### Critical Design Decisions
@@ -110,15 +118,15 @@ clears the flag first, then checks other conditions before syncing focus.
    (an intercepted non-prefix key), the flag must stay true. Only
    `post-command-hook` (after the full command completes) clears it.
 
-2. **Synchronous focus sync**: `ewm-input--sync-focus` runs directly from
+2. **Synchronous focus sync**: `ewm-input--clear-prefix` runs directly from
    `post-command-hook` — no timer or debouncing. This works because
    `post-command-hook` only fires after complete commands, not mid-sequence.
    Layout sync is decoupled via `window-selection-change-functions`.
 
-3. **Clear flag before checking**: `ewm-input--sync-focus` always clears
-   the prefix sequence flag before checking other conditions. This avoids a
-   circular dependency where the flag could never be cleared because the check
-   itself prevented clearing.
+3. **Only clear when active**: `ewm-input--clear-prefix` only acts when
+   `ewm-in-prefix-sequence-p` is true. It clears the flag and calls
+   `ewm--sync-focus` to restore focus. When no prefix sequence is active,
+   it's a no-op — other hooks handle normal focus changes.
 
 ### Mouse-Follows-Focus
 
@@ -167,6 +175,15 @@ Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 | `state` | Debug state requested | Populate `*ewm-state*` buffer |
 | `working_area` | Layer-shell exclusive zone changes | Adjust frame geometry |
 
+### Event Flow Diagram
+
+The following diagram shows how compositor events flow through Emacs handlers,
+including minibuffer guards that prevent focus-stealing during transient states.
+
+![Refocus event flow](refocus-diagram.png)
+
+Source: [refocus-diagram.mmd](refocus-diagram.mmd)
+
 ## Functions
 
 ### Compositor (Rust)
@@ -178,15 +195,17 @@ Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 ### Emacs (ewm.el / ewm-input.el / ewm-layout.el)
 
 - `ewm-focus(id)`: Request compositor to focus a surface (ModuleCommand::Focus)
-- `ewm--handle-focus(event)`: Handle Focus event from compositor. Finds the correct window using `ewm-input--pointer-in-window-p` when multiple windows show the same buffer.
-- `ewm-input--sync-focus`: `post-command-hook` handler. Clears prefix sequence flag, syncs compositor focus if not locked. Runs synchronously (no timer). Does NOT send layouts — layout sync is handled separately.
-- `ewm--focus-locked-p`: Centralized check — returns non-nil during minibuffer, prefix args, prefix key sequences
-- `ewm--on-window-selection-change`: `window-selection-change-functions` handler, sends layouts whenever selected window changes (covers keyboard navigation, click-to-focus, and programmatic selection)
+- `ewm--handle-focus(event)`: Handle Focus event from compositor. Guarded by `ewm--minibuffer-active-p`. Finds the correct window using `ewm-input--pointer-in-window-p` when multiple windows show the same buffer. Falls back to `pop-to-buffer-same-window` when no window displays the buffer.
+- `ewm--sync-focus`: Computes focus target via `ewm--focus-target`, deduplicates against current compositor focus, sends `ewm-focus` only when changed. Called from window/buffer change hooks and `ewm-input--clear-prefix`.
+- `ewm-input--clear-prefix`: `post-command-hook` handler. Only acts during prefix sequences: clears flag, calls `ewm--sync-focus` to restore focus. No-op otherwise.
+- `ewm--focus-target`: Returns target surface ID, or nil to suppress sync during prefix sequences, prefix args, or transient keymaps. During minibuffer, returns the frame's surface ID.
+- `ewm--minibuffer-active-p`: Guard used by event handlers (Focus, New surface, ActivateWorkspace) to prevent focus-stealing from minibuffer.
+- `ewm--on-window-selection-change`: `window-selection-change-functions` handler, sends layouts and syncs focus whenever selected window changes.
 
-Note: Focus sync and layout sync are decoupled. Focus sync runs synchronously
-from `post-command-hook`. Layout sync uses `window-selection-change-functions`
-which fires whenever selected-window changes, ensuring focused flags are always
-up to date regardless of how focus changed.
+Note: Focus sync and layout sync are coupled in `ewm--on-window-selection-change`
+(calls both `ewm-layout--send-layouts` and `ewm--sync-focus`) but can also fire
+independently — `ewm-input--clear-prefix` syncs focus without sending layouts,
+and `ewm--window-config-change` sends layouts without syncing focus.
 
 ## Multi-Monitor Behavior
 

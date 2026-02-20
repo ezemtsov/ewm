@@ -1,0 +1,84 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '14px' } } }%%
+flowchart TB
+    click_src["Pointer click<br/>input.rs:836"]
+    scroll_src["Scroll wheel<br/>input.rs:894"]
+    destroyed_src["Toplevel destroyed<br/>lib.rs:2984"]
+    activation_src["xdg_activation<br/>lib.rs:3222"]
+    foreign_src["foreign_toplevel<br/>lib.rs:3255"]
+    newsurface_src["New surface created"]
+    closesurface_src["Surface closed"]
+    waybar_src["Waybar click<br/>workspace protocol"]
+    hotplug_src["Hotplug / Resume"]
+
+    focusev["Event::Focus"]
+    newev["Event::New"]
+    closeev["Event::Close"]
+    wsev["Event::ActivateWorkspace"]
+    outev["Event::OutputsComplete"]
+
+    click_src -->|notify| focusev
+    scroll_src -->|notify| focusev
+    destroyed_src -->|notify| focusev
+    activation_src -->|notify| focusev
+    foreign_src -->|notify| focusev
+    newsurface_src --> newev
+    closesurface_src --> closeev
+    waybar_src --> wsev
+    hotplug_src --> outev
+
+    focusev -->|SIGUSR1| dispatch
+    newev -->|SIGUSR1| dispatch
+    closeev -->|SIGUSR1| dispatch
+    wsev -->|SIGUSR1| dispatch
+    outev -->|SIGUSR1| dispatch
+
+    dispatch["ewm--handle-event"]
+
+    dispatch -->|focus| hfocus["ewm--handle-focus"]
+    dispatch -->|new| hnew["ewm--handle-new-surface"]
+    dispatch -->|close| hclose["ewm--handle-close-surface"]
+    dispatch -->|activate_workspace| hws["ewm--handle-activate-workspace"]
+    dispatch -->|outputs_complete| hout["ewm--handle-outputs-complete"]
+
+    focus_guard{"minibuffer<br/>active?"}:::guard
+    focus_drop(["Dropped"]):::safe
+
+    hfocus --> focus_guard
+    focus_guard -->|Yes| focus_drop
+    focus_guard -->|No| lookup["Lookup buffer +<br/>find window"]
+    lookup --> winfound{"window<br/>found?"}
+    winfound -->|Yes| selwin["select-frame +<br/>select-window"]
+    winfound -->|No| popbuf["pop-to-buffer-same-window"]
+    selwin --> hooks["window hooks →<br/>send-layouts + sync-focus"]
+    popbuf --> hooks
+    hooks --> dedup{"already<br/>focused?"}
+    dedup -->|Yes| noop(["No-op"]):::safe
+    dedup -->|No| sendfocus["ewm-focus-module"]
+
+    hnew --> create_buf["Create buffer"]
+    create_buf --> new_guard{"minibuffer<br/>active?"}:::guard
+    new_guard -->|Yes| bufonly(["Buffer only"]):::safe
+    new_guard -->|No| target["select-frame for output +<br/>pop-to-buffer-same-window"]
+    target --> hooks
+
+    ws_guard{"minibuffer<br/>active?"}:::guard
+    ws_drop(["Dropped"]):::safe
+
+    hws --> ws_guard
+    ws_guard -->|Yes| ws_drop
+    ws_guard -->|No| tabswitch["tab-bar-select-tab"]
+    tabswitch --> hooks
+
+    hclose --> killbuf["kill-buffer"]:::muted
+    hout --> parity["apply-output-config +<br/>enforce parity +<br/>layout refresh +<br/>sync-focus"]:::muted
+
+    subgraph Legend
+        direction LR
+        leg_guard["Orange: minibuffer guard"]:::guard
+        leg_safe(["Green: safe"]):::safe
+        leg_muted["Gray: inherently safe"]:::muted
+    end
+
+    classDef safe fill:#d4edda,stroke:#28a745,color:#155724
+    classDef guard fill:#ffeeba,stroke:#856404,color:#856404,stroke-width:2px
+    classDef muted fill:#e2e3e5,stroke:#6c757d,color:#383d41
