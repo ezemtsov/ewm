@@ -87,7 +87,6 @@ Load `ewm.el` in your Emacs:
 
 ```elisp
 (use-package ewm
-  :load-path "~/git/ewm/lisp"
   :custom
   ;; Optional: configure output modes
   (ewm-output-config '(("DP-1" :width 2560 :height 1440)))
