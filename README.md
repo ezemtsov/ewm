@@ -2,7 +2,7 @@
 
 ![EWM Screenshot](docs/ewm-showcase.png)
 
-> **Disclaimer**: This project was vibe-coded together with Claude Code over a week as an experiment to see how far I could progress without getting drawn into the details. As a long-time EXWM user, the idea of having a modern Wayland-based EXWM implementation intrigued me a lot, but not enough to spend months implementing everything by hand. With that in mind, please expect possible issues, the project is in active development.
+> **Disclaimer**: Writing a Wayland compositor from scratch is a staggering amount of work. I wanted to switch from EXWM as soon as possible, so the initial bootstrap was done with Claude, which helped a lot in reverse-engineering the brilliant [niri](https://github.com/YaLTeR/niri) codebase and surgically extracting the pieces relevant to EWM. Inherently, this means the codebase still needs validation and cleanup, which is the current priority.
 
 ## Video Demo
 
