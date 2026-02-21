@@ -92,8 +92,10 @@ converts to global positions using output geometry + working area offset."
   (ewm-layout--refresh))
 
 (defun ewm--on-minibuffer-setup ()
-  "Refresh layout and resolve focus when minibuffer activates."
-  (ewm-layout--refresh)
+  "Resolve focus when minibuffer activates.
+Layout is not refreshed here because mini-window auto-resize
+happens during redisplay, after this hook runs.  The correction
+comes from `window-size-change-functions' on the next cycle."
   (ewm--sync-focus))
 
 (defun ewm--on-minibuffer-exit ()
