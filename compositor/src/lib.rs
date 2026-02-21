@@ -549,7 +549,7 @@ pub struct Ewm {
     // Emacs client tracking - used to identify which surfaces belong to Emacs
     // vs external applications (for key interception)
     pub emacs_pid: Option<u32>,
-    pub emacs_surfaces: std::collections::HashSet<u32>,
+    pub emacs_surfaces: HashMap<u32, String>,
 
     // Screenshot request
     pub pending_screenshot: Option<String>,
@@ -751,7 +751,7 @@ impl Ewm {
             keyboard_focus_dirty: false,
             input_configs: Vec::new(),
             emacs_pid: None,
-            emacs_surfaces: std::collections::HashSet::new(),
+            emacs_surfaces: HashMap::new(),
             pending_screenshot: None,
             output_state: HashMap::new(),
             monitors_active: true,
@@ -1594,7 +1594,7 @@ impl Ewm {
         let windows: Vec<WindowInfo> = self
             .id_windows
             .iter()
-            .filter(|(id, _)| !self.emacs_surfaces.contains(id))
+            .filter(|(id, _)| !self.emacs_surfaces.contains_key(id))
             .filter_map(|(&id, window)| {
                 let surface = window.wl_surface()?.into_owned();
                 let info = self.surface_info.get(&id)?;
@@ -1692,7 +1692,7 @@ impl Ewm {
 
     /// Check if focus is on an Emacs surface (for key interception decisions)
     pub fn is_focus_on_emacs(&self) -> bool {
-        self.emacs_surfaces.contains(&self.focused_surface_id)
+        self.emacs_surfaces.contains_key(&self.focused_surface_id)
     }
 
     /// Set focus to a surface and notify Emacs.
@@ -1820,7 +1820,7 @@ impl Ewm {
         let text_input = self.seat.text_input();
 
         // Skip if this is an Emacs surface
-        let is_emacs = surface_id.map_or(false, |id| self.emacs_surfaces.contains(&id));
+        let is_emacs = surface_id.map_or(false, |id| self.emacs_surfaces.contains_key(&id));
 
         if is_emacs || surface.is_none() {
             text_input.leave();
@@ -2049,17 +2049,12 @@ impl Ewm {
     pub fn get_emacs_surface_for_focused_output(&self) -> Option<u32> {
         let focused_output = self.get_focused_output()?;
 
-        // Find an Emacs surface on the same output
-        for &emacs_id in &self.emacs_surfaces {
-            if self.find_surface_output(emacs_id).map(|o| o.name()).as_ref()
-                == Some(&focused_output)
-            {
-                return Some(emacs_id);
-            }
-        }
-
-        // Fallback to first Emacs surface
-        self.emacs_surfaces.iter().next().copied()
+        // Find an Emacs surface assigned to the focused output
+        self.emacs_surfaces
+            .iter()
+            .find(|(_, out)| *out == &focused_output)
+            .map(|(&id, _)| id)
+            .or_else(|| self.emacs_surfaces.keys().next().copied())
     }
 
     /// Recalculate total output size from current space geometry
@@ -2149,37 +2144,32 @@ impl Ewm {
             None => return,
         };
 
-        // Find Emacs frame surfaces on this output and update their position/size
+        // Find Emacs frame surfaces assigned to this output and update their position/size
         for (&id, window) in &self.id_windows {
-            // Only update Emacs surfaces
-            if !self.emacs_surfaces.contains(&id) {
+            // Only update Emacs surfaces assigned to this output
+            if self.emacs_surfaces.get(&id).map(|s| s.as_str()) != Some(&*output.name()) {
                 continue;
             }
 
-            // Check if this window is on the target output by comparing position
-            if let Some(window_loc) = self.space.element_location(window) {
-                if output_geo.contains(window_loc) {
-                    // Reposition to working area origin (relative to output)
-                    let new_pos = (
-                        output_geo.loc.x + working_area.loc.x,
-                        output_geo.loc.y + working_area.loc.y,
-                    );
+            // Reposition to working area origin (relative to output)
+            let new_pos = (
+                output_geo.loc.x + working_area.loc.x,
+                output_geo.loc.y + working_area.loc.y,
+            );
 
-                    debug!(
-                        "Updating Emacs frame {} position to ({}, {}) size {}x{}",
-                        id, new_pos.0, new_pos.1, working_area.size.w, working_area.size.h
-                    );
+            debug!(
+                "Updating Emacs frame {} position to ({}, {}) size {}x{}",
+                id, new_pos.0, new_pos.1, working_area.size.w, working_area.size.h
+            );
 
-                    self.space.map_element(window.clone(), new_pos, false);
+            self.space.map_element(window.clone(), new_pos, false);
 
-                    // Resize to working area
-                    if let Some(toplevel) = window.toplevel() {
-                        toplevel.with_pending_state(|state| {
-                            state.size = Some(working_area.size);
-                        });
-                        toplevel.send_configure();
-                    }
-                }
+            // Resize to working area
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some(working_area.size);
+                });
+                toplevel.send_configure();
             }
         }
 
@@ -2365,7 +2355,6 @@ impl Ewm {
         let is_emacs = self.is_emacs_client(surface.wl_surface());
         if is_emacs {
             info!("Surface {} is an Emacs surface", id);
-            self.emacs_surfaces.insert(id);
         }
 
         let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
@@ -2393,6 +2382,11 @@ impl Ewm {
         // Determine target output
         let frame_output = module::take_pending_frame_output();
         let target_output = frame_output.clone().or_else(|| self.active_output());
+
+        if is_emacs {
+            self.emacs_surfaces
+                .insert(id, target_output.clone().unwrap_or_default());
+        }
 
         // Associate window with target output for scale detection.
         // Output association is managed explicitly — not via space.refresh().
@@ -2512,13 +2506,8 @@ impl Ewm {
                     .and_then(|out| {
                         self.emacs_surfaces
                             .iter()
-                            .find(|&&eid| {
-                                self.find_surface_output(eid)
-                                    .map(|o| o.name())
-                                    .as_ref()
-                                    == Some(out)
-                            })
-                            .copied()
+                            .find(|(_, o)| o.as_str() == out)
+                            .map(|(&eid, _)| eid)
                     })
                     .or(Some(1));
             }
@@ -2580,7 +2569,7 @@ impl Ewm {
         };
 
         // Skip title change events for Emacs surfaces
-        if self.emacs_surfaces.contains(&id) {
+        if self.emacs_surfaces.contains_key(&id) {
             return;
         }
 
