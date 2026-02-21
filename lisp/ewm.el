@@ -267,7 +267,7 @@ Deletes the frame for that output. Surface buffers remain in Emacs but are
 hidden by the compositor since no windows display them."
   (pcase-let (((map ("name" name)) event))
     (when-let ((frame (ewm--frame-for-output name)))
-      (delete-frame frame))))
+      (delete-frame frame t))))
 
 (defun ewm--rename-buffer ()
   "Rename the current surface buffer based on app and title.
@@ -493,6 +493,20 @@ The frame will be fully assigned when the compositor responds."
                    (lambda ()
                      (ignore-errors (delete-frame frame))))))))
 
+(defun ewm--prevent-frame-deletion (orig-fun &optional frame force)
+  "Around advice for `delete-frame' to protect output frames.
+Prevents deletion of the last frame for an output unless FORCE is non-nil."
+  (let* ((f (or frame (selected-frame)))
+         (output (frame-parameter f 'ewm-output)))
+    (if (and output (not force)
+             (not (cl-some (lambda (other)
+                             (and (not (eq other f))
+                                  (string= output
+                                           (frame-parameter other 'ewm-output))))
+                           (frame-list))))
+        (message "Cannot delete the only frame on output %s" output)
+      (funcall orig-fun frame force))))
+
 (defun ewm--enforce-frame-output-parity ()
   "Ensure one frame per output. Delete orphans and duplicates."
   (let ((seen (make-hash-table :test 'equal)))
@@ -662,6 +676,7 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
   (setq ewm--saved-interprogram-cut-function interprogram-cut-function)
   (setq interprogram-cut-function #'ewm--interprogram-cut-function)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
+  (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion)
   (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
 
 (defun ewm--mode-disable ()
@@ -672,6 +687,7 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
   (ewm--disable-process-advice)
   (setq interprogram-cut-function ewm--saved-interprogram-cut-function)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
+  (advice-remove 'delete-frame #'ewm--prevent-frame-deletion)
   (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Stop module mode if active
   (when ewm--module-mode
