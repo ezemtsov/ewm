@@ -59,7 +59,7 @@ let
     systemctl --user --wait start ewm.service
 
     # Force stop of graphical-session.target on exit
-    systemctl --user start --job-mode=replace-irreversibly ewm-shutdown.target
+    systemctl --user start --job-mode=replace-irreversibly ewm-session-shutdown.target
 
     # Clean up environment
     systemctl --user unset-environment WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
