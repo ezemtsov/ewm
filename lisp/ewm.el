@@ -165,7 +165,7 @@ Example:
       ("text-input-activated" (ewm--handle-text-input-activated))
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
       ("key" (ewm--handle-key event))
-      ("state" (ewm--handle-state event))
+      ("debug_state" (ewm--handle-debug-state event))
       ("working_area" (ewm--handle-working-area event))
       ("selection-changed" (ewm--handle-selection-changed event))
       ("activate_workspace" (ewm--handle-activate-workspace event)))))
@@ -301,8 +301,8 @@ re-syncs layout and focus with the compositor."
 Signals that the compositor is fully initialized."
   (setq ewm--compositor-ready t))
 
-(defun ewm--handle-state (event)
-  "Handle state event from compositor.
+(defun ewm--handle-debug-state (event)
+  "Handle debug_state event from compositor.
 Displays the compositor state in a buffer for debugging."
   (let ((json (map-elt event "json")))
     (with-current-buffer (get-buffer-create "*ewm-state*")
@@ -388,7 +388,7 @@ Coordinates are relative to the output's working area."
   "Request compositor state dump.
 State will be displayed in *ewm-state* buffer when received."
   (interactive)
-  (ewm-get-state-module)
+  (ewm-get-debug-state-module)
   (ewm--log "Requested compositor state..."))
 
 (defun ewm-debug-mode (&optional enable)

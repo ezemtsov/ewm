@@ -542,6 +542,8 @@ pub struct Ewm {
     pub focused_surface_id: u32,
     pub keyboard_focus: Option<WlSurface>,
     pub keyboard_focus_dirty: bool,
+    /// Output geometry or working areas changed; shared output_offsets need recomputation.
+    pub output_offsets_dirty: bool,
 
     // Libinput device configuration
     pub input_configs: Vec<input::InputConfigEntry>,
@@ -749,6 +751,7 @@ impl Ewm {
             focused_surface_id: 0,
             keyboard_focus: None,
             keyboard_focus_dirty: false,
+            output_offsets_dirty: true,
             input_configs: Vec::new(),
             emacs_pid: None,
             emacs_surfaces: HashMap::new(),
@@ -1709,7 +1712,6 @@ impl Ewm {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
         self.keyboard_focus_dirty = true;
-        crate::module::set_focused_id(id);
         if notify_emacs {
             self.queue_event(Event::Focus { id });
         }
@@ -2072,13 +2074,13 @@ impl Ewm {
 
     /// Send output detected event to Emacs
     pub fn send_output_detected(&mut self, output: OutputInfo) {
-        crate::module::set_output_offset(&output.name, output.x, output.y);
+        self.output_offsets_dirty = true;
         self.queue_event(Event::OutputDetected(output));
     }
 
     /// Send output disconnected event to Emacs
     pub fn send_output_disconnected(&mut self, name: &str) {
-        crate::module::remove_output(name);
+        self.output_offsets_dirty = true;
         self.queue_event(Event::OutputDisconnected {
             name: name.to_string(),
         });
@@ -2201,15 +2203,7 @@ impl Ewm {
             );
 
             self.working_areas.insert(output_name.clone(), working_area);
-
-            // Update module offset to reflect frame origin (output pos + working area)
-            if let Some(output_geo) = self.space.output_geometry(output) {
-                crate::module::set_output_offset(
-                    &output_name,
-                    output_geo.loc.x + working_area.loc.x,
-                    output_geo.loc.y + working_area.loc.y,
-                );
-            }
+            self.output_offsets_dirty = true;
 
             // Update Emacs frames to fit new working area
             self.update_frames_for_working_area(output);
@@ -3690,9 +3684,38 @@ impl State {
         // the Layout command, not via automatic spatial overlap detection.
         self.ewm.cleanup_dead_windows();
 
+        // Update shared state snapshot for Emacs to read synchronously
+        self.update_shared_state();
+
         // Flush Wayland clients
         if let Err(e) = self.ewm.display_handle.flush_clients() {
             tracing::warn!("Failed to flush Wayland clients: {e}");
+        }
+    }
+
+    /// Update the shared state snapshot that Emacs reads synchronously.
+    /// Called once per tick, after all command processing and state changes.
+    fn update_shared_state(&mut self) {
+        let mut shared = module::shared_state().lock().unwrap();
+        shared.focused_surface_id = self.ewm.focused_surface_id;
+        shared.pointer_location = self.ewm.pointer_location;
+        if self.ewm.output_offsets_dirty {
+            self.ewm.output_offsets_dirty = false;
+            // Derive output_offsets from output geometry + working area.
+            // Falls back to raw output origin when working_areas not yet populated
+            // (before first layer-shell commit).
+            shared.output_offsets = self
+                .ewm
+                .space
+                .outputs()
+                .filter_map(|o| {
+                    let geo = self.ewm.space.output_geometry(o)?;
+                    let wa = self.ewm.working_areas.get(&o.name());
+                    let x = geo.loc.x + wa.map_or(0, |r| r.loc.x);
+                    let y = geo.loc.y + wa.map_or(0, |r| r.loc.y);
+                    Some((o.name(), (x, y)))
+                })
+                .collect();
         }
     }
 
@@ -3719,7 +3742,6 @@ impl State {
             }
             ModuleCommand::WarpPointer { x, y } => {
                 self.ewm.pointer_location = (x, y);
-                module::set_pointer_location(x, y);
                 let pointer = self.ewm.pointer.clone();
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self
@@ -3862,7 +3884,7 @@ impl State {
                     current: self.ewm.xkb_current_layout,
                 });
             }
-            ModuleCommand::GetState => {
+            ModuleCommand::GetDebugState => {
                 let id_window_keys: Vec<u32> = self.ewm.id_windows.keys().copied().collect();
                 let layer_surfaces_info = self.ewm.get_layer_surfaces_info();
                 let state = serde_json::json!({
@@ -3892,13 +3914,12 @@ impl State {
                     }).collect::<Vec<_>>(),
                     "pending_frame_outputs": module::peek_pending_frame_outputs(),
                     "in_prefix_sequence": module::get_in_prefix_sequence(),
-                    // Debug info
                     "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
                     "pending_commands": module::peek_commands(),
                     "focus_history": module::get_focus_history(),
                 });
                 let json = serde_json::to_string_pretty(&state).unwrap_or_default();
-                self.ewm.queue_event(Event::State { json });
+                self.ewm.queue_event(Event::DebugState { json });
             }
             ModuleCommand::CreateActivationToken => {
                 // Create an activation token for Emacs to pass to spawned processes

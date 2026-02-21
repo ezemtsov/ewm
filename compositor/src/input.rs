@@ -260,7 +260,6 @@ pub fn handle_keyboard_event(
             module::record_focus(emacs_id, "intercept_redirect", Some(&context));
             state.ewm.focused_surface_id = emacs_id;
             state.ewm.keyboard_focus_dirty = false; // Immediate path — we sync right here
-            crate::module::set_focused_id(emacs_id);
             if let Some(window) = state.ewm.id_windows.get(&emacs_id) {
                 if let Some(surface) = window.wl_surface() {
                     let emacs_surface: WlSurface = surface.into_owned();
@@ -371,7 +370,6 @@ pub fn restore_focus(state: &mut State, surface_id: u32) {
     if state.ewm.id_windows.contains_key(&surface_id) {
         state.ewm.focused_surface_id = surface_id;
         state.ewm.keyboard_focus_dirty = true;
-        crate::module::set_focused_id(surface_id);
         state.sync_keyboard_focus();
     }
 }
@@ -704,7 +702,6 @@ pub fn handle_pointer_motion<B: InputBackend>(
     let new_x = (current_x + delta.x).clamp(0.0, output_size.w as f64);
     let new_y = (current_y + delta.y).clamp(0.0, output_size.h as f64);
     state.ewm.pointer_location = (new_x, new_y);
-    module::set_pointer_location(new_x, new_y);
 
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
@@ -757,7 +754,6 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     let output_size = state.ewm.output_size;
     let pos = event.position_transformed(output_size);
     state.ewm.pointer_location = (pos.x, pos.y);
-    module::set_pointer_location(pos.x, pos.y);
 
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();

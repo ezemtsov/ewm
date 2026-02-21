@@ -3,10 +3,11 @@
 //! # Design Invariants
 //!
 //! 1. **Thread safety**: The compositor runs in a separate thread from Emacs.
-//!    Communication uses lock-free queues and atomic flags:
+//!    Communication uses queues and shared state:
 //!    - `COMMAND_QUEUE`: Emacs → Compositor commands (layouts, focus, etc.)
 //!    - `EVENT_QUEUE`: Compositor → Emacs events (new surfaces, focus changes)
-//!    - Atomic flags for simple state (`FOCUSED_SURFACE_ID`, `IN_PREFIX_SEQUENCE`)
+//!    - `SHARED_STATE`: Compositor → Emacs snapshot (focus, pointer, outputs)
+//!    - `IN_PREFIX_SEQUENCE`: Bidirectional atomic (hot input path)
 //!
 //! 2. **No blocking**: Module functions called from Emacs must never block.
 //!    They push to queues and return immediately. The compositor processes
@@ -30,14 +31,15 @@
 //! - Emacs produces: layout commands, focus requests, key interception config
 //! - Compositor produces: new surface events, title changes, focus notifications
 //!
-//! Lock-free queues provide the necessary synchronization with minimal overhead.
-//! The compositor drains all pending commands at the start of each event loop
-//! iteration, ensuring consistent state.
+//! State that Emacs needs to read synchronously (focus ID, pointer location,
+//! output offsets) is collected into a single `SharedState` mutex, updated once
+//! per compositor tick in `update_shared_state()`. This gives consistent
+//! snapshots without scattered atomics.
 
 use emacs::{defun, Env, IntoLisp, Result, Value};
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 
@@ -50,21 +52,19 @@ use crate::{InterceptedKey, KeyId, LayoutEntry};
 // Shared State (read by Emacs, written by compositor)
 // ============================================================================
 
-/// Current focused surface ID (updated by compositor, queried by Emacs)
-static FOCUSED_SURFACE_ID: AtomicU32 = AtomicU32::new(0);
-
-/// Current pointer location in compositor coordinates (updated by compositor, queried by Emacs)
-static POINTER_LOCATION: OnceLock<Mutex<(f64, f64)>> = OnceLock::new();
-
-fn pointer_location() -> &'static Mutex<(f64, f64)> {
-    POINTER_LOCATION.get_or_init(|| Mutex::new((0.0, 0.0)))
+/// Compositor state snapshot, updated once per tick in `update_shared_state()`.
+/// Only contains fields that Emacs reads synchronously via per-field defuns.
+#[derive(Default)]
+pub struct SharedState {
+    pub focused_surface_id: u32,
+    pub pointer_location: (f64, f64),
+    pub output_offsets: HashMap<String, (i32, i32)>,
 }
 
-/// Output offsets: name -> (x, y)
-static OUTPUT_OFFSETS: OnceLock<Mutex<HashMap<String, (i32, i32)>>> = OnceLock::new();
+static SHARED_STATE: OnceLock<Mutex<SharedState>> = OnceLock::new();
 
-fn output_offsets() -> &'static Mutex<HashMap<String, (i32, i32)>> {
-    OUTPUT_OFFSETS.get_or_init(|| Mutex::new(HashMap::new()))
+pub fn shared_state() -> &'static Mutex<SharedState> {
+    SHARED_STATE.get_or_init(|| Mutex::new(SharedState::default()))
 }
 
 /// Pending frame-to-output assignments (synchronous to avoid race with surface creation)
@@ -115,53 +115,31 @@ pub fn get_in_prefix_sequence() -> bool {
     IN_PREFIX_SEQUENCE.load(Ordering::Relaxed)
 }
 
-/// Update focused surface ID (called by compositor)
-pub fn set_focused_id(id: u32) {
-    FOCUSED_SURFACE_ID.store(id, Ordering::Relaxed);
-}
+// Per-field accessors: thin defuns for hot-path reads.
+// Each locks SharedState briefly and returns a single value — no alist construction.
 
-/// Update output offset (called by compositor).
-/// This is the Emacs frame origin in compositor-global coordinates:
-/// output position + working area origin within that output.
-pub fn set_output_offset(name: &str, x: i32, y: i32) {
-    output_offsets()
-        .lock()
-        .unwrap()
-        .insert(name.to_string(), (x, y));
-}
-
-/// Remove output (called by compositor)
-pub fn remove_output(name: &str) {
-    output_offsets().lock().unwrap().remove(name);
-}
-
-/// Update pointer location (called by compositor)
-pub fn set_pointer_location(x: f64, y: f64) {
-    *pointer_location().lock().unwrap() = (x, y);
-}
-
-/// Query focused surface ID (called by Emacs)
+/// Query focused surface ID (called by Emacs on every post-command-hook).
 #[defun]
 fn get_focused_id(_: &Env) -> Result<i64> {
-    Ok(FOCUSED_SURFACE_ID.load(Ordering::Relaxed) as i64)
+    Ok(shared_state().lock().unwrap().focused_surface_id as i64)
 }
 
-/// Query output offset (called by Emacs)
-/// Returns (x . y) cons cell, or nil if output not found
+/// Query output offset (called by Emacs for frame positioning).
+/// Returns (x . y) cons cell, or nil if output not found.
 #[defun]
 fn get_output_offset<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
-    let offsets = output_offsets().lock().unwrap();
-    match offsets.get(&name) {
+    let state = shared_state().lock().unwrap();
+    match state.output_offsets.get(&name) {
         Some((x, y)) => env.call("cons", (*x as i64, *y as i64)),
         None => ().into_lisp(env),
     }
 }
 
-/// Query pointer location (called by Emacs)
-/// Returns (x . y) cons cell in compositor coordinates
+/// Query pointer location (called by Emacs for mouse-follows-focus).
+/// Returns (x . y) cons cell in compositor coordinates.
 #[defun]
 fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
-    let (x, y) = *pointer_location().lock().unwrap();
+    let (x, y) = shared_state().lock().unwrap().pointer_location;
     env.call("cons", (x, y))
 }
 
@@ -210,7 +188,8 @@ pub enum ModuleCommand {
         layout: String,
     },
     GetLayouts,
-    GetState,
+    /// Request verbose state dump for debugging (ewm-show-state)
+    GetDebugState,
     /// Request activation token creation (compositor will push to ACTIVATION_TOKEN_POOL)
     CreateActivationToken,
     /// Set clipboard selection from Emacs
@@ -535,8 +514,8 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
             }
             list(items)
         }
-        Event::State { json } => list(vec![
-            cons("event", "state".into_lisp(env)?)?,
+        Event::DebugState { json } => list(vec![
+            cons("event", "debug_state".into_lisp(env)?)?,
             cons("json", json.into_lisp(env)?)?,
         ]),
         Event::WorkingArea {
@@ -977,10 +956,10 @@ fn get_layouts_module(_: &Env) -> Result<()> {
     Ok(())
 }
 
-/// Request compositor state dump (module mode).
+/// Request verbose compositor state dump for debugging (module mode).
 #[defun]
-fn get_state_module(_: &Env) -> Result<()> {
-    push_command(ModuleCommand::GetState);
+fn get_debug_state_module(_: &Env) -> Result<()> {
+    push_command(ModuleCommand::GetDebugState);
     Ok(())
 }
 

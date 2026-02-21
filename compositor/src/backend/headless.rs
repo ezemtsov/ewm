@@ -271,6 +271,7 @@ impl HeadlessBackend {
         ewm.send_scale_transform_to_output_surfaces(&output);
 
         ewm.recalculate_output_size();
+        ewm.output_offsets_dirty = true;
         ewm.check_working_area_change(&output);
         ewm.queue_redraw_all();
 

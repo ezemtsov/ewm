@@ -647,6 +647,7 @@ impl DrmBackendState {
 
         // --- Recalculate total output size, working areas, and queue redraw ---
         ewm.recalculate_output_size();
+        ewm.output_offsets_dirty = true;
         ewm.check_working_area_change(&output);
         ewm.queue_redraw_all();
 
