@@ -114,6 +114,7 @@ binding with `:bind (:map ewm-mode-map ...)` in `use-package`.
 | `s-d`         | `ewm-launch-app`            | Launch XDG application   |
 | `s-t`         | `tab-new`                   | New workspace tab        |
 | `s-w`         | `tab-close`                 | Close workspace tab      |
+| `s-f`         | `ewm-toggle-fullscreen`     | Toggle surface fullscreen|
 | `s-1`..`s-9`  | `ewm-tab-select-or-return`  | Switch to tab N          |
 
 When the compositor starts, Wayland surfaces appear as special buffers. Use standard Emacs commands:
@@ -190,11 +191,14 @@ libinput list-devices                         # system-wide
 - Wayland surfaces as Emacs buffers
 - Automatic layout synchronization
 - Per-output declarative layout (surfaces can span multiple outputs)
+- Per-window fullscreen (XDG fullscreen protocol, `s-f` toggle)
 - Prefix key interception (compositor forwards to Emacs)
 - Line/char mode (pass all keys to app, or only specific ones)
 - Client-side decoration auto-disable
 - DRM backend with multi-monitor support (hotplug, per-output Emacs frames)
+- Lid close/open handling (laptop panel off when external monitor connected)
 - Layer-shell protocol (waybar, notifications, etc.)
+- Workspace protocol (ext-workspace-v1, tab-bar integration)
 - Screen sharing via xdg-desktop-portal (PipeWire DMA-BUF)
 - Input method support (type in any script via Emacs input methods)
 - Clipboard integration with Emacs kill-ring as central hub

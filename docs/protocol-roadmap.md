@@ -4,25 +4,26 @@ This document outlines Wayland protocols to implement for broader application co
 
 ## Currently Implemented
 
-| Protocol | Status | Notes |
-|----------|--------|-------|
-| `wl-compositor` | Done | Core Wayland |
-| `xdg-shell` | Done | Window management |
-| `xdg-decoration` | Done | Server-side decorations |
-| `wlr-layer-shell` | Done | Panels, notifications, wallpapers |
-| `wlr-screencopy` | Done | Screenshot/recording |
-| `zwp-text-input-v3` | Done | Input method support |
-| `zwp-input-method-v2` | Done | Emacs as input method |
-| `linux-dmabuf` | Done | Efficient buffer sharing |
-| `xdg-output` | Done | Multi-monitor info |
-| `xdg-activation-v1` | Done | Focus requests from apps |
-| `wlr-foreign-toplevel-v1` | Done | Exposes windows to external tools |
-| `ext-session-lock-v1` | Done | Secure screen locking (swaylock) |
-| `ext-idle-notify-v1` | Done | Idle detection (swayidle) |
-| `wlr-data-control-v1` | Done | Clipboard access for external tools (wl-copy, cliphist) |
-| `zwp-primary-selection-v1` | Done | Primary (middle-click) selection |
-| `wp-fractional-scale-v1` | Done | Fractional output scaling (1.25x, 1.5x, etc.) |
-| `wp-viewporter` | Done | Buffer scaling/cropping |
+| Protocol | Notes |
+|----------|-------|
+| `wl-compositor` | Core Wayland |
+| `xdg-shell` | Window management (including fullscreen) |
+| `xdg-decoration` | Server-side decorations |
+| `wlr-layer-shell` | Panels, notifications, wallpapers |
+| `wlr-screencopy` | Screenshot/recording |
+| `zwp-text-input-v3` | Input method support |
+| `zwp-input-method-v2` | Emacs as input method |
+| `linux-dmabuf` | Efficient buffer sharing |
+| `xdg-output` | Multi-monitor info |
+| `xdg-activation-v1` | Focus requests from apps |
+| `wlr-foreign-toplevel-v1` | Exposes windows to external tools |
+| `ext-session-lock-v1` | Secure screen locking (swaylock) |
+| `ext-idle-notify-v1` | Idle detection (swayidle) |
+| `ext-workspace-v1` | Workspace state for panels (tab-bar integration) |
+| `wlr-data-control-v1` | Clipboard access for external tools (wl-copy, cliphist) |
+| `zwp-primary-selection-v1` | Primary (middle-click) selection |
+| `wp-fractional-scale-v1` | Fractional output scaling (1.25x, 1.5x, etc.) |
+| `wp-viewporter` | Buffer scaling/cropping |
 
 ## Priority 1: Application Compatibility
 
@@ -76,12 +77,10 @@ This document outlines Wayland protocols to implement for broader application co
 **Purpose**: Standardized clipboard access (replaces wlr-data-control)
 
 **Enables**:
-- DankMaterialShell (quickshell) clipboard integration
 - Future-proof clipboard manager support
+- Broader compositor compatibility
 
 **Complexity**: Low - Same pattern as wlr-data-control, already implemented
-
-**Blocked**: Requires Smithay upgrade (0.4 → 0.7+), module added post-`0c2230f`
 
 ## Priority 2: Enhanced Features
 
@@ -128,18 +127,6 @@ This document outlines Wayland protocols to implement for broader application co
 
 **Complexity**: Low
 
-## Priority 3: Workspace Protocols
-
-These are lower priority since EWM uses Emacs for workspace management.
-
-### ext-workspace-v1 (proposed)
-
-**Purpose**: Standard workspace protocol
-
-**Status**: Not yet standardized, compositor-specific alternatives exist
-
-**Note**: EWM's workspace model is fundamentally different (Emacs buffers/windows)
-
 ## Implementation Notes
 
 ### Adding a New Protocol
@@ -155,11 +142,12 @@ These are lower priority since EWM uses Emacs for workspace management.
 
 | Protocol | Test With | Status |
 |----------|-----------|--------|
-| foreign-toplevel | `wlrctl`, DankMaterialShell | ✓ |
-| idle-notify | `swayidle` | ✓ |
-| session-lock | `swaylock` | ✓ |
-| activation | Launch apps from terminal | ✓ |
-| data-control | `wl-copy`, `wl-paste`, `cliphist` | ✓ |
+| foreign-toplevel | `wlrctl`, DankMaterialShell | Done |
+| idle-notify | `swayidle` | Done |
+| session-lock | `swaylock` | Done |
+| activation | Launch apps from terminal | Done |
+| data-control | `wl-copy`, `wl-paste`, `cliphist` | Done |
+| workspace | waybar, DankMaterialShell | Done |
 | pointer-constraints | `pointer-constraints-demo` | TODO |
 | idle-inhibit | Video player, `wayland-info` | TODO |
 
@@ -167,5 +155,5 @@ These are lower priority since EWM uses Emacs for workspace management.
 
 - [Wayland Protocol Registry](https://wayland.app/protocols/)
 - [wlroots protocols](https://gitlab.freedesktop.org/wlroots/wlr-protocols)
-- [niri source](https://github.com/YaLTeR/niri) - Excellent reference implementation
+- [niri source](https://github.com/YaLTeR/niri) - Reference implementation
 - [Smithay protocols](https://github.com/Smithay/smithay)
