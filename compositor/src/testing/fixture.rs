@@ -76,8 +76,8 @@ impl Fixture {
         self.clients.get_client_mut(id)
     }
 
-    /// Get total number of test clients
-    pub fn client_count(&self) -> usize {
+    /// Get total number of test surfaces across all clients
+    pub fn surface_count(&self) -> usize {
         self.clients.total_surfaces()
     }
 

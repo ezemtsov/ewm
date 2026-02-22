@@ -15,9 +15,12 @@
 //!    and its ID becomes invalid.
 //!
 //! 3. **Redraw state machine**: Each output has independent redraw state:
-//!    `Idle` → `Queued` → `WaitingForVBlank` → `Idle`
-//!    This prevents double-buffering issues and busy-waiting. The state is owned
-//!    by `Ewm::output_state`, not the backend.
+//!    `Idle` → `Queued` → `WaitingForVBlank` → `Idle` (real VBlank path)
+//!    `Idle` → `Queued` → `WaitingForEstimatedVBlank` → `Idle` (no-damage path)
+//!    The estimated-VBlank variants use a timer when no damage occurs.
+//!    `WaitingForVBlank { redraw_needed }` and `WaitingForEstimatedVBlankAndQueued`
+//!    handle redraws requested while waiting. State is owned by
+//!    `Ewm::output_state`, not the backend.
 //!
 //! 4. **Emacs ownership**: The compositor runs as a thread within Emacs.
 //!    Emacs controls window layout and focus policy. The compositor handles
@@ -27,7 +30,7 @@
 //!    - Events flow back to Emacs via the event queue
 //!
 //! 5. **Thread safety**: Communication between Emacs and compositor uses
-//!    lock-free queues and atomic flags. The module interface (module.rs)
+//!    mutex-protected queues and atomic flags. The module interface (module.rs)
 //!    provides the synchronization boundary.
 
 pub mod backend;

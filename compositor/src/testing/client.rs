@@ -84,7 +84,7 @@ impl TestSurface {
 /// let mut client = TestClient::new(ClientId(1));
 ///
 /// // Create a toplevel surface
-/// let surface_id = client.create_toplevel(&mut fixture);
+/// let surface_id = client.create_toplevel(fixture.ewm());
 ///
 /// // Dispatch to process the surface
 /// fixture.dispatch();

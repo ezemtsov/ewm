@@ -6,7 +6,7 @@
 //! # Design Invariants
 //!
 //! 1. **Key interception**: Super-prefixed bindings are intercepted and redirected to
-//!    Emacs. The intercepted key list comes from Emacs via `ewm-set-intercepted-keys`.
+//!    Emacs. The intercepted key list comes from Emacs via `ewm-intercept-keys-module`.
 //!    Keys are matched using raw Latin keysyms to work regardless of XKB layout.
 //!
 //! 2. **Focus synchronization**: Before processing any key, we check for pending focus

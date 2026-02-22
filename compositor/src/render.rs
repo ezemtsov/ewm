@@ -12,11 +12,12 @@
 //!    critical for efficient rendering, accurate damage tracking, and screen sharing.
 //!
 //! 2. **Rendering order**: Elements are collected front-to-back:
-//!    Overlay → Cursor → Top → Popups → Windows → Bottom → Background
+//!    Cursor → Overlay → Top → Popups → Windows → Bottom → Background
 //!    This order matches typical desktop compositor layering.
 //!
-//! 3. **View-based rendering**: Surfaces with Emacs-managed views are rendered at
-//!    view positions. Surfaces without views use space positions (for Emacs frames).
+//! 3. **Layout-based rendering**: Surfaces with entries in `output_layouts` are
+//!    rendered at their declared positions. Surfaces without layout entries use
+//!    space positions (for Emacs frames).
 
 use std::ptr;
 

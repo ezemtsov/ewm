@@ -6,13 +6,11 @@
 //! # Design Invariants
 //!
 //! 1. **No hardware access**: The headless backend never touches real GPUs or displays.
-//!    All rendering is performed to software buffers using GLES via surfaceless contexts.
+//!    The `render()` method is a no-op that increments a counter and returns `Submitted`.
+//!    A GLES renderer can be initialized for tests that need texture operations.
 //!
 //! 2. **Deterministic output**: Virtual outputs have fixed sizes and refresh rates,
 //!    enabling reproducible snapshot tests.
-//!
-//! 3. **Event simulation**: Input events can be injected programmatically for testing
-//!    keyboard/pointer handling without real hardware.
 
 use std::collections::HashMap;
 

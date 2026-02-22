@@ -1,7 +1,8 @@
-//! Event types shared between IPC and module interfaces.
+//! Event types for the compositor-to-Emacs interface.
 //!
-//! These types represent events sent from the compositor to Emacs,
-//! regardless of transport (socket IPC or dynamic module).
+//! These types represent events sent from the compositor to Emacs
+//! via the dynamic module interface. The `Serialize` derive is used
+//! for debug state serialization.
 
 use serde::Serialize;
 
@@ -41,7 +42,7 @@ pub struct WorkingAreaInfo {
 
 /// Events sent from compositor to Emacs.
 ///
-/// Used by both IPC (JSON serialization) and module (direct Lisp conversion).
+/// Converted to Lisp alists in `module.rs::event_to_lisp()`.
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "event")]
 pub enum Event {

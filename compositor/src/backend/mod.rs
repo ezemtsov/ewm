@@ -11,14 +11,11 @@
 //! # Design Invariants
 //!
 //! 1. **Backend isolation**: Each backend owns its renderer and output management.
-//!    The compositor core (Ewm) is backend-agnostic and works through the common
-//!    trait interface.
+//!    The compositor core (Ewm) is backend-agnostic and works through the `Backend`
+//!    enum's method dispatch.
 //!
 //! 2. **Output state separation**: Redraw state is stored in `Ewm::output_state`,
 //!    not in the backend. This allows backend-agnostic redraw scheduling.
-//!
-//! 3. **Render element collection**: Both backends use the same `collect_render_elements_for_output`
-//!    function, ensuring consistent rendering behavior across backends.
 
 pub mod drm;
 pub mod headless;
@@ -54,8 +51,8 @@ pub enum RenderResult {
 /// # Usage
 ///
 /// ```ignore
-/// let backend = Backend::Headless(HeadlessBackend::new());
-/// backend.redraw_queued_outputs(&mut ewm);
+/// let mut backend = Backend::Headless(HeadlessBackend::new());
+/// ewm.redraw_queued_outputs(&mut backend);
 /// ```
 pub enum Backend {
     /// DRM backend for hardware rendering on TTY

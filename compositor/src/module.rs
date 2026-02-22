@@ -7,11 +7,13 @@
 //!    - `COMMAND_QUEUE`: Emacs → Compositor commands (layouts, focus, etc.)
 //!    - `EVENT_QUEUE`: Compositor → Emacs events (new surfaces, focus changes)
 //!    - `SHARED_STATE`: Compositor → Emacs snapshot (focus, pointer, outputs)
+//!    - `ACTIVATION_TOKEN_POOL`: Compositor → Emacs pre-generated XDG activation tokens
 //!    - `IN_PREFIX_SEQUENCE`: Bidirectional atomic (hot input path)
 //!
 //! 2. **No blocking**: Module functions called from Emacs must never block.
 //!    They push to queues and return immediately. The compositor processes
-//!    queues on its event loop.
+//!    queues on its event loop. Exception: `create_activation_token` may
+//!    busy-wait up to 100ms if the token pool is empty.
 //!
 //! 3. **Synchronous state for races**: Some state must be synchronous to avoid
 //!    race conditions:
