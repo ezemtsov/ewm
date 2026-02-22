@@ -311,7 +311,7 @@ Returns a list of intercept specs."
   (let ((specs '()))
     (map-keymap
      (lambda (event binding)
-       (when (and binding (not (eq binding 'undefined)))
+       (when (and binding (not (eq binding 'undefined)) (not (eq binding 'ignore)))
          (when-let ((spec (ewm--event-to-intercept-spec event)))
            (push spec specs))))
      keymap)
