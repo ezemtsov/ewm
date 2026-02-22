@@ -211,10 +211,17 @@ pub fn collect_render_elements_for_output(
     // 2. Overlay layer
     elements.append(&mut overlay_elems);
 
-    // 3. Top layer
-    elements.append(&mut top_elems);
+    // 3. Top layer — deferred if any entry is fullscreen (fullscreen covers Top layer)
+    let has_fullscreen = ewm
+        .output_layouts
+        .get(&output.name())
+        .map_or(false, |entries| entries.iter().any(|e| e.fullscreen));
 
-    // Track position for popup insertion (after top layer)
+    if !has_fullscreen {
+        elements.append(&mut top_elems);
+    }
+
+    // Track position for popup insertion (after top layer / before windows)
     let popup_insert_pos = elements.len();
 
     // 4. Render declared surfaces from output_layouts (authoritative, no intersection test)
@@ -222,6 +229,61 @@ pub fn collect_render_elements_for_output(
     if let Some(entries) = ewm.output_layouts.get(&output.name()) {
         for entry in entries {
             if let Some(window) = ewm.id_windows.get(&entry.id) {
+                if entry.fullscreen {
+                    // Fullscreen: surface + backdrop at output origin, bypassing working area.
+                    // Elements are front-to-back: surface first, then backdrop behind it.
+                    let output_logical_size = ewm
+                        .space
+                        .output_geometry(output)
+                        .map(|g| g.size)
+                        .unwrap_or_default();
+
+                    let (offset_x, offset_y) = crate::fullscreen_center_offset(
+                        window.geometry().size,
+                        output_logical_size,
+                    );
+                    let loc = Point::from((offset_x, offset_y));
+                    let loc_physical: Point<i32, Physical> =
+                        loc.to_physical_precise_round(scale);
+
+                    let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                        window.render_elements(renderer, loc_physical, scale, 1.0);
+
+                    // Crop to output bounds
+                    let output_physical: Size<i32, Physical> =
+                        output_logical_size.to_physical_precise_round(scale);
+                    let constrain =
+                        Rectangle::new(Point::from((0, 0)), output_physical);
+                    elements.extend(
+                        view_elements
+                            .into_iter()
+                            .map(|e| {
+                                RescaleRenderElement::from_element(
+                                    e,
+                                    loc_physical,
+                                    Scale::from(1.0),
+                                )
+                            })
+                            .filter_map(|e| {
+                                CropRenderElement::from_element(e, scale, constrain)
+                            })
+                            .map(EwmRenderElement::Constrained),
+                    );
+
+                    // Black backdrop covering full output (behind surface)
+                    if let Some(state) = ewm.output_state.get(output) {
+                        let bg = SolidColorRenderElement::from_buffer(
+                            &state.fullscreen_backdrop,
+                            (0, 0),
+                            scale,
+                            1.0,
+                            Kind::Unspecified,
+                        );
+                        elements.push(EwmRenderElement::SolidColor(bg));
+                    }
+                    continue;
+                }
+
                 // Frame-relative → output-local (working_area.loc is relative to output origin)
                 let location = Point::from((
                     working_area.loc.x + entry.x,
@@ -291,6 +353,11 @@ pub fn collect_render_elements_for_output(
                 }
             }
         }
+    }
+
+    // 4b. Deferred Top layer (behind fullscreen surface)
+    if has_fullscreen {
+        elements.append(&mut top_elems);
     }
 
     // 5. Render surfaces from the space that are NOT in output_layouts (like Emacs frames)

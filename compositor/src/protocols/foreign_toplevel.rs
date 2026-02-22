@@ -53,6 +53,7 @@ pub struct WindowInfo {
     pub app_id: Option<String>,
     pub output: Option<Output>,
     pub is_focused: bool,
+    pub is_fullscreen: bool,
 }
 
 impl ForeignToplevelManagerState {
@@ -115,7 +116,7 @@ impl ForeignToplevelManagerState {
     where
         D: Dispatch<ZwlrForeignToplevelHandleV1, ()> + 'static,
     {
-        let states = to_state_vec(window.is_focused);
+        let states = to_state_vec(window.is_focused, window.is_fullscreen);
 
         match self.toplevels.entry(window.surface.clone()) {
             Entry::Occupied(entry) => {
@@ -373,11 +374,13 @@ where
     }
 }
 
-fn to_state_vec(has_focus: bool) -> Vec<u32> {
+fn to_state_vec(has_focus: bool, is_fullscreen: bool) -> Vec<u32> {
     let mut rv = Vec::new();
-    // EWM windows are always maximized (fill their Emacs window)
-    rv.push(zwlr_foreign_toplevel_handle_v1::State::Maximized as u32);
-    // Activated = keyboard focus
+    if is_fullscreen {
+        rv.push(zwlr_foreign_toplevel_handle_v1::State::Fullscreen as u32);
+    } else {
+        rv.push(zwlr_foreign_toplevel_handle_v1::State::Maximized as u32);
+    }
     if has_focus {
         rv.push(zwlr_foreign_toplevel_handle_v1::State::Activated as u32);
     }

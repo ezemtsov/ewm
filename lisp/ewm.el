@@ -168,7 +168,9 @@ Example:
       ("debug_state" (ewm--handle-debug-state event))
       ("working_area" (ewm--handle-working-area event))
       ("selection-changed" (ewm--handle-selection-changed event))
-      ("activate_workspace" (ewm--handle-activate-workspace event)))))
+      ("activate_workspace" (ewm--handle-activate-workspace event))
+      ("fullscreen_request" (ewm--handle-fullscreen-request event))
+      ("unfullscreen_request" (ewm--handle-unfullscreen-request event)))))
 
 ;;; Event handlers
 
@@ -362,7 +364,30 @@ Switch to the requested tab on the appropriate frame."
         (with-selected-frame frame
           (tab-bar-select-tab tab-index))))))
 
+(defun ewm--handle-fullscreen-request (event)
+  "Handle fullscreen request EVENT: set fullscreen flag and refresh layout."
+  (let ((id (map-elt event "id")))
+    (when-let ((buf (gethash id ewm--surfaces)))
+      (with-current-buffer buf
+        (setq-local ewm-surface-fullscreen t))
+      (ewm-layout--refresh))))
+
+(defun ewm--handle-unfullscreen-request (event)
+  "Handle unfullscreen request EVENT: clear fullscreen flag and refresh layout."
+  (let ((id (map-elt event "id")))
+    (when-let ((buf (gethash id ewm--surfaces)))
+      (with-current-buffer buf
+        (setq-local ewm-surface-fullscreen nil))
+      (ewm-layout--refresh))))
+
 ;;; Commands
+
+(defun ewm-toggle-fullscreen ()
+  "Toggle fullscreen for the surface in the current buffer."
+  (interactive)
+  (when ewm-surface-id
+    (setq-local ewm-surface-fullscreen (not ewm-surface-fullscreen))
+    (ewm-layout--refresh)))
 
 (defun ewm-output-layout (output surfaces tabs)
   "Set declarative layout for OUTPUT.

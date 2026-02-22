@@ -306,6 +306,8 @@ pub struct OutputState {
     /// Incremented each VBlank cycle to prevent sending duplicate frame callbacks
     /// within the same refresh cycle.
     pub frame_callback_sequence: u32,
+    /// Black backdrop for fullscreen surfaces (covers entire output)
+    pub fullscreen_backdrop: SolidColorBuffer,
 }
 
 impl OutputState {
@@ -326,12 +328,18 @@ impl OutputState {
             // Dark gray background for lock screen
             lock_color_buffer: SolidColorBuffer::new(size, [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
+            fullscreen_backdrop: SolidColorBuffer::new(size, [0.0, 0.0, 0.0, 1.0]),
         }
     }
 
     /// Resize the lock color buffer for this output
     pub fn resize_lock_buffer(&mut self, size: (i32, i32)) {
         self.lock_color_buffer.resize(size);
+    }
+
+    /// Resize the fullscreen backdrop buffer for this output
+    pub fn resize_fullscreen_backdrop(&mut self, size: (i32, i32)) {
+        self.fullscreen_backdrop.resize(size);
     }
 }
 
@@ -347,6 +355,7 @@ impl Default for OutputState {
             // Default 1920x1080 lock background (will be resized per output)
             lock_color_buffer: SolidColorBuffer::new((1920, 1080), [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
+            fullscreen_backdrop: SolidColorBuffer::new((1920, 1080), [0.0, 0.0, 0.0, 1.0]),
         }
     }
 }
@@ -401,6 +410,29 @@ pub struct LayoutEntry {
     /// Largest view per surface — computed by compositor from entry dimensions.
     /// Drives send_configure() size + scale and native-size rendering.
     pub primary: bool,
+    /// Fullscreen mode — surface covers full output, bypassing working area.
+    #[serde(default)]
+    pub fullscreen: bool,
+}
+
+/// Centering offset for a fullscreen surface within an output.
+/// Returns (0, 0) when the surface is at least as large as the output.
+pub fn fullscreen_center_offset(
+    window_size: Size<i32, Logical>,
+    output_size: Size<i32, Logical>,
+) -> (i32, i32) {
+    (
+        if window_size.w < output_size.w {
+            (output_size.w - window_size.w) / 2
+        } else {
+            0
+        },
+        if window_size.h < output_size.h {
+            (output_size.h - window_size.h) / 2
+        } else {
+            0
+        },
+    )
 }
 
 /// Key identifier: either a keysym integer or a named key string
@@ -882,6 +914,16 @@ impl Ewm {
                 .outputs()
                 .find(|o| o.name() == output_name)?;
             let output_geo = self.space.output_geometry(output)?;
+
+            if entry.fullscreen {
+                let (ox, oy) =
+                    fullscreen_center_offset(window.geometry().size, output_geo.size);
+                return Some(Point::from((
+                    output_geo.loc.x + ox,
+                    output_geo.loc.y + oy,
+                )));
+            }
+
             let working_area = {
                 let map = layer_map_for_output(output);
                 map.non_exclusive_zone()
@@ -912,6 +954,11 @@ impl Ewm {
 
         // Iterate in reverse (last = topmost in render order)
         for entry in entries.iter().rev() {
+            if entry.fullscreen {
+                // Fullscreen covers entire output
+                return Some((entry, output_geo.loc.x, output_geo.loc.y));
+            }
+
             let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
             let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
 
@@ -944,23 +991,35 @@ impl Ewm {
         let pos_in_entry_y = pos.y - entry_y as f64;
 
         // Scale pointer coords from entry space to window space.
-        // Primary entries crop overflow but don't rescale, so mapping is 1:1.
+        // Fullscreen/primary entries use 1:1 mapping (with centering offset for fullscreen).
         // Non-primary entries use uniform fill+crop: the buffer is scaled by
         // max(entry/buf) to fully cover the entry, then cropped. The pointer
         // inverse is min(buf/entry) applied uniformly to both axes.
-        let pointer_scale = if entry.primary {
-            1.0
+        let (pointer_scale, center_offset_x, center_offset_y) = if entry.fullscreen {
+            let output_size = self
+                .output_at(pos)
+                .and_then(|o| self.space.output_geometry(o))
+                .map(|g| g.size)
+                .unwrap_or_default();
+            let (cx, cy) = fullscreen_center_offset(window_geo.size, output_size);
+            (1.0, cx as f64, cy as f64)
+        } else if entry.primary {
+            (1.0, 0.0, 0.0)
         } else if entry.w > 0 && entry.h > 0 {
-            f64::min(
-                window_geo.size.w as f64 / entry.w as f64,
-                window_geo.size.h as f64 / entry.h as f64,
+            (
+                f64::min(
+                    window_geo.size.w as f64 / entry.w as f64,
+                    window_geo.size.h as f64 / entry.h as f64,
+                ),
+                0.0,
+                0.0,
             )
         } else {
-            1.0
+            (1.0, 0.0, 0.0)
         };
         let pos_in_window = Point::from((
-            pos_in_entry_x * pointer_scale,
-            pos_in_entry_y * pointer_scale,
+            (pos_in_entry_x - center_offset_x) * pointer_scale,
+            (pos_in_entry_y - center_offset_y) * pointer_scale,
         ));
 
         if window
@@ -978,6 +1037,13 @@ impl Ewm {
             return Some((window.wl_surface()?.into_owned(), global_loc));
         }
         None
+    }
+
+    /// Check if a surface has fullscreen set in any output layout.
+    pub fn is_surface_fullscreen(&self, id: u32) -> bool {
+        self.output_layouts
+            .values()
+            .any(|entries| entries.iter().any(|e| e.id == id && e.fullscreen))
     }
 
     /// Hit-test layout surfaces under a global position, returning the surface ID.
@@ -1097,7 +1163,18 @@ impl Ewm {
                         });
                         window.toplevel().map(|t| {
                             t.with_pending_state(|state| {
-                                state.size = Some((entry.w as i32, entry.h as i32).into());
+                                if entry.fullscreen {
+                                    let output_logical = crate::utils::output_size(&output);
+                                    state.size = Some(
+                                        (output_logical.w as i32, output_logical.h as i32).into(),
+                                    );
+                                    state.states.set(XdgToplevelState::Fullscreen);
+                                    state.states.unset(XdgToplevelState::Maximized);
+                                } else {
+                                    state.size = Some((entry.w as i32, entry.h as i32).into());
+                                    state.states.set(XdgToplevelState::Maximized);
+                                    state.states.unset(XdgToplevelState::Fullscreen);
+                                }
                             });
                             t.send_configure();
                         });
@@ -1602,6 +1679,7 @@ impl Ewm {
                 let surface = window.wl_surface()?.into_owned();
                 let info = self.surface_info.get(&id)?;
                 let output = self.find_surface_output(id);
+                let is_fullscreen = self.is_surface_fullscreen(id);
                 Some(WindowInfo {
                     surface,
                     title: if info.title.is_empty() {
@@ -1612,6 +1690,7 @@ impl Ewm {
                     app_id: Some(info.app_id.clone()),
                     output,
                     is_focused: self.focused_surface_id == id,
+                    is_fullscreen,
                 })
             })
             .collect();
@@ -3049,6 +3128,22 @@ impl XdgShellHandler for State {
         surface.send_repositioned(token);
     }
 
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
+            let output_name = output
+                .and_then(|o| Output::from_resource(&o))
+                .map(|o| o.name())
+                .or_else(|| self.ewm.find_surface_output(id).map(|o| o.name()));
+            module::push_event(Event::FullscreenRequest { id, output: output_name });
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
+            module::push_event(Event::UnfullscreenRequest { id });
+        }
+    }
+
     fn popup_destroyed(&mut self, _surface: PopupSurface) {
         // Queue redraw to clear the popup from screen
         self.ewm.queue_redraw_all();
@@ -3293,12 +3388,20 @@ impl ForeignToplevelHandler for State {
         }
     }
 
-    fn set_fullscreen(&mut self, _wl_surface: WlSurface, _wl_output: Option<WlOutput>) {
-        // EWM doesn't have a fullscreen concept - windows fill Emacs windows
+    fn set_fullscreen(&mut self, wl_surface: WlSurface, wl_output: Option<WlOutput>) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
+            let output_name = wl_output
+                .and_then(|o| Output::from_resource(&o))
+                .map(|o| o.name())
+                .or_else(|| self.ewm.find_surface_output(id).map(|o| o.name()));
+            module::push_event(Event::FullscreenRequest { id, output: output_name });
+        }
     }
 
-    fn unset_fullscreen(&mut self, _wl_surface: WlSurface) {
-        // No-op for EWM
+    fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
+            module::push_event(Event::UnfullscreenRequest { id });
+        }
     }
 }
 delegate_foreign_toplevel!(State);

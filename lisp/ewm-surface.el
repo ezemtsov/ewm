@@ -26,6 +26,9 @@ Similar to `exwm-class-name'.")
   "Window title for this buffer.
 Similar to `exwm-title'.")
 
+(defvar-local ewm-surface-fullscreen nil
+  "Non-nil when surface is in fullscreen mode.")
+
 (defun ewm--kill-buffer-query-function ()
   "Run in `kill-buffer-query-functions' for surface buffers.
 Sends close request to compositor and prevents immediate buffer kill."

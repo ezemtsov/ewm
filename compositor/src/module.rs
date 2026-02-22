@@ -561,6 +561,20 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
             cons("output", output.into_lisp(env)?)?,
             cons("tab_index", (tab_index as i64).into_lisp(env)?)?,
         ]),
+        Event::FullscreenRequest { id, output } => {
+            let mut items = vec![
+                cons("event", "fullscreen_request".into_lisp(env)?)?,
+                cons("id", (id as i64).into_lisp(env)?)?,
+            ];
+            if let Some(out) = output {
+                items.push(cons("output", out.into_lisp(env)?)?);
+            }
+            list(items)
+        }
+        Event::UnfullscreenRequest { id } => list(vec![
+            cons("event", "unfullscreen_request".into_lisp(env)?)?,
+            cons("id", (id as i64).into_lisp(env)?)?,
+        ]),
     }
 }
 
@@ -742,6 +756,11 @@ fn output_layout_module(
         let is_false = eq_result.is_not_nil();
         let focused = focused_val.is_not_nil() && !is_false;
 
+        let fullscreen_val: Value = env.call("plist-get", (entry, env.intern(":fullscreen")?))?;
+        let eq_result_fs: Value = env.call("eq", (fullscreen_val, false_sym))?;
+        let is_false_fs = eq_result_fs.is_not_nil();
+        let fullscreen = fullscreen_val.is_not_nil() && !is_false_fs;
+
         entries.push(LayoutEntry {
             id: id as u32,
             x: x as i32,
@@ -750,6 +769,7 @@ fn output_layout_module(
             h: h as u32,
             focused,
             primary: false, // computed by apply_output_layout
+            fullscreen,
         });
     }
 

@@ -619,6 +619,7 @@ impl DrmBackendState {
         let is_locked = ewm.is_locked();
         if let Some(state) = ewm.output_state.get_mut(&output) {
             state.resize_lock_buffer((output_size.w as i32, output_size.h as i32));
+            state.resize_fullscreen_backdrop((output_size.w as i32, output_size.h as i32));
             if is_locked {
                 if let Some(lock_surface) = &state.lock_surface {
                     crate::configure_lock_surface(lock_surface, &output);

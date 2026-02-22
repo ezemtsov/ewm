@@ -76,16 +76,19 @@ The compositor independently computes which entry is `primary'
 
 (defun ewm-layout--make-output-view (window focused-p)
   "Create a view plist for WINDOW with frame-relative coordinates.
-Returns (:x X :y Y :w W :h H :focused FOCUSED-P).
+Returns (:x X :y Y :w W :h H :focused FOCUSED-P :fullscreen FS).
 Coordinates are relative to the output's working area — the compositor
 converts to global positions using output geometry + working area offset."
   (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
          (x (pop edges))
          (y (pop edges))
          (width (- (pop edges) x))
-         (height (- (pop edges) y)))
+         (height (- (pop edges) y))
+         (fullscreen (buffer-local-value 'ewm-surface-fullscreen
+                                         (window-buffer window))))
     `(:x ,x :y ,y :w ,width :h ,height
-      :focused ,(if focused-p t :false))))
+      :focused ,(if focused-p t :false)
+      :fullscreen ,(if fullscreen t :false))))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes."
