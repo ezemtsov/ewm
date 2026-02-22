@@ -9,12 +9,17 @@ flowchart TB
     closesurface_src["Surface closed"]
     waybar_src["Waybar click<br/>workspace protocol"]
     hotplug_src["Hotplug / Resume"]
+    xdg_fs_req["xdg_toplevel<br/>set_fullscreen"]
+    xdg_unfs_req["xdg_toplevel<br/>unset_fullscreen"]
+    foreign_fs["foreign_toplevel<br/>set/unset_fullscreen"]
 
     focusev["Event::Focus"]
     newev["Event::New"]
     closeev["Event::Close"]
     wsev["Event::ActivateWorkspace"]
     outev["Event::OutputsComplete"]
+    fsev["Event::FullscreenRequest"]
+    unfsev["Event::UnfullscreenRequest"]
 
     click_src -->|notify| focusev
     scroll_src -->|notify| focusev
@@ -25,12 +30,18 @@ flowchart TB
     closesurface_src --> closeev
     waybar_src --> wsev
     hotplug_src --> outev
+    xdg_fs_req --> fsev
+    xdg_unfs_req --> unfsev
+    foreign_fs --> fsev
+    foreign_fs --> unfsev
 
     focusev -->|SIGUSR1| dispatch
     newev -->|SIGUSR1| dispatch
     closeev -->|SIGUSR1| dispatch
     wsev -->|SIGUSR1| dispatch
     outev -->|SIGUSR1| dispatch
+    fsev -->|SIGUSR1| dispatch
+    unfsev -->|SIGUSR1| dispatch
 
     dispatch["ewm--handle-event"]
 
@@ -39,6 +50,8 @@ flowchart TB
     dispatch -->|close| hclose["ewm--handle-close-surface"]
     dispatch -->|activate_workspace| hws["ewm--handle-activate-workspace"]
     dispatch -->|outputs_complete| hout["ewm--handle-outputs-complete"]
+    dispatch -->|fullscreen_request| hfs["ewm--handle-fullscreen-request"]
+    dispatch -->|unfullscreen_request| hunfs["ewm--handle-unfullscreen-request"]
 
     focus_guard{"minibuffer<br/>active?"}:::guard
     focus_drop(["Dropped"]):::safe
@@ -72,10 +85,35 @@ flowchart TB
     hclose --> killbuf["kill-buffer"]:::muted
     hout --> parity["apply-output-config +<br/>enforce parity +<br/>layout refresh +<br/>sync-focus"]:::muted
 
+    hfs --> set_param["set ewm-fullscreen<br/>per-frame"]
+    set_param --> refresh_fs["ewm-layout--refresh"]
+    refresh_fs --> layout_send["ewm-output-layout →<br/>apply_output_layout"]
+
+    hunfs --> clear_param["clear ewm-fullscreen<br/>per-frame"]
+    clear_param --> refresh_unfs["ewm-layout--refresh"]
+    refresh_unfs --> layout_send
+
+    %% ── Keyboard fullscreen gate (input.rs) ──
+
+    keypress["Key pressed<br/>handle_keyboard_event"]
+    fs_check{"focused surface<br/>fullscreen?"}:::guard
+    fs_restore["Restore focus<br/>to fullscreen surface"]
+    fs_toggle_check{"is_fullscreen_toggle?"}:::guard
+    fs_forward(["Forward to surface"]):::safe
+    fs_exit["Exit fullscreen"]
+
+    keypress --> fs_check
+    fs_check -->|No| normal_intercept["Normal intercept<br/>(code 1 → redirect)"]
+    fs_check -->|Yes| fs_restore
+    fs_restore --> fs_toggle_check
+    fs_toggle_check -->|Yes| fs_exit
+    fs_toggle_check -->|No| fs_forward
+    fs_exit -->|"push_event<br/>(consume key)"| unfsev
+
     subgraph Legend
         direction LR
-        leg_guard["Orange: minibuffer guard"]:::guard
-        leg_safe(["Green: safe"]):::safe
+        leg_guard["Orange: guard / decision"]:::guard
+        leg_safe(["Green: safe / forwarded"]):::safe
         leg_muted["Gray: inherently safe"]:::muted
     end
 

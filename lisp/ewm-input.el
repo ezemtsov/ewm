@@ -288,7 +288,7 @@ user action."
 
 (defun ewm--event-to-intercept-spec (event)
   "Convert EVENT to an intercept specification for the compositor.
-Returns a plist with :key, modifier flags, and :is-prefix."
+Returns a plist with :key, modifier flags, :is-prefix, and :is-fullscreen-toggle."
   (let* ((mods (event-modifiers event))
          (base (event-basic-type event))
          ;; base is either an integer (ASCII) or a symbol (special key)
@@ -298,14 +298,17 @@ Returns a plist with :key, modifier flags, and :is-prefix."
                      (t nil)))
          ;; Check if this key is bound to a keymap (prefix)
          (binding (key-binding (vector event)))
-         (is-prefix (keymapp binding)))
+         (is-prefix (keymapp binding))
+         ;; Must be directly bound (not through a wrapper function)
+         (is-fs-toggle (eq binding 'ewm-toggle-fullscreen)))
     (when key-value
       `(:key ,key-value
         :ctrl ,(if (memq 'control mods) t :false)
         :alt ,(if (memq 'meta mods) t :false)
         :shift ,(if (memq 'shift mods) t :false)
         :super ,(if (memq 'super mods) t :false)
-        :is-prefix ,(if is-prefix t :false)))))
+        :is-prefix ,(if is-prefix t :false)
+        :is-fullscreen-toggle ,(if is-fs-toggle t :false)))))
 
 (defun ewm--scan-keymap (keymap)
   "Scan KEYMAP for all key bindings.

@@ -503,6 +503,9 @@ pub struct InterceptedKey {
     /// True if this key is bound to a keymap (prefix key)
     #[serde(default)]
     pub is_prefix: bool,
+    /// True if this key is bound to the fullscreen toggle command
+    #[serde(default)]
+    pub is_fullscreen_toggle: bool,
 }
 
 impl InterceptedKey {
@@ -916,12 +919,17 @@ impl Ewm {
             let output_geo = self.space.output_geometry(output)?;
 
             if entry.fullscreen {
-                let (ox, oy) =
-                    fullscreen_center_offset(window.geometry().size, output_geo.size);
-                return Some(Point::from((
-                    output_geo.loc.x + ox,
-                    output_geo.loc.y + oy,
-                )));
+                if entry.primary {
+                    let (ox, oy) =
+                        fullscreen_center_offset(window.geometry().size, output_geo.size);
+                    return Some(Point::from((
+                        output_geo.loc.x + ox,
+                        output_geo.loc.y + oy,
+                    )));
+                } else {
+                    // Non-primary fullscreen: stretch from output origin
+                    return Some(Point::from((output_geo.loc.x, output_geo.loc.y)));
+                }
             }
 
             let working_area = {
@@ -1001,8 +1009,18 @@ impl Ewm {
                 .and_then(|o| self.space.output_geometry(o))
                 .map(|g| g.size)
                 .unwrap_or_default();
-            let (cx, cy) = fullscreen_center_offset(window_geo.size, output_size);
-            (1.0, cx as f64, cy as f64)
+            if entry.primary {
+                // Primary fullscreen: 1:1 mapping with centering offset
+                let (cx, cy) = fullscreen_center_offset(window_geo.size, output_size);
+                (1.0, cx as f64, cy as f64)
+            } else {
+                // Non-primary fullscreen: uniform stretch inverse
+                let uniform = f64::max(
+                    output_size.w as f64 / window_geo.size.w as f64,
+                    output_size.h as f64 / window_geo.size.h as f64,
+                );
+                (1.0 / uniform, 0.0, 0.0)
+            }
         } else if entry.primary {
             (1.0, 0.0, 0.0)
         } else if entry.w > 0 && entry.h > 0 {
@@ -1121,12 +1139,37 @@ impl Ewm {
             .insert(output_name.to_string(), entries);
 
         // 7. Compute primary flags: largest area per surface across all outputs.
+        // Fullscreen entries use the output's logical size (the surface is
+        // configured at full output size), not entry.w/h from Emacs.
         {
+            // Build output size lookup for fullscreen area computation
+            let output_sizes: HashMap<String, (u64, u64)> = self
+                .space
+                .outputs()
+                .map(|o| {
+                    let size = crate::utils::output_size(o);
+                    (o.name(), (size.w as u64, size.h as u64))
+                })
+                .collect();
+
+            let entry_area =
+                |entry: &LayoutEntry, oname: &str| -> u64 {
+                    if entry.fullscreen {
+                        let (w, h) = output_sizes
+                            .get(oname)
+                            .copied()
+                            .unwrap_or((entry.w as u64, entry.h as u64));
+                        w * h
+                    } else {
+                        entry.w as u64 * entry.h as u64
+                    }
+                };
+
             let mut best_area: HashMap<u32, u64> = HashMap::new();
             // First pass: find the largest area per surface
-            for entries in self.output_layouts.values() {
+            for (oname, entries) in &self.output_layouts {
                 for entry in entries {
-                    let area = entry.w as u64 * entry.h as u64;
+                    let area = entry_area(entry, oname);
                     best_area
                         .entry(entry.id)
                         .and_modify(|a| *a = (*a).max(area))
@@ -1135,11 +1178,11 @@ impl Ewm {
             }
             // Second pass: mark primary on the matching entry
             let mut assigned: HashSet<u32> = HashSet::new();
-            for entries in self.output_layouts.values_mut() {
+            for (oname, entries) in self.output_layouts.iter_mut() {
                 for entry in entries.iter_mut() {
                     let dominated = best_area.get(&entry.id).copied().unwrap_or(0);
-                    let area = entry.w as u64 * entry.h as u64;
-                    entry.primary = area == dominated && assigned.insert(entry.id);
+                    entry.primary =
+                        entry_area(entry, oname) == dominated && assigned.insert(entry.id);
                 }
             }
         }

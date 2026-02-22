@@ -93,6 +93,27 @@ fn render_layer(
     }
 }
 
+/// Push constrained (rescale + crop) render elements into the element list.
+///
+/// Shared pipeline for all view rendering: fullscreen primary/non-primary
+/// and normal primary/non-primary.
+fn push_constrained(
+    elements: &mut Vec<EwmRenderElement>,
+    view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    loc: Point<i32, Physical>,
+    element_scale: Scale<f64>,
+    output_scale: Scale<f64>,
+    constrain: Rectangle<i32, Physical>,
+) {
+    elements.extend(
+        view_elements
+            .into_iter()
+            .map(|e| RescaleRenderElement::from_element(e, loc, element_scale))
+            .filter_map(|e| CropRenderElement::from_element(e, output_scale, constrain))
+            .map(EwmRenderElement::Constrained),
+    );
+}
+
 /// Collect render elements for a specific output.
 ///
 /// This function collects only elements visible on the target output, filtering
@@ -237,38 +258,33 @@ pub fn collect_render_elements_for_output(
                         .output_geometry(output)
                         .map(|g| g.size)
                         .unwrap_or_default();
-
-                    let (offset_x, offset_y) = crate::fullscreen_center_offset(
-                        window.geometry().size,
-                        output_logical_size,
-                    );
-                    let loc = Point::from((offset_x, offset_y));
-                    let loc_physical: Point<i32, Physical> =
-                        loc.to_physical_precise_round(scale);
-
-                    let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                        window.render_elements(renderer, loc_physical, scale, 1.0);
-
-                    // Crop to output bounds
                     let output_physical: Size<i32, Physical> =
                         output_logical_size.to_physical_precise_round(scale);
                     let constrain =
                         Rectangle::new(Point::from((0, 0)), output_physical);
-                    elements.extend(
-                        view_elements
-                            .into_iter()
-                            .map(|e| {
-                                RescaleRenderElement::from_element(
-                                    e,
-                                    loc_physical,
-                                    Scale::from(1.0),
-                                )
-                            })
-                            .filter_map(|e| {
-                                CropRenderElement::from_element(e, scale, constrain)
-                            })
-                            .map(EwmRenderElement::Constrained),
-                    );
+
+                    if entry.primary {
+                        // Primary: native size, centered, crop to output bounds.
+                        let (offset_x, offset_y) = crate::fullscreen_center_offset(
+                            window.geometry().size,
+                            output_logical_size,
+                        );
+                        let loc_physical: Point<i32, Physical> =
+                            Point::from((offset_x, offset_y)).to_physical_precise_round(scale);
+                        let view_elements = window.render_elements(renderer, loc_physical, scale, 1.0);
+                        push_constrained(&mut elements, view_elements, loc_physical, Scale::from(1.0), scale, constrain);
+                    } else {
+                        // Non-primary: uniform stretch to fill output, crop overflow.
+                        let loc_physical: Point<i32, Physical> = Point::from((0, 0));
+                        let view_elements = window.render_elements(renderer, loc_physical, scale, 1.0);
+                        let buf_size: Size<i32, Physical> =
+                            window.geometry().size.to_physical_precise_round(scale);
+                        let uniform = f64::max(
+                            output_physical.w as f64 / buf_size.w as f64,
+                            output_physical.h as f64 / buf_size.h as f64,
+                        );
+                        push_constrained(&mut elements, view_elements, loc_physical, Scale::from(uniform), scale, constrain);
+                    }
 
                     // Black backdrop covering full output (behind surface)
                     if let Some(state) = ewm.output_state.get(output) {
@@ -303,53 +319,18 @@ pub fn collect_render_elements_for_output(
 
                 if entry.primary {
                     // Primary view: render at native size, crop to entry.
-                    elements.extend(
-                        view_elements
-                            .into_iter()
-                            .map(|e| {
-                                RescaleRenderElement::from_element(
-                                    e,
-                                    loc_physical,
-                                    Scale::from(1.0),
-                                )
-                            })
-                            .filter_map(|e| {
-                                CropRenderElement::from_element(e, scale, constrain)
-                            })
-                            .map(EwmRenderElement::Constrained),
-                    );
+                    push_constrained(&mut elements, view_elements, loc_physical, Scale::from(1.0), scale, constrain);
                 } else {
                     // Non-primary view: stretch buffer to fill entry bounds, then crop.
-                    // Inline the rescale+crop pipeline instead of using
-                    // constrain_render_elements, which has a bug: it scales
-                    // reference.loc around (0,0) via Rectangle::upscale(), creating
-                    // a spurious offset of reference.loc * (1 - element_scale) when
-                    // reference.loc is non-zero (i.e., working area has a Y offset
-                    // from layer shell panels like waybar).
+                    // Uses uniform scale (fill): pick the larger factor to fully cover
+                    // the entry, preserving aspect ratio. The crop trims overflow.
                     let buf_size: Size<i32, Physical> =
                         window.geometry().size.to_physical_precise_round(scale);
-                    // Uniform scale (fill): pick the larger factor to fully cover
-                    // the entry, preserving aspect ratio. The crop trims overflow.
                     let uniform = f64::max(
                         entry_size.w as f64 / buf_size.w as f64,
                         entry_size.h as f64 / buf_size.h as f64,
                     );
-                    let element_scale = Scale::from(uniform);
-                    elements.extend(
-                        view_elements
-                            .into_iter()
-                            .map(|e| {
-                                RescaleRenderElement::from_element(
-                                    e,
-                                    loc_physical,
-                                    element_scale,
-                                )
-                            })
-                            .filter_map(|e| {
-                                CropRenderElement::from_element(e, scale, constrain)
-                            })
-                            .map(EwmRenderElement::Constrained),
-                    );
+                    push_constrained(&mut elements, view_elements, loc_physical, Scale::from(uniform), scale, constrain);
                 }
             }
         }

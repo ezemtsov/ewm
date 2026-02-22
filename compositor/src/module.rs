@@ -919,6 +919,8 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         let shift_val: Value = env.call("plist-get", (key_spec, env.intern(":shift")?))?;
         let super_val: Value = env.call("plist-get", (key_spec, env.intern(":super")?))?;
         let is_prefix_val: Value = env.call("plist-get", (key_spec, env.intern(":is-prefix")?))?;
+        let is_fs_toggle_val: Value =
+            env.call("plist-get", (key_spec, env.intern(":is-fullscreen-toggle")?))?;
 
         parsed_keys.push(InterceptedKey {
             key,
@@ -927,6 +929,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
             shift: is_true(shift_val),
             logo: is_true(super_val),
             is_prefix: is_true(is_prefix_val),
+            is_fullscreen_toggle: is_true(is_fs_toggle_val),
         });
     }
 

@@ -130,8 +130,33 @@ pub fn handle_keyboard_event(
 
     // Clone values needed in the filter closure
     let intercepted_keys = crate::module::get_intercepted_keys();
-    let focus_on_emacs = state.ewm.is_focus_on_emacs();
     let text_input_intercept = state.ewm.text_input_intercept;
+
+    // Check if a fullscreen surface is logically focused (Emacs selected-window).
+    // Uses the layout's `focused` flag, NOT keyboard focus — after intercept_redirect
+    // keyboard focus is temporarily on Emacs even though the surface is fullscreen.
+    let fullscreen_surface_id = state
+        .ewm
+        .output_layouts
+        .values()
+        .flat_map(|entries| entries.iter())
+        .find(|e| e.focused && e.fullscreen)
+        .map(|e| e.id);
+
+    // When a fullscreen surface exists, ensure keyboard focus is on it before processing keys.
+    // After intercept_redirect (e.g. s-f to enter fullscreen), Wayland keyboard focus stays on
+    // Emacs. Without this, FilterResult::Forward sends keys to Emacs instead of the surface.
+    if let Some(fs_id) = fullscreen_surface_id {
+        if state.ewm.focused_surface_id != fs_id {
+            state
+                .ewm
+                .set_focus(fs_id, false, "fullscreen_focus_redirect", None);
+            state.sync_keyboard_focus();
+        }
+    }
+
+    // Computed after fullscreen restore so it reflects the corrected focus state
+    let focus_on_emacs = state.ewm.is_focus_on_emacs();
 
     // During a prefix sequence (C-x ...), Emacs needs Latin keysyms for
     // keybinding dispatch. Temporarily set base layout for this key event,
@@ -189,6 +214,15 @@ pub fn handle_keyboard_event(
                 .find(|ik| ik.matches(keysym_raw, mods));
 
             if let Some(ik) = matched_key {
+                // Fullscreen mode: all keys go to the surface except the
+                // fullscreen toggle (exits fullscreen) and kill combo (above).
+                if let Some(fs_id) = fullscreen_surface_id {
+                    if ik.is_fullscreen_toggle {
+                        return FilterResult::Intercept((5, fs_id, None));
+                    }
+                    return FilterResult::Forward;
+                }
+
                 if !focus_on_emacs {
                     // This is an intercepted key and focus is on an external app (not Emacs)
                     // Only SET the flag on prefix keys, never clear it here
@@ -244,6 +278,14 @@ pub fn handle_keyboard_event(
             }
             _ => {}
         }
+    }
+
+    if let Some((5, fs_id, _)) = &filter_result {
+        // Fullscreen toggle pressed — exit fullscreen, consume the key.
+        // Don't replay the key to Emacs (would cause double-toggle for s-f).
+        tracing::info!("fullscreen_exit: surface {}", fs_id);
+        module::push_event(crate::Event::UnfullscreenRequest { id: *fs_id });
+        return KeyboardAction::Forward;
     }
 
     if filter_result.as_ref().map(|(c, _, _)| *c) == Some(1) {
