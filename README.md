@@ -193,7 +193,6 @@ libinput list-devices                         # system-wide
 - Per-output declarative layout (surfaces can span multiple outputs)
 - Per-window fullscreen (XDG fullscreen protocol, `s-f` toggle)
 - Prefix key interception (compositor forwards to Emacs)
-- Line/char mode (pass all keys to app, or only specific ones)
 - Client-side decoration auto-disable
 - DRM backend with multi-monitor support (hotplug, per-output Emacs frames)
 - Lid close/open handling (laptop panel off when external monitor connected)
@@ -218,7 +217,7 @@ libinput list-devices                         # system-wide
 
 ## Inspirations
 
-- **[EXWM](https://github.com/ch11ng/exwm)** (Emacs side): Buffer-per-window model, prefix key interception, line/char mode switching, automatic focus management
+- **[EXWM](https://github.com/ch11ng/exwm)** (Emacs side): Buffer-per-window model, prefix key interception, automatic focus management
 - **[niri](https://github.com/YaLTeR/niri)** (Compositor side): Backend architecture, Smithay patterns, DRM abstraction
 
 ## License

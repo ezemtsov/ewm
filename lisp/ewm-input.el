@@ -142,9 +142,6 @@ Example: \"ctrl:nocaps,grp:alt_shift_toggle\""
   :type '(choice (const nil) string)
   :group 'ewm-input)
 
-(defvar-local ewm-input--mode 'line-mode
-  "Current input mode: `line-mode' or `char-mode'.")
-
 ;;; Key interception
 
 (defcustom ewm-intercept-prefixes
@@ -159,41 +156,6 @@ Default includes only essential prefixes. Add more as needed:
   (add-to-list \\='ewm-intercept-prefixes ?\\M-:)  ; eval-expression"
   :type '(repeat (choice character string))
   :group 'ewm-input)
-
-
-;;; Input mode
-
-(defun ewm-input--update-mode (mode)
-  "Update input mode to MODE for current buffer.
-MODE is either `line-mode' or `char-mode'.
-
-In EXWM, line-mode still gives the X window keyboard focus but intercepts
-keys via XGrabKey.  In EWM/Wayland, we achieve similar behavior by:
-- Line-mode: surface has focus, compositor intercepts prefix keys
-- Char-mode: surface has focus, no interception (same as line-mode for now)
-
-Both modes keep focus on the surface so typing works immediately.
-Focus is managed by `ewm--sync-focus' through window change hooks."
-  (when ewm-surface-id
-    (setq ewm-input--mode mode)
-    (force-mode-line-update)))
-
-(defun ewm-input-char-mode ()
-  "Switch to char-mode: keys go directly to surface.
-Press a prefix key to return to line-mode."
-  (interactive)
-  (ewm-input--update-mode 'char-mode))
-
-(defun ewm-input-line-mode ()
-  "Switch to line-mode: keys go to Emacs."
-  (interactive)
-  (ewm-input--update-mode 'line-mode))
-
-(defun ewm-input-toggle-mode ()
-  "Toggle between line-mode and char-mode."
-  (interactive)
-  (ewm-input--update-mode
-   (if (eq ewm-input--mode 'char-mode) 'line-mode 'char-mode)))
 
 ;;; Mouse-follows-focus
 
