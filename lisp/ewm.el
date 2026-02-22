@@ -390,6 +390,11 @@ Clears on the focused frame only, so other outputs remain fullscreen."
 
 ;;; Commands
 
+(defun ewm-lock-session ()
+  "Lock the session via loginctl."
+  (interactive)
+  (start-process "loginctl" nil "loginctl" "lock-session"))
+
 (defun ewm-toggle-fullscreen ()
   "Toggle fullscreen for the surface in the current window."
   (interactive)

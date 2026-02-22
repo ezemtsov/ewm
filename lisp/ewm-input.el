@@ -47,6 +47,8 @@ Reads the digit from `last-command-event' for i3-style back-and-forth."
     (define-key map (kbd "s-d") #'ewm-launch-app)
     ;; Fullscreen toggle
     (define-key map (kbd "s-f") #'ewm-toggle-fullscreen)
+    ;; Lock session
+    (define-key map (kbd "s-l") #'ewm-lock-session)
     ;; Tab/workspace management
     (define-key map (kbd "s-t") #'tab-new)
     (define-key map (kbd "s-w") #'tab-close)
