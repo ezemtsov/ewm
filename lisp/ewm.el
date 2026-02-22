@@ -516,6 +516,7 @@ The frame will be fully assigned when the compositor responds."
 (defun ewm--on-make-frame (frame)
   "Hook for frame creation. Register pending or delete unauthorized."
   (when ewm-mode
+    (ewm--fixup-display-customs frame)
     (cond
      ((frame-parameter frame 'ewm-output)
       nil)
@@ -695,6 +696,26 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
          (cmd (replace-regexp-in-string "%[uUfFdDnNickvm]" "" cmd))
          (cmd (string-trim cmd)))
     (start-process-shell-command name nil cmd)))
+
+(defun ewm--fixup-display-customs (frame)
+  "Re-evaluate defcustom defaults that got nil during headless init.
+EWM starts Emacs as a foreground daemon, so display-probing functions
+return nil when init.el loads packages.  Re-evaluate affected defaults
+now that a graphical FRAME exists."
+  (when (display-graphic-p frame)
+    (let ((probe-re (regexp-opt '("image-transforms-p"
+                                  "face-valid-attribute-values"
+                                  "display-graphic-p"
+                                  "display-images-p"))))
+      (mapatoms
+       (lambda (sym)
+         (when-let* ((std (get sym 'standard-value))
+                     (form (car-safe std)))
+           (when (and (null (symbol-value sym))
+                      (not (get sym 'saved-value))
+                      (not (get sym 'customized-value))
+                      (string-match-p probe-re (prin1-to-string form)))
+             (custom-reevaluate-setting sym))))))))
 
 ;;; Global minor mode
 
