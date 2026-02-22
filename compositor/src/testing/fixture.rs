@@ -76,11 +76,6 @@ impl Fixture {
         self.clients.get_client_mut(id)
     }
 
-    /// Get total number of test surfaces across all clients
-    pub fn surface_count(&self) -> usize {
-        self.clients.total_surfaces()
-    }
-
     /// Add a virtual output with the given name and size
     pub fn add_output(&mut self, name: &str, width: i32, height: i32) {
         if let Some(headless) = self.state.backend.as_headless_mut() {
