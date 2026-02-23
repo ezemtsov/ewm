@@ -20,61 +20,15 @@ The compositor runs as a separate thread within Emacs (via a dynamic module), so
 └────────────────────────────────────────────────────────────┘
 ```
 
-## Requirements
-
-- **Emacs with pgtk**: Must be built with the pure GTK (pgtk) backend for native Wayland support. On NixOS use `emacs-pgtk` or `emacs30-pgtk`.
-- **Mesa/EGL**: Graphics drivers providing `libEGL.so.1`. On NixOS, enable `hardware.graphics.enable = true`.
-- **Run from TTY**: Must launch from a virtual terminal, not inside an existing Wayland/X11 session.
-
-## Running from Source
-
-Build the compositor module and launch Emacs from a TTY (not inside an existing
-Wayland/X11 session):
+## Quick Start
 
 ```bash
-cd compositor
-cargo build --features=screencast
+cd compositor && cargo build --features=screencast
 EWM_MODULE_PATH=$(pwd)/target/debug/libewm_core.so \
   emacs --fg-daemon -L ../lisp -l ewm -f ewm-start-module
 ```
 
-`--fg-daemon` is required — EWM creates frames dynamically as outputs are
-discovered, so Emacs must start without initial frames. Add `--init-directory`
-to point at your config if it's not in the default location.
-
-Launch applications with `s-d` (`ewm-launch-app`). **Kill combo**: `Super+Shift+E`.
-
-## NixOS Setup
-
-See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki/NixOS) for NixOS module configuration.
-
-## Emacs Setup
-
-Load `ewm.el` in your Emacs:
-
-```elisp
-(use-package ewm
-  :custom
-  ;; Optional: configure output modes
-  (ewm-output-config '(("DP-1" :width 2560 :height 1440)))
-  :bind (:map ewm-mode-map
-         ;; Override defaults with your preferred commands
-         ("s-d" . consult-buffer)))
-```
-
-Then start the compositor with `M-x ewm-start-module`.
-
-All bindings in `ewm-mode-map` are automatically intercepted by the compositor —
-no separate keybinding configuration is needed. See the [keyboard wiki page](https://codeberg.org/ezemtsov/ewm/wiki/Keyboard) for default bindings and customization.
-
-When the compositor starts, Wayland surfaces appear as special buffers. Use standard Emacs commands:
-- `C-x b` — switch between apps and regular buffers
-- `C-x 2`, `C-x 3` — split windows (surfaces follow)
-- `C-x 0`, `C-x 1` — close/maximize windows
-
-## Configuration
-
-See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for configuration options.
+Launch apps with `s-d`, kill with `Super+Shift+E`. See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for full setup, configuration, and NixOS instructions.
 
 ## Current Features
 
