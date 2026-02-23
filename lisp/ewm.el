@@ -716,11 +716,13 @@ now that a graphical FRAME exists."
        (lambda (sym)
          (when-let* ((std (get sym 'standard-value))
                      (form (car-safe std)))
-           (when (and (null (symbol-value sym))
-                      (not (get sym 'saved-value))
-                      (not (get sym 'customized-value))
-                      (string-match-p probe-re (prin1-to-string form)))
-             (custom-reevaluate-setting sym))))))))
+            (when (and (boundp sym)
+                       (null (symbol-value sym))
+                       (not (get sym 'saved-value))
+                       (not (get sym 'customized-value))
+                       (string-match-p probe-re (prin1-to-string form)))
+              (custom-reevaluate-setting sym))))))))
+
 
 ;;; Global minor mode
 
