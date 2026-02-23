@@ -55,10 +55,6 @@ Launch apps with `s-d`, kill with `Super+Shift+E`. See the [wiki](https://codebe
 - GPU selection is automatic (no override)
 - Must run from TTY (no nested mode)
 
-## Related Projects
-
-- **[ewm-consult](https://github.com/Kirth/ewm-consult)** - Consult integration for EWM
-
 ## Inspirations
 
 - **[EXWM](https://github.com/ch11ng/exwm)** (Emacs side): Buffer-per-window model, prefix key interception, automatic focus management
