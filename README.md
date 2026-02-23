@@ -46,40 +46,7 @@ Launch applications with `s-d` (`ewm-launch-app`). **Kill combo**: `Super+Shift+
 
 ## NixOS Setup
 
-EWM provides a NixOS module for easy deployment. Import the module and configure it:
-
-```nix
-# configuration.nix
-{ pkgs, ... }:
-
-{
-  imports = [ /path/to/ewm/nix/service.nix ];
-
-  programs.ewm.enable = true;
-}
-```
-
-The module registers an `ewm` session with your display manager (e.g., ly, gdm).
-Select "ewm" at login to start the compositor. Emacs loads your normal init
-directory (`~/.emacs.d` or `~/.config/emacs`).
-
-To use a custom init directory, different Emacs version, or add extra packages:
-
-```nix
-programs.ewm = {
-  enable = true;
-  extraEmacsArgs = "--init-directory /etc/nixos/dotfiles/emacs";
-  emacsPackage = pkgs.emacs30-pgtk.pkgs.withPackages (epkgs: [
-    config.programs.ewm.ewmPackage
-    epkgs.consult
-  ]);
-};
-```
-
-Module options:
-- `emacsPackage`: Emacs with EWM included (default: `pkgs.emacs-pgtk` with EWM package)
-- `extraEmacsArgs`: Additional Emacs CLI arguments (e.g., `"--no-site-lisp"`)
-- `screencast.enable`: Enable screen sharing via PipeWire (default: true)
+See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki/NixOS) for NixOS module configuration.
 
 ## Emacs Setup
 
@@ -124,67 +91,7 @@ When the compositor starts, Wayland surfaces appear as special buffers. Use stan
 
 ## Configuration
 
-### Output
-
-Configure display modes and positions via `ewm-output-config`:
-
-```elisp
-(setq ewm-output-config
-      '(("DP-1" :width 2560 :height 1440 :scale 1.0)
-        ("eDP-1" :width 1920 :height 1200 :scale 1.25 :x 0 :y 0)))
-```
-
-| Property     | Type    | Description                                            |
-|--------------|---------|--------------------------------------------------------|
-| `:width`     | integer | Horizontal resolution in pixels                        |
-| `:height`    | integer | Vertical resolution in pixels                          |
-| `:refresh`   | integer | Refresh rate in Hz                                     |
-| `:x`         | integer | Horizontal position in global coordinate space         |
-| `:y`         | integer | Vertical position in global coordinate space           |
-| `:scale`     | float   | Fractional scale (e.g. 1.25, 1.5, 2.0)                |
-| `:transform` | integer | 0=Normal 1=90 2=180 3=270 4=Flipped 5-7=Flipped+rot   |
-| `:enabled`   | boolean | Whether the output is enabled (default t)              |
-
-### Input Devices
-
-Configure touchpad, mouse, trackball, and trackpoint via `ewm-input-config`.
-Each entry is keyed by device type (symbol) or device name (string for
-per-device overrides). Omitted properties use the device default.
-
-```elisp
-(setq ewm-input-config
-      '((touchpad :natural-scroll t :tap t :dwt t)
-        (mouse :accel-profile "flat")
-        (trackpoint :accel-speed 0.5)
-        ;; Per-device override (exact name from libinput)
-        ("ELAN0676:00 04F3:3195 Touchpad" :tap nil :accel-speed -0.2)))
-```
-
-Device-specific entries override type defaults for matching properties.
-The resolution order is: device-specific > type default > hardware default.
-
-| Property            | Type   | Description                                         | Applies to       |
-|---------------------|--------|-----------------------------------------------------|------------------|
-| `:natural-scroll`   | bool   | Invert scroll direction                             | all              |
-| `:accel-speed`      | float  | Pointer acceleration, -1.0 to 1.0                   | all              |
-| `:accel-profile`    | string | `"flat"` or `"adaptive"`                            | all              |
-| `:scroll-method`    | string | `"two-finger"`, `"edge"`, `"on-button-down"`, `"no-scroll"` | all   |
-| `:left-handed`      | bool   | Swap left/right buttons                             | all              |
-| `:middle-emulation` | bool   | Emulate middle button from simultaneous L+R click   | all              |
-| `:tap`              | bool   | Tap-to-click                                        | touchpad         |
-| `:dwt`              | bool   | Disable touchpad while typing                       | touchpad         |
-| `:click-method`     | string | `"button-areas"` or `"clickfinger"`                 | touchpad         |
-| `:tap-button-map`   | string | `"left-right-middle"` or `"left-middle-right"`      | touchpad         |
-
-Settings take effect immediately when set (via `customize-variable` or
-`setq` followed by `ewm--send-input-config`). New devices receive
-the current configuration on hotplug. Invalid keys or values signal an error.
-
-To find device names for per-device overrides:
-```bash
-journalctl --user -t ewm | grep Configuring  # from compositor logs
-libinput list-devices                         # system-wide
-```
+See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for detailed configuration of [keyboard](https://codeberg.org/ezemtsov/ewm/wiki/Keyboard), [input devices](https://codeberg.org/ezemtsov/ewm/wiki/Input-Devices), and [output](https://codeberg.org/ezemtsov/ewm/wiki/Output).
 
 ## Current Features
 
