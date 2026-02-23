@@ -65,33 +65,16 @@ Load `ewm.el` in your Emacs:
 Then start the compositor with `M-x ewm-start-module`.
 
 All bindings in `ewm-mode-map` are automatically intercepted by the compositor —
-no separate keybinding configuration is needed.
-
-### Default Keybindings
-
-`ewm-mode` provides sensible defaults via `ewm-mode-map`. Override any
-binding with `:bind (:map ewm-mode-map ...)` in `use-package`.
-
-| Key           | Command                     | Description              |
-|---------------|-----------------------------|--------------------------|
-| `s-<left>`    | `windmove-left`             | Focus window left        |
-| `s-<right>`   | `windmove-right`            | Focus window right       |
-| `s-<down>`    | `windmove-down`             | Focus window below       |
-| `s-<up>`      | `windmove-up`               | Focus window above       |
-| `s-d`         | `ewm-launch-app`            | Launch XDG application   |
-| `s-t`         | `tab-new`                   | New workspace tab        |
-| `s-w`         | `tab-close`                 | Close workspace tab      |
-| `s-f`         | `ewm-toggle-fullscreen`     | Toggle surface fullscreen|
-| `s-1`..`s-9`  | `ewm-tab-select-or-return`  | Switch to tab N          |
+no separate keybinding configuration is needed. See the [keyboard wiki page](https://codeberg.org/ezemtsov/ewm/wiki/Keyboard) for default bindings and customization.
 
 When the compositor starts, Wayland surfaces appear as special buffers. Use standard Emacs commands:
-- `C-x b` - switch between apps and regular buffers
-- `C-x 2`, `C-x 3` - split windows (surfaces follow)
-- `C-x 0`, `C-x 1` - close/maximize windows
+- `C-x b` — switch between apps and regular buffers
+- `C-x 2`, `C-x 3` — split windows (surfaces follow)
+- `C-x 0`, `C-x 1` — close/maximize windows
 
 ## Configuration
 
-See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for detailed configuration of [keyboard](https://codeberg.org/ezemtsov/ewm/wiki/Keyboard), [input devices](https://codeberg.org/ezemtsov/ewm/wiki/Input-Devices), and [output](https://codeberg.org/ezemtsov/ewm/wiki/Output).
+See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for configuration options.
 
 ## Current Features
 
