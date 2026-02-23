@@ -963,8 +963,8 @@ impl Ewm {
         };
         let entries = self.output_layouts.get(&output.name())?;
 
-        // Iterate in reverse (last = topmost in render order)
-        for entry in entries.iter().rev() {
+        // Iterate forward (first = topmost, matching render element order)
+        for entry in entries.iter() {
             if entry.fullscreen {
                 // Fullscreen covers entire output
                 return Some((entry, output_geo.loc.x, output_geo.loc.y));
@@ -1043,10 +1043,15 @@ impl Ewm {
             (pos_in_entry_y - center_offset_y) * pointer_scale,
         ));
 
-        if window
+        // Hit if the pointer is over the actual surface, or anywhere on a fullscreen
+        // entry (the backdrop area outside the client buffer still belongs to the
+        // fullscreen window for input — matching niri's tile_size() approach).
+        let hit = window
             .surface_under(pos_in_window, WindowSurfaceType::ALL)
             .is_some()
-        {
+            || entry.fullscreen;
+
+        if hit {
             // Adjust location so Smithay sends surface-space coordinates.
             // For stretched (non-primary) entries, entry size != buffer size,
             // so we offset the location to compensate for the scale factor.
@@ -1057,6 +1062,7 @@ impl Ewm {
             ));
             return Some((window.wl_surface()?.into_owned(), global_loc));
         }
+
         None
     }
 
@@ -1065,6 +1071,17 @@ impl Ewm {
         self.output_layouts
             .values()
             .any(|entries| entries.iter().any(|e| e.id == id && e.fullscreen))
+    }
+
+    /// Whether layout surfaces render (and receive input) above the Top layer on this output.
+    ///
+    /// True when a fullscreen surface is active. Used to reorder both the render
+    /// element list and the input hit-testing chain so that the fullscreen surface
+    /// occludes Top/Bottom/Background layers for input as well as visually.
+    pub fn render_above_top_layer(&self, output: &Output) -> bool {
+        self.output_layouts
+            .get(&output.name())
+            .map_or(false, |entries| entries.iter().any(|e| e.fullscreen))
     }
 
     /// Hit-test layout surfaces under a global position, returning the surface ID.
@@ -2023,12 +2040,19 @@ impl Ewm {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let pos_within_output = pos - output_geo.loc.to_f64();
+        let above_top_layer = self.render_above_top_layer(output);
 
         let map = layer_map_for_output(output);
-        // Check in render order: Overlay → Top → Bottom → Background
-        for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
-            let layers: Vec<_> = map.layers_on(layer).rev().cloned().collect();
-            for layer_surface in &layers {
+        // When fullscreen, only Overlay receives input above the fullscreen surface.
+        // Top/Bottom/Background are visually behind it and must not intercept clicks.
+        let layers: &[Layer] = if above_top_layer {
+            &[Layer::Overlay]
+        } else {
+            &[Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background]
+        };
+        for &layer in layers {
+            let surfaces: Vec<_> = map.layers_on(layer).rev().cloned().collect();
+            for layer_surface in &surfaces {
                 let geo = match map.layer_geometry(layer_surface) {
                     Some(g) => g,
                     None => continue,
@@ -2049,8 +2073,14 @@ impl Ewm {
     }
 
     /// Find the surface under a point, checking layers and popups in render order.
-    /// Order: Overlay → Top → [window popups] → [toplevels] → Bottom → Background
-    /// Returns the surface and its location in global coordinates.
+    ///
+    /// When no fullscreen surface is active:
+    ///   Overlay → Top → [popups] → [layout surfaces] → [Emacs frames] → Bottom → Background
+    ///
+    /// When a fullscreen surface is active on the output (`render_above_top_layer`):
+    ///   Overlay → [popups] → [layout surfaces] → [Emacs frames] → Top → Bottom → Background
+    ///
+    /// This ensures the input hit-testing order matches the visual render order.
     pub fn surface_under_point(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -2062,22 +2092,25 @@ impl Ewm {
 
         let output = self.output_at(pos);
         let output_geo = output.and_then(|o| self.space.output_geometry(o));
+        let above_top_layer = output.map_or(false, |o| self.render_above_top_layer(o));
 
         if let (Some(output), Some(geo)) = (output, output_geo) {
             let pos_within_output = pos - geo.loc.to_f64();
 
-            // 1. Overlay layer (highest)
+            // 1. Overlay layer (always highest, regardless of fullscreen)
             if let Some(result) =
                 self.layer_surface_under(output, Layer::Overlay, pos_within_output, geo.loc)
             {
                 return Some(result);
             }
 
-            // 2. Top layer
-            if let Some(result) =
-                self.layer_surface_under(output, Layer::Top, pos_within_output, geo.loc)
-            {
-                return Some(result);
+            // 2. Top layer — only before windows when not fullscreen
+            if !above_top_layer {
+                if let Some(result) =
+                    self.layer_surface_under(output, Layer::Top, pos_within_output, geo.loc)
+                {
+                    return Some(result);
+                }
             }
         }
 
@@ -2119,9 +2152,17 @@ impl Ewm {
             return Some(result);
         }
 
-        // 5-6. Bottom and Background layers
+        // 6. Deferred layers (Top deferred behind fullscreen, then Bottom/Background)
         if let (Some(output), Some(geo)) = (output, output_geo) {
             let pos_within_output = pos - geo.loc.to_f64();
+
+            if above_top_layer {
+                if let Some(result) =
+                    self.layer_surface_under(output, Layer::Top, pos_within_output, geo.loc)
+                {
+                    return Some(result);
+                }
+            }
 
             if let Some(result) =
                 self.layer_surface_under(output, Layer::Bottom, pos_within_output, geo.loc)

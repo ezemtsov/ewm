@@ -233,13 +233,10 @@ pub fn collect_render_elements_for_output(
     // 2. Overlay layer
     elements.append(&mut overlay_elems);
 
-    // 3. Top layer — deferred if any entry is fullscreen (fullscreen covers Top layer)
-    let has_fullscreen = ewm
-        .output_layouts
-        .get(&output.name())
-        .map_or(false, |entries| entries.iter().any(|e| e.fullscreen));
+    // 3. Top layer — deferred if fullscreen (fullscreen covers Top layer)
+    let above_top_layer = ewm.render_above_top_layer(output);
 
-    if !has_fullscreen {
+    if !above_top_layer {
         elements.append(&mut top_elems);
     }
 
@@ -250,6 +247,11 @@ pub fn collect_render_elements_for_output(
     let working_area = ewm.get_working_area(output);
     if let Some(entries) = ewm.output_layouts.get(&output.name()) {
         for entry in entries {
+            // When fullscreen is active, non-fullscreen entries are behind the
+            // fullscreen backdrop — skip them to avoid rendering on top.
+            if above_top_layer && !entry.fullscreen {
+                continue;
+            }
             if let Some(window) = ewm.id_windows.get(&entry.id) {
                 if entry.fullscreen {
                     // Fullscreen: surface + backdrop at output origin, bypassing working area.
@@ -338,7 +340,7 @@ pub fn collect_render_elements_for_output(
     }
 
     // 4b. Deferred Top layer (behind fullscreen surface)
-    if has_fullscreen {
+    if above_top_layer {
         elements.append(&mut top_elems);
     }
 
