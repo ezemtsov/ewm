@@ -733,7 +733,7 @@ impl DrmBackendState {
         };
 
         // Collect render elements for this specific output
-        let elements = collect_render_elements_for_output(
+        let (mut content, cursor) = collect_render_elements_for_output(
             ewm,
             renderer.as_mut(),
             output_scale,
@@ -743,6 +743,9 @@ impl DrmBackendState {
             true, // include_cursor
             output,
         );
+        // DRM render needs all elements merged (cursor in front)
+        content.splice(0..0, cursor);
+        let elements = content;
 
         // Frame flags for proper plane scanout
         let flags =
@@ -1005,12 +1008,12 @@ impl DrmBackendState {
 
                 let include_cursor = cast.cursor_mode != 0;
 
-                let elements = sc_elements.get_or_insert_with(|| {
+                let (content, cursor) = sc_elements.get_or_insert_with(|| {
                     let Some(device) = &mut self.device else {
-                        return Vec::new();
+                        return (Vec::new(), Vec::new());
                     };
                     let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
-                        return Vec::new();
+                        return (Vec::new(), Vec::new());
                     };
                     collect_render_elements_for_output(
                         ewm,
@@ -1031,9 +1034,16 @@ impl DrmBackendState {
                     break;
                 };
 
+                let cursor_location = {
+                    let (px, py) = ewm.pointer_location;
+                    smithay::utils::Point::<i32, smithay::utils::Physical>::from((px as i32, py as i32))
+                };
+
                 if cast.dequeue_buffer_and_render(
                     renderer.as_mut(),
-                    elements,
+                    content,
+                    cursor,
+                    cursor_location,
                     output_size_physical,
                     output_scale,
                 ) {

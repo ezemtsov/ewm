@@ -41,7 +41,7 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use smithay::reexports::gbm::Modifier;
-use smithay::utils::{Physical, Scale, Size, Transform};
+use smithay::utils::{Physical, Point, Scale, Size, Transform};
 use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
@@ -73,8 +73,12 @@ enum CastState {
         modifier: Modifier,
         #[allow(dead_code)]
         plane_count: i32,
-        /// Damage tracker for skip-if-no-damage optimization (lazily initialized)
+        /// Damage tracker for content elements (skip-if-no-damage optimization)
         damage_tracker: Option<OutputDamageTracker>,
+        /// Separate damage tracker for cursor elements
+        cursor_damage_tracker: Option<OutputDamageTracker>,
+        /// Last cursor position for detecting cursor-only movement
+        last_cursor_location: Option<Point<i32, Physical>>,
     },
 }
 
@@ -385,6 +389,8 @@ impl Cast {
                             modifier,
                             plane_count,
                             damage_tracker: None,
+                            cursor_damage_tracker: None,
+                            last_cursor_location: None,
                         };
                         drop(state_ref);
 
@@ -792,11 +798,19 @@ impl Cast {
     }
 
     /// Dequeue a buffer, render to it, and queue it back.
+    ///
+    /// Content and cursor elements are tracked separately for damage. When only
+    /// the cursor position changes (e.g. mouse-follows-focus on each keystroke),
+    /// the content damage tracker reports no damage, allowing the screencast to
+    /// detect cursor-only updates efficiently.
+    ///
     /// Returns true if a frame was rendered.
     pub fn dequeue_buffer_and_render<E>(
         &mut self,
         renderer: &mut GlesRenderer,
-        elements: &[E],
+        content_elements: &[E],
+        cursor_elements: &[E],
+        cursor_location: Point<i32, Physical>,
         _size: Size<i32, Physical>,
         scale: Scale<f64>,
     ) -> bool
@@ -812,6 +826,8 @@ impl Cast {
         let CastState::Ready {
             size: ready_size,
             damage_tracker,
+            cursor_damage_tracker,
+            last_cursor_location,
             ..
         } = &mut *state
         else {
@@ -821,6 +837,7 @@ impl Cast {
 
         let size = Size::from((ready_size.w as i32, ready_size.h as i32));
 
+        // Content damage tracking
         let dt = damage_tracker
             .get_or_insert_with(|| OutputDamageTracker::new(size, scale, Transform::Normal));
 
@@ -831,14 +848,40 @@ impl Cast {
             *dt = OutputDamageTracker::new(size, scale, Transform::Normal);
         }
 
-        let (damage, _states) = dt.damage_output(1, elements).unwrap();
-        if damage.is_none() {
+        let (content_damage, _states) = dt.damage_output(1, content_elements).unwrap();
+
+        // Cursor damage tracking (separate tracker)
+        let cursor_dt = cursor_damage_tracker
+            .get_or_insert_with(|| OutputDamageTracker::new(size, scale, Transform::Normal));
+
+        let OutputModeSource::Static {
+            scale: ct_scale, ..
+        } = cursor_dt.mode()
+        else {
+            unreachable!();
+        };
+        if *ct_scale != scale {
+            *cursor_dt = OutputDamageTracker::new(size, scale, Transform::Normal);
+        }
+
+        let (cursor_damage, _) = cursor_dt.damage_output(1, cursor_elements).unwrap();
+
+        // Detect cursor position change
+        let cursor_moved = *last_cursor_location != Some(cursor_location);
+        *last_cursor_location = Some(cursor_location);
+
+        let has_cursor_update = cursor_damage.is_some() || cursor_moved;
+
+        if content_damage.is_none() && !has_cursor_update {
             trace!("no damage, skipping PipeWire frame");
             return false;
         }
         trace!(
-            element_count = elements.len(),
-            damage_regions = ?damage.as_ref().map(|d| d.len()),
+            content_count = content_elements.len(),
+            cursor_count = cursor_elements.len(),
+            content_damage = ?content_damage.as_ref().map(|d| d.len()),
+            cursor_damage = ?cursor_damage.as_ref().map(|d| d.len()),
+            cursor_moved,
             "PipeWire frame has damage"
         );
 
@@ -863,13 +906,14 @@ impl Cast {
             let dmabuf = dmabuf.clone();
             drop(dmabufs);
 
+            // Chain cursor elements (front) onto content elements for rendering
             match crate::render::render_to_dmabuf(
                 renderer,
                 dmabuf,
                 size,
                 scale,
                 Transform::Normal,
-                elements.iter().rev(),
+                cursor_elements.iter().chain(content_elements.iter()).rev(),
             ) {
                 Ok(sync_point) => {
                     mark_buffer_as_good(spa_buf, &mut self.sequence_counter);

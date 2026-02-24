@@ -122,6 +122,10 @@ fn push_constrained(
 /// 1. Efficient rendering - don't process elements that won't be visible
 /// 2. Accurate damage tracking - elements from other outputs don't trigger false damage
 ///
+/// Returns `(content_elements, cursor_elements)`. Cursor elements are split out
+/// to allow separate damage tracking for screencast — when only the cursor moves,
+/// the screencast can skip a full re-render.
+///
 /// Rendering order (front to back):
 /// 1. Cursor (highest z-order, always visible)
 /// 2. Overlay layer
@@ -145,7 +149,7 @@ pub fn collect_render_elements_for_output(
     output_size: Size<i32, smithay::utils::Logical>,
     include_cursor: bool,
     output: &Output,
-) -> Vec<EwmRenderElement> {
+) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
     tracy_span!("collect_render_elements");
 
     use smithay::backend::renderer::element::AsRenderElements;
@@ -153,6 +157,7 @@ pub fn collect_render_elements_for_output(
     use smithay::wayland::seat::WaylandFocus;
 
     let mut elements: Vec<EwmRenderElement> = Vec::new();
+    let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
 
     // If session is locked, render ONLY the lock surface for this output
     if ewm.is_locked() {
@@ -183,7 +188,7 @@ pub fn collect_render_elements_for_output(
             elements.push(EwmRenderElement::SolidColor(bg_element));
         }
         // Return early - don't render anything else when locked
-        return elements;
+        return (elements, cursor_elements);
     }
 
     // Output bounds in global logical coordinates
@@ -208,6 +213,7 @@ pub fn collect_render_elements_for_output(
     };
 
     // 1. Cursor (highest z-order, always visible above all layers)
+    // Collected into a separate vec for independent damage tracking in screencast.
     if include_cursor {
         let (pointer_x, pointer_y) = ewm.pointer_location;
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
@@ -221,7 +227,7 @@ pub fn collect_render_elements_for_output(
 
             match cursor_buffer.render_element(renderer, cursor_pos) {
                 Ok(cursor_element) => {
-                    elements.push(EwmRenderElement::Cursor(cursor_element));
+                    cursor_elements.push(EwmRenderElement::Cursor(cursor_element));
                 }
                 Err(e) => {
                     warn!("Failed to create cursor render element: {:?}", e);
@@ -412,7 +418,7 @@ pub fn collect_render_elements_for_output(
     // Insert popups after top layer but before windows
     elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
 
-    elements
+    (elements, cursor_elements)
 }
 
 /// Render elements to a dmabuf buffer for screencopy
@@ -565,7 +571,7 @@ pub fn process_screencopies_for_output(
 
         // Lazily collect render elements (shared across all queues for this output)
         let elements = elements.get_or_init(|| {
-            collect_render_elements_for_output(
+            let (mut content, cursor) = collect_render_elements_for_output(
                 ewm,
                 renderer,
                 output_scale,
@@ -574,7 +580,10 @@ pub fn process_screencopies_for_output(
                 output_size,
                 true, // include_cursor
                 output,
-            )
+            );
+            // Screencopy doesn't need separate cursor tracking — merge them
+            content.splice(0..0, cursor);
+            content
         });
 
         let size = screencopy.buffer_size();
@@ -687,7 +696,7 @@ pub fn render_screencopy_immediate(
     let output_transform = output.current_transform();
     let output_geo = ewm.space.output_geometry(&output).unwrap_or_default();
 
-    let elements = collect_render_elements_for_output(
+    let (mut content, cursor) = collect_render_elements_for_output(
         ewm,
         renderer,
         output_scale,
@@ -697,6 +706,9 @@ pub fn render_screencopy_immediate(
         true,
         &output,
     );
+    // Screencopy doesn't need separate cursor tracking — merge them
+    content.splice(0..0, cursor);
+    let elements = content;
 
     let size = screencopy.buffer_size();
     let region_loc = screencopy.region_loc();
