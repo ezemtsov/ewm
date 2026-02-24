@@ -1336,6 +1336,29 @@ impl Ewm {
         }
     }
 
+    /// Return the next output needing a redraw, preferring `prefer` if queued.
+    fn next_queued_redraw(&self, prefer: Option<&str>) -> Option<Output> {
+        if !self.monitors_active {
+            return None;
+        }
+        let needs_redraw = |s: &OutputState| {
+            matches!(
+                s.redraw_state,
+                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+            )
+        };
+        if let Some(name) = prefer {
+            let found = self.output_state.iter().find(|(o, s)| o.name() == name && needs_redraw(s));
+            if let Some((output, _)) = found {
+                return Some(output.clone());
+            }
+        }
+        self.output_state
+            .iter()
+            .find(|(_, s)| needs_redraw(s))
+            .map(|(o, _)| o.clone())
+    }
+
     /// Orchestrate a single output redraw.
     ///
     /// Orchestrate a single output redraw:
@@ -3824,6 +3847,20 @@ impl State {
         }
     }
 
+    /// Drain pending module commands, dispatch them, and sync keyboard focus.
+    /// Returns true if any commands were processed.
+    fn process_pending_commands(&mut self) -> bool {
+        let commands = crate::module::drain_commands();
+        if commands.is_empty() {
+            return false;
+        }
+        for cmd in commands {
+            self.handle_module_command(cmd);
+        }
+        self.sync_keyboard_focus();
+        true
+    }
+
     /// Per-frame processing callback for the event loop.
     /// Called after each dispatch to handle redraws, events, and client flushing.
     pub fn refresh_and_flush_clients(&mut self) {
@@ -3833,22 +3870,7 @@ impl State {
             self.ewm.stop();
         }
 
-        // Process module commands (from Emacs via dynamic module)
-        let commands = crate::module::drain_commands();
-        if !commands.is_empty() {
-            let _start = std::time::Instant::now();
-            let _count = commands.len();
-            for cmd in commands {
-                self.handle_module_command(cmd);
-            }
-            let _elapsed_us = _start.elapsed().as_micros() as f64;
-            crate::tracy_plot!("emacs_cmd_count", _count as f64);
-            crate::tracy_plot!("emacs_cmd_time_us", _elapsed_us);
-        }
-
-        // Sync keyboard focus after processing module commands.
-        // This catches any focus changes from Emacs commands, xdg_activation, etc.
-        self.sync_keyboard_focus();
+        self.process_pending_commands();
 
         // Refresh workspace protocol state (pull model: diff source of truth vs mirrors).
         crate::protocols::workspace::refresh::<State>(
@@ -3863,8 +3885,23 @@ impl State {
             self.backend.early_import(&surface);
         }
 
-        // Process any queued redraws
-        self.ewm.redraw_queued_outputs(&mut self.backend);
+        // Render queued outputs, focused first. Between outputs, check for
+        // commands that arrived during render — process them and defer remaining redraws.
+        let focused = self.ewm.get_focused_output();
+        let mut rendered_focused = false;
+
+        while let Some(output) = self.ewm.next_queued_redraw(focused.as_deref()) {
+            let is_focused = focused.as_deref() == Some(output.name().as_str());
+
+            if rendered_focused && !is_focused && self.process_pending_commands() {
+                break;
+            }
+
+            self.ewm.redraw(&mut self.backend, &output);
+            if is_focused {
+                rendered_focused = true;
+            }
+        }
 
         // Process IM relay events and send to Emacs
         self.process_im_events();
