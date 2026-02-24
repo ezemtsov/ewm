@@ -1,7 +1,7 @@
 sequenceDiagram
     participant LI as libinput
     participant C as Compositor<br/>(event loop)
-    participant EQ as Event Queue<br/>(Vec + Mutex)
+    participant EQ as Event Queue<br/>(VecDeque + Mutex)
     participant E as Emacs<br/>(SIGUSR1 handler)
     participant CQ as Command Queue<br/>(Vec + Mutex)
     participant IR as IM Relay<br/>(MPSC channel)
@@ -34,7 +34,7 @@ sequenceDiagram
 
     rect rgb(240, 255, 240)
         Note over CQ,App: 3. Emacs → Client (FIFO)
-        C->>CQ: drain_commands() each frame tick
+        C->>CQ: drain_commands() pre-render + between outputs
         CQ-->>C: Vec<ImCommit> in push order
         loop for each ImCommit
             C->>IR: ImCommand::CommitString(text)
@@ -42,6 +42,7 @@ sequenceDiagram
         IR->>App: im.commit_string(text)
         IR->>App: im.commit(serial)
         IR->>IR: conn.flush()
+        Note right of C: Focused output renders first.<br/>Commands arriving mid-render are<br/>processed between outputs, deferring<br/>remaining redraws to next VBlank.
     end
 
     Note over LI,App: Fast typing → keys buffer in queues, process with latency but never reorder

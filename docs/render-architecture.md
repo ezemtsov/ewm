@@ -54,31 +54,45 @@ The `refresh_and_flush_clients()` callback runs after each event dispatch:
 impl State {
     pub fn refresh_and_flush_clients(&mut self) {
         // 1. Check if stop was requested from Emacs module (ewm-stop)
-        // 2. Process module commands (from Emacs via dynamic module)
-        // 3. Sync keyboard focus after processing commands
-        self.sync_keyboard_focus();
+        // 2. Process module commands and sync keyboard focus
+        self.process_pending_commands();
 
-        // 4. Process pending early buffer imports
+        // 3. Process pending early buffer imports
         for surface in self.ewm.pending_early_imports.drain(..) {
             self.backend.early_import(&surface);
         }
 
-        // 5. Render any outputs with queued redraws
-        self.ewm.redraw_queued_outputs(&mut self.backend);
+        // 4. Render queued outputs, focused first. Between outputs, check for
+        //    commands that arrived during render — process them and defer
+        //    remaining redraws (picked up next VBlank cycle).
+        let focused = self.ewm.get_focused_output();
+        let mut rendered_focused = false;
+        while let Some(output) = self.ewm.next_queued_redraw(focused.as_deref()) {
+            let is_focused = focused.as_deref() == Some(output.name().as_str());
+            if rendered_focused && !is_focused && self.process_pending_commands() {
+                break;
+            }
+            self.ewm.redraw(&mut self.backend, &output);
+            if is_focused { rendered_focused = true; }
+        }
 
-        // 6. Process IM relay events and send to Emacs
+        // 5. Process IM relay events and send to Emacs
         self.process_im_events();
 
-        // 7. Clean up dead windows from space
+        // 6. Clean up dead windows from space
         self.ewm.cleanup_dead_windows();
 
-        // 8. Flush Wayland clients
+        // 7. Flush Wayland clients
         if let Err(e) = self.ewm.display_handle.flush_clients() {
             warn!("Failed to flush Wayland clients: {e}");
         }
     }
 }
 ```
+
+The interleaving ensures input commands (e.g., `ImCommit`) are delivered within
+one output render (~3-5ms) rather than waiting for all outputs to finish
+(~10-20ms with screencasting).
 
 This pattern avoids `Rc<RefCell<>>` wrapping, providing:
 - No Rc clone overhead
@@ -186,25 +200,25 @@ The `queue_redraw()` method is idempotent — calling it multiple times won't qu
 
 ## Render Loop
 
-The redraw loop lives on `Ewm` and iterates `output_state` using `while let .find()` to pick up outputs that get queued during rendering (e.g., by VBlank handlers):
+The production render loop lives in `State::refresh_and_flush_clients()` (see
+above) and uses `Ewm::next_queued_redraw()` to select the next output:
 
 ```rust
 impl Ewm {
-    pub fn redraw_queued_outputs(&mut self, backend: &mut Backend) {
-        while let Some(output) = self
-            .output_state
-            .iter()
-            .find(|(_, state)| matches!(
-                state.redraw_state,
-                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-            ))
-            .map(|(output, _)| output.clone())
-        {
-            self.redraw(backend, &output);
-        }
+    fn next_queued_redraw(&self, prefer: Option<&str>) -> Option<Output> {
+        // Returns the preferred (focused) output first if it needs a redraw,
+        // then falls back to any other queued output.
     }
 }
 ```
+
+This prioritization ensures the focused output renders first, reducing input
+latency for the active workspace. Between outputs, `process_pending_commands()`
+drains any module commands that arrived during rendering. If commands were
+found, remaining non-focused outputs are deferred to the next VBlank cycle.
+
+`Ewm::redraw_queued_outputs()` is a simpler variant without interleaving,
+used during DRM startup and in the test fixture:
 
 ### Render Flow
 

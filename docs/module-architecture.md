@@ -59,11 +59,11 @@ push_event(Event::Focus{...})  │
 ### Rust Side
 
 ```rust
-static EVENT_QUEUE: OnceLock<Mutex<Vec<Event>>> = OnceLock::new();
+static EVENT_QUEUE: OnceLock<Mutex<VecDeque<Event>>> = OnceLock::new();
 
 pub fn push_event(event: Event) {
     let mut queue = event_queue().lock().unwrap();
-    queue.push(event);
+    queue.push_back(event);
     drop(queue);  // Release lock before signaling
     unsafe { libc::raise(libc::SIGUSR1); }
 }
