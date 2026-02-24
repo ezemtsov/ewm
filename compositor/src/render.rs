@@ -58,6 +58,18 @@ use tracing::warn;
 use crate::protocols::screencopy::ScreencopyBuffer;
 use crate::{cursor, Ewm, State};
 
+/// Identifies the target of a render pass.
+///
+/// Currently used as scaffolding for future per-window privacy filtering
+/// (`block_out_from`), where surfaces could opt out of being captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderTarget {
+    /// Rendering for display on a physical or virtual output.
+    Output,
+    /// Rendering for a screen cast (PipeWire stream).
+    Screencast,
+}
+
 // Combined render element type for ewm.
 // Generated via Smithay's `render_elements!` macro, which auto-derives
 // `Element`, `RenderElement<GlesRenderer>`, and `From` impls for each variant.
@@ -140,6 +152,8 @@ fn push_constrained(
 /// - `output_pos`: The output's position in global logical space
 /// - `output_size`: The output's size in logical coordinates
 /// - `include_cursor`: Whether to include the cursor element
+/// - `target`: The render target (Output vs Screencast); currently unused
+///   but threaded through for future per-window privacy filtering.
 pub fn collect_render_elements_for_output(
     ewm: &Ewm,
     renderer: &mut GlesRenderer,
@@ -149,6 +163,7 @@ pub fn collect_render_elements_for_output(
     output_size: Size<i32, smithay::utils::Logical>,
     include_cursor: bool,
     output: &Output,
+    _target: RenderTarget,
 ) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
     tracy_span!("collect_render_elements");
 
@@ -580,6 +595,7 @@ pub fn process_screencopies_for_output(
                 output_size,
                 true, // include_cursor
                 output,
+                RenderTarget::Output,
             );
             // Screencopy doesn't need separate cursor tracking — merge them
             content.splice(0..0, cursor);
@@ -705,6 +721,7 @@ pub fn render_screencopy_immediate(
         output_geo.size,
         true,
         &output,
+        RenderTarget::Output,
     );
     // Screencopy doesn't need separate cursor tracking — merge them
     content.splice(0..0, cursor);

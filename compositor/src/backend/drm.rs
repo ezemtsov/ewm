@@ -81,7 +81,7 @@ use crate::{
     backend::Backend,
     cursor::CursorBuffer,
     input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
-    render::{collect_render_elements_for_output, process_screencopies_for_output},
+    render::{collect_render_elements_for_output, process_screencopies_for_output, RenderTarget},
     vblank_throttle::VBlankThrottle,
     Ewm, OutputInfo, OutputMode, OutputState, RedrawState, State,
 };
@@ -742,6 +742,7 @@ impl DrmBackendState {
             output_size,
             true, // include_cursor
             output,
+            RenderTarget::Output,
         );
         // DRM render needs all elements merged (cursor in front)
         content.splice(0..0, cursor);
@@ -1017,6 +1018,7 @@ impl DrmBackendState {
                         output_size,
                         include_cursor,
                         output,
+                        RenderTarget::Screencast,
                     )
                 });
 
