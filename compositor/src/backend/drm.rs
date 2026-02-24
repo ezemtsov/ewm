@@ -953,8 +953,10 @@ impl DrmBackendState {
         };
         let renderer = renderer.as_mut();
 
-        // Process pending screencopy requests
-        process_screencopies_for_output(ewm, renderer, output, cursor_buffer, &event_loop);
+        // Process pending screencopy requests (skip setup cost when no requests pending)
+        if ewm.screencopy_state.has_pending_for_output(output) {
+            process_screencopies_for_output(ewm, renderer, output, cursor_buffer, &event_loop);
+        }
 
         // Render to active screen casts
         #[cfg(feature = "screencast")]

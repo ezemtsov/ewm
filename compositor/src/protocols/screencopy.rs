@@ -131,6 +131,16 @@ impl ScreencopyManagerState {
         self.queues.values_mut()
     }
 
+    /// Check if any queue has a pending screencopy request for the given output.
+    pub fn has_pending_for_output(&self, output: &Output) -> bool {
+        self.queues.values().any(|queue| {
+            queue
+                .screencopies
+                .iter()
+                .any(|sc| sc.output() == output)
+        })
+    }
+
     /// Iterate all queues with a closure, then clean up dead managers.
     pub fn with_queues_mut(&mut self, mut f: impl FnMut(&mut ScreencopyQueue)) {
         for queue in self.queues.values_mut() {
