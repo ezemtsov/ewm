@@ -929,32 +929,31 @@ impl DrmBackendState {
     }
 
     /// Process post-render work: screencopy and screencast for an output.
+    ///
+    /// Acquires the GPU renderer once and uses it for all post-render work
+    /// (screencopy + screencast), avoiding repeated mutex locks on the GPU manager.
     pub(crate) fn post_render(
         &mut self,
         ewm: &mut Ewm,
         output: &smithay::output::Output,
     ) {
-        let Some(device) = &self.device else {
+        let Some(ref event_loop) = self.loop_handle else {
+            return;
+        };
+        let event_loop = event_loop.clone();
+        let cursor_buffer = &self.cursor_buffer;
+
+        let Some(device) = &mut self.device else {
             return;
         };
         let render_node = device.render_node;
+        let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
+            return;
+        };
+        let renderer = renderer.as_mut();
 
         // Process pending screencopy requests
-        if let Some(ref event_loop) = self.loop_handle {
-            let Some(device) = &mut self.device else {
-                return;
-            };
-            let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
-                return;
-            };
-            process_screencopies_for_output(
-                ewm,
-                renderer.as_mut(),
-                output,
-                &self.cursor_buffer,
-                event_loop,
-            );
-        }
+        process_screencopies_for_output(ewm, renderer, output, cursor_buffer, &event_loop);
 
         // Render to active screen casts
         #[cfg(feature = "screencast")]
@@ -1009,17 +1008,11 @@ impl DrmBackendState {
                 let include_cursor = cast.cursor_mode != 0;
 
                 let (content, cursor) = sc_elements.get_or_insert_with(|| {
-                    let Some(device) = &mut self.device else {
-                        return (Vec::new(), Vec::new());
-                    };
-                    let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
-                        return (Vec::new(), Vec::new());
-                    };
                     collect_render_elements_for_output(
                         ewm,
-                        renderer.as_mut(),
+                        renderer,
                         output_scale,
-                        &self.cursor_buffer,
+                        cursor_buffer,
                         output_pos,
                         output_size,
                         include_cursor,
@@ -1027,20 +1020,13 @@ impl DrmBackendState {
                     )
                 });
 
-                let Some(device) = &mut self.device else {
-                    break;
-                };
-                let Ok(mut renderer) = device.gpu_manager.single_renderer(&render_node) else {
-                    break;
-                };
-
                 let cursor_location = {
                     let (px, py) = ewm.pointer_location;
                     smithay::utils::Point::<i32, smithay::utils::Physical>::from((px as i32, py as i32))
                 };
 
                 if cast.dequeue_buffer_and_render(
-                    renderer.as_mut(),
+                    renderer,
                     content,
                     cursor,
                     cursor_location,
