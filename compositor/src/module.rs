@@ -381,16 +381,16 @@ pub fn get_focus_history() -> Vec<FocusEvent> {
 // ============================================================================
 
 /// Event queue shared between compositor thread and Emacs
-static EVENT_QUEUE: OnceLock<Mutex<Vec<Event>>> = OnceLock::new();
+static EVENT_QUEUE: OnceLock<Mutex<VecDeque<Event>>> = OnceLock::new();
 
-fn event_queue() -> &'static Mutex<Vec<Event>> {
-    EVENT_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+fn event_queue() -> &'static Mutex<VecDeque<Event>> {
+    EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 /// Push an event to the queue and notify Emacs via SIGUSR1
 pub fn push_event(event: Event) {
     let mut queue = event_queue().lock().unwrap();
-    queue.push(event);
+    queue.push_back(event);
     drop(queue); // Release lock before signaling
 
     // Send SIGUSR1 to wake Emacs event loop (only when running as module).
@@ -408,7 +408,7 @@ pub fn push_event(event: Event) {
 #[defun]
 fn pop_event(env: &Env) -> Result<Value<'_>> {
     let mut queue = event_queue().lock().unwrap();
-    let event = queue.pop();
+    let event = queue.pop_front();
     drop(queue);
 
     match event {
