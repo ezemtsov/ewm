@@ -899,6 +899,19 @@ impl Ewm {
         None
     }
 
+    /// Find the primary output layout entry for a surface.
+    ///
+    /// Scans all output_layouts for a primary entry matching the given surface ID.
+    /// Used as fallback when no focused entry exists (e.g. popup positioning).
+    fn primary_output_for_surface(&self, id: u32) -> Option<(&str, &LayoutEntry)> {
+        for (output_name, entries) in &self.output_layouts {
+            if let Some(entry) = entries.iter().find(|e| e.id == id && e.primary) {
+                return Some((output_name.as_str(), entry));
+            }
+        }
+        None
+    }
+
     /// Get the global position of a window.
     ///
     /// For layout surfaces (managed via output_layouts): uses the primary entry's
@@ -912,9 +925,11 @@ impl Ewm {
 
         let id = self.window_ids.get(window).copied()?;
 
-        // Layout surface: use focused entry for output association
+        // Layout surface: use focused entry for output association, fall back to primary
         if self.surface_outputs.contains_key(&id) {
-            let (output_name, entry) = self.focused_output_for_surface(id)?;
+            let (output_name, entry) = self
+                .focused_output_for_surface(id)
+                .or_else(|| self.primary_output_for_surface(id))?;
             let output = self
                 .space
                 .outputs()
@@ -986,81 +1001,106 @@ impl Ewm {
 
     /// Hit-test layout surfaces under a global position.
     ///
-    /// Checks output_layouts entries on the pointer's output, handling stretched
-    /// views by scaling pointer coords to match the window's actual geometry.
+    /// Iterates all entries on the pointer's output and calls surface_under(ALL)
+    /// on each window. This catches popups and subsurfaces that extend beyond
+    /// their parent entry bounds, without needing a separate popup iteration pass.
+    /// Entries are checked in topmost-first order (matching render element order).
     pub fn layout_surface_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) -> Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
         use smithay::utils::Point;
 
-        let (entry, entry_x, entry_y) = self.layout_entry_under(pos)?;
-        let window = self.id_windows.get(&entry.id)?;
-        let window_geo = window.geometry();
-
-        let pos_in_entry_x = pos.x - entry_x as f64;
-        let pos_in_entry_y = pos.y - entry_y as f64;
-
-        // Scale pointer coords from entry space to window space.
-        // Fullscreen/primary entries use 1:1 mapping (with centering offset for fullscreen).
-        // Non-primary entries use uniform fill+crop: the buffer is scaled by
-        // max(entry/buf) to fully cover the entry, then cropped. The pointer
-        // inverse is min(buf/entry) applied uniformly to both axes.
-        let (pointer_scale, center_offset_x, center_offset_y) = if entry.fullscreen {
-            let output_size = self
-                .output_at(pos)
-                .and_then(|o| self.space.output_geometry(o))
-                .map(|g| g.size)
-                .unwrap_or_default();
-            if entry.primary {
-                // Primary fullscreen: 1:1 mapping with centering offset
-                let (cx, cy) = fullscreen_center_offset(window_geo.size, output_size);
-                (1.0, cx as f64, cy as f64)
-            } else {
-                // Non-primary fullscreen: uniform stretch inverse
-                let uniform = f64::max(
-                    output_size.w as f64 / window_geo.size.w as f64,
-                    output_size.h as f64 / window_geo.size.h as f64,
-                );
-                (1.0 / uniform, 0.0, 0.0)
-            }
-        } else if entry.primary {
-            (1.0, 0.0, 0.0)
-        } else if entry.w > 0 && entry.h > 0 {
-            (
-                f64::min(
-                    window_geo.size.w as f64 / entry.w as f64,
-                    window_geo.size.h as f64 / entry.h as f64,
-                ),
-                0.0,
-                0.0,
-            )
-        } else {
-            (1.0, 0.0, 0.0)
+        let output = self.output_at(pos)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let working_area = {
+            let map = layer_map_for_output(output);
+            map.non_exclusive_zone()
         };
-        let pos_in_window = Point::from((
-            (pos_in_entry_x - center_offset_x) * pointer_scale,
-            (pos_in_entry_y - center_offset_y) * pointer_scale,
-        ));
+        let entries = self.output_layouts.get(&output.name())?;
 
-        // Hit if the pointer is over the actual surface, or anywhere on a fullscreen
-        // entry (the backdrop area outside the client buffer still belongs to the
-        // fullscreen window for input — matching niri's tile_size() approach).
-        let hit = window
-            .surface_under(pos_in_window, WindowSurfaceType::ALL)
-            .is_some()
-            || entry.fullscreen;
+        let mut fullscreen_fallback = None;
 
-        if hit {
-            // Adjust location so Smithay sends surface-space coordinates.
-            // For stretched (non-primary) entries, entry size != buffer size,
-            // so we offset the location to compensate for the scale factor.
-            // For primary entries (scale=1.0), this reduces to (entry_x, entry_y).
-            let global_loc = Point::from((
-                pos.x - pos_in_window.x,
-                pos.y - pos_in_window.y,
+        for entry in entries.iter() {
+            let window = match self.id_windows.get(&entry.id) {
+                Some(w) => w,
+                None => continue,
+            };
+            let window_geo = window.geometry();
+
+            let (entry_x, entry_y) = if entry.fullscreen {
+                (output_geo.loc.x, output_geo.loc.y)
+            } else {
+                (
+                    output_geo.loc.x + working_area.loc.x + entry.x,
+                    output_geo.loc.y + working_area.loc.y + entry.y,
+                )
+            };
+
+            let pos_in_entry_x = pos.x - entry_x as f64;
+            let pos_in_entry_y = pos.y - entry_y as f64;
+
+            // Scale pointer coords from entry space to window space.
+            // Primary/fullscreen-primary use 1:1 mapping. Non-primary entries use
+            // uniform fill+crop inverse: min(buf/entry) applied to both axes.
+            let (pointer_scale, center_offset_x, center_offset_y) = if entry.fullscreen {
+                if entry.primary {
+                    let (cx, cy) = fullscreen_center_offset(window_geo.size, output_geo.size);
+                    (1.0, cx as f64, cy as f64)
+                } else {
+                    let uniform = f64::max(
+                        output_geo.size.w as f64 / window_geo.size.w as f64,
+                        output_geo.size.h as f64 / window_geo.size.h as f64,
+                    );
+                    (1.0 / uniform, 0.0, 0.0)
+                }
+            } else if entry.primary {
+                (1.0, 0.0, 0.0)
+            } else if entry.w > 0 && entry.h > 0 {
+                (
+                    f64::min(
+                        window_geo.size.w as f64 / entry.w as f64,
+                        window_geo.size.h as f64 / entry.h as f64,
+                    ),
+                    0.0,
+                    0.0,
+                )
+            } else {
+                (1.0, 0.0, 0.0)
+            };
+
+            let pos_in_window = Point::from((
+                (pos_in_entry_x - center_offset_x) * pointer_scale,
+                (pos_in_entry_y - center_offset_y) * pointer_scale,
             ));
-            return Some((window.wl_surface()?.into_owned(), global_loc));
+
+            // Window's global origin: pointer_global - origin = pointer_in_window.
+            let window_origin =
+                Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
+
+            // surface_under(ALL) traverses the full surface tree: toplevel, popups,
+            // and subsurfaces. Popups extending beyond entry bounds are found here.
+            if let Some((surface, surface_offset)) =
+                window.surface_under(pos_in_window, WindowSurfaceType::ALL)
+            {
+                let global_loc = Point::from((
+                    window_origin.x + surface_offset.x as f64,
+                    window_origin.y + surface_offset.y as f64,
+                ));
+                return Some((surface, global_loc));
+            }
+
+            // Fullscreen covers the entire output — no entries below are visible.
+            if entry.fullscreen {
+                fullscreen_fallback = Some((window, window_origin));
+                break;
+            }
+        }
+
+        // Fullscreen backdrop: the area outside the client buffer still belongs to
+        // the fullscreen window for input.
+        if let Some((window, window_origin)) = fullscreen_fallback {
+            return Some((window.wl_surface()?.into_owned(), window_origin));
         }
 
         None
@@ -2164,36 +2204,12 @@ impl Ewm {
             }
         }
 
-        // 3. Window popups (check all windows, including layout surfaces)
-        for window in self.id_windows.values() {
-            if let Some(surface) = window.wl_surface() {
-                let window_loc = self.window_global_position(window).unwrap_or_default();
-                let window_geo = window.geometry();
-
-                for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
-                    let popup_loc = (window_loc + window_geo.loc + popup_offset
-                        - popup.geometry().loc)
-                        .to_f64();
-                    let pos_in_popup = pos - popup_loc;
-                    let popup_geo = popup.geometry();
-
-                    if pos_in_popup.x >= 0.0
-                        && pos_in_popup.y >= 0.0
-                        && pos_in_popup.x < popup_geo.size.w as f64
-                        && pos_in_popup.y < popup_geo.size.h as f64
-                    {
-                        return Some((popup.wl_surface().clone(), popup_loc));
-                    }
-                }
-            }
-        }
-
-        // 4. Layout surfaces (output_layouts-managed)
+        // 3. Layout surfaces (output_layouts-managed, includes popup/subsurface hit-testing)
         if let Some(result) = self.layout_surface_under(pos) {
             return Some(result);
         }
 
-        // 5. Emacs frames (still in Space)
+        // 4. Emacs frames (still in Space)
         if let Some(result) = self
             .space
             .element_under(pos)
@@ -2202,7 +2218,7 @@ impl Ewm {
             return Some(result);
         }
 
-        // 6. Deferred layers (Top deferred behind fullscreen, then Bottom/Background)
+        // 5. Deferred layers (Top deferred behind fullscreen, then Bottom/Background)
         if let (Some(output), Some(geo)) = (output, output_geo) {
             let pos_within_output = pos - geo.loc.to_f64();
 
