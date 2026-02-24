@@ -180,9 +180,9 @@ Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
 The following diagram shows how compositor events flow through Emacs handlers,
 including minibuffer guards that prevent focus-stealing during transient states.
 
-![Refocus event flow](refocus-diagram.png)
+![Refocus event flow](diagrams/refocus.png)
 
-Source: [refocus-diagram.mmd](refocus-diagram.mmd)
+Source: [refocus.mmd](diagrams/refocus.mmd)
 
 ## Functions
 

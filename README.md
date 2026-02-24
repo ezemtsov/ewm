@@ -1,6 +1,6 @@
 # EWM - Emacs Wayland Manager
 
-![EWM Screenshot](docs/ewm-showcase.png)
+![EWM Screenshot](docs/diagrams/ewm-showcase.png)
 
 > **Disclaimer**: Writing a Wayland compositor from scratch is a staggering amount of work. I wanted to switch from EXWM as soon as possible, so the initial bootstrap was done with Claude, which helped a lot in reverse-engineering the brilliant [niri](https://github.com/YaLTeR/niri) codebase and surgically extracting the pieces relevant to EWM. Inherently, this means the codebase still needs validation and cleanup, which is the current priority.
 

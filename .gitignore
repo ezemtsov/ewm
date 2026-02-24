@@ -2,7 +2,7 @@
 *.elc
 *.log
 *.png
-!docs/*.png
+!docs/**/*.png
 .direnv/
 result
 \#*\#

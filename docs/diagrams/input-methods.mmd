@@ -1,0 +1,47 @@
+sequenceDiagram
+    participant LI as libinput
+    participant C as Compositor<br/>(event loop)
+    participant EQ as Event Queue<br/>(Vec + Mutex)
+    participant E as Emacs<br/>(SIGUSR1 handler)
+    participant CQ as Command Queue<br/>(Vec + Mutex)
+    participant IR as IM Relay<br/>(MPSC channel)
+    participant App as Wayland Client
+
+    Note over LI,App: Key ordering is preserved end-to-end via FIFO queues and single-threaded consumers
+
+    rect rgb(240, 248, 255)
+        Note over LI,C: 1. Key Reception
+        LI->>C: KeyboardEvent (keycode, state)
+        C->>C: XKB lookup → keysym + UTF-8
+        C->>C: text_input_intercept enabled?
+        Note right of C: Intercept if: no Ctrl/Alt/Super,<br/>text input active, IM enabled,<br/>surface is not Emacs
+    end
+
+    rect rgb(255, 248, 240)
+        Note over C,E: 2. Compositor → Emacs (FIFO)
+        C->>EQ: push Event::Key { keysym, utf8 }
+        EQ-->>E: SIGUSR1
+        Note right of EQ: Lock released BEFORE signal<br/>to prevent deadlock
+
+        loop while-let (ewm-pop-event) — synchronous drain
+            E->>EQ: pop (FIFO order)
+            EQ-->>E: Event::Key
+            E->>E: Input method translation<br/>(per focused surface buffer)
+            E->>CQ: ewm-im-commit-module(text)
+        end
+        Note right of E: Synchronous loop is the<br/>ordering linchpin — each key<br/>fully processed before next
+    end
+
+    rect rgb(240, 255, 240)
+        Note over CQ,App: 3. Emacs → Client (FIFO)
+        C->>CQ: drain_commands() each frame tick
+        CQ-->>C: Vec<ImCommit> in push order
+        loop for each ImCommit
+            C->>IR: ImCommand::CommitString(text)
+        end
+        IR->>App: im.commit_string(text)
+        IR->>App: im.commit(serial)
+        IR->>IR: conn.flush()
+    end
+
+    Note over LI,App: Fast typing → keys buffer in queues, process with latency but never reorder
