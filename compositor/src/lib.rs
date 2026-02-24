@@ -1263,6 +1263,33 @@ impl Ewm {
         }
     }
 
+    /// Queue redraws for outputs displaying the given surface.
+    ///
+    /// Layout-managed surfaces redraw their declared outputs.
+    /// Emacs frames redraw their assigned output. Untracked surfaces
+    /// fall back to redrawing all outputs.
+    pub fn queue_redraw_for_surface(&mut self, id: u32) {
+        let outputs: Vec<_> = if let Some(names) = self.surface_outputs.get(&id) {
+            self.space
+                .outputs()
+                .filter(|o| names.contains(&o.name()))
+                .cloned()
+                .collect()
+        } else if let Some(name) = self.emacs_surfaces.get(&id) {
+            self.space
+                .outputs()
+                .filter(|o| o.name() == *name)
+                .cloned()
+                .collect()
+        } else {
+            return self.queue_redraw_all();
+        };
+
+        for output in outputs {
+            self.queue_redraw(&output);
+        }
+    }
+
     /// Queue a redraw for a specific output
     pub fn queue_redraw(&mut self, output: &Output) {
         if let Some(state) = self.output_state.get_mut(output) {
@@ -2980,22 +3007,7 @@ impl CompositorHandler for State {
         if let Some((window, id)) = window_and_id {
             window.on_commit();
 
-            // Queue redraw for outputs showing this surface
-            if let Some(output_names) = self.ewm.surface_outputs.get(&id) {
-                let outputs: Vec<_> = self
-                    .ewm
-                    .space
-                    .outputs()
-                    .filter(|o| output_names.contains(&o.name()))
-                    .cloned()
-                    .collect();
-                for output in outputs {
-                    self.ewm.queue_redraw(&output);
-                }
-            } else {
-                // Non-layout surface (Emacs frame): redraw all as fallback
-                self.ewm.queue_redraw_all();
-            }
+            self.ewm.queue_redraw_for_surface(id);
 
             self.ewm.check_surface_info_changes(surface);
             return;
