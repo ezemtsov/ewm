@@ -438,6 +438,48 @@ pub fn fullscreen_center_offset(
     )
 }
 
+/// Unconstrain a popup with 8px padding, falling back to no padding if it
+/// doesn't fit. Ported from niri's `unconstrain_with_padding`.
+fn unconstrain_with_padding(
+    positioner: PositionerState,
+    target: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner::ConstraintAdjustment;
+
+    const PADDING: i32 = 8;
+
+    let mut padded = target;
+    if PADDING * 2 < padded.size.w {
+        padded.loc.x += PADDING;
+        padded.size.w -= PADDING * 2;
+    }
+    if PADDING * 2 < padded.size.h {
+        padded.loc.y += PADDING;
+        padded.size.h -= PADDING * 2;
+    }
+
+    if padded == target {
+        return positioner.get_unconstrained_geometry(target);
+    }
+
+    // Try padded without resize adjustments first.
+    let mut no_resize = positioner;
+    no_resize
+        .constraint_adjustment
+        .remove(ConstraintAdjustment::ResizeX);
+    no_resize
+        .constraint_adjustment
+        .remove(ConstraintAdjustment::ResizeY);
+
+    let geo = no_resize.get_unconstrained_geometry(padded);
+    if padded.contains_rect(geo) {
+        return geo;
+    }
+
+    // Padded didn't fit — fall back to the full target.
+    positioner.get_unconstrained_geometry(target)
+}
+
 /// Key identifier: either a keysym integer or a named key string
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -1087,6 +1129,27 @@ impl Ewm {
                     window_origin.x + surface_offset.x as f64,
                     window_origin.y + surface_offset.y as f64,
                 ));
+                // Log all hits in fullscreen, and popup/subsurface hits always
+                let is_toplevel = window
+                    .wl_surface()
+                    .map_or(false, |ws| *ws == surface);
+                if entry.fullscreen || !is_toplevel {
+                    info!(
+                        "surface_under: {} entry {} (fs={}) \
+                         pos={:.0},{:.0} pos_in_window={:.0},{:.0} \
+                         surface_offset={},{} global_loc={:.0},{:.0} \
+                         geo.loc={},{} geo.size={}x{} center={:.0},{:.0}",
+                        if is_toplevel { "toplevel" } else { "popup" },
+                        entry.id, entry.fullscreen,
+                        pos.x, pos.y,
+                        pos_in_window.x, pos_in_window.y,
+                        surface_offset.x, surface_offset.y,
+                        global_loc.x, global_loc.y,
+                        window_geo.loc.x, window_geo.loc.y,
+                        window_geo.size.w, window_geo.size.h,
+                        center_offset_x, center_offset_y,
+                    );
+                }
                 return Some((surface, global_loc));
             }
 
@@ -2543,33 +2606,95 @@ impl Ewm {
         })
     }
 
-    /// Unconstrain a popup's position to keep it within screen bounds
+    /// Compute the available rectangle for a popup in geometry-local coordinates.
+    ///
+    /// Derived from the layout entry position — no dependency on window.geometry(),
+    /// so centering offsets and CSD geometry don't affect the result.
+    /// Fullscreen: full output. Normal: entry width × output height (horizontally
+    /// constrained to the entry, vertically to the full output).
+    fn popup_target_rect(&self, id: u32) -> Option<Rectangle<i32, Logical>> {
+        let (output_name, entry) = self
+            .focused_output_for_surface(id)
+            .or_else(|| self.primary_output_for_surface(id))?;
+        let output = self.space.outputs().find(|o| o.name() == output_name)?;
+        let output_geo = self.space.output_geometry(output)?;
+
+        if entry.fullscreen {
+            return Some(Rectangle::from_size(output_geo.size));
+        }
+
+        let working_area = {
+            let map = layer_map_for_output(output);
+            map.non_exclusive_zone()
+        };
+
+        // Horizontal: constrain to entry width (popup stays within the window).
+        // Vertical: full working area height relative to the entry's Y position.
+        // Origin is in window-geometry-local coords: x=0 (window's left edge),
+        // y=-entry.y (working area's top edge relative to window).
+        Some(Rectangle::new(
+            smithay::utils::Point::from((0, -(entry.y))),
+            Size::from((entry.w as i32, working_area.size.h)),
+        ))
+    }
+
+    /// Unconstrain a popup's position to keep it within screen bounds.
+    ///
+    /// For window popups, computes the target from the layout entry position
+    /// (not window.geometry()), matching niri's popup_target_rect pattern.
+    /// For layer-shell popups, uses the output bounds adjusted for the layer
+    /// surface position and non-exclusive zone.
     pub fn unconstrain_popup(&self, popup: &PopupSurface) {
-        let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
+        let popup_kind = PopupKind::Xdg(popup.clone());
+        let Ok(root) = find_popup_root_surface(&popup_kind) else {
             return;
         };
 
-        // Find the window that owns this popup
-        let Some((window, _id)) = self.find_window_by_surface(&root) else {
+        // Window popup path
+        if let Some((_window, id)) = self.find_window_by_surface(&root) {
+            let raw_target = self
+                .popup_target_rect(id)
+                .unwrap_or_else(|| Rectangle::from_size(self.output_size));
+            let toplevel_coords = get_popup_toplevel_coords(&popup_kind);
+            let mut target = raw_target;
+            target.loc -= toplevel_coords;
+
+            popup.with_pending_state(|state| {
+                let result = unconstrain_with_padding(state.positioner, target);
+                info!(
+                    "unconstrain_popup: id={} raw_target={:?} \
+                     toplevel_coords={:?} target={:?} \
+                     positioner.rect={:?} positioner.size={:?} \
+                     result={:?}",
+                    id, raw_target, toplevel_coords, target,
+                    state.positioner.anchor_rect, state.positioner.rect_size,
+                    result,
+                );
+                state.geometry = result;
+            });
             return;
-        };
+        }
 
-        // Get window location in global coordinates
-        let window_loc = self.window_global_position(&window).unwrap_or_default();
-        let window_geo = window.geometry();
+        // Layer-shell popup path
+        if let Some((output, layer_geo)) = self.space.outputs().find_map(|o| {
+            let map = layer_map_for_output(o);
+            let ls = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)?;
+            let geo = map.layer_geometry(ls)?;
+            Some((o.clone(), geo))
+        }) {
+            let output_geo = self
+                .space
+                .output_geometry(&output)
+                .unwrap_or_else(|| Rectangle::from_size(self.output_size));
 
-        // Target rectangle is the popup's output, adjusted for popup's position in window
-        let output = self.output_for_popup(&PopupKind::Xdg(popup.clone()));
-        let output_geo = output
-            .and_then(|o| self.space.output_geometry(o))
-            .unwrap_or_else(|| Rectangle::from_size(self.output_size));
-        let mut target = output_geo;
-        target.loc -= window_loc + window_geo.loc;
-        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+            let mut target = Rectangle::from_size(output_geo.size);
+            target.loc -= layer_geo.loc;
+            target.loc -= get_popup_toplevel_coords(&popup_kind);
 
-        popup.with_pending_state(|state| {
-            state.geometry = state.positioner.get_unconstrained_geometry(target);
-        });
+            popup.with_pending_state(|state| {
+                state.geometry = state.positioner.get_unconstrained_geometry(target);
+            });
+        }
     }
 
     /// Handle new toplevel surface from XdgShellHandler
