@@ -173,62 +173,9 @@ pub fn collect_render_elements_for_output(
 
     let mut elements: Vec<EwmRenderElement> = Vec::new();
     let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
-
-    // If session is locked, render ONLY the lock surface for this output
-    if ewm.is_locked() {
-        if let Some(state) = ewm.output_state.get(output) {
-            if let Some(ref lock_surface) = state.lock_surface {
-                // Render lock surface at (0,0) covering full output
-                let lock_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    render_elements_from_surface_tree(
-                        renderer,
-                        lock_surface.wl_surface(),
-                        Point::<i32, Physical>::from((0, 0)),
-                        scale,
-                        1.0,
-                        Kind::Unspecified,
-                    );
-                elements.extend(lock_elements.into_iter().map(EwmRenderElement::Surface));
-            }
-
-            // Add solid color background behind lock surface
-            // (rendered last = behind everything else)
-            let bg_element = SolidColorRenderElement::from_buffer(
-                &state.lock_color_buffer,
-                (0, 0),
-                scale,
-                1.0,
-                Kind::Unspecified,
-            );
-            elements.push(EwmRenderElement::SolidColor(bg_element));
-        }
-        // Return early - don't render anything else when locked
-        return (elements, cursor_elements);
-    }
-
-    // Output bounds in global logical coordinates
     let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
 
-    // Collect all layer elements in a tight scope to avoid holding the RefCell
-    // borrow across the rest of the function. layer_map_for_output() returns
-    // RefMut<LayerMap> — calling it again (e.g. via get_working_area) while
-    // this borrow is alive would panic.
-    let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = {
-        let layer_map = layer_map_for_output(output);
-        let mut overlay = Vec::new();
-        let mut top = Vec::new();
-        let mut bottom = Vec::new();
-        let mut bg = Vec::new();
-        render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut overlay);
-        render_layer(&layer_map, Layer::Top, renderer, scale, &mut top);
-        render_layer(&layer_map, Layer::Bottom, renderer, scale, &mut bottom);
-        render_layer(&layer_map, Layer::Background, renderer, scale, &mut bg);
-        (overlay, top, bottom, bg)
-        // layer_map (RefMut) dropped here
-    };
-
-    // 1. Cursor (highest z-order, always visible above all layers)
-    // Collected into a separate vec for independent damage tracking in screencast.
+    // The cursor goes on top.
     if include_cursor {
         let (pointer_x, pointer_y) = ewm.pointer_location;
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
@@ -250,6 +197,53 @@ pub fn collect_render_elements_for_output(
             }
         }
     }
+
+    // If the session is locked, draw the lock surface.
+    if ewm.is_locked() {
+        let state = ewm.output_state.get(output).unwrap();
+        if let Some(surface) = state.lock_surface.as_ref() {
+            let lock_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                render_elements_from_surface_tree(
+                    renderer,
+                    surface.wl_surface(),
+                    Point::from((0, 0)),
+                    scale,
+                    1.,
+                    Kind::ScanoutCandidate,
+                );
+            elements.extend(lock_elements.into_iter().map(EwmRenderElement::Surface));
+        }
+
+        // Draw the solid color background.
+        let bg_element = SolidColorRenderElement::from_buffer(
+            &state.lock_color_buffer,
+            (0, 0),
+            scale,
+            1.,
+            Kind::Unspecified,
+        );
+        elements.push(EwmRenderElement::SolidColor(bg_element));
+
+        return (elements, cursor_elements);
+    }
+
+    // Collect all layer elements in a tight scope to avoid holding the RefCell
+    // borrow across the rest of the function. layer_map_for_output() returns
+    // RefMut<LayerMap> — calling it again (e.g. via get_working_area) while
+    // this borrow is alive would panic.
+    let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = {
+        let layer_map = layer_map_for_output(output);
+        let mut overlay = Vec::new();
+        let mut top = Vec::new();
+        let mut bottom = Vec::new();
+        let mut bg = Vec::new();
+        render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut overlay);
+        render_layer(&layer_map, Layer::Top, renderer, scale, &mut top);
+        render_layer(&layer_map, Layer::Bottom, renderer, scale, &mut bottom);
+        render_layer(&layer_map, Layer::Background, renderer, scale, &mut bg);
+        (overlay, top, bottom, bg)
+        // layer_map (RefMut) dropped here
+    };
 
     // 2. Overlay layer
     elements.append(&mut overlay_elems);
