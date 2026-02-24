@@ -69,6 +69,10 @@ Override individual bindings with `use-package':
 (declare-function ewm--sync-focus "ewm-focus")
 (declare-function ewm-warp-pointer "ewm")
 (declare-function ewm--get-output-offset "ewm")
+;; Defined in ewm.el (loaded after ewm-input.el)
+(declare-function ewm-launch-app "ewm")
+(declare-function ewm-toggle-fullscreen "ewm")
+(declare-function ewm-lock-session "ewm")
 
 (defvar ewm-surface-id)
 (defvar ewm--module-mode)

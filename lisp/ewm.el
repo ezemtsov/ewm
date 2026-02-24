@@ -33,6 +33,21 @@
         (module-load path)
       (require 'ewm-core))))
 
+;; Functions provided by the ewm-core dynamic module
+(declare-function ewm-pop-event "ewm-core")
+(declare-function ewm-set-selection-module "ewm-core")
+(declare-function ewm-output-layout-module "ewm-core")
+(declare-function ewm-close-module "ewm-core")
+(declare-function ewm-warp-pointer-module "ewm-core")
+(declare-function ewm-screenshot-module "ewm-core")
+(declare-function ewm-get-debug-state-module "ewm-core")
+(declare-function ewm-debug-mode-module "ewm-core")
+(declare-function ewm-configure-output-module "ewm-core")
+(declare-function ewm-prepare-frame-module "ewm-core")
+(declare-function ewm-get-output-offset "ewm-core")
+(declare-function ewm-start "ewm-core")
+(declare-function ewm-list-xdg-apps "ewm-core")
+
 ;;; Logging
 
 (defvar ewm--debug nil
