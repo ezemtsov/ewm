@@ -1,0 +1,16 @@
+[Unit]
+Description=Emacs Wayland Manager
+Documentation=https://github.com/ezemtsov/ewm
+BindsTo=graphical-session.target
+Before=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
+
+Wants=xdg-desktop-autostart.target
+Before=xdg-desktop-autostart.target
+
+[Service]
+Slice=session.slice
+Type=notify
+WorkingDirectory=%h
+ExecStart=ewm-launch

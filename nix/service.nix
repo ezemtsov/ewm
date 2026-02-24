@@ -22,59 +22,6 @@ let
     emacsPackage = baseEmacs;
   };
 
-  # Session script that sets up environment and starts ewm.service
-  ewmSession = pkgs.writeShellScript "ewm-session" ''
-    # Re-exec through a login shell to get the full NixOS environment
-    # (PATH, etc.) before importing it into systemd. Without this,
-    # the display manager starts us with a minimal PATH.
-    if [ -n "$SHELL" ] &&
-       grep -q "$SHELL" /etc/shells &&
-       ! (echo "$SHELL" | grep -q "false") &&
-       ! (echo "$SHELL" | grep -q "nologin"); then
-      if [ "$1" != '-l' ]; then
-        exec bash -c "exec -l '$SHELL' -c '$0 -l $*'"
-      else
-        shift
-      fi
-    fi
-
-    # Check for existing session
-    if systemctl --user -q is-active ewm.service; then
-      echo 'An EWM session is already running.'
-      exit 1
-    fi
-
-    # Reset failed state of user units
-    systemctl --user reset-failed
-
-    # Import the login manager environment to systemd
-    systemctl --user import-environment
-
-    # Update D-Bus activation environment
-    if command -v dbus-update-activation-environment >/dev/null 2>&1; then
-      dbus-update-activation-environment --all
-    fi
-
-    # Start EWM and wait for it to terminate
-    systemctl --user --wait start ewm.service
-
-    # Force stop of graphical-session.target on exit
-    systemctl --user start --job-mode=replace-irreversibly ewm-session-shutdown.target
-
-    # Clean up environment
-    systemctl --user unset-environment WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
-  '';
-
-  # Wayland session file for display managers
-  sessionFile = pkgs.writeText "ewm.desktop" ''
-    [Desktop Entry]
-    Name=ewm
-    Comment=Emacs Wayland Manager
-    Exec=${ewmSession}
-    Type=Application
-    DesktopNames=ewm
-  '';
-
   # Launch script that runs EWM in the provided Emacs.
   launchScript = pkgs.writeShellScript "ewm-launch" ''
     exec ${cfg.emacsPackage}/bin/emacs \
@@ -84,30 +31,17 @@ let
       ${cfg.extraEmacsArgs} "$@"
   '';
 
-  # verbatim service file to avoid NixOS overriding the environment
-  ewmService = pkgs.writeText "ewm.service" ''
-    [Unit]
-    Description=Emacs Wayland Manager
-    Documentation=https://github.com/ezemtsov/ewm
-    BindsTo=graphical-session.target
-    Before=graphical-session.target
-    Wants=graphical-session-pre.target
-    After=graphical-session-pre.target
-
-    [Service]
-    Slice=session.slice
-    Type=notify
-    WorkingDirectory=%h
-    ExecStart=/run/current-system/sw/bin/ewm-launch
-  '';
-
-  ewmSystemPackage = pkgs.runCommand "ewm-system"  {
+  ewmSystemPackage = pkgs.runCommand "ewm-system" {
     passthru.providedSessions = [ "ewm" ];
-  }''
+  } ''
     install -Dm755 ${launchScript} $out/bin/ewm-launch
-    install -Dm755 ${ewmSession} $out/bin/ewm-session
-    install -Dm644 ${sessionFile} $out/share/wayland-sessions/ewm.desktop
-    install -Dm0644 ${ewmService} $out/share/systemd/user/ewm.service
+    install -Dm755 ${../resources/ewm-session} $out/bin/ewm-session
+    install -Dm644 ${../resources/ewm.desktop} $out/share/wayland-sessions/ewm.desktop
+    mkdir -p $out/lib/systemd/user
+    substitute ${../resources/ewm.service} $out/lib/systemd/user/ewm.service \
+      --replace-fail 'ExecStart=ewm-launch' 'ExecStart=/run/current-system/sw/bin/ewm-launch'
+    install -Dm644 ${../resources/ewm-shutdown.target} $out/lib/systemd/user/ewm-shutdown.target
+    install -Dm644 ${../resources/ewm-portals.conf} $out/share/xdg-desktop-portal/ewm-portals.conf
   '';
 in
 {
@@ -148,56 +82,25 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ ewmSystemPackage ];
     services.displayManager.sessionPackages = [ ewmSystemPackage ];
+    systemd.packages = [ ewmSystemPackage ];
     security.polkit.enable = true;
 
-    # Shutdown target that explicitly conflicts with graphical-session to force
-    # its shutdown.
-    systemd.user.targets.ewm-session-shutdown = {
-      description = "EWM session shutdown";
-      unitConfig = {
-        DefaultDependencies = false;
-        StopWhenUnneeded = true;
-      };
-      conflicts = [
-        "graphical-session.target"
-        "graphical-session-pre.target"
-      ];
-      after = [
-        "graphical-session.target"
-        "graphical-session-pre.target"
-      ];
-    };
+    # Provides fonts, xdg-utils, graphics, PipeWire, inotify limits, etc.
+    services.graphical-desktop.enable = true;
 
-    # Required for DRM backend (provides libEGL, mesa drivers)
-    hardware.graphics.enable = lib.mkDefault true;
-
-    services.pipewire = lib.mkIf cfg.screencast.enable {
-      enable = lib.mkDefault true;
-      wireplumber.enable = lib.mkDefault true;
-    };
-
-    services.dbus.enable = true;
+    services.pipewire.wireplumber.enable = lib.mkIf cfg.screencast.enable (lib.mkDefault true);
 
     environment.sessionVariables = {
       NIXOS_OZONE_WL = lib.mkDefault 1;
     };
 
-    # Recommended for Wayland compositors
-    programs.dconf.enable = lib.mkDefault true;
     services.gnome.gnome-keyring.enable = lib.mkDefault true;
 
     # XDG portal configuration for screen sharing, file dialogs, etc.
     xdg.portal = {
       enable = lib.mkDefault true;
-      wlr.enable = lib.mkDefault true;
+      configPackages = [ ewmSystemPackage ];
       extraPortals = [ pkgs.xdg-desktop-portal-gnome pkgs.xdg-desktop-portal-gtk ];
-      # Portal configuration for EWM
-      config.ewm = {
-        default = [ "gnome" "gtk" ];
-      };
     };
-
-    # Run XDG autostart files (window managers don't do this automatically)
-    services.xserver.desktopManager.runXdgAutostartIfNone = lib.mkDefault true;
   };
 }

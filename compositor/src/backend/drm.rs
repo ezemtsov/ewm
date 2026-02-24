@@ -1982,7 +1982,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     // SAFETY: We're single-threaded at this point, before spawning any threads
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &socket_name_str);
-        std::env::set_var("XDG_CURRENT_DESKTOP", "wlroots");
+        std::env::set_var("XDG_CURRENT_DESKTOP", "ewm");
         std::env::set_var("XDG_SESSION_TYPE", "wayland");
         // Use Wayland-native input method for GTK/Qt apps
         std::env::set_var("GTK_IM_MODULE", "wayland");
