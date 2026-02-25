@@ -84,6 +84,7 @@ use crate::protocols::foreign_toplevel::{
     ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
 };
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
+use crate::protocols::output_management::{OutputManagementHandler, OutputManagementState};
 use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
 use serde::{Deserialize, Serialize};
 use smithay::{
@@ -710,6 +711,9 @@ pub struct Ewm {
     // Workspace state (ext-workspace-v1: exposes Emacs tabs to external tools)
     pub workspace_state: WorkspaceManagerState,
 
+    // Output management state (wlr-output-management-unstable-v1)
+    pub output_management_state: OutputManagementState,
+
     // Session lock state (ext-session-lock-v1 protocol)
     pub session_lock_state: SessionLockManagerState,
     pub lock_state: LockState,
@@ -811,6 +815,10 @@ impl Ewm {
         let workspace_state =
             WorkspaceManagerState::new::<State, _>(&display_handle, |_| true);
 
+        // Initialize output management (wlr-output-management-unstable-v1)
+        let output_management_state =
+            OutputManagementState::new::<State, _>(&display_handle, |_| true);
+
         // Initialize session lock for screen locking (ext-session-lock-v1)
         let session_lock_state =
             SessionLockManagerState::new::<State, _>(&display_handle, |_| true);
@@ -885,6 +893,7 @@ impl Ewm {
             activation_state,
             foreign_toplevel_state,
             workspace_state,
+            output_management_state,
             session_lock_state,
             lock_state: LockState::Unlocked,
             pre_lock_focus: None,
@@ -954,6 +963,69 @@ impl Ewm {
             self.emacs_surfaces.remove(&id);
             self.queue_event(Event::Close { id });
         }
+    }
+
+    /// Build a snapshot of all output states for the output management protocol.
+    pub fn build_output_head_states(
+        &self,
+    ) -> HashMap<String, protocols::output_management::OutputHeadState> {
+        use protocols::output_management::{OutputHeadState, OutputModeState};
+
+        let mut states = HashMap::new();
+        for info in &self.outputs {
+            let output = self.space.outputs().find(|o| o.name() == info.name);
+            let geo = output
+                .and_then(|o| self.space.output_geometry(o));
+
+            let enabled = self
+                .output_config
+                .get(&info.name)
+                .map(|c| c.enabled)
+                .unwrap_or(true);
+
+            // Find current mode index
+            let current_mode = if enabled {
+                output.and_then(|o| {
+                    let current = o.current_mode()?;
+                    info.modes.iter().position(|m| {
+                        m.width == current.size.w
+                            && m.height == current.size.h
+                            && m.refresh == current.refresh
+                    })
+                })
+            } else {
+                None
+            };
+
+            let head = OutputHeadState {
+                name: info.name.clone(),
+                make: info.make.clone(),
+                model: info.model.clone(),
+                serial_number: None,
+                physical_size: if info.width_mm > 0 || info.height_mm > 0 {
+                    Some((info.width_mm, info.height_mm))
+                } else {
+                    None
+                },
+                enabled,
+                modes: info
+                    .modes
+                    .iter()
+                    .map(|m| OutputModeState {
+                        width: m.width,
+                        height: m.height,
+                        refresh: m.refresh,
+                        preferred: m.preferred,
+                    })
+                    .collect(),
+                current_mode,
+                position: geo.map(|g| (g.loc.x, g.loc.y)),
+                scale: Some(info.scale),
+                transform: Some(backend::int_to_transform(info.transform)),
+            };
+            states.insert(info.name.clone(), head);
+        }
+        states
     }
 
     /// Find a window by its root WlSurface, returning the window and its ID.
@@ -1697,8 +1769,9 @@ impl Ewm {
             state.frame_clock.next_presentation_time()
         };
 
-        // Refresh foreign toplevel state before rendering
+        // Refresh protocol state before rendering
         self.refresh_foreign_toplevel();
+        self.refresh_output_management();
 
         // Render via backend
         let res = backend.render(self, output, target_presentation_time);
@@ -2096,6 +2169,18 @@ impl Ewm {
             .collect();
 
         self.foreign_toplevel_state.refresh::<State>(windows);
+    }
+
+    /// Refresh output management protocol if output heads changed.
+    /// Called from redraw() before rendering, so updates are deferred
+    /// until after any in-flight Dispatch handlers have finished.
+    pub fn refresh_output_management(&mut self) {
+        if !self.output_management_state.output_heads_changed {
+            return;
+        }
+        self.output_management_state.output_heads_changed = false;
+        let new_state = self.build_output_head_states();
+        self.output_management_state.notify_changes(new_state);
     }
 
     /// Find the output for a surface (returns Output object)
@@ -3877,6 +3962,26 @@ impl WorkspaceHandler for State {
     }
 }
 delegate_workspace!(State);
+
+// Output management protocol (wlr-output-management-unstable-v1)
+impl OutputManagementHandler for State {
+    fn output_management_state(&mut self) -> &mut OutputManagementState {
+        &mut self.ewm.output_management_state
+    }
+
+    fn apply_output_config(&mut self, configs: HashMap<String, OutputConfig>) {
+        // Merge each config into ewm.output_config and apply.
+        // The backend sets output_heads_changed = true; the deferred
+        // refresh_output_management() call (before next render) will
+        // send protocol updates to clients — after the Dispatch handler
+        // has already sent succeeded().
+        for (name, config) in configs {
+            self.ewm.output_config.insert(name.clone(), config);
+            self.backend.apply_output_config(&mut self.ewm, &name);
+        }
+    }
+}
+delegate_output_management!(State);
 
 // Screencopy protocol
 impl ScreencopyHandler for State {

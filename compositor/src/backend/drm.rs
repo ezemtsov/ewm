@@ -683,6 +683,8 @@ impl DrmBackendState {
             transform: super::transform_to_int(output.current_transform()),
         });
 
+        ewm.output_management_state.output_heads_changed = true;
+
         info!(
             "Applied config for {}: mode={:?}, scale={:?}, transform={:?}, pos={:?}",
             output_name, config.mode, config.scale, config.transform, config.position,
@@ -1589,6 +1591,8 @@ impl DrmBackendState {
             height: working_area.size.h,
         });
 
+        ewm.output_management_state.output_heads_changed = true;
+
         info!("Output connected: {}", connector_name);
 
         Ok(())
@@ -1659,6 +1663,8 @@ impl DrmBackendState {
         // Send IPC event
         ewm.send_output_disconnected(&output_name);
 
+        ewm.output_management_state.output_heads_changed = true;
+
         info!("Output disconnected: {}", output_name);
     }
 
@@ -1719,6 +1725,8 @@ impl DrmBackendState {
             ewm.activate_monitors();
             ewm.wake_from_idle();
         }
+
+        ewm.output_management_state.output_heads_changed = true;
 
         ewm.queue_event(crate::event::Event::OutputsComplete);
     }
