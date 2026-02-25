@@ -24,6 +24,7 @@ This document outlines Wayland protocols to implement for broader application co
 | `zwp-primary-selection-v1` | Primary (middle-click) selection |
 | `wp-fractional-scale-v1` | Fractional output scaling (1.25x, 1.5x, etc.) |
 | `wp-viewporter` | Buffer scaling/cropping |
+| `wlr-output-management-unstable-v1` | External display configuration (wlr-randr, wdisplays, DankMaterialShell) |
 
 ## Priority 1: Application Compatibility
 
@@ -104,18 +105,6 @@ This document outlines Wayland protocols to implement for broader application co
 
 **Complexity**: Low - Store hint, use in rendering decisions
 
-### wlr-output-management-unstable-v1
-
-**Purpose**: External display configuration
-
-**Enables**:
-- wdisplays, kanshi
-- GUI display configuration
-
-**Complexity**: Medium - Must coordinate with Emacs display management
-
-**Note**: May conflict with EWM's Emacs-driven output configuration
-
 ### wlr-virtual-pointer-unstable-v1
 
 **Purpose**: Create virtual pointer devices
@@ -148,6 +137,7 @@ This document outlines Wayland protocols to implement for broader application co
 | activation | Launch apps from terminal | Done |
 | data-control | `wl-copy`, `wl-paste`, `cliphist` | Done |
 | workspace | waybar, DankMaterialShell | Done |
+| output-management | `wlr-randr`, DankMaterialShell | Done |
 | pointer-constraints | `pointer-constraints-demo` | TODO |
 | idle-inhibit | Video player, `wayland-info` | TODO |
 
