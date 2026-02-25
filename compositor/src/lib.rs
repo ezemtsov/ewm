@@ -1369,21 +1369,27 @@ impl Ewm {
                             );
                         });
                         window.toplevel().map(|t| {
-                            t.with_pending_state(|state| {
+                            let changed = t.with_pending_state(|state| {
+                                let new_size = if entry.fullscreen {
+                                    let s = crate::utils::output_size(&output);
+                                    (s.w as i32, s.h as i32).into()
+                                } else {
+                                    (entry.w as i32, entry.h as i32).into()
+                                };
+                                let changed = state.size != Some(new_size);
+                                state.size = Some(new_size);
                                 if entry.fullscreen {
-                                    let output_logical = crate::utils::output_size(&output);
-                                    state.size = Some(
-                                        (output_logical.w as i32, output_logical.h as i32).into(),
-                                    );
                                     state.states.set(XdgToplevelState::Fullscreen);
                                     state.states.unset(XdgToplevelState::Maximized);
                                 } else {
-                                    state.size = Some((entry.w as i32, entry.h as i32).into());
                                     state.states.set(XdgToplevelState::Maximized);
                                     state.states.unset(XdgToplevelState::Fullscreen);
                                 }
+                                changed
                             });
-                            t.send_configure();
+                            if changed {
+                                t.send_configure();
+                            }
                         });
                     }
                 }
