@@ -117,7 +117,7 @@ use smithay::{
     reexports::{
         calloop::{
             generic::Generic, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction,
-            RegistrationToken,
+            RegistrationToken, timer::Timer,
         },
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState,
         wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
@@ -258,6 +258,29 @@ pub enum LockRenderState {
     Unlocked,
     /// Output has rendered a locked frame
     Locked,
+}
+
+/// Action to perform when the native idle timeout fires.
+#[derive(Debug, Clone)]
+pub enum IdleAction {
+    /// Turn off monitors (deactivate_monitors)
+    DeactivateMonitors,
+    /// Run a shell command (e.g., screensaver)
+    RunCommand(String),
+}
+
+/// State for the native idle timeout feature.
+///
+/// Uses a last-activity timestamp pattern to avoid timer thrashing:
+/// input events just update `last_activity` (free), and when the timer
+/// fires it checks elapsed time, rescheduling if activity occurred.
+pub struct IdleTimeoutState {
+    pub timeout: Option<Duration>,
+    pub action: IdleAction,
+    pub timer_token: Option<RegistrationToken>,
+    pub child_process: Option<std::process::Child>,
+    pub is_idle: bool,
+    pub last_activity: std::time::Instant,
 }
 
 /// Desired output configuration (from Emacs).
@@ -731,6 +754,12 @@ pub struct Ewm {
     // Input method relay (self-connection to activate input_method protocol)
     #[allow(dead_code)]
     pub im_relay: Option<im_relay::ImRelay>,
+
+    // Event loop handle (for idle timer registration)
+    pub loop_handle: LoopHandle<'static, State>,
+
+    // Native idle timeout state
+    pub idle_timeout: IdleTimeoutState,
 }
 
 impl Ewm {
@@ -785,6 +814,9 @@ impl Ewm {
         // Initialize session lock for screen locking (ext-session-lock-v1)
         let session_lock_state =
             SessionLockManagerState::new::<State, _>(&display_handle, |_| true);
+
+        // Clone loop_handle before IdleNotifierState consumes it
+        let loop_handle_clone = loop_handle.clone();
 
         // Initialize idle notifier (ext-idle-notify-v1)
         let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle);
@@ -871,6 +903,15 @@ impl Ewm {
             xkb_layout_names: vec!["us".to_string()],
             xkb_current_layout: 0,
             im_relay: None,
+            loop_handle: loop_handle_clone,
+            idle_timeout: IdleTimeoutState {
+                timeout: None,
+                action: IdleAction::DeactivateMonitors,
+                timer_token: None,
+                child_process: None,
+                is_idle: false,
+                last_activity: std::time::Instant::now(),
+            },
         }
     }
 
@@ -1435,6 +1476,143 @@ impl Ewm {
             info!("Monitors activated");
             self.monitors_active = true;
             self.queue_redraw_all();
+        }
+    }
+
+    /// Configure the native idle timeout.
+    /// Passing `None` for timeout disables it.
+    pub fn configure_idle(&mut self, timeout: Option<Duration>, action: IdleAction) {
+        // If currently idle, wake without restarting the old timer
+        if self.idle_timeout.is_idle {
+            self.idle_timeout.is_idle = false;
+            self.kill_idle_child();
+            self.activate_monitors();
+            self.queue_event(event::Event::IdleStateChanged { idle: false });
+        }
+
+        self.cancel_idle_timer();
+        self.idle_timeout.timeout = timeout;
+        self.idle_timeout.action = action;
+        self.idle_timeout.last_activity = std::time::Instant::now();
+
+        if let Some(duration) = timeout {
+            self.start_idle_timer(duration);
+            info!("Idle timeout configured: {:?}", duration);
+        } else {
+            info!("Idle timeout disabled");
+        }
+    }
+
+    fn start_idle_timer(&mut self, duration: Duration) {
+        self.cancel_idle_timer();
+        let timer = Timer::from_duration(duration);
+        match self.loop_handle.insert_source(timer, |_, _, state| {
+            let went_idle = state.ewm.on_idle_timer_fired();
+            if went_idle {
+                // Blank the DRM surfaces (DPMS off)
+                state.backend.clear_all_surfaces();
+            }
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        }) {
+            Ok(token) => {
+                self.idle_timeout.timer_token = Some(token);
+            }
+            Err(err) => {
+                warn!("Failed to insert idle timer: {:?}", err);
+            }
+        }
+    }
+
+    fn cancel_idle_timer(&mut self) {
+        if let Some(token) = self.idle_timeout.timer_token.take() {
+            self.loop_handle.remove(token);
+        }
+    }
+
+    /// Called when the calloop timer fires. Checks whether enough idle time
+    /// has actually elapsed (activity may have occurred since the timer was set).
+    /// If not, reschedules for the remaining time instead of firing the action.
+    /// Returns `true` if the idle action was actually fired.
+    fn on_idle_timer_fired(&mut self) -> bool {
+        self.idle_timeout.timer_token = None;
+
+        let Some(timeout) = self.idle_timeout.timeout else {
+            return false;
+        };
+
+        let elapsed = self.idle_timeout.last_activity.elapsed();
+        if elapsed < timeout {
+            // Activity happened since timer was set — reschedule for remaining time
+            let remaining = timeout - elapsed;
+            self.start_idle_timer(remaining);
+            return false;
+        }
+
+        // Actually fire the idle action
+        self.idle_timeout.is_idle = true;
+        info!("Idle timeout fired");
+
+        match &self.idle_timeout.action {
+            IdleAction::DeactivateMonitors => {
+                self.deactivate_monitors();
+            }
+            IdleAction::RunCommand(cmd) => {
+                match std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .spawn()
+                {
+                    Ok(child) => {
+                        info!("Idle command spawned: {}", cmd);
+                        self.idle_timeout.child_process = Some(child);
+                    }
+                    Err(err) => {
+                        warn!("Failed to spawn idle command: {:?}", err);
+                    }
+                }
+            }
+        }
+
+        self.queue_event(event::Event::IdleStateChanged { idle: true });
+        true
+    }
+
+    /// Wake from idle state: kill child process, reactivate monitors, restart timer.
+    pub fn wake_from_idle(&mut self) {
+        if !self.idle_timeout.is_idle {
+            return;
+        }
+        info!("Waking from idle");
+        self.idle_timeout.is_idle = false;
+
+        self.kill_idle_child();
+        self.activate_monitors();
+
+        // Restart the timer for the next idle cycle
+        self.idle_timeout.last_activity = std::time::Instant::now();
+        if let Some(duration) = self.idle_timeout.timeout {
+            self.start_idle_timer(duration);
+        }
+
+        self.queue_event(event::Event::IdleStateChanged { idle: false });
+    }
+
+    /// Record user activity. If idle, wakes immediately.
+    /// Otherwise just updates the timestamp — the timer callback
+    /// will check elapsed time and reschedule if needed.
+    pub fn reset_idle_timer(&mut self) {
+        if self.idle_timeout.is_idle {
+            self.wake_from_idle();
+        } else {
+            self.idle_timeout.last_activity = std::time::Instant::now();
+        }
+    }
+
+    /// Kill idle child process (e.g., on lid close).
+    pub fn kill_idle_child(&mut self) {
+        if let Some(mut child) = self.idle_timeout.child_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 
@@ -3738,6 +3916,9 @@ impl SessionLockHandler for State {
 
         info!("Session lock requested");
 
+        // Wake from idle if locked while idle (need monitors on for lock screen)
+        self.ewm.wake_from_idle();
+
         // Save current focus to restore after unlock
         if self.ewm.focused_surface_id != 0 {
             self.ewm.pre_lock_focus = Some(self.ewm.focused_surface_id);
@@ -3784,6 +3965,10 @@ impl SessionLockHandler for State {
         self.sync_keyboard_focus();
 
         self.ewm.queue_redraw_all();
+
+        // Restart idle timer after unlock
+        self.ewm.reset_idle_timer();
+
         info!("Session unlocked");
     }
 
@@ -4350,6 +4535,17 @@ impl State {
                 self.ewm.input_configs = configs;
                 self.backend
                     .reapply_libinput_config(&self.ewm.input_configs);
+            }
+            ModuleCommand::ConfigureIdle { timeout_secs, action } => {
+                let idle_action = if action == "blank" {
+                    IdleAction::DeactivateMonitors
+                } else {
+                    IdleAction::RunCommand(action)
+                };
+                self.ewm.configure_idle(
+                    timeout_secs.map(Duration::from_secs),
+                    idle_action,
+                );
             }
         }
     }

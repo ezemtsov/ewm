@@ -268,6 +268,16 @@ impl Backend {
         }
     }
 
+    /// Clear all DRM surfaces (sets DPMS off, disables planes).
+    /// The next `queue_frame` will re-enable automatically.
+    /// No-op for headless backend.
+    pub fn clear_all_surfaces(&mut self) {
+        match self {
+            Backend::Drm(drm) => drm.clear_all_surfaces(),
+            Backend::Headless(_) => {}
+        }
+    }
+
 }
 
 /// Round scale to the nearest value representable by the fractional-scale

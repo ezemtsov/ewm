@@ -400,8 +400,9 @@ impl DrmBackendState {
         // Queue redraws for all outputs to resume rendering
         ewm.queue_redraw_all();
 
-        // Reset idle timer so we don't immediately trigger idle timeout after wake
+        // Reset idle timers so we don't immediately trigger idle timeout after wake
         ewm.idle_notifier_state.notify_activity(&ewm.seat);
+        ewm.reset_idle_timer();
 
         // Always notify Emacs so it re-syncs layout and focus after resume,
         // even if no output topology changed.
@@ -439,6 +440,16 @@ impl DrmBackendState {
     pub fn reapply_libinput_config(&mut self, configs: &[crate::input::InputConfigEntry]) {
         for mut device in self.libinput_devices.iter().cloned() {
             crate::input::apply_libinput_settings(&mut device, configs);
+        }
+    }
+
+    /// Clear all DRM surfaces (DPMS off). Re-enabled on next queue_frame.
+    pub fn clear_all_surfaces(&mut self) {
+        let Some(device) = &mut self.device else { return };
+        for surface in device.surfaces.values_mut() {
+            if let Err(err) = surface.compositor.clear() {
+                warn!("Error clearing DRM surface: {:?}", err);
+            }
         }
     }
 }
@@ -1676,6 +1687,9 @@ impl DrmBackendState {
             if ewm.outputs.is_empty() {
                 ewm.deactivate_monitors();
             }
+
+            // Kill idle child process (e.g., screensaver) on lid close
+            ewm.kill_idle_child();
         } else {
             // Lid opened: reconnect laptop panels that the scanner still knows
             // about but that we disconnected. on_device_changed() won't help
@@ -1703,6 +1717,7 @@ impl DrmBackendState {
                 }
             }
             ewm.activate_monitors();
+            ewm.wake_from_idle();
         }
 
         ewm.queue_event(crate::event::Event::OutputsComplete);

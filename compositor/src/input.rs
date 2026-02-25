@@ -31,12 +31,13 @@ use smithay::{
 
 use crate::{is_kill_combo, module, State};
 
-/// Notify the idle notifier of user activity
+/// Notify the idle notifier of user activity and reset native idle timer
 fn notify_activity(state: &mut State) {
     state
         .ewm
         .idle_notifier_state
         .notify_activity(&state.ewm.seat);
+    state.ewm.reset_idle_timer();
 }
 
 /// Result of processing a keyboard event

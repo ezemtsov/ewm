@@ -208,6 +208,11 @@ pub enum ModuleCommand {
     ConfigureInput {
         configs: Vec<crate::input::InputConfigEntry>,
     },
+    /// Configure native idle timeout
+    ConfigureIdle {
+        timeout_secs: Option<u64>,
+        action: String,
+    },
 }
 
 /// Tab info sent from Emacs for workspace protocol
@@ -576,6 +581,10 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
         Event::UnfullscreenRequest { id } => list(vec![
             cons("event", "unfullscreen_request".into_lisp(env)?)?,
             cons("id", (id as i64).into_lisp(env)?)?,
+        ]),
+        Event::IdleStateChanged { idle } => list(vec![
+            cons("event", "idle_state_changed".into_lisp(env)?)?,
+            cons("idle", idle.into_lisp(env)?)?,
         ]),
     }
 }
@@ -992,6 +1001,19 @@ fn get_debug_state_module(_: &Env) -> Result<()> {
 #[defun]
 fn set_selection_module(_: &Env, text: String) -> Result<()> {
     push_command(ModuleCommand::SetSelection { text });
+    Ok(())
+}
+
+/// Configure native idle timeout (module mode).
+/// TIMEOUT is seconds of inactivity (nil to disable).
+/// ACTION is "blank" for monitor off, or a shell command string.
+#[defun]
+fn configure_idle_module(_: &Env, timeout: Option<i64>, action: Option<String>) -> Result<()> {
+    let timeout_secs = timeout.and_then(|t| if t > 0 { Some(t as u64) } else { None });
+    push_command(ModuleCommand::ConfigureIdle {
+        timeout_secs,
+        action: action.unwrap_or_else(|| "blank".to_string()),
+    });
     Ok(())
 }
 

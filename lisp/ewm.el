@@ -139,6 +139,31 @@ Example:
            (ewm--apply-output-config)))
   :group 'ewm)
 
+(defcustom ewm-idle nil
+  "Idle timeout and action.
+nil disables idle timeout.  An integer means blank monitors after
+that many seconds.  A cons (SECONDS . COMMAND) runs COMMAND as a
+shell command after SECONDS of inactivity.
+
+Examples:
+  nil          ; disabled
+  300          ; blank after 5 minutes
+  (300 . \"swaylock -f -c 333333\")  ; lock after 5 minutes"
+  :type '(choice (const :tag "Disabled" nil)
+                 (integer :tag "Blank after N seconds")
+                 (cons :tag "Run command after N seconds"
+                       (integer :tag "Seconds")
+                       (string :tag "Shell command")))
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (fboundp 'ewm--send-idle-config)
+           (ewm--send-idle-config)))
+  :group 'ewm)
+
+(defvar ewm-idle-hook nil
+  "Hook run when idle state changes.
+Called with one argument: t when entering idle, nil when waking.")
+
 ;; Load submodules (before event handlers that reference them)
 (require 'ewm-surface)
 (require 'ewm-focus)
@@ -170,7 +195,8 @@ Example:
       ("selection-changed" (ewm--handle-selection-changed event))
       ("activate_workspace" (ewm--handle-activate-workspace event))
       ("fullscreen_request" (ewm--handle-fullscreen-request event))
-      ("unfullscreen_request" (ewm--handle-unfullscreen-request event)))))
+      ("unfullscreen_request" (ewm--handle-unfullscreen-request event))
+      ("idle_state_changed" (ewm--handle-idle-state-changed event)))))
 
 ;;; Event handlers
 
@@ -387,6 +413,23 @@ Clears on the focused frame only, so other outputs remain fullscreen."
                 (win (get-buffer-window buf t)))
       (ewm--set-fullscreen-on-frame buf (window-frame win) nil)
       (ewm-layout--refresh))))
+
+;;; Idle timeout
+
+(defun ewm--handle-idle-state-changed (event)
+  "Handle idle_state_changed EVENT from compositor."
+  (let ((idle (map-elt event "idle")))
+    (run-hook-with-args 'ewm-idle-hook idle)))
+
+(defun ewm--send-idle-config ()
+  "Send idle timeout configuration to compositor."
+  (when (ewm--compositor-active-p)
+    (pcase ewm-idle
+      ('nil (ewm-configure-idle-module nil nil))
+      ((pred integerp)
+       (ewm-configure-idle-module ewm-idle "blank"))
+      (`(,(and (pred integerp) secs) . ,(and (pred stringp) cmd))
+       (ewm-configure-idle-module secs cmd)))))
 
 ;;; Commands
 
@@ -734,6 +777,7 @@ now that a graphical FRAME exists."
   (ewm--send-intercept-keys)
   (ewm--send-xkb-config)
   (ewm--send-input-config)
+  (ewm--send-idle-config)
   (ewm-text-input-auto-mode-enable)
   (ewm--enable-process-advice)
   (setq ewm--saved-interprogram-cut-function interprogram-cut-function)

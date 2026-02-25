@@ -137,4 +137,7 @@ pub enum Event {
     /// Surface requests to leave fullscreen mode
     #[serde(rename = "unfullscreen_request")]
     UnfullscreenRequest { id: u32 },
+    /// Idle state changed (native idle timeout)
+    #[serde(rename = "idle_state_changed")]
+    IdleStateChanged { idle: bool },
 }
