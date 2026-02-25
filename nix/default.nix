@@ -70,6 +70,11 @@ let
     doCheck = false;
   };
 
+  etcFiles = lib.fileset.toSource {
+    root = ./../etc;
+    fileset = lib.fileset.intersection gitTrackedFiles ./../etc;
+  };
+
 in
 emacsPackage.pkgs.trivialBuild {
   pname = "ewm";
@@ -80,6 +85,9 @@ emacsPackage.pkgs.trivialBuild {
   };
   packageRequires = [ ewm-core ];
   passthru.module = "${./service.nix}";
+  postInstall = ''
+    cp -r ${etcFiles} $out/etc
+  '';
 
   meta = {
     description = "Emacs Wayland Manager - Wayland compositor for Emacs";

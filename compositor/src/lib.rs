@@ -2903,6 +2903,15 @@ impl Ewm {
                 .unwrap_or_else(|| "unknown".to_string())
         });
 
+        // Extract client PID (before surface is moved)
+        let client_pid = self
+            .display_handle
+            .get_client(surface.wl_surface().id())
+            .ok()
+            .and_then(|c| c.get_credentials(&self.display_handle).ok())
+            .map(|creds| creds.pid)
+            .unwrap_or(0);
+
         surface.with_pending_state(|state| {
             state.size = Some(self.output_size);
             state.states.set(XdgToplevelState::Maximized);
@@ -2997,6 +3006,7 @@ impl Ewm {
             id,
             app: app.clone(),
             output: target_output.clone(),
+            pid: client_pid,
         });
         info!(
             "New toplevel {} ({}) -> {:?}",

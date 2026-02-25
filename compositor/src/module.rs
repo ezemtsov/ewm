@@ -429,11 +429,12 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
 
     match event {
         Event::Ready => list(vec![cons("event", "ready".into_lisp(env)?)?]),
-        Event::New { id, app, output } => {
+        Event::New { id, app, output, pid } => {
             let mut items = vec![
                 cons("event", "new".into_lisp(env)?)?,
                 cons("id", (id as i64).into_lisp(env)?)?,
                 cons("app", app.into_lisp(env)?)?,
+                cons("pid", (pid as i64).into_lisp(env)?)?,
             ];
             if let Some(out) = output {
                 items.push(cons("output", out.into_lisp(env)?)?);

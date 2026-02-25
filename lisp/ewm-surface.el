@@ -24,6 +24,9 @@ Similar to `exwm-class-name'.")
   "Window title for this buffer.
 Similar to `exwm-title'.")
 
+(defvar-local ewm-surface-pid nil
+  "Client PID for this surface.")
+
 
 (defun ewm--kill-buffer-query-function ()
   "Run in `kill-buffer-query-functions' for surface buffers.

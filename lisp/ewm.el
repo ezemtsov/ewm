@@ -215,14 +215,15 @@ Called with one argument: t when entering idle, nil when waking.")
     (when (null ewm--pending-frame-outputs)
       (ewm--cleanup-orphan-frames))))
 
-(defun ewm--create-surface-buffer (id app output)
-  "Create buffer for regular surface ID with APP on OUTPUT."
+(defun ewm--create-surface-buffer (id app output pid)
+  "Create buffer for regular surface ID with APP on OUTPUT and PID."
   (let ((buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
     (puthash id buf ewm--surfaces)
     (with-current-buffer buf
       (ewm-surface-mode)
       (setq-local ewm-surface-id id)
-      (setq-local ewm-surface-app app))
+      (setq-local ewm-surface-app app)
+      (setq-local ewm-surface-pid pid))
     ;; Display on target frame unless minibuffer is active.
     ;; select-frame + pop-to-buffer changes selected-window, which triggers
     ;; window-selection-change-functions → ewm--sync-focus naturally.
@@ -236,11 +237,11 @@ Called with one argument: t when entering idle, nil when waking.")
   "Handle new surface EVENT.
 If there's a pending frame for this output, this is an Emacs frame.
 Otherwise, creates a buffer for external surface."
-  (pcase-let (((map ("id" id) ("app" app) ("output" output)) event))
+  (pcase-let (((map ("id" id) ("app" app) ("output" output) ("pid" pid)) event))
     (let ((pending (and output (assoc output ewm--pending-frame-outputs))))
       (if pending
           (ewm--assign-pending-frame id output pending)
-        (ewm--create-surface-buffer id app output)))))
+        (ewm--create-surface-buffer id app output pid)))))
 
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.
@@ -253,6 +254,47 @@ Kills the surface buffer."
                        #'ewm--kill-buffer-query-function t))
         (kill-buffer buf))
       (remhash id ewm--surfaces))))
+
+;;; Shell CWD tracking
+
+(defun ewm--cwd-ancestors (pid)
+  "Return list of ancestor PIDs for PID by walking /proc PPid chain."
+  (let ((ancestors nil)
+        (current pid)
+        (depth 0))
+    (while (and current (< depth 10))
+      (push current ancestors)
+      (let ((status-file (format "/proc/%d/status" current)))
+        (setq current
+              (when (file-readable-p status-file)
+                (with-temp-buffer
+                  (insert-file-contents status-file)
+                  (when (re-search-forward "^PPid:\\s-*\\([0-9]+\\)" nil t)
+                    (let ((ppid (string-to-number (match-string 1))))
+                      (and (> ppid 1) ppid)))))))
+      (cl-incf depth))
+    ancestors))
+
+(defun ewm--cwd-find-buffer (shell-pid)
+  "Find the surface buffer whose PID is an ancestor of SHELL-PID."
+  (let ((ancestors (ewm--cwd-ancestors shell-pid))
+        (found nil))
+    (maphash (lambda (_id buf)
+               (when (and (not found)
+                          (buffer-live-p buf)
+                          (buffer-local-value 'ewm-surface-pid buf)
+                          (memq (buffer-local-value 'ewm-surface-pid buf)
+                                ancestors))
+                 (setq found buf)))
+             ewm--surfaces)
+    found))
+
+(defun ewm--report-cwd (shell-pid cwd)
+  "Report that shell with SHELL-PID has changed directory to CWD.
+Called by shell hooks via emacsclient."
+  (when-let ((buf (ewm--cwd-find-buffer shell-pid)))
+    (with-current-buffer buf
+      (setq default-directory (file-name-as-directory cwd)))))
 
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.

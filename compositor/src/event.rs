@@ -56,6 +56,7 @@ pub enum Event {
         app: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
+        pid: i32,
     },
     /// Surface closed
     #[serde(rename = "close")]
