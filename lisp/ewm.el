@@ -733,17 +733,20 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
 
 ;;; Application launcher
 
+(defun ewm-launch-xdg-command (name)
+  "Launch XDG app NAME, stripping desktop field codes from its Exec line."
+  (let* ((cmd (cdr (assoc name (ewm-list-xdg-apps))))
+         (cmd (replace-regexp-in-string "%[uUfFdDnNickvm]" "" cmd))
+         (cmd (string-trim cmd)))
+    (start-process-shell-command name nil cmd)))
+
 (defun ewm-launch-app ()
   "Launch an XDG desktop application via `completing-read'."
   (interactive)
   (let* ((apps (ewm-list-xdg-apps))
          (names (mapcar #'car apps))
-         (name (completing-read "Launch app: " names nil t))
-         (cmd (cdr (assoc name apps)))
-         ;; Strip XDG field codes (%u, %f, %U, %F, etc.)
-         (cmd (replace-regexp-in-string "%[uUfFdDnNickvm]" "" cmd))
-         (cmd (string-trim cmd)))
-    (start-process-shell-command name nil cmd)))
+         (name (completing-read "Launch app: " names nil t)))
+    (ewm-launch-xdg-command name)))
 
 (defun ewm--fixup-display-customs (frame)
   "Re-evaluate defcustom defaults that got nil during headless init.
