@@ -4506,37 +4506,6 @@ impl State {
                     self.ewm.text_input_intercept = enabled;
                 }
             }
-            ModuleCommand::ConfigureXkb { layouts, options } => {
-                let layout_names: Vec<String> = layouts
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if layout_names.is_empty() {
-                    warn!("No valid layouts in configure-xkb");
-                    return;
-                }
-                let xkb_config = smithay::input::keyboard::XkbConfig {
-                    layout: &layouts,
-                    options: options.clone(),
-                    ..Default::default()
-                };
-                let keyboard = self.ewm.keyboard.clone();
-                if let Err(e) = keyboard.set_xkb_config(self, xkb_config) {
-                    error!("Failed to configure XKB: {:?}", e);
-                    return;
-                }
-                self.ewm.xkb_layout_names = layout_names.clone();
-                self.ewm.xkb_current_layout = 0;
-                info!(
-                    "Configured XKB layouts: {:?}, options: {:?}",
-                    layout_names, options
-                );
-                self.ewm.queue_event(Event::Layouts {
-                    layouts: layout_names,
-                    current: 0,
-                });
-            }
             ModuleCommand::SwitchLayout { layout } => {
                 let index = self.ewm.xkb_layout_names.iter().position(|l| l == &layout);
                 match index {

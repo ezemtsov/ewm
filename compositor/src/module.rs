@@ -182,10 +182,6 @@ pub enum ModuleCommand {
     TextInputIntercept {
         enabled: bool,
     },
-    ConfigureXkb {
-        layouts: String,
-        options: Option<String>,
-    },
     SwitchLayout {
         layout: String,
     },
@@ -967,13 +963,6 @@ fn text_input_intercept_module(_: &Env, enabled: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::TextInputIntercept {
         enabled: enabled.is_not_nil(),
     });
-    Ok(())
-}
-
-/// Configure XKB layouts (module mode).
-#[defun]
-fn configure_xkb_module(_: &Env, layouts: String, options: Option<String>) -> Result<()> {
-    push_command(ModuleCommand::ConfigureXkb { layouts, options });
     Ok(())
 }
 

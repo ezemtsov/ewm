@@ -835,7 +835,6 @@ now that a graphical FRAME exists."
   (ewm--enable-layout-sync)
   (ewm-input--enable)
   (ewm--send-intercept-keys)
-  (ewm--send-xkb-config)
   (ewm--send-input-config)
   (ewm--send-idle-config)
   (ewm-text-input-auto-mode-enable)

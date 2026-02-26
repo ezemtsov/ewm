@@ -61,7 +61,6 @@ Override individual bindings with `use-package':
   :bind (:map ewm-mode-map (\"s-d\" . my-launcher))")
 
 (declare-function ewm-intercept-keys-module "ewm-core")
-(declare-function ewm-configure-xkb-module "ewm-core")
 (declare-function ewm-configure-input-module "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-clear-prefix-sequence "ewm-core")
@@ -142,21 +141,6 @@ Example:
                         (append (list :device key) props))))
           (push plist entries)))
       (ewm-configure-input-module (vconcat (nreverse entries))))))
-
-;;; Keyboard layout configuration
-
-(defcustom ewm-xkb-layouts '("us")
-  "List of XKB layout names to configure in the compositor.
-These layouts will be available for switching via `set-input-method'.
-Example: \\='(\"us\" \"ru\" \"no\")"
-  :type '(repeat string)
-  :group 'ewm-input)
-
-(defcustom ewm-xkb-options nil
-  "XKB options string for the compositor.
-Example: \"ctrl:nocaps,grp:alt_shift_toggle\""
-  :type '(choice (const nil) string)
-  :group 'ewm-input)
 
 ;;; Key interception
 
@@ -325,13 +309,6 @@ Scans `ewm-mode-map' and adds `ewm-intercept-prefixes'."
           (push spec specs))))
     ;; Send to compositor
     (ewm-intercept-keys-module (vconcat (nreverse specs)))))
-
-;;; XKB configuration
-
-(defun ewm--send-xkb-config ()
-  "Send XKB configuration to compositor."
-  (when ewm--module-mode
-    (ewm-configure-xkb-module (string-join ewm-xkb-layouts ",") ewm-xkb-options)))
 
 (provide 'ewm-input)
 ;;; ewm-input.el ends here
