@@ -88,10 +88,13 @@ Override individual bindings with `use-package':
 (defcustom ewm-input-config nil
   "Input device configuration alist.
 Each entry is (KEY . PROPS) where KEY is:
-  - A symbol for type defaults: `touchpad', `mouse', `trackball', `trackpoint'
+  - A symbol for type defaults: `touchpad', `mouse', `trackball',
+    `trackpoint', `keyboard'
   - A string for device-specific overrides (exact device name)
 
 PROPS is a plist of settings (omitted properties use device defaults):
+
+  Pointer devices (touchpad, mouse, trackball, trackpoint):
   :natural-scroll BOOL  - Invert scroll direction
   :tap BOOL             - Tap-to-click (touchpad only)
   :dwt BOOL             - Disable while typing (touchpad only)
@@ -103,13 +106,20 @@ PROPS is a plist of settings (omitted properties use device defaults):
   :middle-emulation BOOL - Emulate middle button
   :tap-button-map STRING - \"left-right-middle\" or \"left-middle-right\" (touchpad only)
 
+  Keyboard:
+  :repeat-delay INT     - Key repeat delay in milliseconds (default 200)
+  :repeat-rate INT      - Key repeat rate in Hz (default 25)
+  :xkb-layouts STRING   - Comma-separated XKB layout names (e.g. \"us,ru\")
+  :xkb-options STRING   - XKB options (e.g. \"ctrl:nocaps\")
+
 Device-specific entries override type defaults for matching settings.
 
 Example:
   (setq ewm-input-config
     \\='((touchpad :natural-scroll t :tap t)
       (mouse :accel-profile \"flat\")
-      (trackpoint :accel-speed 0.5)
+      (keyboard :repeat-delay 200 :repeat-rate 25
+                :xkb-layouts \"us,ru\" :xkb-options \"ctrl:nocaps\")
       (\"ELAN0676:00 04F3:3195 Touchpad\" :tap nil :accel-speed -0.2)))"
   :type '(alist :key-type (choice symbol string)
                 :value-type plist)

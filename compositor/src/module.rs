@@ -1052,7 +1052,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                             Some(dt) => entry.device_type = Some(dt),
                             None => env.signal(
                                 "error",
-                                (format!("Invalid :type \"{s}\", expected: touchpad, mouse, trackball, trackpoint"),),
+                                (format!("Invalid :type \"{s}\", expected: touchpad, mouse, trackball, trackpoint, keyboard"),),
                             )?,
                         }
                     }
@@ -1113,6 +1113,26 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                                 (format!("Invalid :tap-button-map \"{s}\", expected: left-right-middle, left-middle-right"),),
                             )?,
                         }
+                    }
+                }
+                ":repeat-delay" => {
+                    if val.is_not_nil() {
+                        entry.repeat_delay = Some(val.into_rust::<i64>()? as i32);
+                    }
+                }
+                ":repeat-rate" => {
+                    if val.is_not_nil() {
+                        entry.repeat_rate = Some(val.into_rust::<i64>()? as i32);
+                    }
+                }
+                ":xkb-layouts" => {
+                    if val.is_not_nil() {
+                        entry.xkb_layouts = Some(val.into_rust()?);
+                    }
+                }
+                ":xkb-options" => {
+                    if val.is_not_nil() {
+                        entry.xkb_options = Some(val.into_rust()?);
                     }
                 }
                 _ => env.signal(

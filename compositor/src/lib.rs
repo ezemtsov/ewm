@@ -4653,9 +4653,66 @@ impl State {
             }
             ModuleCommand::ConfigureInput { configs } => {
                 info!("Input config updated: {} entries", configs.len());
+
+                // Extract keyboard settings before storing configs (avoids borrow conflict)
+                let kb_repeat = configs
+                    .iter()
+                    .find(|c| c.device_type == Some(crate::input::DeviceType::Keyboard))
+                    .and_then(|kb| {
+                        if kb.repeat_rate.is_some() || kb.repeat_delay.is_some() {
+                            Some((kb.repeat_rate.unwrap_or(25), kb.repeat_delay.unwrap_or(200)))
+                        } else {
+                            None
+                        }
+                    });
+                let kb_xkb = configs
+                    .iter()
+                    .find(|c| c.device_type == Some(crate::input::DeviceType::Keyboard))
+                    .and_then(|kb| {
+                        kb.xkb_layouts.clone().map(|layouts| (layouts, kb.xkb_options.clone()))
+                    });
+
                 self.ewm.input_configs = configs;
                 self.backend
                     .reapply_libinput_config(&self.ewm.input_configs);
+
+                // Apply keyboard repeat settings
+                if let Some((rate, delay)) = kb_repeat {
+                    let keyboard = self.ewm.keyboard.clone();
+                    keyboard.change_repeat_info(rate, delay);
+                    info!("Keyboard repeat: rate={}, delay={}", rate, delay);
+                }
+
+                // Apply XKB layout settings
+                if let Some((layouts_str, options)) = kb_xkb {
+                    let layout_names: Vec<String> = layouts_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !layout_names.is_empty() {
+                        let xkb_config = smithay::input::keyboard::XkbConfig {
+                            layout: &layouts_str,
+                            options: options.clone(),
+                            ..Default::default()
+                        };
+                        let keyboard = self.ewm.keyboard.clone();
+                        if let Err(e) = keyboard.set_xkb_config(self, xkb_config) {
+                            error!("Failed to configure XKB: {:?}", e);
+                        } else {
+                            self.ewm.xkb_layout_names = layout_names.clone();
+                            self.ewm.xkb_current_layout = 0;
+                            info!(
+                                "Configured XKB layouts: {:?}, options: {:?}",
+                                layout_names, options
+                            );
+                            self.ewm.queue_event(Event::Layouts {
+                                layouts: layout_names,
+                                current: 0,
+                            });
+                        }
+                    }
+                }
             }
             ModuleCommand::ConfigureIdle { timeout_secs, action } => {
                 let idle_action = if action == "blank" {

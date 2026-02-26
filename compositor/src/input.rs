@@ -506,6 +506,7 @@ pub enum DeviceType {
     Mouse,
     Trackball,
     Trackpoint,
+    Keyboard,
 }
 
 impl DeviceType {
@@ -516,6 +517,7 @@ impl DeviceType {
             "mouse" => Some(DeviceType::Mouse),
             "trackball" => Some(DeviceType::Trackball),
             "trackpoint" => Some(DeviceType::Trackpoint),
+            "keyboard" => Some(DeviceType::Keyboard),
             _ => None,
         }
     }
@@ -542,6 +544,11 @@ pub struct InputConfigEntry {
     pub left_handed: Option<bool>,
     pub middle_emulation: Option<bool>,
     pub tap_button_map: Option<TapButtonMap>,
+    // Keyboard-specific settings
+    pub repeat_delay: Option<i32>,
+    pub repeat_rate: Option<i32>,
+    pub xkb_layouts: Option<String>,
+    pub xkb_options: Option<String>,
 }
 
 /// Detect the type of a libinput device.
