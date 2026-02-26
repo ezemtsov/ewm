@@ -2018,7 +2018,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         .args([
             "-c",
             &format!(
-                "systemctl --user import-environment {variables}; \
+                "hash systemctl 2>/dev/null && \
+                 systemctl --user import-environment {variables}; \
                  hash dbus-update-activation-environment 2>/dev/null && \
                  dbus-update-activation-environment {variables}"
             ),
