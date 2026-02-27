@@ -1902,6 +1902,9 @@ fn initialize_drm(
 
     info!("DRM initialization complete");
 
+    // Place pointer at center of first output instead of (0, 0).
+    state.center_pointer_on_first_output();
+
     // connect_output already sent output_detected and working_area events
     // for each output. Send the final completion events.
     state.ewm.queue_event(crate::event::Event::OutputsComplete);

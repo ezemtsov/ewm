@@ -4493,6 +4493,40 @@ pub struct State {
 }
 
 impl State {
+    /// Warp the pointer to an absolute position, notifying clients.
+    pub fn warp_pointer(&mut self, x: f64, y: f64) {
+        self.ewm.pointer_location = (x, y);
+        let pointer = self.ewm.pointer.clone();
+        let under = self
+            .ewm
+            .surface_under_point(Point::from((x, y)));
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location: (x, y).into(),
+                serial: SERIAL_COUNTER.next_serial(),
+                time: 0,
+            },
+        );
+        pointer.frame(self);
+        self.ewm.queue_redraw_for_pointer();
+    }
+
+    /// Center the pointer on the first output. Called once during startup so the
+    /// cursor doesn't begin at (0, 0).
+    pub fn center_pointer_on_first_output(&mut self) {
+        let Some(output) = self.ewm.space.outputs().next().cloned() else {
+            return;
+        };
+        let Some(geo) = self.ewm.space.output_geometry(&output) else {
+            return;
+        };
+        let x = geo.loc.x as f64 + geo.size.w as f64 / 2.0;
+        let y = geo.loc.y as f64 + geo.size.h as f64 / 2.0;
+        self.warp_pointer(x, y);
+    }
+
     /// Synchronize Wayland keyboard focus with focused_surface_id.
     ///
     /// This is the primary mechanism for keeping logical focus (focused_surface_id)
@@ -4677,23 +4711,7 @@ impl State {
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {
-                self.ewm.pointer_location = (x, y);
-                let pointer = self.ewm.pointer.clone();
-                let serial = SERIAL_COUNTER.next_serial();
-                let under = self
-                    .ewm
-                    .surface_under_point(smithay::utils::Point::from((x, y)));
-                pointer.motion(
-                    self,
-                    under,
-                    &smithay::input::pointer::MotionEvent {
-                        location: (x, y).into(),
-                        serial,
-                        time: 0,
-                    },
-                );
-                pointer.frame(self);
-                self.ewm.queue_redraw_for_pointer();
+                self.warp_pointer(x, y);
             }
             ModuleCommand::Screenshot { path } => {
                 let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
