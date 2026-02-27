@@ -495,6 +495,34 @@ Clears on the focused frame only, so other outputs remain fullscreen."
   (interactive)
   (start-process "loginctl" nil "loginctl" "lock-session"))
 
+(defun ewm--sorted-surface-buffers ()
+  "Return live surface buffers sorted by surface ID."
+  (let ((bufs (cl-loop for buf being the hash-values of ewm--surfaces
+                       when (buffer-live-p buf) collect buf)))
+    (sort bufs (lambda (a b)
+                 (< (buffer-local-value 'ewm-surface-id a)
+                    (buffer-local-value 'ewm-surface-id b))))))
+
+(defun ewm--cycle-surface-buffer (delta)
+  "Switch to surface buffer DELTA steps away from current."
+  (let ((bufs (ewm--sorted-surface-buffers))
+        (cur (current-buffer)))
+    (when (cdr bufs)
+      (let* ((pos (cl-position cur bufs))
+             (next (nth (if pos (mod (+ pos delta) (length bufs)) 0) bufs)))
+        (switch-to-buffer next))))
+  (ewm--sync-focus))
+
+(defun ewm-next-surface-buffer ()
+  "Switch to the next surface buffer in the current window."
+  (interactive)
+  (ewm--cycle-surface-buffer 1))
+
+(defun ewm-prev-surface-buffer ()
+  "Switch to the previous surface buffer in the current window."
+  (interactive)
+  (ewm--cycle-surface-buffer -1))
+
 (defun ewm-toggle-fullscreen ()
   "Toggle fullscreen for the surface in the current window."
   (interactive)

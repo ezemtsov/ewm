@@ -49,7 +49,11 @@ Reads the digit from `last-command-event' for i3-style back-and-forth."
     (define-key map (kbd "s-f") #'ewm-toggle-fullscreen)
     ;; Lock session
     (define-key map (kbd "s-l") #'ewm-lock-session)
-    ;; Tab/workspace management
+    ;; Surface buffer cycling
+    (define-key map (kbd "s-<tab>") #'ewm-next-surface-buffer)
+    ;; Emacs sees S-Tab as iso-lefttab; compositor sees Tab+Shift.  Need both.
+    (define-key map (kbd "s-<iso-lefttab>") #'ewm-prev-surface-buffer)
+    (define-key map (kbd "s-S-<tab>") #'ewm-prev-surface-buffer)
     (define-key map (kbd "s-t") #'tab-new)
     (define-key map (kbd "s-w") #'tab-close)
     (dotimes (i 9)
