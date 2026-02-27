@@ -4392,9 +4392,8 @@ fn configure_lock_surface(surface: &LockSurface, output: &Output) {
     use smithay::wayland::compositor::with_states;
 
     surface.with_pending_state(|states| {
-        let mode = output.current_mode().unwrap();
-        let size = output.current_transform().transform_size(mode.size);
-        states.size = Some(Size::from((size.w as u32, size.h as u32)));
+        let size = crate::utils::output_size(output);
+        states.size = Some(size.to_i32_round());
     });
 
     let scale = output.current_scale();
