@@ -40,6 +40,23 @@ fn notify_activity(state: &mut State) {
     state.ewm.reset_idle_timer();
 }
 
+/// What the keyboard filter decided to do with an intercepted key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterceptKind {
+    /// Prefix key (C-x) — hold focus on Emacs across the sequence
+    Prefix,
+    /// Non-prefix intercepted key (s-v) — redirect then restore focus immediately
+    NonPrefix,
+    /// Kill combo (Super+Shift+E)
+    Kill,
+    /// Text input intercept — printable key for Emacs IM processing
+    TextInput,
+    /// VT switch (Ctrl+Alt+F1-F12)
+    VtSwitch,
+    /// Exit fullscreen toggle
+    FullscreenExit,
+}
+
 /// Result of processing a keyboard event
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardAction {
@@ -175,7 +192,7 @@ pub fn handle_keyboard_event(
         };
 
     // Process key with filter to detect intercepted keys and kill combo
-    let filter_result = keyboard.input::<(u8, u32, Option<String>), _>(
+    let filter_result = keyboard.input::<(InterceptKind, u32, Option<String>), _>(
         state,
         keycode.into(),
         key_state,
@@ -196,7 +213,7 @@ pub fn handle_keyboard_event(
                 .contains(&modified_raw)
             {
                 let vt = (modified_raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32;
-                return FilterResult::Intercept((4, vt as u32, None)); // 4 = VT switch
+                return FilterResult::Intercept((InterceptKind::VtSwitch, vt as u32, None));
             }
 
             // Get the raw latin keysym for this key (layout-independent)
@@ -207,7 +224,7 @@ pub fn handle_keyboard_event(
 
             // Check for kill combo (Super+Shift+E)
             if is_kill_combo(keysym_raw, mods.shift, mods.logo) {
-                return FilterResult::Intercept((2, 0, None)); // 2 = kill
+                return FilterResult::Intercept((InterceptKind::Kill, 0, None));
             }
             // Find if this is an intercepted key and whether it's a prefix
             let matched_key = intercepted_keys
@@ -219,19 +236,22 @@ pub fn handle_keyboard_event(
                 // fullscreen toggle (exits fullscreen) and kill combo (above).
                 if let Some(fs_id) = fullscreen_surface_id {
                     if ik.is_fullscreen_toggle {
-                        return FilterResult::Intercept((5, fs_id, None));
+                        return FilterResult::Intercept((InterceptKind::FullscreenExit, fs_id, None));
                     }
                     return FilterResult::Forward;
                 }
 
                 if !focus_on_emacs {
-                    // Redirect focus to Emacs for this key. Set the prefix flag
-                    // so post-command-hook restores focus after the command
-                    // completes. For true prefix keys (C-x) the flag persists
-                    // across the whole sequence; for single-shot keys (s-v) it
-                    // is cleared immediately by the next post-command cycle.
-                    module::set_in_prefix_sequence(true);
-                    return FilterResult::Intercept((1, keysym_raw, None)); // 1 = redirect to emacs
+                    if ik.is_prefix {
+                        // Prefix key: hold focus on Emacs across the sequence.
+                        // Emacs clears the flag via post-command-hook.
+                        module::set_in_prefix_sequence(true);
+                        return FilterResult::Intercept((InterceptKind::Prefix, keysym_raw, None));
+                    } else {
+                        // Non-prefix: redirect, send key, restore immediately.
+                        // Code 7 tells the post-filter to restore focus.
+                        return FilterResult::Intercept((InterceptKind::NonPrefix, keysym_raw, None));
+                    }
                 }
                 // Intercepted key but already on Emacs - just forward
                 return FilterResult::Forward;
@@ -244,7 +264,7 @@ pub fn handle_keyboard_event(
                 let utf8 = xkb::keysym_to_utf8(modified);
                 if !utf8.is_empty() && !utf8.chars().all(|c| c.is_control()) {
                     // This is a printable character - intercept for text input
-                    FilterResult::Intercept((3, keysym_raw, Some(utf8))) // 3 = text input
+                    FilterResult::Intercept((InterceptKind::TextInput, keysym_raw, Some(utf8)))
                 } else {
                     FilterResult::Forward
                 }
@@ -262,64 +282,61 @@ pub fn handle_keyboard_event(
     }
 
     // Determine action from filter result
-    if let Some((code, keysym, ref utf8)) = filter_result {
-        match code {
-            2 => return KeyboardAction::Shutdown,
-            3 => {
-                // Text input intercept - send key to Emacs via IPC
+    if let Some((kind, keysym, ref utf8)) = filter_result {
+        match kind {
+            InterceptKind::Kill => return KeyboardAction::Shutdown,
+            InterceptKind::TextInput => {
                 state.ewm.queue_event(crate::Event::Key {
                     keysym,
                     utf8: utf8.clone(),
                 });
                 return KeyboardAction::TextInputIntercepted;
             }
-            4 => {
-                // VT switch - keysym contains the VT number
+            InterceptKind::VtSwitch => {
                 return KeyboardAction::ChangeVt(keysym as i32);
+            }
+            InterceptKind::FullscreenExit => {
+                tracing::info!("fullscreen_exit: surface {}", keysym);
+                module::push_event(crate::Event::UnfullscreenRequest { id: keysym });
+                return KeyboardAction::Forward;
             }
             _ => {}
         }
     }
 
-    if let Some((5, fs_id, _)) = &filter_result {
-        // Fullscreen toggle pressed — exit fullscreen, consume the key.
-        // Don't replay the key to Emacs (would cause double-toggle for s-f).
-        tracing::info!("fullscreen_exit: surface {}", fs_id);
-        module::push_event(crate::Event::UnfullscreenRequest { id: *fs_id });
-        return KeyboardAction::Forward;
-    }
-
-    if filter_result.as_ref().map(|(c, _, _)| *c) == Some(1) {
-        // Switch focus to the Emacs frame on the same output as the focused surface
+    // Prefix and NonPrefix both redirect the key to Emacs.
+    // NonPrefix restores focus immediately so the surface never visibly loses it.
+    let intercept_kind = filter_result.as_ref().map(|(k, _, _)| *k);
+    if intercept_kind == Some(InterceptKind::Prefix)
+        || intercept_kind == Some(InterceptKind::NonPrefix)
+    {
+        let is_prefix = intercept_kind == Some(InterceptKind::Prefix);
         let keysym_val = filter_result.as_ref().map(|(_, k, _)| *k).unwrap_or(0);
         tracing::info!(
-            "intercept_redirect: keycode={} keysym=0x{:x} from surface {}",
+            "intercept_redirect: keycode={} keysym=0x{:x} prefix={} from surface {}",
             keycode,
             keysym_val,
+            is_prefix,
             state.ewm.focused_surface_id
         );
+
+        // Save original focus for non-prefix restore
+        let original_id = state.ewm.focused_surface_id;
+        let original_focus = state.ewm.keyboard_focus.clone();
+
         if let Some(emacs_id) = state.ewm.get_emacs_surface_for_focused_output() {
             let context = format!("keycode={} keysym=0x{:x}", keycode, keysym_val);
             module::record_focus(emacs_id, "intercept_redirect", Some(&context));
             state.ewm.focused_surface_id = emacs_id;
-            state.ewm.keyboard_focus_dirty = false; // Immediate path — we sync right here
+            state.ewm.keyboard_focus_dirty = false;
             if let Some(window) = state.ewm.id_windows.get(&emacs_id) {
                 if let Some(surface) = window.wl_surface() {
                     let emacs_surface: WlSurface = surface.into_owned();
                     state.ewm.keyboard_focus = Some(emacs_surface.clone());
-                    // Immediate keyboard.set_focus — must happen before re-sending the key
                     keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
-
-                    // NOTE: We intentionally do NOT send a Focus event here.
-                    // The prefix key redirect is temporary for the key sequence,
-                    // and sending Focus would cause ewm-layout--refresh to
-                    // redirect focus back to the external surface before the
-                    // sequence completes (race condition with C-x left/right etc).
-                    // Emacs frames handle their own focus via Wayland protocol.
 
                     // Temporarily switch to base layout so the re-sent key
                     // produces Latin keysyms for Emacs keybindings.
-                    // Restored immediately after — no persistent layout change.
                     let saved_layout = state.ewm.xkb_current_layout;
                     if saved_layout != 0 && !state.ewm.xkb_layout_names.is_empty() {
                         keyboard.with_xkb_state(state, |mut context| {
@@ -337,13 +354,31 @@ pub fn handle_keyboard_event(
                         |_, _, _| FilterResult::Forward,
                     );
 
-                    // Restore layout — external surface keeps its layout
+                    // Restore XKB layout
                     if saved_layout != 0 {
                         keyboard.with_xkb_state(state, |mut context| {
                             context.set_layout(smithay::input::keyboard::Layout(
                                 saved_layout as u32,
                             ));
                         });
+                    }
+
+                    // Non-prefix: restore focus immediately. The leave+enter
+                    // messages are batched in the same Wayland flush, so the
+                    // client processes them back-to-back without visible flicker.
+                    if !is_prefix {
+                        state.ewm.focused_surface_id = original_id;
+                        state.ewm.keyboard_focus = original_focus;
+                        state.ewm.keyboard_focus_dirty = false;
+                        if let Some(window) = state.ewm.id_windows.get(&original_id) {
+                            if let Some(surface) = window.wl_surface() {
+                                keyboard.set_focus(
+                                    state,
+                                    Some(surface.into_owned()),
+                                    serial,
+                                );
+                            }
+                        }
                     }
                 }
             }
