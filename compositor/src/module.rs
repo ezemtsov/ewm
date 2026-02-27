@@ -178,6 +178,7 @@ pub enum ModuleCommand {
     },
     ImCommit {
         text: String,
+        surface_id: u32,
     },
     TextInputIntercept {
         enabled: bool,
@@ -949,10 +950,15 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Commit text to focused input field (module mode).
+/// Commit text to a client text field.
+/// SURFACE-ID identifies the target surface, used for queuing commits
+/// that arrive while the client is in a disable→enable gap.
 #[defun]
-fn im_commit_module(_: &Env, text: String) -> Result<()> {
-    push_command(ModuleCommand::ImCommit { text });
+fn im_commit_module(_: &Env, text: String, surface_id: i64) -> Result<()> {
+    push_command(ModuleCommand::ImCommit {
+        text,
+        surface_id: surface_id as u32,
+    });
     Ok(())
 }
 

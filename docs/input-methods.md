@@ -71,9 +71,14 @@ Application                    Compositor                      Emacs
      |  [user types]                |                              |
      |                              |--input-key {keysym}--------->|
      |                              |                              |
-     |                              |<--commit-text {string}-------|
-     |<--commit_string--------------|                              |
+     |                              |<--im-commit {text, id}-------|
+     |<--commit_string (direct)-----|                              |
 ```
+
+Commits are applied directly on the compositor thread via `TextInputHandle`,
+avoiding cross-thread serial races. If the client is in a disable→enable gap
+(e.g., after focus returned from the minibuffer), commits are queued and
+drained on the next Activated event.
 
 ### Module Interface
 
@@ -88,7 +93,7 @@ Application                    Compositor                      Emacs
 **Emacs → Compositor (module functions):**
 
 ```elisp
-(ewm-im-commit-module text)              ; Insert text into focused field
+(ewm-im-commit-module text surface-id)   ; Insert text into focused field
 (ewm-text-input-intercept-module enable) ; Enable/disable key interception
 ```
 

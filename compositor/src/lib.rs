@@ -707,8 +707,10 @@ pub struct Ewm {
 
     // When true, intercept all keys and send to Emacs for text input
     pub text_input_intercept: bool,
-    // Track text input active state to deduplicate IM relay events
+    // Deduplicate IM relay activate/deactivate events
     pub text_input_active: bool,
+    // Commits queued during the client's disable→enable gap
+    pub pending_im_commits: Vec<String>,
 
     // Popup manager for XDG popups
     pub popups: PopupManager,
@@ -778,8 +780,8 @@ pub struct Ewm {
     pub xkb_layout_names: Vec<String>,
     pub xkb_current_layout: usize,
 
-    // Input method relay (self-connection to activate input_method protocol)
-    #[allow(dead_code)]
+    // IM relay keepalive — Smithay requires an input_method_v2 instance
+    // for text_input_v3. Commits bypass the relay (direct TextInputHandle).
     pub im_relay: Option<im_relay::ImRelay>,
 
     // Event loop handle (for idle timer registration)
@@ -908,6 +910,7 @@ impl Ewm {
             input_method_state,
             text_input_intercept: false,
             text_input_active: false,
+            pending_im_commits: Vec::new(),
             popups: PopupManager::default(),
             dnd_icon: None,
             layer_shell_state,
@@ -948,14 +951,9 @@ impl Ewm {
         }
     }
 
-    /// Connect the input method relay after socket is ready
+    /// Connect the input method relay after socket is ready.
     pub fn connect_im_relay(&mut self, socket_path: &std::path::Path) {
-        self.im_relay = im_relay::ImRelay::connect(socket_path);
-        if self.im_relay.is_some() {
-            info!("Input method relay connected successfully");
-        } else {
-            warn!("Failed to connect input method relay");
-        }
+        self.im_relay = Some(im_relay::ImRelay::connect(socket_path));
     }
 
     /// Remove dead windows from the space.
@@ -2475,12 +2473,15 @@ impl Ewm {
     }
 
     /// Update text_input focus for input method support.
-    /// Skips Emacs surfaces since Emacs handles its own input methods.
+    ///
+    /// Emacs surfaces and None both clear text_input (leave + set_focus(None)),
+    /// causing the client to disable. Commits that arrive during the resulting
+    /// disable→enable gap are queued in `pending_im_commits` and drained on
+    /// the next `ImEvent::Activated`.
     pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u32>) {
         use smithay::wayland::text_input::TextInputSeat;
         let text_input = self.seat.text_input();
 
-        // Skip if this is an Emacs surface
         let is_emacs = surface_id.map_or(false, |id| self.emacs_surfaces.contains_key(&id));
 
         if is_emacs || surface.is_none() {
@@ -4673,11 +4674,20 @@ impl State {
                 // Apply the config
                 self.backend.apply_output_config(&mut self.ewm, &name);
             }
-            ModuleCommand::ImCommit { text } => {
-                if let Some(ref relay) = self.ewm.im_relay {
-                    relay.commit_string(text);
+            ModuleCommand::ImCommit { text, surface_id } => {
+                use smithay::wayland::text_input::TextInputSeat;
+                let text_input = self.ewm.seat.text_input();
+                let mut delivered = false;
+                text_input.with_active_text_input(|ti, _surface| {
+                    ti.commit_string(Some(text.clone()));
+                    delivered = true;
+                });
+                if delivered {
+                    text_input.done(false);
                 } else {
-                    warn!("im-commit received but no IM relay connected");
+                    // Client in disable→enable gap — drain on next Activated.
+                    debug!("ImCommit: queued (surface_id={surface_id})");
+                    self.ewm.pending_im_commits.push(text);
                 }
             }
             ModuleCommand::TextInputIntercept { enabled } => {
@@ -4923,9 +4933,8 @@ impl State {
         }
     }
 
-    /// Process events from the IM relay and send to Emacs
+    /// Poll IM relay for activate/deactivate events.
     pub fn process_im_events(&mut self) {
-        // Collect events first to avoid borrow conflict with queue_event
         let events: Vec<_> = self
             .ewm
             .im_relay
@@ -4938,14 +4947,26 @@ impl State {
                 im_relay::ImEvent::Activated => {
                     if !self.ewm.text_input_active {
                         self.ewm.text_input_active = true;
-                        info!("Text input activated, notifying Emacs");
                         self.ewm.queue_event(Event::TextInputActivated);
+                    }
+
+                    // Drain commits queued during the disable→enable gap.
+                    if !self.ewm.pending_im_commits.is_empty() {
+                        use smithay::wayland::text_input::TextInputSeat;
+                        let text_input = self.ewm.seat.text_input();
+                        let text = self.ewm.pending_im_commits.join("");
+                        let count = self.ewm.pending_im_commits.len();
+                        self.ewm.pending_im_commits.clear();
+                        debug!("ImCommit: draining {count} queued commit(s)");
+                        text_input.with_active_text_input(|ti, _surface| {
+                            ti.commit_string(Some(text.clone()));
+                        });
+                        text_input.done(false);
                     }
                 }
                 im_relay::ImEvent::Deactivated => {
                     if self.ewm.text_input_active {
                         self.ewm.text_input_active = false;
-                        info!("Text input deactivated, notifying Emacs");
                         self.ewm.queue_event(Event::TextInputDeactivated);
                     }
                 }

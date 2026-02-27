@@ -15,6 +15,7 @@
 (declare-function ewm-get-focused-id "ewm-core")
 
 (defvar ewm--surfaces)
+(defvar ewm-surface-id)
 
 (defvar ewm-text-input-activated-hook nil
   "Hook run when a client text field becomes active.
@@ -33,9 +34,9 @@ Called when a client's text field gains focus."
 Called when a client's text field loses focus."
   (run-hooks 'ewm-text-input-deactivated-hook))
 
-(defun ewm-im-commit (text)
-  "Commit TEXT to the currently focused client text field."
-  (ewm-im-commit-module text))
+(defun ewm-im-commit (text surface-id)
+  "Commit TEXT to the client text field on SURFACE-ID."
+  (ewm-im-commit-module text surface-id))
 
 (defvar ewm-text-input-method nil
   "Input method to use for text input translation.
@@ -65,10 +66,11 @@ For quail-based input methods, looks up the translation directly."
 Sends the typed character to the client via commit_string,
 applying input method translation if active."
   (interactive)
-  (let* ((char last-command-event)
-         (translated (ewm-text-input--translate-char char)))
-    (when (stringp translated)
-      (ewm-im-commit translated))))
+  (when ewm-surface-id
+    (let* ((char last-command-event)
+           (translated (ewm-text-input--translate-char char)))
+      (when (stringp translated)
+        (ewm-im-commit translated ewm-surface-id)))))
 
 (defvar ewm-text-input-mode-map
   (let ((map (make-sparse-keymap)))
@@ -110,16 +112,13 @@ client text fields gain/lose focus."
 Called when text-input-intercept is enabled and a printable key is pressed."
   (pcase-let (((map ("utf8" utf8)) event))
     (when utf8
-      ;; Get input method from the focused surface buffer
-      (let* ((surface-buf (ewm--focused-surface-buffer))
+      (let* ((focused-id (ewm-get-focused-id))
+             (surface-buf (gethash focused-id ewm--surfaces))
              (im (when surface-buf
                    (buffer-local-value 'current-input-method surface-buf)))
              (translated (ewm-text-input--translate-char (string-to-char utf8) im)))
-        (ewm-im-commit translated)))))
-
-(defun ewm--focused-surface-buffer ()
-  "Return the buffer displaying the currently focused surface."
-  (gethash (ewm-get-focused-id) ewm--surfaces))
+        (when (and focused-id (> focused-id 0))
+          (ewm-im-commit translated focused-id))))))
 
 (defun ewm-text-input--auto-enable ()
   "Enable text input mode when a client text field is activated."

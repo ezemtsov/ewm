@@ -11,6 +11,7 @@
 ;;; Code:
 
 (declare-function ewm-close "ewm")
+(declare-function ewm-im-commit "ewm-text-input")
 
 (defvar ewm--module-mode)
 (defvar-local ewm-surface-id nil
@@ -37,9 +38,23 @@ Sends close request to compositor and prevents immediate buffer kill."
     (ewm-close ewm-surface-id)
     nil))
 
+(defun ewm-surface--after-change (beg end old-len)
+  "Intercept insertions and route through im-commit.
+Pure insertions are captured, removed from the buffer, and
+forwarded to the client text field via `ewm-im-commit'."
+  (when (and (> end beg) (zerop old-len))
+    (let ((text (buffer-substring-no-properties beg end))
+          (inhibit-modification-hooks t)
+          (buffer-undo-list t))
+      (delete-region beg end)
+      (ewm-im-commit text ewm-surface-id))))
+
 (define-derived-mode ewm-surface-mode fundamental-mode "Surface"
   "Major mode for EWM surface buffers."
-  (setq buffer-read-only t)
+  ;; Surface buffers are visual proxies — no editable text content.
+  ;; Insertions are intercepted and routed to the client text field.
+  (buffer-disable-undo)
+  (add-hook 'after-change-functions #'ewm-surface--after-change nil t)
   (setq-local cursor-type nil)
   (setq-local left-fringe-width 0)
   (setq-local right-fringe-width 0)
