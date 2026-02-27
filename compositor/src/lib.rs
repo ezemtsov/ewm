@@ -956,6 +956,82 @@ impl Ewm {
         self.im_relay = Some(im_relay::ImRelay::connect(socket_path));
     }
 
+    /// Remove a surface from all output layouts and the reverse index.
+    fn remove_surface_from_layouts(&mut self, id: u32) {
+        self.surface_outputs.remove(&id);
+        for entries in self.output_layouts.values_mut() {
+            entries.retain(|e| e.id != id);
+        }
+    }
+
+    /// Clean up all Ewm state for a removed output.
+    ///
+    /// Called by backends after their own teardown (e.g. DRM surface removal).
+    /// Handles: output state, lock check, screencasts, space, layouts,
+    /// workspaces, working areas, outputs list, D-Bus, output size, IPC.
+    pub fn remove_output(&mut self, output: &Output) {
+        let output_name = output.name();
+
+        // Cancel pending estimated-VBlank timers
+        if let Some(output_state) = self.output_state.remove(output) {
+            if let RedrawState::WaitingForEstimatedVBlank(token)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = output_state.redraw_state
+            {
+                self.loop_handle.remove(token);
+            }
+        }
+
+        self.check_lock_on_output_removed();
+
+        // Stop screen casts for this output
+        #[cfg(feature = "screencast")]
+        {
+            let sessions_to_stop: Vec<usize> = self
+                .screen_casts
+                .iter()
+                .filter(|(_, cast)| cast.output_name == output_name)
+                .map(|(id, _)| *id)
+                .collect();
+            for session_id in sessions_to_stop {
+                info!(output = %output_name, session_id, "stopping cast due to output disconnect");
+                self.stop_cast(session_id);
+            }
+        }
+
+        // Unmap from space
+        self.space.unmap_output(output);
+
+        // Clean up layout state
+        if let Some(old_entries) = self.output_layouts.remove(&output_name) {
+            for entry in &old_entries {
+                if let Some(outputs) = self.surface_outputs.get_mut(&entry.id) {
+                    outputs.remove(&output_name);
+                    if outputs.is_empty() {
+                        self.surface_outputs.remove(&entry.id);
+                    }
+                }
+            }
+        }
+        self.output_workspaces.remove(&output_name);
+        self.working_areas.remove(&output_name);
+
+        // Remove from outputs list
+        self.outputs.retain(|o| o.name != output_name);
+
+        // Remove from D-Bus outputs
+        #[cfg(feature = "screencast")]
+        {
+            let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
+            dbus_outputs.retain(|o| o.name != output_name);
+        }
+
+        self.recalculate_output_size();
+        self.send_output_disconnected(&output_name);
+        self.output_management_state.output_heads_changed = true;
+
+        info!("Output removed: {}", output_name);
+    }
+
     /// Remove dead windows from the space.
     /// This replaces Space::refresh() — we manage output enter/leave explicitly
     /// rather than relying on automatic spatial overlap detection.
@@ -977,10 +1053,7 @@ impl Ewm {
             if let Some(window) = self.id_windows.remove(&id) {
                 self.window_ids.remove(&window);
             }
-            self.surface_outputs.remove(&id);
-            for entries in self.output_layouts.values_mut() {
-                entries.retain(|e| e.id != id);
-            }
+            self.remove_surface_from_layouts(id);
             self.surface_info.remove(&id);
             self.emacs_surfaces.remove(&id);
             self.queue_event(Event::Close { id });
@@ -3220,11 +3293,7 @@ impl Ewm {
             self.window_ids.remove(&window);
             self.id_windows.remove(&id);
             self.surface_info.remove(&id);
-            self.surface_outputs.remove(&id);
-            // Remove from all output layouts
-            for entries in self.output_layouts.values_mut() {
-                entries.retain(|e| e.id != id);
-            }
+            self.remove_surface_from_layouts(id);
             self.emacs_surfaces.remove(&id);
             self.queue_event(Event::Close { id });
             info!("Toplevel {} destroyed", id);

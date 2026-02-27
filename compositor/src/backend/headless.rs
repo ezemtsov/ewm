@@ -165,11 +165,7 @@ impl HeadlessBackend {
     /// Remove a virtual output by name
     pub fn remove_output(&mut self, name: &str, ewm: &mut Ewm) {
         if let Some(virtual_output) = self.outputs.remove(name) {
-            ewm.output_state.remove(&virtual_output.output);
-            ewm.check_lock_on_output_removed();
-            ewm.space.unmap_output(&virtual_output.output);
-            ewm.recalculate_output_size();
-            info!("Removed virtual output: {}", name);
+            ewm.remove_output(&virtual_output.output);
         }
     }
 

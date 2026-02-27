@@ -1608,64 +1608,7 @@ impl DrmBackendState {
             return;
         };
 
-        let output_name = surface.output.name();
-
-        // Cancel pending timers and remove output state from Ewm
-        if let Some(output_state) = ewm.output_state.remove(&surface.output) {
-            if let RedrawState::WaitingForEstimatedVBlank(token)
-            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = output_state.redraw_state
-            {
-                if let Some(ref handle) = self.loop_handle {
-                    handle.remove(token);
-                }
-            }
-        }
-
-        // Check if lock can be confirmed (removed output no longer needs to render)
-        ewm.check_lock_on_output_removed();
-
-        // Stop any active screen casts for this output
-        #[cfg(feature = "screencast")]
-        {
-            let sessions_to_stop: Vec<usize> = ewm
-                .screen_casts
-                .iter()
-                .filter(|(_, cast)| cast.output_name == output_name)
-                .map(|(id, _)| *id)
-                .collect();
-
-            for session_id in sessions_to_stop {
-                info!(
-                    output = %output_name,
-                    session_id,
-                    "stopping cast due to output disconnect"
-                );
-                ewm.stop_cast(session_id);
-            }
-        }
-
-        // Unmap from space
-        ewm.space.unmap_output(&surface.output);
-
-        // Remove from outputs list
-        ewm.outputs.retain(|o| o.name != output_name);
-
-        // Remove from D-Bus outputs
-        #[cfg(feature = "screencast")]
-        {
-            let mut dbus_outputs = ewm.dbus_outputs.lock().unwrap();
-            dbus_outputs.retain(|o| o.name != output_name);
-        }
-
-        // Recalculate output_size
-        ewm.recalculate_output_size();
-
-        // Send IPC event
-        ewm.send_output_disconnected(&output_name);
-
-        ewm.output_management_state.output_heads_changed = true;
-
-        info!("Output disconnected: {}", output_name);
+        ewm.remove_output(&surface.output);
     }
 
     /// Handle lid open/close by disconnecting or reconnecting the laptop panel.
