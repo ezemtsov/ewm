@@ -546,11 +546,15 @@ Returns nil when no surface is found."
 (defun ewm-get-window-info-json (&optional id)
   "Return window info as a JSON string.
 Calls `ewm-get-window-info' and serializes the result.
-Returns a JSON object with null values when no surface is found.
+When ID is nil, use the current buffer's surface or compositor focus.
+Returns fallback Emacs frame info when no surface is found.
 
 For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
   (json-encode (or (ewm-get-window-info id)
-                   '((id) (app) (title) (pid)))))
+                   `((id . 0)
+                     (app . "emacs")
+                     (title . ,(frame-parameter nil 'name))
+                     (pid . ,(emacs-pid))))))
 
 (defun ewm-output-layout (output surfaces tabs)
   "Set declarative layout for OUTPUT.
