@@ -83,7 +83,7 @@ use crate::{
     input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
     render::{collect_render_elements_for_output, process_screencopies_for_output, RenderTarget},
     vblank_throttle::VBlankThrottle,
-    Ewm, OutputInfo, OutputMode, OutputState, RedrawState, State,
+    Ewm, LockRenderState, OutputInfo, OutputMode, OutputState, RedrawState, State,
 };
 
 
@@ -1496,14 +1496,17 @@ impl DrmBackendState {
 
         // Initialize output state in Ewm (redraw state, refresh interval)
         let logical_size = crate::utils::output_size(&output);
-        ewm.output_state.insert(
-            output.clone(),
-            OutputState::new(
-                &connector_name,
-                refresh_interval_us,
-                (logical_size.w as i32, logical_size.h as i32),
-            ),
+        let mut output_state = OutputState::new(
+            &connector_name,
+            refresh_interval_us,
+            (logical_size.w as i32, logical_size.h as i32),
         );
+        // If the session is locked, mark the new output as locked immediately
+        // so it shows the solid color fallback and doesn't block lock confirmation.
+        if ewm.is_locked() {
+            output_state.lock_render_state = LockRenderState::Locked;
+        }
+        ewm.output_state.insert(output.clone(), output_state);
 
         // Check if output should be enabled (skip mapping if disabled)
         let is_enabled = config.as_ref().map(|c| c.enabled).unwrap_or(true);
