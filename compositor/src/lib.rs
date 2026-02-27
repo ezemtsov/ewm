@@ -108,7 +108,7 @@ use smithay::{
         WindowSurfaceType,
     },
     input::{
-        dnd::DndGrabHandler,
+        dnd::{self, DnDGrab, DndGrabHandler, DndTarget},
         keyboard::{xkb::keysyms, KeyboardHandle, ModifiersState},
         pointer::PointerHandle,
         Seat, SeatHandler, SeatState,
@@ -128,7 +128,7 @@ use smithay::{
             Display, DisplayHandle, Resource,
         },
     },
-    utils::{IsAlive, Logical, Rectangle, Size, Transform, SERIAL_COUNTER},
+    utils::{IsAlive, Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{
@@ -599,6 +599,13 @@ impl InterceptedKey {
     }
 }
 
+/// DnD icon surface attached to the pointer during a drag operation.
+#[derive(Debug)]
+pub struct DndIcon {
+    pub surface: WlSurface,
+    pub offset: Point<i32, Logical>,
+}
+
 pub struct Ewm {
     pub stop_signal: Option<LoopSignal>,
     pub space: Space<Window>,
@@ -692,6 +699,9 @@ pub struct Ewm {
 
     // Popup manager for XDG popups
     pub popups: PopupManager,
+
+    // DnD icon surface (shown at pointer during drag)
+    pub dnd_icon: Option<DndIcon>,
 
     // Layer shell state
     pub layer_shell_state: WlrLayerShellState,
@@ -886,6 +896,7 @@ impl Ewm {
             text_input_intercept: false,
             text_input_active: false,
             popups: PopupManager::default(),
+            dnd_icon: None,
             layer_shell_state,
             unmapped_layer_surfaces: std::collections::HashSet::new(),
             layer_shell_on_demand_focus: None,
@@ -1884,6 +1895,25 @@ impl Ewm {
                 );
             }
         }
+
+        // Update DnD icon
+        if let Some(icon) = self.dnd_icon.as_ref() {
+            with_surface_tree_downward(
+                &icon.surface,
+                (),
+                |_, _, _| TraversalAction::DoChildren(()),
+                |surface, states, _| {
+                    update_surface_primary_scanout_output(
+                        surface,
+                        output,
+                        states,
+                        render_element_states,
+                        |_, _, output, _| output,
+                    );
+                },
+                |_, _, _| true,
+            );
+        }
     }
 
     /// Send DMA-BUF feedback to clients, telling them which formats/modifiers
@@ -1943,6 +1973,23 @@ impl Ewm {
                 );
             }
         }
+
+        // DnD icon
+        if let Some(icon) = self.dnd_icon.as_ref() {
+            send_dmabuf_feedback_surface_tree(
+                &icon.surface,
+                output,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    select_dmabuf_feedback(
+                        surface,
+                        render_element_states,
+                        &feedback.render,
+                        &feedback.scanout,
+                    )
+                },
+            );
+        }
     }
 
     /// Collect presentation feedback callbacks from all surfaces on this output.
@@ -1997,6 +2044,18 @@ impl Ewm {
                     },
                 );
             }
+        }
+
+        // Collect from DnD icon
+        if let Some(icon) = self.dnd_icon.as_ref() {
+            take_presentation_feedback_surface_tree(
+                &icon.surface,
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    surface_presentation_feedback_flags_from_states(surface, render_element_states)
+                },
+            );
         }
 
         feedback
@@ -2070,6 +2129,17 @@ impl Ewm {
                 );
             }
         }
+
+        // DnD icon
+        if let Some(icon) = self.dnd_icon.as_ref() {
+            send_frames_surface_tree(
+                &icon.surface,
+                output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                &should_send,
+            );
+        }
     }
 
     /// Fallback frame callback sender — safety net for stuck surfaces.
@@ -2123,6 +2193,18 @@ impl Ewm {
                     |_, _| None,
                 );
             }
+        }
+
+        // DnD icon (not tied to a specific output)
+        if let Some(icon) = self.dnd_icon.as_ref() {
+            let output = self.output_state.keys().next().unwrap_or(&output);
+            send_frames_surface_tree(
+                &icon.surface,
+                output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                |_, _| None,
+            );
         }
     }
 
@@ -2690,6 +2772,13 @@ impl Ewm {
         for layer in layer_map.layers() {
             layer.with_surfaces(|surface, data| {
                 crate::utils::send_scale_transform(surface, data, scale, transform);
+            });
+        }
+
+        // Notify DnD icon
+        if let Some(icon) = self.dnd_icon.as_ref() {
+            smithay::wayland::compositor::with_states(&icon.surface, |data| {
+                crate::utils::send_scale_transform(&icon.surface, data, scale, transform);
             });
         }
     }
@@ -3382,6 +3471,31 @@ impl CompositorHandler for State {
         // Queue early import for DRM backend (processed in main loop)
         self.ewm.pending_early_imports.push(surface.clone());
 
+        // DnD icon surface: update offset from buffer delta and redraw.
+        if let Some(icon) = &self.ewm.dnd_icon {
+            let mut root = surface.clone();
+            while let Some(parent) = get_parent(&root) {
+                root = parent;
+            }
+            if icon.surface == root {
+                if surface == &icon.surface {
+                    let dnd_icon = self.ewm.dnd_icon.as_mut().unwrap();
+                    smithay::wayland::compositor::with_states(&dnd_icon.surface, |states| {
+                        let delta = states
+                            .cached_state
+                            .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                            .current()
+                            .buffer_delta
+                            .take()
+                            .unwrap_or_default();
+                        dnd_icon.offset += delta;
+                    });
+                }
+                self.ewm.queue_redraw_all();
+                return;
+            }
+        }
+
         // Surface type dispatch order:
         // 1. Layer surfaces  2. Popups  3. Windows  4. Lock surfaces
         // When adding new surface types, add a branch here.
@@ -3549,8 +3663,61 @@ impl SelectionHandler for State {
         });
     }
 }
-impl WaylandDndGrabHandler for State {}
-impl DndGrabHandler for State {}
+impl WaylandDndGrabHandler for State {
+    fn dnd_requested<S: dnd::Source>(
+        &mut self,
+        source: S,
+        icon: Option<WlSurface>,
+        seat: Seat<Self>,
+        serial: smithay::utils::Serial,
+        type_: dnd::GrabType,
+    ) {
+        self.ewm.dnd_icon = icon.map(|surface| DndIcon {
+            surface,
+            offset: Point::from((0, 0)),
+        });
+
+        match type_ {
+            dnd::GrabType::Pointer => {
+                let pointer = seat.get_pointer().unwrap();
+                let start_data = pointer.grab_start_data().unwrap();
+                let grab = DnDGrab::new_pointer(
+                    &self.ewm.display_handle,
+                    start_data,
+                    source,
+                    seat,
+                );
+                pointer.set_grab(
+                    self,
+                    grab,
+                    serial,
+                    smithay::input::pointer::Focus::Keep,
+                );
+            }
+            dnd::GrabType::Touch => {
+                let touch = seat.get_touch().unwrap();
+                let start_data = touch.grab_start_data().unwrap();
+                let grab =
+                    DnDGrab::new_touch(&self.ewm.display_handle, start_data, source, seat);
+                touch.set_grab(self, grab, serial);
+            }
+        }
+
+        self.ewm.queue_redraw_all();
+    }
+}
+impl DndGrabHandler for State {
+    fn dropped(
+        &mut self,
+        _target: Option<DndTarget<'_, Self>>,
+        _validated: bool,
+        _seat: Seat<Self>,
+        _location: Point<f64, Logical>,
+    ) {
+        self.ewm.dnd_icon = None;
+        self.ewm.queue_redraw_all();
+    }
+}
 impl DataDeviceHandler for State {
     fn data_device_state(&mut self) -> &mut DataDeviceState {
         &mut self.ewm.data_device_state
