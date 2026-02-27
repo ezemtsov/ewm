@@ -504,6 +504,26 @@ Clears on the focused frame only, so other outputs remain fullscreen."
       (ewm--set-fullscreen-on-frame (window-buffer win) (selected-frame) new-val))
     (ewm-layout--refresh)))
 
+(defun ewm-get-window-info (&optional id)
+  "Return window info alist (id app title pid) for surface ID.
+When ID is nil, use the current buffer's surface or compositor focus.
+Returns nil when no surface is found."
+  (when-let* ((surface-id (or id ewm-surface-id (ewm-get-focused-id)))
+              (buf (gethash surface-id ewm--surfaces)))
+    (list (cons 'id surface-id)
+          (cons 'app (buffer-local-value 'ewm-surface-app buf))
+          (cons 'title (buffer-local-value 'ewm-surface-title buf))
+          (cons 'pid (buffer-local-value 'ewm-surface-pid buf)))))
+
+(defun ewm-get-window-info-json (&optional id)
+  "Return window info as a JSON string.
+Calls `ewm-get-window-info' and serializes the result.
+Returns a JSON object with null values when no surface is found.
+
+For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
+  (json-encode (or (ewm-get-window-info id)
+                   '((id) (app) (title) (pid)))))
+
 (defun ewm-output-layout (output surfaces tabs)
   "Set declarative layout for OUTPUT.
 SURFACES is a vector of plists with :id :x :y :w :h :primary keys.
