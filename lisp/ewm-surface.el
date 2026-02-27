@@ -37,7 +37,7 @@ Sends close request to compositor and prevents immediate buffer kill."
     (ewm-close ewm-surface-id)
     nil))
 
-(define-derived-mode ewm-surface-mode fundamental-mode "EWM"
+(define-derived-mode ewm-surface-mode fundamental-mode "Surface"
   "Major mode for EWM surface buffers."
   (setq buffer-read-only t)
   (setq-local cursor-type nil)

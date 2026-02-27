@@ -83,7 +83,7 @@ text field via input method commit_string, while Emacs commands
 like C-x and M-x continue to work normally.
 
 Input method translations (e.g., russian-computer) are applied."
-  :lighter " TxtIn"
+  :lighter " IM"
   :keymap ewm-text-input-mode-map)
 
 (defun ewm-text-input-auto-mode-enable ()

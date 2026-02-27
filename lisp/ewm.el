@@ -886,7 +886,7 @@ now that a graphical FRAME exists."
 (define-minor-mode ewm-mode
   "Global minor mode for EWM compositor integration."
   :global t
-  :lighter " EWM"
+  :lighter " ewm"
   :keymap ewm-mode-map
   :group 'ewm
   (if ewm-mode
