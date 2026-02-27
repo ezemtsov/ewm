@@ -1,5 +1,38 @@
 # EWM Input Methods
 
+## Feature Status
+
+| Feature | Protocol | Status | Notes |
+|---------|----------|--------|-------|
+| Commit string | `text_input_v3` / `input_method_v2` | Done | Direct on compositor thread, queued during gaps |
+| Key interception | `text_input_v3` | Done | Printable keys routed to Emacs for IM translation |
+| Activate/deactivate | `input_method_v2` | Done | Relay thread forwards events to Emacs |
+| XKB layout switching | core Wayland | Done | Multi-layout with temporary reset for intercepts |
+| Preedit (composing text) | `text_input_v3` | TODO | Inline composition preview in client (CJK essential) |
+| Content type hints | `text_input_v3` | TODO | Auto-disable intercept for password fields |
+| Surrounding text | `text_input_v3` | TODO | Selection access for cut/copy in surface buffers |
+| Delete surrounding text | `input_method_v2` | TODO | Cut in surface buffers, backspace during composition |
+| Input popup surface | `input_method_v2` | TODO | Candidate window positioned at client cursor |
+
+### Priority
+
+**Preedit** is the most impactful missing feature — it's required for proper
+CJK input (Japanese, Chinese, Korean) in external apps. Without it, composing
+characters only appear in Emacs's echo area, not inline in the client text field.
+
+**Surrounding text + delete** together enable clipboard operations (cut/copy)
+in surface buffers via the protocol rather than synthetic keypresses:
+
+1. Client sends `set_surrounding_text(text, cursor, anchor)` — when
+   `cursor != anchor`, the text between them is the selection.
+2. Emacs extracts the selected portion and puts it on the clipboard.
+3. For cut, compositor sends `delete_surrounding_text` via `input_method_v2`
+   to remove the selection in the client.
+
+This would let `s-x` (cut) and `s-c` (copy) work in surface buffers the
+same way they work in Emacs buffers, using the Wayland protocol instead of
+injecting synthetic Ctrl+X/C keypresses.
+
 ## Overview
 
 EWM provides full input method support:
