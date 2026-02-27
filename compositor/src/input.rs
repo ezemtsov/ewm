@@ -225,12 +225,12 @@ pub fn handle_keyboard_event(
                 }
 
                 if !focus_on_emacs {
-                    // This is an intercepted key and focus is on an external app (not Emacs)
-                    // Only SET the flag on prefix keys, never clear it here
-                    // Emacs clears the flag when the command sequence completes
-                    if ik.is_prefix {
-                        module::set_in_prefix_sequence(true);
-                    }
+                    // Redirect focus to Emacs for this key. Set the prefix flag
+                    // so post-command-hook restores focus after the command
+                    // completes. For true prefix keys (C-x) the flag persists
+                    // across the whole sequence; for single-shot keys (s-v) it
+                    // is cleared immediately by the next post-command cycle.
+                    module::set_in_prefix_sequence(true);
                     return FilterResult::Intercept((1, keysym_raw, None)); // 1 = redirect to emacs
                 }
                 // Intercepted key but already on Emacs - just forward
