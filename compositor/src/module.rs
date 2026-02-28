@@ -65,6 +65,13 @@ use_symbols! {
     kw_unset  => ":unset"
 }
 
+// Cached Lisp function subrs used in hot-path defuns (interning string on every call is wasteful).
+emacs::global_refs! { __init_fn_refs__(init_to_function) =>
+    plist_get => "plist-get"
+    length
+    aref
+}
+
 define_errors! {
     ewm_input_error        "EWM input configuration error"
     ewm_input_invalid_value "Invalid value for input config key" (ewm_input_error)
@@ -800,28 +807,22 @@ fn output_layout_module(
 ) -> Result<()> {
     let mut entries = Vec::new();
 
-    let len_val: Value = env.call("length", (surfaces,))?;
-    let len: i64 = len_val.into_rust()?;
+    let len: i64 = env.call(length, (surfaces,))?.into_rust()?;
     for i in 0..len {
-        let entry: Value = env.call("aref", (surfaces, i))?;
+        let entry = env.call(aref, (surfaces, i))?;
 
-        let id_val: Value = env.call("plist-get", (entry, kw_id.bind(env)))?;
-        let x_val: Value = env.call("plist-get", (entry, kw_x.bind(env)))?;
-        let y_val: Value = env.call("plist-get", (entry, kw_y.bind(env)))?;
-        let w_val: Value = env.call("plist-get", (entry, kw_w.bind(env)))?;
-        let h_val: Value = env.call("plist-get", (entry, kw_h.bind(env)))?;
-        let id: i64 = id_val.into_rust()?;
-        let x: i64 = x_val.into_rust()?;
-        let y: i64 = y_val.into_rust()?;
-        let w: i64 = w_val.into_rust()?;
-        let h: i64 = h_val.into_rust()?;
+        let id: i64 = env.call(plist_get, (entry, kw_id))?.into_rust()?;
+        let x: i64 = env.call(plist_get, (entry, kw_x))?.into_rust()?;
+        let y: i64 = env.call(plist_get, (entry, kw_y))?.into_rust()?;
+        let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
+        let h: i64 = env.call(plist_get, (entry, kw_h))?.into_rust()?;
 
         let false_sym = kw_false.bind(env);
-        let focused_val: Value = env.call("plist-get", (entry, kw_focused.bind(env)))?;
-        let focused = focused_val.is_not_nil() && !env.call("eq", (focused_val, false_sym))?.is_not_nil();
+        let focused_val = env.call(plist_get, (entry, kw_focused))?;
+        let focused = focused_val.is_not_nil() && !focused_val.eq(false_sym);
 
-        let fullscreen_val: Value = env.call("plist-get", (entry, kw_fullscreen.bind(env)))?;
-        let fullscreen = fullscreen_val.is_not_nil() && !env.call("eq", (fullscreen_val, false_sym))?.is_not_nil();
+        let fullscreen_val = env.call(plist_get, (entry, kw_fullscreen))?;
+        let fullscreen = fullscreen_val.is_not_nil() && !fullscreen_val.eq(false_sym);
 
         entries.push(LayoutEntry {
             id: id as u32,
@@ -836,18 +837,16 @@ fn output_layout_module(
     }
 
     let mut parsed_tabs = Vec::new();
-    let tabs_len_val: Value = env.call("length", (tabs,))?;
-    let tabs_len: i64 = tabs_len_val.into_rust()?;
+    let tabs_len: i64 = env.call(length, (tabs,))?.into_rust()?;
     let false_sym = kw_false.bind(env);
 
     for i in 0..tabs_len {
-        let tab: Value = env.call("aref", (tabs, i))?;
+        let tab = env.call(aref, (tabs, i))?;
 
-        let name_val: Value = env.call("plist-get", (tab, kw_name.bind(env)))?;
-        let name: String = name_val.into_rust().unwrap_or_default();
+        let name: String = env.call(plist_get, (tab, kw_name))?.into_rust().unwrap_or_default();
 
-        let active_val: Value = env.call("plist-get", (tab, kw_active.bind(env)))?;
-        let active = active_val.is_not_nil() && !env.call("eq", (active_val, false_sym))?.is_not_nil();
+        let active_val = env.call(plist_get, (tab, kw_active))?;
+        let active = active_val.is_not_nil() && !active_val.eq(false_sym);
 
         parsed_tabs.push(TabInfo { name, active });
     }
@@ -916,8 +915,7 @@ fn configure_output_module(
     // We use a special marker to detect "not provided" vs nil
     let enabled_opt = if enabled.is_not_nil() {
         // Check if it's :unset (our marker for "not provided")
-        let eq_result: Value = env.call("eq", (enabled, kw_unset.bind(env)))?;
-        if eq_result.is_not_nil() {
+        if enabled.eq(kw_unset.bind(env)) {
             None
         } else {
             Some(true)
@@ -1012,16 +1010,15 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
 fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
     let mut parsed_keys = Vec::new();
 
-    let len_val: Value = env.call("length", (keys,))?;
-    let len: i64 = len_val.into_rust()?;
+    let len: i64 = env.call(length, (keys,))?.into_rust()?;
     let false_sym = kw_false.bind(env);
 
     for i in 0..len {
-        let key_spec: Value = env.call("aref", (keys, i))?;
+        let key_spec = env.call(aref, (keys, i))?;
 
         // Resolve keysym from Emacs key description using libxkbcommon.
         // Emacs passes either an integer (Unicode codepoint) or a string (key name).
-        let key_val = env.call("plist-get", (key_spec, kw_key.bind(env)))?;
+        let key_val = env.call(plist_get, (key_spec, kw_key))?;
         let keysym = if let Ok(codepoint) = key_val.into_rust::<i64>() {
             xkb::utf32_to_keysym(codepoint as u32)
         } else if let Ok(name) = key_val.into_rust::<String>() {
@@ -1043,21 +1040,14 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         }
 
         // Helper to check if a value is truthy (not nil and not :false)
-        let is_true = |v: Value| -> bool {
-            if !v.is_not_nil() {
-                return false;
-            }
-            let eq_result: Value = env.call("eq", (v, false_sym)).unwrap();
-            !eq_result.is_not_nil()
-        };
+        let is_true = |v: Value| -> bool { v.is_not_nil() && !v.eq(false_sym) };
 
         // Extract modifier flags
-        let ctrl_val: Value = env.call("plist-get", (key_spec, kw_ctrl.bind(env)))?;
-        let alt_val: Value = env.call("plist-get", (key_spec, kw_alt.bind(env)))?;
-        let shift_val: Value = env.call("plist-get", (key_spec, kw_shift.bind(env)))?;
-        let super_val: Value = env.call("plist-get", (key_spec, kw_super.bind(env)))?;
-        let is_fs_toggle_val: Value =
-            env.call("plist-get", (key_spec, kw_is_fullscreen_toggle.bind(env)))?;
+        let ctrl_val = env.call(plist_get, (key_spec, kw_ctrl))?;
+        let alt_val = env.call(plist_get, (key_spec, kw_alt))?;
+        let shift_val = env.call(plist_get, (key_spec, kw_shift))?;
+        let super_val = env.call(plist_get, (key_spec, kw_super))?;
+        let is_fs_toggle_val = env.call(plist_get, (key_spec, kw_is_fullscreen_toggle))?;
 
         parsed_keys.push(InterceptedKey {
             keysym: keysym.raw(),
@@ -1146,11 +1136,11 @@ fn configure_idle_module(timeout: Option<i64>, action: Option<String>) -> Result
 fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
     use crate::input;
 
-    let len: i64 = env.call("length", (configs,))?.into_rust()?;
+    let len: i64 = env.call(length, (configs,))?.into_rust()?;
     let mut entries = Vec::new();
 
     for i in 0..len {
-        let plist: Value = env.call("aref", (configs, i))?;
+        let plist = env.call(aref, (configs, i))?;
         let mut entry = input::InputConfigEntry::default();
 
         // Walk plist key/value pairs. The match arms ARE the schema:
