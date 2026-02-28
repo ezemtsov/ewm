@@ -38,6 +38,7 @@
 (declare-function ewm-set-selection-module "ewm-core")
 (declare-function ewm-output-layout-module "ewm-core")
 (declare-function ewm-close-module "ewm-core")
+(declare-function ewm-minimize-module "ewm-core")
 (declare-function ewm-warp-pointer-module "ewm-core")
 (declare-function ewm-screenshot-module "ewm-core")
 (declare-function ewm-get-debug-state-module "ewm-core")
@@ -195,6 +196,7 @@ Called with one argument: t when entering idle, nil when waking.")
     (pcase type
       ("new" (ewm--handle-new-surface event))
       ("close" (ewm--handle-close-surface event))
+      ("minimize" (ewm--handle-minimize-surface event))
       ("title" (ewm--handle-title-update event))
       ("focus" (ewm--handle-focus event))
       ("output_detected" (ewm--handle-output-detected event))
@@ -270,6 +272,15 @@ Kills the surface buffer."
                        #'ewm--kill-buffer-query-function t))
         (kill-buffer buf))
       (remhash id ewm--surfaces))))
+
+(defun ewm--handle-minimize-surface (event)
+  "Handle minimize surface EVENT.
+Buries the surface buffer, causing it to be hidden by the layout system."
+  (pcase-let (((map ("id" id)) event))
+    (when-let ((buf (gethash id ewm--surfaces)))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (bury-buffer))))))
 
 ;;; Shell CWD tracking
 

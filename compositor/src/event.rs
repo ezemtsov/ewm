@@ -61,6 +61,9 @@ pub enum Event {
     /// Surface closed
     #[serde(rename = "close")]
     Close { id: u32 },
+    /// Surface minimize requested
+    #[serde(rename = "minimize")]
+    Minimize { id: u32 },
     /// Surface title changed
     #[serde(rename = "title")]
     Title { id: u32, app: String, title: String },

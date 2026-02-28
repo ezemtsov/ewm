@@ -157,6 +157,9 @@ pub enum ModuleCommand {
     Close {
         id: u32,
     },
+    Minimize {
+        id: u32,
+    },
     Focus {
         id: u32,
     },
@@ -442,6 +445,10 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
         }
         Event::Close { id } => list(vec![
             cons("event", "close".into_lisp(env)?)?,
+            cons("id", (id as i64).into_lisp(env)?)?,
+        ]),
+        Event::Minimize { id } => list(vec![
+            cons("event", "minimize".into_lisp(env)?)?,
             cons("id", (id as i64).into_lisp(env)?)?,
         ]),
         Event::Title { id, app, title } => list(vec![

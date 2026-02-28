@@ -3833,6 +3833,12 @@ impl XdgShellHandler for State {
         }
     }
 
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
+            module::push_event(Event::Minimize { id });
+        }
+    }
+
     fn grab(
         &mut self,
         surface: PopupSurface,
@@ -4140,6 +4146,12 @@ impl ForeignToplevelHandler for State {
     fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
             module::push_event(Event::UnfullscreenRequest { id });
+        }
+    }
+
+    fn minimize(&mut self, wl_surface: WlSurface) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
+            module::push_event(Event::Minimize { id });
         }
     }
 }
@@ -4678,6 +4690,12 @@ impl State {
                         toplevel.send_close();
                         info!("Close surface {} (sent close request)", id);
                     }
+                }
+            }
+            ModuleCommand::Minimize { id } => {
+                if self.ewm.id_windows.contains_key(&id) {
+                    module::push_event(event::Event::Minimize { id });
+                    info!("Minimize surface {} (sent event to Emacs)", id);
                 }
             }
             ModuleCommand::Focus { id } => {
