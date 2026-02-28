@@ -195,27 +195,6 @@ All `*-module` functions push to command queue:
 The focus debounce timer is for user experience (prevents flicker), not
 correctness. All state is synchronous via the module.
 
-## Minibuffer Handling
-
-No timers needed for minibuffer. Synchronous `redisplay t` ensures geometry
-is current before layout refresh:
-
-```elisp
-(defun ewm--on-minibuffer-setup ()
-  (setq ewm--pre-minibuffer-surface-id (ewm-get-focused-id))
-  (when-let ((frame-surface-id (frame-parameter (selected-frame) 'ewm-surface-id)))
-    (ewm-focus frame-surface-id))
-  (redisplay t)
-  (ewm-layout--refresh))
-
-(defun ewm--on-minibuffer-exit ()
-  (when ewm--pre-minibuffer-surface-id
-    (ewm-focus ewm--pre-minibuffer-surface-id)
-    (setq ewm--pre-minibuffer-surface-id nil))
-  (redisplay t)
-  (ewm-layout--refresh))
-```
-
 ## Benefits
 
 | Metric | Value |

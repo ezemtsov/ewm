@@ -86,24 +86,12 @@ converts to global positions using output geometry + working area offset."
          (height (- (pop edges) y))
          (fullscreen (window-parameter window 'ewm-fullscreen)))
     `(:x ,x :y ,y :w ,width :h ,height
-      :focused ,(if focused-p t :false)
-      :fullscreen ,(if fullscreen t :false))))
+         :focused ,(if focused-p t :false)
+         :fullscreen ,(if fullscreen t :false))))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes."
   (ewm-layout--refresh))
-
-(defun ewm--on-minibuffer-setup ()
-  "Resolve focus when minibuffer activates.
-Layout is not refreshed here because mini-window auto-resize
-happens during redisplay, after this hook runs.  The correction
-comes from `window-size-change-functions' on the next cycle."
-  (ewm--sync-focus))
-
-(defun ewm--on-minibuffer-exit ()
-  "Refresh layout and resolve focus when minibuffer exits."
-  (ewm-layout--refresh)
-  (ewm--sync-focus))
 
 (defun ewm--on-window-size-change (_frame)
   "Refresh layout when window sizes change.
@@ -143,18 +131,14 @@ buffer without changing the selected window."
   (add-hook 'window-configuration-change-hook #'ewm--window-config-change)
   (add-hook 'window-size-change-functions #'ewm--on-window-size-change)
   (add-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
-  (add-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change)
-  (add-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
-  (add-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
+  (add-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change))
 
 (defun ewm--disable-layout-sync ()
   "Disable automatic layout sync."
   (remove-hook 'window-configuration-change-hook #'ewm--window-config-change)
   (remove-hook 'window-size-change-functions #'ewm--on-window-size-change)
   (remove-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
-  (remove-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change)
-  (remove-hook 'minibuffer-setup-hook #'ewm--on-minibuffer-setup)
-  (remove-hook 'minibuffer-exit-hook #'ewm--on-minibuffer-exit))
+  (remove-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change))
 
 (provide 'ewm-layout)
 ;;; ewm-layout.el ends here
