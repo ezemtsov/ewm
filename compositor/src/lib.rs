@@ -504,76 +504,12 @@ fn unconstrain_with_padding(
     positioner.get_unconstrained_geometry(target)
 }
 
-/// Key identifier: either a keysym integer or a named key string
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum KeyId {
-    Keysym(u32),
-    Named(String),
-}
-
-impl KeyId {
-    /// Convert to keysym, mapping named keys to XKB keysyms
-    fn to_keysym(&self) -> Option<u32> {
-        match self {
-            KeyId::Keysym(k) => Some(*k),
-            KeyId::Named(name) => match name.as_str() {
-                // Arrow keys
-                "left" => Some(keysyms::KEY_Left),
-                "right" => Some(keysyms::KEY_Right),
-                "up" => Some(keysyms::KEY_Up),
-                "down" => Some(keysyms::KEY_Down),
-                // Navigation
-                "home" => Some(keysyms::KEY_Home),
-                "end" => Some(keysyms::KEY_End),
-                "prior" => Some(keysyms::KEY_Prior),
-                "next" => Some(keysyms::KEY_Next),
-                "insert" => Some(keysyms::KEY_Insert),
-                "delete" => Some(keysyms::KEY_Delete),
-                // Function keys
-                "f1" => Some(keysyms::KEY_F1),
-                "f2" => Some(keysyms::KEY_F2),
-                "f3" => Some(keysyms::KEY_F3),
-                "f4" => Some(keysyms::KEY_F4),
-                "f5" => Some(keysyms::KEY_F5),
-                "f6" => Some(keysyms::KEY_F6),
-                "f7" => Some(keysyms::KEY_F7),
-                "f8" => Some(keysyms::KEY_F8),
-                "f9" => Some(keysyms::KEY_F9),
-                "f10" => Some(keysyms::KEY_F10),
-                "f11" => Some(keysyms::KEY_F11),
-                "f12" => Some(keysyms::KEY_F12),
-                // Special keys
-                "AudioRaiseVolume" => Some(keysyms::KEY_XF86AudioRaiseVolume),
-                "AudioLowerVolume" => Some(keysyms::KEY_XF86AudioLowerVolume),
-                "AudioMicMute" => Some(keysyms::KEY_XF86AudioMicMute),
-                "AudioMute" => Some(keysyms::KEY_XF86AudioMute),
-                "AudioNext" => Some(keysyms::KEY_XF86AudioNext),
-                "AudioPause" => Some(keysyms::KEY_XF86AudioPause),
-                "AudioPlay" => Some(keysyms::KEY_XF86AudioPlay),
-                "AudioPrev" => Some(keysyms::KEY_XF86AudioPrev),
-                "MonBrightnessDown" => Some(keysyms::KEY_XF86MonBrightnessDown),
-                "MonBrightnessUp" => Some(keysyms::KEY_XF86MonBrightnessUp),
-                "return" => Some(keysyms::KEY_Return),
-                "print" => Some(keysyms::KEY_Print),
-                "display" => Some(keysyms::KEY_XF86Display),
-                "menu" => Some(keysyms::KEY_Menu),
-                "tab" => Some(keysyms::KEY_Tab),
-                "escape" => Some(keysyms::KEY_Escape),
-                "backspace" => Some(keysyms::KEY_BackSpace),
-                _ => {
-                    warn!("Unknown key name: {}", name);
-                    None
-                }
-            },
-        }
-    }
-}
-
-/// Intercepted key: key + required modifiers (sent pre-parsed from Emacs)
+/// Intercepted key: resolved keysym + required modifiers.
+/// Keysyms are resolved from Emacs key descriptions at registration time
+/// using libxkbcommon (via Smithay's re-export).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InterceptedKey {
-    pub key: KeyId,
+    pub keysym: u32,
     #[serde(default)]
     pub ctrl: bool,
     #[serde(default)]
@@ -593,16 +529,11 @@ pub struct InterceptedKey {
 impl InterceptedKey {
     /// Check if this key matches the given keysym and modifiers
     pub fn matches(&self, keysym: u32, mods: &ModifiersState) -> bool {
-        let target_keysym = match self.key.to_keysym() {
-            Some(k) => k,
-            None => return false,
-        };
-
         // Handle case-insensitive letter matching (A-Z vs a-z)
-        let keysym_match = target_keysym == keysym
+        let keysym_match = self.keysym == keysym
             || (keysym >= keysyms::KEY_A
                 && keysym <= keysyms::KEY_Z
-                && target_keysym == keysym - keysyms::KEY_A + keysyms::KEY_a);
+                && self.keysym == keysym - keysyms::KEY_A + keysyms::KEY_a);
 
         keysym_match
             && self.ctrl == mods.ctrl

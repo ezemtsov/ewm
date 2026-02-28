@@ -48,7 +48,9 @@ use std::thread::{self, JoinHandle};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::event::Event;
-use crate::{InterceptedKey, KeyId, LayoutEntry};
+use smithay::input::keyboard::{keysyms, xkb};
+
+use crate::{InterceptedKey, LayoutEntry};
 
 // ============================================================================
 // Shared State (read by Emacs, written by compositor)
@@ -890,6 +892,72 @@ fn configure_output_module(
     Ok(())
 }
 
+/// Emacs key names that don't round-trip through simple transformations.
+/// Emacs lowercases and replaces underscores with hyphens, but also compounds
+/// words (e.g., XKB "ISO_Left_Tab" → Emacs "iso-lefttab"), losing word boundaries.
+const EMACS_TO_XKB_NAMES: &[(&str, &str)] = &[
+    ("iso-lefttab", "ISO_Left_Tab"),
+    ("iso-move-line-up", "ISO_Move_Line_Up"),
+    ("iso-move-line-down", "ISO_Move_Line_Down"),
+    ("iso-partial-line-up", "ISO_Partial_Line_Up"),
+    ("iso-partial-line-down", "ISO_Partial_Line_Down"),
+    ("iso-partial-space-left", "ISO_Partial_Space_Left"),
+    ("iso-partial-space-right", "ISO_Partial_Space_Right"),
+    ("iso-set-margin-left", "ISO_Set_Margin_Left"),
+    ("iso-set-margin-right", "ISO_Set_Margin_Right"),
+    ("iso-release-margin-left", "ISO_Release_Margin_Left"),
+    ("iso-release-margin-right", "ISO_Release_Margin_Right"),
+    ("iso-release-both-margins", "ISO_Release_Both_Margins"),
+    ("iso-fast-cursor-left", "ISO_Fast_Cursor_Left"),
+    ("iso-fast-cursor-right", "ISO_Fast_Cursor_Right"),
+    ("iso-fast-cursor-up", "ISO_Fast_Cursor_Up"),
+    ("iso-fast-cursor-down", "ISO_Fast_Cursor_Down"),
+    ("iso-continuous-underline", "ISO_Continuous_Underline"),
+    ("iso-discontinuous-underline", "ISO_Discontinuous_Underline"),
+    ("iso-emphasize", "ISO_Emphasize"),
+    ("iso-center-object", "ISO_Center_Object"),
+    ("iso-enter", "ISO_Enter"),
+];
+
+/// Resolve an Emacs key name to an XKB keysym.
+/// Handles: case differences (Emacs "left" → XKB "Left"),
+/// hyphens vs underscores (Emacs "kp-add" → XKB "KP_Add"),
+/// XF86 prefix (Emacs "AudioMute" → XKB "XF86AudioMute"),
+/// and compound-word lossy names via fallback table.
+fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
+    let no_symbol: xkb::Keysym = keysyms::KEY_NoSymbol.into();
+
+    // Try the name as-is (case-insensitive)
+    let sym = xkb::keysym_from_name(name, xkb::KEYSYM_CASE_INSENSITIVE);
+    if sym != no_symbol {
+        return sym;
+    }
+
+    // Try with hyphens replaced by underscores (Emacs convention → XKB convention)
+    if name.contains('-') {
+        let underscored = name.replace('-', "_");
+        let sym = xkb::keysym_from_name(&underscored, xkb::KEYSYM_CASE_INSENSITIVE);
+        if sym != no_symbol {
+            return sym;
+        }
+    }
+
+    // Try with XF86 prefix (Emacs strips it for media keys)
+    let xf86_name = format!("XF86{}", name);
+    let sym = xkb::keysym_from_name(&xf86_name, xkb::KEYSYM_CASE_INSENSITIVE);
+    if sym != no_symbol {
+        return sym;
+    }
+
+    // Fallback: Emacs compounds words in some key names, losing word boundaries.
+    // Use a static table for these lossy mappings.
+    if let Some((_, xkb_name)) = EMACS_TO_XKB_NAMES.iter().find(|(emacs, _)| *emacs == name) {
+        return xkb::keysym_from_name(xkb_name, xkb::KEYSYM_NO_FLAGS);
+    }
+
+    no_symbol
+}
+
 /// Set intercepted keys (module mode).
 /// KEYS is a vector of plists with :key :ctrl :alt :shift :super keys.
 #[defun]
@@ -903,15 +971,28 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
     for i in 0..len {
         let key_spec: Value = env.call("aref", (keys, i))?;
 
-        // Extract :key (can be integer or string)
+        // Resolve keysym from Emacs key description using libxkbcommon.
+        // Emacs passes either an integer (Unicode codepoint) or a string (key name).
         let key_val: Value = env.call("plist-get", (key_spec, env.intern(":key")?))?;
-        let key = if let Ok(k) = key_val.into_rust::<i64>() {
-            KeyId::Keysym(k as u32)
-        } else if let Ok(s) = key_val.into_rust::<String>() {
-            KeyId::Named(s)
+        let keysym = if let Ok(codepoint) = key_val.into_rust::<i64>() {
+            xkb::utf32_to_keysym(codepoint as u32)
+        } else if let Ok(name) = key_val.into_rust::<String>() {
+            resolve_keysym_from_name(&name)
         } else {
             continue; // Skip invalid keys
         };
+
+        if keysym == keysyms::KEY_NoSymbol.into() {
+            let desc = if let Ok(v) = key_val.into_rust::<i64>() {
+                format!("codepoint {}", v)
+            } else if let Ok(v) = key_val.into_rust::<String>() {
+                format!("name {:?}", v)
+            } else {
+                "unknown".to_string()
+            };
+            tracing::warn!("Could not resolve keysym for key {}, skipping", desc);
+            continue;
+        }
 
         // Helper to check if a value is truthy (not nil and not :false)
         let is_true = |v: Value| -> bool {
@@ -932,7 +1013,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
             env.call("plist-get", (key_spec, env.intern(":is-fullscreen-toggle")?))?;
 
         parsed_keys.push(InterceptedKey {
-            key,
+            keysym: keysym.raw(),
             ctrl: is_true(ctrl_val),
             alt: is_true(alt_val),
             shift: is_true(shift_val),
