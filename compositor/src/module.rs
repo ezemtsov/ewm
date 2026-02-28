@@ -124,7 +124,7 @@ pub fn get_in_prefix_sequence() -> bool {
 
 /// Query focused surface ID (called by Emacs on every post-command-hook).
 #[defun]
-fn get_focused_id(_: &Env) -> Result<i64> {
+fn get_focused_id() -> Result<i64> {
     Ok(shared_state().lock().unwrap().focused_surface_id as i64)
 }
 
@@ -300,7 +300,7 @@ pub fn push_activation_token(token: String) {
 /// Returns a token string that can be set as XDG_ACTIVATION_TOKEN env var.
 /// If the pool is empty, requests one from the compositor and waits briefly.
 #[defun]
-fn create_activation_token(_: &Env) -> Result<Option<String>> {
+fn create_activation_token() -> Result<Option<String>> {
     // Try to get from pool first
     {
         let mut pool = activation_token_pool().lock().unwrap();
@@ -614,13 +614,13 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
 
 /// Test function - returns a greeting
 #[defun]
-fn hello(_: &Env) -> Result<String> {
+fn hello() -> Result<String> {
     Ok("Hello from EWM compositor!".to_string())
 }
 
 /// Return the module version
 #[defun]
-fn version(_: &Env) -> Result<String> {
+fn version() -> Result<String> {
     Ok(env!("CARGO_PKG_VERSION").to_string())
 }
 
@@ -666,7 +666,7 @@ fn init_logging() {
 /// Must be called from a TTY (not inside another compositor).
 /// Returns t if started successfully, nil if already running.
 #[defun]
-fn start(_: &Env) -> Result<bool> {
+fn start() -> Result<bool> {
     use crate::backend::drm::run_drm;
 
     init_logging();
@@ -719,7 +719,7 @@ fn start(_: &Env) -> Result<bool> {
 /// Stop the compositor gracefully.
 /// Returns t if stop was requested, nil if compositor wasn't running.
 #[defun]
-fn stop(_: &Env) -> Result<bool> {
+fn stop() -> Result<bool> {
     let state = compositor_state().lock().unwrap();
 
     if !state.thread.as_ref().is_some_and(|t| !t.is_finished()) {
@@ -740,14 +740,14 @@ fn stop(_: &Env) -> Result<bool> {
 
 /// Check if compositor is running.
 #[defun]
-fn running(_: &Env) -> Result<bool> {
+fn running() -> Result<bool> {
     let state = compositor_state().lock().unwrap();
     Ok(state.thread.as_ref().is_some_and(|t| !t.is_finished()))
 }
 
 /// Get the Wayland display socket name (if compositor is running).
 #[defun]
-fn socket(_: &Env) -> Result<Option<String>> {
+fn socket() -> Result<Option<String>> {
     Ok(std::env::var("EWM_WAYLAND_DISPLAY").ok())
 }
 
@@ -836,35 +836,35 @@ fn output_layout_module(
 
 /// Request surface to close (module mode).
 #[defun]
-fn close_module(_: &Env, id: i64) -> Result<()> {
+fn close_module(id: i64) -> Result<()> {
     push_command(ModuleCommand::Close { id: id as u32 });
     Ok(())
 }
 
 /// Focus a surface (module mode).
 #[defun]
-fn focus_module(_: &Env, id: i64) -> Result<()> {
+fn focus_module(id: i64) -> Result<()> {
     push_command(ModuleCommand::Focus { id: id as u32 });
     Ok(())
 }
 
 /// Warp pointer to absolute position (module mode).
 #[defun]
-fn warp_pointer_module(_: &Env, x: f64, y: f64) -> Result<()> {
+fn warp_pointer_module(x: f64, y: f64) -> Result<()> {
     push_command(ModuleCommand::WarpPointer { x, y });
     Ok(())
 }
 
 /// Take a screenshot (module mode).
 #[defun]
-fn screenshot_module(_: &Env, path: Option<String>) -> Result<()> {
+fn screenshot_module(path: Option<String>) -> Result<()> {
     push_command(ModuleCommand::Screenshot { path });
     Ok(())
 }
 
 /// Prepare next frame for output (synchronous to avoid race with surface creation).
 #[defun]
-fn prepare_frame_module(_: &Env, output: String) -> Result<()> {
+fn prepare_frame_module(output: String) -> Result<()> {
     pending_frame_outputs().lock().unwrap().push(output.clone());
     tracing::info!("Prepared frame for output {}", output);
     Ok(())
@@ -1056,7 +1056,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
 /// SURFACE-ID identifies the target surface, used for queuing commits
 /// that arrive while the client is in a disable→enable gap.
 #[defun]
-fn im_commit_module(_: &Env, text: String, surface_id: i64) -> Result<()> {
+fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
     push_command(ModuleCommand::ImCommit {
         text,
         surface_id: surface_id as u32,
@@ -1067,7 +1067,7 @@ fn im_commit_module(_: &Env, text: String, surface_id: i64) -> Result<()> {
 /// Enable/disable text input interception (module mode).
 /// ENABLED should be t or nil.
 #[defun]
-fn text_input_intercept_module(_: &Env, enabled: Value<'_>) -> Result<()> {
+fn text_input_intercept_module(enabled: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::TextInputIntercept {
         enabled: enabled.is_not_nil(),
     });
@@ -1076,28 +1076,28 @@ fn text_input_intercept_module(_: &Env, enabled: Value<'_>) -> Result<()> {
 
 /// Switch to named XKB layout (module mode).
 #[defun]
-fn switch_layout_module(_: &Env, layout: String) -> Result<()> {
+fn switch_layout_module(layout: String) -> Result<()> {
     push_command(ModuleCommand::SwitchLayout { layout });
     Ok(())
 }
 
 /// Get current XKB layouts (module mode).
 #[defun]
-fn get_layouts_module(_: &Env) -> Result<()> {
+fn get_layouts_module() -> Result<()> {
     push_command(ModuleCommand::GetLayouts);
     Ok(())
 }
 
 /// Request verbose compositor state dump for debugging (module mode).
 #[defun]
-fn get_debug_state_module(_: &Env) -> Result<()> {
+fn get_debug_state_module() -> Result<()> {
     push_command(ModuleCommand::GetDebugState);
     Ok(())
 }
 
 /// Set clipboard selection from Emacs (module mode).
 #[defun]
-fn set_selection_module(_: &Env, text: String) -> Result<()> {
+fn set_selection_module(text: String) -> Result<()> {
     push_command(ModuleCommand::SetSelection { text });
     Ok(())
 }
@@ -1106,7 +1106,7 @@ fn set_selection_module(_: &Env, text: String) -> Result<()> {
 /// TIMEOUT is seconds of inactivity (nil to disable).
 /// ACTION is "blank" for monitor off, or a shell command string.
 #[defun]
-fn configure_idle_module(_: &Env, timeout: Option<i64>, action: Option<String>) -> Result<()> {
+fn configure_idle_module(timeout: Option<i64>, action: Option<String>) -> Result<()> {
     let timeout_secs = timeout.and_then(|t| if t > 0 { Some(t as u64) } else { None });
     push_command(ModuleCommand::ConfigureIdle {
         timeout_secs,
@@ -1251,7 +1251,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
 /// Toggle debug mode for verbose logging.
 /// Returns new debug mode state (t or nil).
 #[defun]
-fn debug_mode_module(_: &Env, enabled: Option<Value<'_>>) -> Result<bool> {
+fn debug_mode_module(enabled: Option<Value<'_>>) -> Result<bool> {
     let new_state = match enabled {
         Some(v) => v.is_not_nil(),
         None => !DEBUG_MODE.load(Ordering::Relaxed),
@@ -1267,19 +1267,19 @@ fn debug_mode_module(_: &Env, enabled: Option<Value<'_>>) -> Result<bool> {
 
 /// Check if debug mode is enabled.
 #[defun]
-fn debug_mode_p(_: &Env) -> Result<bool> {
+fn debug_mode_p() -> Result<bool> {
     Ok(DEBUG_MODE.load(Ordering::Relaxed))
 }
 
 /// Query prefix sequence state (called by Emacs before focus sync).
 #[defun]
-fn in_prefix_sequence_p(_: &Env) -> Result<bool> {
+fn in_prefix_sequence_p() -> Result<bool> {
     Ok(IN_PREFIX_SEQUENCE.load(Ordering::Relaxed))
 }
 
 /// Clear prefix sequence flag (called by Emacs when command completes).
 #[defun]
-fn clear_prefix_sequence(_: &Env) -> Result<()> {
+fn clear_prefix_sequence() -> Result<()> {
     IN_PREFIX_SEQUENCE.store(false, Ordering::Relaxed);
     Ok(())
 }
