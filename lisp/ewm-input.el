@@ -238,20 +238,37 @@ user action."
       (ewm-clear-prefix-sequence)
       (ewm--sync-focus))))
 
+;;; Frame-switch suppression
+;;
+;; `handle-switch-frame' fires when PGTK's `pgtk_focus_frame' updates GDK
+;; state during `select-frame'.  In multi-output setups this targets the
+;; wrong frame, overriding compositor click-to-focus.  Suppress it entirely
+;; — EWM owns frame selection via `ewm--handle-focus'.  Same pattern as
+;; EXWM suppressing `handle-focus-in'/`handle-focus-out'.
+
+(defun ewm-input--suppress-switch-frame (orig-fn event)
+  "Suppress `handle-switch-frame' when EWM is active.
+EWM owns frame selection via `ewm--handle-focus'."
+  (unless ewm--module-mode
+    (funcall orig-fn event)))
+
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
   (add-hook 'post-command-hook #'ewm-input--clear-prefix)
   ;; Mouse-follows-focus hooks
   (advice-add 'select-window :after #'ewm-input--on-select-window)
-  (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame))
+  (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame)
+  ;; Suppress GDK-triggered frame switching (compositor handles this)
+  (advice-add 'handle-switch-frame :around #'ewm-input--suppress-switch-frame))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
   (remove-hook 'post-command-hook #'ewm-input--clear-prefix)
   (advice-remove 'select-window #'ewm-input--on-select-window)
-  (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame))
+  (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame)
+  (advice-remove 'handle-switch-frame #'ewm-input--suppress-switch-frame))
 
 ;;; Key scanning and interception
 

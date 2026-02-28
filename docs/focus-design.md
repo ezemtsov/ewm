@@ -128,6 +128,16 @@ Focus suppression in `ewm--focus-target`:
    `ewm--sync-focus` to restore focus. When no prefix sequence is active,
    it's a no-op — other hooks handle normal focus changes.
 
+### Frame-Switch Suppression
+
+PGTK's `pgtk_focus_frame` updates GDK state when `select-frame` is called
+(in `ewm--handle-focus`), generating `handle-switch-frame` events that target
+the wrong frame in multi-output setups. This overrides compositor click-to-focus.
+
+Fix: suppress `handle-switch-frame` via `:around` advice when EWM is active.
+Same pattern as EXWM suppressing `handle-focus-in`/`handle-focus-out`
+(exwm-workspace.el).
+
 ### Mouse-Follows-Focus
 
 When `ewm-mouse-follows-focus` is enabled, the pointer warps to the center of a
@@ -198,6 +208,7 @@ Source: [refocus.mmd](diagrams/refocus.mmd)
 - `ewm--handle-focus(event)`: Handle Focus event from compositor. Guarded by `ewm--minibuffer-active-p`. Finds the correct window using `ewm-input--pointer-in-window-p` when multiple windows show the same buffer. Falls back to `pop-to-buffer-same-window` when no window displays the buffer.
 - `ewm--sync-focus`: Computes focus target via `ewm--focus-target`, deduplicates against current compositor focus, sends `ewm-focus` only when changed. Called from window/buffer change hooks and `ewm-input--clear-prefix`.
 - `ewm-input--clear-prefix`: `post-command-hook` handler. Only acts during prefix sequences: clears flag, calls `ewm--sync-focus` to restore focus. No-op otherwise.
+- `ewm-input--suppress-switch-frame`: `:around` advice on `handle-switch-frame`. Suppresses it when `ewm--module-mode` is active — EWM owns frame selection.
 - `ewm--focus-target`: Returns target surface ID, or nil to suppress sync during prefix sequences, prefix args, or transient keymaps. During minibuffer, returns the frame's surface ID.
 - `ewm--minibuffer-active-p`: Guard used by event handlers (Focus, New surface, ActivateWorkspace) to prevent focus-stealing from minibuffer.
 - `ewm--on-window-selection-change`: `window-selection-change-functions` handler, sends layouts and syncs focus whenever selected window changes.
