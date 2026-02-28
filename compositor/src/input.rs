@@ -43,10 +43,8 @@ fn notify_activity(state: &mut State) {
 /// What the keyboard filter decided to do with an intercepted key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InterceptKind {
-    /// Prefix key (C-x) — hold focus on Emacs across the sequence
-    Prefix,
-    /// Non-prefix intercepted key (s-v) — redirect then restore focus immediately
-    NonPrefix,
+    /// Intercepted key — hold focus on Emacs, let post-command-hook restore
+    Redirect,
     /// Kill combo (Super+Shift+E)
     Kill,
     /// Text input intercept — printable key for Emacs IM processing
@@ -242,16 +240,13 @@ pub fn handle_keyboard_event(
                 }
 
                 if !focus_on_emacs {
-                    if ik.is_prefix {
-                        // Prefix key: hold focus on Emacs across the sequence.
-                        // Emacs clears the flag via post-command-hook.
-                        module::set_in_prefix_sequence(true);
-                        return FilterResult::Intercept((InterceptKind::Prefix, keysym_raw, None));
-                    } else {
-                        // Non-prefix: redirect, send key, restore immediately.
-                        // Code 7 tells the post-filter to restore focus.
-                        return FilterResult::Intercept((InterceptKind::NonPrefix, keysym_raw, None));
-                    }
+                    // Redirect focus to Emacs for this key. Set the prefix flag
+                    // so post-command-hook restores focus after the command
+                    // completes. For true prefix keys (C-x) the flag persists
+                    // across the whole sequence; for single-shot keys (s-v) it
+                    // is cleared immediately by the next post-command cycle.
+                    module::set_in_prefix_sequence(true);
+                    return FilterResult::Intercept((InterceptKind::Redirect, keysym_raw, None));
                 }
                 // Intercepted key but already on Emacs - just forward
                 return FilterResult::Forward;
@@ -304,25 +299,14 @@ pub fn handle_keyboard_event(
         }
     }
 
-    // Prefix and NonPrefix both redirect the key to Emacs.
-    // NonPrefix restores focus immediately so the surface never visibly loses it.
-    let intercept_kind = filter_result.as_ref().map(|(k, _, _)| *k);
-    if intercept_kind == Some(InterceptKind::Prefix)
-        || intercept_kind == Some(InterceptKind::NonPrefix)
-    {
-        let is_prefix = intercept_kind == Some(InterceptKind::Prefix);
+    if filter_result.as_ref().map(|(k, _, _)| *k) == Some(InterceptKind::Redirect) {
         let keysym_val = filter_result.as_ref().map(|(_, k, _)| *k).unwrap_or(0);
         tracing::info!(
-            "intercept_redirect: keycode={} keysym=0x{:x} prefix={} from surface {}",
+            "intercept_redirect: keycode={} keysym=0x{:x} from surface {}",
             keycode,
             keysym_val,
-            is_prefix,
             state.ewm.focused_surface_id
         );
-
-        // Save original focus for non-prefix restore
-        let original_id = state.ewm.focused_surface_id;
-        let original_focus = state.ewm.keyboard_focus.clone();
 
         if let Some(emacs_id) = state.ewm.get_emacs_surface_for_focused_output() {
             let context = format!("keycode={} keysym=0x{:x}", keycode, keysym_val);
@@ -334,6 +318,13 @@ pub fn handle_keyboard_event(
                     let emacs_surface: WlSurface = surface.into_owned();
                     state.ewm.keyboard_focus = Some(emacs_surface.clone());
                     keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
+
+                    // NOTE: We intentionally do NOT send a Focus event here.
+                    // The prefix key redirect is temporary for the key sequence,
+                    // and sending Focus would cause ewm-layout--refresh to
+                    // redirect focus back to the external surface before the
+                    // sequence completes (race condition with C-x left/right etc).
+                    // Emacs frames handle their own focus via Wayland protocol.
 
                     // Temporarily switch to base layout so the re-sent key
                     // produces Latin keysyms for Emacs keybindings.
@@ -354,31 +345,13 @@ pub fn handle_keyboard_event(
                         |_, _, _| FilterResult::Forward,
                     );
 
-                    // Restore XKB layout
+                    // Restore layout — external surface keeps its layout
                     if saved_layout != 0 {
                         keyboard.with_xkb_state(state, |mut context| {
                             context.set_layout(smithay::input::keyboard::Layout(
                                 saved_layout as u32,
                             ));
                         });
-                    }
-
-                    // Non-prefix: restore focus immediately. The leave+enter
-                    // messages are batched in the same Wayland flush, so the
-                    // client processes them back-to-back without visible flicker.
-                    if !is_prefix {
-                        state.ewm.focused_surface_id = original_id;
-                        state.ewm.keyboard_focus = original_focus;
-                        state.ewm.keyboard_focus_dirty = false;
-                        if let Some(window) = state.ewm.id_windows.get(&original_id) {
-                            if let Some(surface) = window.wl_surface() {
-                                keyboard.set_focus(
-                                    state,
-                                    Some(surface.into_owned()),
-                                    serial,
-                                );
-                            }
-                        }
                     }
                 }
             }
