@@ -38,7 +38,7 @@
 //! per compositor tick in `update_shared_state()`. This gives consistent
 //! snapshots without scattered atomics.
 
-use emacs::{defun, use_symbols, Env, IntoLisp, Result, Value};
+use emacs::{define_errors, defun, use_symbols, Env, IntoLisp, Result, Value};
 
 // Cached Lisp symbols used in hot-path defuns (interning on every call is wasteful).
 use_symbols! {
@@ -64,6 +64,13 @@ use_symbols! {
     // configure_output_module: marker for "not provided" (distinct from nil)
     kw_unset  => ":unset"
 }
+
+define_errors! {
+    ewm_input_error        "EWM input configuration error"
+    ewm_input_invalid_value "Invalid value for input config key" (ewm_input_error)
+    ewm_input_unknown_key  "Unknown input config key"            (ewm_input_error)
+}
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1166,7 +1173,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         match input::DeviceType::parse(&s) {
                             Some(dt) => entry.device_type = Some(dt),
                             None => env.signal(
-                                "error",
+                                ewm_input_invalid_value,
                                 (format!("Invalid :type \"{s}\", expected: touchpad, mouse, trackball, trackpoint, keyboard"),),
                             )?,
                         }
@@ -1188,7 +1195,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         match input::parse_accel_profile(&s) {
                             Some(v) => entry.accel_profile = Some(v),
                             None => env.signal(
-                                "error",
+                                ewm_input_invalid_value,
                                 (format!("Invalid :accel-profile \"{s}\", expected: flat, adaptive"),),
                             )?,
                         }
@@ -1200,7 +1207,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         match input::parse_click_method(&s) {
                             Some(v) => entry.click_method = Some(v),
                             None => env.signal(
-                                "error",
+                                ewm_input_invalid_value,
                                 (format!("Invalid :click-method \"{s}\", expected: button-areas, clickfinger"),),
                             )?,
                         }
@@ -1212,7 +1219,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         match input::parse_scroll_method(&s) {
                             Some(v) => entry.scroll_method = Some(v),
                             None => env.signal(
-                                "error",
+                                ewm_input_invalid_value,
                                 (format!("Invalid :scroll-method \"{s}\", expected: no-scroll, two-finger, edge, on-button-down"),),
                             )?,
                         }
@@ -1224,7 +1231,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         match input::parse_tap_button_map(&s) {
                             Some(v) => entry.tap_button_map = Some(v),
                             None => env.signal(
-                                "error",
+                                ewm_input_invalid_value,
                                 (format!("Invalid :tap-button-map \"{s}\", expected: left-right-middle, left-middle-right"),),
                             )?,
                         }
@@ -1251,7 +1258,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                     }
                 }
                 _ => env.signal(
-                    "error",
+                    ewm_input_unknown_key,
                     (format!("Unknown input config key {key}"),),
                 )?,
             }
