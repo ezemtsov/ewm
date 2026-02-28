@@ -38,7 +38,32 @@
 //! per compositor tick in `update_shared_state()`. This gives consistent
 //! snapshots without scattered atomics.
 
-use emacs::{defun, Env, IntoLisp, Result, Value};
+use emacs::{defun, use_symbols, Env, IntoLisp, Result, Value};
+
+// Cached Lisp symbols used in hot-path defuns (interning on every call is wasteful).
+use_symbols! {
+    // Boolean sentinel: Emacs uses :false to pass an explicit false through the module interface,
+    // since nil is indistinguishable from "argument absent".
+    kw_false => ":false"
+    // output_layout_module / intercept_keys_module plist keys
+    kw_id          => ":id"
+    kw_x           => ":x"
+    kw_y           => ":y"
+    kw_w           => ":w"
+    kw_h           => ":h"
+    kw_focused     => ":focused"
+    kw_fullscreen  => ":fullscreen"
+    kw_key         => ":key"
+    kw_ctrl        => ":ctrl"
+    kw_alt         => ":alt"
+    kw_shift       => ":shift"
+    kw_super       => ":super"
+    kw_is_fullscreen_toggle => ":is-fullscreen-toggle"
+    kw_name   => ":name"
+    kw_active => ":active"
+    // configure_output_module: marker for "not provided" (distinct from nil)
+    kw_unset  => ":unset"
+}
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -773,27 +798,23 @@ fn output_layout_module(
     for i in 0..len {
         let entry: Value = env.call("aref", (surfaces, i))?;
 
-        let id_val: Value = env.call("plist-get", (entry, env.intern(":id")?))?;
-        let x_val: Value = env.call("plist-get", (entry, env.intern(":x")?))?;
-        let y_val: Value = env.call("plist-get", (entry, env.intern(":y")?))?;
-        let w_val: Value = env.call("plist-get", (entry, env.intern(":w")?))?;
-        let h_val: Value = env.call("plist-get", (entry, env.intern(":h")?))?;
+        let id_val: Value = env.call("plist-get", (entry, kw_id.bind(env)))?;
+        let x_val: Value = env.call("plist-get", (entry, kw_x.bind(env)))?;
+        let y_val: Value = env.call("plist-get", (entry, kw_y.bind(env)))?;
+        let w_val: Value = env.call("plist-get", (entry, kw_w.bind(env)))?;
+        let h_val: Value = env.call("plist-get", (entry, kw_h.bind(env)))?;
         let id: i64 = id_val.into_rust()?;
         let x: i64 = x_val.into_rust()?;
         let y: i64 = y_val.into_rust()?;
         let w: i64 = w_val.into_rust()?;
         let h: i64 = h_val.into_rust()?;
 
-        let focused_val: Value = env.call("plist-get", (entry, env.intern(":focused")?))?;
-        let false_sym = env.intern(":false")?;
-        let eq_result: Value = env.call("eq", (focused_val, false_sym))?;
-        let is_false = eq_result.is_not_nil();
-        let focused = focused_val.is_not_nil() && !is_false;
+        let false_sym = kw_false.bind(env);
+        let focused_val: Value = env.call("plist-get", (entry, kw_focused.bind(env)))?;
+        let focused = focused_val.is_not_nil() && !env.call("eq", (focused_val, false_sym))?.is_not_nil();
 
-        let fullscreen_val: Value = env.call("plist-get", (entry, env.intern(":fullscreen")?))?;
-        let eq_result_fs: Value = env.call("eq", (fullscreen_val, false_sym))?;
-        let is_false_fs = eq_result_fs.is_not_nil();
-        let fullscreen = fullscreen_val.is_not_nil() && !is_false_fs;
+        let fullscreen_val: Value = env.call("plist-get", (entry, kw_fullscreen.bind(env)))?;
+        let fullscreen = fullscreen_val.is_not_nil() && !env.call("eq", (fullscreen_val, false_sym))?.is_not_nil();
 
         entries.push(LayoutEntry {
             id: id as u32,
@@ -810,18 +831,16 @@ fn output_layout_module(
     let mut parsed_tabs = Vec::new();
     let tabs_len_val: Value = env.call("length", (tabs,))?;
     let tabs_len: i64 = tabs_len_val.into_rust()?;
-    let false_sym = env.intern(":false")?;
+    let false_sym = kw_false.bind(env);
 
     for i in 0..tabs_len {
         let tab: Value = env.call("aref", (tabs, i))?;
 
-        let name_val: Value = env.call("plist-get", (tab, env.intern(":name")?))?;
+        let name_val: Value = env.call("plist-get", (tab, kw_name.bind(env)))?;
         let name: String = name_val.into_rust().unwrap_or_default();
 
-        let active_val: Value = env.call("plist-get", (tab, env.intern(":active")?))?;
-        let eq_result: Value = env.call("eq", (active_val, false_sym))?;
-        let is_false = eq_result.is_not_nil();
-        let active = active_val.is_not_nil() && !is_false;
+        let active_val: Value = env.call("plist-get", (tab, kw_active.bind(env)))?;
+        let active = active_val.is_not_nil() && !env.call("eq", (active_val, false_sym))?.is_not_nil();
 
         parsed_tabs.push(TabInfo { name, active });
     }
@@ -890,8 +909,7 @@ fn configure_output_module(
     // We use a special marker to detect "not provided" vs nil
     let enabled_opt = if enabled.is_not_nil() {
         // Check if it's :unset (our marker for "not provided")
-        let unset_sym = env.intern(":unset")?;
-        let eq_result: Value = env.call("eq", (enabled, unset_sym))?;
+        let eq_result: Value = env.call("eq", (enabled, kw_unset.bind(env)))?;
         if eq_result.is_not_nil() {
             None
         } else {
@@ -989,14 +1007,14 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
 
     let len_val: Value = env.call("length", (keys,))?;
     let len: i64 = len_val.into_rust()?;
-    let false_sym = env.intern(":false")?;
+    let false_sym = kw_false.bind(env);
 
     for i in 0..len {
         let key_spec: Value = env.call("aref", (keys, i))?;
 
         // Resolve keysym from Emacs key description using libxkbcommon.
         // Emacs passes either an integer (Unicode codepoint) or a string (key name).
-        let key_val: Value = env.call("plist-get", (key_spec, env.intern(":key")?))?;
+        let key_val = env.call("plist-get", (key_spec, kw_key.bind(env)))?;
         let keysym = if let Ok(codepoint) = key_val.into_rust::<i64>() {
             xkb::utf32_to_keysym(codepoint as u32)
         } else if let Ok(name) = key_val.into_rust::<String>() {
@@ -1027,12 +1045,12 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         };
 
         // Extract modifier flags
-        let ctrl_val: Value = env.call("plist-get", (key_spec, env.intern(":ctrl")?))?;
-        let alt_val: Value = env.call("plist-get", (key_spec, env.intern(":alt")?))?;
-        let shift_val: Value = env.call("plist-get", (key_spec, env.intern(":shift")?))?;
-        let super_val: Value = env.call("plist-get", (key_spec, env.intern(":super")?))?;
+        let ctrl_val: Value = env.call("plist-get", (key_spec, kw_ctrl.bind(env)))?;
+        let alt_val: Value = env.call("plist-get", (key_spec, kw_alt.bind(env)))?;
+        let shift_val: Value = env.call("plist-get", (key_spec, kw_shift.bind(env)))?;
+        let super_val: Value = env.call("plist-get", (key_spec, kw_super.bind(env)))?;
         let is_fs_toggle_val: Value =
-            env.call("plist-get", (key_spec, env.intern(":is-fullscreen-toggle")?))?;
+            env.call("plist-get", (key_spec, kw_is_fullscreen_toggle.bind(env)))?;
 
         parsed_keys.push(InterceptedKey {
             keysym: keysym.raw(),
