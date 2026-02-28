@@ -63,13 +63,34 @@ use_symbols! {
     kw_active => ":active"
     // configure_output_module: marker for "not provided" (distinct from nil)
     kw_unset  => ":unset"
+    // configure_input_module plist property names
+    kw_device          => ":device"
+    kw_type            => ":type"
+    kw_natural_scroll  => ":natural-scroll"
+    kw_tap             => ":tap"
+    kw_dwt             => ":dwt"
+    kw_left_handed     => ":left-handed"
+    kw_middle_emulation => ":middle-emulation"
+    kw_accel_speed     => ":accel-speed"
+    kw_accel_profile   => ":accel-profile"
+    kw_click_method    => ":click-method"
+    kw_scroll_method   => ":scroll-method"
+    kw_tap_button_map  => ":tap-button-map"
+    kw_repeat_delay    => ":repeat-delay"
+    kw_repeat_rate     => ":repeat-rate"
+    kw_xkb_layouts     => ":xkb-layouts"
+    kw_xkb_options     => ":xkb-options"
 }
 
 // Cached Lisp function subrs used in hot-path defuns (interning string on every call is wasteful).
 emacs::global_refs! { __init_fn_refs__(init_to_function) =>
-    plist_get => "plist-get"
+    plist_get   => "plist-get"
     length
     aref
+    car
+    cadr
+    cddr
+    symbol_name => "symbol-name"
 }
 
 define_errors! {
@@ -1097,117 +1118,108 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
         let plist = env.call(aref, (configs, i))?;
         let mut entry = input::InputConfigEntry::default();
 
-        // Walk plist key/value pairs. The match arms ARE the schema:
-        // unknown keys hit the _ arm → error, wrong types → error.
+        // Walk plist key/value pairs. Compare the key symbol Value directly against
+        // cached GlobalRefs — avoids symbol-name → String → match on every iteration.
         let mut rest = plist;
         while rest.is_not_nil() {
-            let key: String =
-                env.call("symbol-name", (env.call("car", (rest,))?,))?.into_rust()?;
-            let val: Value = env.call("cadr", (rest,))?;
+            let key = env.call(car, (rest,))?;
+            let val = env.call(cadr, (rest,))?;
 
-            match key.as_str() {
-                ":device" => {
-                    if val.is_not_nil() {
-                        entry.device = Some(val.into_rust()?);
+            if key.eq(kw_device.bind(env)) {
+                if val.is_not_nil() {
+                    entry.device = Some(val.into_rust()?);
+                }
+            } else if key.eq(kw_type.bind(env)) {
+                if val.is_not_nil() {
+                    let s: String = val.into_rust()?;
+                    match input::DeviceType::parse(&s) {
+                        Some(dt) => entry.device_type = Some(dt),
+                        None => env.signal(
+                            ewm_input_invalid_value,
+                            (format!("Invalid :type \"{s}\", expected: touchpad, mouse, trackball, trackpoint, keyboard"),),
+                        )?,
                     }
                 }
-                ":type" => {
-                    if val.is_not_nil() {
-                        let s: String = val.into_rust()?;
-                        match input::DeviceType::parse(&s) {
-                            Some(dt) => entry.device_type = Some(dt),
-                            None => env.signal(
-                                ewm_input_invalid_value,
-                                (format!("Invalid :type \"{s}\", expected: touchpad, mouse, trackball, trackpoint, keyboard"),),
-                            )?,
-                        }
+            } else if key.eq(kw_natural_scroll.bind(env)) {
+                entry.natural_scroll = Some(val.is_not_nil());
+            } else if key.eq(kw_tap.bind(env)) {
+                entry.tap = Some(val.is_not_nil());
+            } else if key.eq(kw_dwt.bind(env)) {
+                entry.dwt = Some(val.is_not_nil());
+            } else if key.eq(kw_left_handed.bind(env)) {
+                entry.left_handed = Some(val.is_not_nil());
+            } else if key.eq(kw_middle_emulation.bind(env)) {
+                entry.middle_emulation = Some(val.is_not_nil());
+            } else if key.eq(kw_accel_speed.bind(env)) {
+                if val.is_not_nil() {
+                    entry.accel_speed = Some(val.into_rust()?);
+                }
+            } else if key.eq(kw_accel_profile.bind(env)) {
+                if val.is_not_nil() {
+                    let s: String = val.into_rust()?;
+                    match input::parse_accel_profile(&s) {
+                        Some(v) => entry.accel_profile = Some(v),
+                        None => env.signal(
+                            ewm_input_invalid_value,
+                            (format!("Invalid :accel-profile \"{s}\", expected: flat, adaptive"),),
+                        )?,
                     }
                 }
-                ":natural-scroll" => entry.natural_scroll = Some(val.is_not_nil()),
-                ":tap" => entry.tap = Some(val.is_not_nil()),
-                ":dwt" => entry.dwt = Some(val.is_not_nil()),
-                ":left-handed" => entry.left_handed = Some(val.is_not_nil()),
-                ":middle-emulation" => entry.middle_emulation = Some(val.is_not_nil()),
-                ":accel-speed" => {
-                    if val.is_not_nil() {
-                        entry.accel_speed = Some(val.into_rust()?);
+            } else if key.eq(kw_click_method.bind(env)) {
+                if val.is_not_nil() {
+                    let s: String = val.into_rust()?;
+                    match input::parse_click_method(&s) {
+                        Some(v) => entry.click_method = Some(v),
+                        None => env.signal(
+                            ewm_input_invalid_value,
+                            (format!("Invalid :click-method \"{s}\", expected: button-areas, clickfinger"),),
+                        )?,
                     }
                 }
-                ":accel-profile" => {
-                    if val.is_not_nil() {
-                        let s: String = val.into_rust()?;
-                        match input::parse_accel_profile(&s) {
-                            Some(v) => entry.accel_profile = Some(v),
-                            None => env.signal(
-                                ewm_input_invalid_value,
-                                (format!("Invalid :accel-profile \"{s}\", expected: flat, adaptive"),),
-                            )?,
-                        }
+            } else if key.eq(kw_scroll_method.bind(env)) {
+                if val.is_not_nil() {
+                    let s: String = val.into_rust()?;
+                    match input::parse_scroll_method(&s) {
+                        Some(v) => entry.scroll_method = Some(v),
+                        None => env.signal(
+                            ewm_input_invalid_value,
+                            (format!("Invalid :scroll-method \"{s}\", expected: no-scroll, two-finger, edge, on-button-down"),),
+                        )?,
                     }
                 }
-                ":click-method" => {
-                    if val.is_not_nil() {
-                        let s: String = val.into_rust()?;
-                        match input::parse_click_method(&s) {
-                            Some(v) => entry.click_method = Some(v),
-                            None => env.signal(
-                                ewm_input_invalid_value,
-                                (format!("Invalid :click-method \"{s}\", expected: button-areas, clickfinger"),),
-                            )?,
-                        }
+            } else if key.eq(kw_tap_button_map.bind(env)) {
+                if val.is_not_nil() {
+                    let s: String = val.into_rust()?;
+                    match input::parse_tap_button_map(&s) {
+                        Some(v) => entry.tap_button_map = Some(v),
+                        None => env.signal(
+                            ewm_input_invalid_value,
+                            (format!("Invalid :tap-button-map \"{s}\", expected: left-right-middle, left-middle-right"),),
+                        )?,
                     }
                 }
-                ":scroll-method" => {
-                    if val.is_not_nil() {
-                        let s: String = val.into_rust()?;
-                        match input::parse_scroll_method(&s) {
-                            Some(v) => entry.scroll_method = Some(v),
-                            None => env.signal(
-                                ewm_input_invalid_value,
-                                (format!("Invalid :scroll-method \"{s}\", expected: no-scroll, two-finger, edge, on-button-down"),),
-                            )?,
-                        }
-                    }
+            } else if key.eq(kw_repeat_delay.bind(env)) {
+                if val.is_not_nil() {
+                    entry.repeat_delay = Some(val.into_rust::<i64>()? as i32);
                 }
-                ":tap-button-map" => {
-                    if val.is_not_nil() {
-                        let s: String = val.into_rust()?;
-                        match input::parse_tap_button_map(&s) {
-                            Some(v) => entry.tap_button_map = Some(v),
-                            None => env.signal(
-                                ewm_input_invalid_value,
-                                (format!("Invalid :tap-button-map \"{s}\", expected: left-right-middle, left-middle-right"),),
-                            )?,
-                        }
-                    }
+            } else if key.eq(kw_repeat_rate.bind(env)) {
+                if val.is_not_nil() {
+                    entry.repeat_rate = Some(val.into_rust::<i64>()? as i32);
                 }
-                ":repeat-delay" => {
-                    if val.is_not_nil() {
-                        entry.repeat_delay = Some(val.into_rust::<i64>()? as i32);
-                    }
+            } else if key.eq(kw_xkb_layouts.bind(env)) {
+                if val.is_not_nil() {
+                    entry.xkb_layouts = Some(val.into_rust()?);
                 }
-                ":repeat-rate" => {
-                    if val.is_not_nil() {
-                        entry.repeat_rate = Some(val.into_rust::<i64>()? as i32);
-                    }
+            } else if key.eq(kw_xkb_options.bind(env)) {
+                if val.is_not_nil() {
+                    entry.xkb_options = Some(val.into_rust()?);
                 }
-                ":xkb-layouts" => {
-                    if val.is_not_nil() {
-                        entry.xkb_layouts = Some(val.into_rust()?);
-                    }
-                }
-                ":xkb-options" => {
-                    if val.is_not_nil() {
-                        entry.xkb_options = Some(val.into_rust()?);
-                    }
-                }
-                _ => env.signal(
-                    ewm_input_unknown_key,
-                    (format!("Unknown input config key {key}"),),
-                )?,
+            } else {
+                let key_name: String = env.call(symbol_name, (key,))?.into_rust()?;
+                env.signal(ewm_input_unknown_key, (format!("Unknown input config key {key_name}"),))?;
             }
 
-            rest = env.call("cddr", (rest,))?;
+            rest = env.call(cddr, (rest,))?;
         }
 
         entries.push(entry);
