@@ -173,7 +173,7 @@ fn get_focused_id() -> Result<i64> {
 fn get_output_offset<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
     let state = shared_state().lock().unwrap();
     match state.output_offsets.get(&name) {
-        Some((x, y)) => env.call("cons", (*x as i64, *y as i64)),
+        Some((x, y)) => env.cons(*x as i64, *y as i64),
         None => ().into_lisp(env),
     }
 }
@@ -183,7 +183,7 @@ fn get_output_offset<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
 #[defun]
 fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
     let (x, y) = shared_state().lock().unwrap().pointer_location;
-    env.call("cons", (x, y))
+    env.cons(x, y)
 }
 
 // ============================================================================
@@ -460,193 +460,147 @@ fn pop_event(env: &Env) -> Result<Value<'_>> {
     }
 }
 
-/// Convert a Event to a Lisp alist
+/// Convert an Event to a Lisp alist.
 fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
-    let cons = |k: &str, v: Value<'a>| -> Result<Value<'a>> { env.call("cons", (k, v)) };
-    let list = |items: Vec<Value<'a>>| -> Result<Value<'a>> { env.call("list", items.as_slice()) };
+    // env.cons / env.list accept any IntoLisp — no need to pre-convert values.
+    macro_rules! alist {
+        ($( $k:expr => $v:expr ),+ $(,)?) => {
+            env.list(($(env.cons($k, $v)?,)+))
+        };
+    }
 
     match event {
-        Event::Ready => list(vec![cons("event", "ready".into_lisp(env)?)?]),
+        Event::Ready => alist!["event" => "ready"],
         Event::New { id, app, output, pid } => {
             let mut items = vec![
-                cons("event", "new".into_lisp(env)?)?,
-                cons("id", (id as i64).into_lisp(env)?)?,
-                cons("app", app.into_lisp(env)?)?,
-                cons("pid", (pid as i64).into_lisp(env)?)?,
+                env.cons("event", "new")?,
+                env.cons("id", id as i64)?,
+                env.cons("app", app)?,
+                env.cons("pid", pid as i64)?,
             ];
             if let Some(out) = output {
-                items.push(cons("output", out.into_lisp(env)?)?);
+                items.push(env.cons("output", out)?);
             }
-            list(items)
+            env.list(items.as_slice())
         }
-        Event::Close { id } => list(vec![
-            cons("event", "close".into_lisp(env)?)?,
-            cons("id", (id as i64).into_lisp(env)?)?,
-        ]),
-        Event::Minimize { id } => list(vec![
-            cons("event", "minimize".into_lisp(env)?)?,
-            cons("id", (id as i64).into_lisp(env)?)?,
-        ]),
-        Event::Title { id, app, title } => list(vec![
-            cons("event", "title".into_lisp(env)?)?,
-            cons("id", (id as i64).into_lisp(env)?)?,
-            cons("app", app.into_lisp(env)?)?,
-            cons("title", title.into_lisp(env)?)?,
-        ]),
-        Event::Focus { id } => list(vec![
-            cons("event", "focus".into_lisp(env)?)?,
-            cons("id", (id as i64).into_lisp(env)?)?,
-        ]),
+        Event::Close { id } => alist!["event" => "close", "id" => id as i64],
+        Event::Minimize { id } => alist!["event" => "minimize", "id" => id as i64],
+        Event::Title { id, app, title } => alist![
+            "event" => "title",
+            "id" => id as i64,
+            "app" => app,
+            "title" => title,
+        ],
+        Event::Focus { id } => alist!["event" => "focus", "id" => id as i64],
         Event::OutputDetected(info) => {
             // Convert modes to list of alists
             let modes: Result<Vec<Value<'a>>> = info
                 .modes
                 .iter()
                 .map(|m| {
-                    list(vec![
-                        cons("width", (m.width as i64).into_lisp(env)?)?,
-                        cons("height", (m.height as i64).into_lisp(env)?)?,
-                        cons("refresh", (m.refresh as i64).into_lisp(env)?)?,
-                        cons("preferred", m.preferred.into_lisp(env)?)?,
-                    ])
+                    env.list((
+                        env.cons("width", m.width as i64)?,
+                        env.cons("height", m.height as i64)?,
+                        env.cons("refresh", m.refresh as i64)?,
+                        env.cons("preferred", m.preferred)?,
+                    ))
                 })
                 .collect();
-            let modes_list = env.call("list", modes?.as_slice())?;
-
-            list(vec![
-                cons("event", "output_detected".into_lisp(env)?)?,
-                cons("name", info.name.into_lisp(env)?)?,
-                cons("make", info.make.into_lisp(env)?)?,
-                cons("model", info.model.into_lisp(env)?)?,
-                cons("width-mm", (info.width_mm as i64).into_lisp(env)?)?,
-                cons("height-mm", (info.height_mm as i64).into_lisp(env)?)?,
-                cons("x", (info.x as i64).into_lisp(env)?)?,
-                cons("y", (info.y as i64).into_lisp(env)?)?,
-                cons("scale", info.scale.into_lisp(env)?)?,
-                cons("transform", (info.transform as i64).into_lisp(env)?)?,
-                cons("modes", modes_list)?,
-            ])
+            let modes_list = env.list(modes?.as_slice())?;
+            alist![
+                "event" => "output_detected",
+                "name" => info.name,
+                "make" => info.make,
+                "model" => info.model,
+                "width-mm" => info.width_mm as i64,
+                "height-mm" => info.height_mm as i64,
+                "x" => info.x as i64,
+                "y" => info.y as i64,
+                "scale" => info.scale,
+                "transform" => info.transform as i64,
+                "modes" => modes_list,
+            ]
         }
-        Event::OutputDisconnected { name } => list(vec![
-            cons("event", "output_disconnected".into_lisp(env)?)?,
-            cons("name", name.into_lisp(env)?)?,
-        ]),
-        Event::OutputsComplete => list(vec![cons("event", "outputs_complete".into_lisp(env)?)?]),
+        Event::OutputDisconnected { name } => {
+            alist!["event" => "output_disconnected", "name" => name]
+        }
+        Event::OutputsComplete => alist!["event" => "outputs_complete"],
         Event::Layouts { layouts, current } => {
             let layouts_list: Result<Vec<Value<'a>>> =
                 layouts.into_iter().map(|s| s.into_lisp(env)).collect();
-            let layouts_val = env.call("list", layouts_list?.as_slice())?;
-            list(vec![
-                cons("event", "layouts".into_lisp(env)?)?,
-                cons("layouts", layouts_val)?,
-                cons("current", (current as i64).into_lisp(env)?)?,
-            ])
+            let layouts_val = env.list(layouts_list?.as_slice())?;
+            alist!["event" => "layouts", "layouts" => layouts_val, "current" => current as i64]
         }
-        Event::LayoutSwitched { layout, index } => list(vec![
-            cons("event", "layout-switched".into_lisp(env)?)?,
-            cons("layout", layout.into_lisp(env)?)?,
-            cons("index", (index as i64).into_lisp(env)?)?,
-        ]),
-        Event::TextInputActivated => {
-            list(vec![cons("event", "text-input-activated".into_lisp(env)?)?])
-        }
-        Event::TextInputDeactivated => list(vec![cons(
-            "event",
-            "text-input-deactivated".into_lisp(env)?,
-        )?]),
+        Event::LayoutSwitched { layout, index } => alist![
+            "event" => "layout-switched",
+            "layout" => layout,
+            "index" => index as i64,
+        ],
+        Event::TextInputActivated => alist!["event" => "text-input-activated"],
+        Event::TextInputDeactivated => alist!["event" => "text-input-deactivated"],
         Event::Key { keysym, utf8 } => {
             let mut items = vec![
-                cons("event", "key".into_lisp(env)?)?,
-                cons("keysym", (keysym as i64).into_lisp(env)?)?,
+                env.cons("event", "key")?,
+                env.cons("keysym", keysym as i64)?,
             ];
             if let Some(s) = utf8 {
-                items.push(cons("utf8", s.into_lisp(env)?)?);
+                items.push(env.cons("utf8", s)?);
             }
-            list(items)
+            env.list(items.as_slice())
         }
-        Event::DebugState { json } => list(vec![
-            cons("event", "debug_state".into_lisp(env)?)?,
-            cons("json", json.into_lisp(env)?)?,
-        ]),
-        Event::WorkingArea {
-            output,
-            x,
-            y,
-            width,
-            height,
-        } => list(vec![
-            cons("event", "working_area".into_lisp(env)?)?,
-            cons("output", output.into_lisp(env)?)?,
-            cons("x", (x as i64).into_lisp(env)?)?,
-            cons("y", (y as i64).into_lisp(env)?)?,
-            cons("width", (width as i64).into_lisp(env)?)?,
-            cons("height", (height as i64).into_lisp(env)?)?,
-        ]),
-        Event::OutputConfigChanged {
-            name,
-            width,
-            height,
-            refresh,
-            x,
-            y,
-            scale,
-            transform,
-        } => list(vec![
-            cons("event", "output_config_changed".into_lisp(env)?)?,
-            cons("name", name.into_lisp(env)?)?,
-            cons("width", (width as i64).into_lisp(env)?)?,
-            cons("height", (height as i64).into_lisp(env)?)?,
-            cons("refresh", (refresh as i64).into_lisp(env)?)?,
-            cons("x", (x as i64).into_lisp(env)?)?,
-            cons("y", (y as i64).into_lisp(env)?)?,
-            cons("scale", scale.into_lisp(env)?)?,
-            cons("transform", (transform as i64).into_lisp(env)?)?,
-        ]),
-        Event::SelectionChanged { text } => list(vec![
-            cons("event", "selection-changed".into_lisp(env)?)?,
-            cons("text", text.into_lisp(env)?)?,
-        ]),
-        Event::ActivateWorkspace { output, tab_index } => list(vec![
-            cons("event", "activate_workspace".into_lisp(env)?)?,
-            cons("output", output.into_lisp(env)?)?,
-            cons("tab_index", (tab_index as i64).into_lisp(env)?)?,
-        ]),
+        Event::DebugState { json } => alist!["event" => "debug_state", "json" => json],
+        Event::WorkingArea { output, x, y, width, height } => alist![
+            "event" => "working_area",
+            "output" => output,
+            "x" => x as i64,
+            "y" => y as i64,
+            "width" => width as i64,
+            "height" => height as i64,
+        ],
+        Event::OutputConfigChanged { name, width, height, refresh, x, y, scale, transform } => {
+            alist![
+                "event" => "output_config_changed",
+                "name" => name,
+                "width" => width as i64,
+                "height" => height as i64,
+                "refresh" => refresh as i64,
+                "x" => x as i64,
+                "y" => y as i64,
+                "scale" => scale,
+                "transform" => transform as i64,
+            ]
+        }
+        Event::SelectionChanged { text } => alist!["event" => "selection-changed", "text" => text],
+        Event::ActivateWorkspace { output, tab_index } => alist![
+            "event" => "activate_workspace",
+            "output" => output,
+            "tab_index" => tab_index as i64,
+        ],
         Event::FullscreenRequest { id, output } => {
             let mut items = vec![
-                cons("event", "fullscreen_request".into_lisp(env)?)?,
-                cons("id", (id as i64).into_lisp(env)?)?,
+                env.cons("event", "fullscreen_request")?,
+                env.cons("id", id as i64)?,
             ];
             if let Some(out) = output {
-                items.push(cons("output", out.into_lisp(env)?)?);
+                items.push(env.cons("output", out)?);
             }
-            list(items)
+            env.list(items.as_slice())
         }
-        Event::UnfullscreenRequest { id } => list(vec![
-            cons("event", "unfullscreen_request".into_lisp(env)?)?,
-            cons("id", (id as i64).into_lisp(env)?)?,
-        ]),
-        Event::MaximizeRequest { id } => list(vec![
-            cons("event", "maximize_request".into_lisp(env)?)?,
-            cons("id", (id as i64).into_lisp(env)?)?,
-        ]),
-        Event::UnmaximizeRequest { id } => list(vec![
-            cons("event", "unmaximize_request".into_lisp(env)?)?,
-            cons("id", (id as i64).into_lisp(env)?)?,
-        ]),
-        Event::IdleStateChanged { idle } => list(vec![
-            cons("event", "idle_state_changed".into_lisp(env)?)?,
-            cons("idle", idle.into_lisp(env)?)?,
-        ]),
+        Event::UnfullscreenRequest { id } => {
+            alist!["event" => "unfullscreen_request", "id" => id as i64]
+        }
+        Event::MaximizeRequest { id } => {
+            alist!["event" => "maximize_request", "id" => id as i64]
+        }
+        Event::UnmaximizeRequest { id } => {
+            alist!["event" => "unmaximize_request", "id" => id as i64]
+        }
+        Event::IdleStateChanged { idle } => alist!["event" => "idle_state_changed", "idle" => idle],
         Event::Environment { vars } => {
-            let pairs: Result<Vec<Value<'a>>> = vars
-                .into_iter()
-                .map(|(k, v)| env.call("cons", (k, v)))
-                .collect();
-            let vars_list = env.call("list", pairs?.as_slice())?;
-            list(vec![
-                cons("event", "environment".into_lisp(env)?)?,
-                cons("vars", vars_list)?,
-            ])
+            let pairs: Result<Vec<Value<'a>>> =
+                vars.into_iter().map(|(k, v)| env.cons(k, v)).collect();
+            let vars_list = env.list(pairs?.as_slice())?;
+            alist!["event" => "environment", "vars" => vars_list]
         }
     }
 }
@@ -1319,8 +1273,8 @@ fn list_xdg_apps<'a>(env: &'a Env) -> Result<Value<'a>> {
             None => continue,
         };
 
-        let pair = env.call("cons", (name.as_str(), commandline.as_str()))?;
-        result = env.call("cons", (pair, result))?;
+        let pair = env.cons(name.as_str(), commandline.as_str())?;
+        result = env.cons(pair, result)?;
     }
 
     result = env.call("nreverse", (result,))?;
