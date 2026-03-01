@@ -2307,6 +2307,9 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         ewm,
     };
 
+    // Set up xwayland-satellite for X11 support (on-demand)
+    crate::xwayland::satellite::setup(&mut state);
+
     // Build complete environment
     let mut env_vars: Vec<(String, String)> = vec![
         ("WAYLAND_DISPLAY".into(), socket_name_str),
@@ -2315,6 +2318,14 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         ("GTK_IM_MODULE".into(), "wayland".into()),
         ("QT_IM_MODULE".into(), "wayland".into()),
     ];
+    if let Some(satellite) = &state.ewm.satellite {
+        let display_name = satellite.display_name().to_owned();
+        info!("listening on X11 socket: {display_name}");
+        env_vars.push(("DISPLAY".into(), display_name));
+    } else {
+        // SAFETY: still single-threaded at this point
+        unsafe { std::env::remove_var("DISPLAY") };
+    }
 
     // Set C-level environment (pgtk needs WAYLAND_DISPLAY for wl_display_connect,
     // GTK/Qt read IM_MODULE at init, satellite needs WAYLAND_DISPLAY to connect)

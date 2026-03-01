@@ -49,6 +49,7 @@ pub mod render;
 pub mod tracy;
 pub mod utils;
 pub mod vblank_throttle;
+pub mod xwayland;
 pub use tracy::VBlankFrameTracker;
 
 // Testing module is always compiled but only used by tests
@@ -721,6 +722,9 @@ pub struct Ewm {
     // Event loop handle (for idle timer registration)
     pub loop_handle: LoopHandle<'static, State>,
 
+    // xwayland-satellite (on-demand X11 support)
+    pub satellite: Option<xwayland::satellite::Satellite>,
+
     // Native idle timeout state
     pub idle_timeout: IdleTimeoutState,
 }
@@ -879,6 +883,7 @@ impl Ewm {
             xkb_current_layout: 0,
             im_relay: None,
             loop_handle: loop_handle_clone,
+            satellite: None,
             idle_timeout: IdleTimeoutState {
                 timeout: None,
                 action: IdleAction::DeactivateMonitors,
