@@ -586,6 +586,17 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
             cons("event", "idle_state_changed".into_lisp(env)?)?,
             cons("idle", idle.into_lisp(env)?)?,
         ]),
+        Event::Environment { vars } => {
+            let pairs: Result<Vec<Value<'a>>> = vars
+                .into_iter()
+                .map(|(k, v)| env.call("cons", (k, v)))
+                .collect();
+            let vars_list = env.call("list", pairs?.as_slice())?;
+            list(vec![
+                cons("event", "environment".into_lisp(env)?)?,
+                cons("vars", vars_list)?,
+            ])
+        }
     }
 }
 

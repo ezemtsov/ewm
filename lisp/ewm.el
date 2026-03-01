@@ -211,7 +211,8 @@ Called with one argument: t when entering idle, nil when waking.")
       ("activate_workspace" (ewm--handle-activate-workspace event))
       ("fullscreen_request" (ewm--handle-fullscreen-request event))
       ("unfullscreen_request" (ewm--handle-unfullscreen-request event))
-      ("idle_state_changed" (ewm--handle-idle-state-changed event)))))
+      ("idle_state_changed" (ewm--handle-idle-state-changed event))
+      ("environment" (ewm--handle-environment event)))))
 
 ;;; Event handlers
 
@@ -380,6 +381,12 @@ re-syncs layout and focus with the compositor."
   (ewm--enforce-frame-output-parity)
   (ewm-layout--refresh)
   (ewm--sync-focus))
+
+(defun ewm--handle-environment (event)
+  "Handle environment event from compositor.
+Sets Emacs's `process-environment' so child processes inherit these vars."
+  (dolist (pair (map-elt event "vars"))
+    (setenv (car pair) (cdr pair))))
 
 (defun ewm--handle-ready ()
   "Handle ready event from compositor.
@@ -717,16 +724,6 @@ Prevents deletion of the last frame for an output unless FORCE is non-nil."
 
 ;;; Public API
 
-(defun ewm--current-vt ()
-  "Return the current VT number, or nil if not on a VT."
-  (when-let ((active (ignore-errors
-                       (string-trim
-                        (with-temp-buffer
-                          (insert-file-contents "/sys/class/tty/tty0/active")
-                          (buffer-string))))))
-    (when (string-match "\\`tty\\([0-9]+\\)\\'" active)
-      (string-to-number (match-string 1 active)))))
-
 (defun ewm--disable-csd ()
   "Disable client-side decorations and bars for all frames.
 Sets frames to undecorated mode and removes bars since EWM manages windows directly."
@@ -777,13 +774,7 @@ The compositor runs as a thread within the Emacs process."
             (ewm--disable-signal-handler)
             (ewm-mode -1)
             (setq ewm--module-mode nil)
-            (error "Compositor failed to become ready")))
-        ;; Set environment for Wayland clients
-        (let ((socket-name (format "wayland-ewm-vt%d" (ewm--current-vt))))
-          (setenv "WAYLAND_DISPLAY" socket-name)
-          (setenv "XDG_SESSION_TYPE" "wayland")
-          (setenv "GTK_IM_MODULE" "wayland")
-          (setenv "QT_IM_MODULE" "wayland")))
+            (error "Compositor failed to become ready"))))
     (error "Failed to start compositor")))
 
 (defun ewm-stop-module ()

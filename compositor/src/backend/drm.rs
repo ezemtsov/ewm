@@ -2260,40 +2260,6 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     let socket_name_str = socket_name.to_string_lossy().to_string();
     info!("Wayland socket: {:?}", socket_name);
 
-    // Set environment variables for child processes and portals
-    // SAFETY: We're single-threaded at this point, before spawning any threads
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", &socket_name_str);
-        std::env::set_var("XDG_CURRENT_DESKTOP", "ewm");
-        std::env::set_var("XDG_SESSION_TYPE", "wayland");
-        // Use Wayland-native input method for GTK/Qt apps
-        std::env::set_var("GTK_IM_MODULE", "wayland");
-        std::env::set_var("QT_IM_MODULE", "wayland");
-    }
-
-    // Update D-Bus/systemd environment so portals can find us
-    let variables = "WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE";
-    match std::process::Command::new("/bin/sh")
-        .args([
-            "-c",
-            &format!(
-                "hash systemctl 2>/dev/null && \
-                 systemctl --user import-environment {variables}; \
-                 hash dbus-update-activation-environment 2>/dev/null && \
-                 dbus-update-activation-environment {variables}"
-            ),
-        ])
-        .status()
-    {
-        Ok(status) if !status.success() => {
-            warn!("import environment exited with {}", status);
-        }
-        Err(e) => {
-            warn!("Failed to import environment: {}", e);
-        }
-        _ => {}
-    }
-
     let mut ewm = Ewm::new(display_handle.clone(), event_loop.handle(), true);
 
     // Connect input method relay to ourselves
@@ -2340,6 +2306,51 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         backend: Backend::Drm(backend),
         ewm,
     };
+
+    // Build complete environment
+    let mut env_vars: Vec<(String, String)> = vec![
+        ("WAYLAND_DISPLAY".into(), socket_name_str),
+        ("XDG_CURRENT_DESKTOP".into(), "ewm".into()),
+        ("XDG_SESSION_TYPE".into(), "wayland".into()),
+        ("GTK_IM_MODULE".into(), "wayland".into()),
+        ("QT_IM_MODULE".into(), "wayland".into()),
+    ];
+
+    // Set C-level environment (pgtk needs WAYLAND_DISPLAY for wl_display_connect,
+    // GTK/Qt read IM_MODULE at init, satellite needs WAYLAND_DISPLAY to connect)
+    // SAFETY: still single-threaded at this point
+    unsafe {
+        for (k, v) in &env_vars {
+            std::env::set_var(k, v);
+        }
+    }
+
+    // Propagate to D-Bus/systemd so portals and apps launched via D-Bus inherit them
+    let import_names: Vec<&str> = env_vars.iter().map(|(k, _)| k.as_str()).collect();
+    let import_list = import_names.join(" ");
+    match std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!(
+                "hash systemctl 2>/dev/null && \
+                 systemctl --user import-environment {import_list}; \
+                 hash dbus-update-activation-environment 2>/dev/null && \
+                 dbus-update-activation-environment {import_list}"
+            ),
+        ])
+        .status()
+    {
+        Ok(status) if !status.success() => {
+            warn!("import-environment exited with {}", status);
+        }
+        Err(e) => {
+            warn!("Failed to import-environment: {}", e);
+        }
+        _ => {}
+    }
+
+    // Send to Emacs for process-environment (so child processes inherit)
+    crate::module::push_event(crate::event::Event::Environment { vars: env_vars });
 
     // Initialize PipeWire and D-Bus for screen sharing
     #[cfg(feature = "screencast")]

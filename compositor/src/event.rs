@@ -141,4 +141,7 @@ pub enum Event {
     /// Idle state changed (native idle timeout)
     #[serde(rename = "idle_state_changed")]
     IdleStateChanged { idle: bool },
+    /// Environment variables for Emacs to apply
+    #[serde(rename = "environment")]
+    Environment { vars: Vec<(String, String)> },
 }
