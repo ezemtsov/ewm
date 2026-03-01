@@ -679,6 +679,9 @@ pub struct Ewm {
     // Idle notify state (ext-idle-notify-v1 protocol)
     pub idle_notifier_state: IdleNotifierState<State>,
 
+    // Gamma control state (wlr-gamma-control-unstable-v1 protocol)
+    pub gamma_control_state: crate::protocols::gamma_control::GammaControlManagerState,
+
     // Fractional scale protocol (wp-fractional-scale-v1)
     #[allow(dead_code)]
     pub fractional_scale_state: FractionalScaleManagerState,
@@ -723,7 +726,7 @@ pub struct Ewm {
 }
 
 impl Ewm {
-    pub fn new(display_handle: DisplayHandle, loop_handle: LoopHandle<'static, State>) -> Self {
+    pub fn new(display_handle: DisplayHandle, loop_handle: LoopHandle<'static, State>, is_drm: bool) -> Self {
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<State>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<State>(&display_handle);
@@ -784,6 +787,10 @@ impl Ewm {
 
         // Initialize idle notifier (ext-idle-notify-v1)
         let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle);
+
+        // Initialize gamma control (wlr-gamma-control-unstable-v1)
+        // Only advertise the global on DRM backends where gamma is actually supported
+        let gamma_control_state = crate::protocols::gamma_control::GammaControlManagerState::new::<State, _>(&display_handle, move |_| is_drm);
 
         // Initialize fractional scale protocol (wp-fractional-scale-v1)
         let fractional_scale_state = FractionalScaleManagerState::new::<State>(&display_handle);
@@ -856,6 +863,7 @@ impl Ewm {
             lock_state: LockState::Unlocked,
             pre_lock_focus: None,
             idle_notifier_state,
+            gamma_control_state,
             fractional_scale_state,
             viewporter_state,
             presentation_state,
@@ -913,6 +921,9 @@ impl Ewm {
         }
 
         self.check_lock_on_output_removed();
+
+        // Clean up gamma control for this output
+        self.gamma_control_state.output_removed(output);
 
         // Stop screen casts for this output
         #[cfg(feature = "screencast")]
@@ -4305,6 +4316,37 @@ impl IdleNotifierHandler for State {
     }
 }
 delegate_idle_notify!(State);
+
+// Gamma control protocol (wlr-gamma-control-unstable-v1)
+impl crate::protocols::gamma_control::GammaControlHandler for State {
+    fn gamma_control_manager_state(&mut self) -> &mut crate::protocols::gamma_control::GammaControlManagerState {
+        &mut self.ewm.gamma_control_state
+    }
+
+    fn get_gamma_size(&mut self, output: &Output) -> Option<u32> {
+        let drm = self.backend.as_drm_mut()?;
+        match drm.get_gamma_size(output) {
+            Ok(0) => None,
+            Ok(size) => Some(size),
+            Err(err) => {
+                warn!("error getting gamma size for {}: {err:?}", output.name());
+                None
+            }
+        }
+    }
+
+    fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> Option<()> {
+        let drm = self.backend.as_drm_mut()?;
+        match drm.set_gamma(output, ramp) {
+            Ok(()) => Some(()),
+            Err(err) => {
+                warn!("error setting gamma for {}: {err:?}", output.name());
+                None
+            }
+        }
+    }
+}
+delegate_gamma_control!(State);
 
 // Fractional scale protocol (wp-fractional-scale-v1)
 // Scale is sent from lifecycle-specific handlers (handle_new_toplevel, new_layer_surface,

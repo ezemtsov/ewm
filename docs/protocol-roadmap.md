@@ -24,6 +24,7 @@ This document outlines Wayland protocols to implement for broader application co
 | `zwp-primary-selection-v1` | Primary (middle-click) selection |
 | `wp-fractional-scale-v1` | Fractional output scaling (1.25x, 1.5x, etc.) |
 | `wp-viewporter` | Buffer scaling/cropping |
+| `wlr-gamma-control-unstable-v1` | Manage gamma tables of outputs |
 | `wlr-output-management-unstable-v1` | External display configuration (wlr-randr, wdisplays, DankMaterialShell) |
 | `wl_data_device` | Drag-and-drop (icon rendering, data transfer between clients) |
 

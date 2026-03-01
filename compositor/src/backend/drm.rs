@@ -22,11 +22,16 @@
 //!    VBlank synchronization. Outputs never share frame timing.
 
 use std::collections::HashMap;
+use std::iter::zip;
+use std::num::NonZeroU64;
+use std::os::fd::AsFd;
 
+use anyhow::{ensure, Context as _};
 use crate::tracy_span;
-use tracing::{debug, error, info, trace, warn};
+use bytemuck::cast_slice_mut;
 use std::path::PathBuf;
 use std::time::Duration;
+use tracing::{debug, error, info, trace, warn};
 
 #[cfg(feature = "screencast")]
 use smithay::utils::Size;
@@ -61,7 +66,8 @@ use smithay::{
             EventLoop, LoopHandle, RegistrationToken,
         },
         drm::control::{
-            connector, crtc, Device as ControlDevice, Mode as DrmMode, ModeTypeFlags,
+            connector, crtc, property, Device as ControlDevice, Mode as DrmMode, ModeTypeFlags,
+            ResourceHandle,
         },
         input::Libinput,
         rustix::fs::OFlags,
@@ -205,6 +211,10 @@ struct OutputSurface {
     vblank_throttle: VBlankThrottle,
     /// DMA-BUF feedback for direct scanout hints to clients
     dmabuf_feedback: Option<SurfaceDmabufFeedback>,
+    /// Gamma control properties (if hardware supports it)
+    gamma_props: Option<GammaProps>,
+    /// Pending gamma change to apply when session becomes active
+    pending_gamma_change: Option<Option<Vec<u16>>>,
 }
 
 /// Per-surface DMA-BUF feedback: render path vs direct scanout path.
@@ -213,6 +223,216 @@ struct OutputSurface {
 pub struct SurfaceDmabufFeedback {
     pub render: DmabufFeedback,
     pub scanout: DmabufFeedback,
+}
+
+/// Look up a DRM property value for a resource handle.
+fn get_drm_property(
+    drm: &DrmDevice,
+    resource: impl ResourceHandle,
+    prop: property::Handle,
+) -> Option<property::RawValue> {
+    let props = match drm.get_properties(resource) {
+        Ok(props) => props,
+        Err(err) => {
+            warn!("error getting properties: {err:?}");
+            return None;
+        }
+    };
+    props
+        .into_iter()
+        .find_map(|(handle, value)| (handle == prop).then_some(value))
+}
+
+/// DRM gamma correction properties for a CRTC
+struct GammaProps {
+    crtc: crtc::Handle,
+    gamma_lut: property::Handle,
+    gamma_lut_size: property::Handle,
+    previous_blob: Option<NonZeroU64>,
+}
+
+impl GammaProps {
+    /// Query CRTC properties and create GammaProps if hardware supports gamma control
+    fn new(device: &DrmDevice, crtc: crtc::Handle) -> anyhow::Result<Self> {
+        let mut gamma_lut = None;
+        let mut gamma_lut_size = None;
+
+        let props = device
+            .get_properties(crtc)
+            .context("error getting CRTC properties")?;
+        for (prop, _) in props {
+            let Ok(info) = device.get_property(prop) else {
+                continue;
+            };
+
+            let Ok(name) = info.name().to_str() else {
+                continue;
+            };
+
+            match name {
+                "GAMMA_LUT" => {
+                    ensure!(
+                        matches!(info.value_type(), property::ValueType::Blob),
+                        "GAMMA_LUT has unexpected type {:?}",
+                        info.value_type()
+                    );
+                    gamma_lut = Some(prop);
+                }
+                "GAMMA_LUT_SIZE" => {
+                    ensure!(
+                        matches!(info.value_type(), property::ValueType::UnsignedRange(_, _)),
+                        "GAMMA_LUT_SIZE has unexpected type {:?}",
+                        info.value_type()
+                    );
+                    gamma_lut_size = Some(prop);
+                }
+                _ => (),
+            }
+        }
+
+        Ok(Self {
+            crtc,
+            gamma_lut: gamma_lut.context("GAMMA_LUT property not found")?,
+            gamma_lut_size: gamma_lut_size.context("GAMMA_LUT_SIZE property not found")?,
+            previous_blob: None,
+        })
+    }
+
+    /// Get the gamma ramp size supported by hardware
+    fn gamma_size(&self, device: &DrmDevice) -> anyhow::Result<u32> {
+        get_drm_property(device, self.crtc, self.gamma_lut_size)
+            .map(|v| v as u32)
+            .context("error getting GAMMA_LUT_SIZE")
+    }
+
+    /// Set gamma ramp (or None to reset to identity)
+    fn set_gamma(&mut self, device: &DrmDevice, gamma: Option<&[u16]>) -> anyhow::Result<()> {
+        tracy_span!("GammaProps::set_gamma");
+
+        let blob = if let Some(gamma) = gamma {
+            let gamma_size = self.gamma_size(device)? as usize;
+
+            ensure!(
+                gamma.len() == gamma_size * 3,
+                "wrong gamma length: got {}, expected {}",
+                gamma.len(),
+                gamma_size * 3
+            );
+
+            // Convert flat [R,G,B] array to drm_color_lut structs
+            #[allow(non_camel_case_types)]
+            #[repr(C)]
+            #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+            struct drm_color_lut {
+                red: u16,
+                green: u16,
+                blue: u16,
+                reserved: u16,
+            }
+
+            let (red, rest) = gamma.split_at(gamma_size);
+            let (blue, green) = rest.split_at(gamma_size);
+            let mut data = zip(zip(red, blue), green)
+                .map(|((&red, &green), &blue)| drm_color_lut {
+                    red,
+                    green,
+                    blue,
+                    reserved: 0,
+                })
+                .collect::<Vec<_>>();
+            let data = cast_slice_mut(&mut data);
+
+            let blob = drm_ffi::mode::create_property_blob(device.as_fd(), data)
+                .context("error creating GAMMA_LUT blob")?;
+            NonZeroU64::new(u64::from(blob.blob_id))
+        } else {
+            None
+        };
+
+        let blob_id = blob.map(NonZeroU64::get).unwrap_or(0);
+
+        device
+            .set_property(
+                self.crtc,
+                self.gamma_lut,
+                property::Value::Blob(blob_id).into(),
+            )
+            .inspect_err(|_| {
+                // Clean up the blob we just created on failure
+                if blob_id != 0 {
+                    if let Err(err) = device.destroy_property_blob(blob_id) {
+                        warn!("error destroying GAMMA_LUT property blob: {err:?}");
+                    }
+                }
+            })
+            .context("error setting GAMMA_LUT")?;
+
+        // Destroy previous blob after successfully setting the new one
+        if let Some(previous) = std::mem::replace(&mut self.previous_blob, blob) {
+            if let Err(err) = device.destroy_property_blob(previous.get()) {
+                warn!("error destroying previous GAMMA_LUT blob: {err:?}");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Restore the previously-active gamma blob (e.g. after session resume)
+    fn restore_gamma(&self, device: &DrmDevice) -> anyhow::Result<()> {
+        let blob = self.previous_blob.map(NonZeroU64::get).unwrap_or(0);
+        device
+            .set_property(
+                self.crtc,
+                self.gamma_lut,
+                property::Value::Blob(blob).into(),
+            )
+            .context("error setting GAMMA_LUT")?;
+        Ok(())
+    }
+}
+
+/// Legacy gamma fallback for hardware without GAMMA_LUT property.
+/// Uses the ioctl-based `set_gamma` on the CRTC directly.
+fn set_gamma_for_crtc(
+    device: &DrmDevice,
+    crtc: crtc::Handle,
+    ramp: Option<&[u16]>,
+) -> anyhow::Result<()> {
+    let crtc_info = device.get_crtc(crtc).context("error getting CRTC info")?;
+    let gamma_length = crtc_info.gamma_length() as usize;
+    ensure!(gamma_length > 0, "CRTC reports zero gamma length");
+
+    let mut temp;
+    let ramp = if let Some(ramp) = ramp {
+        ensure!(
+            ramp.len() == gamma_length * 3,
+            "wrong gamma length: got {}, expected {}",
+            ramp.len(),
+            gamma_length * 3
+        );
+        ramp
+    } else {
+        // Generate linear ramp
+        temp = vec![0u16; gamma_length * 3];
+        let (red, rest) = temp.split_at_mut(gamma_length);
+        let (green, blue) = rest.split_at_mut(gamma_length);
+        let denom = gamma_length as u64 - 1;
+        for (i, ((r, g), b)) in zip(zip(red, green), blue).enumerate() {
+            let value = (0xFFFFu64 * i as u64 / denom) as u16;
+            *r = value;
+            *g = value;
+            *b = value;
+        }
+        &temp
+    };
+
+    let (red, rest) = ramp.split_at(gamma_length);
+    let (green, blue) = rest.split_at(gamma_length);
+    device
+        .set_gamma(crtc, red, green, blue)
+        .context("error setting legacy gamma")?;
+
+    Ok(())
 }
 
 /// Message to trigger deferred DRM initialization
@@ -382,6 +602,28 @@ impl DrmBackendState {
                     warn!("Error resetting DrmCompositor state: {:?}", err);
                 }
                 surface.compositor.reset_buffers();
+
+                // Apply any pending gamma changes that were queued while session was paused
+                if let Some(ramp) = surface.pending_gamma_change.take() {
+                    if let Some(ref mut gamma_props) = surface.gamma_props {
+                        if let Err(err) = gamma_props.set_gamma(&device.drm, ramp.as_deref()) {
+                            warn!("error applying pending gamma change for {}: {err:?}", surface.output.name());
+                        }
+                    } else {
+                        // Legacy fallback
+                        let crtc = surface.compositor.surface().crtc();
+                        if let Err(err) = set_gamma_for_crtc(&device.drm, crtc, ramp.as_deref()) {
+                            warn!("error applying pending gamma change for {}: {err:?}", surface.output.name());
+                        }
+                    }
+                } else {
+                    // No pending change — restore previous gamma state
+                    if let Some(ref gamma_props) = surface.gamma_props {
+                        if let Err(err) = gamma_props.restore_gamma(&device.drm) {
+                            warn!("error restoring gamma for {}: {err:?}", surface.output.name());
+                        }
+                    }
+                }
             }
         }
 
@@ -450,6 +692,54 @@ impl DrmBackendState {
             if let Err(err) = surface.compositor.clear() {
                 warn!("Error clearing DRM surface: {:?}", err);
             }
+        }
+    }
+
+    /// Get gamma ramp size for an output
+    pub fn get_gamma_size(&mut self, output: &Output) -> anyhow::Result<u32> {
+        let device = self.device.as_ref().context("DRM device not initialized")?;
+
+        let (crtc, surface) = device
+            .surfaces
+            .iter()
+            .find(|(_, s)| &s.output == output)
+            .context("output not found")?;
+
+        if let Some(ref gamma_props) = surface.gamma_props {
+            gamma_props.gamma_size(&device.drm)
+        } else {
+            // Legacy fallback: read gamma_length from CRTC info
+            let crtc_info = device
+                .drm
+                .get_crtc(*crtc)
+                .context("error getting CRTC info")?;
+            Ok(crtc_info.gamma_length())
+        }
+    }
+
+    /// Set gamma ramp for an output (or None to reset to identity)
+    pub fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> anyhow::Result<()> {
+        let device = self.device.as_mut().context("DRM device not initialized")?;
+
+        let (&crtc, surface) = device
+            .surfaces
+            .iter_mut()
+            .find(|(_, s)| &s.output == output)
+            .context("output not found")?;
+
+        // If session is paused, store the change to apply on resume
+        if self.paused {
+            trace!("Session paused, queuing gamma change for {}", output.name());
+            surface.pending_gamma_change = Some(ramp);
+            return Ok(());
+        }
+
+        // Apply immediately
+        if let Some(ref mut gamma_props) = surface.gamma_props {
+            gamma_props.set_gamma(&device.drm, ramp.as_deref())
+        } else {
+            // Legacy fallback
+            set_gamma_for_crtc(&device.drm, crtc, ramp.as_deref())
         }
     }
 }
@@ -1483,6 +1773,24 @@ impl DrmBackendState {
             }
         };
 
+        // Initialize gamma control if hardware supports it
+        let mut gamma_props = match GammaProps::new(&device.drm, crtc) {
+            Ok(props) => Some(props),
+            Err(err) => {
+                debug!("no GAMMA_LUT support for {connector_name}: {err:?}");
+                None
+            }
+        };
+
+        // Reset to identity gamma
+        if let Some(ref mut gamma_props) = gamma_props {
+            if let Err(err) = gamma_props.set_gamma(&device.drm, None) {
+                debug!("failed to reset gamma for {connector_name}: {err:?}");
+            }
+        } else if let Err(err) = set_gamma_for_crtc(&device.drm, crtc, None) {
+            debug!("failed to reset legacy gamma for {connector_name}: {err:?}");
+        }
+
         device.surfaces.insert(
             crtc,
             OutputSurface {
@@ -1491,6 +1799,8 @@ impl DrmBackendState {
                 connector: connector.handle(),
                 vblank_throttle,
                 dmabuf_feedback,
+                gamma_props,
+                pending_gamma_change: None,
             },
         );
 
@@ -1984,7 +2294,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
 
-    let mut ewm = Ewm::new(display_handle.clone(), event_loop.handle());
+    let mut ewm = Ewm::new(display_handle.clone(), event_loop.handle(), true);
 
     // Connect input method relay to ourselves
     let socket_path = std::env::var("XDG_RUNTIME_DIR")
