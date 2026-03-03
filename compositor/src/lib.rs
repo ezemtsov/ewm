@@ -519,9 +519,6 @@ pub struct InterceptedKey {
     pub shift: bool,
     #[serde(rename = "super", default)]
     pub logo: bool,
-    /// True if this key is bound to a keymap (prefix key)
-    #[serde(default)]
-    pub is_prefix: bool,
     /// True if this key is bound to the fullscreen toggle command
     #[serde(default)]
     pub is_fullscreen_toggle: bool,
@@ -732,7 +729,15 @@ pub struct Ewm {
 impl Ewm {
     pub fn new(display_handle: DisplayHandle, loop_handle: LoopHandle<'static, State>, is_drm: bool) -> Self {
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
-        let xdg_shell_state = XdgShellState::new::<State>(&display_handle);
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::WmCapabilities;
+        let xdg_shell_state = XdgShellState::new_with_capabilities::<State>(
+            &display_handle,
+            [
+                WmCapabilities::Fullscreen,
+                WmCapabilities::Maximize,
+                WmCapabilities::Minimize,
+            ],
+        );
         let xdg_decoration_state = XdgDecorationState::new::<State>(&display_handle);
         let shm_state = ShmState::new::<State>(&display_handle, vec![]);
         let dmabuf_state = DmabufState::new();
