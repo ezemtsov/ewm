@@ -102,21 +102,23 @@ const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
 
 /// Find a DRM mode matching the requested resolution and optional refresh rate.
 ///
-/// `refresh_mhz`: target refresh rate in millihertz (e.g., 60000 for 60Hz).
+/// `refresh_hz`: target refresh rate in Hz (e.g., 60 for 60Hz).
+/// Converted to millihertz internally for precise matching against DRM modes.
 /// When multiple modes match the resolution, prefers the one closest to the
 /// target refresh rate (within 2Hz tolerance), otherwise picks the highest.
 fn resolve_drm_mode(
     modes: &[DrmMode],
     width: i32,
     height: i32,
-    refresh_mhz: Option<i32>,
+    refresh_hz: Option<i32>,
 ) -> Option<DrmMode> {
+    let target_mhz = refresh_hz.map(|r| r * 1000);
     modes
         .iter()
         .filter(|m| m.size().0 as i32 == width && m.size().1 as i32 == height)
         .max_by_key(|m| {
-            let mode_mhz = (m.vrefresh() * 1000) as i32;
-            if let Some(target) = refresh_mhz {
+            let mode_mhz = Mode::from(**m).refresh;
+            if let Some(target) = target_mhz {
                 // Within 2Hz tolerance = 2000 mHz
                 if (mode_mhz - target).abs() < 2000 {
                     return 1_000_000 + mode_mhz;
