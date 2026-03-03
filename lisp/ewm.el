@@ -888,7 +888,9 @@ now that a graphical FRAME exists."
   (ewm--disable-csd)
   (ewm--enable-layout-sync)
   (ewm-input--enable)
-  (ewm--send-intercept-keys)
+  (if after-init-time
+      (ewm--send-intercept-keys)
+    (add-hook 'after-init-hook #'ewm--send-intercept-keys))
   (ewm--send-input-config)
   (ewm--send-idle-config)
   (ewm-text-input-auto-mode-enable)
