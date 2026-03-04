@@ -111,7 +111,7 @@ use smithay::{
     input::{
         dnd::{self, DnDGrab, DndGrabHandler, DndTarget},
         keyboard::{xkb::keysyms, KeyboardHandle, ModifiersState},
-        pointer::PointerHandle,
+        pointer::{CursorImageStatus, PointerHandle},
         Seat, SeatHandler, SeatState,
     },
     output::{Output, PhysicalProperties, Subpixel},
@@ -724,6 +724,9 @@ pub struct Ewm {
 
     // Native idle timeout state
     pub idle_timeout: IdleTimeoutState,
+
+    // Client cursor image status (Hidden/Surface/Named)
+    pub cursor_image_status: CursorImageStatus,
 }
 
 impl Ewm {
@@ -897,6 +900,7 @@ impl Ewm {
                 is_idle: false,
                 last_activity: std::time::Instant::now(),
             },
+            cursor_image_status: CursorImageStatus::default_named(),
         }
     }
 
@@ -1009,6 +1013,13 @@ impl Ewm {
             self.surface_info.remove(&id);
             self.emacs_surfaces.remove(&id);
             self.queue_event(Event::Close { id });
+        }
+
+        // Reset cursor image if the cursor surface died
+        if let CursorImageStatus::Surface(surface) = &self.cursor_image_status {
+            if !surface.alive() {
+                self.cursor_image_status = CursorImageStatus::default_named();
+            }
         }
     }
 
@@ -3648,11 +3659,8 @@ impl SeatHandler for State {
         self.ewm.update_text_input_focus(focused, surface_id);
     }
 
-    fn cursor_image(
-        &mut self,
-        _seat: &Seat<Self>,
-        _image: smithay::input::pointer::CursorImageStatus,
-    ) {
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.ewm.cursor_image_status = image;
     }
 }
 delegate_seat!(State);
