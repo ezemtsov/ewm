@@ -84,7 +84,7 @@ converts to global positions using output geometry + working area offset."
          (y (pop edges))
          (width (- (pop edges) x))
          (height (- (pop edges) y))
-         (fullscreen (window-parameter window 'ewm-fullscreen)))
+         (fullscreen (buffer-local-value 'ewm-surface-fullscreen (window-buffer window))))
     `(:x ,x :y ,y :w ,width :h ,height
          :focused ,(if focused-p t :false)
          :fullscreen ,(if fullscreen t :false))))
