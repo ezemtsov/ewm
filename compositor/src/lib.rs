@@ -1648,7 +1648,7 @@ impl Ewm {
         }
     }
 
-    fn cancel_idle_timer(&mut self) {
+    pub(crate) fn cancel_idle_timer(&mut self) {
         if let Some(token) = self.idle_timeout.timer_token.take() {
             self.loop_handle.remove(token);
         }

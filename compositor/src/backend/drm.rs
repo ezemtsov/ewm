@@ -489,7 +489,6 @@ pub struct DrmBackendState {
     display_handle: Option<DisplayHandle>,
     /// Pending initialization data - Some until DRM is initialized
     pending: Option<DrmPendingInit>,
-    paused: bool,
     /// Whether the laptop lid is currently closed (from libinput switch events)
     pub lid_closed: bool,
     /// Token for session notifier - must be removed before session drops
@@ -521,6 +520,11 @@ impl Drop for DrmBackendState {
 }
 
 impl DrmBackendState {
+    /// Check if the libseat session is currently active (not on another VT).
+    fn session_active(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.is_active())
+    }
+
     /// Check if DRM is initialized and ready
     pub fn is_initialized(&self) -> bool {
         self.device.is_some()
@@ -576,13 +580,12 @@ impl DrmBackendState {
                 }
             }
         }
-        self.paused = true;
+        ewm.cancel_idle_timer();
     }
 
     /// Handle session resume (VT switch back)
     pub(crate) fn resume(&mut self, ewm: &mut Ewm) {
         debug!("Resuming DRM session");
-        self.paused = false;
 
         if self.libinput.resume().is_err() {
             warn!("Error resuming libinput");
@@ -721,6 +724,7 @@ impl DrmBackendState {
 
     /// Set gamma ramp for an output (or None to reset to identity)
     pub fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> anyhow::Result<()> {
+        let session_active = self.session_active();
         let device = self.device.as_mut().context("DRM device not initialized")?;
 
         let (&crtc, surface) = device
@@ -730,7 +734,7 @@ impl DrmBackendState {
             .context("output not found")?;
 
         // If session is paused, store the change to apply on resume
-        if self.paused {
+        if !session_active {
             trace!("Session paused, queuing gamma change for {}", output.name());
             surface.pending_gamma_change = Some(ramp);
             return Ok(());
@@ -1009,7 +1013,7 @@ impl DrmBackendState {
             return super::RenderResult::Skipped;
         };
 
-        if self.paused || !device.drm.is_active() {
+        if !device.drm.is_active() {
             // This branch hits any time we try to render while the user has
             // switched to a different VT, so don't print anything here.
             return super::RenderResult::Skipped;
@@ -1485,7 +1489,7 @@ impl DrmBackendState {
 
     /// Handle udev device change event (monitor hotplug)
     pub fn on_device_changed(&mut self, ewm: &mut Ewm) {
-        if self.paused {
+        if !self.session_active() {
             return;
         }
 
@@ -2291,7 +2295,6 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             gpu_path: gpu_path.clone(),
             seat_name: seat_name.clone(),
         }),
-        paused: false,
         lid_closed: false,
         session_notifier_token: None, // Set after registering notifier
         init_sender: Some(init_sender),
