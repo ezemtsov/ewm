@@ -551,9 +551,9 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "emacs"
-version = "0.19.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a773f2eeb842fea9f9e52f8360dbf7c0c54af0c904e025c9e08db5053b8718c"
+checksum = "000155dfcc22d533a53482795d873fe549714e787feffe1b9a5cf2865c04f96b"
 dependencies = [
  "anyhow",
  "ctor",
@@ -578,9 +578,9 @@ dependencies = [
 
 [[package]]
 name = "emacs_module"
-version = "0.18.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3067bc974045ed2c6db333bd4fc30d3bdaafa6421a9a889fa7b2826b6f7f2fa"
+checksum = "23273c0d5dd437429610bfb0323fd86c980dd45d41182b1b4bafc663536ebaa0"
 
 [[package]]
 name = "encode_unicode"

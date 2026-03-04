@@ -76,7 +76,7 @@ version = "0.20"
 
 # Emacs dynamic module support
 [dependencies.emacs]
-version = "0.19"
+version = "0.20"
 
 [features]
 default = []

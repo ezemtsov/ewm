@@ -38,7 +38,7 @@
 //! per compositor tick in `update_shared_state()`. This gives consistent
 //! snapshots without scattered atomics.
 
-use emacs::{define_errors, defun, use_symbols, Env, IntoLisp, Result, Value};
+use emacs::{define_errors, defun, use_functions, use_symbols, Env, IntoLisp, Result, Value};
 
 // Cached Lisp symbols used in hot-path defuns (interning on every call is wasteful).
 use_symbols! {
@@ -83,7 +83,7 @@ use_symbols! {
 }
 
 // Cached Lisp function subrs used in hot-path defuns (interning string on every call is wasteful).
-emacs::global_refs! { __init_fn_refs__(init_to_function) =>
+use_functions! {
     plist_get   => "plist-get"
     length
     aref
@@ -792,12 +792,11 @@ fn output_layout_module(
         let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
         let h: i64 = env.call(plist_get, (entry, kw_h))?.into_rust()?;
 
-        let false_sym = kw_false.bind(env);
         let focused_val = env.call(plist_get, (entry, kw_focused))?;
-        let focused = focused_val.is_not_nil() && !focused_val.eq(false_sym);
+        let focused = focused_val.is_not_nil() && focused_val != *kw_false;
 
         let fullscreen_val = env.call(plist_get, (entry, kw_fullscreen))?;
-        let fullscreen = fullscreen_val.is_not_nil() && !fullscreen_val.eq(false_sym);
+        let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
 
         entries.push(LayoutEntry {
             id: id as u32,
@@ -813,7 +812,6 @@ fn output_layout_module(
 
     let mut parsed_tabs = Vec::new();
     let tabs_len: i64 = env.call(length, (tabs,))?.into_rust()?;
-    let false_sym = kw_false.bind(env);
 
     for i in 0..tabs_len {
         let tab = env.call(aref, (tabs, i))?;
@@ -821,7 +819,7 @@ fn output_layout_module(
         let name: String = env.call(plist_get, (tab, kw_name))?.into_rust().unwrap_or_default();
 
         let active_val = env.call(plist_get, (tab, kw_active))?;
-        let active = active_val.is_not_nil() && !active_val.eq(false_sym);
+        let active = active_val.is_not_nil() && active_val != *kw_false;
 
         parsed_tabs.push(TabInfo { name, active });
     }
@@ -875,7 +873,6 @@ fn prepare_frame_module(output: String) -> Result<()> {
 /// SCALE is a float (e.g. 1.5). TRANSFORM is an integer (0=Normal, 1=90, 2=180, 3=270, 4=Flipped, 5=Flipped90, 6=Flipped180, 7=Flipped270).
 #[defun]
 fn configure_output_module(
-    env: &Env,
     name: String,
     x: Option<i64>,
     y: Option<i64>,
@@ -890,7 +887,7 @@ fn configure_output_module(
     // We use a special marker to detect "not provided" vs nil
     let enabled_opt = if enabled.is_not_nil() {
         // Check if it's :unset (our marker for "not provided")
-        if enabled.eq(kw_unset.bind(env)) {
+        if enabled == *kw_unset {
             None
         } else {
             Some(true)
@@ -986,7 +983,6 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
     let mut parsed_keys = Vec::new();
 
     let len: i64 = env.call(length, (keys,))?.into_rust()?;
-    let false_sym = kw_false.bind(env);
 
     for i in 0..len {
         let key_spec = env.call(aref, (keys, i))?;
@@ -1015,7 +1011,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         }
 
         // Helper to check if a value is truthy (not nil and not :false)
-        let is_true = |v: Value| -> bool { v.is_not_nil() && !v.eq(false_sym) };
+        let is_true = |v: Value| -> bool { v.is_not_nil() && v != *kw_false };
 
         // Extract modifier flags
         let ctrl_val = env.call(plist_get, (key_spec, kw_ctrl))?;
@@ -1125,11 +1121,11 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
             let key = env.call(car, (rest,))?;
             let val = env.call(cadr, (rest,))?;
 
-            if key.eq(kw_device.bind(env)) {
+            if key == *kw_device {
                 if val.is_not_nil() {
                     entry.device = Some(val.into_rust()?);
                 }
-            } else if key.eq(kw_type.bind(env)) {
+            } else if key == *kw_type {
                 if val.is_not_nil() {
                     let s: String = val.into_rust()?;
                     match input::DeviceType::parse(&s) {
@@ -1140,21 +1136,21 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         )?,
                     }
                 }
-            } else if key.eq(kw_natural_scroll.bind(env)) {
+            } else if key == *kw_natural_scroll {
                 entry.natural_scroll = Some(val.is_not_nil());
-            } else if key.eq(kw_tap.bind(env)) {
+            } else if key == *kw_tap {
                 entry.tap = Some(val.is_not_nil());
-            } else if key.eq(kw_dwt.bind(env)) {
+            } else if key == *kw_dwt {
                 entry.dwt = Some(val.is_not_nil());
-            } else if key.eq(kw_left_handed.bind(env)) {
+            } else if key == *kw_left_handed {
                 entry.left_handed = Some(val.is_not_nil());
-            } else if key.eq(kw_middle_emulation.bind(env)) {
+            } else if key == *kw_middle_emulation {
                 entry.middle_emulation = Some(val.is_not_nil());
-            } else if key.eq(kw_accel_speed.bind(env)) {
+            } else if key == *kw_accel_speed {
                 if val.is_not_nil() {
                     entry.accel_speed = Some(val.into_rust()?);
                 }
-            } else if key.eq(kw_accel_profile.bind(env)) {
+            } else if key == *kw_accel_profile {
                 if val.is_not_nil() {
                     let s: String = val.into_rust()?;
                     match input::parse_accel_profile(&s) {
@@ -1165,7 +1161,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         )?,
                     }
                 }
-            } else if key.eq(kw_click_method.bind(env)) {
+            } else if key == *kw_click_method {
                 if val.is_not_nil() {
                     let s: String = val.into_rust()?;
                     match input::parse_click_method(&s) {
@@ -1176,7 +1172,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         )?,
                     }
                 }
-            } else if key.eq(kw_scroll_method.bind(env)) {
+            } else if key == *kw_scroll_method {
                 if val.is_not_nil() {
                     let s: String = val.into_rust()?;
                     match input::parse_scroll_method(&s) {
@@ -1187,7 +1183,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         )?,
                     }
                 }
-            } else if key.eq(kw_tap_button_map.bind(env)) {
+            } else if key == *kw_tap_button_map {
                 if val.is_not_nil() {
                     let s: String = val.into_rust()?;
                     match input::parse_tap_button_map(&s) {
@@ -1198,19 +1194,19 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         )?,
                     }
                 }
-            } else if key.eq(kw_repeat_delay.bind(env)) {
+            } else if key == *kw_repeat_delay {
                 if val.is_not_nil() {
                     entry.repeat_delay = Some(val.into_rust::<i64>()? as i32);
                 }
-            } else if key.eq(kw_repeat_rate.bind(env)) {
+            } else if key == *kw_repeat_rate {
                 if val.is_not_nil() {
                     entry.repeat_rate = Some(val.into_rust::<i64>()? as i32);
                 }
-            } else if key.eq(kw_xkb_layouts.bind(env)) {
+            } else if key == *kw_xkb_layouts {
                 if val.is_not_nil() {
                     entry.xkb_layouts = Some(val.into_rust()?);
                 }
-            } else if key.eq(kw_xkb_options.bind(env)) {
+            } else if key == *kw_xkb_options {
                 if val.is_not_nil() {
                     entry.xkb_options = Some(val.into_rust()?);
                 }
