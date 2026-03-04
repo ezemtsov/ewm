@@ -438,6 +438,9 @@ changing the available area for Emacs frames."
 (defvar ewm--saved-interprogram-cut-function nil
   "Saved value of `interprogram-cut-function' before EWM override.")
 
+(defvar ewm--saved-interprogram-paste-function nil
+  "Saved value of `interprogram-paste-function' before EWM override.")
+
 (defun ewm--handle-selection-changed (event)
   "Handle selection-changed EVENT from compositor.
 Push the text onto the kill ring."
@@ -897,6 +900,8 @@ now that a graphical FRAME exists."
   (ewm--enable-process-advice)
   (setq ewm--saved-interprogram-cut-function interprogram-cut-function)
   (setq interprogram-cut-function #'ewm--interprogram-cut-function)
+  (setq ewm--saved-interprogram-paste-function interprogram-paste-function)
+  (setq interprogram-paste-function nil)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion)
   (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
@@ -908,6 +913,7 @@ now that a graphical FRAME exists."
   (ewm-text-input-auto-mode-disable)
   (ewm--disable-process-advice)
   (setq interprogram-cut-function ewm--saved-interprogram-cut-function)
+  (setq interprogram-paste-function ewm--saved-interprogram-paste-function)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (advice-remove 'delete-frame #'ewm--prevent-frame-deletion)
   (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
