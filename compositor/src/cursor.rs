@@ -8,7 +8,7 @@ use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
 use smithay::backend::renderer::gles::{GlesError, GlesRenderer};
-use smithay::utils::{Physical, Point, Transform};
+use smithay::utils::{Physical, Point, Size, Transform};
 
 /// Fallback cursor image data (64x64 RGBA)
 /// This is a simple left_ptr style cursor.
@@ -54,7 +54,7 @@ impl CursorBuffer {
             &self.buffer,
             None,
             None,
-            None,
+            Some(Size::from((CURSOR_WIDTH, CURSOR_HEIGHT))),
             smithay::backend::renderer::element::Kind::Cursor,
         )
     }

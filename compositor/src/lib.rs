@@ -4213,7 +4213,7 @@ impl OutputManagementHandler for State {
         // has already sent succeeded().
         for (name, config) in configs {
             self.ewm.output_config.insert(name.clone(), config);
-            self.backend.apply_output_config(&mut self.ewm, &name);
+            self.apply_output_config_for(&name);
         }
     }
 }
@@ -4529,6 +4529,43 @@ impl State {
         self.ewm.queue_redraw_for_pointer();
     }
 
+    /// Apply output config and adjust the pointer if the output geometry changed.
+    /// Preserves the pointer's relative position within the output (e.g. center
+    /// stays center after a scale change).
+    fn apply_output_config_for(&mut self, output_name: &str) {
+        let pos: Point<f64, Logical> = self.ewm.pointer_location.into();
+        let output = self
+            .ewm
+            .space
+            .outputs()
+            .find(|o| o.name() == output_name)
+            .cloned();
+        let old_geo = output
+            .as_ref()
+            .and_then(|o| self.ewm.space.output_geometry(o));
+
+        self.backend.apply_output_config(&mut self.ewm, output_name);
+
+        if let (Some(ref output), Some(old_geo)) = (&output, old_geo) {
+            let point = Point::from((pos.x as i32, pos.y as i32));
+            if old_geo.contains(point) {
+                if let Some(new_geo) = self.ewm.space.output_geometry(output) {
+                    if old_geo != new_geo {
+                        let rel_x =
+                            (pos.x - old_geo.loc.x as f64) / old_geo.size.w as f64;
+                        let rel_y =
+                            (pos.y - old_geo.loc.y as f64) / old_geo.size.h as f64;
+                        let new_x =
+                            new_geo.loc.x as f64 + rel_x * new_geo.size.w as f64;
+                        let new_y =
+                            new_geo.loc.y as f64 + rel_y * new_geo.size.h as f64;
+                        self.warp_pointer(new_x, new_y);
+                    }
+                }
+            }
+        }
+    }
+
     /// Center the pointer on the first output. Called once during startup so the
     /// cursor doesn't begin at (0, 0).
     pub fn center_pointer_on_first_output(&mut self) {
@@ -4774,8 +4811,8 @@ impl State {
                     config.enabled = e;
                 }
 
-                // Apply the config
-                self.backend.apply_output_config(&mut self.ewm, &name);
+                // Apply the config (adjusts pointer if geometry changed)
+                self.apply_output_config_for(&name);
             }
             ModuleCommand::ImCommit { text, surface_id } => {
                 use smithay::wayland::text_input::TextInputSeat;
