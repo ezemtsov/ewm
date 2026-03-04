@@ -38,7 +38,6 @@
 (declare-function ewm-set-selection-module "ewm-core")
 (declare-function ewm-output-layout-module "ewm-core")
 (declare-function ewm-close-module "ewm-core")
-(declare-function ewm-minimize-module "ewm-core")
 (declare-function ewm-warp-pointer-module "ewm-core")
 (declare-function ewm-screenshot-module "ewm-core")
 (declare-function ewm-get-debug-state-module "ewm-core")
@@ -213,6 +212,8 @@ Called with one argument: t when entering idle, nil when waking.")
       ("activate_workspace" (ewm--handle-activate-workspace event))
       ("fullscreen_request" (ewm--handle-fullscreen-request event))
       ("unfullscreen_request" (ewm--handle-unfullscreen-request event))
+      ("maximize_request" (ewm--handle-maximize-request event))
+      ("unmaximize_request" (ewm--handle-unmaximize-request event))
       ("idle_state_changed" (ewm--handle-idle-state-changed event))
       ("environment" (ewm--handle-environment event)))))
 
@@ -281,6 +282,20 @@ Buries the surface buffer, causing it to be hidden by the layout system."
       (when (buffer-live-p buf)
         (with-current-buffer buf
           (bury-buffer))))))
+
+(defun ewm--handle-maximize-request (event)
+  "Handle maximize request EVENT.
+Makes the surface the sole window in its tab via `delete-other-windows'."
+  (let ((id (map-elt event "id")))
+    (when-let* ((buf (gethash id ewm--surfaces))
+                (win (get-buffer-window buf t)))
+      (select-window win)
+      (delete-other-windows win))))
+
+(defun ewm--handle-unmaximize-request (_event)
+  "Handle unmaximize request EVENT.
+No-op: tiling layout has no maximized state to restore."
+  nil)
 
 ;;; Shell CWD tracking
 

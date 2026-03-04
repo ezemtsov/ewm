@@ -9,7 +9,7 @@ use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
-use crate::{event, module, Ewm, State};
+use crate::{Ewm, State};
 
 use super::client::{ClientId, ClientManager, TestClient};
 
@@ -212,11 +212,6 @@ impl Fixture {
                     if let Some(toplevel) = window.toplevel() {
                         toplevel.send_close();
                     }
-                }
-            }
-            ModuleCommand::Minimize { id } => {
-                if self.state.ewm.id_windows.contains_key(&id) {
-                    module::push_event(event::Event::Minimize { id });
                 }
             }
             ModuleCommand::OutputLayout { output, surfaces, tabs } => {

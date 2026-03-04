@@ -157,9 +157,6 @@ pub enum ModuleCommand {
     Close {
         id: u32,
     },
-    Minimize {
-        id: u32,
-    },
     Focus {
         id: u32,
     },
@@ -587,6 +584,14 @@ fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
         }
         Event::UnfullscreenRequest { id } => list(vec![
             cons("event", "unfullscreen_request".into_lisp(env)?)?,
+            cons("id", (id as i64).into_lisp(env)?)?,
+        ]),
+        Event::MaximizeRequest { id } => list(vec![
+            cons("event", "maximize_request".into_lisp(env)?)?,
+            cons("id", (id as i64).into_lisp(env)?)?,
+        ]),
+        Event::UnmaximizeRequest { id } => list(vec![
+            cons("event", "unmaximize_request".into_lisp(env)?)?,
             cons("id", (id as i64).into_lisp(env)?)?,
         ]),
         Event::IdleStateChanged { idle } => list(vec![

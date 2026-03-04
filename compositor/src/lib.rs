@@ -3894,6 +3894,18 @@ impl XdgShellHandler for State {
         }
     }
 
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
+            module::push_event(Event::MaximizeRequest { id });
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
+            module::push_event(Event::UnmaximizeRequest { id });
+        }
+    }
+
     fn popup_destroyed(&mut self, _surface: PopupSurface) {
         // Queue redraw to clear the popup from screen
         self.ewm.queue_redraw_all();
@@ -3907,7 +3919,7 @@ impl XdgDecorationHandler for State {
         use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(Mode::ServerSide);
+            state.decoration_mode = Some(Mode::ClientSide);
         });
         toplevel.send_configure();
     }
@@ -3915,12 +3927,10 @@ impl XdgDecorationHandler for State {
     fn request_mode(
         &mut self,
         toplevel: ToplevelSurface,
-        _mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     ) {
-        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
-
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(Mode::ServerSide);
+            state.decoration_mode = Some(mode);
         });
         toplevel.send_configure();
     }
@@ -4151,6 +4161,18 @@ impl ForeignToplevelHandler for State {
     fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
             module::push_event(Event::UnfullscreenRequest { id });
+        }
+    }
+
+    fn set_maximized(&mut self, wl_surface: WlSurface) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
+            module::push_event(Event::MaximizeRequest { id });
+        }
+    }
+
+    fn unset_maximized(&mut self, wl_surface: WlSurface) {
+        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
+            module::push_event(Event::UnmaximizeRequest { id });
         }
     }
 
@@ -4695,12 +4717,6 @@ impl State {
                         toplevel.send_close();
                         info!("Close surface {} (sent close request)", id);
                     }
-                }
-            }
-            ModuleCommand::Minimize { id } => {
-                if self.ewm.id_windows.contains_key(&id) {
-                    module::push_event(event::Event::Minimize { id });
-                    info!("Minimize surface {} (sent event to Emacs)", id);
                 }
             }
             ModuleCommand::Focus { id } => {
