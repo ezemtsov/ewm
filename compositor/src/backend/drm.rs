@@ -1010,11 +1010,8 @@ impl DrmBackendState {
         };
 
         if self.paused || !device.drm.is_active() {
-            debug!(
-                "Skipping render: paused={} drm_active={}",
-                self.paused,
-                device.drm.is_active()
-            );
+            // This branch hits any time we try to render while the user has
+            // switched to a different VT, so don't print anything here.
             return super::RenderResult::Skipped;
         }
 
