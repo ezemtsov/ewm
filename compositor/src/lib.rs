@@ -4975,34 +4975,38 @@ impl State {
     }
 
     /// Read clipboard data from the current client selection and forward to Emacs.
+    ///
+    /// Deferred to an idle callback because `new_selection()` is called before
+    /// Smithay updates `SeatData`, so `request_data_device_client_selection()`
+    /// would read the old selection if called synchronously.
     fn read_client_selection_to_emacs(&mut self) {
-        let (read_end, write_end) = std::os::unix::net::UnixStream::pair()
-            .expect("UnixStream::pair failed");
+        self.ewm.loop_handle.insert_idle(|state| {
+            let (read_end, write_end) = std::os::unix::net::UnixStream::pair()
+                .expect("UnixStream::pair failed");
 
-        let write_fd: OwnedFd = write_end.into();
-
-        let mime = "text/plain;charset=utf-8".to_string();
-        match request_data_device_client_selection(&self.ewm.seat, mime, write_fd) {
-            Ok(()) => {
-                std::thread::spawn(move || {
-                    use std::io::Read;
-                    // Set a read timeout so we don't block forever on misbehaving clients
-                    let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
-                    let mut read_end = read_end;
-                    let mut buf = Vec::new();
-                    if let Err(e) = read_end.read_to_end(&mut buf) {
-                        warn!("error reading client selection: {e:?}");
-                        return;
-                    }
-                    if let Ok(text) = String::from_utf8(buf) {
-                        if !text.is_empty() {
-                            module::push_event(Event::SelectionChanged { text });
+            let write_fd: OwnedFd = write_end.into();
+            let mime = "text/plain;charset=utf-8".to_string();
+            match request_data_device_client_selection(&state.ewm.seat, mime, write_fd) {
+                Ok(()) => {
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
+                        let mut read_end = read_end;
+                        let mut buf = Vec::new();
+                        if let Err(e) = read_end.read_to_end(&mut buf) {
+                            warn!("error reading client selection: {e:?}");
+                            return;
                         }
-                    }
-                });
+                        if let Ok(text) = String::from_utf8(buf) {
+                            if !text.is_empty() {
+                                module::push_event(Event::SelectionChanged { text });
+                            }
+                        }
+                    });
+                }
+                Err(_) => {}
             }
-            Err(_) => {}
-        }
+        });
     }
 
     /// Handle lid open/close from libinput switch events.
