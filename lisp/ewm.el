@@ -674,7 +674,7 @@ ARGS is a plist with optional keys:
            (y (plist-get props :y))
            (scale (plist-get props :scale))
            (transform (plist-get props :transform)))
-      (when (or width height scale transform x y)
+      (when (or width height refresh scale transform x y)
         (ewm-configure-output name
                               :width width
                               :height height
