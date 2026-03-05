@@ -6,7 +6,7 @@
 let
   inherit (pkgs) lib;
   inherit (pkgs) rustPlatform pkg-config;
-  inherit (pkgs) glib libdrm libgbm libglvnd libinput libxkbcommon pipewire seatd systemd wayland;
+  inherit (pkgs) glib libdisplay-info libdrm libgbm libglvnd libinput libxkbcommon pipewire seatd systemd wayland;
 
   gitTrackedFiles = lib.fileset.gitTracked ./..;
 
@@ -36,6 +36,7 @@ let
 
     buildInputs = [
       glib # For GIO (XDG app enumeration)
+      libdisplay-info # EDID parsing for monitor make/model
       libdrm
       libgbm
       libglvnd # For libEGL

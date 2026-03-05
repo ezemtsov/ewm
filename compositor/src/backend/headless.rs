@@ -131,7 +131,7 @@ impl HeadlessBackend {
         // Initialize output state in Ewm
         ewm.output_state.insert(
             output.clone(),
-            OutputState::new(name, 16_667, (width as i32, height as i32)), // ~60Hz
+            OutputState::new(name, 16_667, (width, height)), // ~60Hz
         );
 
         let size = Size::from((width, height));
@@ -140,21 +140,35 @@ impl HeadlessBackend {
         self.outputs.insert(
             name.to_string(),
             VirtualOutput {
-                output,
+                output: output.clone(),
                 size,
                 damage_tracker,
                 render_count: 0,
             },
         );
 
-        // Recalculate total output size
-        ewm.recalculate_output_size();
+        // Build OutputInfo and register via centralized lifecycle method
+        let current_scale = output.current_scale().fractional_scale();
+        let current_transform = output.current_transform();
+        let output_info = crate::OutputInfo {
+            name: name.to_string(),
+            make: "EWM".to_string(),
+            model: "Virtual".to_string(),
+            width_mm: width,
+            height_mm: height,
+            x: x_offset,
+            y: y_offset,
+            scale: current_scale,
+            transform: crate::backend::transform_to_int(current_transform),
+            modes: vec![crate::OutputMode {
+                width,
+                height,
+                refresh: 60_000,
+                preferred: true,
+            }],
+        };
 
-        // Register initial working area (full output, no panels yet)
-        let working_area: smithay::utils::Rectangle<i32, smithay::utils::Logical> =
-            smithay::utils::Rectangle::from_size(Size::from((width, height)));
-        ewm.working_areas
-            .insert(name.to_string(), working_area);
+        ewm.add_output(&output, output_info);
 
         info!(
             "Added virtual output: {} ({}x{}) at ({}, {})",
@@ -245,46 +259,8 @@ impl HeadlessBackend {
             ewm.space.map_output(&output, (x, y));
         }
 
-        // Update OutputInfo
-        for out_info in &mut ewm.outputs {
-            if out_info.name == output_name {
-                if let Some(scale) = config.scale {
-                    out_info.scale = super::closest_representable_scale(scale);
-                }
-                if let Some(transform) = config.transform {
-                    out_info.transform = super::transform_to_int(transform);
-                }
-                if let Some((x, y)) = config.position {
-                    out_info.x = x;
-                    out_info.y = y;
-                }
-            }
-        }
-
-        // Notify existing surfaces of scale/transform change
-        ewm.send_scale_transform_to_output_surfaces(&output);
-
-        ewm.recalculate_output_size();
-        ewm.output_offsets_dirty = true;
-        ewm.check_working_area_change(&output);
-        ewm.queue_redraw_all();
-
-        // Notify Emacs of the applied config
-        let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
-            size: (0, 0).into(),
-            refresh: 0,
-        });
-        let current_geo = ewm.space.output_geometry(&output).unwrap_or_default();
-        ewm.queue_event(crate::event::Event::OutputConfigChanged {
-            name: output_name.to_string(),
-            width: current_mode.size.w,
-            height: current_mode.size.h,
-            refresh: current_mode.refresh,
-            x: current_geo.loc.x,
-            y: current_geo.loc.y,
-            scale: output.current_scale().fractional_scale(),
-            transform: super::transform_to_int(output.current_transform()),
-        });
+        // Update all backend-agnostic bookkeeping
+        ewm.output_config_changed(&output);
     }
 
     /// Get the renderer (for tests that need to verify rendering)

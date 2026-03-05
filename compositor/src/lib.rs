@@ -2782,6 +2782,154 @@ impl Ewm {
         });
     }
 
+    /// Register a newly connected output.
+    ///
+    /// Called by backends after hardware setup (DRM surface, virtual output) and
+    /// after the output is mapped in the space. Handles all backend-agnostic
+    /// bookkeeping: OutputInfo registration, D-Bus output, size recalculation,
+    /// IPC event to Emacs, initial working area, and output management state.
+    pub fn add_output(&mut self, output: &Output, info: OutputInfo) {
+        let output_name = info.name.clone();
+
+        // Register D-Bus output for screen casting
+        #[cfg(feature = "screencast")]
+        {
+            let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
+                size: (0, 0).into(),
+                refresh: 0,
+            });
+            let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
+            dbus_outputs.push(crate::dbus::OutputInfo {
+                name: output_name.clone(),
+                x: info.x,
+                y: info.y,
+                width: current_mode.size.w,
+                height: current_mode.size.h,
+                refresh: (current_mode.refresh / 1000) as u32,
+            });
+            info!(
+                "Added D-Bus output: {} at ({}, {}) (total: {})",
+                output_name, info.x, info.y, dbus_outputs.len()
+            );
+        }
+
+        self.outputs.push(info.clone());
+
+        self.recalculate_output_size();
+
+        self.send_output_detected(info);
+
+        // Send initial working area (full output initially, before any panels)
+        let working_area = self.get_working_area(output);
+        self.working_areas
+            .insert(output_name.clone(), working_area);
+        self.queue_event(Event::WorkingArea {
+            output: output_name,
+            x: working_area.loc.x,
+            y: working_area.loc.y,
+            width: working_area.size.w,
+            height: working_area.size.h,
+        });
+
+        self.output_management_state.output_heads_changed = true;
+    }
+
+    /// Handle output configuration changes (mode, scale, transform, position).
+    ///
+    /// Called by backends after applying hardware state changes. Handles all
+    /// backend-agnostic bookkeeping: OutputInfo update, D-Bus update, scale
+    /// notification, lock buffer resize, screencast size, recalculation,
+    /// working areas, redraw, IPC event to Emacs, and output management state.
+    pub fn output_config_changed(&mut self, output: &Output) {
+        let output_name = output.name();
+        let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
+            size: (0, 0).into(),
+            refresh: 0,
+        });
+        let current_scale = output.current_scale().fractional_scale();
+        let current_transform = output.current_transform();
+        let current_geo = self.space.output_geometry(output).unwrap_or_default();
+
+        // Update OutputInfo in-place
+        for out_info in &mut self.outputs {
+            if out_info.name == output_name {
+                out_info.scale = current_scale;
+                out_info.transform = backend::transform_to_int(current_transform);
+                out_info.x = current_geo.loc.x;
+                out_info.y = current_geo.loc.y;
+                for mode_info in &mut out_info.modes {
+                    mode_info.preferred = mode_info.width == current_mode.size.w
+                        && mode_info.height == current_mode.size.h
+                        && mode_info.refresh == current_mode.refresh;
+                }
+            }
+        }
+
+        // Update D-Bus outputs
+        #[cfg(feature = "screencast")]
+        {
+            let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
+            for dbus_out in dbus_outputs.iter_mut() {
+                if dbus_out.name == output_name {
+                    dbus_out.width = current_mode.size.w;
+                    dbus_out.height = current_mode.size.h;
+                    dbus_out.refresh = (current_mode.refresh / 1000) as u32;
+                    dbus_out.x = current_geo.loc.x;
+                    dbus_out.y = current_geo.loc.y;
+                }
+            }
+        }
+
+        // Notify existing surfaces of scale/transform change
+        self.send_scale_transform_to_output_surfaces(output);
+
+        // Resize lock buffer and reconfigure lock surface for new output size
+        let output_size = crate::utils::output_size(output);
+        let is_locked = self.is_locked();
+        if let Some(state) = self.output_state.get_mut(output) {
+            state.resize_lock_buffer((output_size.w as i32, output_size.h as i32));
+            state.resize_fullscreen_backdrop((output_size.w as i32, output_size.h as i32));
+            if is_locked {
+                if let Some(lock_surface) = &state.lock_surface {
+                    configure_lock_surface(lock_surface, output);
+                }
+            }
+        }
+
+        // Notify screen casts of size change
+        #[cfg(feature = "screencast")]
+        {
+            let physical_size = Size::from((current_mode.size.w, current_mode.size.h));
+            let refresh = (current_mode.refresh / 1000) as u32;
+            for cast in self.screen_casts.values_mut() {
+                if cast.output_name == output_name {
+                    cast.ensure_size(physical_size, refresh);
+                    cast.set_refresh(refresh);
+                }
+            }
+        }
+
+        // Recalculate total output size, working areas, and queue redraw
+        self.recalculate_output_size();
+        self.output_offsets_dirty = true;
+        self.check_working_area_change(output);
+        self.queue_redraw_all();
+
+        // Notify Emacs of the applied config
+        self.queue_event(Event::OutputConfigChanged {
+            name: output_name.to_string(),
+            width: current_mode.size.w,
+            height: current_mode.size.h,
+            refresh: current_mode.refresh,
+            x: current_geo.loc.x,
+            y: current_geo.loc.y,
+            scale: current_scale,
+            transform: backend::transform_to_int(current_transform),
+        });
+
+        self.output_management_state.output_heads_changed = true;
+    }
+
     /// Notify all surfaces on an output about a scale/transform change.
     ///
     /// Iterates windows and layer surfaces on the given output,
@@ -4792,7 +4940,20 @@ impl State {
             } => {
                 // Update stored config (merge with existing)
                 let config = self.ewm.output_config.entry(name.clone()).or_default();
-                if let (Some(w), Some(h)) = (width, height) {
+                if width.is_some() || height.is_some() || refresh.is_some() {
+                    // Fall back to current mode for unspecified parameters
+                    let current = self
+                        .ewm
+                        .space
+                        .outputs()
+                        .find(|o| o.name() == name)
+                        .and_then(|o| o.current_mode());
+                    let w = width.unwrap_or_else(|| {
+                        current.map(|m| m.size.w).unwrap_or(1920)
+                    });
+                    let h = height.unwrap_or_else(|| {
+                        current.map(|m| m.size.h).unwrap_or(1080)
+                    });
                     config.mode = Some((w, h, refresh));
                 }
                 if x.is_some() || y.is_some() {

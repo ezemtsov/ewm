@@ -44,6 +44,7 @@ features = [
 git = "https://github.com/Smithay/smithay.git"
 rev = "ae14fa12f6ee3fc4dd4c766ffb21848f991a6a18"
 default-features = false
+features = ["display-info"]
 
 # PipeWire for screen sharing (optional)
 [dependencies.pipewire]

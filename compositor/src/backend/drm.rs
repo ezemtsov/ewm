@@ -103,30 +103,29 @@ const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
 /// Find a DRM mode matching the requested resolution and optional refresh rate.
 ///
 /// `refresh_hz`: target refresh rate in Hz (e.g., 60 for 60Hz).
-/// Converted to millihertz internally for precise matching against DRM modes.
-/// When multiple modes match the resolution, prefers the one closest to the
-/// target refresh rate (within 2Hz tolerance), otherwise picks the highest.
+/// When specified, picks the mode whose refresh is closest (within 1Hz).
+/// When omitted, picks the highest available refresh rate.
 fn resolve_drm_mode(
     modes: &[DrmMode],
     width: i32,
     height: i32,
     refresh_hz: Option<i32>,
 ) -> Option<DrmMode> {
-    let target_mhz = refresh_hz.map(|r| r * 1000);
-    modes
+    let matching = modes
         .iter()
-        .filter(|m| m.size().0 as i32 == width && m.size().1 as i32 == height)
-        .max_by_key(|m| {
-            let mode_mhz = Mode::from(**m).refresh;
-            if let Some(target) = target_mhz {
-                // Within 2Hz tolerance = 2000 mHz
-                if (mode_mhz - target).abs() < 2000 {
-                    return 1_000_000 + mode_mhz;
-                }
-            }
-            mode_mhz
-        })
-        .copied()
+        .filter(|m| m.size().0 as i32 == width && m.size().1 as i32 == height);
+
+    if let Some(target_hz) = refresh_hz {
+        let target_mhz = target_hz * 1000;
+        // Pick mode closest to target, within 1Hz tolerance
+        matching
+            .filter(|m| (Mode::from(**m).refresh - target_mhz).abs() < 1000)
+            .min_by_key(|m| (Mode::from(**m).refresh - target_mhz).abs())
+            .copied()
+    } else {
+        // No refresh specified — pick highest available
+        matching.max_by_key(|m| Mode::from(**m).refresh).copied()
+    }
 }
 
 /// Build per-surface DMA-BUF feedback with scanout tranche hints.
@@ -869,117 +868,8 @@ impl DrmBackendState {
             }
         }
 
-        // --- Update OutputInfo ---
-        for out_info in &mut ewm.outputs {
-            if out_info.name == output_name {
-                if let Some(drm_mode) = new_drm_mode {
-                    // Update mode list entries to reflect current mode dimensions
-                    for mode_info in &mut out_info.modes {
-                        mode_info.preferred = false;
-                    }
-                    // Mark the applied mode as preferred
-                    if let Some(mode_info) = out_info.modes.iter_mut().find(|m| {
-                        m.width == drm_mode.size().0 as i32
-                            && m.height == drm_mode.size().1 as i32
-                            && m.refresh == (drm_mode.vrefresh() * 1000) as i32
-                    }) {
-                        mode_info.preferred = true;
-                    }
-                }
-                if let Some(scale) = config.scale {
-                    out_info.scale = super::closest_representable_scale(scale);
-                }
-                if let Some(transform) = config.transform {
-                    out_info.transform = super::transform_to_int(transform);
-                }
-                if let Some((x, y)) = config.position {
-                    out_info.x = x;
-                    out_info.y = y;
-                }
-            }
-        }
-
-        // --- Update D-Bus outputs ---
-        #[cfg(feature = "screencast")]
-        {
-            let mut dbus_outputs = ewm.dbus_outputs.lock().unwrap();
-            for dbus_out in dbus_outputs.iter_mut() {
-                if dbus_out.name == output_name {
-                    if let Some(drm_mode) = new_drm_mode {
-                        dbus_out.width = drm_mode.size().0 as i32;
-                        dbus_out.height = drm_mode.size().1 as i32;
-                        dbus_out.refresh = drm_mode.vrefresh();
-                    }
-                    if let Some((x, y)) = config.position {
-                        dbus_out.x = x;
-                        dbus_out.y = y;
-                    }
-                }
-            }
-        }
-
-        // --- Notify existing surfaces of scale/transform change ---
-        ewm.send_scale_transform_to_output_surfaces(&output);
-
-        // --- Resize lock buffer and reconfigure lock surface for new output size ---
-        let output_size = crate::utils::output_size(&output);
-        let is_locked = ewm.is_locked();
-        if let Some(state) = ewm.output_state.get_mut(&output) {
-            state.resize_lock_buffer((output_size.w as i32, output_size.h as i32));
-            state.resize_fullscreen_backdrop((output_size.w as i32, output_size.h as i32));
-            if is_locked {
-                if let Some(lock_surface) = &state.lock_surface {
-                    crate::configure_lock_surface(lock_surface, &output);
-                }
-            }
-        }
-
-        // --- Notify screen casts of size change ---
-        #[cfg(feature = "screencast")]
-        if new_drm_mode.is_some() || config.scale.is_some() {
-            let physical_size = output
-                .current_mode()
-                .map(|m| Size::from((m.size.w, m.size.h)))
-                .unwrap_or_else(|| Size::from((1920i32, 1080i32)));
-            let refresh = output
-                .current_mode()
-                .map(|m| (m.refresh / 1000) as u32)
-                .unwrap_or(60);
-            for cast in ewm.screen_casts.values_mut() {
-                if cast.output_name == output_name {
-                    cast.ensure_size(physical_size, refresh);
-                    cast.set_refresh(refresh);
-                }
-            }
-        }
-
-        // --- Recalculate total output size, working areas, and queue redraw ---
-        ewm.recalculate_output_size();
-        ewm.output_offsets_dirty = true;
-        ewm.check_working_area_change(&output);
-        ewm.queue_redraw_all();
-
-        // --- Notify Emacs of the applied config ---
-        let current_mode = output.current_mode().unwrap_or(Mode {
-            size: (0, 0).into(),
-            refresh: 0,
-        });
-        let current_geo = ewm
-            .space
-            .output_geometry(&output)
-            .unwrap_or_default();
-        ewm.queue_event(crate::event::Event::OutputConfigChanged {
-            name: output_name.to_string(),
-            width: current_mode.size.w,
-            height: current_mode.size.h,
-            refresh: current_mode.refresh,
-            x: current_geo.loc.x,
-            y: current_geo.loc.y,
-            scale: output.current_scale().fractional_scale(),
-            transform: super::transform_to_int(output.current_transform()),
-        });
-
-        ewm.output_management_state.output_heads_changed = true;
+        // --- Update all backend-agnostic bookkeeping ---
+        ewm.output_config_changed(&output);
 
         info!(
             "Applied config for {}: mode={:?}, scale={:?}, transform={:?}, pos={:?}",
@@ -1664,6 +1554,21 @@ impl DrmBackendState {
             })
             .collect();
 
+        // Read EDID for manufacturer/model/serial
+        let (make, model, serial_number) =
+            if let Some(info) = smithay_drm_extras::display_info::for_connector(
+                &device.drm,
+                connector.handle(),
+            ) {
+                (
+                    info.make().unwrap_or_else(|| "Unknown".to_string()),
+                    info.model().unwrap_or_else(|| "Unknown".to_string()),
+                    info.serial().unwrap_or_default(),
+                )
+            } else {
+                ("Unknown".to_string(), "Unknown".to_string(), String::new())
+            };
+
         // Create Smithay output
         let output = Output::new(
             connector_name.clone(),
@@ -1673,9 +1578,9 @@ impl DrmBackendState {
                     .map(|(w, h)| (w as i32, h as i32).into())
                     .unwrap_or_default(),
                 subpixel: Subpixel::Unknown,
-                make: "EWM".into(),
-                model: "DRM".into(),
-                serial_number: String::new(),
+                make: make.clone(),
+                model: model.clone(),
+                serial_number: serial_number.clone(),
             },
         );
 
@@ -1833,7 +1738,7 @@ impl DrmBackendState {
             info!("Output {} connected but disabled by config", connector_name);
         }
 
-        // Collect output info for IPC
+        // Build OutputInfo and register via centralized lifecycle method
         let physical_size = connector.size().unwrap_or((0, 0));
         let output_modes: Vec<OutputMode> = connector
             .modes()
@@ -1855,8 +1760,8 @@ impl DrmBackendState {
 
         let output_info = OutputInfo {
             name: connector_name.clone(),
-            make: "Unknown".to_string(),
-            model: "Unknown".to_string(),
+            make,
+            model,
             width_mm: physical_size.0 as i32,
             height_mm: physical_size.1 as i32,
             x: x_offset,
@@ -1866,48 +1771,7 @@ impl DrmBackendState {
             modes: output_modes,
         };
 
-        ewm.outputs.push(output_info.clone());
-
-        // Update D-Bus outputs for screen casting
-        #[cfg(feature = "screencast")]
-        {
-            let mut dbus_outputs = ewm.dbus_outputs.lock().unwrap();
-            dbus_outputs.push(crate::dbus::OutputInfo {
-                name: connector_name.clone(),
-                x: x_offset,
-                y: y_offset,
-                width: mode.size().0 as i32,
-                height: mode.size().1 as i32,
-                refresh: mode.vrefresh(),
-            });
-            info!(
-                "Added D-Bus output: {} at ({}, {}) (total: {})",
-                connector_name,
-                x_offset,
-                y_offset,
-                dbus_outputs.len()
-            );
-        }
-
-        // Recalculate output_size
-        ewm.recalculate_output_size();
-
-        // Send IPC event
-        ewm.send_output_detected(output_info);
-
-        // Send initial working area (equals full output initially, before any panels)
-        let working_area = ewm.get_working_area(&output);
-        ewm.working_areas
-            .insert(connector_name.clone(), working_area);
-        ewm.queue_event(crate::event::Event::WorkingArea {
-            output: connector_name.clone(),
-            x: working_area.loc.x,
-            y: working_area.loc.y,
-            width: working_area.size.w,
-            height: working_area.size.h,
-        });
-
-        ewm.output_management_state.output_heads_changed = true;
+        ewm.add_output(&output, output_info);
 
         info!("Output connected: {}", connector_name);
 
