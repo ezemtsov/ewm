@@ -283,14 +283,10 @@ Buries the surface buffer, causing it to be hidden by the layout system."
         (with-current-buffer buf
           (bury-buffer))))))
 
-(defun ewm--handle-maximize-request (event)
+(defun ewm--handle-maximize-request (_event)
   "Handle maximize request EVENT.
-Makes the surface the sole window in its tab via `delete-other-windows'."
-  (let ((id (map-elt event "id")))
-    (when-let* ((buf (gethash id ewm--surfaces))
-                (win (get-buffer-window buf t)))
-      (select-window win)
-      (delete-other-windows win))))
+No-op: tiling layout already manages window sizes."
+  nil)
 
 (defun ewm--handle-unmaximize-request (_event)
   "Handle unmaximize request EVENT.
