@@ -340,12 +340,7 @@ pub struct OutputState {
 
 impl OutputState {
     /// Create a new OutputState for the given output name and size.
-    pub fn new(output_name: &str, refresh_interval_us: u64, size: (i32, i32)) -> Self {
-        let refresh_interval = if refresh_interval_us > 0 {
-            Some(Duration::from_micros(refresh_interval_us))
-        } else {
-            None
-        };
+    pub fn new(output_name: &str, refresh_interval: Option<Duration>, size: (i32, i32)) -> Self {
         Self {
             redraw_state: RedrawState::Queued,
             frame_clock: frame_clock::FrameClock::new(refresh_interval),

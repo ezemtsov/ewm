@@ -13,6 +13,7 @@
 //!    enabling reproducible snapshot tests.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use smithay::{
     backend::{
@@ -131,7 +132,7 @@ impl HeadlessBackend {
         // Initialize output state in Ewm
         ewm.output_state.insert(
             output.clone(),
-            OutputState::new(name, 16_667, (width, height)), // ~60Hz
+            OutputState::new(name, Some(Duration::from_micros(16_667)), (width, height)), // ~60Hz
         );
 
         let size = Size::from((width, height));

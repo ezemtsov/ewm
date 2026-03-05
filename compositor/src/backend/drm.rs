@@ -66,8 +66,8 @@ use smithay::{
             EventLoop, LoopHandle, RegistrationToken,
         },
         drm::control::{
-            connector, crtc, property, Device as ControlDevice, Mode as DrmMode, ModeTypeFlags,
-            ResourceHandle,
+            connector, crtc, property, Device as ControlDevice, Mode as DrmMode, ModeFlags,
+            ModeTypeFlags, ResourceHandle,
         },
         input::Libinput,
         rustix::fs::OFlags,
@@ -126,6 +126,37 @@ fn resolve_drm_mode(
         // No refresh specified — pick highest available
         matching.max_by_key(|m| Mode::from(**m).refresh).copied()
     }
+}
+
+/// Compute precise refresh interval from DRM mode timing parameters.
+///
+/// Uses raw pixel clock and total line counts instead of the rounded `vrefresh()`
+/// value, giving nanosecond precision (e.g. 4167291ns for 239.964Hz instead of
+/// 4166µs from integer division).
+fn refresh_interval(mode: DrmMode) -> Duration {
+    let clock = mode.clock() as u64;
+    let htotal = mode.hsync().2 as u64;
+    let vtotal = mode.vsync().2 as u64;
+
+    if clock == 0 || htotal == 0 || vtotal == 0 {
+        return Duration::from_micros(16_667);
+    }
+
+    let mut numerator = htotal * vtotal * 1_000_000;
+    let mut denominator = clock;
+
+    if mode.flags().contains(ModeFlags::INTERLACE) {
+        denominator *= 2;
+    }
+    if mode.flags().contains(ModeFlags::DBLSCAN) {
+        numerator *= 2;
+    }
+    if mode.vscan() > 1 {
+        numerator *= mode.vscan() as u64;
+    }
+
+    let refresh_interval_ns = (numerator + denominator / 2) / denominator;
+    Duration::from_nanos(refresh_interval_ns)
 }
 
 /// Build per-surface DMA-BUF feedback with scanout tranche hints.
@@ -833,10 +864,7 @@ impl DrmBackendState {
         }
 
         // --- Build final Smithay state and apply in one call ---
-        let smithay_mode = new_drm_mode.map(|m| Mode {
-            size: (m.size().0 as i32, m.size().1 as i32).into(),
-            refresh: (m.vrefresh() * 1000) as i32,
-        });
+        let smithay_mode = new_drm_mode.map(Mode::from);
         let scale = config
             .scale
             .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
@@ -855,16 +883,9 @@ impl DrmBackendState {
 
         // --- Update frame clock refresh interval ---
         if let Some(drm_mode) = new_drm_mode {
-            let refresh_interval = if drm_mode.vrefresh() > 0 {
-                Some(std::time::Duration::from_micros(
-                    1_000_000 / drm_mode.vrefresh() as u64,
-                ))
-            } else {
-                None
-            };
             if let Some(output_state) = ewm.output_state.get_mut(&output) {
                 output_state.frame_clock =
-                    crate::frame_clock::FrameClock::new(refresh_interval);
+                    crate::frame_clock::FrameClock::new(Some(refresh_interval(drm_mode)));
             }
         }
 
@@ -1584,10 +1605,7 @@ impl DrmBackendState {
             },
         );
 
-        let smithay_mode = Mode {
-            size: (mode.size().0 as i32, mode.size().1 as i32).into(),
-            refresh: (mode.vrefresh() * 1000) as i32,
-        };
+        let smithay_mode = Mode::from(mode);
         let initial_transform = config
             .as_ref()
             .and_then(|c| c.transform)
@@ -1651,11 +1669,7 @@ impl DrmBackendState {
 
         info!("DrmCompositor created for {}", connector_name);
 
-        let refresh_interval_us = if mode.vrefresh() > 0 {
-            1_000_000 / mode.vrefresh() as u64
-        } else {
-            16_667
-        };
+        let refresh_interval = refresh_interval(mode);
 
         // Calculate position: use config or auto horizontal layout
         let (x_offset, y_offset) = config
@@ -1716,7 +1730,7 @@ impl DrmBackendState {
         let logical_size = crate::utils::output_size(&output);
         let mut output_state = OutputState::new(
             &connector_name,
-            refresh_interval_us,
+            Some(refresh_interval),
             (logical_size.w as i32, logical_size.h as i32),
         );
         // If the session is locked, mark the new output as locked immediately
@@ -1743,11 +1757,14 @@ impl DrmBackendState {
         let output_modes: Vec<OutputMode> = connector
             .modes()
             .iter()
-            .map(|m| OutputMode {
-                width: m.size().0 as i32,
-                height: m.size().1 as i32,
-                refresh: (m.vrefresh() * 1000) as i32,
-                preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
+            .map(|m| {
+                let smithay = Mode::from(*m);
+                OutputMode {
+                    width: smithay.size.w,
+                    height: smithay.size.h,
+                    refresh: smithay.refresh,
+                    preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
+                }
             })
             .collect();
 
@@ -2443,9 +2460,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         .insert_source(udev_backend, |event, _, state| {
             match event {
                 UdevEvent::Changed { device_id: _ } => {
-                    // Scan for connector changes
+                    // Scan for connector changes (redraws queued per-output as needed)
                     state.backend.on_device_changed(&mut state.ewm);
-                    state.ewm.queue_redraw_all();
                 }
                 UdevEvent::Added { device_id, path } => {
                     debug!("UDev device added: {:?} at {:?}", device_id, path);
