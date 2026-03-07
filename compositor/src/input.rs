@@ -435,6 +435,11 @@ use smithay::{
         PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
+    utils::Point,
+    wayland::{
+        compositor::RegionAttributes,
+        pointer_constraints::{with_pointer_constraint, PointerConstraint},
+    },
 };
 
 // ============================================================================
@@ -746,6 +751,41 @@ pub fn parse_tap_button_map(s: &str) -> Option<TapButtonMap> {
     }
 }
 
+/// Result of checking for an active pointer constraint.
+enum ActiveConstraint {
+    /// Pointer is locked in place — no position change allowed.
+    Locked,
+    /// Pointer is confined to a surface, optionally within a region.
+    Confined(Option<RegionAttributes>),
+}
+
+/// Check for an active constraint on `surface` at `pos_within_surface`.
+/// Returns the constraint type if active, or `None`.
+fn active_constraint(
+    surface: &WlSurface,
+    pointer: &smithay::input::pointer::PointerHandle<State>,
+    pos_within_surface: Point<f64, smithay::utils::Logical>,
+) -> Option<ActiveConstraint> {
+    with_pointer_constraint(surface, pointer, |constraint| {
+        let constraint = constraint?;
+        if !constraint.is_active() {
+            return None;
+        }
+        // Constraint does not apply if not within region.
+        if let Some(region) = constraint.region() {
+            if !region.contains(pos_within_surface.to_i32_round()) {
+                return None;
+            }
+        }
+        match &*constraint {
+            PointerConstraint::Locked(_) => Some(ActiveConstraint::Locked),
+            PointerConstraint::Confined(c) => {
+                Some(ActiveConstraint::Confined(c.region().cloned()))
+            }
+        }
+    })
+}
+
 /// Handle relative pointer motion (mice, trackpoints)
 pub fn handle_pointer_motion<B: InputBackend>(
     state: &mut State,
@@ -759,10 +799,74 @@ pub fn handle_pointer_motion<B: InputBackend>(
     // Calculate new position, clamped to output bounds
     let new_x = (current_x + delta.x).clamp(0.0, output_size.w as f64);
     let new_y = (current_y + delta.y).clamp(0.0, output_size.h as f64);
-    state.ewm.pointer_location = (new_x, new_y);
 
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
+
+    // Check active pointer constraints (locked or confined).
+    let mut pointer_confined = None;
+    if let Some((ref surface, surface_loc)) = state.ewm.pointer_focus {
+        let pos_within_surface = Point::from((current_x, current_y)) - surface_loc;
+
+        match active_constraint(surface, &pointer, pos_within_surface) {
+            Some(ActiveConstraint::Locked) => {
+                // Pointer locked — send only relative motion, no position change.
+                pointer.relative_motion(
+                    state,
+                    state.ewm.pointer_focus.clone(),
+                    &RelativeMotionEvent {
+                        delta: event.delta(),
+                        delta_unaccel: event.delta_unaccel(),
+                        utime: event.time(),
+                    },
+                );
+                pointer.frame(state);
+                return true;
+            }
+            Some(ActiveConstraint::Confined(region)) => {
+                pointer_confined =
+                    Some((state.ewm.pointer_focus.clone().unwrap(), region));
+            }
+            None => {}
+        }
+    }
+
+    // Handle confined pointer: prevent leaving the surface/region.
+    if let Some((focus_surface, region)) = &pointer_confined {
+        let new_pos: Point<f64, _> = (new_x, new_y).into();
+        let under = state.ewm.surface_under_point(new_pos);
+        let mut prevent = false;
+
+        // Prevent leaving the focused surface.
+        if Some(&focus_surface.0) != under.as_ref().map(|(s, _)| s) {
+            prevent = true;
+        }
+
+        // Prevent leaving the confine region, if any.
+        if let Some(region) = region {
+            let local = new_pos - focus_surface.1;
+            if !region.contains(local.to_i32_round()) {
+                prevent = true;
+            }
+        }
+
+        if prevent {
+            pointer.relative_motion(
+                state,
+                Some(focus_surface.clone()),
+                &RelativeMotionEvent {
+                    delta: event.delta(),
+                    delta_unaccel: event.delta_unaccel(),
+                    utime: event.time(),
+                },
+            );
+            pointer.frame(state);
+            notify_activity(state);
+            return true;
+        }
+    }
+
+    state.ewm.pointer_location = (new_x, new_y);
 
     // When locked, route pointer to lock surface instead of normal surfaces
     let under = if state.ewm.is_locked() {
@@ -773,6 +877,8 @@ pub fn handle_pointer_motion<B: InputBackend>(
     } else {
         state.ewm.surface_under_point((new_x, new_y).into())
     };
+
+    state.ewm.pointer_focus = under.clone();
 
     pointer.motion(
         state,
@@ -800,6 +906,9 @@ pub fn handle_pointer_motion<B: InputBackend>(
     // Notify idle notifier of user activity
     notify_activity(state);
 
+    // Try to activate any pending constraint on the newly-focused surface
+    state.maybe_activate_pointer_constraint();
+
     true // needs redraw
 }
 
@@ -811,10 +920,53 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     tracy_span!("handle_pointer_motion_absolute");
     let output_size = state.ewm.output_size;
     let pos = event.position_transformed(output_size);
-    state.ewm.pointer_location = (pos.x, pos.y);
 
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
+
+    // Check active pointer constraints (locked or confined).
+    let mut pointer_confined = None;
+    if let Some((ref surface, surface_loc)) = state.ewm.pointer_focus {
+        let (cx, cy) = state.ewm.pointer_location;
+        let pos_within_surface = Point::from((cx, cy)) - surface_loc;
+
+        match active_constraint(surface, &pointer, pos_within_surface) {
+            Some(ActiveConstraint::Locked) => {
+                pointer.frame(state);
+                return true;
+            }
+            Some(ActiveConstraint::Confined(region)) => {
+                pointer_confined =
+                    Some((state.ewm.pointer_focus.clone().unwrap(), region));
+            }
+            None => {}
+        }
+    }
+
+    // Handle confined pointer: prevent leaving the surface/region.
+    if let Some((focus_surface, region)) = &pointer_confined {
+        let under = state.ewm.surface_under_point(pos);
+        let mut prevent = false;
+
+        if Some(&focus_surface.0) != under.as_ref().map(|(s, _)| s) {
+            prevent = true;
+        }
+
+        if let Some(region) = region {
+            let local = pos - focus_surface.1;
+            if !region.contains(local.to_i32_round()) {
+                prevent = true;
+            }
+        }
+
+        if prevent {
+            pointer.frame(state);
+            notify_activity(state);
+            return true;
+        }
+    }
+
+    state.ewm.pointer_location = (pos.x, pos.y);
 
     // When locked, route pointer to lock surface instead of normal surfaces
     let under = if state.ewm.is_locked() {
@@ -825,6 +977,8 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     } else {
         state.ewm.surface_under_point(pos)
     };
+
+    state.ewm.pointer_focus = under.clone();
 
     pointer.motion(
         state,
@@ -839,6 +993,9 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
 
     // Notify idle notifier of user activity
     notify_activity(state);
+
+    // Try to activate any pending constraint on the newly-focused surface
+    state.maybe_activate_pointer_constraint();
 
     true // needs redraw
 }

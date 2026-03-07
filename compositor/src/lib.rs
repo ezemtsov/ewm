@@ -94,6 +94,7 @@ use smithay::{
     delegate_fractional_scale, delegate_idle_notify, delegate_input_method_manager,
     delegate_layer_shell, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
+    delegate_pointer_constraints, delegate_relative_pointer,
     delegate_text_input_manager, delegate_viewporter, delegate_xdg_activation,
     delegate_xdg_shell,
     backend::renderer::element::utils::select_dmabuf_feedback,
@@ -163,6 +164,10 @@ use smithay::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
         },
+        pointer_constraints::{
+            with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState,
+        },
+        relative_pointer::RelativePointerManagerState,
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
@@ -585,6 +590,8 @@ pub struct Ewm {
 
     // Input
     pub pointer_location: (f64, f64),
+    /// Surface under the pointer + its global origin, for constraint checks.
+    pub pointer_focus: Option<(WlSurface, Point<f64, Logical>)>,
     /// Last output the pointer was on, for per-output cursor redraw.
     pointer_output: Option<Output>,
     pub focused_surface_id: u32,
@@ -686,6 +693,14 @@ pub struct Ewm {
     // Presentation time protocol (wp-presentation-time)
     #[allow(dead_code)]
     pub presentation_state: smithay::wayland::presentation::PresentationState,
+
+    // Relative pointer protocol (zwp-relative-pointer-v1)
+    #[allow(dead_code)]
+    pub relative_pointer_state: RelativePointerManagerState,
+
+    // Pointer constraints protocol (zwp-pointer-constraints-v1)
+    #[allow(dead_code)]
+    pub pointer_constraints_state: PointerConstraintsState,
 
     // PipeWire for screen sharing (initialized lazily)
     #[cfg(feature = "screencast")]
@@ -810,6 +825,12 @@ impl Ewm {
         let presentation_state =
             smithay::wayland::presentation::PresentationState::new::<State>(&display_handle, 1);
 
+        // Initialize relative pointer protocol (zwp-relative-pointer-v1)
+        let relative_pointer_state = RelativePointerManagerState::new::<State>(&display_handle);
+
+        // Initialize pointer constraints protocol (zwp-pointer-constraints-v1)
+        let pointer_constraints_state = PointerConstraintsState::new::<State>(&display_handle);
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -837,6 +858,7 @@ impl Ewm {
             outputs: Vec::new(),
             output_config: HashMap::new(),
             pointer_location: (0.0, 0.0),
+            pointer_focus: None,
             pointer_output: None,
             focused_surface_id: 0,
             keyboard_focus: None,
@@ -874,6 +896,8 @@ impl Ewm {
             fractional_scale_state,
             viewporter_state,
             presentation_state,
+            relative_pointer_state,
+            pointer_constraints_state,
             #[cfg(feature = "screencast")]
             pipewire: None,
             #[cfg(feature = "screencast")]
@@ -1227,8 +1251,6 @@ impl Ewm {
         };
         let entries = self.output_layouts.get(&output.name())?;
 
-        let mut fullscreen_fallback = None;
-
         for entry in entries.iter() {
             let window = match self.id_windows.get(&entry.id) {
                 Some(w) => w,
@@ -1283,7 +1305,7 @@ impl Ewm {
             ));
 
             // Window's global origin: pointer_global - origin = pointer_in_window.
-            let window_origin =
+            let window_origin: Point<f64, Logical> =
                 Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
 
             // surface_under(ALL) traverses the full surface tree: toplevel, popups,
@@ -1321,15 +1343,8 @@ impl Ewm {
 
             // Fullscreen covers the entire output — no entries below are visible.
             if entry.fullscreen {
-                fullscreen_fallback = Some((window, window_origin));
                 break;
             }
-        }
-
-        // Fullscreen backdrop: the area outside the client buffer still belongs to
-        // the fullscreen window for input.
-        if let Some((window, window_origin)) = fullscreen_fallback {
-            return Some((window.wl_surface()?.into_owned(), window_origin));
         }
 
         None
@@ -4555,6 +4570,52 @@ smithay::delegate_presentation!(State);
 // Viewporter protocol (wp-viewporter, required by fractional scale clients)
 delegate_viewporter!(State);
 
+// Relative pointer protocol (zwp-relative-pointer-v1)
+delegate_relative_pointer!(State);
+
+// Pointer constraints protocol (zwp-pointer-constraints-v1)
+impl PointerConstraintsHandler for State {
+    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
+        // Pointer constraints track pointer focus internally, so make sure
+        // it's up to date before activating a new one.
+        self.refresh_pointer_focus();
+
+        self.maybe_activate_pointer_constraint();
+    }
+
+    fn cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        location: Point<f64, Logical>,
+    ) {
+        // Only apply hint if the constraint is active
+        let active = with_pointer_constraint(surface, pointer, |c| {
+            c.is_some_and(|c| c.is_active())
+        });
+        if !active {
+            return;
+        }
+
+        let Some((ref focus_surface, origin)) = self.ewm.pointer_focus else {
+            return;
+        };
+        if focus_surface != surface {
+            return;
+        }
+
+        // Clamp hint to output bounds
+        let target = origin + location;
+        let clamped_x = target.x.clamp(0.0, self.ewm.output_size.w as f64);
+        let clamped_y = target.y.clamp(0.0, self.ewm.output_size.h as f64);
+        pointer.set_location((clamped_x, clamped_y).into());
+
+        // Redraw to update cursor position visually
+        self.ewm.queue_redraw_for_pointer();
+    }
+}
+delegate_pointer_constraints!(State);
+
 /// Configure a lock surface to cover the full output
 fn configure_lock_surface(surface: &LockSurface, output: &Output) {
     use smithay::wayland::compositor::with_states;
@@ -4661,12 +4722,15 @@ pub struct State {
 
 impl State {
     /// Warp the pointer to an absolute position, notifying clients.
+    /// Does NOT activate pointer constraints (programmatic warps from Emacs
+    /// during layout changes should not trap the pointer).
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
         self.ewm.pointer_location = (x, y);
         let pointer = self.ewm.pointer.clone();
         let under = self
             .ewm
             .surface_under_point(Point::from((x, y)));
+        self.ewm.pointer_focus = under.clone();
         pointer.motion(
             self,
             under,
@@ -4678,6 +4742,67 @@ impl State {
         );
         pointer.frame(self);
         self.ewm.queue_redraw_for_pointer();
+    }
+
+    /// Re-compute `pointer_focus` from the current pointer location and send
+    /// a motion event so Smithay's internal pointer focus is up to date.
+    /// Called before constraint activation to ensure focus is synced.
+    fn refresh_pointer_focus(&mut self) {
+        let pointer = self.ewm.pointer.clone();
+        let (x, y) = self.ewm.pointer_location;
+        let pos: Point<f64, Logical> = (x, y).into();
+
+        let under = if self.ewm.is_locked() {
+            self.ewm
+                .lock_surface_focus()
+                .map(|s| (s, (0.0, 0.0).into()))
+        } else {
+            self.ewm.surface_under_point(pos)
+        };
+
+        if self.ewm.pointer_focus == under {
+            return;
+        }
+
+        self.ewm.pointer_focus = under.clone();
+
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location: pos,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: 0,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// Activate a pointer constraint if the pointer is over a surface that
+    /// has a pending constraint and the pointer is within the region.
+    fn maybe_activate_pointer_constraint(&self) {
+        let Some((ref surface, surface_loc)) = self.ewm.pointer_focus else {
+            return;
+        };
+        let pointer = &self.ewm.pointer;
+        if !pointer.current_focus().is_some_and(|s| &s == surface) {
+            return;
+        }
+
+        with_pointer_constraint(surface, pointer, |constraint| {
+            let Some(constraint) = constraint else { return };
+            if constraint.is_active() {
+                return;
+            }
+            // Constraint does not apply if not within region.
+            if let Some(region) = constraint.region() {
+                let pos = Point::from(self.ewm.pointer_location) - surface_loc;
+                if !region.contains(pos.to_i32_round()) {
+                    return;
+                }
+            }
+            constraint.activate();
+        });
     }
 
     /// Apply output config and adjust the pointer if the output geometry changed.
