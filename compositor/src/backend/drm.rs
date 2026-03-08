@@ -1753,6 +1753,15 @@ impl DrmBackendState {
         let is_enabled = config.as_ref().map(|c| c.enabled).unwrap_or(true);
         if is_enabled {
             ewm.space.map_output(&output, (x_offset, y_offset));
+            // Notify Wayland clients (including xwayland-satellite) of the
+            // output position via wl_output.geometry. space.map_output only
+            // tracks position internally.
+            output.change_current_state(
+                None,
+                None,
+                None,
+                Some((x_offset, y_offset).into()),
+            );
             info!(
                 "Mapped output {} at position ({}, {}), size {}x{}",
                 connector_name, x_offset, y_offset, mode.size().0, mode.size().1
