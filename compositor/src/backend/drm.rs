@@ -1242,7 +1242,7 @@ impl DrmBackendState {
                 });
 
                 let cursor_location = {
-                    let (px, py) = ewm.pointer_location;
+                    let (px, py) = ewm.pointer_location();
                     smithay::utils::Point::<i32, smithay::utils::Physical>::from((px as i32, py as i32))
                 };
 

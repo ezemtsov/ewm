@@ -73,7 +73,7 @@ fn test_pointer_location_tracking() {
     let ewm = fixture.ewm_ref();
 
     // Pointer starts at origin
-    assert_eq!(ewm.pointer_location, (0.0, 0.0));
+    assert_eq!(ewm.pointer_location(), (0.0, 0.0));
 
     // Total output size should span both outputs
     assert!(ewm.output_size.w >= 3840, "Should span both outputs");

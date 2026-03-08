@@ -589,7 +589,6 @@ pub struct Ewm {
     pub output_config: HashMap<String, OutputConfig>,
 
     // Input
-    pub pointer_location: (f64, f64),
     /// Surface under the pointer + its global origin, for constraint checks.
     pub pointer_focus: Option<(WlSurface, Point<f64, Logical>)>,
     /// Last output the pointer was on, for per-output cursor redraw.
@@ -857,7 +856,6 @@ impl Ewm {
             output_size: Size::from((0, 0)),
             outputs: Vec::new(),
             output_config: HashMap::new(),
-            pointer_location: (0.0, 0.0),
             pointer_focus: None,
             pointer_output: None,
             focused_surface_id: 0,
@@ -1587,11 +1585,19 @@ impl Ewm {
         }
     }
 
+    /// Current pointer location, read from Smithay's pointer handle.
+    /// This is the single source of truth — updated by `pointer.motion()`,
+    /// `pointer.set_location()`, and `cursor_position_hint`.
+    pub fn pointer_location(&self) -> (f64, f64) {
+        let pos = self.pointer.current_location();
+        (pos.x, pos.y)
+    }
+
     /// Queue a redraw for outputs overlapping the cursor.
     /// Redraws the output the pointer is currently on, plus the previous
     /// output if the pointer crossed a boundary.
     pub fn queue_redraw_for_pointer(&mut self) {
-        let pos = smithay::utils::Point::from(self.pointer_location);
+        let pos = smithay::utils::Point::from(self.pointer_location());
         let current = self.output_at(pos).cloned();
         let prev = self.pointer_output.take();
 
@@ -2732,7 +2738,7 @@ impl Ewm {
     /// Get the output under the cursor position
     fn output_under_cursor(&self) -> Option<String> {
         use smithay::utils::Point;
-        let (px, py) = self.pointer_location;
+        let (px, py) = self.pointer_location();
         let cursor_point = Point::from((px as i32, py as i32));
 
         for output in self.space.outputs() {
@@ -4725,7 +4731,6 @@ impl State {
     /// Does NOT activate pointer constraints (programmatic warps from Emacs
     /// during layout changes should not trap the pointer).
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
-        self.ewm.pointer_location = (x, y);
         let pointer = self.ewm.pointer.clone();
         let under = self
             .ewm
@@ -4749,7 +4754,7 @@ impl State {
     /// Called before constraint activation to ensure focus is synced.
     fn refresh_pointer_focus(&mut self) {
         let pointer = self.ewm.pointer.clone();
-        let (x, y) = self.ewm.pointer_location;
+        let (x, y) = self.ewm.pointer_location();
         let pos: Point<f64, Logical> = (x, y).into();
 
         let under = if self.ewm.is_locked() {
@@ -4796,7 +4801,7 @@ impl State {
             }
             // Constraint does not apply if not within region.
             if let Some(region) = constraint.region() {
-                let pos = Point::from(self.ewm.pointer_location) - surface_loc;
+                let pos = Point::from(self.ewm.pointer_location()) - surface_loc;
                 if !region.contains(pos.to_i32_round()) {
                     return;
                 }
@@ -4809,7 +4814,7 @@ impl State {
     /// Preserves the pointer's relative position within the output (e.g. center
     /// stays center after a scale change).
     fn apply_output_config_for(&mut self, output_name: &str) {
-        let pos: Point<f64, Logical> = self.ewm.pointer_location.into();
+        let pos: Point<f64, Logical> = self.ewm.pointer_location().into();
         let output = self
             .ewm
             .space
@@ -4997,7 +5002,7 @@ impl State {
     fn update_shared_state(&mut self) {
         let mut shared = module::shared_state().lock().unwrap();
         shared.focused_surface_id = self.ewm.focused_surface_id;
-        shared.pointer_location = self.ewm.pointer_location;
+        shared.pointer_location = self.ewm.pointer_location();
         if self.ewm.output_offsets_dirty {
             self.ewm.output_offsets_dirty = false;
             // Derive output_offsets from output geometry + working area.
@@ -5172,7 +5177,7 @@ impl State {
                     "outputs": self.ewm.outputs,
                     "working_areas": self.ewm.get_working_areas_info(),
                     "layer_surfaces": layer_surfaces_info,
-                    "pointer_location": self.ewm.pointer_location,
+                    "pointer_location": self.ewm.pointer_location(),
                     "intercepted_keys": module::get_intercepted_keys(),
                     "emacs_pid": self.ewm.emacs_pid,
                     "text_input_intercept": self.ewm.text_input_intercept,
@@ -5219,7 +5224,7 @@ impl State {
             ModuleCommand::OutputLayout { output, surfaces, tabs } => {
                 self.ewm.apply_output_layout(&output, surfaces);
                 // Re-evaluate pointer focus after layout change
-                let (px, py) = self.ewm.pointer_location;
+                let (px, py) = self.ewm.pointer_location();
                 let under = self
                     .ewm
                     .surface_under_point(smithay::utils::Point::from((px, py)));

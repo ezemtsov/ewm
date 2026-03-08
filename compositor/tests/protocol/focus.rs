@@ -42,7 +42,7 @@ fn test_pointer_location_tracking() {
     let ewm = fixture.ewm_ref();
 
     // Pointer starts at origin
-    assert_eq!(ewm.pointer_location, (0.0, 0.0));
+    assert_eq!(ewm.pointer_location(), (0.0, 0.0));
 }
 
 /// Test that output state includes redraw tracking

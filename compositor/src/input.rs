@@ -792,7 +792,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
     event: B::PointerMotionEvent,
 ) -> bool {
     tracy_span!("handle_pointer_motion");
-    let (current_x, current_y) = state.ewm.pointer_location;
+    let (current_x, current_y) = state.ewm.pointer_location();
     let delta = event.delta();
     let output_size = state.ewm.output_size;
 
@@ -866,8 +866,6 @@ pub fn handle_pointer_motion<B: InputBackend>(
         }
     }
 
-    state.ewm.pointer_location = (new_x, new_y);
-
     // When locked, route pointer to lock surface instead of normal surfaces
     let under = if state.ewm.is_locked() {
         state
@@ -878,6 +876,9 @@ pub fn handle_pointer_motion<B: InputBackend>(
         state.ewm.surface_under_point((new_x, new_y).into())
     };
 
+    // Activate pending constraints only on focus change (not every motion).
+    let focus_changed = state.ewm.pointer_focus.as_ref().map(|(s, _)| s)
+        != under.as_ref().map(|(s, _)| s);
     state.ewm.pointer_focus = under.clone();
 
     pointer.motion(
@@ -906,8 +907,9 @@ pub fn handle_pointer_motion<B: InputBackend>(
     // Notify idle notifier of user activity
     notify_activity(state);
 
-    // Try to activate any pending constraint on the newly-focused surface
-    state.maybe_activate_pointer_constraint();
+    if focus_changed {
+        state.maybe_activate_pointer_constraint();
+    }
 
     true // needs redraw
 }
@@ -927,7 +929,7 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     // Check active pointer constraints (locked or confined).
     let mut pointer_confined = None;
     if let Some((ref surface, surface_loc)) = state.ewm.pointer_focus {
-        let (cx, cy) = state.ewm.pointer_location;
+        let (cx, cy) = state.ewm.pointer_location();
         let pos_within_surface = Point::from((cx, cy)) - surface_loc;
 
         match active_constraint(surface, &pointer, pos_within_surface) {
@@ -966,8 +968,6 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
         }
     }
 
-    state.ewm.pointer_location = (pos.x, pos.y);
-
     // When locked, route pointer to lock surface instead of normal surfaces
     let under = if state.ewm.is_locked() {
         state
@@ -978,6 +978,9 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
         state.ewm.surface_under_point(pos)
     };
 
+    // Activate pending constraints only on focus change (not every motion).
+    let focus_changed = state.ewm.pointer_focus.as_ref().map(|(s, _)| s)
+        != under.as_ref().map(|(s, _)| s);
     state.ewm.pointer_focus = under.clone();
 
     pointer.motion(
@@ -994,8 +997,9 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     // Notify idle notifier of user activity
     notify_activity(state);
 
-    // Try to activate any pending constraint on the newly-focused surface
-    state.maybe_activate_pointer_constraint();
+    if focus_changed {
+        state.maybe_activate_pointer_constraint();
+    }
 
     true // needs redraw
 }
@@ -1015,7 +1019,7 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
     if !state.ewm.is_locked() {
         // Click-to-focus: on button press, focus the surface under pointer
         if button_state == ButtonState::Pressed {
-            let (px, py) = state.ewm.pointer_location;
+            let (px, py) = state.ewm.pointer_location();
             let pos = (px, py).into();
 
             // Check if a layer surface is under the pointer
@@ -1073,7 +1077,7 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
     // When locked, skip scroll-to-focus
     if !state.ewm.is_locked() {
         // Scroll-to-focus: focus the surface under pointer on scroll
-        let (px, py) = state.ewm.pointer_location;
+        let (px, py) = state.ewm.pointer_location();
         let pos = (px, py).into();
 
         // Check if a layer surface is under the pointer
