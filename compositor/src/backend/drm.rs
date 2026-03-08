@@ -71,7 +71,9 @@ use smithay::{
         },
         input::Libinput,
         rustix::fs::OFlags,
-        wayland_server::{protocol::wl_surface::WlSurface, Display, DisplayHandle},
+        wayland_server::{
+            backend::GlobalId, protocol::wl_surface::WlSurface, Display, DisplayHandle,
+        },
     },
     utils::{DeviceFd, Scale, Transform},
     wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder},
@@ -236,6 +238,8 @@ type GbmDrmCompositor = DrmCompositor<
 /// Per-output surface state (DRM-specific, redraw state is in Ewm::output_state)
 struct OutputSurface {
     output: Output,
+    /// wl_output global ID (stored for verification/lifecycle)
+    global_id: GlobalId,
     compositor: GbmDrmCompositor,
     /// Connector handle for mode lookups
     connector: connector::Handle,
@@ -665,6 +669,9 @@ impl DrmBackendState {
         // Re-scan connectors to detect monitors added/removed during VT switch.
         // If topology changed, on_device_changed sends OutputsComplete.
         self.on_device_changed(ewm);
+
+        // Verify output globals survived the session pause/resume cycle
+        self.verify_output_globals();
 
         // Reactivate monitors in case they were deactivated (e.g., lid closed)
         ewm.activate_monitors();
@@ -1621,7 +1628,8 @@ impl DrmBackendState {
             None,
         );
         output.set_preferred(smithay_mode);
-        output.create_global::<State>(display_handle);
+        let global_id = output.create_global::<State>(display_handle);
+        warn!("Created wl_output global for {}: {:?}", connector_name, global_id);
 
         // Create DrmCompositor
         let cursor_size = device.drm.cursor_size();
@@ -1717,6 +1725,7 @@ impl DrmBackendState {
             crtc,
             OutputSurface {
                 output: output.clone(),
+                global_id,
                 compositor,
                 connector: connector.handle(),
                 vblank_throttle,
@@ -1806,6 +1815,33 @@ impl DrmBackendState {
         };
 
         ewm.remove_output(&surface.output);
+    }
+
+    /// Verify all connected outputs have valid wl_output globals.
+    /// Re-creates any that are missing (defensive against silent global loss).
+    fn verify_output_globals(&mut self) {
+        let Some(device) = &mut self.device else {
+            return;
+        };
+        let Some(dh) = &self.display_handle else {
+            return;
+        };
+        for surface in device.surfaces.values_mut() {
+            let backend = dh.backend_handle();
+            if backend.global_info(surface.global_id.clone()).is_err() {
+                warn!(
+                    "Output {} has invalid wl_output global {:?}, re-creating",
+                    surface.output.name(),
+                    surface.global_id
+                );
+                surface.global_id = surface.output.create_global::<State>(dh);
+                warn!(
+                    "Re-created wl_output global for {}: {:?}",
+                    surface.output.name(),
+                    surface.global_id
+                );
+            }
+        }
     }
 
     /// Handle lid open/close by disconnecting or reconnecting the laptop panel.
@@ -2003,6 +2039,13 @@ fn initialize_drm(
             warn!("Failed to connect output during init: {:?}", err);
         }
     }
+
+    // Verify all output globals are valid (defensive against silent global loss)
+    state
+        .backend
+        .as_drm_mut()
+        .unwrap()
+        .verify_output_globals();
 
     info!(
         "Total output area: {}x{} ({} outputs)",
