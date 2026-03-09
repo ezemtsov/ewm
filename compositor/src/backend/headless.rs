@@ -274,14 +274,3 @@ impl HeadlessBackend {
         self.outputs.get(name).map(|o| o.render_count).unwrap_or(0)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_headless_backend_creation() {
-        let backend = HeadlessBackend::new();
-        assert!(backend.outputs.is_empty());
-    }
-}

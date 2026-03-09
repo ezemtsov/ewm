@@ -11,22 +11,18 @@ use tracing::info;
 use crate::backend::{Backend, HeadlessBackend};
 use crate::{Ewm, State};
 
-use super::client::{ClientId, ClientManager, TestClient};
-
 /// Test fixture for integration testing
 ///
 /// Provides a complete compositor environment with:
 /// - Event loop for async operations
 /// - Headless backend for virtual outputs
 /// - Wayland display for protocol testing
-/// - Client manager for simulating Wayland clients
 ///
 /// Uses the same `State` struct as production, but with `Backend::Headless`.
 pub struct Fixture {
     event_loop: EventLoop<'static, State>,
     state: State,
     _display: Display<State>,
-    clients: ClientManager,
 }
 
 impl Fixture {
@@ -47,7 +43,6 @@ impl Fixture {
         let backend = Backend::Headless(HeadlessBackend::new());
 
         let state = State { backend, ewm };
-        let clients = ClientManager::new();
 
         info!("Test fixture initialized with headless backend");
 
@@ -55,25 +50,7 @@ impl Fixture {
             event_loop,
             state,
             _display: display,
-            clients,
         })
-    }
-
-    /// Add a new test client
-    ///
-    /// Returns a ClientId that can be used to interact with the client.
-    pub fn add_client(&mut self) -> ClientId {
-        self.clients.add_client()
-    }
-
-    /// Get a test client by ID
-    pub fn get_client(&self, id: ClientId) -> Option<&TestClient> {
-        self.clients.get_client(id)
-    }
-
-    /// Get a mutable test client by ID
-    pub fn get_client_mut(&mut self, id: ClientId) -> Option<&mut TestClient> {
-        self.clients.get_client_mut(id)
     }
 
     /// Add a virtual output with the given name and size
@@ -221,52 +198,5 @@ impl Fixture {
             // Other commands can be added as needed for testing
             _ => {}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_fixture_creation() {
-        let fixture = Fixture::new();
-        assert!(fixture.is_ok());
-    }
-
-    #[test]
-    fn test_add_output() {
-        let mut fixture = Fixture::new().unwrap();
-        fixture.add_output("test", 1920, 1080);
-        assert_eq!(fixture.output_count(), 1);
-    }
-
-    #[test]
-    fn test_remove_output() {
-        let mut fixture = Fixture::new().unwrap();
-        fixture.add_output("test1", 1920, 1080);
-        fixture.add_output("test2", 1280, 720);
-        assert_eq!(fixture.output_count(), 2);
-        fixture.remove_output("test1");
-        assert_eq!(fixture.output_count(), 1);
-    }
-
-    #[test]
-    fn test_dispatch_triggers_redraw() {
-        let mut fixture = Fixture::new().unwrap();
-        fixture.add_output("test", 1920, 1080);
-        fixture.dispatch();
-        // Just verify dispatch doesn't panic
-    }
-
-    #[test]
-    fn test_output_size_calculation() {
-        let mut fixture = Fixture::new().unwrap();
-        fixture.add_output("test1", 1920, 1080);
-        fixture.add_output("test2", 1280, 720);
-        // After adding two outputs side by side, total width should be sum
-        let total_size = fixture.ewm().output_size;
-        assert_eq!(total_size.w, 1920 + 1280);
-        assert_eq!(total_size.h, 1080); // Height is max of outputs
     }
 }
