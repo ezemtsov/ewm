@@ -5,6 +5,7 @@
 //! for debug state serialization.
 
 use serde::Serialize;
+use std::collections::HashMap;
 
 /// Output mode information
 #[derive(Serialize, Clone, Debug)]
@@ -42,7 +43,7 @@ pub struct WorkingAreaInfo {
 
 /// Events sent from compositor to Emacs.
 ///
-/// Converted to Lisp alists in `module.rs::event_to_lisp()`.
+/// Serialized to JSON via serde and sent to Emacs over a pipe fd.
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "event")]
 pub enum Event {
@@ -152,5 +153,5 @@ pub enum Event {
     IdleStateChanged { idle: bool },
     /// Environment variables for Emacs to apply
     #[serde(rename = "environment")]
-    Environment { vars: Vec<(String, String)> },
+    Environment { vars: HashMap<String, String> },
 }

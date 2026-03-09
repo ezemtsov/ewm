@@ -18,7 +18,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'map)
 
 (declare-function ewm-focus-module "ewm-core")
 (declare-function ewm-get-focused-id "ewm-core")
@@ -74,7 +73,7 @@ Calls `ewm-focus' only when the target differs from current focus."
   "Handle focus EVENT from compositor.
 Selects the window displaying the surface's buffer, or displays it if hidden.
 When multiple windows show the same buffer, picks the one under the pointer."
-  (pcase-let (((map ("id" id)) event))
+  (let ((id (alist-get 'id event)))
     (when-let* (((not (ewm--minibuffer-active-p)))
                 (buf (gethash id ewm--surfaces))
                 ((buffer-live-p buf)))

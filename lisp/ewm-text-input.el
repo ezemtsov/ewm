@@ -110,7 +110,7 @@ client text fields gain/lose focus."
 (defun ewm--handle-key (event)
   "Handle key event from compositor.
 Called when text-input-intercept is enabled and a printable key is pressed."
-  (pcase-let (((map ("utf8" utf8)) event))
+  (let ((utf8 (alist-get 'utf8 event)))
     (when utf8
       (let* ((focused-id (ewm-get-focused-id))
              (surface-buf (gethash focused-id ewm--surfaces))

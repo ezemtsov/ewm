@@ -25,7 +25,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'map)
 
 (unless (featurep 'ewm-core)
   (let ((path (getenv "EWM_MODULE_PATH")))
@@ -34,7 +33,7 @@
       (require 'ewm-core))))
 
 ;; Functions provided by the ewm-core dynamic module
-(declare-function ewm-pop-event "ewm-core")
+(declare-function ewm-init-event-channel "ewm-core")
 (declare-function ewm-set-selection-module "ewm-core")
 (declare-function ewm-output-layout-module "ewm-core")
 (declare-function ewm-close-module "ewm-core")
@@ -75,28 +74,39 @@ FORMAT-STRING and ARGS are passed to `format'."
   "Return non-nil if compositor is active."
   ewm--module-mode)
 
-(defun ewm--sigusr1-handler ()
-  "Handle SIGUSR1 signal from compositor.
-The compositor sends this signal when events are queued."
-  (interactive)
-  (ewm--process-pending-events))
+(defvar ewm--event-process nil
+  "Pipe process receiving compositor events via open_channel.")
 
-(defun ewm--enable-signal-handler ()
-  "Enable SIGUSR1 handler for compositor events."
-  (define-key special-event-map [sigusr1] #'ewm--sigusr1-handler))
+(defvar ewm--event-buffer ""
+  "Accumulator for partial JSON lines from the event pipe.")
 
-(defun ewm--disable-signal-handler ()
-  "Disable SIGUSR1 handler."
-  (define-key special-event-map [sigusr1] nil))
+(defun ewm--event-filter (_proc output)
+  "Process newline-delimited JSON events from the compositor pipe."
+  (setq ewm--event-buffer (concat ewm--event-buffer output))
+  (while (string-match "\n" ewm--event-buffer)
+    (let ((line (substring ewm--event-buffer 0 (match-beginning 0))))
+      (setq ewm--event-buffer (substring ewm--event-buffer (match-end 0)))
+      (when (> (length line) 0)
+        (condition-case err
+            (let ((event (json-parse-string line :object-type 'alist :false-object nil)))
+              (ewm--handle-event event))
+          (error (message "EWM: event parse error: %s" err)))))))
 
-(defun ewm--process-pending-events ()
-  "Process all pending module events synchronously.
-Called by SIGUSR1 handler when compositor queues events."
-  (when (and ewm--module-mode
-             (fboundp 'ewm-running)
-             (ewm-running))
-    (while-let ((event (ewm-pop-event)))
-      (ewm--handle-event event))))
+(defun ewm--init-event-channel ()
+  "Create a pipe process and register it as the compositor event channel."
+  (ewm--destroy-event-channel)
+  (setq ewm--event-buffer "")
+  (setq ewm--event-process
+        (make-pipe-process :name "ewm-events"
+                           :noquery t
+                           :filter #'ewm--event-filter))
+  (ewm-init-event-channel ewm--event-process))
+
+(defun ewm--destroy-event-channel ()
+  "Tear down the event pipe process."
+  (when (and ewm--event-process (process-live-p ewm--event-process))
+    (delete-process ewm--event-process))
+  (setq ewm--event-process nil))
 
 (defgroup ewm nil
   "Emacs Wayland Manager - Wayland apps as Emacs buffers."
@@ -190,8 +200,8 @@ Called with one argument: t when entering idle, nil when waking.")
 ;;; Protocol
 
 (defun ewm--handle-event (event)
-  "Handle EVENT from compositor (an alist with string keys)."
-  (let ((type (map-elt event "event")))
+  "Handle EVENT from compositor (an alist with symbol keys)."
+  (let ((type (alist-get 'event event)))
     (pcase type
       ("new" (ewm--handle-new-surface event))
       ("close" (ewm--handle-close-surface event))
@@ -256,7 +266,10 @@ Called with one argument: t when entering idle, nil when waking.")
   "Handle new surface EVENT.
 If there's a pending frame for this output, this is an Emacs frame.
 Otherwise, creates a buffer for external surface."
-  (pcase-let (((map ("id" id) ("app" app) ("output" output) ("pid" pid)) event))
+  (let ((id (alist-get 'id event))
+        (app (alist-get 'app event))
+        (output (alist-get 'output event))
+        (pid (alist-get 'pid event)))
     (let ((pending (and output (assoc output ewm--pending-frame-outputs))))
       (if pending
           (ewm--assign-pending-frame id output pending)
@@ -265,7 +278,7 @@ Otherwise, creates a buffer for external surface."
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.
 Kills the surface buffer."
-  (pcase-let (((map ("id" id)) event))
+  (let ((id (alist-get 'id event)))
     (when-let ((buf (gethash id ewm--surfaces)))
       (when (buffer-live-p buf)
         (with-current-buffer buf
@@ -277,7 +290,7 @@ Kills the surface buffer."
 (defun ewm--handle-minimize-surface (event)
   "Handle minimize surface EVENT.
 Buries the surface buffer, causing it to be hidden by the layout system."
-  (pcase-let (((map ("id" id)) event))
+  (let ((id (alist-get 'id event)))
     (when-let ((buf (gethash id ewm--surfaces)))
       (when (buffer-live-p buf)
         (with-current-buffer buf
@@ -344,7 +357,9 @@ The current buffer is the surface buffer when this runs."
 (defun ewm--handle-title-update (event)
   "Handle title update EVENT.
 Updates buffer-local variables and renames the buffer."
-  (pcase-let (((map ("id" id) ("app" app) ("title" title)) event))
+  (let ((id (alist-get 'id event))
+        (app (alist-get 'app event))
+        (title (alist-get 'title event)))
     (when-let ((buf (gethash id ewm--surfaces)))
       (when (buffer-live-p buf)
         (with-current-buffer buf
@@ -355,7 +370,7 @@ Updates buffer-local variables and renames the buffer."
 
 (defun ewm--handle-output-detected (event)
   "Handle output detected EVENT. Creates a frame if needed."
-  (pcase-let (((map ("name" name)) event))
+  (let ((name (alist-get 'name event)))
     (unless (ewm--frame-for-output name)
       (ewm--create-frame-for-output name))))
 
@@ -366,14 +381,14 @@ Runs `ewm-output-config-changed-hook' with the applied configuration."
 
 (defvar ewm-output-config-changed-hook nil
   "Hook run when output configuration is applied.
-Each function receives the event alist with keys:
-  \"name\", \"width\", \"height\", \"refresh\", \"x\", \"y\", \"scale\", \"transform\".")
+Each function receives the event alist with symbol keys:
+  name, width, height, refresh, x, y, scale, transform.")
 
 (defun ewm--handle-output-disconnected (event)
   "Handle output disconnected EVENT.
 Deletes the frame for that output. Surface buffers remain in Emacs but are
 hidden by the compositor since no windows display them."
-  (pcase-let (((map ("name" name)) event))
+  (let ((name (alist-get 'name event)))
     (when-let ((frame (ewm--frame-for-output name)))
       (delete-frame frame t))))
 
@@ -407,8 +422,8 @@ re-syncs layout and focus with the compositor."
 (defun ewm--handle-environment (event)
   "Handle environment event from compositor.
 Sets Emacs's `process-environment' so child processes inherit these vars."
-  (dolist (pair (map-elt event "vars"))
-    (setenv (car pair) (cdr pair))))
+  (dolist (pair (alist-get 'vars event))
+    (setenv (symbol-name (car pair)) (cdr pair))))
 
 (defun ewm--handle-ready ()
   "Handle ready event from compositor.
@@ -418,7 +433,7 @@ Signals that the compositor is fully initialized."
 (defun ewm--handle-debug-state (event)
   "Handle debug_state event from compositor.
 Displays the compositor state in a buffer for debugging."
-  (let ((json (map-elt event "json")))
+  (let ((json (alist-get 'json event)))
     (with-current-buffer (get-buffer-create "*ewm-state*")
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -431,15 +446,13 @@ Displays the compositor state in a buffer for debugging."
   "Handle working area change EVENT.
 Called when layer-shell surfaces (panels) claim exclusive zones,
 changing the available area for Emacs frames."
-  (pcase-let (((map ("output" output) ("x" x) ("y" y)
-                     ("width" width) ("height" height)) event))
-    (ewm--log "Working area for %s: %dx%d+%d+%d" output width height x y)
-    ;; Frame resize happens automatically via Wayland configure event.
-    ;; Layout refresh is triggered by window-size-change-functions when
-    ;; the frame actually resizes. Don't call ewm-layout--refresh directly
-    ;; here to avoid focus loops during startup when multiple working area
-    ;; events arrive in quick succession.
-    ))
+  ;; Frame resize happens automatically via Wayland configure event.
+  ;; Layout refresh is triggered by window-size-change-functions when
+  ;; the frame actually resizes.
+  (ewm--log "Working area for %s: %dx%d+%d+%d"
+            (alist-get 'output event) (alist-get 'width event)
+            (alist-get 'height event) (alist-get 'x event)
+            (alist-get 'y event)))
 
 ;;; Clipboard integration
 
@@ -455,7 +468,7 @@ changing the available area for Emacs frames."
 (defun ewm--handle-selection-changed (event)
   "Handle selection-changed EVENT from compositor.
 Push the text onto the kill ring."
-  (let ((text (map-elt event "text")))
+  (let ((text (alist-get 'text event)))
     (when (and text (not (string-empty-p text))
                 (not (equal text (car kill-ring))))
       (setq ewm--last-selection text)
@@ -472,8 +485,8 @@ Push the text onto the kill ring."
   "Handle activate_workspace EVENT from compositor.
 Switch to the requested tab on the appropriate frame."
   (unless (ewm--minibuffer-active-p)
-    (let* ((output (map-elt event "output"))
-           (tab-index (map-elt event "tab_index"))
+    (let* ((output (alist-get 'output event))
+           (tab-index (alist-get 'tab_index event))
            (frame (ewm--frame-for-output output)))
       (when frame
         (with-selected-frame frame
@@ -488,7 +501,7 @@ Switch to the requested tab on the appropriate frame."
 (defun ewm--handle-fullscreen-request (event)
   "Handle fullscreen request EVENT: set fullscreen flag and refresh layout.
 Sets on all windows of the buffer on the target frame."
-  (let ((id (map-elt event "id")))
+  (let ((id (alist-get 'id event)))
     (when-let* ((buf (gethash id ewm--surfaces))
                 (win (get-buffer-window buf t)))
       (ewm--set-fullscreen buf t)
@@ -497,7 +510,7 @@ Sets on all windows of the buffer on the target frame."
 (defun ewm--handle-unfullscreen-request (event)
   "Handle unfullscreen request EVENT: clear fullscreen flag and refresh layout.
 Clears on the focused frame only, so other outputs remain fullscreen."
-  (let ((id (map-elt event "id")))
+  (let ((id (alist-get 'id event)))
     (when-let* ((buf (gethash id ewm--surfaces))
                 (win (get-buffer-window buf t)))
       (ewm--set-fullscreen buf nil)
@@ -507,7 +520,7 @@ Clears on the focused frame only, so other outputs remain fullscreen."
 
 (defun ewm--handle-idle-state-changed (event)
   "Handle idle_state_changed EVENT from compositor."
-  (let ((idle (map-elt event "idle")))
+  (let ((idle (alist-get 'idle event)))
     (run-hook-with-args 'ewm-idle-hook idle)))
 
 (defun ewm--send-idle-config ()
@@ -779,39 +792,38 @@ The compositor runs as a thread within the Emacs process."
   (setq ewm--pending-frame-outputs nil)
   (setq ewm--module-mode nil)
   (setq ewm--compositor-ready nil)
-  ;; Start the compositor
+  ;; Set up pipe channel before starting compositor so no events are lost
+  (ewm--init-event-channel)
   (if (ewm-start)
       (progn
         (setq ewm--module-mode t)
-        ;; Enable EWM mode first (needed for frame creation hooks)
+        ;; Enable EWM mode (needed for frame creation hooks)
         (ewm-mode 1)
-        ;; Enable signal handler to receive events
-        (ewm--enable-signal-handler)
         ;; Wait for compositor ready event (with timeout)
         (let ((timeout 50))  ; 5 seconds max
           (while (and (> timeout 0)
                       (not ewm--compositor-ready))
-            (sleep-for 0.1)
-            (ewm--process-pending-events)
+            (accept-process-output ewm--event-process 0.1)
             (cl-decf timeout))
           (unless ewm--compositor-ready
-            (ewm--disable-signal-handler)
+            (ewm--destroy-event-channel)
             (ewm-mode -1)
             (setq ewm--module-mode nil)
             (error "Compositor failed to become ready"))))
+    (ewm--destroy-event-channel)
     (error "Failed to start compositor")))
 
 (defun ewm-stop-module ()
   "Stop EWM module mode compositor."
   (interactive)
   (when ewm--module-mode
-    (ewm--disable-signal-handler)
     (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
       (ewm-stop)
       (let ((timeout 50))
         (while (and (> timeout 0) (ewm-running))
           (sleep-for 0.1)
           (cl-decf timeout))))
+    (ewm--destroy-event-channel)
     (setq ewm--module-mode nil)
     (setq ewm--compositor-ready nil)
     (ewm-mode -1)))
@@ -929,9 +941,9 @@ now that a graphical FRAME exists."
   (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
   ;; Stop module mode if active
   (when ewm--module-mode
-    (ewm--disable-signal-handler)
     (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
       (ewm-stop))
+    (ewm--destroy-event-channel)
     (setq ewm--module-mode nil)))
 
 ;;;###autoload

@@ -219,7 +219,7 @@ fn spawn(xwl: &Satellite) {
 
     unsafe {
         process.pre_exec(|| {
-            // Unblock signals inherited from Emacs (e.g. SIGUSR1).
+            // Unblock signals inherited from Emacs.
             let mut set: libc::sigset_t = std::mem::zeroed();
             libc::sigfillset(&mut set);
             libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());

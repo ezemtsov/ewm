@@ -2246,17 +2246,17 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     crate::xwayland::satellite::setup(&mut state);
 
     // Build complete environment
-    let mut env_vars: Vec<(String, String)> = vec![
+    let mut env_vars = std::collections::HashMap::<String, String>::from([
         ("WAYLAND_DISPLAY".into(), socket_name_str),
         ("XDG_CURRENT_DESKTOP".into(), "ewm".into()),
         ("XDG_SESSION_TYPE".into(), "wayland".into()),
         ("GTK_IM_MODULE".into(), "wayland".into()),
         ("QT_IM_MODULE".into(), "wayland".into()),
-    ];
+    ]);
     if let Some(satellite) = &state.ewm.satellite {
         let display_name = satellite.display_name().to_owned();
         info!("listening on X11 socket: {display_name}");
-        env_vars.push(("DISPLAY".into(), display_name));
+        env_vars.insert("DISPLAY".into(), display_name);
     } else {
         // SAFETY: still single-threaded at this point
         unsafe { std::env::remove_var("DISPLAY") };

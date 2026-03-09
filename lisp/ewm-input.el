@@ -230,13 +230,10 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
 
 (defun ewm-input--clear-prefix ()
   "Complete prefix sequence: clear flag and restore compositor focus.
-Only acts when a prefix sequence was active.  Skipped during SIGUSR1
-handling — the signal handler runs as a command but is not a real
-user action."
-  (unless (eq this-command 'ewm--sigusr1-handler)
-    (when (ewm-in-prefix-sequence-p)
-      (ewm-clear-prefix-sequence)
-      (ewm--sync-focus))))
+Only acts when a prefix sequence was active."
+  (when (ewm-in-prefix-sequence-p)
+    (ewm-clear-prefix-sequence)
+    (ewm--sync-focus)))
 
 ;;; Frame-switch suppression
 ;;

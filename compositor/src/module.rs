@@ -3,9 +3,9 @@
 //! # Design Invariants
 //!
 //! 1. **Thread safety**: The compositor runs in a separate thread from Emacs.
-//!    Communication uses queues and shared state:
+//!    Communication uses queues, pipes, and shared state:
 //!    - `COMMAND_QUEUE`: Emacs → Compositor commands (layouts, focus, etc.)
-//!    - `EVENT_QUEUE`: Compositor → Emacs events (new surfaces, focus changes)
+//!    - `EVENT_WRITER`: Compositor → Emacs events via pipe fd (open_channel)
 //!    - `SHARED_STATE`: Compositor → Emacs snapshot (focus, pointer, outputs)
 //!    - `ACTIVATION_TOKEN_POOL`: Compositor → Emacs pre-generated XDG activation tokens
 //!    - `IN_PREFIX_SEQUENCE`: Bidirectional atomic (hot input path)
@@ -101,6 +101,7 @@ define_errors! {
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
@@ -441,187 +442,30 @@ pub fn get_focus_history() -> Vec<FocusEvent> {
 }
 
 // ============================================================================
-// Event Queue
+// Event Pipe (compositor → Emacs via open_channel fd)
 // ============================================================================
 
-/// Event queue shared between compositor thread and Emacs
-static EVENT_QUEUE: OnceLock<Mutex<VecDeque<Event>>> = OnceLock::new();
+/// Pipe writer for sending events to Emacs.
+/// Set by `init_event_channel`, written to by `push_event`.
+static EVENT_WRITER: Mutex<Option<Box<dyn std::io::Write + Send>>> = Mutex::new(None);
 
-fn event_queue() -> &'static Mutex<VecDeque<Event>> {
-    EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
-}
-
-/// Push an event to the queue and notify Emacs via SIGUSR1
-pub fn push_event(event: Event) {
-    let mut queue = event_queue().lock().unwrap();
-    queue.push_back(event);
-    drop(queue); // Release lock before signaling
-
-    // Send SIGUSR1 to wake Emacs event loop (only when running as module).
-    // In test/standalone mode LOOP_SIGNAL is never set, so skip the signal
-    // to avoid killing the process.
-    if LOOP_SIGNAL.get().is_some() {
-        unsafe {
-            libc::raise(libc::SIGUSR1);
-        }
-    }
-}
-
-/// Pop the next event from the queue, returning it as a Lisp alist
-/// Returns nil if the queue is empty
+/// Initialize the event channel from a pipe process.
+/// Called from Elisp before starting the compositor thread.
 #[defun]
-fn pop_event(env: &Env) -> Result<Value<'_>> {
-    let mut queue = event_queue().lock().unwrap();
-    let event = queue.pop_front();
-    drop(queue);
-
-    match event {
-        None => ().into_lisp(env),
-        Some(e) => event_to_lisp(env, e),
-    }
+fn init_event_channel(env: &Env, pipe_process: Value<'_>) -> Result<()> {
+    let writer = env.open_channel(pipe_process)?;
+    *EVENT_WRITER.lock().unwrap() = Some(Box::new(writer));
+    Ok(())
 }
 
-/// Convert an Event to a Lisp alist.
-fn event_to_lisp<'a>(env: &'a Env, event: Event) -> Result<Value<'a>> {
-    // env.cons / env.list accept any IntoLisp — no need to pre-convert values.
-    macro_rules! alist {
-        ($( $k:expr => $v:expr ),+ $(,)?) => {
-            env.list(($(env.cons($k, $v)?,)+))
-        };
-    }
-
-    match event {
-        Event::Ready => alist!["event" => "ready"],
-        Event::New { id, app, output, pid } => {
-            let mut items = vec![
-                env.cons("event", "new")?,
-                env.cons("id", id as i64)?,
-                env.cons("app", app)?,
-                env.cons("pid", pid as i64)?,
-            ];
-            if let Some(out) = output {
-                items.push(env.cons("output", out)?);
-            }
-            env.list(items.as_slice())
-        }
-        Event::Close { id } => alist!["event" => "close", "id" => id as i64],
-        Event::Minimize { id } => alist!["event" => "minimize", "id" => id as i64],
-        Event::Title { id, app, title } => alist![
-            "event" => "title",
-            "id" => id as i64,
-            "app" => app,
-            "title" => title,
-        ],
-        Event::Focus { id } => alist!["event" => "focus", "id" => id as i64],
-        Event::OutputDetected(info) => {
-            // Convert modes to list of alists
-            let modes: Result<Vec<Value<'a>>> = info
-                .modes
-                .iter()
-                .map(|m| {
-                    env.list((
-                        env.cons("width", m.width as i64)?,
-                        env.cons("height", m.height as i64)?,
-                        env.cons("refresh", m.refresh as i64)?,
-                        env.cons("preferred", m.preferred)?,
-                    ))
-                })
-                .collect();
-            let modes_list = env.list(modes?.as_slice())?;
-            alist![
-                "event" => "output_detected",
-                "name" => info.name,
-                "make" => info.make,
-                "model" => info.model,
-                "width-mm" => info.width_mm as i64,
-                "height-mm" => info.height_mm as i64,
-                "x" => info.x as i64,
-                "y" => info.y as i64,
-                "scale" => info.scale,
-                "transform" => info.transform as i64,
-                "modes" => modes_list,
-            ]
-        }
-        Event::OutputDisconnected { name } => {
-            alist!["event" => "output_disconnected", "name" => name]
-        }
-        Event::OutputsComplete => alist!["event" => "outputs_complete"],
-        Event::Layouts { layouts, current } => {
-            let layouts_list: Result<Vec<Value<'a>>> =
-                layouts.into_iter().map(|s| s.into_lisp(env)).collect();
-            let layouts_val = env.list(layouts_list?.as_slice())?;
-            alist!["event" => "layouts", "layouts" => layouts_val, "current" => current as i64]
-        }
-        Event::LayoutSwitched { layout, index } => alist![
-            "event" => "layout-switched",
-            "layout" => layout,
-            "index" => index as i64,
-        ],
-        Event::TextInputActivated => alist!["event" => "text-input-activated"],
-        Event::TextInputDeactivated => alist!["event" => "text-input-deactivated"],
-        Event::Key { keysym, utf8 } => {
-            let mut items = vec![
-                env.cons("event", "key")?,
-                env.cons("keysym", keysym as i64)?,
-            ];
-            if let Some(s) = utf8 {
-                items.push(env.cons("utf8", s)?);
-            }
-            env.list(items.as_slice())
-        }
-        Event::DebugState { json } => alist!["event" => "debug_state", "json" => json],
-        Event::WorkingArea { output, x, y, width, height } => alist![
-            "event" => "working_area",
-            "output" => output,
-            "x" => x as i64,
-            "y" => y as i64,
-            "width" => width as i64,
-            "height" => height as i64,
-        ],
-        Event::OutputConfigChanged { name, width, height, refresh, x, y, scale, transform } => {
-            alist![
-                "event" => "output_config_changed",
-                "name" => name,
-                "width" => width as i64,
-                "height" => height as i64,
-                "refresh" => refresh as i64,
-                "x" => x as i64,
-                "y" => y as i64,
-                "scale" => scale,
-                "transform" => transform as i64,
-            ]
-        }
-        Event::SelectionChanged { text } => alist!["event" => "selection-changed", "text" => text],
-        Event::ActivateWorkspace { output, tab_index } => alist![
-            "event" => "activate_workspace",
-            "output" => output,
-            "tab_index" => tab_index as i64,
-        ],
-        Event::FullscreenRequest { id, output } => {
-            let mut items = vec![
-                env.cons("event", "fullscreen_request")?,
-                env.cons("id", id as i64)?,
-            ];
-            if let Some(out) = output {
-                items.push(env.cons("output", out)?);
-            }
-            env.list(items.as_slice())
-        }
-        Event::UnfullscreenRequest { id } => {
-            alist!["event" => "unfullscreen_request", "id" => id as i64]
-        }
-        Event::MaximizeRequest { id } => {
-            alist!["event" => "maximize_request", "id" => id as i64]
-        }
-        Event::UnmaximizeRequest { id } => {
-            alist!["event" => "unmaximize_request", "id" => id as i64]
-        }
-        Event::IdleStateChanged { idle } => alist!["event" => "idle_state_changed", "idle" => idle],
-        Event::Environment { vars } => {
-            let pairs: Result<Vec<Value<'a>>> =
-                vars.into_iter().map(|(k, v)| env.cons(k, v)).collect();
-            let vars_list = env.list(pairs?.as_slice())?;
-            alist!["event" => "environment", "vars" => vars_list]
+/// Send an event to Emacs as newline-delimited JSON via the pipe.
+pub fn push_event(event: Event) {
+    let mut guard = EVENT_WRITER.lock().unwrap();
+    if let Some(ref mut w) = *guard {
+        let mut buf = serde_json::to_vec(&event).unwrap_or_default();
+        buf.push(b'\n');
+        if w.write_all(&buf).is_err() {
+            // Pipe broken (Emacs closed the process) — drop silently
         }
     }
 }
@@ -693,9 +537,8 @@ fn start() -> Result<bool> {
         return Ok(false);
     }
 
-    // Reset stop flag and event queue
+    // Reset stop flag
     STOP_REQUESTED.store(false, Ordering::SeqCst);
-    event_queue().lock().unwrap().clear();
 
     // Spawn compositor thread - frames are created via output_detected events
     // (Emacs receives events and creates frames with ewm--create-frame-for-output)
