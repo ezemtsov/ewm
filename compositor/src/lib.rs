@@ -525,19 +525,42 @@ pub struct InterceptedKey {
 }
 
 impl InterceptedKey {
-    /// Check if this key matches the given keysym and modifiers
-    pub fn matches(&self, keysym: u32, mods: &ModifiersState) -> bool {
+    /// Check if this key matches the given keysym and modifiers.
+    ///
+    /// `raw_keysym` is the layout-independent keysym (physical key, no
+    /// modifiers).  `modified_keysym` is the keysym after XKB applies
+    /// modifiers (e.g. Shift+`;` → `colon`).
+    ///
+    /// We try `raw_keysym` first for layout-independent matching, then
+    /// fall back to `modified_keysym` for shifted punctuation (`:`, `&`,
+    /// etc.) where Emacs encodes the character directly rather than
+    /// decomposing it into base-key + Shift.
+    pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
         // Handle case-insensitive letter matching (A-Z vs a-z)
-        let keysym_match = self.keysym == keysym
-            || (keysym >= keysyms::KEY_A
-                && keysym <= keysyms::KEY_Z
-                && self.keysym == keysym - keysyms::KEY_A + keysyms::KEY_a);
+        let raw_match = self.keysym == raw_keysym
+            || (raw_keysym >= keysyms::KEY_A
+                && raw_keysym <= keysyms::KEY_Z
+                && self.keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
 
-        keysym_match
-            && self.ctrl == mods.ctrl
-            && self.alt == mods.alt
-            && (self.shift == mods.shift || (keysym >= keysyms::KEY_A && keysym <= keysyms::KEY_Z))
-            && self.logo == mods.logo
+        if raw_match {
+            return self.ctrl == mods.ctrl
+                && self.alt == mods.alt
+                && (self.shift == mods.shift
+                    || (raw_keysym >= keysyms::KEY_A && raw_keysym <= keysyms::KEY_Z))
+                && self.logo == mods.logo;
+        }
+
+        // Fallback: match against the XKB-modified keysym.  This handles
+        // shifted punctuation like `:` (Shift+`;`), `&` (Shift+`7`), etc.
+        // XKB already consumed Shift to produce the modified keysym, so we
+        // skip the shift comparison here.
+        if raw_keysym != modified_keysym && self.keysym == modified_keysym {
+            return self.ctrl == mods.ctrl
+                && self.alt == mods.alt
+                && self.logo == mods.logo;
+        }
+
+        false
     }
 }
 

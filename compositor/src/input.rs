@@ -227,7 +227,7 @@ pub fn handle_keyboard_event(
             // Find if this is an intercepted key and whether it's a prefix
             let matched_key = intercepted_keys
                 .iter()
-                .find(|ik| ik.matches(keysym_raw, mods));
+                .find(|ik| ik.matches(keysym_raw, modified_raw, mods));
 
             if let Some(ik) = matched_key {
                 // Fullscreen mode: all keys go to the surface except the
