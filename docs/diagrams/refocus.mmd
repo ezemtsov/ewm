@@ -35,13 +35,13 @@ flowchart TB
     foreign_fs --> fsev
     foreign_fs --> unfsev
 
-    focusev -->|SIGUSR1| dispatch
-    newev -->|SIGUSR1| dispatch
-    closeev -->|SIGUSR1| dispatch
-    wsev -->|SIGUSR1| dispatch
-    outev -->|SIGUSR1| dispatch
-    fsev -->|SIGUSR1| dispatch
-    unfsev -->|SIGUSR1| dispatch
+    focusev -->|pipe fd| dispatch
+    newev -->|pipe fd| dispatch
+    closeev -->|pipe fd| dispatch
+    wsev -->|pipe fd| dispatch
+    outev -->|pipe fd| dispatch
+    fsev -->|pipe fd| dispatch
+    unfsev -->|pipe fd| dispatch
 
     dispatch["ewm--handle-event"]
 

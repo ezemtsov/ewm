@@ -167,7 +167,7 @@ With input-to-focus:
 
 ## Module Events
 
-Events are pushed to a shared queue and delivered to Emacs via SIGUSR1:
+Events are serialized to JSON and delivered to Emacs via pipe fd:
 
 | Event | When Sent | Purpose |
 |-------|-----------|---------|

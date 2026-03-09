@@ -22,7 +22,7 @@ pub enum Backend {
 
 The `Backend` enum dispatches to the active backend. Backend-specific operations (render, post-render, early-import) are methods on `Backend` that delegate to the inner variant. Backend-agnostic orchestration (redraw loop, state transitions, frame callbacks) lives on `Ewm`.
 
-Note: The Wayland `Display` is owned by the event loop (via `Generic` source), not by `State`. This ensures the display outlives all handlers. Communication with Emacs happens via shared state (mutexes) and SIGUSR1 signals — no IPC socket needed.
+Note: The Wayland `Display` is owned by the event loop (via `Generic` source), not by `State`. This ensures the display outlives all handlers. Communication with Emacs happens via shared state (mutexes) and a pipe fd for events — no IPC socket needed.
 
 ### Event Loop Integration
 

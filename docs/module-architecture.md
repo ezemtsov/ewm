@@ -17,12 +17,13 @@ contexts communicate.
 │  │  │  Wayland    │           │ surfaces          │         │ │
 │  │  └──────┬──────┘           │ outputs           │         │ │
 │  │         │                  └─────────▲─────────┘         │ │
-│  │    SIGUSR1                           │                   │ │
-│  │         │                  ┌─────────┴─────────┐         │ │
-│  │         ▼                  │    Elisp API      │         │ │
-│  │  ┌─────────────┐           │ ewm-focus-module  │         │ │
-│  │  │ Event Queue │──────────▶│ ewm-pop-event     │         │ │
-│  │  └─────────────┘           └───────────────────┘         │ │
+│  │    pipe fd                           │                   │ │
+│  │   (open_channel)           ┌─────────┴─────────┐         │ │
+│  │         │                  │    Elisp API      │         │ │
+│  │         ▼                  │ ewm-focus-module  │         │ │
+│  │  ┌─────────────┐           │                   │         │ │
+│  │  │ Event Pipe  │──────────▶│ ewm--event-filter │         │ │
+│  │  │ (JSON/fd)   │           └───────────────────┘         │ │
 │  └───────────────────────────────────────────────────────────┘ │
 │                                                                │
 │  ┌─ ewm.el ────────────────────────────────────────────────────┐
@@ -38,57 +39,63 @@ contexts communicate.
 
 Emacs Lisp is single-threaded and cannot be called from the compositor thread.
 Communication uses shared queues protected by `Mutex`, with locks released
-before crossing thread boundaries.
+before crossing thread boundaries. Events flow from compositor to Emacs via
+a pipe fd (newline-delimited JSON).
 
 ## Event Delivery: Compositor → Emacs
 
-The compositor pushes events to a shared queue and signals Emacs via SIGUSR1:
+The compositor serializes events to JSON and writes them to a pipe fd created
+via `emacs-module-rs`'s `open_channel`. Emacs receives them through a process
+filter on the pipe process:
 
 ```
 Compositor Thread              │  Emacs Main Thread
                                │
 push_event(Event::Focus{...})  │
-  └─ queue.push(event)         │
-  └─ raise(SIGUSR1) ──────────►│  [sigusr1] event received
-                               │    └─ ewm--sigusr1-handler
-                               │    └─ ewm--process-pending-events
-                               │    └─ while (event = pop_event())
-                               │         ewm--handle-module-event(event)
+  └─ serde_json::to_vec(event) │
+  └─ write to pipe fd ────────►│  ewm--event-filter receives data
+                               │    └─ split on newlines
+                               │    └─ json-parse-string → alist
+                               │    └─ ewm--handle-event(alist)
 ```
 
 ### Rust Side
 
 ```rust
-static EVENT_QUEUE: OnceLock<Mutex<VecDeque<Event>>> = OnceLock::new();
+static EVENT_WRITER: Mutex<Option<Box<dyn Write + Send>>> = Mutex::new(None);
 
 pub fn push_event(event: Event) {
-    let mut queue = event_queue().lock().unwrap();
-    queue.push_back(event);
-    drop(queue);  // Release lock before signaling
-    unsafe { libc::raise(libc::SIGUSR1); }
+    let mut guard = EVENT_WRITER.lock().unwrap();
+    if let Some(ref mut w) = *guard {
+        let mut buf = serde_json::to_vec(&event).unwrap_or_default();
+        buf.push(b'\n');
+        let _ = w.write_all(&buf);  // Broken pipe = Emacs closed
+    }
 }
 ```
 
 ### Emacs Side
 
 ```elisp
-(defun ewm--sigusr1-handler ()
-  "Handle SIGUSR1 signal from compositor."
-  (interactive)
-  (ewm--process-pending-events))
-
-(defun ewm--enable-signal-handler ()
-  (define-key special-event-map [sigusr1] #'ewm--sigusr1-handler))
+(defun ewm--event-filter (_proc output)
+  "Process newline-delimited JSON events from the compositor pipe."
+  (setq ewm--event-buffer (concat ewm--event-buffer output))
+  (while (string-match "\n" ewm--event-buffer)
+    (let ((line (substring ewm--event-buffer 0 (match-beginning 0))))
+      (setq ewm--event-buffer (substring ewm--event-buffer (match-end 0)))
+      (when (> (length line) 0)
+        (let ((event (json-parse-string line :object-type 'alist :false-object nil)))
+          (ewm--handle-event event))))))
 ```
 
-### Why SIGUSR1 Works
+### Why Pipe fd Works
 
-Emacs has built-in support for Unix signals via `special-event-map`. When
-SIGUSR1 arrives, Emacs queues a `[sigusr1]` event that runs our handler
-at the next safe point in the event loop.
-
-Signal coalescing is fine—multiple rapid events result in one signal, but
-the handler drains the entire queue each time.
+`emacs-module-rs`'s `open_channel` creates a pipe whose read end is registered
+with Emacs's event loop as a process. Data written to the write end triggers
+the process filter at the next safe point — same integration as network or
+subprocess output. Unlike SIGUSR1, pipe writes are never coalesced: each
+JSON line is delivered exactly once. Serde serialization replaces the manual
+`event_to_lisp` converter, keeping the Event enum as the single source of truth.
 
 ### Events
 
@@ -128,15 +135,14 @@ this event instead of using arbitrary sleep delays:
 
 ```elisp
 (defun ewm-start-module ()
-  (ewm-start)                      ; Start compositor thread
+  (ewm--init-event-channel)         ; Set up pipe before starting compositor
+  (ewm-start)                       ; Start compositor thread
   (setq ewm--module-mode t)
-  (ewm-mode 1)                     ; Enable BEFORE processing events
-  (ewm--enable-signal-handler)
+  (ewm-mode 1)                      ; Enable BEFORE processing events
   ;; Wait for ready event
   (let ((timeout 50))
     (while (and (> timeout 0) (not ewm--compositor-ready))
-      (sleep-for 0.1)
-      (ewm--process-pending-events)
+      (accept-process-output ewm--event-process 0.1)
       (cl-decf timeout)))
   ...)
 ```
@@ -155,12 +161,10 @@ this event instead of using arbitrary sleep delays:
 (ewm-socket)     ; Get Wayland socket name
 ```
 
-### Events
+### Event Channel
 
 ```elisp
-(ewm-event-fd)      ; Get pipe fd for select()
-(ewm-pop-event)     ; Pop next event as alist, nil if empty
-(ewm-drain-events)  ; Clear notification pipe after processing
+(ewm-init-event-channel process)  ; Register pipe process for compositor events
 ```
 
 ### Commands
@@ -185,7 +189,7 @@ All `*-module` functions push to command queue:
 
 | Timer | Purpose | Status |
 |-------|---------|--------|
-| ~~60Hz polling~~ | Event sync | Removed (SIGUSR1) |
+| ~~60Hz polling~~ | Event sync | Removed (pipe fd) |
 | ~~Minibuffer 50ms~~ | Layout settle | Removed (sync redisplay) |
 | ~~Startup sleep~~ | Wait for init | Removed (ready event) |
 | Focus debounce | Coalesce rapid changes | 10ms, for UX only |
@@ -214,7 +218,7 @@ correctness. All state is synchronous via the module.
 
 ## Files
 
-- `compositor/src/module.rs` - Dynamic module FFI, queues, defuns
+- `compositor/src/module.rs` - Dynamic module FFI, queues, pipe event channel, defuns
 - `compositor/src/lib.rs` - Compositor core
 - `compositor/src/event.rs` - Event enum shared with module
 - `lisp/ewm.el` - Main module initialization, event dispatch

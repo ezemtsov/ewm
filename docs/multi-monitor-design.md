@@ -50,11 +50,12 @@ Emacs frames are created with an explicit target output. No "show then reassign"
 ## Module Interface
 
 The compositor runs as a dynamic module thread within Emacs. Communication happens
-via shared state protected by mutexes, with SIGUSR1 signals for event notification.
+via shared state protected by mutexes, with events delivered over a pipe fd
+(newline-delimited JSON via `open_channel`).
 
 ### Compositor → Emacs Events
 
-Events are pushed to a shared queue and Emacs is notified via SIGUSR1:
+Events are serialized to JSON and written to a pipe fd:
 
 | Event | Fields | Purpose |
 |-------|--------|---------|
@@ -75,7 +76,7 @@ Emacs calls module functions directly (no serialization needed):
 ## Emacs Frame Lifecycle
 
 ```
-1. Compositor pushes output_detected event, signals Emacs via SIGUSR1
+1. Compositor pushes output_detected event via pipe fd
 2. Emacs receives event, consults ewm-output-config
 3. Emacs calls (ewm-prepare-frame "HDMI-A-1") to register pending frame
 4. Emacs calls (make-frame) which creates a Wayland surface
@@ -89,7 +90,7 @@ Emacs calls module functions directly (no serialization needed):
 1. External client (Firefox, terminal, etc.) creates surface
 2. Compositor assigns to active output (cursor/focus based)
 3. Compositor pushes new event with { id, app, output }
-4. Emacs receives via SIGUSR1, creates buffer for surface
+4. Emacs receives via pipe fd, creates buffer for surface
 5. Emacs includes surface in next OutputLayout declaration for the target output
 6. Compositor positions and displays the surface
 ```
@@ -239,14 +240,11 @@ cat /sys/class/drm/card*-*/status
 
 **Events not reaching Emacs:**
 ```elisp
-;; Check if SIGUSR1 handler is installed
-(lookup-key special-event-map [sigusr1])
+;; Check if event pipe process is alive
+(process-live-p ewm--event-process)
 
 ;; Check if compositor is running
 (ewm-running)
-
-;; Manually drain event queue
-(ewm--process-pending-events)
 ```
 
 **Frames not created for outputs:**

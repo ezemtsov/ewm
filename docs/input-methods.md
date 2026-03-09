@@ -60,7 +60,7 @@ On startup, Emacs configures XKB via the dynamic module.
 (ewm-get-layouts-module)                    ; Query current layouts
 ```
 
-**Compositor → Emacs (events via SIGUSR1):**
+**Compositor → Emacs (events via pipe fd):**
 
 | Event | Fields | Purpose |
 |-------|--------|---------|
@@ -115,7 +115,7 @@ drained on the next Activated event.
 
 ### Module Interface
 
-**Compositor → Emacs (events via SIGUSR1):**
+**Compositor → Emacs (events via pipe fd):**
 
 | Event | Fields | Purpose |
 |-------|--------|---------|

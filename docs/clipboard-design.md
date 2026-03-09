@@ -27,7 +27,7 @@ Client copies text
   → Compositor creates UnixStream pair, asks client to write via
     request_data_device_client_selection()
   → Background thread reads from socket, pushes SelectionChanged event
-  → Emacs receives event via SIGUSR1 → ewm--handle-selection-changed
+  → Emacs receives event via pipe fd → ewm--handle-selection-changed
   → Text pushed to kill ring via kill-new
 ```
 
@@ -89,7 +89,7 @@ primary selection support and no client filtering (`|_| true`).
 | File | What |
 |------|------|
 | `compositor/src/lib.rs` | `SelectionHandler` (`Arc<[u8]>`, `new_selection`, `send_selection`), `DataControlHandler`, `read_client_selection_to_emacs`, `SetSelection` handling |
-| `compositor/src/module.rs` | `SetSelection` command variant, `set_selection_module` defun, `SelectionChanged` event conversion |
+| `compositor/src/module.rs` | `SetSelection` command variant, `set_selection_module` defun |
 | `compositor/src/event.rs` | `SelectionChanged { text }` event variant |
 | `lisp/ewm.el` | Event handler, `interprogram-cut-function`, echo prevention |
 
