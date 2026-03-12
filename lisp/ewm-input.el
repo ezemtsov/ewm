@@ -59,6 +59,12 @@ Reads the digit from `last-command-event' for i3-style back-and-forth."
     (define-key map (kbd "s-S-<tab>") #'ewm-prev-surface-buffer)
     (define-key map (kbd "s-t") #'tab-new)
     (define-key map (kbd "s-w") #'tab-close)
+    ;; Buffer movement
+    (define-key map (kbd "C-s-<left>") #'buf-move-left)
+    (define-key map (kbd "C-s-<right>") #'buf-move-right)
+    (define-key map (kbd "C-s-<up>") #'buf-move-up)
+    (define-key map (kbd "C-s-<down>") #'buf-move-down)
+    ;; Workspace shortcuts
     (dotimes (i 9)
       (define-key map (kbd (format "s-%d" (1+ i))) #'ewm-tab-select-or-return))
     map)
