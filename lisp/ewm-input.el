@@ -35,9 +35,20 @@ Reads the digit from `last-command-event' for i3-style back-and-forth."
         (tab-recent)
       (tab-bar-select-tab tab))))
 
+(defmacro ewm--cmd (&rest args)
+  "Create an interactive command that runs ARGS as a subprocess."
+  `(lambda () (interactive) (start-process ,(car args) nil ,@args)))
+
 (defvar ewm-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<XF86WakeUp>") #'ignore)
+    ;; Media/hardware keys
+    (define-key map (kbd "<AudioRaiseVolume>")  (ewm--cmd "wpctl" "set-volume" "-l" "1.0" "@DEFAULT_AUDIO_SINK@" "5%+"))
+    (define-key map (kbd "<AudioLowerVolume>")  (ewm--cmd "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%-"))
+    (define-key map (kbd "<AudioMute>")         (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"))
+    (define-key map (kbd "<AudioMicMute>")      (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
+    (define-key map (kbd "<MonBrightnessUp>")   (ewm--cmd "brightnessctl" "set" "5%+"))
+    (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
     ;; Window navigation (super + arrows)
     (define-key map (kbd "s-<left>") #'windmove-left)
     (define-key map (kbd "s-<right>") #'windmove-right)
@@ -159,10 +170,10 @@ Example:
 
 (defcustom ewm-intercept-prefixes
   '(?\C-x ?\C-u ?\C-h ?\M-x (?\s-f :fullscreen)
-    ("<XF86MonBrightnessUp>" :fullscreen) ("<XF86MonBrightnessDown>" :fullscreen)
-    ("<XF86AudioRaiseVolume>" :fullscreen) ("<XF86AudioLowerVolume>" :fullscreen)
-    ("<XF86AudioMute>" :fullscreen) ("<XF86AudioMicMute>" :fullscreen)
-    ("<print>" :fullscreen))
+    ("<MonBrightnessUp>" :fullscreen) ("<MonBrightnessDown>" :fullscreen)
+    ("<AudioRaiseVolume>" :fullscreen) ("<AudioLowerVolume>" :fullscreen)
+    ("<AudioMute>" :fullscreen) ("<AudioMicMute>" :fullscreen)
+    ("<Print>" :fullscreen))
   "Keys that always go to Emacs, even when a surface has focus.
 Each entry is a key or (key :fullscreen).  Plain keys are intercepted
 normally; :fullscreen keys are also sent to Emacs when a fullscreen
