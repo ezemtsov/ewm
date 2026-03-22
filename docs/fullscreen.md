@@ -57,8 +57,8 @@ Unfullscreen follows the reverse path. The user can also toggle with `s-f`
 
 ### Intercepted Keys
 
-`InterceptedKey` has `is_fullscreen_toggle: bool`. The compositor uses this to
-gate fullscreen toggle keys through to Emacs even during fullscreen.
+`InterceptedKey` has `allow_fullscreen: bool`. The compositor uses this to
+gate fullscreen keys through to Emacs even during fullscreen.
 
 ## Emacs
 

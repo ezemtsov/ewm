@@ -98,17 +98,15 @@ flowchart TB
     keypress["Key pressed<br/>handle_keyboard_event"]
     fs_check{"focused surface<br/>fullscreen?"}:::guard
     fs_restore["Restore focus<br/>to fullscreen surface"]
-    fs_toggle_check{"is_fullscreen_toggle?"}:::guard
+    fs_allow_check{"allow_fullscreen<br/>& !focus_on_emacs?"}:::guard
     fs_forward(["Forward to surface"]):::safe
-    fs_exit["Exit fullscreen"]
 
     keypress --> fs_check
     fs_check -->|No| normal_intercept["Normal intercept<br/>(code 1 → redirect)"]
     fs_check -->|Yes| fs_restore
-    fs_restore --> fs_toggle_check
-    fs_toggle_check -->|Yes| fs_exit
-    fs_toggle_check -->|No| fs_forward
-    fs_exit -->|"push_event<br/>(consume key)"| unfsev
+    fs_restore --> fs_allow_check
+    fs_allow_check -->|Yes| normal_intercept
+    fs_allow_check -->|No| fs_forward
 
     subgraph Legend
         direction LR

@@ -51,8 +51,6 @@ enum InterceptKind {
     TextInput,
     /// VT switch (Ctrl+Alt+F1-F12)
     VtSwitch,
-    /// Exit fullscreen toggle
-    FullscreenExit,
 }
 
 /// Result of processing a keyboard event
@@ -135,12 +133,9 @@ pub fn handle_keyboard_event(
     if let Some(focus_id) = module::take_pending_focus() {
         if state.ewm.focused_surface_id != focus_id && state.ewm.id_windows.contains_key(&focus_id)
         {
-            state.ewm.set_focus(
-                focus_id,
-                false,
-                "pending_focus",
-                Some("keyboard_event"),
-            );
+            state
+                .ewm
+                .set_focus(focus_id, false, "pending_focus", Some("keyboard_event"));
         }
     }
 
@@ -230,11 +225,16 @@ pub fn handle_keyboard_event(
                 .find(|ik| ik.matches(keysym_raw, modified_raw, mods));
 
             if let Some(ik) = matched_key {
-                // Fullscreen mode: all keys go to the surface except the
-                // fullscreen toggle (exits fullscreen) and kill combo (above).
-                if let Some(fs_id) = fullscreen_surface_id {
-                    if ik.is_fullscreen_toggle {
-                        return FilterResult::Intercept((InterceptKind::FullscreenExit, fs_id, None));
+                // Fullscreen mode: only keys marked allow_fullscreen are redirected to Emacs;
+                // everything else forwards to the fullscreen surface.
+                if fullscreen_surface_id.is_some() {
+                    if ik.allow_fullscreen && !focus_on_emacs {
+                        module::set_in_prefix_sequence(true);
+                        return FilterResult::Intercept((
+                            InterceptKind::Redirect,
+                            keysym_raw,
+                            None,
+                        ));
                     }
                     return FilterResult::Forward;
                 }
@@ -290,11 +290,6 @@ pub fn handle_keyboard_event(
             InterceptKind::VtSwitch => {
                 return KeyboardAction::ChangeVt(keysym as i32);
             }
-            InterceptKind::FullscreenExit => {
-                tracing::info!("fullscreen_exit: surface {}", keysym);
-                module::push_event(crate::Event::UnfullscreenRequest { id: keysym });
-                return KeyboardAction::Forward;
-            }
             _ => {}
         }
     }
@@ -348,9 +343,8 @@ pub fn handle_keyboard_event(
                     // Restore layout — external surface keeps its layout
                     if saved_layout != 0 {
                         keyboard.with_xkb_state(state, |mut context| {
-                            context.set_layout(smithay::input::keyboard::Layout(
-                                saved_layout as u32,
-                            ));
+                            context
+                                .set_layout(smithay::input::keyboard::Layout(saved_layout as u32));
                         });
                     }
                 }

@@ -158,16 +158,23 @@ Example:
 ;;; Key interception
 
 (defcustom ewm-intercept-prefixes
-  '(?\C-x ?\C-u ?\C-h ?\M-x)
-  "Prefix keys that always go to Emacs.
-These are keys that start command sequences.
-Can be character literals (e.g., ?\\C-x) or strings (e.g., \"C-x\").
+  '(?\C-x ?\C-u ?\C-h ?\M-x (?\s-f :fullscreen)
+    ("<XF86MonBrightnessUp>" :fullscreen) ("<XF86MonBrightnessDown>" :fullscreen)
+    ("<XF86AudioRaiseVolume>" :fullscreen) ("<XF86AudioLowerVolume>" :fullscreen)
+    ("<XF86AudioMute>" :fullscreen) ("<XF86AudioMicMute>" :fullscreen)
+    ("<print>" :fullscreen))
+  "Keys that always go to Emacs, even when a surface has focus.
+Each entry is a key or (key :fullscreen).  Plain keys are intercepted
+normally; :fullscreen keys are also sent to Emacs when a fullscreen
+surface has focus.  Keys can be character literals or strings.
 
-Default includes only essential prefixes. Add more as needed:
-  (add-to-list \\='ewm-intercept-prefixes ?\\M-`)   ; tmm-menubar
-  (add-to-list \\='ewm-intercept-prefixes ?\\M-&)  ; async-shell-command
-  (add-to-list \\='ewm-intercept-prefixes ?\\M-:)  ; eval-expression"
-  :type '(repeat (choice character string))
+Bindings in `ewm-mode-map' are always intercepted (without :fullscreen).
+
+Add more as needed:
+  (add-to-list \\='ewm-intercept-prefixes ?\\M-\\`)  ; tmm-menubar
+  (add-to-list \\='ewm-intercept-prefixes \\='(\"<print>\" :fullscreen))"
+  :type '(repeat (choice character string
+                          (list (choice character string) (const :fullscreen))))
   :group 'ewm-input)
 
 ;;; Mouse-follows-focus
@@ -275,62 +282,60 @@ EWM owns frame selection via `ewm--handle-focus'."
 
 ;;; Key scanning and interception
 
-(defun ewm--event-to-intercept-spec (event)
+(defun ewm--event-to-intercept-spec (event &optional fullscreen)
   "Convert EVENT to an intercept specification for the compositor.
-Returns a plist with :key, modifier flags, and :is-fullscreen-toggle."
+Returns a plist with :key, modifier flags, and :fullscreen."
   (let* ((mods (event-modifiers event))
          (base (event-basic-type event))
          ;; base is either an integer (ASCII) or a symbol (special key)
          (key-value (cond
                      ((integerp base) base)
                      ((symbolp base) (symbol-name base))
-                     (t nil)))
-         (binding (key-binding (vector event)))
-         (is-fs-toggle (eq binding 'ewm-toggle-fullscreen)))
+                     (t nil))))
     (when key-value
       `(:key ,key-value
         :ctrl ,(if (memq 'control mods) t :false)
         :alt ,(if (memq 'meta mods) t :false)
         :shift ,(if (memq 'shift mods) t :false)
         :super ,(if (memq 'super mods) t :false)
-        :is-fullscreen-toggle ,(if is-fs-toggle t :false)))))
+        :fullscreen ,(if fullscreen t :false)))))
 
-(defun ewm--scan-keymap (keymap)
-  "Scan KEYMAP for all key bindings.
-Returns a list of intercept specs."
-  (let ((specs '()))
-    (map-keymap
-     (lambda (event binding)
-       (when (and binding (not (eq binding 'undefined)) (not (eq binding 'ignore)))
-         (when-let ((spec (ewm--event-to-intercept-spec event)))
-           (push spec specs))))
-     keymap)
-    specs))
+(defun ewm--parse-intercept-entry (entry)
+  "Parse ENTRY from `ewm-intercept-prefixes'.
+Returns (event . fullscreen-p) or nil."
+  (cond
+   ((integerp entry) (cons entry nil))
+   ((stringp entry) (cons (aref (key-parse entry) 0) nil))
+   ((and (listp entry) (memq :fullscreen entry))
+    (let ((key (car entry)))
+      (cond
+       ((integerp key) (cons key t))
+       ((stringp key) (cons (aref (key-parse key) 0) t))
+       (t nil))))
+   (t nil)))
 
 (defun ewm--send-intercept-keys ()
   "Send intercepted keys configuration to compositor.
-Scans `ewm-mode-map' and adds `ewm-intercept-prefixes'."
+Scans `ewm-intercept-prefixes' first (so :fullscreen flags win),
+then `ewm-mode-map' bindings."
   (let ((specs '())
-        (seen (make-hash-table :test 'equal)))
-    ;; Add prefix keys
-    (dolist (key ewm-intercept-prefixes)
-      (let ((event (cond
-                    ((integerp key) key)
-                    ((stringp key) (aref (key-parse key) 0))
-                    (t nil))))
-        (when event
-          (when-let ((spec (ewm--event-to-intercept-spec event)))
-            (let ((spec-key (format "%S" spec)))
-              (unless (gethash spec-key seen)
-                (puthash spec-key t seen)
-                (push spec specs)))))))
-    ;; Scan ewm-mode-map
-    (dolist (spec (ewm--scan-keymap ewm-mode-map))
-      (let ((spec-key (format "%S" spec)))
-        (unless (gethash spec-key seen)
-          (puthash spec-key t seen)
-          (push spec specs))))
-    ;; Send to compositor
+        (fs-events (make-hash-table :test 'eql)))
+    ;; Intercept prefixes first — :fullscreen entries populate fs-events
+    (dolist (entry ewm-intercept-prefixes)
+      (when-let ((parsed (ewm--parse-intercept-entry entry)))
+        (let ((event (car parsed)))
+          (when (cdr parsed)
+            (puthash event t fs-events))
+          (when-let ((spec (ewm--event-to-intercept-spec event (cdr parsed))))
+            (push spec specs)))))
+    ;; Keymap bindings — fullscreen flag looked up from fs-events
+    (map-keymap
+     (lambda (event binding)
+       (when (and binding (not (eq binding 'undefined)) (not (eq binding 'ignore)))
+         (when-let ((spec (ewm--event-to-intercept-spec
+                           event (gethash event fs-events))))
+           (push spec specs))))
+     ewm-mode-map)
     (ewm-intercept-keys-module (vconcat (nreverse specs)))))
 
 (provide 'ewm-input)

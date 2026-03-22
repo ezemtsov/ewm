@@ -470,7 +470,7 @@ changing the available area for Emacs frames."
 Push the text onto the kill ring."
   (let ((text (alist-get 'text event)))
     (when (and text (not (string-empty-p text))
-                (not (equal text (car kill-ring))))
+               (not (equal text (car kill-ring))))
       (setq ewm--last-selection text)
       (kill-new text))))
 

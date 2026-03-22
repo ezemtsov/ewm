@@ -58,7 +58,6 @@ use_symbols! {
     kw_alt         => ":alt"
     kw_shift       => ":shift"
     kw_super       => ":super"
-    kw_is_fullscreen_toggle => ":is-fullscreen-toggle"
     kw_name   => ":name"
     kw_active => ":active"
     // configure_output_module: marker for "not provided" (distinct from nil)
@@ -861,7 +860,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         let alt_val = env.call(plist_get, (key_spec, kw_alt))?;
         let shift_val = env.call(plist_get, (key_spec, kw_shift))?;
         let super_val = env.call(plist_get, (key_spec, kw_super))?;
-        let is_fs_toggle_val = env.call(plist_get, (key_spec, kw_is_fullscreen_toggle))?;
+        let allow_fullscreen_val = env.call(plist_get, (key_spec, kw_fullscreen))?;
 
         parsed_keys.push(InterceptedKey {
             keysym: keysym.raw(),
@@ -869,7 +868,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
             alt: is_true(alt_val),
             shift: is_true(shift_val),
             logo: is_true(super_val),
-            is_fullscreen_toggle: is_true(is_fs_toggle_val),
+            allow_fullscreen: is_true(allow_fullscreen_val),
         });
     }
 

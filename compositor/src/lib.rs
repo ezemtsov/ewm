@@ -519,9 +519,9 @@ pub struct InterceptedKey {
     pub shift: bool,
     #[serde(rename = "super", default)]
     pub logo: bool,
-    /// True if this key is bound to the fullscreen toggle command
+    /// If true, this key is redirected to Emacs even during fullscreen
     #[serde(default)]
-    pub is_fullscreen_toggle: bool,
+    pub allow_fullscreen: bool,
 }
 
 impl InterceptedKey {
@@ -585,7 +585,7 @@ mod intercepted_key_tests {
             alt,
             shift,
             logo,
-            is_fullscreen_toggle: false,
+            allow_fullscreen: false,
         }
     }
 
