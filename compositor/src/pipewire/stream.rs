@@ -57,9 +57,7 @@ const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 enum CastState {
     /// Waiting for PipeWire to negotiate format at the requested size.
     /// This is both the initial state and the state after output resize.
-    ResizePending {
-        pending_size: Size<u32, Physical>,
-    },
+    ResizePending { pending_size: Size<u32, Physical> },
     /// Modifier fixated, waiting for PipeWire to confirm the chosen format.
     /// Only entered when DONT_FIXATE was set (multiple modifiers offered).
     ConfirmationPending {
@@ -162,7 +160,9 @@ impl Cast {
 
         let node_id = Rc::new(Cell::new(None));
         let is_active = Rc::new(Cell::new(false));
-        let state = Rc::new(RefCell::new(CastState::ResizePending { pending_size: size }));
+        let state = Rc::new(RefCell::new(CastState::ResizePending {
+            pending_size: size,
+        }));
         let dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>> = Rc::new(RefCell::new(HashMap::new()));
         let min_time_between_frames = Rc::new(Cell::new(Duration::ZERO));
         let had_error = Rc::new(Cell::new(false));
@@ -334,11 +334,8 @@ impl Cast {
                                 // Offer fixated format first, original as fallback
                                 let fixated_obj =
                                     make_video_params_fixated(format_size, refresh, modifier);
-                                let fallback_obj = make_video_params(
-                                    format_size,
-                                    refresh,
-                                    &param_render_formats,
-                                );
+                                let fallback_obj =
+                                    make_video_params(format_size, refresh, &param_render_formats);
                                 let mut b1 = Vec::new();
                                 let pod1 = make_pod(&mut b1, fixated_obj);
                                 let mut b2 = Vec::new();
@@ -409,10 +406,7 @@ impl Cast {
                                     }
                                 ))),
                             ),
-                            Property::new(
-                                SPA_PARAM_BUFFERS_blocks,
-                                pod::Value::Int(plane_count)
-                            ),
+                            Property::new(SPA_PARAM_BUFFERS_blocks, pod::Value::Int(plane_count)),
                             Property::new(
                                 SPA_PARAM_BUFFERS_dataType,
                                 pod::Value::Choice(ChoiceValue::Int(Choice(
@@ -500,9 +494,7 @@ impl Cast {
                         }
 
                         // During size re-negotiation, force a redraw once we got a newly sized buffer.
-                        if dmabufs.borrow().len() == 1
-                            && stream.state() == StreamState::Streaming
-                        {
+                        if dmabufs.borrow().len() == 1 && stream.state() == StreamState::Streaming {
                             let output_name = add_buf_output_name.clone();
                             let _ = add_buf_event_loop.insert_source(
                                 Timer::from_duration(Duration::ZERO),
@@ -618,7 +610,9 @@ impl Cast {
 
         self.size = new_size;
         self.refresh = refresh;
-        *self.state.borrow_mut() = CastState::ResizePending { pending_size: new_size };
+        *self.state.borrow_mut() = CastState::ResizePending {
+            pending_size: new_size,
+        };
 
         let obj = make_video_params(new_size, refresh, &self.render_formats);
         let mut buffer = Vec::new();
@@ -635,7 +629,11 @@ impl Cast {
         let min = self.min_time_between_frames.get();
 
         if last.is_zero() {
-            trace!(?target_frame_time, ?last, "last is zero, recording first frame");
+            trace!(
+                ?target_frame_time,
+                ?last,
+                "last is zero, recording first frame"
+            );
             return Duration::ZERO;
         }
 

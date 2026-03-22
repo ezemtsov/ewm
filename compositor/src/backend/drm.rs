@@ -26,8 +26,8 @@ use std::iter::zip;
 use std::num::NonZeroU64;
 use std::os::fd::AsFd;
 
-use anyhow::{ensure, Context as _};
 use crate::tracy_span;
+use anyhow::{ensure, Context as _};
 use bytemuck::cast_slice_mut;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -93,7 +93,6 @@ use crate::{
     vblank_throttle::VBlankThrottle,
     Ewm, LockRenderState, OutputInfo, OutputMode, OutputState, RedrawState, State,
 };
-
 
 const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
     smithay::backend::allocator::Fourcc::Xrgb8888,
@@ -646,20 +645,29 @@ impl DrmBackendState {
                 if let Some(ramp) = surface.pending_gamma_change.take() {
                     if let Some(ref mut gamma_props) = surface.gamma_props {
                         if let Err(err) = gamma_props.set_gamma(&device.drm, ramp.as_deref()) {
-                            warn!("error applying pending gamma change for {}: {err:?}", surface.output.name());
+                            warn!(
+                                "error applying pending gamma change for {}: {err:?}",
+                                surface.output.name()
+                            );
                         }
                     } else {
                         // Legacy fallback
                         let crtc = surface.compositor.surface().crtc();
                         if let Err(err) = set_gamma_for_crtc(&device.drm, crtc, ramp.as_deref()) {
-                            warn!("error applying pending gamma change for {}: {err:?}", surface.output.name());
+                            warn!(
+                                "error applying pending gamma change for {}: {err:?}",
+                                surface.output.name()
+                            );
                         }
                     }
                 } else {
                     // No pending change — restore previous gamma state
                     if let Some(ref gamma_props) = surface.gamma_props {
                         if let Err(err) = gamma_props.restore_gamma(&device.drm) {
-                            warn!("error restoring gamma for {}: {err:?}", surface.output.name());
+                            warn!(
+                                "error restoring gamma for {}: {err:?}",
+                                surface.output.name()
+                            );
                         }
                     }
                 }
@@ -729,7 +737,9 @@ impl DrmBackendState {
 
     /// Clear all DRM surfaces (DPMS off). Re-enabled on next queue_frame.
     pub fn clear_all_surfaces(&mut self) {
-        let Some(device) = &mut self.device else { return };
+        let Some(device) = &mut self.device else {
+            return;
+        };
         for surface in device.surfaces.values_mut() {
             if let Err(err) = surface.compositor.clear() {
                 warn!("Error clearing DRM surface: {:?}", err);
@@ -837,10 +847,7 @@ impl DrmBackendState {
             let connector_info = match device.drm.get_connector(surface.connector, false) {
                 Ok(info) => info,
                 Err(e) => {
-                    warn!(
-                        "Failed to get connector info for {}: {:?}",
-                        output_name, e
-                    );
+                    warn!("Failed to get connector info for {}: {:?}", output_name, e);
                     return;
                 }
             };
@@ -923,11 +930,7 @@ impl DrmBackendState {
         };
 
         // Find CRTC for this output
-        let Some((&crtc, _)) = device
-            .surfaces
-            .iter()
-            .find(|(_, s)| s.output == *output)
-        else {
+        let Some((&crtc, _)) = device.surfaces.iter().find(|(_, s)| s.output == *output) else {
             return super::RenderResult::Skipped;
         };
 
@@ -1029,10 +1032,7 @@ impl DrmBackendState {
                             let new_state = RedrawState::WaitingForVBlank {
                                 redraw_needed: false,
                             };
-                            match std::mem::replace(
-                                &mut output_state.redraw_state,
-                                new_state,
-                            ) {
+                            match std::mem::replace(&mut output_state.redraw_state, new_state) {
                                 RedrawState::Idle => unreachable!(),
                                 RedrawState::Queued => (),
                                 RedrawState::WaitingForVBlank { .. } => unreachable!(),
@@ -1118,7 +1118,10 @@ impl DrmBackendState {
                 .unwrap_or(Duration::from_micros(16_667));
         }
 
-        trace!("{}: queueing estimated vblank timer to fire in {duration:?}", output.name());
+        trace!(
+            "{}: queueing estimated vblank timer to fire in {duration:?}",
+            output.name()
+        );
 
         let token = handle
             .insert_source(Timer::from_duration(duration), move |_, _, state| {
@@ -1157,11 +1160,7 @@ impl DrmBackendState {
     ///
     /// Acquires the GPU renderer once and uses it for all post-render work
     /// (screencopy + screencast), avoiding repeated mutex locks on the GPU manager.
-    pub(crate) fn post_render(
-        &mut self,
-        ewm: &mut Ewm,
-        output: &smithay::output::Output,
-    ) {
+    pub(crate) fn post_render(&mut self, ewm: &mut Ewm, output: &smithay::output::Output) {
         let Some(ref event_loop) = self.loop_handle else {
             return;
         };
@@ -1250,7 +1249,9 @@ impl DrmBackendState {
 
                 let cursor_location = {
                     let (px, py) = ewm.pointer_location();
-                    smithay::utils::Point::<i32, smithay::utils::Physical>::from((px as i32, py as i32))
+                    smithay::utils::Point::<i32, smithay::utils::Physical>::from((
+                        px as i32, py as i32,
+                    ))
                 };
 
                 if cast.dequeue_buffer_and_render(
@@ -1290,8 +1291,7 @@ impl DrmBackendState {
         };
 
         // Increment sequence for frame callback throttling
-        output_state.frame_callback_sequence =
-            output_state.frame_callback_sequence.wrapping_add(1);
+        output_state.frame_callback_sequence = output_state.frame_callback_sequence.wrapping_add(1);
 
         match std::mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
             RedrawState::Idle => unreachable!(),
@@ -1346,25 +1346,23 @@ impl DrmBackendState {
         // Transition state BEFORE frame_submitted(). frame_submitted() may
         // submit a queued frame (generating another VBlank), so the state
         // machine must be settled first.
-        let redraw_needed = match std::mem::replace(
-            &mut output_state.redraw_state,
-            RedrawState::Idle,
-        ) {
-            RedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
-            state @ (RedrawState::Idle
-            | RedrawState::Queued
-            | RedrawState::WaitingForEstimatedVBlank(_)
-            | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => {
-                error!(
-                    "{}: unexpected redraw state on VBlank \
+        let redraw_needed =
+            match std::mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
+                RedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
+                state @ (RedrawState::Idle
+                | RedrawState::Queued
+                | RedrawState::WaitingForEstimatedVBlank(_)
+                | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => {
+                    error!(
+                        "{}: unexpected redraw state on VBlank \
                      (should be WaitingForVBlank); can happen when \
                      resuming from sleep or powering on monitors: {}",
-                    output.name(),
-                    state
-                );
-                true
-            }
-        };
+                        output.name(),
+                        state
+                    );
+                    true
+                }
+            };
 
         // Record presentation time in frame clock
         output_state.frame_clock.presented(presentation_time);
@@ -1471,8 +1469,7 @@ impl DrmBackendState {
         // is present (mirrors on_lid_state_changed logic). Without this,
         // udev Changed events after lid-close re-report the panel as
         // Connected, causing a connect/disconnect cycle every second.
-        let disable_laptop_panels =
-            self.lid_closed && self.has_external_monitor(ewm);
+        let disable_laptop_panels = self.lid_closed && self.has_external_monitor(ewm);
 
         // Process new connections, skipping CRTCs that already have a
         // surface (guards against spurious scanner re-reports).
@@ -1531,7 +1528,11 @@ impl DrmBackendState {
         };
 
         // Build connector name early so we can look up config
-        let connector_name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
+        let connector_name = format!(
+            "{}-{}",
+            connector.interface().as_str(),
+            connector.interface_id()
+        );
         let config = ewm.output_config.get(&connector_name).cloned();
 
         // Select mode: use configured mode if available, otherwise preferred
@@ -1583,19 +1584,17 @@ impl DrmBackendState {
             .collect();
 
         // Read EDID for manufacturer/model/serial
-        let (make, model, serial_number) =
-            if let Some(info) = smithay_drm_extras::display_info::for_connector(
-                &device.drm,
-                connector.handle(),
-            ) {
-                (
-                    info.make().unwrap_or_else(|| "Unknown".to_string()),
-                    info.model().unwrap_or_else(|| "Unknown".to_string()),
-                    info.serial().unwrap_or_default(),
-                )
-            } else {
-                ("Unknown".to_string(), "Unknown".to_string(), String::new())
-            };
+        let (make, model, serial_number) = if let Some(info) =
+            smithay_drm_extras::display_info::for_connector(&device.drm, connector.handle())
+        {
+            (
+                info.make().unwrap_or_else(|| "Unknown".to_string()),
+                info.model().unwrap_or_else(|| "Unknown".to_string()),
+                info.serial().unwrap_or_default(),
+            )
+        } else {
+            ("Unknown".to_string(), "Unknown".to_string(), String::new())
+        };
 
         // Create Smithay output
         let output = Output::new(
@@ -1629,7 +1628,10 @@ impl DrmBackendState {
         );
         output.set_preferred(smithay_mode);
         let global_id = output.create_global::<State>(display_handle);
-        warn!("Created wl_output global for {}: {:?}", connector_name, global_id);
+        warn!(
+            "Created wl_output global for {}: {:?}",
+            connector_name, global_id
+        );
 
         // Create DrmCompositor
         let cursor_size = device.drm.cursor_size();
@@ -1685,10 +1687,8 @@ impl DrmBackendState {
             .and_then(|c| c.position)
             .unwrap_or((ewm.output_size.w, 0));
 
-        let vblank_throttle = VBlankThrottle::new(
-            self.loop_handle.clone().unwrap(),
-            connector_name.clone(),
-        );
+        let vblank_throttle =
+            VBlankThrottle::new(self.loop_handle.clone().unwrap(), connector_name.clone());
 
         // Build per-surface DMA-BUF feedback (scanout hints for clients)
         let dmabuf_feedback = match build_surface_dmabuf_feedback(
@@ -1756,15 +1756,14 @@ impl DrmBackendState {
             // Notify Wayland clients (including xwayland-satellite) of the
             // output position via wl_output.geometry. space.map_output only
             // tracks position internally.
-            output.change_current_state(
-                None,
-                None,
-                None,
-                Some((x_offset, y_offset).into()),
-            );
+            output.change_current_state(None, None, None, Some((x_offset, y_offset).into()));
             info!(
                 "Mapped output {} at position ({}, {}), size {}x{}",
-                connector_name, x_offset, y_offset, mode.size().0, mode.size().1
+                connector_name,
+                x_offset,
+                y_offset,
+                mode.size().0,
+                mode.size().1
             );
         } else {
             info!("Output {} connected but disabled by config", connector_name);
@@ -1786,8 +1785,9 @@ impl DrmBackendState {
             })
             .collect();
 
-        let applied_scale =
-            super::closest_representable_scale(config.as_ref().and_then(|c| c.scale).unwrap_or(1.0));
+        let applied_scale = super::closest_representable_scale(
+            config.as_ref().and_then(|c| c.scale).unwrap_or(1.0),
+        );
         let applied_transform = config
             .as_ref()
             .and_then(|c| c.transform)
@@ -1893,11 +1893,7 @@ impl DrmBackendState {
                 .filter(|(conn, _)| conn.state() == connector::State::Connected)
                 .filter(|(_, crtc)| !device.surfaces.contains_key(crtc))
                 .filter(|(conn, _)| {
-                    let name = format!(
-                        "{}-{}",
-                        conn.interface().as_str(),
-                        conn.interface_id()
-                    );
+                    let name = format!("{}-{}", conn.interface().as_str(), conn.interface_id());
                     crate::is_laptop_panel(&name)
                 })
                 .map(|(conn, crtc)| (conn.clone(), crtc))
@@ -2010,13 +2006,7 @@ fn initialize_drm(
 
     // Scan connectors (collect results before releasing borrow)
     let connectors: Vec<_> = {
-        let device = state
-            .backend
-            .as_drm_mut()
-            .unwrap()
-            .device
-            .as_mut()
-            .unwrap();
+        let device = state.backend.as_drm_mut().unwrap().device.as_mut().unwrap();
         let scan_result = device.drm_scanner.scan_connectors(&device.drm)?;
         scan_result
             .into_iter()
@@ -2050,11 +2040,7 @@ fn initialize_drm(
     }
 
     // Verify all output globals are valid (defensive against silent global loss)
-    state
-        .backend
-        .as_drm_mut()
-        .unwrap()
-        .verify_output_globals();
+    state.backend.as_drm_mut().unwrap().verify_output_globals();
 
     info!(
         "Total output area: {}x{} ({} outputs)",
@@ -2089,8 +2075,7 @@ fn initialize_drm(
 
                 // Throttle buggy drivers that deliver VBlanks too early
                 {
-                    let Some(device) = &mut state.backend.as_drm_mut().unwrap().device
-                    else {
+                    let Some(device) = &mut state.backend.as_drm_mut().unwrap().device else {
                         return;
                     };
                     let Some(surface) = device.surfaces.get_mut(&crtc) else {
@@ -2103,10 +2088,9 @@ fn initialize_drm(
                         .and_then(|s| s.frame_clock.refresh_interval());
 
                     let seq = meta.sequence;
-                    if surface.vblank_throttle.throttle(
-                        refresh_interval,
-                        time,
-                        move |state| {
+                    if surface
+                        .vblank_throttle
+                        .throttle(refresh_interval, time, move |state| {
                             // Re-enter on_vblank with zeroed time (throttled)
                             let meta = DrmEventMetadata {
                                 sequence: seq,
@@ -2114,8 +2098,8 @@ fn initialize_drm(
                             };
                             let drm = state.backend.as_drm_mut().unwrap();
                             drm.process_vblank(crtc, meta, &mut state.ewm);
-                        },
-                    ) {
+                        })
+                    {
                         return; // Throttled — deferred via timer
                     }
                 }
@@ -2136,10 +2120,7 @@ fn initialize_drm(
                                 output_state.redraw_state,
                                 RedrawState::WaitingForVBlank { .. }
                             ) {
-                                warn!(
-                                    "Recovering stuck redraw state for {}",
-                                    output.name()
-                                );
+                                warn!("Recovering stuck redraw state for {}", output.name());
                                 output_state.redraw_state = RedrawState::Queued;
                             }
                         }
@@ -2495,15 +2476,13 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     // didn't receive frame callbacks through the normal render path.
     // Fires every second and sends callbacks to all surfaces unconditionally,
     // relying on FRAME_CALLBACK_THROTTLE (995ms) to prevent busy-looping.
-    event_loop
-        .handle()
-        .insert_source(
-            Timer::from_duration(Duration::from_secs(1)),
-            |_, _, state| {
-                state.ewm.send_frame_callbacks_on_fallback_timer();
-                TimeoutAction::ToDuration(Duration::from_secs(1))
-            },
-        )?;
+    event_loop.handle().insert_source(
+        Timer::from_duration(Duration::from_secs(1)),
+        |_, _, state| {
+            state.ewm.send_frame_callbacks_on_fallback_timer();
+            TimeoutAction::ToDuration(Duration::from_secs(1))
+        },
+    )?;
 
     // Register UdevBackend for hotplug detection
     let udev_backend = UdevBackend::new(&seat_name)?;
@@ -2551,80 +2530,66 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     // Register libinput with event loop (using shared input handlers)
     let libinput_backend = LibinputInputBackend::new(libinput);
     info!("Registering libinput backend with event loop...");
-    let _libinput_token =
-        event_loop
-            .handle()
-            .insert_source(libinput_backend, move |mut event, _, state| {
-                match event {
-                    InputEvent::DeviceAdded { ref mut device } => {
-                        apply_libinput_settings(device, &state.ewm.input_configs);
-                        if let Backend::Drm(drm) = &mut state.backend {
-                            drm.libinput_devices.insert(device.clone());
-                        }
+    let _libinput_token = event_loop.handle().insert_source(
+        libinput_backend,
+        move |mut event, _, state| match event {
+            InputEvent::DeviceAdded { ref mut device } => {
+                apply_libinput_settings(device, &state.ewm.input_configs);
+                if let Backend::Drm(drm) = &mut state.backend {
+                    drm.libinput_devices.insert(device.clone());
+                }
+            }
+            InputEvent::Keyboard { event: kb_event } => {
+                let action = handle_keyboard_event(
+                    state,
+                    kb_event.key_code().into(),
+                    kb_event.state(),
+                    Event::time_msec(&kb_event),
+                );
+                match action {
+                    KeyboardAction::Shutdown => {
+                        info!("Kill combo pressed, shutting down");
+                        state.ewm.stop();
                     }
-                    InputEvent::Keyboard { event: kb_event } => {
-                        let action = handle_keyboard_event(
-                            state,
-                            kb_event.key_code().into(),
-                            kb_event.state(),
-                            Event::time_msec(&kb_event),
-                        );
-                        match action {
-                            KeyboardAction::Shutdown => {
-                                info!("Kill combo pressed, shutting down");
-                                state.ewm.stop();
-                            }
-                            KeyboardAction::ChangeVt(vt) => {
-                                state.backend.change_vt(vt);
-                            }
-                            _ => {}
-                        }
-                    }
-                    InputEvent::PointerMotion { event } => {
-                        crate::input::handle_pointer_motion::<LibinputInputBackend>(
-                            state, event,
-                        );
-                        state.ewm.queue_redraw_for_pointer();
-                    }
-                    InputEvent::PointerMotionAbsolute { event } => {
-                        crate::input::handle_pointer_motion_absolute::<LibinputInputBackend>(
-                            state, event,
-                        );
-                        state.ewm.queue_redraw_for_pointer();
-                    }
-                    InputEvent::PointerButton { event } => {
-                        crate::input::handle_pointer_button::<LibinputInputBackend>(
-                            state, event,
-                        );
-                    }
-                    InputEvent::PointerAxis { event } => {
-                        crate::input::handle_pointer_axis::<LibinputInputBackend>(
-                            state, event,
-                        );
-                    }
-                    InputEvent::SwitchToggle { event } => {
-                        use smithay::backend::input::{
-                            Switch, SwitchState,
-                            SwitchToggleEvent as SwitchEvt,
-                        };
-                        if SwitchEvt::<LibinputInputBackend>::switch(&event)
-                            == Some(Switch::Lid)
-                        {
-                            let is_closed =
-                                SwitchEvt::<LibinputInputBackend>::state(&event)
-                                    == SwitchState::On;
-                            info!("Lid {}", if is_closed { "closed" } else { "opened" });
-                            state.handle_lid_state(is_closed);
-                        }
-                    }
-                    InputEvent::DeviceRemoved { ref device } => {
-                        if let Backend::Drm(drm) = &mut state.backend {
-                            drm.libinput_devices.remove(device);
-                        }
+                    KeyboardAction::ChangeVt(vt) => {
+                        state.backend.change_vt(vt);
                     }
                     _ => {}
                 }
-            })?;
+            }
+            InputEvent::PointerMotion { event } => {
+                crate::input::handle_pointer_motion::<LibinputInputBackend>(state, event);
+                state.ewm.queue_redraw_for_pointer();
+            }
+            InputEvent::PointerMotionAbsolute { event } => {
+                crate::input::handle_pointer_motion_absolute::<LibinputInputBackend>(state, event);
+                state.ewm.queue_redraw_for_pointer();
+            }
+            InputEvent::PointerButton { event } => {
+                crate::input::handle_pointer_button::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::PointerAxis { event } => {
+                crate::input::handle_pointer_axis::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::SwitchToggle { event } => {
+                use smithay::backend::input::{
+                    Switch, SwitchState, SwitchToggleEvent as SwitchEvt,
+                };
+                if SwitchEvt::<LibinputInputBackend>::switch(&event) == Some(Switch::Lid) {
+                    let is_closed =
+                        SwitchEvt::<LibinputInputBackend>::state(&event) == SwitchState::On;
+                    info!("Lid {}", if is_closed { "closed" } else { "opened" });
+                    state.handle_lid_state(is_closed);
+                }
+            }
+            InputEvent::DeviceRemoved { ref device } => {
+                if let Backend::Drm(drm) = &mut state.backend {
+                    drm.libinput_devices.remove(device);
+                }
+            }
+            _ => {}
+        },
+    )?;
 
     info!("EWM DRM backend started (waiting for session activation)");
     info!("VT switching: Ctrl+Alt+F1-F7");
@@ -2656,4 +2621,3 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-

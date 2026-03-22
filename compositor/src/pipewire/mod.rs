@@ -41,7 +41,8 @@ impl PipeWire {
         info!("Initializing PipeWire");
 
         let main_loop = MainLoopRc::new(None).context("error creating PipeWire MainLoop")?;
-        let context = ContextRc::new(&main_loop, None).context("error creating PipeWire Context")?;
+        let context =
+            ContextRc::new(&main_loop, None).context("error creating PipeWire Context")?;
         let core = context
             .connect_rc(None)
             .context("error connecting to PipeWire")?;

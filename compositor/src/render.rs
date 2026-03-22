@@ -33,9 +33,7 @@ use smithay::{
                 render_elements,
                 solid::SolidColorRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-                utils::{
-                    CropRenderElement, RescaleRenderElement,
-                },
+                utils::{CropRenderElement, RescaleRenderElement},
                 Kind, RenderElement,
             },
             gles::{GlesRenderer, GlesTarget, GlesTexture},
@@ -303,8 +301,7 @@ pub fn collect_render_elements_for_output(
                         .unwrap_or_default();
                     let output_physical: Size<i32, Physical> =
                         output_logical_size.to_physical_precise_round(scale);
-                    let constrain =
-                        Rectangle::new(Point::from((0, 0)), output_physical);
+                    let constrain = Rectangle::new(Point::from((0, 0)), output_physical);
 
                     if entry.primary {
                         // Primary: native size, centered, crop to output bounds.
@@ -314,19 +311,35 @@ pub fn collect_render_elements_for_output(
                         );
                         let loc_physical: Point<i32, Physical> =
                             Point::from((offset_x, offset_y)).to_physical_precise_round(scale);
-                        let view_elements = window.render_elements(renderer, loc_physical, scale, 1.0);
-                        push_constrained(&mut elements, view_elements, loc_physical, Scale::from(1.0), scale, constrain);
+                        let view_elements =
+                            window.render_elements(renderer, loc_physical, scale, 1.0);
+                        push_constrained(
+                            &mut elements,
+                            view_elements,
+                            loc_physical,
+                            Scale::from(1.0),
+                            scale,
+                            constrain,
+                        );
                     } else {
                         // Non-primary: uniform stretch to fill output, crop overflow.
                         let loc_physical: Point<i32, Physical> = Point::from((0, 0));
-                        let view_elements = window.render_elements(renderer, loc_physical, scale, 1.0);
+                        let view_elements =
+                            window.render_elements(renderer, loc_physical, scale, 1.0);
                         let buf_size: Size<i32, Physical> =
                             window.geometry().size.to_physical_precise_round(scale);
                         let uniform = f64::max(
                             output_physical.w as f64 / buf_size.w as f64,
                             output_physical.h as f64 / buf_size.h as f64,
                         );
-                        push_constrained(&mut elements, view_elements, loc_physical, Scale::from(uniform), scale, constrain);
+                        push_constrained(
+                            &mut elements,
+                            view_elements,
+                            loc_physical,
+                            Scale::from(uniform),
+                            scale,
+                            constrain,
+                        );
                     }
 
                     // Black backdrop covering full output (behind surface)
@@ -344,17 +357,13 @@ pub fn collect_render_elements_for_output(
                 }
 
                 // Frame-relative → output-local (working_area.loc is relative to output origin)
-                let location = Point::from((
-                    working_area.loc.x + entry.x,
-                    working_area.loc.y + entry.y,
-                ));
-                let loc_physical: Point<i32, Physical> =
-                    location.to_physical_precise_round(scale);
+                let location =
+                    Point::from((working_area.loc.x + entry.x, working_area.loc.y + entry.y));
+                let loc_physical: Point<i32, Physical> = location.to_physical_precise_round(scale);
                 let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     window.render_elements(renderer, loc_physical, scale, 1.0);
                 let entry_size: Size<i32, Physical> =
-                    Size::from((entry.w as i32, entry.h as i32))
-                        .to_physical_precise_round(scale);
+                    Size::from((entry.w as i32, entry.h as i32)).to_physical_precise_round(scale);
 
                 // Crop to entry bounds — clients may render larger than configured
                 // (e.g. Electron apps with a minimum window size).
@@ -362,7 +371,14 @@ pub fn collect_render_elements_for_output(
 
                 if entry.primary {
                     // Primary view: render at native size, crop to entry.
-                    push_constrained(&mut elements, view_elements, loc_physical, Scale::from(1.0), scale, constrain);
+                    push_constrained(
+                        &mut elements,
+                        view_elements,
+                        loc_physical,
+                        Scale::from(1.0),
+                        scale,
+                        constrain,
+                    );
                 } else {
                     // Non-primary view: stretch buffer to fill entry bounds, then crop.
                     // Uses uniform scale (fill): pick the larger factor to fully cover
@@ -373,7 +389,14 @@ pub fn collect_render_elements_for_output(
                         entry_size.w as f64 / buf_size.w as f64,
                         entry_size.h as f64 / buf_size.h as f64,
                     );
-                    push_constrained(&mut elements, view_elements, loc_physical, Scale::from(uniform), scale, constrain);
+                    push_constrained(
+                        &mut elements,
+                        view_elements,
+                        loc_physical,
+                        Scale::from(uniform),
+                        scale,
+                        constrain,
+                    );
                 }
             }
         }
@@ -651,7 +674,10 @@ pub fn process_screencopies_for_output(
             .collect();
 
         // Compute damage against this queue's tracker
-        let damages = damage_tracker.damage_output(1, &relocated_elements).unwrap().0;
+        let damages = damage_tracker
+            .damage_output(1, &relocated_elements)
+            .unwrap()
+            .0;
         if with_damage && damages.is_none() {
             trace!("screencopy: no damage, waiting for next redraw");
             return;
@@ -752,11 +778,7 @@ pub fn render_screencopy_immediate(
     let relocated_elements: Vec<_> = elements
         .iter()
         .map(|element| {
-            RelocateRenderElement::from_element(
-                element,
-                region_loc.upscale(-1),
-                Relocate::Relative,
-            )
+            RelocateRenderElement::from_element(element, region_loc.upscale(-1), Relocate::Relative)
         })
         .collect();
 

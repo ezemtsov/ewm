@@ -94,7 +94,12 @@ impl ScreenCast {
             .unwrap_or(1); // Default to Embedded
         debug!("Session {} cursor_mode={}", session_id, cursor_mode);
 
-        let session = Session::new(session_id, self.outputs.clone(), self.to_compositor.clone(), cursor_mode);
+        let session = Session::new(
+            session_id,
+            self.outputs.clone(),
+            self.to_compositor.clone(),
+            cursor_mode,
+        );
 
         match server.at(&path, session).await {
             Ok(true) => {
@@ -317,12 +322,21 @@ impl Stream {
         }
     }
 
-    fn start(&self, session_id: usize, output_name: String, signal_ctx: SignalEmitter<'static>, cursor_mode: u32) {
+    fn start(
+        &self,
+        session_id: usize,
+        output_name: String,
+        signal_ctx: SignalEmitter<'static>,
+        cursor_mode: u32,
+    ) {
         if self.was_started.swap(true, Ordering::SeqCst) {
             return;
         }
 
-        info!("Stream {} starting for output {} (cursor_mode={})", self.id, output_name, cursor_mode);
+        info!(
+            "Stream {} starting for output {} (cursor_mode={})",
+            self.id, output_name, cursor_mode
+        );
 
         if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StartCast {
             session_id,

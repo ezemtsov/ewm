@@ -179,9 +179,7 @@ impl Fixture {
                 if self.state.ewm.focused_surface_id != id
                     && self.state.ewm.id_windows.contains_key(&id)
                 {
-                    self.state
-                        .ewm
-                        .set_focus(id, false, "test", None);
+                    self.state.ewm.set_focus(id, false, "test", None);
                 }
             }
             ModuleCommand::Close { id } => {
@@ -191,7 +189,11 @@ impl Fixture {
                     }
                 }
             }
-            ModuleCommand::OutputLayout { output, surfaces, tabs } => {
+            ModuleCommand::OutputLayout {
+                output,
+                surfaces,
+                tabs,
+            } => {
                 self.state.ewm.apply_output_layout(&output, surfaces);
                 self.state.ewm.output_workspaces.insert(output, tabs);
             }

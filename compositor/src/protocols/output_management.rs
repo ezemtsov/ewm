@@ -7,7 +7,6 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::mem;
 
-use smithay::utils::Transform;
 use smithay::reexports::wayland_protocols_wlr::output_management::v1::server::{
     zwlr_output_configuration_head_v1, zwlr_output_configuration_v1, zwlr_output_head_v1,
     zwlr_output_manager_v1, zwlr_output_mode_v1,
@@ -17,6 +16,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::Transform as WlTran
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
 };
+use smithay::utils::Transform;
 use zwlr_output_configuration_head_v1::ZwlrOutputConfigurationHeadV1;
 use zwlr_output_configuration_v1::ZwlrOutputConfigurationV1;
 use zwlr_output_head_v1::ZwlrOutputHeadV1;
@@ -271,8 +271,7 @@ impl OutputManagementState {
 
 // --- GlobalDispatch for ZwlrOutputManagerV1 ---
 
-impl<D> GlobalDispatch<ZwlrOutputManagerV1, OutputManagementGlobalData, D>
-    for OutputManagementState
+impl<D> GlobalDispatch<ZwlrOutputManagerV1, OutputManagementGlobalData, D> for OutputManagementState
 where
     D: GlobalDispatch<ZwlrOutputManagerV1, OutputManagementGlobalData>,
     D: Dispatch<ZwlrOutputManagerV1, ()>,

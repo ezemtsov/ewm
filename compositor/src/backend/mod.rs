@@ -277,7 +277,6 @@ impl Backend {
             Backend::Headless(_) => {}
         }
     }
-
 }
 
 /// Round scale to the nearest value representable by the fractional-scale

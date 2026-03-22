@@ -658,7 +658,10 @@ fn output_layout_module(
     for i in 0..tabs_len {
         let tab = env.call(aref, (tabs, i))?;
 
-        let name: String = env.call(plist_get, (tab, kw_name))?.into_rust().unwrap_or_default();
+        let name: String = env
+            .call(plist_get, (tab, kw_name))?
+            .into_rust()
+            .unwrap_or_default();
 
         let active_val = env.call(plist_get, (tab, kw_active))?;
         let active = active_val.is_not_nil() && active_val != *kw_false;
@@ -999,7 +1002,9 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                         Some(v) => entry.accel_profile = Some(v),
                         None => env.signal(
                             ewm_input_invalid_value,
-                            (format!("Invalid :accel-profile \"{s}\", expected: flat, adaptive"),),
+                            (format!(
+                                "Invalid :accel-profile \"{s}\", expected: flat, adaptive"
+                            ),),
                         )?,
                     }
                 }
@@ -1054,7 +1059,10 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                 }
             } else {
                 let key_name: String = env.call(symbol_name, (key,))?.into_rust()?;
-                env.signal(ewm_input_unknown_key, (format!("Unknown input config key {key_name}"),))?;
+                env.signal(
+                    ewm_input_unknown_key,
+                    (format!("Unknown input config key {key_name}"),),
+                )?;
             }
 
             rest = env.call(cddr, (rest,))?;

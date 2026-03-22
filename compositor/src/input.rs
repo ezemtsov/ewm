@@ -172,17 +172,18 @@ pub fn handle_keyboard_event(
     // During a prefix sequence (C-x ...), Emacs needs Latin keysyms for
     // keybinding dispatch. Temporarily set base layout for this key event,
     // then restore immediately after. No persistent state needed.
-    let prefix_saved_layout =
-        if module::get_in_prefix_sequence() && focus_on_emacs && state.ewm.xkb_current_layout != 0
-        {
-            let saved = state.ewm.xkb_current_layout;
-            keyboard.with_xkb_state(state, |mut context| {
-                context.set_layout(smithay::input::keyboard::Layout(0));
-            });
-            Some(saved)
-        } else {
-            None
-        };
+    let prefix_saved_layout = if module::get_in_prefix_sequence()
+        && focus_on_emacs
+        && state.ewm.xkb_current_layout != 0
+    {
+        let saved = state.ewm.xkb_current_layout;
+        keyboard.with_xkb_state(state, |mut context| {
+            context.set_layout(smithay::input::keyboard::Layout(0));
+        });
+        Some(saved)
+    } else {
+        None
+    };
 
     // Process key with filter to detect intercepted keys and kill combo
     let filter_result = keyboard.input::<(InterceptKind, u32, Option<String>), _>(
@@ -622,9 +623,9 @@ pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputCo
     let device_cfg = configs
         .iter()
         .find(|c| c.device.as_deref() == Some(device_name.as_str()));
-    let type_cfg = configs.iter().find(|c| {
-        c.device.is_none() && c.device_type == Some(detected_type)
-    });
+    let type_cfg = configs
+        .iter()
+        .find(|c| c.device.is_none() && c.device_type == Some(detected_type));
 
     tracing::debug!("Configuring {:?}: {}", detected_type, device_name);
 
@@ -773,9 +774,7 @@ fn active_constraint(
         }
         match &*constraint {
             PointerConstraint::Locked(_) => Some(ActiveConstraint::Locked),
-            PointerConstraint::Confined(c) => {
-                Some(ActiveConstraint::Confined(c.region().cloned()))
-            }
+            PointerConstraint::Confined(c) => Some(ActiveConstraint::Confined(c.region().cloned())),
         }
     })
 }
@@ -818,8 +817,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
                 return true;
             }
             Some(ActiveConstraint::Confined(region)) => {
-                pointer_confined =
-                    Some((state.ewm.pointer_focus.clone().unwrap(), region));
+                pointer_confined = Some((state.ewm.pointer_focus.clone().unwrap(), region));
             }
             None => {}
         }
@@ -871,8 +869,8 @@ pub fn handle_pointer_motion<B: InputBackend>(
     };
 
     // Activate pending constraints only on focus change (not every motion).
-    let focus_changed = state.ewm.pointer_focus.as_ref().map(|(s, _)| s)
-        != under.as_ref().map(|(s, _)| s);
+    let focus_changed =
+        state.ewm.pointer_focus.as_ref().map(|(s, _)| s) != under.as_ref().map(|(s, _)| s);
     state.ewm.pointer_focus = under.clone();
 
     pointer.motion(
@@ -932,8 +930,7 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
                 return true;
             }
             Some(ActiveConstraint::Confined(region)) => {
-                pointer_confined =
-                    Some((state.ewm.pointer_focus.clone().unwrap(), region));
+                pointer_confined = Some((state.ewm.pointer_focus.clone().unwrap(), region));
             }
             None => {}
         }
@@ -973,8 +970,8 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     };
 
     // Activate pending constraints only on focus change (not every motion).
-    let focus_changed = state.ewm.pointer_focus.as_ref().map(|(s, _)| s)
-        != under.as_ref().map(|(s, _)| s);
+    let focus_changed =
+        state.ewm.pointer_focus.as_ref().map(|(s, _)| s) != under.as_ref().map(|(s, _)| s);
     state.ewm.pointer_focus = under.clone();
 
     pointer.motion(
@@ -1024,18 +1021,13 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
             // If click is on a toplevel (not a layer surface), do normal focus
             if !on_layer {
                 // Check layout surfaces first, then Emacs frames in space
-                let focus_info = state
-                    .ewm
-                    .layout_surface_id_under(pos)
-                    .or_else(|| {
-                        state
-                            .ewm
-                            .space
-                            .element_under(pos)
-                            .and_then(|(window, _)| {
-                                state.ewm.window_ids.get(&window).copied()
-                            })
-                    });
+                let focus_info = state.ewm.layout_surface_id_under(pos).or_else(|| {
+                    state
+                        .ewm
+                        .space
+                        .element_under(pos)
+                        .and_then(|(window, _)| state.ewm.window_ids.get(&window).copied())
+                });
 
                 if let Some(id) = focus_info {
                     state.ewm.set_focus(id, true, "click", None);
@@ -1082,18 +1074,13 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
         // If scroll is on a toplevel (not a layer surface), do normal focus
         if !on_layer {
             // Check layout surfaces first, then Emacs frames in space
-            let focus_info = state
-                .ewm
-                .layout_surface_id_under(pos)
-                .or_else(|| {
-                    state
-                        .ewm
-                        .space
-                        .element_under(pos)
-                        .and_then(|(window, _)| {
-                            state.ewm.window_ids.get(&window).copied()
-                        })
-                });
+            let focus_info = state.ewm.layout_surface_id_under(pos).or_else(|| {
+                state
+                    .ewm
+                    .space
+                    .element_under(pos)
+                    .and_then(|(window, _)| state.ewm.window_ids.get(&window).copied())
+            });
 
             if let Some(id) = focus_info {
                 state.ewm.set_focus(id, true, "scroll", None);

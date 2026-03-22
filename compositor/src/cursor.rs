@@ -46,8 +46,7 @@ impl CursorBuffer {
         &self,
         renderer: &mut GlesRenderer,
         position: Point<i32, Physical>,
-    ) -> Result<MemoryRenderBufferRenderElement<GlesRenderer>, GlesError>
-    {
+    ) -> Result<MemoryRenderBufferRenderElement<GlesRenderer>, GlesError> {
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             position.to_f64(),

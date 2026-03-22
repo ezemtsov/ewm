@@ -84,20 +84,19 @@ pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 use crate::protocols::foreign_toplevel::{
     ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
 };
-use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use crate::protocols::output_management::{OutputManagementHandler, OutputManagementState};
+use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
 use serde::{Deserialize, Serialize};
 use smithay::{
+    backend::renderer::element::utils::select_dmabuf_feedback,
     backend::renderer::element::{solid::SolidColorBuffer, RenderElementStates},
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_fractional_scale, delegate_idle_notify, delegate_input_method_manager,
-    delegate_layer_shell, delegate_output,
-    delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_shm,
-    delegate_pointer_constraints, delegate_relative_pointer,
-    delegate_text_input_manager, delegate_viewporter, delegate_xdg_activation,
+    delegate_layer_shell, delegate_output, delegate_pointer_constraints,
+    delegate_primary_selection, delegate_relative_pointer, delegate_seat, delegate_session_lock,
+    delegate_shm, delegate_text_input_manager, delegate_viewporter, delegate_xdg_activation,
     delegate_xdg_shell,
-    backend::renderer::element::utils::select_dmabuf_feedback,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
         utils::{
@@ -119,8 +118,8 @@ use smithay::{
     reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
     reexports::{
         calloop::{
-            generic::Generic, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction,
-            RegistrationToken, timer::Timer,
+            generic::Generic, timer::Timer, Interest, LoopHandle, LoopSignal, Mode as CalloopMode,
+            PostAction, RegistrationToken,
         },
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState,
         wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
@@ -144,12 +143,16 @@ use smithay::{
             InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface,
         },
         output::OutputManagerState,
+        pointer_constraints::{
+            with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState,
+        },
+        relative_pointer::RelativePointerManagerState,
         seat::WaylandFocus,
         selection::{
             data_device::{
                 request_data_device_client_selection, set_data_device_focus,
-                set_data_device_selection, DataDeviceHandler,
-                DataDeviceState, WaylandDndGrabHandler,
+                set_data_device_selection, DataDeviceHandler, DataDeviceState,
+                WaylandDndGrabHandler,
             },
             primary_selection::{
                 set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
@@ -164,10 +167,6 @@ use smithay::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
         },
-        pointer_constraints::{
-            with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState,
-        },
-        relative_pointer::RelativePointerManagerState,
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
@@ -555,9 +554,7 @@ impl InterceptedKey {
         // XKB already consumed Shift to produce the modified keysym, so we
         // skip the shift comparison here.
         if raw_keysym != modified_keysym && self.keysym == modified_keysym {
-            return self.ctrl == mods.ctrl
-                && self.alt == mods.alt
-                && self.logo == mods.logo;
+            return self.ctrl == mods.ctrl && self.alt == mods.alt && self.logo == mods.logo;
         }
 
         false
@@ -594,7 +591,11 @@ mod intercepted_key_tests {
         // s-a: Emacs sends keysym=a, logo=true
         let ik = key(keysyms::KEY_a, false, false, false, true);
         // Physical: raw=a, modified=a, mods={logo}
-        assert!(ik.matches(keysyms::KEY_a, keysyms::KEY_a, &mods(false, false, false, true)));
+        assert!(ik.matches(
+            keysyms::KEY_a,
+            keysyms::KEY_a,
+            &mods(false, false, false, true)
+        ));
     }
 
     #[test]
@@ -602,7 +603,11 @@ mod intercepted_key_tests {
         // Emacs sends keysym=a (lowercase), physical key produces A (uppercase, shift held)
         let ik = key(keysyms::KEY_a, false, false, false, true);
         // Shift is ignored for letter keys
-        assert!(ik.matches(keysyms::KEY_A, keysyms::KEY_A, &mods(false, false, true, true)));
+        assert!(ik.matches(
+            keysyms::KEY_A,
+            keysyms::KEY_A,
+            &mods(false, false, true, true)
+        ));
     }
 
     #[test]
@@ -610,14 +615,22 @@ mod intercepted_key_tests {
         // C-x: Emacs sends keysym=x, ctrl=true
         let ik = key(keysyms::KEY_x, true, false, false, false);
         // Physical: x pressed but ctrl NOT held — should not match
-        assert!(!ik.matches(keysyms::KEY_x, keysyms::KEY_x, &mods(false, false, false, false)));
+        assert!(!ik.matches(
+            keysyms::KEY_x,
+            keysyms::KEY_x,
+            &mods(false, false, false, false)
+        ));
     }
 
     #[test]
     fn wrong_keysym_rejects() {
         // s-a should not match s-b
         let ik = key(keysyms::KEY_a, false, false, false, true);
-        assert!(!ik.matches(keysyms::KEY_b, keysyms::KEY_b, &mods(false, false, false, true)));
+        assert!(!ik.matches(
+            keysyms::KEY_b,
+            keysyms::KEY_b,
+            &mods(false, false, false, true)
+        ));
     }
 
     #[test]
@@ -863,7 +876,11 @@ pub struct Ewm {
 }
 
 impl Ewm {
-    pub fn new(display_handle: DisplayHandle, loop_handle: LoopHandle<'static, State>, is_drm: bool) -> Self {
+    pub fn new(
+        display_handle: DisplayHandle,
+        loop_handle: LoopHandle<'static, State>,
+        is_drm: bool,
+    ) -> Self {
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::WmCapabilities;
         let xdg_shell_state = XdgShellState::new_with_capabilities::<State>(
@@ -916,8 +933,7 @@ impl Ewm {
             ForeignToplevelManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize workspace management (ext-workspace-v1: Emacs tabs as workspaces)
-        let workspace_state =
-            WorkspaceManagerState::new::<State, _>(&display_handle, |_| true);
+        let workspace_state = WorkspaceManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize output management (wlr-output-management-unstable-v1)
         let output_management_state =
@@ -935,7 +951,10 @@ impl Ewm {
 
         // Initialize gamma control (wlr-gamma-control-unstable-v1)
         // Only advertise the global on DRM backends where gamma is actually supported
-        let gamma_control_state = crate::protocols::gamma_control::GammaControlManagerState::new::<State, _>(&display_handle, move |_| is_drm);
+        let gamma_control_state = crate::protocols::gamma_control::GammaControlManagerState::new::<
+            State,
+            _,
+        >(&display_handle, move |_| is_drm);
 
         // Initialize fractional scale protocol (wp-fractional-scale-v1)
         let fractional_scale_state = FractionalScaleManagerState::new::<State>(&display_handle);
@@ -1134,7 +1153,12 @@ impl Ewm {
     /// rather than relying on automatic spatial overlap detection.
     pub fn cleanup_dead_windows(&mut self) {
         // Clean Emacs frames from space
-        let dead: Vec<Window> = self.space.elements().filter(|w| !w.alive()).cloned().collect();
+        let dead: Vec<Window> = self
+            .space
+            .elements()
+            .filter(|w| !w.alive())
+            .cloned()
+            .collect();
         for w in dead {
             self.space.unmap_elem(&w);
         }
@@ -1173,8 +1197,7 @@ impl Ewm {
         let mut states = HashMap::new();
         for info in &self.outputs {
             let output = self.space.outputs().find(|o| o.name() == info.name);
-            let geo = output
-                .and_then(|o| self.space.output_geometry(o));
+            let geo = output.and_then(|o| self.space.output_geometry(o));
 
             let enabled = self
                 .output_config
@@ -1284,20 +1307,14 @@ impl Ewm {
             let (output_name, entry) = self
                 .focused_output_for_surface(id)
                 .or_else(|| self.primary_output_for_surface(id))?;
-            let output = self
-                .space
-                .outputs()
-                .find(|o| o.name() == output_name)?;
+            let output = self.space.outputs().find(|o| o.name() == output_name)?;
             let output_geo = self.space.output_geometry(output)?;
 
             if entry.fullscreen {
                 if entry.primary {
                     let (ox, oy) =
                         fullscreen_center_offset(window.geometry().size, output_geo.size);
-                    return Some(Point::from((
-                        output_geo.loc.x + ox,
-                        output_geo.loc.y + oy,
-                    )));
+                    return Some(Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy)));
                 } else {
                     // Non-primary fullscreen: stretch from output origin
                     return Some(Point::from((output_geo.loc.x, output_geo.loc.y)));
@@ -1362,7 +1379,10 @@ impl Ewm {
     pub fn layout_surface_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)> {
+    ) -> Option<(
+        WlSurface,
+        smithay::utils::Point<f64, smithay::utils::Logical>,
+    )> {
         use smithay::utils::Point;
 
         let output = self.output_at(pos)?;
@@ -1440,9 +1460,7 @@ impl Ewm {
                     window_origin.y + surface_offset.y as f64,
                 ));
                 // Log all hits in fullscreen, and popup/subsurface hits always
-                let is_toplevel = window
-                    .wl_surface()
-                    .map_or(false, |ws| *ws == surface);
+                let is_toplevel = window.wl_surface().map_or(false, |ws| *ws == surface);
                 if entry.fullscreen || !is_toplevel {
                     info!(
                         "surface_under: {} entry {} (fs={}) \
@@ -1450,14 +1468,22 @@ impl Ewm {
                          surface_offset={},{} global_loc={:.0},{:.0} \
                          geo.loc={},{} geo.size={}x{} center={:.0},{:.0}",
                         if is_toplevel { "toplevel" } else { "popup" },
-                        entry.id, entry.fullscreen,
-                        pos.x, pos.y,
-                        pos_in_window.x, pos_in_window.y,
-                        surface_offset.x, surface_offset.y,
-                        global_loc.x, global_loc.y,
-                        window_geo.loc.x, window_geo.loc.y,
-                        window_geo.size.w, window_geo.size.h,
-                        center_offset_x, center_offset_y,
+                        entry.id,
+                        entry.fullscreen,
+                        pos.x,
+                        pos.y,
+                        pos_in_window.x,
+                        pos_in_window.y,
+                        surface_offset.x,
+                        surface_offset.y,
+                        global_loc.x,
+                        global_loc.y,
+                        window_geo.loc.x,
+                        window_geo.loc.y,
+                        window_geo.size.w,
+                        window_geo.size.h,
+                        center_offset_x,
+                        center_offset_y,
                     );
                 }
                 return Some((surface, global_loc));
@@ -1561,8 +1587,7 @@ impl Ewm {
         }
 
         // 6. Store the layout
-        self.output_layouts
-            .insert(output_name.to_string(), entries);
+        self.output_layouts.insert(output_name.to_string(), entries);
 
         // 7. Compute primary flags: largest area per surface across all outputs.
         // Fullscreen entries use the output's logical size (the surface is
@@ -1578,18 +1603,17 @@ impl Ewm {
                 })
                 .collect();
 
-            let entry_area =
-                |entry: &LayoutEntry, oname: &str| -> u64 {
-                    if entry.fullscreen {
-                        let (w, h) = output_sizes
-                            .get(oname)
-                            .copied()
-                            .unwrap_or((entry.w as u64, entry.h as u64));
-                        w * h
-                    } else {
-                        entry.w as u64 * entry.h as u64
-                    }
-                };
+            let entry_area = |entry: &LayoutEntry, oname: &str| -> u64 {
+                if entry.fullscreen {
+                    let (w, h) = output_sizes
+                        .get(oname)
+                        .copied()
+                        .unwrap_or((entry.w as u64, entry.h as u64));
+                    w * h
+                } else {
+                    entry.w as u64 * entry.h as u64
+                }
+            };
 
             let mut best_area: HashMap<u32, u64> = HashMap::new();
             // First pass: find the largest area per surface
@@ -1833,11 +1857,7 @@ impl Ewm {
                 self.deactivate_monitors();
             }
             IdleAction::RunCommand(cmd) => {
-                match std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(cmd)
-                    .spawn()
-                {
+                match std::process::Command::new("sh").arg("-c").arg(cmd).spawn() {
                     Ok(child) => {
                         info!("Idle command spawned: {}", cmd);
                         self.idle_timeout.child_process = Some(child);
@@ -1932,7 +1952,10 @@ impl Ewm {
             )
         };
         if let Some(name) = prefer {
-            let found = self.output_state.iter().find(|(o, s)| o.name() == name && needs_redraw(s));
+            let found = self
+                .output_state
+                .iter()
+                .find(|(o, s)| o.name() == name && needs_redraw(s));
             if let Some((output, _)) = found {
                 return Some(output.clone());
             }
@@ -1980,15 +2003,14 @@ impl Ewm {
             if res == backend::RenderResult::Skipped {
                 // Preserve estimated vblank timer if one exists, otherwise go Idle.
                 // Submitted and NoDamage state transitions are owned by each backend's render().
-                state.redraw_state =
-                    if let RedrawState::WaitingForEstimatedVBlank(token)
-                    | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
-                        state.redraw_state
-                    {
-                        RedrawState::WaitingForEstimatedVBlank(token)
-                    } else {
-                        RedrawState::Idle
-                    };
+                state.redraw_state = if let RedrawState::WaitingForEstimatedVBlank(token)
+                | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
+                    state.redraw_state
+                {
+                    RedrawState::WaitingForEstimatedVBlank(token)
+                } else {
+                    RedrawState::Idle
+                };
             }
 
             // Update lock render state on every successful render.
@@ -2282,8 +2304,7 @@ impl Ewm {
             Some(output.clone())
         };
 
-        let frame_callback_time =
-            crate::protocols::screencopy::get_monotonic_time();
+        let frame_callback_time = crate::protocols::screencopy::get_monotonic_time();
 
         for window in self.id_windows.values() {
             window.send_frame(
@@ -2363,12 +2384,9 @@ impl Ewm {
         for (out, state) in self.output_state.iter() {
             let layer_map = layer_map_for_output(out);
             for layer in layer_map.layers() {
-                layer.send_frame(
-                    out,
-                    frame_callback_time,
-                    FRAME_CALLBACK_THROTTLE,
-                    |_, _| None,
-                );
+                layer.send_frame(out, frame_callback_time, FRAME_CALLBACK_THROTTLE, |_, _| {
+                    None
+                });
             }
 
             if let Some(ref lock_surface) = state.lock_surface {
@@ -2533,13 +2551,7 @@ impl Ewm {
     /// Marks keyboard focus dirty for deferred sync.
     /// Focus a surface with source tracking for debugging.
     /// Marks keyboard focus dirty for deferred sync via sync_keyboard_focus().
-    pub fn set_focus(
-        &mut self,
-        id: u32,
-        notify_emacs: bool,
-        source: &str,
-        context: Option<&str>,
-    ) {
+    pub fn set_focus(&mut self, id: u32, notify_emacs: bool, source: &str, context: Option<&str>) {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
         self.keyboard_focus_dirty = true;
@@ -2551,16 +2563,11 @@ impl Ewm {
     /// Update on-demand layer shell keyboard focus.
     /// If the surface has OnDemand keyboard interactivity, set it as on-demand focus.
     /// Otherwise, clear on-demand focus.
-    pub fn focus_layer_surface_if_on_demand(
-        &mut self,
-        surface: Option<DesktopLayerSurface>,
-    ) {
+    pub fn focus_layer_surface_if_on_demand(&mut self, surface: Option<DesktopLayerSurface>) {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
         if let Some(surface) = surface {
-            if surface.cached_state().keyboard_interactivity
-                == KeyboardInteractivity::OnDemand
-            {
+            if surface.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand {
                 if self.layer_shell_on_demand_focus.as_ref() != Some(&surface) {
                     self.layer_shell_on_demand_focus = Some(surface);
                     self.keyboard_focus_dirty = true;
@@ -2587,8 +2594,7 @@ impl Ewm {
             let map = layer_map_for_output(output);
             let layers: Vec<_> = map.layers_on(layer).cloned().collect();
             layers.into_iter().find_map(|surface| {
-                if surface.cached_state().keyboard_interactivity
-                    == KeyboardInteractivity::Exclusive
+                if surface.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
                 {
                     Some(surface.wl_surface().clone())
                 } else {
@@ -2628,7 +2634,9 @@ impl Ewm {
                 }
             }
             // Exclusive Bottom/Background (only when no toplevel has focus)
-            if self.focused_surface_id == 0 || self.id_windows.get(&self.focused_surface_id).is_none() {
+            if self.focused_surface_id == 0
+                || self.id_windows.get(&self.focused_surface_id).is_none()
+            {
                 if let Some(s) = excl_on_layer(output, Layer::Bottom) {
                     return Some(s);
                 }
@@ -2712,10 +2720,9 @@ impl Ewm {
                 None => continue,
             };
             let layer_pos = geo.loc.to_f64();
-            if let Some((surface, pos_in_layer)) = layer_surface.surface_under(
-                pos_within_output - layer_pos,
-                WindowSurfaceType::ALL,
-            ) {
+            if let Some((surface, pos_in_layer)) =
+                layer_surface.surface_under(pos_within_output - layer_pos, WindowSurfaceType::ALL)
+            {
                 let global_pos = (pos_in_layer + geo.loc).to_f64() + output_pos.to_f64();
                 return Some((surface, global_pos));
             }
@@ -2751,10 +2758,7 @@ impl Ewm {
                 };
                 let layer_pos = geo.loc.to_f64();
                 if layer_surface
-                    .surface_under(
-                        pos_within_output - layer_pos,
-                        WindowSurfaceType::ALL,
-                    )
+                    .surface_under(pos_within_output - layer_pos, WindowSurfaceType::ALL)
                     .is_some()
                 {
                     return Some(layer_surface.clone());
@@ -2947,7 +2951,10 @@ impl Ewm {
             });
             info!(
                 "Added D-Bus output: {} at ({}, {}) (total: {})",
-                output_name, info.x, info.y, dbus_outputs.len()
+                output_name,
+                info.x,
+                info.y,
+                dbus_outputs.len()
             );
         }
 
@@ -2959,8 +2966,7 @@ impl Ewm {
 
         // Send initial working area (full output initially, before any panels)
         let working_area = self.get_working_area(output);
-        self.working_areas
-            .insert(output_name.clone(), working_area);
+        self.working_areas.insert(output_name.clone(), working_area);
         self.queue_event(Event::WorkingArea {
             output: output_name,
             x: working_area.loc.x,
@@ -3360,8 +3366,12 @@ impl Ewm {
                      toplevel_coords={:?} target={:?} \
                      positioner.rect={:?} positioner.size={:?} \
                      result={:?}",
-                    id, raw_target, toplevel_coords, target,
-                    state.positioner.anchor_rect, state.positioner.rect_size,
+                    id,
+                    raw_target,
+                    toplevel_coords,
+                    target,
+                    state.positioner.anchor_rect,
+                    state.positioner.rect_size,
                     result,
                 );
                 state.geometry = result;
@@ -4005,24 +4015,13 @@ impl WaylandDndGrabHandler for State {
             dnd::GrabType::Pointer => {
                 let pointer = seat.get_pointer().unwrap();
                 let start_data = pointer.grab_start_data().unwrap();
-                let grab = DnDGrab::new_pointer(
-                    &self.ewm.display_handle,
-                    start_data,
-                    source,
-                    seat,
-                );
-                pointer.set_grab(
-                    self,
-                    grab,
-                    serial,
-                    smithay::input::pointer::Focus::Keep,
-                );
+                let grab = DnDGrab::new_pointer(&self.ewm.display_handle, start_data, source, seat);
+                pointer.set_grab(self, grab, serial, smithay::input::pointer::Focus::Keep);
             }
             dnd::GrabType::Touch => {
                 let touch = seat.get_touch().unwrap();
                 let start_data = touch.grab_start_data().unwrap();
-                let grab =
-                    DnDGrab::new_touch(&self.ewm.display_handle, start_data, source, seat);
+                let grab = DnDGrab::new_touch(&self.ewm.display_handle, start_data, source, seat);
                 touch.set_grab(self, grab, serial);
             }
         }
@@ -4115,7 +4114,8 @@ impl XdgShellHandler for State {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(refocus_id) = self.ewm.handle_toplevel_destroyed(surface) {
             // Refocus to the returned surface (keyboard sync deferred)
-            self.ewm.set_focus(refocus_id, true, "toplevel_destroyed", None);
+            self.ewm
+                .set_focus(refocus_id, true, "toplevel_destroyed", None);
             self.sync_keyboard_focus();
         }
     }
@@ -4173,7 +4173,10 @@ impl XdgShellHandler for State {
                 .and_then(|o| Output::from_resource(&o))
                 .map(|o| o.name())
                 .or_else(|| self.ewm.find_surface_output(id).map(|o| o.name()));
-            module::push_event(Event::FullscreenRequest { id, output: output_name });
+            module::push_event(Event::FullscreenRequest {
+                id,
+                output: output_name,
+            });
         }
     }
 
@@ -4384,8 +4387,7 @@ impl XdgActivationHandler for State {
                 .map(|(_, id)| id)
             {
                 // Focus the surface and notify Emacs (keyboard sync deferred)
-                self.ewm
-                    .set_focus(id, true, "xdg_activation", None);
+                self.ewm.set_focus(id, true, "xdg_activation", None);
                 info!("xdg_activation: granted for surface {}", id);
             } else {
                 debug!("xdg_activation: surface not found in window_ids");
@@ -4423,8 +4425,7 @@ impl ForeignToplevelHandler for State {
             .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
             .map(|(_, id)| id)
         {
-            self.ewm
-                .set_focus(id, true, "foreign_toplevel", None);
+            self.ewm.set_focus(id, true, "foreign_toplevel", None);
             info!("Foreign toplevel: activated surface {}", id);
         }
     }
@@ -4449,7 +4450,10 @@ impl ForeignToplevelHandler for State {
                 .and_then(|o| Output::from_resource(&o))
                 .map(|o| o.name())
                 .or_else(|| self.ewm.find_surface_output(id).map(|o| o.name()));
-            module::push_event(Event::FullscreenRequest { id, output: output_name });
+            module::push_event(Event::FullscreenRequest {
+                id,
+                output: output_name,
+            });
         }
     }
 
@@ -4486,10 +4490,7 @@ impl WorkspaceHandler for State {
     }
 
     fn activate_workspace(&mut self, output: String, tab_index: usize) {
-        module::push_event(Event::ActivateWorkspace {
-            output,
-            tab_index,
-        });
+        module::push_event(Event::ActivateWorkspace { output, tab_index });
     }
 }
 delegate_workspace!(State);
@@ -4610,8 +4611,7 @@ impl SessionLockHandler for State {
         if let Some(id) = self.ewm.pre_lock_focus.take() {
             if self.ewm.id_windows.contains_key(&id) {
                 info!("Restoring focus to surface {} after unlock", id);
-                self.ewm
-                    .set_focus(id, false, "unlock", None);
+                self.ewm.set_focus(id, false, "unlock", None);
             }
         }
         self.sync_keyboard_focus();
@@ -4658,7 +4658,9 @@ delegate_idle_notify!(State);
 
 // Gamma control protocol (wlr-gamma-control-unstable-v1)
 impl crate::protocols::gamma_control::GammaControlHandler for State {
-    fn gamma_control_manager_state(&mut self) -> &mut crate::protocols::gamma_control::GammaControlManagerState {
+    fn gamma_control_manager_state(
+        &mut self,
+    ) -> &mut crate::protocols::gamma_control::GammaControlManagerState {
         &mut self.ewm.gamma_control_state
     }
 
@@ -4719,9 +4721,8 @@ impl PointerConstraintsHandler for State {
         location: Point<f64, Logical>,
     ) {
         // Only apply hint if the constraint is active
-        let active = with_pointer_constraint(surface, pointer, |c| {
-            c.is_some_and(|c| c.is_active())
-        });
+        let active =
+            with_pointer_constraint(surface, pointer, |c| c.is_some_and(|c| c.is_active()));
         if !active {
             return;
         }
@@ -4855,9 +4856,7 @@ impl State {
     /// during layout changes should not trap the pointer).
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
         let pointer = self.ewm.pointer.clone();
-        let under = self
-            .ewm
-            .surface_under_point(Point::from((x, y)));
+        let under = self.ewm.surface_under_point(Point::from((x, y)));
         self.ewm.pointer_focus = under.clone();
         pointer.motion(
             self,
@@ -4955,14 +4954,10 @@ impl State {
             if old_geo.contains(point) {
                 if let Some(new_geo) = self.ewm.space.output_geometry(output) {
                     if old_geo != new_geo {
-                        let rel_x =
-                            (pos.x - old_geo.loc.x as f64) / old_geo.size.w as f64;
-                        let rel_y =
-                            (pos.y - old_geo.loc.y as f64) / old_geo.size.h as f64;
-                        let new_x =
-                            new_geo.loc.x as f64 + rel_x * new_geo.size.w as f64;
-                        let new_y =
-                            new_geo.loc.y as f64 + rel_y * new_geo.size.h as f64;
+                        let rel_x = (pos.x - old_geo.loc.x as f64) / old_geo.size.w as f64;
+                        let rel_y = (pos.y - old_geo.loc.y as f64) / old_geo.size.h as f64;
+                        let new_x = new_geo.loc.x as f64 + rel_x * new_geo.size.w as f64;
+                        let new_y = new_geo.loc.y as f64 + rel_y * new_geo.size.h as f64;
                         self.warp_pointer(new_x, new_y);
                     }
                 }
@@ -5017,8 +5012,7 @@ impl State {
         // Clean up stale on-demand focus
         if let Some(surface) = &self.ewm.layer_shell_on_demand_focus {
             let good = surface.alive()
-                && surface.cached_state().keyboard_interactivity
-                    == KeyboardInteractivity::OnDemand;
+                && surface.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand;
             if !good {
                 self.ewm.layer_shell_on_demand_focus = None;
             }
@@ -5163,8 +5157,7 @@ impl State {
             ModuleCommand::Focus { id } => {
                 // Skip if already focused (keyboard sync deferred to after command batch)
                 if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
-                    self.ewm
-                        .set_focus(id, false, "emacs_command", None);
+                    self.ewm.set_focus(id, false, "emacs_command", None);
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {
@@ -5196,12 +5189,8 @@ impl State {
                         .outputs()
                         .find(|o| o.name() == name)
                         .and_then(|o| o.current_mode());
-                    let w = width.unwrap_or_else(|| {
-                        current.map(|m| m.size.w).unwrap_or(1920)
-                    });
-                    let h = height.unwrap_or_else(|| {
-                        current.map(|m| m.size.h).unwrap_or(1080)
-                    });
+                    let w = width.unwrap_or_else(|| current.map(|m| m.size.w).unwrap_or(1920));
+                    let h = height.unwrap_or_else(|| current.map(|m| m.size.h).unwrap_or(1080));
                     config.mode = Some((w, h, refresh));
                 }
                 if x.is_some() || y.is_some() {
@@ -5213,10 +5202,8 @@ impl State {
                         .and_then(|o| self.ewm.space.output_geometry(o))
                         .map(|g| (g.loc.x, g.loc.y))
                         .unwrap_or((0, 0));
-                    config.position = Some((
-                        x.unwrap_or(current_pos.0),
-                        y.unwrap_or(current_pos.1),
-                    ));
+                    config.position =
+                        Some((x.unwrap_or(current_pos.0), y.unwrap_or(current_pos.1)));
                 }
                 if let Some(s) = scale {
                     config.scale = Some(s);
@@ -5344,7 +5331,11 @@ impl State {
                 );
                 debug!("Selection set from Emacs");
             }
-            ModuleCommand::OutputLayout { output, surfaces, tabs } => {
+            ModuleCommand::OutputLayout {
+                output,
+                surfaces,
+                tabs,
+            } => {
                 self.ewm.apply_output_layout(&output, surfaces);
                 // Re-evaluate pointer focus after layout change
                 let (px, py) = self.ewm.pointer_location();
@@ -5385,7 +5376,9 @@ impl State {
                     .iter()
                     .find(|c| c.device_type == Some(crate::input::DeviceType::Keyboard))
                     .and_then(|kb| {
-                        kb.xkb_layouts.clone().map(|layouts| (layouts, kb.xkb_options.clone()))
+                        kb.xkb_layouts
+                            .clone()
+                            .map(|layouts| (layouts, kb.xkb_options.clone()))
                     });
 
                 self.ewm.input_configs = configs;
@@ -5430,16 +5423,17 @@ impl State {
                     }
                 }
             }
-            ModuleCommand::ConfigureIdle { timeout_secs, action } => {
+            ModuleCommand::ConfigureIdle {
+                timeout_secs,
+                action,
+            } => {
                 let idle_action = if action == "blank" {
                     IdleAction::DeactivateMonitors
                 } else {
                     IdleAction::RunCommand(action)
                 };
-                self.ewm.configure_idle(
-                    timeout_secs.map(Duration::from_secs),
-                    idle_action,
-                );
+                self.ewm
+                    .configure_idle(timeout_secs.map(Duration::from_secs), idle_action);
             }
         }
     }
@@ -5451,8 +5445,8 @@ impl State {
     /// would read the old selection if called synchronously.
     fn read_client_selection_to_emacs(&mut self) {
         self.ewm.loop_handle.insert_idle(|state| {
-            let (read_end, write_end) = std::os::unix::net::UnixStream::pair()
-                .expect("UnixStream::pair failed");
+            let (read_end, write_end) =
+                std::os::unix::net::UnixStream::pair().expect("UnixStream::pair failed");
 
             let write_fd: OwnedFd = write_end.into();
             let mime = "text/plain;charset=utf-8".to_string();

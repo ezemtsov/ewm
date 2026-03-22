@@ -34,7 +34,10 @@ pub trait WorkspaceHandler {
 
 /// Queued client request, executed on Commit.
 enum Action {
-    Activate { output_name: String, tab_index: usize },
+    Activate {
+        output_name: String,
+        tab_index: usize,
+    },
 }
 
 impl Action {
@@ -193,8 +196,7 @@ pub fn refresh<'a, D>(
     let mut changed = false;
 
     // Build map of live outputs by name.
-    let live_outputs: HashMap<String, Output> =
-        outputs.map(|o| (o.name(), o.clone())).collect();
+    let live_outputs: HashMap<String, Output> = outputs.map(|o| (o.name(), o.clone())).collect();
 
     // Build "seen" set of (output_name, tab_index) from source of truth.
     let mut seen_workspaces: std::collections::HashSet<WorkspaceKey> =
@@ -256,12 +258,7 @@ pub fn refresh<'a, D>(
             };
             for manager in workspace_state.instances.keys() {
                 if let Some(client) = manager.client() {
-                    group.add_instance::<D>(
-                        &workspace_state.display,
-                        &client,
-                        manager,
-                        output,
-                    );
+                    group.add_instance::<D>(&workspace_state.display, &client, manager, output);
                 }
             }
             workspace_state.groups.insert(output_name.clone(), group);
@@ -306,11 +303,7 @@ pub fn refresh<'a, D>(
                 let mut ws = WorkspaceData::new(display_name, i, tab.active);
                 for manager in workspace_state.instances.keys() {
                     if let Some(client) = manager.client() {
-                        ws.add_instance::<D>(
-                            &workspace_state.display,
-                            &client,
-                            manager,
-                        );
+                        ws.add_instance::<D>(&workspace_state.display, &client, manager);
                     }
                 }
                 // Send workspace_enter to group.
@@ -426,22 +419,14 @@ where
                 .get_mut(&(output_name.clone(), index))
                 .unwrap();
             ws_data.add_instance::<D>(&ps.display, client, &manager);
-            new_ws_by_output
-                .entry(output_name)
-                .or_default()
-                .push(index);
+            new_ws_by_output.entry(output_name).or_default().push(index);
         }
 
         // Create group instances for all tracked outputs, with workspace_enter.
         let group_keys: Vec<String> = ps.groups.keys().cloned().collect();
         for output_name in group_keys {
             let group_data = ps.groups.get_mut(&output_name).unwrap();
-            group_data.add_instance::<D>(
-                &ps.display,
-                client,
-                &manager,
-                &group_data.output.clone(),
-            );
+            group_data.add_instance::<D>(&ps.display, client, &manager, &group_data.output.clone());
 
             // Send workspace_enter for workspaces on this output.
             let group_handle = group_data.instances.last().unwrap();
@@ -522,12 +507,7 @@ where
         }
     }
 
-    fn destroyed(
-        state: &mut D,
-        _client: ClientId,
-        resource: &ExtWorkspaceManagerV1,
-        _data: &(),
-    ) {
+    fn destroyed(state: &mut D, _client: ClientId, resource: &ExtWorkspaceManagerV1, _data: &()) {
         let ps = state.workspace_manager_state();
         ps.instances.retain(|m, _| m != resource);
         for group_data in ps.groups.values_mut() {
