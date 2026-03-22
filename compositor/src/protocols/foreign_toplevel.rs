@@ -28,6 +28,8 @@ pub struct ForeignToplevelManagerState {
 
 pub trait ForeignToplevelHandler {
     fn foreign_toplevel_manager_state(&mut self) -> &mut ForeignToplevelManagerState;
+    /// Whether external tools should be prevented from controlling this surface.
+    fn is_read_only_surface(&self, wl_surface: &WlSurface) -> bool;
     fn activate(&mut self, wl_surface: WlSurface);
     fn close(&mut self, wl_surface: WlSurface);
     fn set_fullscreen(&mut self, wl_surface: WlSurface, wl_output: Option<WlOutput>);
@@ -340,6 +342,10 @@ where
             return;
         };
         let surface = surface.clone();
+
+        if state.is_read_only_surface(&surface) {
+            return;
+        }
 
         match request {
             zwlr_foreign_toplevel_handle_v1::Request::SetMaximized => {

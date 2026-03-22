@@ -2412,11 +2412,9 @@ impl Ewm {
     pub fn refresh_foreign_toplevel(&mut self) {
         use smithay::wayland::seat::WaylandFocus;
 
-        // Collect window info for all non-Emacs surfaces
         let windows: Vec<WindowInfo> = self
             .id_windows
             .iter()
-            .filter(|(id, _)| !self.emacs_surfaces.contains_key(id))
             .filter_map(|(&id, window)| {
                 let surface = window.wl_surface()?.into_owned();
                 let info = self.surface_info.get(&id)?;
@@ -3502,16 +3500,13 @@ impl Ewm {
             }
         }
 
-        // Initialize surface_info for non-Emacs surfaces
-        if !is_emacs {
-            self.surface_info.insert(
-                id,
-                SurfaceInfo {
-                    app_id: app.clone(),
-                    title: String::new(),
-                },
-            );
-        }
+        self.surface_info.insert(
+            id,
+            SurfaceInfo {
+                app_id: app.clone(),
+                title: String::new(),
+            },
+        );
 
         // Send event to Emacs
         self.queue_event(Event::New {
@@ -3621,11 +3616,6 @@ impl Ewm {
             return;
         };
 
-        // Skip title change events for Emacs surfaces
-        if self.emacs_surfaces.contains_key(&id) {
-            return;
-        }
-
         let (app_id, title) = smithay::wayland::compositor::with_states(surface, |states| {
             states
                 .data_map
@@ -3658,11 +3648,14 @@ impl Ewm {
                     title: title.clone(),
                 },
             );
-            self.queue_event(Event::Title {
-                id,
-                app: app_id,
-                title,
-            });
+            // Skip Title event for Emacs surfaces — Emacs already knows its own titles
+            if !self.emacs_surfaces.contains_key(&id) {
+                self.queue_event(Event::Title {
+                    id,
+                    app: app_id,
+                    title,
+                });
+            }
         }
     }
 
@@ -4414,6 +4407,12 @@ delegate_xdg_activation!(State);
 impl ForeignToplevelHandler for State {
     fn foreign_toplevel_manager_state(&mut self) -> &mut ForeignToplevelManagerState {
         &mut self.ewm.foreign_toplevel_state
+    }
+
+    fn is_read_only_surface(&self, wl_surface: &WlSurface) -> bool {
+        self.ewm
+            .find_window_by_surface(wl_surface)
+            .is_some_and(|(_, id)| self.ewm.emacs_surfaces.contains_key(&id))
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {
