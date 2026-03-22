@@ -28,7 +28,7 @@ EWM_MODULE_PATH=$(pwd)/target/debug/libewm_core.so \
   emacs --fg-daemon -L ../lisp -l ewm -f ewm-start-module
 ```
 
-Launch apps with `s-d`, kill with `Super+Shift+E`. See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for full setup, configuration, and NixOS instructions.
+Launch apps with `s-d`. See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for full setup, configuration, and NixOS instructions.
 
 ## Current Features
 
