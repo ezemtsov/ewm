@@ -45,7 +45,7 @@ fn notify_activity(state: &mut State) {
 enum InterceptKind {
     /// Intercepted key — hold focus on Emacs, let post-command-hook restore
     Redirect,
-    /// Kill combo (Super+Shift+E)
+    /// Kill combo (Ctrl+Alt+Backspace)
     Kill,
     /// Text input intercept — printable key for Emacs IM processing
     TextInput,
@@ -71,7 +71,7 @@ pub enum KeyboardAction {
 /// Process a keyboard key event
 ///
 /// This handles:
-/// - Kill combo detection (Super+Shift+E)
+/// - Kill combo detection (Ctrl+Alt+Backspace)
 /// - Prefix key interception (redirect to Emacs)
 /// - Normal key forwarding to focused surface
 ///
@@ -216,8 +216,8 @@ pub fn handle_keyboard_event(
             let keysym = raw_latin.unwrap_or(modified);
             let keysym_raw = keysym.raw();
 
-            // Check for kill combo (Super+Shift+E)
-            if is_kill_combo(keysym_raw, mods.shift, mods.logo) {
+            // Check for kill combo (Ctrl+Alt+Backspace)
+            if is_kill_combo(keysym_raw, mods.ctrl, mods.alt) {
                 return FilterResult::Intercept((InterceptKind::Kill, 0, None));
             }
             // Find if this is an intercepted key and whether it's a prefix

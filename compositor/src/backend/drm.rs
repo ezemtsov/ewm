@@ -2689,7 +2689,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("EWM DRM backend started (waiting for session activation)");
     info!("VT switching: Ctrl+Alt+F1-F7");
-    info!("Kill combo: Super+Shift+E");
+    info!("Kill combo: Ctrl+Alt+Backspace");
 
     // If session is already active, initialize DRM immediately
     if session_active {
