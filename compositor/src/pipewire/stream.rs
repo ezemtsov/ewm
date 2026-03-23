@@ -47,6 +47,7 @@ use zbus::object_server::SignalEmitter;
 
 use super::PipeWire;
 use crate::dbus::screen_cast;
+use crate::dbus::CastTarget;
 use crate::State;
 
 /// Allowance for frame timing - if delay is below this, proceed anyway
@@ -108,8 +109,8 @@ pub struct Cast {
     pub is_active: Rc<Cell<bool>>,
     pub size: Size<u32, Physical>,
     pub node_id: Rc<Cell<Option<u32>>>,
-    /// The output name this cast is capturing
-    pub output_name: String,
+    /// What this cast is capturing (output or window)
+    pub target: CastTarget,
     state: Rc<RefCell<CastState>>,
     dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>>,
     /// Monotonic time of last frame capture
@@ -122,6 +123,8 @@ pub struct Cast {
     sequence_counter: u64,
     /// Cursor mode: 0=Hidden, 1=Embedded, 2=Metadata
     pub cursor_mode: u32,
+    /// Whether the stream uses alpha (BGRA). True for window casts.
+    alpha: bool,
     /// Render formats (modifier list) for renegotiation on resize
     render_formats: Vec<i64>,
     /// Output refresh rate for renegotiation on resize
@@ -144,7 +147,8 @@ impl Cast {
         gbm: GbmDevice<DrmDeviceFd>,
         size: Size<i32, Physical>,
         refresh: u32,
-        output_name: String,
+        target: CastTarget,
+        alpha: bool,
         signal_ctx: SignalEmitter<'static>,
         render_formats: Vec<i64>,
         cursor_mode: u32,
@@ -227,6 +231,7 @@ impl Cast {
                     let gbm = gbm_clone.clone();
                     let min_time_between_frames = min_time_between_frames_clone.clone();
                     let param_render_formats = render_formats.clone();
+                    let param_alpha = alpha;
                     move |stream: &Stream, (), id, pod| {
                         if ParamType::from_raw(id) != ParamType::Format {
                             return;
@@ -304,7 +309,11 @@ impl Cast {
                                     return;
                                 };
 
-                                let fourcc = Fourcc::Xrgb8888;
+                                let fourcc = if param_alpha {
+                                    Fourcc::Argb8888
+                                } else {
+                                    Fourcc::Xrgb8888
+                                };
                                 let (modifier, plane_count) = match find_preferred_modifier(
                                     &gbm,
                                     format_size,
@@ -332,10 +341,18 @@ impl Cast {
                                 drop(state_ref);
 
                                 // Offer fixated format first, original as fallback
-                                let fixated_obj =
-                                    make_video_params_fixated(format_size, refresh, modifier);
-                                let fallback_obj =
-                                    make_video_params(format_size, refresh, &param_render_formats);
+                                let fixated_obj = make_video_params_fixated(
+                                    format_size,
+                                    refresh,
+                                    modifier,
+                                    param_alpha,
+                                );
+                                let fallback_obj = make_video_params(
+                                    format_size,
+                                    refresh,
+                                    &param_render_formats,
+                                    param_alpha,
+                                );
                                 let mut b1 = Vec::new();
                                 let pod1 = make_pod(&mut b1, fixated_obj);
                                 let mut b2 = Vec::new();
@@ -362,7 +379,11 @@ impl Cast {
                             _ => {
                                 // First negotiation with single modifier, or modifier changed.
                                 // Do a test allocation to validate.
-                                let fourcc = Fourcc::Xrgb8888;
+                                let fourcc = if param_alpha {
+                                    Fourcc::Argb8888
+                                } else {
+                                    Fourcc::Xrgb8888
+                                };
                                 let (_, pc) = match find_preferred_modifier(
                                     &gbm,
                                     format_size,
@@ -447,7 +468,8 @@ impl Cast {
                     let dmabufs = dmabufs.clone();
                     let gbm = gbm_clone.clone();
                     let add_buf_event_loop = event_loop.clone();
-                    let add_buf_output_name = output_name.clone();
+                    let add_buf_target = target.clone();
+                    let add_buf_alpha = alpha;
                     move |stream, (), buffer| {
                         let state_ref = state.borrow();
                         let CastState::Ready { size, modifier, .. } = &*state_ref else {
@@ -462,7 +484,11 @@ impl Cast {
 
                         unsafe {
                             let spa_buffer = (*buffer).buffer;
-                            let fourcc = Fourcc::Xrgb8888;
+                            let fourcc = if add_buf_alpha {
+                                Fourcc::Argb8888
+                            } else {
+                                Fourcc::Xrgb8888
+                            };
 
                             let dmabuf = match allocate_dmabuf(&gbm, size, fourcc, modifier) {
                                 Ok(d) => d,
@@ -495,18 +521,27 @@ impl Cast {
 
                         // During size re-negotiation, force a redraw once we got a newly sized buffer.
                         if dmabufs.borrow().len() == 1 && stream.state() == StreamState::Streaming {
-                            let output_name = add_buf_output_name.clone();
+                            let redraw_target = add_buf_target.clone();
                             let _ = add_buf_event_loop.insert_source(
                                 Timer::from_duration(Duration::ZERO),
                                 move |_, _, state| {
-                                    let output = state
-                                        .ewm
-                                        .space
-                                        .outputs()
-                                        .find(|o| o.name() == output_name)
-                                        .cloned();
-                                    if let Some(output) = output {
-                                        state.ewm.queue_redraw(&output);
+                                    // For window casts, find which output the window is on
+                                    let output_name = match &redraw_target {
+                                        CastTarget::Output { name } => Some(name.clone()),
+                                        CastTarget::Window { id } => {
+                                            state.ewm.window_output_name(*id)
+                                        }
+                                    };
+                                    if let Some(name) = output_name {
+                                        let output = state
+                                            .ewm
+                                            .space
+                                            .outputs()
+                                            .find(|o| o.name() == name)
+                                            .cloned();
+                                        if let Some(output) = output {
+                                            state.ewm.queue_redraw(&output);
+                                        }
                                     }
                                     TimeoutAction::Drop
                                 },
@@ -537,7 +572,7 @@ impl Cast {
 
         // Create format parameters with available modifiers
         let mut buffer = Vec::new();
-        let obj = make_video_params(size, refresh, &render_formats);
+        let obj = make_video_params(size, refresh, &render_formats, alpha);
         let params = make_pod(&mut buffer, obj);
 
         stream
@@ -549,7 +584,7 @@ impl Cast {
             )
             .context("error connecting stream")?;
 
-        info!("PipeWire stream created for size {:?}", size);
+        info!("PipeWire stream created for {:?} size {:?}", target, size);
 
         Ok(Self {
             event_loop,
@@ -559,7 +594,7 @@ impl Cast {
             is_active,
             size,
             node_id,
-            output_name,
+            target,
             state,
             dmabufs,
             last_frame_time: Duration::ZERO,
@@ -567,6 +602,7 @@ impl Cast {
             had_error,
             sequence_counter: 0,
             cursor_mode,
+            alpha,
             render_formats,
             refresh,
             scheduled_redraw: None,
@@ -589,7 +625,7 @@ impl Cast {
         !matches!(*self.state.borrow(), CastState::Ready { .. })
     }
 
-    /// Handle output size change by renegotiating with PipeWire.
+    /// Handle size change by renegotiating with PipeWire.
     pub fn ensure_size(&mut self, new_size: Size<i32, Physical>, refresh: u32) {
         let new_size = Size::from((new_size.w as u32, new_size.h as u32));
 
@@ -603,9 +639,9 @@ impl Cast {
         }
 
         info!(
-            output = %self.output_name,
+            target = ?self.target,
             ?new_size,
-            "output size changed, renegotiating PipeWire stream"
+            "size changed, renegotiating PipeWire stream"
         );
 
         self.size = new_size;
@@ -614,7 +650,7 @@ impl Cast {
             pending_size: new_size,
         };
 
-        let obj = make_video_params(new_size, refresh, &self.render_formats);
+        let obj = make_video_params(new_size, refresh, &self.render_formats, self.alpha);
         let mut buffer = Vec::new();
         let params = make_pod(&mut buffer, obj);
 
@@ -786,7 +822,7 @@ impl Cast {
         self.refresh = refresh;
 
         let size = self.state.borrow().expected_format_size();
-        let obj = make_video_params(size, refresh, &self.render_formats);
+        let obj = make_video_params(size, refresh, &self.render_formats, self.alpha);
         let mut buffer = Vec::new();
         let params = make_pod(&mut buffer, obj);
 
@@ -974,6 +1010,7 @@ fn make_video_params(
     size: Size<u32, Physical>,
     refresh: u32,
     render_formats: &[i64],
+    alpha: bool,
 ) -> pod::Object {
     let default = render_formats
         .first()
@@ -987,12 +1024,19 @@ fn make_video_params(
         PropertyFlags::empty()
     };
 
+    // Window casts use BGRA (alpha) for transparency; output casts use BGRx
+    let video_format = if alpha {
+        VideoFormat::BGRA
+    } else {
+        VideoFormat::BGRx
+    };
+
     pod::object!(
         SpaTypes::ObjectParamFormat,
         ParamType::EnumFormat,
         pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
         pod::property!(FormatProperties::MediaSubtype, Id, MediaSubtype::Raw),
-        pod::property!(FormatProperties::VideoFormat, Id, VideoFormat::BGRx),
+        pod::property!(FormatProperties::VideoFormat, Id, video_format),
         Property {
             key: FormatProperties::VideoModifier.as_raw(),
             flags: PropertyFlags::MANDATORY | dont_fixate,
@@ -1040,15 +1084,21 @@ fn make_video_params_fixated(
     size: Size<u32, Physical>,
     refresh: u32,
     modifier: Modifier,
+    alpha: bool,
 ) -> pod::Object {
     let modifier_val = u64::from(modifier) as i64;
+    let video_format = if alpha {
+        VideoFormat::BGRA
+    } else {
+        VideoFormat::BGRx
+    };
 
     pod::object!(
         SpaTypes::ObjectParamFormat,
         ParamType::EnumFormat,
         pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
         pod::property!(FormatProperties::MediaSubtype, Id, MediaSubtype::Raw),
-        pod::property!(FormatProperties::VideoFormat, Id, VideoFormat::BGRx),
+        pod::property!(FormatProperties::VideoFormat, Id, video_format),
         Property {
             key: FormatProperties::VideoModifier.as_raw(),
             flags: PropertyFlags::MANDATORY,
@@ -1165,9 +1215,9 @@ fn allocate_dmabuf(
 impl Drop for Cast {
     fn drop(&mut self) {
         self.remove_scheduled_redraw();
-        info!(output = %self.output_name, "Disconnecting PipeWire stream");
+        info!(target = ?self.target, "Disconnecting PipeWire stream");
         if let Err(err) = self.stream.disconnect() {
-            warn!(output = %self.output_name, "Error disconnecting PipeWire stream: {err:?}");
+            warn!(target = ?self.target, "Error disconnecting PipeWire stream: {err:?}");
         }
     }
 }

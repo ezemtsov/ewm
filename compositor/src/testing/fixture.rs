@@ -111,7 +111,7 @@ impl Fixture {
     }
 
     /// Get the focused surface ID
-    pub fn focused_surface_id(&self) -> u32 {
+    pub fn focused_surface_id(&self) -> u64 {
         self.state.ewm.focused_surface_id
     }
 
@@ -138,7 +138,7 @@ impl Fixture {
     }
 
     /// Check if a surface with the given ID exists
-    pub fn has_surface(&self, id: u32) -> bool {
+    pub fn has_surface(&self, id: u64) -> bool {
         self.state.ewm.id_windows.contains_key(&id)
     }
 

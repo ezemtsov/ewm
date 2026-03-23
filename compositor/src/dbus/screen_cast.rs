@@ -10,16 +10,33 @@ use smithay::reexports::calloop::channel::Sender;
 use tracing::{debug, info, warn};
 use zbus::blocking::Connection;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
-use zbus::zvariant::{OwnedObjectPath, Value};
+use zbus::zvariant::{DeserializeDict, OwnedObjectPath, Type, Value};
 use zbus::{fdo, interface, ObjectServer};
 
 use super::{OutputInfo, Start};
+
+/// Target for a screen cast stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CastTarget {
+    /// Cast an entire output/monitor.
+    Output { name: String },
+    /// Cast an individual window by its compositor ID.
+    Window { id: u64 },
+}
+
+/// Properties for the RecordWindow D-Bus method.
+#[derive(Debug, DeserializeDict, Type)]
+#[zvariant(signature = "dict")]
+struct RecordWindowProperties {
+    #[zvariant(rename = "window-id")]
+    window_id: u64,
+}
 
 /// Messages sent from D-Bus to compositor
 pub enum ScreenCastToCompositor {
     StartCast {
         session_id: usize,
-        output_name: String,
+        target: CastTarget,
         signal_ctx: SignalEmitter<'static>,
         cursor_mode: u32,
     },
@@ -33,13 +50,11 @@ impl std::fmt::Debug for ScreenCastToCompositor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::StartCast {
-                session_id,
-                output_name,
-                ..
+                session_id, target, ..
             } => f
                 .debug_struct("StartCast")
                 .field("session_id", session_id)
-                .field("output_name", output_name)
+                .field("target", target)
                 .finish(),
             Self::StopCast { session_id } => f
                 .debug_struct("StopCast")
@@ -124,7 +139,7 @@ impl ScreenCast {
 struct StreamInfo {
     stream: Stream,
     iface: InterfaceRef<Stream>,
-    output_name: String,
+    target: CastTarget,
 }
 
 /// Session interface
@@ -168,7 +183,7 @@ impl Session {
         for stream_info in streams.iter() {
             stream_info.stream.start(
                 self.id,
-                stream_info.output_name.clone(),
+                stream_info.target.clone(),
                 stream_info.iface.signal_emitter().clone(),
                 self.cursor_mode,
             );
@@ -241,12 +256,16 @@ impl Session {
             )));
         };
 
+        let target = CastTarget::Output {
+            name: connector.to_string(),
+        };
+
         let stream_id = STREAM_ID.fetch_add(1, Ordering::SeqCst);
         let path = format!("/org/gnome/Mutter/ScreenCast/Stream/u{}", stream_id);
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let stream = Stream::new(stream_id, self.id, output, self.to_compositor.clone());
+        let stream = Stream::new_output(stream_id, self.id, output, self.to_compositor.clone());
 
         // Register stream with D-Bus and get InterfaceRef
         let iface = match server.at(&path, stream.clone()).await {
@@ -273,10 +292,55 @@ impl Session {
         self.streams.lock().unwrap().push(StreamInfo {
             stream,
             iface,
-            output_name: connector.to_string(),
+            target,
         });
 
         info!("Created ScreenCast stream: {}", path);
+        Ok(path)
+    }
+
+    async fn record_window(
+        &self,
+        #[zbus(object_server)] server: &ObjectServer,
+        properties: RecordWindowProperties,
+    ) -> fdo::Result<OwnedObjectPath> {
+        let window_id = properties.window_id;
+        info!("RecordWindow: window_id={}", window_id);
+
+        let target = CastTarget::Window { id: window_id };
+
+        let stream_id = STREAM_ID.fetch_add(1, Ordering::SeqCst);
+        let path = format!("/org/gnome/Mutter/ScreenCast/Stream/u{}", stream_id);
+        let path =
+            OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
+
+        let stream = Stream::new_window(stream_id, self.id, window_id, self.to_compositor.clone());
+
+        // Register stream with D-Bus and get InterfaceRef
+        let iface = match server.at(&path, stream.clone()).await {
+            Ok(true) => match server.interface::<_, Stream>(&path).await {
+                Ok(iface) => iface,
+                Err(err) => {
+                    return Err(fdo::Error::Failed(format!(
+                        "error getting stream interface: {err:?}"
+                    )));
+                }
+            },
+            Ok(false) => return Err(fdo::Error::Failed("stream path already exists".to_owned())),
+            Err(err) => {
+                return Err(fdo::Error::Failed(format!(
+                    "error creating stream object: {err:?}"
+                )))
+            }
+        };
+
+        self.streams.lock().unwrap().push(StreamInfo {
+            stream,
+            iface,
+            target,
+        });
+
+        info!("Created ScreenCast window stream: {}", path);
         Ok(path)
     }
 
@@ -294,6 +358,14 @@ impl Drop for Session {
     }
 }
 
+/// The target of a stream (for D-Bus property reporting).
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+enum StreamTarget {
+    Output(OutputInfo),
+    Window { id: u64 },
+}
+
 /// Stream interface
 #[derive(Clone)]
 pub struct Stream {
@@ -301,13 +373,13 @@ pub struct Stream {
     id: usize,
     #[allow(dead_code)]
     session_id: usize,
-    output: OutputInfo,
+    target: StreamTarget,
     to_compositor: Sender<ScreenCastToCompositor>,
     was_started: Arc<AtomicBool>,
 }
 
 impl Stream {
-    fn new(
+    fn new_output(
         id: usize,
         session_id: usize,
         output: OutputInfo,
@@ -316,7 +388,22 @@ impl Stream {
         Self {
             id,
             session_id,
-            output,
+            target: StreamTarget::Output(output),
+            to_compositor,
+            was_started: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn new_window(
+        id: usize,
+        session_id: usize,
+        window_id: u64,
+        to_compositor: Sender<ScreenCastToCompositor>,
+    ) -> Self {
+        Self {
+            id,
+            session_id,
+            target: StreamTarget::Window { id: window_id },
             to_compositor,
             was_started: Arc::new(AtomicBool::new(false)),
         }
@@ -325,7 +412,7 @@ impl Stream {
     fn start(
         &self,
         session_id: usize,
-        output_name: String,
+        cast_target: CastTarget,
         signal_ctx: SignalEmitter<'static>,
         cursor_mode: u32,
     ) {
@@ -334,13 +421,13 @@ impl Stream {
         }
 
         info!(
-            "Stream {} starting for output {} (cursor_mode={})",
-            self.id, output_name, cursor_mode
+            "Stream {} starting for {:?} (cursor_mode={})",
+            self.id, cast_target, cursor_mode
         );
 
         if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StartCast {
             session_id,
-            output_name,
+            target: cast_target,
             signal_ctx,
             cursor_mode,
         }) {
@@ -354,11 +441,20 @@ impl Stream {
     #[zbus(property)]
     async fn parameters(&self) -> HashMap<String, Value<'static>> {
         let mut params = HashMap::new();
-        params.insert("position".to_string(), Value::new((0i32, 0i32)));
-        params.insert(
-            "size".to_string(),
-            Value::new((self.output.width, self.output.height)),
-        );
+        match &self.target {
+            StreamTarget::Output(output) => {
+                params.insert("position".to_string(), Value::new((0i32, 0i32)));
+                params.insert(
+                    "size".to_string(),
+                    Value::new((output.width, output.height)),
+                );
+            }
+            StreamTarget::Window { .. } => {
+                // Window size is dynamic; consumers don't rely on this
+                params.insert("position".to_string(), Value::new((0i32, 0i32)));
+                params.insert("size".to_string(), Value::new((1i32, 1i32)));
+            }
+        }
         params
     }
 

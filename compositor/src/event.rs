@@ -53,7 +53,7 @@ pub enum Event {
     /// New surface created
     #[serde(rename = "new")]
     New {
-        id: u32,
+        id: u64,
         app: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
@@ -61,16 +61,16 @@ pub enum Event {
     },
     /// Surface closed
     #[serde(rename = "close")]
-    Close { id: u32 },
+    Close { id: u64 },
     /// Surface minimize requested
     #[serde(rename = "minimize")]
-    Minimize { id: u32 },
+    Minimize { id: u64 },
     /// Surface title changed
     #[serde(rename = "title")]
-    Title { id: u32, app: String, title: String },
+    Title { id: u64, app: String, title: String },
     /// Focus changed to surface
     #[serde(rename = "focus")]
-    Focus { id: u32 },
+    Focus { id: u64 },
     /// Output connected
     #[serde(rename = "output_detected")]
     OutputDetected(OutputInfo),
@@ -135,19 +135,19 @@ pub enum Event {
     /// Surface requests fullscreen mode
     #[serde(rename = "fullscreen_request")]
     FullscreenRequest {
-        id: u32,
+        id: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
     /// Surface requests to leave fullscreen mode
     #[serde(rename = "unfullscreen_request")]
-    UnfullscreenRequest { id: u32 },
+    UnfullscreenRequest { id: u64 },
     /// Surface requests maximized mode
     #[serde(rename = "maximize_request")]
-    MaximizeRequest { id: u32 },
+    MaximizeRequest { id: u64 },
     /// Surface requests to leave maximized mode
     #[serde(rename = "unmaximize_request")]
-    UnmaximizeRequest { id: u32 },
+    UnmaximizeRequest { id: u64 },
     /// Idle state changed (native idle timeout)
     #[serde(rename = "idle_state_changed")]
     IdleStateChanged { idle: bool },

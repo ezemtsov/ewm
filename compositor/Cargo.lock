@@ -654,6 +654,7 @@ name = "ewm-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "async-io",
  "bytemuck",
  "drm-ffi",

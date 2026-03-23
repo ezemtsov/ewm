@@ -12,6 +12,7 @@
 //! active session always takes over from previous instances.
 
 pub mod display_config;
+pub mod introspect;
 pub mod screen_cast;
 pub mod service_channel;
 
@@ -35,7 +36,10 @@ pub struct OutputInfo {
 }
 
 pub use display_config::DisplayConfig;
-pub use screen_cast::{ScreenCast, ScreenCastToCompositor};
+pub use introspect::{
+    CompositorToIntrospect, Introspect, IntrospectToCompositor, WindowProperties,
+};
+pub use screen_cast::{CastTarget, ScreenCast, ScreenCastToCompositor};
 pub use service_channel::ServiceChannel;
 
 /// Trait for starting D-Bus interfaces
@@ -49,6 +53,7 @@ pub struct DBusServers {
     pub conn_service_channel: Option<Connection>,
     pub conn_display_config: Option<Connection>,
     pub conn_screen_cast: Option<Connection>,
+    pub conn_introspect: Option<Connection>,
 }
 
 impl DBusServers {
@@ -56,7 +61,12 @@ impl DBusServers {
     pub fn start(
         outputs: Arc<std::sync::Mutex<Vec<OutputInfo>>>,
         display_handle: DisplayHandle,
-    ) -> (Self, Channel<ScreenCastToCompositor>) {
+    ) -> (
+        Self,
+        Channel<ScreenCastToCompositor>,
+        Channel<IntrospectToCompositor>,
+        async_channel::Sender<CompositorToIntrospect>,
+    ) {
         let mut dbus = Self::default();
 
         // Start ServiceChannel first (needed for portal compatibility)
@@ -68,13 +78,19 @@ impl DBusServers {
         dbus.conn_display_config = try_start(display_config);
 
         // Start ScreenCast with channel for compositor communication
-        let (sender, receiver) = channel::channel::<ScreenCastToCompositor>();
-        let screen_cast = ScreenCast::new(outputs, sender);
+        let (sc_sender, sc_receiver) = channel::channel::<ScreenCastToCompositor>();
+        let screen_cast = ScreenCast::new(outputs, sc_sender);
         dbus.conn_screen_cast = try_start(screen_cast);
+
+        // Start Introspect with bidirectional channels
+        let (introspect_sender, introspect_receiver) = channel::channel::<IntrospectToCompositor>();
+        let (reply_sender, reply_receiver) = async_channel::bounded::<CompositorToIntrospect>(1);
+        let introspect_iface = Introspect::new(introspect_sender, reply_receiver);
+        dbus.conn_introspect = try_start(introspect_iface);
 
         info!("D-Bus servers started");
 
-        (dbus, receiver)
+        (dbus, sc_receiver, introspect_receiver, reply_sender)
     }
 }
 

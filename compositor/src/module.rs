@@ -120,7 +120,7 @@ use crate::{InterceptedKey, LayoutEntry};
 /// Only contains fields that Emacs reads synchronously via per-field defuns.
 #[derive(Default)]
 pub struct SharedState {
-    pub focused_surface_id: u32,
+    pub focused_surface_id: u64,
     pub pointer_location: (f64, f64),
     pub output_offsets: HashMap<String, (i32, i32)>,
 }
@@ -215,10 +215,10 @@ fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
 #[derive(Debug, Clone)]
 pub enum ModuleCommand {
     Close {
-        id: u32,
+        id: u64,
     },
     Focus {
-        id: u32,
+        id: u64,
     },
     WarpPointer {
         x: f64,
@@ -240,7 +240,7 @@ pub enum ModuleCommand {
     },
     ImCommit {
         text: String,
-        surface_id: u32,
+        surface_id: u64,
     },
     TextInputIntercept {
         enabled: bool,
@@ -296,7 +296,7 @@ pub fn drain_commands() -> Vec<ModuleCommand> {
 
 /// Get the pending focus target, if any.
 /// Called before keyboard event handling to ensure focus is synced.
-pub fn take_pending_focus() -> Option<u32> {
+pub fn take_pending_focus() -> Option<u64> {
     let mut queue = command_queue().lock().unwrap();
     let mut focus_id = None;
     // Find the last Focus command (most recent wins)
@@ -399,7 +399,7 @@ pub struct FocusEvent {
     /// Timestamp (monotonic counter)
     pub seq: usize,
     /// Surface ID that received focus
-    pub surface_id: u32,
+    pub surface_id: u64,
     /// Source of the focus change
     pub source: String,
     /// Additional context
@@ -415,7 +415,7 @@ fn focus_history() -> &'static Mutex<VecDeque<FocusEvent>> {
 }
 
 /// Record a focus change (called by compositor)
-pub fn record_focus(surface_id: u32, source: &str, context: Option<&str>) {
+pub fn record_focus(surface_id: u64, source: &str, context: Option<&str>) {
     let seq = FOCUS_SEQ.fetch_add(1, Ordering::Relaxed);
     let event = FocusEvent {
         seq,
@@ -641,7 +641,7 @@ fn output_layout_module(
         let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
 
         entries.push(LayoutEntry {
-            id: id as u32,
+            id: id as u64,
             x: x as i32,
             y: y as i32,
             w: w as u32,
@@ -680,14 +680,14 @@ fn output_layout_module(
 /// Request surface to close (module mode).
 #[defun]
 fn close_module(id: i64) -> Result<()> {
-    push_command(ModuleCommand::Close { id: id as u32 });
+    push_command(ModuleCommand::Close { id: id as u64 });
     Ok(())
 }
 
 /// Focus a surface (module mode).
 #[defun]
 fn focus_module(id: i64) -> Result<()> {
-    push_command(ModuleCommand::Focus { id: id as u32 });
+    push_command(ModuleCommand::Focus { id: id as u64 });
     Ok(())
 }
 
@@ -890,7 +890,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
 fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
     push_command(ModuleCommand::ImCommit {
         text,
-        surface_id: surface_id as u32,
+        surface_id: surface_id as u64,
     });
     Ok(())
 }

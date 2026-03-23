@@ -1206,63 +1206,86 @@ impl DrmBackendState {
                 ewm.space.outputs().map(|o| o.name()).collect();
 
             for (session_id, cast) in screen_casts.iter_mut() {
-                if !valid_outputs.contains(&cast.output_name) {
-                    trace!(output = %cast.output_name, "skipping orphaned cast");
-                    continue;
-                }
-
                 if cast.has_error() {
                     errored_sessions.push(*session_id);
                     continue;
                 }
 
-                if !cast.is_streaming() || cast.output_name != output.name() {
+                if !cast.is_streaming() {
                     continue;
                 }
 
-                // Check resize pending state
-                if cast.is_resize_pending() {
-                    trace!("cast is resize pending, skipping");
-                    continue;
-                }
+                match &cast.target {
+                    crate::dbus::CastTarget::Output { name } => {
+                        // Output cast: only render if this is the matching output
+                        if !valid_outputs.contains(name) {
+                            trace!(output = %name, "skipping orphaned cast");
+                            continue;
+                        }
+                        if *name != output.name() {
+                            continue;
+                        }
 
-                // Check frame timing — schedules a timer redraw if too early
-                if cast.check_time_and_schedule(output, target_frame_time) {
-                    continue;
-                }
+                        if cast.is_resize_pending() {
+                            trace!("cast is resize pending, skipping");
+                            continue;
+                        }
 
-                let include_cursor = cast.cursor_mode != 0;
+                        if cast.check_time_and_schedule(output, target_frame_time) {
+                            continue;
+                        }
 
-                let (content, cursor) = sc_elements.get_or_insert_with(|| {
-                    collect_render_elements_for_output(
-                        ewm,
-                        renderer,
-                        output_scale,
-                        cursor_buffer,
-                        output_pos,
-                        output_size,
-                        include_cursor,
-                        output,
-                        RenderTarget::Screencast,
-                    )
-                });
+                        let include_cursor = cast.cursor_mode != 0;
 
-                let cursor_location = {
-                    let (px, py) = ewm.pointer_location();
-                    smithay::utils::Point::<i32, smithay::utils::Physical>::from((
-                        px as i32, py as i32,
-                    ))
-                };
+                        let (content, cursor) = sc_elements.get_or_insert_with(|| {
+                            collect_render_elements_for_output(
+                                ewm,
+                                renderer,
+                                output_scale,
+                                cursor_buffer,
+                                output_pos,
+                                output_size,
+                                include_cursor,
+                                output,
+                                RenderTarget::Screencast,
+                            )
+                        });
 
-                if cast.dequeue_buffer_and_render(
-                    renderer,
-                    content,
-                    cursor,
-                    cursor_location,
-                    output_size_physical,
-                    output_scale,
-                ) {
-                    cast.last_frame_time = target_frame_time;
+                        let cursor_location = {
+                            let (px, py) = ewm.pointer_location();
+                            smithay::utils::Point::<i32, smithay::utils::Physical>::from((
+                                px as i32, py as i32,
+                            ))
+                        };
+
+                        if cast.dequeue_buffer_and_render(
+                            renderer,
+                            content,
+                            cursor,
+                            cursor_location,
+                            output_size_physical,
+                            output_scale,
+                        ) {
+                            cast.last_frame_time = target_frame_time;
+                        }
+                    }
+                    crate::dbus::CastTarget::Window { id } => {
+                        // Window cast: check if the window is on this output
+                        let window_output = ewm.window_output_name(*id);
+                        if window_output.as_deref() != Some(&output.name()) {
+                            continue;
+                        }
+
+                        ewm.render_window_for_screen_cast(
+                            renderer,
+                            cast,
+                            *id,
+                            output,
+                            cursor_buffer,
+                            output_scale,
+                            target_frame_time,
+                        );
+                    }
                 }
             }
 
@@ -2320,34 +2343,46 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Start D-Bus servers
-        use crate::dbus::{DBusServers, ScreenCastToCompositor};
+        use crate::dbus::{
+            CastTarget, CompositorToIntrospect, DBusServers, IntrospectToCompositor,
+            ScreenCastToCompositor, WindowProperties,
+        };
         use smithay::reexports::calloop::channel::Event as ChannelEvent;
 
         let outputs = state.ewm.dbus_outputs.clone();
-        let (dbus_servers, receiver) = DBusServers::start(outputs, display_handle.clone());
+        let (dbus_servers, sc_receiver, introspect_receiver, introspect_reply_tx) =
+            DBusServers::start(outputs, display_handle.clone());
         // Store D-Bus servers to keep connections alive
         state.ewm.dbus_servers = Some(dbus_servers);
+        state.ewm.introspect_reply_tx = Some(introspect_reply_tx);
 
-        // Register the receiver to handle D-Bus messages
+        // Register the ScreenCast receiver to handle D-Bus messages
         event_loop
             .handle()
-            .insert_source(receiver, |event, _, state| {
+            .insert_source(sc_receiver, |event, _, state| {
                 if let ChannelEvent::Msg(msg) = event {
                     match msg {
                         ScreenCastToCompositor::StartCast {
                             session_id,
-                            output_name,
+                            target,
                             signal_ctx,
                             cursor_mode,
                         } => {
                             tracing::info!(
-                                "StartCast: session={}, output={}, cursor_mode={}",
+                                "StartCast: session={}, target={:?}, cursor_mode={}",
                                 session_id,
-                                output_name,
+                                target,
                                 cursor_mode,
                             );
 
-                            // Extract XRGB8888 modifiers from render formats
+                            let alpha = matches!(target, CastTarget::Window { .. });
+                            let filter_fourcc = if alpha {
+                                smithay::backend::allocator::Fourcc::Argb8888
+                            } else {
+                                smithay::backend::allocator::Fourcc::Xrgb8888
+                            };
+
+                            // Extract modifiers from render formats for the appropriate fourcc
                             let render_formats: Vec<i64> = state
                                 .backend
                                 .as_drm_mut()
@@ -2363,32 +2398,71 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                         .egl_context()
                                         .dmabuf_render_formats()
                                         .iter()
-                                        .filter(|f| {
-                                            f.code == smithay::backend::allocator::Fourcc::Xrgb8888
-                                        })
+                                        .filter(|f| f.code == filter_fourcc)
                                         .map(|f| u64::from(f.modifier) as i64)
                                         .collect()
                                 })
                                 .unwrap_or_else(|| vec![u64::from(Modifier::Linear) as i64]);
 
-                            // Create PipeWire stream for this output
                             let pw = state.ewm.pipewire.as_ref();
                             let gbm = state.backend.gbm_device();
 
                             if let (Some(pw), Some(gbm)) = (pw, gbm) {
-                                // Find output info
-                                let output_info = state
-                                    .ewm
-                                    .dbus_outputs
-                                    .lock()
-                                    .unwrap()
-                                    .iter()
-                                    .find(|o| o.name == output_name)
-                                    .cloned();
+                                // Determine size and refresh based on target
+                                let cast_info: Option<(smithay::utils::Size<i32, smithay::utils::Physical>, u32)> =
+                                    match &target {
+                                        CastTarget::Output { name } => {
+                                            state
+                                                .ewm
+                                                .dbus_outputs
+                                                .lock()
+                                                .unwrap()
+                                                .iter()
+                                                .find(|o| o.name == *name)
+                                                .map(|info| {
+                                                    (
+                                                        smithay::utils::Size::from((info.width, info.height)),
+                                                        info.refresh,
+                                                    )
+                                                })
+                                        }
+                                        CastTarget::Window { id } => {
+                                            let window = state.ewm.id_windows.get(id);
+                                            if let Some(window) = window {
+                                                // Use bbox_with_popups for accurate size including popups
+                                                let output_name = state.ewm.window_output_name(*id);
+                                                let scale = output_name
+                                                    .as_ref()
+                                                    .and_then(|name| {
+                                                        state.ewm.space.outputs()
+                                                            .find(|o| o.name() == *name)
+                                                    })
+                                                    .map(|o| smithay::utils::Scale::from(o.current_scale().fractional_scale()))
+                                                    .unwrap_or(smithay::utils::Scale::from(1.0));
+                                                let bbox = window.bbox_with_popups().to_physical_precise_up(scale);
+                                                let size = bbox.size;
+                                                // Find the output this window is on for refresh rate
+                                                let refresh = output_name
+                                                    .and_then(|name| {
+                                                        state
+                                                            .ewm
+                                                            .space
+                                                            .outputs()
+                                                            .find(|o| o.name() == name)
+                                                            .and_then(|o| o.current_mode())
+                                                            .map(|m| (m.refresh / 1000) as u32)
+                                                    })
+                                                    .unwrap_or(60);
+                                                Some((size, refresh))
+                                            } else {
+                                                tracing::warn!("StartCast: window {} not found", id);
+                                                None
+                                            }
+                                        }
+                                    };
 
-                                if let Some(info) = output_info {
+                                if let Some((size, refresh)) = cast_info {
                                     use crate::pipewire::stream::Cast;
-                                    use smithay::utils::Size;
 
                                     let event_loop_handle = state
                                         .backend
@@ -2401,18 +2475,19 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                                         event_loop_handle,
                                         session_id,
                                         gbm,
-                                        Size::from((info.width, info.height)),
-                                        info.refresh,
-                                        output_name.clone(),
+                                        size,
+                                        refresh,
+                                        target.clone(),
+                                        alpha,
                                         signal_ctx,
                                         render_formats,
                                         cursor_mode,
                                     ) {
                                         Ok(cast) => {
                                             tracing::info!(
-                                                "PipeWire stream created, waiting for state change"
+                                                "PipeWire stream created for {:?}, waiting for state change",
+                                                target,
                                             );
-                                            // Store the cast to keep the stream alive
                                             state.ewm.screen_casts.insert(session_id, cast);
                                         }
                                         Err(err) => {
@@ -2433,9 +2508,30 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             })
-            .expect("Failed to register D-Bus receiver");
+            .expect("Failed to register D-Bus ScreenCast receiver");
 
-        tracing::info!("D-Bus ScreenCast server started");
+        // Register the Introspect receiver to handle GetWindows requests
+        event_loop
+            .handle()
+            .insert_source(introspect_receiver, |event, _, state| {
+                if let ChannelEvent::Msg(msg) = event {
+                    match msg {
+                        IntrospectToCompositor::GetWindows => {
+                            let mut windows = std::collections::HashMap::new();
+                            for (&id, window) in &state.ewm.id_windows {
+                                let (title, app_id) = crate::window_title_and_app_id(window);
+                                windows.insert(id, WindowProperties { title, app_id });
+                            }
+                            if let Some(ref tx) = state.ewm.introspect_reply_tx {
+                                let _ = tx.send_blocking(CompositorToIntrospect::Windows(windows));
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("Failed to register D-Bus Introspect receiver");
+
+        tracing::info!("D-Bus ScreenCast and Introspect servers started");
     }
 
     // Notify systemd we're ready. This must be outside the #[cfg(feature = "screencast")]

@@ -426,7 +426,7 @@ struct SurfaceInfo {
 /// Coordinates are relative to the output's working area (frame-relative).
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LayoutEntry {
-    pub id: u32,
+    pub id: u64,
     pub x: i32,
     pub y: i32,
     pub w: u32,
@@ -460,6 +460,30 @@ pub fn fullscreen_center_offset(
             0
         },
     )
+}
+
+/// Extract (title, app_id) from a Window via its XDG toplevel state.
+/// Used by the Introspect D-Bus interface to list windows for the portal picker.
+#[cfg(feature = "screencast")]
+pub fn window_title_and_app_id(window: &Window) -> (String, String) {
+    use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
+
+    let Some(surface) = window.wl_surface() else {
+        return (String::new(), String::new());
+    };
+    smithay::wayland::compositor::with_states(&surface, |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .map(|d| {
+                let data = d.lock().unwrap();
+                (
+                    data.title.clone().unwrap_or_default(),
+                    data.app_id.clone().unwrap_or_default(),
+                )
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Unconstrain a popup with 8px padding, falling back to no padding if it
@@ -707,16 +731,16 @@ pub struct Ewm {
     pub keyboard: KeyboardHandle<State>,
 
     // Surface tracking
-    next_surface_id: u32,
-    pub window_ids: HashMap<Window, u32>,
-    pub id_windows: HashMap<u32, Window>,
-    surface_info: HashMap<u32, SurfaceInfo>,
+    next_surface_id: u64,
+    pub window_ids: HashMap<Window, u64>,
+    pub id_windows: HashMap<u64, Window>,
+    surface_info: HashMap<u64, SurfaceInfo>,
     /// Declared layout per output: output_name → entries
     pub output_layouts: HashMap<String, Vec<LayoutEntry>>,
     /// Per-output workspace (tab) state from Emacs: output_name → tab info
     pub output_workspaces: HashMap<String, Vec<module::TabInfo>>,
     /// Reverse index: surface_id → set of output names it appears on
-    pub surface_outputs: HashMap<u32, HashSet<String>>,
+    pub surface_outputs: HashMap<u64, HashSet<String>>,
 
     // Output
     pub output_size: Size<i32, Logical>,
@@ -730,7 +754,7 @@ pub struct Ewm {
     pub pointer_focus: Option<(WlSurface, Point<f64, Logical>)>,
     /// Last output the pointer was on, for per-output cursor redraw.
     pointer_output: Option<Output>,
-    pub focused_surface_id: u32,
+    pub focused_surface_id: u64,
     pub keyboard_focus: Option<WlSurface>,
     pub keyboard_focus_dirty: bool,
     /// Output geometry or working areas changed; shared output_offsets need recomputation.
@@ -742,7 +766,7 @@ pub struct Ewm {
     // Emacs client tracking - used to identify which surfaces belong to Emacs
     // vs external applications (for key interception)
     pub emacs_pid: Option<u32>,
-    pub emacs_surfaces: HashMap<u32, String>,
+    pub emacs_surfaces: HashMap<u64, String>,
 
     // Screenshot request
     pub pending_screenshot: Option<String>,
@@ -810,7 +834,7 @@ pub struct Ewm {
     pub session_lock_state: SessionLockManagerState,
     pub lock_state: LockState,
     /// Surface ID that was focused before locking (restored on unlock)
-    pub pre_lock_focus: Option<u32>,
+    pub pre_lock_focus: Option<u64>,
 
     // Idle notify state (ext-idle-notify-v1 protocol)
     pub idle_notifier_state: IdleNotifierState<State>,
@@ -853,6 +877,15 @@ pub struct Ewm {
     // D-Bus servers (must be kept alive for interfaces to work)
     #[cfg(feature = "screencast")]
     pub dbus_servers: Option<dbus::DBusServers>,
+
+    // Channel to reply to Introspect GetWindows requests
+    #[cfg(feature = "screencast")]
+    pub introspect_reply_tx: Option<async_channel::Sender<dbus::CompositorToIntrospect>>,
+
+    // Cached mapping: window ID → primary output name (for screencast)
+    // Rebuilt in apply_output_layout()
+    #[cfg(feature = "screencast")]
+    pub window_cast_output: HashMap<u64, String>,
 
     // XKB layout state
     pub xkb_layout_names: Vec<String>,
@@ -1047,6 +1080,10 @@ impl Ewm {
             screen_casts: std::collections::HashMap::new(),
             #[cfg(feature = "screencast")]
             dbus_servers: None,
+            #[cfg(feature = "screencast")]
+            introspect_reply_tx: None,
+            #[cfg(feature = "screencast")]
+            window_cast_output: HashMap::new(),
             xkb_layout_names: vec!["us".to_string()],
             xkb_current_layout: 0,
             im_relay: None,
@@ -1070,7 +1107,7 @@ impl Ewm {
     }
 
     /// Remove a surface from all output layouts and the reverse index.
-    fn remove_surface_from_layouts(&mut self, id: u32) {
+    fn remove_surface_from_layouts(&mut self, id: u64) {
         self.surface_outputs.remove(&id);
         for entries in self.output_layouts.values_mut() {
             entries.retain(|e| e.id != id);
@@ -1102,10 +1139,13 @@ impl Ewm {
         // Stop screen casts for this output
         #[cfg(feature = "screencast")]
         {
+            let target = dbus::CastTarget::Output {
+                name: output_name.to_string(),
+            };
             let sessions_to_stop: Vec<usize> = self
                 .screen_casts
                 .iter()
-                .filter(|(_, cast)| cast.output_name == output_name)
+                .filter(|(_, cast)| cast.target == target)
                 .map(|(id, _)| *id)
                 .collect();
             for session_id in sessions_to_stop {
@@ -1164,7 +1204,7 @@ impl Ewm {
         }
 
         // Clean dead layout surfaces from id_windows
-        let dead_ids: Vec<u32> = self
+        let dead_ids: Vec<u64> = self
             .id_windows
             .iter()
             .filter(|(_, w)| !w.alive())
@@ -1178,6 +1218,10 @@ impl Ewm {
             self.surface_info.remove(&id);
             self.emacs_surfaces.remove(&id);
             self.queue_event(Event::Close { id });
+
+            // Stop any screen casts targeting this window
+            #[cfg(feature = "screencast")]
+            self.stop_casts_for_window(id);
         }
 
         // Reset cursor image if the cursor surface died
@@ -1251,7 +1295,7 @@ impl Ewm {
     }
 
     /// Find a window by its root WlSurface, returning the window and its ID.
-    pub fn find_window_by_surface(&self, surface: &WlSurface) -> Option<(Window, u32)> {
+    pub fn find_window_by_surface(&self, surface: &WlSurface) -> Option<(Window, u64)> {
         self.id_windows.iter().find_map(|(&id, window)| {
             window.wl_surface().and_then(|ws| {
                 if *ws == *surface {
@@ -1267,7 +1311,7 @@ impl Ewm {
     ///
     /// Scans all output_layouts for a focused entry matching the given surface ID.
     /// Used for output association (focus routing, popups).
-    fn focused_output_for_surface(&self, id: u32) -> Option<(&str, &LayoutEntry)> {
+    fn focused_output_for_surface(&self, id: u64) -> Option<(&str, &LayoutEntry)> {
         for (output_name, entries) in &self.output_layouts {
             if let Some(entry) = entries.iter().find(|e| e.id == id && e.focused) {
                 return Some((output_name.as_str(), entry));
@@ -1280,7 +1324,7 @@ impl Ewm {
     ///
     /// Scans all output_layouts for a primary entry matching the given surface ID.
     /// Used as fallback when no focused entry exists (e.g. popup positioning).
-    fn primary_output_for_surface(&self, id: u32) -> Option<(&str, &LayoutEntry)> {
+    fn primary_output_for_surface(&self, id: u64) -> Option<(&str, &LayoutEntry)> {
         for (output_name, entries) in &self.output_layouts {
             if let Some(entry) = entries.iter().find(|e| e.id == id && e.primary) {
                 return Some((output_name.as_str(), entry));
@@ -1499,7 +1543,7 @@ impl Ewm {
     }
 
     /// Check if a surface has fullscreen set in any output layout.
-    pub fn is_surface_fullscreen(&self, id: u32) -> bool {
+    pub fn is_surface_fullscreen(&self, id: u64) -> bool {
         self.output_layouts
             .values()
             .any(|entries| entries.iter().any(|e| e.id == id && e.fullscreen))
@@ -1522,7 +1566,7 @@ impl Ewm {
     pub fn layout_surface_id_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<u32> {
+    ) -> Option<u64> {
         self.layout_entry_under(pos).map(|(entry, _, _)| entry.id)
     }
 
@@ -1542,12 +1586,12 @@ impl Ewm {
         };
 
         // 2. Diff old vs new surface IDs
-        let old_ids: HashSet<u32> = self
+        let old_ids: HashSet<u64> = self
             .output_layouts
             .get(output_name)
             .map(|entries| entries.iter().map(|e| e.id).collect())
             .unwrap_or_default();
-        let new_ids: HashSet<u32> = entries.iter().map(|e| e.id).collect();
+        let new_ids: HashSet<u64> = entries.iter().map(|e| e.id).collect();
 
         // 3. Handle removed surfaces (old - new)
         for &id in old_ids.difference(&new_ids) {
@@ -1615,7 +1659,7 @@ impl Ewm {
                 }
             };
 
-            let mut best_area: HashMap<u32, u64> = HashMap::new();
+            let mut best_area: HashMap<u64, u64> = HashMap::new();
             // First pass: find the largest area per surface
             for (oname, entries) in &self.output_layouts {
                 for entry in entries {
@@ -1627,12 +1671,26 @@ impl Ewm {
                 }
             }
             // Second pass: mark primary on the matching entry
-            let mut assigned: HashSet<u32> = HashSet::new();
+            let mut assigned: HashSet<u64> = HashSet::new();
             for (oname, entries) in self.output_layouts.iter_mut() {
                 for entry in entries.iter_mut() {
                     let dominated = best_area.get(&entry.id).copied().unwrap_or(0);
                     entry.primary =
                         entry_area(entry, oname) == dominated && assigned.insert(entry.id);
+                }
+            }
+        }
+
+        // 7b. Rebuild window-output cache for screencast lookups.
+        #[cfg(feature = "screencast")]
+        {
+            self.window_cast_output.clear();
+            for (oname, entries) in &self.output_layouts {
+                for entry in entries {
+                    if entry.primary {
+                        self.window_cast_output
+                            .insert(entry.id, oname.clone());
+                    }
                 }
             }
         }
@@ -1704,7 +1762,7 @@ impl Ewm {
     /// Layout-managed surfaces redraw their declared outputs.
     /// Emacs frames redraw their assigned output. Untracked surfaces
     /// fall back to redrawing all outputs.
-    pub fn queue_redraw_for_surface(&mut self, id: u32) {
+    pub fn queue_redraw_for_surface(&mut self, id: u64) {
         let outputs: Vec<_> = if let Some(names) = self.surface_outputs.get(&id) {
             self.space
                 .outputs()
@@ -2469,7 +2527,7 @@ impl Ewm {
     }
 
     /// Find the output for a surface (returns Output object)
-    fn find_surface_output(&self, surface_id: u32) -> Option<smithay::output::Output> {
+    fn find_surface_output(&self, surface_id: u64) -> Option<smithay::output::Output> {
         // Layout surfaces: prefer focused output, then any
         if self.surface_outputs.contains_key(&surface_id) {
             if let Some((name, _)) = self.focused_output_for_surface(surface_id) {
@@ -2524,6 +2582,172 @@ impl Ewm {
         }
     }
 
+    /// Find which output a window is on (by compositor window ID).
+    /// Returns the output name, or None if the window is not found.
+    /// Uses the cached `window_cast_output` map, populated in `apply_output_layout()`.
+    #[cfg(feature = "screencast")]
+    pub fn window_output_name(&self, window_id: u64) -> Option<String> {
+        self.window_cast_output.get(&window_id).cloned()
+    }
+
+    /// Stop all screen casts targeting a specific window.
+    #[cfg(feature = "screencast")]
+    pub fn stop_casts_for_window(&mut self, window_id: u64) {
+        let target = dbus::CastTarget::Window {
+            id: window_id,
+        };
+        let sessions_to_stop: Vec<usize> = self
+            .screen_casts
+            .iter()
+            .filter(|(_, cast)| cast.target == target)
+            .map(|(session_id, _)| *session_id)
+            .collect();
+        for session_id in sessions_to_stop {
+            tracing::info!(
+                session_id,
+                window_id,
+                "stopping window cast (window closed)"
+            );
+            self.stop_cast(session_id);
+        }
+    }
+
+    /// Render a window into a screencast buffer.
+    ///
+    /// Returns true if a frame was rendered. The `cast` is passed separately
+    /// because `screen_casts` is detached from `self` during the render loop.
+    #[cfg(feature = "screencast")]
+    pub fn render_window_for_screen_cast(
+        &self,
+        renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
+        cast: &mut pipewire::stream::Cast,
+        window_id: u64,
+        output: &Output,
+        cursor_buffer: &cursor::CursorBuffer,
+        output_scale: smithay::utils::Scale<f64>,
+        target_frame_time: std::time::Duration,
+    ) -> bool {
+        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+        use smithay::backend::renderer::element::Kind;
+        use smithay::wayland::seat::WaylandFocus;
+
+        let Some(window) = self.id_windows.get(&window_id) else {
+            return false;
+        };
+
+        // Use bbox_with_popups for accurate size including popups,
+        // scaled to physical pixels via the output's fractional scale.
+        let bbox = window.bbox_with_popups().to_physical_precise_up(output_scale);
+        let window_size = bbox.size;
+
+        let refresh = output
+            .current_mode()
+            .map(|m| (m.refresh / 1000) as u32)
+            .unwrap_or(60);
+
+        cast.ensure_size(window_size, refresh);
+
+        if cast.is_resize_pending() {
+            return false;
+        }
+
+        if cast.check_time_and_schedule(output, target_frame_time) {
+            return false;
+        }
+
+        // bbox.loc is the offset of the bounding box from the window origin;
+        // negate it so popups extending beyond the window are visible.
+        let render_offset = smithay::utils::Point::from((-bbox.loc.x, -bbox.loc.y));
+
+        let window_elements: Vec<render::EwmRenderElement> =
+            if let Some(surface) = window.wl_surface() {
+                let elems: Vec<_> = render_elements_from_surface_tree(
+                    renderer,
+                    &surface,
+                    render_offset,
+                    output_scale,
+                    1.0,
+                    Kind::Unspecified,
+                );
+                elems
+                    .into_iter()
+                    .map(render::EwmRenderElement::Surface)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+        // Render cursor into window cast if cursor_mode != 0
+        let mut cursor_elements: Vec<render::EwmRenderElement> = Vec::new();
+        let mut cursor_location =
+            smithay::utils::Point::<i32, smithay::utils::Physical>::from((0, 0));
+
+        if cast.cursor_mode != 0 {
+            let (px, py) = self.pointer_location();
+            let output_geo = self.space.output_geometry(output);
+
+            if let Some(output_geo) = output_geo {
+                if let Some(entries) = self.output_layouts.get(&output.name()) {
+                    let working_area = {
+                        let map = smithay::desktop::layer_map_for_output(output);
+                        map.non_exclusive_zone()
+                    };
+                    for entry in entries {
+                        if entry.id != window_id {
+                            continue;
+                        }
+                        let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
+                        let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
+
+                        if px >= entry_x as f64
+                            && py >= entry_y as f64
+                            && px < (entry_x + entry.w as i32) as f64
+                            && py < (entry_y + entry.h as i32) as f64
+                        {
+                            // Cursor position relative to the screencast buffer
+                            let bbox_logical = bbox.loc.to_f64().to_logical(output_scale);
+                            let cursor_x =
+                                px - entry_x as f64 - bbox_logical.x - cursor::CURSOR_HOTSPOT.0 as f64;
+                            let cursor_y =
+                                py - entry_y as f64 - bbox_logical.y - cursor::CURSOR_HOTSPOT.1 as f64;
+                            let cursor_pos: smithay::utils::Point<i32, smithay::utils::Physical> =
+                                smithay::utils::Point::from((cursor_x, cursor_y))
+                                    .to_physical_precise_round(output_scale);
+
+                            // cursor_location for SPA_META_Cursor (without hotspot offset)
+                            let loc_x = px - entry_x as f64 - bbox_logical.x;
+                            let loc_y = py - entry_y as f64 - bbox_logical.y;
+                            cursor_location = smithay::utils::Point::from((loc_x, loc_y))
+                                .to_physical_precise_round(output_scale);
+
+                            if let Ok(cursor_element) =
+                                cursor_buffer.render_element(renderer, cursor_pos)
+                            {
+                                cursor_elements
+                                    .push(render::EwmRenderElement::Cursor(cursor_element));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        if cast.dequeue_buffer_and_render(
+            renderer,
+            &window_elements,
+            &cursor_elements,
+            cursor_location,
+            window_size,
+            output_scale,
+        ) {
+            cast.last_frame_time = target_frame_time;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Set the Emacs process PID for client identification
     pub fn set_emacs_pid(&mut self, pid: u32) {
         info!("Tracking Emacs PID: {}", pid);
@@ -2551,7 +2775,7 @@ impl Ewm {
     /// Marks keyboard focus dirty for deferred sync.
     /// Focus a surface with source tracking for debugging.
     /// Marks keyboard focus dirty for deferred sync via sync_keyboard_focus().
-    pub fn set_focus(&mut self, id: u32, notify_emacs: bool, source: &str, context: Option<&str>) {
+    pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str, context: Option<&str>) {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
         self.keyboard_focus_dirty = true;
@@ -2660,7 +2884,7 @@ impl Ewm {
     /// causing the client to disable. Commits that arrive during the resulting
     /// disable→enable gap are queued in `pending_im_commits` and drained on
     /// the next `ImEvent::Activated`.
-    pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u32>) {
+    pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u64>) {
         use smithay::wayland::text_input::TextInputSeat;
         let text_input = self.seat.text_input();
 
@@ -2676,7 +2900,7 @@ impl Ewm {
     }
 
     /// Get surface ID from a WlSurface
-    pub fn surface_id(&self, surface: &WlSurface) -> Option<u32> {
+    pub fn surface_id(&self, surface: &WlSurface) -> Option<u64> {
         self.window_ids
             .iter()
             .find(|(w, _)| w.wl_surface().map(|s| &*s == surface).unwrap_or(false))
@@ -2886,7 +3110,7 @@ impl Ewm {
     }
 
     /// Find the Emacs surface on the same output as the focused surface
-    pub fn get_emacs_surface_for_focused_output(&self) -> Option<u32> {
+    pub fn get_emacs_surface_for_focused_output(&self) -> Option<u64> {
         let focused_output = self.get_focused_output()?;
 
         // Find an Emacs surface assigned to the focused output
@@ -3040,13 +3264,16 @@ impl Ewm {
             }
         }
 
-        // Notify screen casts of size change
+        // Notify output screen casts of size change
         #[cfg(feature = "screencast")]
         {
             let physical_size = Size::from((current_mode.size.w, current_mode.size.h));
             let refresh = (current_mode.refresh / 1000) as u32;
+            let target = dbus::CastTarget::Output {
+                name: output_name.to_string(),
+            };
             for cast in self.screen_casts.values_mut() {
-                if cast.output_name == output_name {
+                if cast.target == target {
                     cast.ensure_size(physical_size, refresh);
                     cast.set_refresh(refresh);
                 }
@@ -3312,7 +3539,7 @@ impl Ewm {
     /// so centering offsets and CSD geometry don't affect the result.
     /// Fullscreen: full output. Normal: entry width × output height (horizontally
     /// constrained to the entry, vertically to the full output).
-    fn popup_target_rect(&self, id: u32) -> Option<Rectangle<i32, Logical>> {
+    fn popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
         let (output_name, entry) = self
             .focused_output_for_surface(id)
             .or_else(|| self.primary_output_for_surface(id))?;
@@ -3535,7 +3762,7 @@ impl Ewm {
 
     /// Handle toplevel destroyed from XdgShellHandler.
     /// Returns surface ID to refocus, if any.
-    pub fn handle_toplevel_destroyed(&mut self, surface: ToplevelSurface) -> Option<u32> {
+    pub fn handle_toplevel_destroyed(&mut self, surface: ToplevelSurface) -> Option<u64> {
         let window = self
             .id_windows
             .iter()
@@ -3553,6 +3780,10 @@ impl Ewm {
             self.emacs_surfaces.remove(&id);
             self.queue_event(Event::Close { id });
             info!("Toplevel {} destroyed", id);
+
+            // Stop any screen casts targeting this window
+            #[cfg(feature = "screencast")]
+            self.stop_casts_for_window(id);
 
             // Unmap from space (no-op if not in space)
             self.space.unmap_elem(&window);
@@ -5274,7 +5505,7 @@ impl State {
                 });
             }
             ModuleCommand::GetDebugState => {
-                let id_window_keys: Vec<u32> = self.ewm.id_windows.keys().copied().collect();
+                let id_window_keys: Vec<u64> = self.ewm.id_windows.keys().copied().collect();
                 let layer_surfaces_info = self.ewm.get_layer_surfaces_info();
                 let state = serde_json::json!({
                     "surfaces": self.ewm.surface_info,

@@ -412,7 +412,7 @@ pub fn release_all_keys(state: &mut State) {
 }
 
 /// Restore focus to a specific surface
-pub fn restore_focus(state: &mut State, surface_id: u32) {
+pub fn restore_focus(state: &mut State, surface_id: u64) {
     if state.ewm.id_windows.contains_key(&surface_id) {
         state.ewm.focused_surface_id = surface_id;
         state.ewm.keyboard_focus_dirty = true;
