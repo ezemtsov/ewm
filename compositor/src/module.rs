@@ -119,10 +119,15 @@ use crate::{InterceptedKey, LayoutEntry};
 /// Compositor state snapshot, updated once per tick in `update_shared_state()`.
 /// Only contains fields that Emacs reads synchronously via per-field defuns.
 #[derive(Default)]
+pub struct ActiveOutput {
+    pub origin: (i32, i32),
+}
+
+#[derive(Default)]
 pub struct SharedState {
     pub focused_surface_id: u64,
     pub pointer_location: (f64, f64),
-    pub output_offsets: HashMap<String, (i32, i32)>,
+    pub active_outputs: HashMap<String, ActiveOutput>,
 }
 
 static SHARED_STATE: OnceLock<Mutex<SharedState>> = OnceLock::new();
@@ -188,13 +193,24 @@ fn get_focused_id() -> Result<i64> {
     Ok(shared_state().lock().unwrap().focused_surface_id as i64)
 }
 
-/// Query output offset (called by Emacs for frame positioning).
+/// Return a list of active output names (e.g., ("eDP-1" "DP-1")).
+#[defun]
+fn get_active_outputs<'a>(env: &'a Env) -> Result<Value<'a>> {
+    let state = shared_state().lock().unwrap();
+    let mut result: Value<'a> = ().into_lisp(env)?;
+    for name in state.active_outputs.keys() {
+        result = env.cons(name.as_str(), result)?;
+    }
+    Ok(result)
+}
+
+/// Query output origin (called by Emacs for mouse-follows-focus pointer warping).
 /// Returns (x . y) cons cell, or nil if output not found.
 #[defun]
-fn get_output_offset<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
+fn get_output_origin<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
     let state = shared_state().lock().unwrap();
-    match state.output_offsets.get(&name) {
-        Some((x, y)) => env.cons(*x as i64, *y as i64),
+    match state.active_outputs.get(&name) {
+        Some(output) => env.cons(output.origin.0 as i64, output.origin.1 as i64),
         None => ().into_lisp(env),
     }
 }

@@ -43,7 +43,8 @@
 (declare-function ewm-debug-mode-module "ewm-core")
 (declare-function ewm-configure-output-module "ewm-core")
 (declare-function ewm-prepare-frame-module "ewm-core")
-(declare-function ewm-get-output-offset "ewm-core")
+(declare-function ewm-get-active-outputs "ewm-core")
+(declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-start "ewm-core")
 (declare-function ewm-list-xdg-apps "ewm-core")
 
@@ -671,9 +672,9 @@ ARGS is a plist with optional keys:
   "Tell compositor to assign next frame to OUTPUT."
   (ewm-prepare-frame-module output))
 
-(defun ewm--get-output-offset (output-name)
-  "Return (x . y) offset for OUTPUT-NAME, or (0 . 0) if not found."
-  (or (ewm-get-output-offset output-name) '(0 . 0)))
+(defun ewm--get-output-origin (output-name)
+  "Return (x . y) origin for OUTPUT-NAME, or (0 . 0) if not found."
+  (or (ewm-get-output-origin output-name) '(0 . 0)))
 
 (defun ewm--apply-output-config ()
   "Apply user output configuration from `ewm-output-config'."
@@ -745,14 +746,17 @@ Prevents deletion of the last frame for an output unless FORCE is non-nil."
       (funcall orig-fun frame force))))
 
 (defun ewm--enforce-frame-output-parity ()
-  "Ensure one frame per output. Delete orphans and duplicates."
-  (let ((seen (make-hash-table :test 'equal)))
+  "Ensure one frame per active output. Delete orphans, stale, and duplicates."
+  (let ((seen (make-hash-table :test 'equal))
+        (active-outputs (ewm-get-active-outputs)))
     (dolist (frame (frame-list))
       (let ((output (frame-parameter frame 'ewm-output)))
         (cond
          ((rassq frame ewm--pending-frame-outputs)
           nil)
          ((null output)
+          (ignore-errors (delete-frame frame)))
+         ((not (member output active-outputs))
           (ignore-errors (delete-frame frame)))
          ((gethash output seen)
           (ignore-errors (delete-frame frame)))

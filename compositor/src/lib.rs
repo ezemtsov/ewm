@@ -757,8 +757,8 @@ pub struct Ewm {
     pub focused_surface_id: u64,
     pub keyboard_focus: Option<WlSurface>,
     pub keyboard_focus_dirty: bool,
-    /// Output geometry or working areas changed; shared output_offsets need recomputation.
-    pub output_offsets_dirty: bool,
+    /// Output geometry or working areas changed; shared active_outputs need recomputation.
+    pub active_outputs_dirty: bool,
 
     // Libinput device configuration
     pub input_configs: Vec<input::InputConfigEntry>,
@@ -1037,7 +1037,7 @@ impl Ewm {
             focused_surface_id: 0,
             keyboard_focus: None,
             keyboard_focus_dirty: false,
-            output_offsets_dirty: true,
+            active_outputs_dirty: true,
             input_configs: Vec::new(),
             emacs_pid: None,
             emacs_surfaces: HashMap::new(),
@@ -3136,13 +3136,13 @@ impl Ewm {
 
     /// Send output detected event to Emacs
     pub fn send_output_detected(&mut self, output: OutputInfo) {
-        self.output_offsets_dirty = true;
+        self.active_outputs_dirty = true;
         self.queue_event(Event::OutputDetected(output));
     }
 
     /// Send output disconnected event to Emacs
     pub fn send_output_disconnected(&mut self, name: &str) {
-        self.output_offsets_dirty = true;
+        self.active_outputs_dirty = true;
         self.queue_event(Event::OutputDisconnected {
             name: name.to_string(),
         });
@@ -3282,7 +3282,7 @@ impl Ewm {
 
         // Recalculate total output size, working areas, and queue redraw
         self.recalculate_output_size();
-        self.output_offsets_dirty = true;
+        self.active_outputs_dirty = true;
         self.check_working_area_change(output);
         self.queue_redraw_all();
 
@@ -3425,7 +3425,7 @@ impl Ewm {
             );
 
             self.working_areas.insert(output_name.clone(), working_area);
-            self.output_offsets_dirty = true;
+            self.active_outputs_dirty = true;
 
             // Update Emacs frames to fit new working area
             self.update_frames_for_working_area(output);
@@ -5351,12 +5351,12 @@ impl State {
         let mut shared = module::shared_state().lock().unwrap();
         shared.focused_surface_id = self.ewm.focused_surface_id;
         shared.pointer_location = self.ewm.pointer_location();
-        if self.ewm.output_offsets_dirty {
-            self.ewm.output_offsets_dirty = false;
-            // Derive output_offsets from output geometry + working area.
+        if self.ewm.active_outputs_dirty {
+            self.ewm.active_outputs_dirty = false;
+            // Derive active_outputs from output geometry + working area.
             // Falls back to raw output origin when working_areas not yet populated
             // (before first layer-shell commit).
-            shared.output_offsets = self
+            shared.active_outputs = self
                 .ewm
                 .space
                 .outputs()
@@ -5365,7 +5365,7 @@ impl State {
                     let wa = self.ewm.working_areas.get(&o.name());
                     let x = geo.loc.x + wa.map_or(0, |r| r.loc.x);
                     let y = geo.loc.y + wa.map_or(0, |r| r.loc.y);
-                    Some((o.name(), (x, y)))
+                    Some((o.name(), module::ActiveOutput { origin: (x, y) }))
                 })
                 .collect();
         }
