@@ -551,13 +551,15 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "emacs"
-version = "0.20.0"
-source = "git+https://github.com/ubolonton/emacs-module-rs.git?rev=34aaff90d22d8f5f876023ab779fe12dfffdd518#34aaff90d22d8f5f876023ab779fe12dfffdd518"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c086f6bd8f5191266ed9a29aa380c155466959057558a3f11d8993317b0b8e1"
 dependencies = [
  "anyhow",
  "ctor",
  "emacs-macros",
  "emacs_module",
+ "libc",
  "once_cell",
  "rustc_version",
  "thiserror 1.0.69",
@@ -566,7 +568,8 @@ dependencies = [
 [[package]]
 name = "emacs-macros"
 version = "0.17.0"
-source = "git+https://github.com/ubolonton/emacs-module-rs.git?rev=34aaff90d22d8f5f876023ab779fe12dfffdd518#34aaff90d22d8f5f876023ab779fe12dfffdd518"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69656fdfe7c2608b87164964db848b5c3795de7302e3130cce7131552c6be161"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -576,8 +579,9 @@ dependencies = [
 
 [[package]]
 name = "emacs_module"
-version = "0.20.0"
-source = "git+https://github.com/ubolonton/emacs-module-rs.git?rev=34aaff90d22d8f5f876023ab779fe12dfffdd518#34aaff90d22d8f5f876023ab779fe12dfffdd518"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "288020fbdb901ce8d3f1dcaa6be8876fd14291ee664136bd1b29fcdb1d99777a"
 
 [[package]]
 name = "encode_unicode"
