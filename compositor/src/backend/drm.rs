@@ -1486,17 +1486,19 @@ impl DrmBackendState {
             changed = true;
         }
 
+        self.suspend_if_clamshell_empty(ewm);
+
         // Re-acquire device reference after disconnections (borrow was
         // consumed by disconnect_output).
         let Some(device) = &self.device else {
             return;
         };
 
-        // Skip laptop panels when the lid is closed and an external monitor
-        // is present (mirrors on_lid_state_changed logic). Without this,
-        // udev Changed events after lid-close re-report the panel as
-        // Connected, causing a connect/disconnect cycle every second.
-        let disable_laptop_panels = self.lid_closed && self.has_external_monitor(ewm);
+        // Never reconnect laptop panels while the lid is closed. Without
+        // this, unplugging the last external monitor causes the scanner to
+        // re-report the panel as Connected (it was only software-disconnected),
+        // racing with the suspend call above and leaving a half-alive output.
+        let disable_laptop_panels = self.lid_closed;
 
         // Process new connections, skipping CRTCs that already have a
         // surface (guards against spurious scanner re-reports).
@@ -1904,15 +1906,7 @@ impl DrmBackendState {
             // Kill idle child process (e.g., screensaver) on lid close
             ewm.kill_idle_child();
 
-            // If no outputs remain (no external monitor), suspend.
-            // We hold a logind inhibitor so logind won't do this automatically.
-            if ewm.outputs.is_empty() {
-                ewm.deactivate_monitors();
-                if let Some(logind) = &self.logind {
-                    info!("No external monitor with lid closed, suspending");
-                    logind.suspend();
-                }
-            }
+            self.suspend_if_clamshell_empty(ewm);
         } else {
             // Lid opened: reconnect laptop panels that the scanner still knows
             // about but that we disconnected. on_device_changed() won't help
@@ -1946,6 +1940,19 @@ impl DrmBackendState {
 
     fn has_external_monitor(&self, ewm: &Ewm) -> bool {
         ewm.outputs.iter().any(|o| !crate::is_laptop_panel(&o.name))
+    }
+
+    /// If the lid is closed and no outputs remain, deactivate and suspend.
+    /// Called after output disconnections (lid close, hotplug) to handle the
+    /// case where the last display disappears while the lid is shut.
+    fn suspend_if_clamshell_empty(&self, ewm: &mut Ewm) {
+        if self.lid_closed && ewm.outputs.is_empty() {
+            ewm.deactivate_monitors();
+            if let Some(logind) = &self.logind {
+                info!("No display remaining with lid closed, suspending");
+                logind.suspend();
+            }
+        }
     }
 }
 
