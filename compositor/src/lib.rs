@@ -3134,15 +3134,37 @@ impl Ewm {
         self.output_size = Size::from((total_width, total_height));
     }
 
-    /// Send output detected event to Emacs
+    /// Immediately sync active_outputs into shared state so that Emacs sees
+    /// up-to-date output lists when it handles events queued after this call.
+    pub fn flush_active_outputs(&mut self) {
+        let mut shared = module::shared_state().lock().unwrap();
+        shared.active_outputs = self
+            .space
+            .outputs()
+            .filter_map(|o| {
+                let geo = self.space.output_geometry(o)?;
+                let wa = self.working_areas.get(&o.name());
+                let x = geo.loc.x + wa.map_or(0, |r| r.loc.x);
+                let y = geo.loc.y + wa.map_or(0, |r| r.loc.y);
+                Some((o.name(), module::ActiveOutput { origin: (x, y) }))
+            })
+            .collect();
+        self.active_outputs_dirty = false;
+    }
+
+    /// Send output detected event to Emacs.
+    /// Flushes active_outputs to shared state first so Emacs sees the new
+    /// output immediately when handling this or subsequent events.
     pub fn send_output_detected(&mut self, output: OutputInfo) {
-        self.active_outputs_dirty = true;
+        self.flush_active_outputs();
         self.queue_event(Event::OutputDetected(output));
     }
 
-    /// Send output disconnected event to Emacs
+    /// Send output disconnected event to Emacs.
+    /// Flushes active_outputs to shared state first so Emacs sees the removal
+    /// immediately when handling this or subsequent events.
     pub fn send_output_disconnected(&mut self, name: &str) {
-        self.active_outputs_dirty = true;
+        self.flush_active_outputs();
         self.queue_event(Event::OutputDisconnected {
             name: name.to_string(),
         });
@@ -5348,27 +5370,13 @@ impl State {
     /// Update the shared state snapshot that Emacs reads synchronously.
     /// Called once per tick, after all command processing and state changes.
     fn update_shared_state(&mut self) {
+        // Flush active_outputs first (acquires shared_state lock internally).
+        if self.ewm.active_outputs_dirty {
+            self.ewm.flush_active_outputs();
+        }
         let mut shared = module::shared_state().lock().unwrap();
         shared.focused_surface_id = self.ewm.focused_surface_id;
         shared.pointer_location = self.ewm.pointer_location();
-        if self.ewm.active_outputs_dirty {
-            self.ewm.active_outputs_dirty = false;
-            // Derive active_outputs from output geometry + working area.
-            // Falls back to raw output origin when working_areas not yet populated
-            // (before first layer-shell commit).
-            shared.active_outputs = self
-                .ewm
-                .space
-                .outputs()
-                .filter_map(|o| {
-                    let geo = self.ewm.space.output_geometry(o)?;
-                    let wa = self.ewm.working_areas.get(&o.name());
-                    let x = geo.loc.x + wa.map_or(0, |r| r.loc.x);
-                    let y = geo.loc.y + wa.map_or(0, |r| r.loc.y);
-                    Some((o.name(), module::ActiveOutput { origin: (x, y) }))
-                })
-                .collect();
-        }
     }
 
     /// Handle a module command (from Emacs via dynamic module).

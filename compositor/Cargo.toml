@@ -54,7 +54,6 @@ features = ["v0_3_33"]
 
 [dependencies.zbus]
 version = "5.13.0"
-optional = true
 
 [dependencies.async-io]
 version = "2.6.0"
@@ -86,7 +85,7 @@ features = [ "emacs-28" ]
 
 [features]
 default = []
-screencast = ["pipewire", "zbus", "async-io", "async-channel"]
+screencast = ["pipewire", "async-io", "async-channel"]
 
 # Tracy profiling support
 profile-with-tracy = ["tracy-client/default"]

@@ -524,6 +524,10 @@ pub struct DrmBackendState {
     pending: Option<DrmPendingInit>,
     /// Whether the laptop lid is currently closed (from libinput switch events)
     pub lid_closed: bool,
+    /// Logind session: inhibitor fd + D-Bus connection for suspend.
+    /// When present, we manage lid-close policy (macOS-like: stay awake with
+    /// external monitor, suspend via D-Bus when no display remains).
+    logind: Option<LogindState>,
     /// Token for session notifier - must be removed before session drops
     session_notifier_token: Option<RegistrationToken>,
     /// Connected libinput devices for re-applying configuration on change
@@ -1897,13 +1901,18 @@ impl DrmBackendState {
                 }
             }
 
-            // If no outputs remain (no external monitor), deactivate all
-            if ewm.outputs.is_empty() {
-                ewm.deactivate_monitors();
-            }
-
             // Kill idle child process (e.g., screensaver) on lid close
             ewm.kill_idle_child();
+
+            // If no outputs remain (no external monitor), suspend.
+            // We hold a logind inhibitor so logind won't do this automatically.
+            if ewm.outputs.is_empty() {
+                ewm.deactivate_monitors();
+                if let Some(logind) = &self.logind {
+                    info!("No external monitor with lid closed, suspending");
+                    logind.suspend();
+                }
+            }
         } else {
             // Lid opened: reconnect laptop panels that the scanner still knows
             // about but that we disconnected. on_device_changed() won't help
@@ -1937,6 +1946,71 @@ impl DrmBackendState {
 
     fn has_external_monitor(&self, ewm: &Ewm) -> bool {
         ewm.outputs.iter().any(|o| !crate::is_laptop_panel(&o.name))
+    }
+}
+
+/// Logind connection with lid-switch inhibitor.
+/// Dropping this releases the inhibitor (fd closes).
+struct LogindState {
+    conn: zbus::blocking::Connection,
+    _inhibitor: std::os::fd::OwnedFd,
+}
+
+impl LogindState {
+    /// Connect to logind and acquire a `handle-lid-switch` inhibitor.
+    /// Returns None if logind is unavailable (non-systemd system).
+    fn new() -> Option<Self> {
+        use zbus::blocking::Connection;
+        use zbus::zvariant::OwnedFd as ZbusFd;
+
+        let conn = match Connection::system() {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("No system D-Bus, lid switch managed by system default: {e}");
+                return None;
+            }
+        };
+
+        let reply = conn.call_method(
+            Some("org.freedesktop.login1"),
+            "/org/freedesktop/login1",
+            Some("org.freedesktop.login1.Manager"),
+            "Inhibit",
+            &("handle-lid-switch", "ewm", "Compositor manages lid switch", "block"),
+        );
+
+        match reply {
+            Ok(msg) => match msg.body().deserialize::<ZbusFd>() {
+                Ok(fd) => {
+                    info!("Acquired logind handle-lid-switch inhibitor");
+                    Some(Self {
+                        conn,
+                        _inhibitor: std::os::fd::OwnedFd::from(fd),
+                    })
+                }
+                Err(e) => {
+                    warn!("Failed to deserialize inhibitor fd: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!("Failed to acquire lid switch inhibitor: {e}");
+                None
+            }
+        }
+    }
+
+    /// Ask logind to suspend the system.
+    fn suspend(&self) {
+        if let Err(e) = self.conn.call_method(
+            Some("org.freedesktop.login1"),
+            "/org/freedesktop/login1",
+            Some("org.freedesktop.login1.Manager"),
+            "Suspend",
+            &(false,),
+        ) {
+            warn!("Failed to suspend via logind: {e}");
+        }
     }
 }
 
@@ -2233,6 +2307,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             seat_name: seat_name.clone(),
         }),
         lid_closed: false,
+        logind: LogindState::new(),
         session_notifier_token: None, // Set after registering notifier
         init_sender: Some(init_sender),
         loop_handle: Some(event_loop.handle()),
