@@ -189,6 +189,24 @@ Add more as needed:
                           (list (choice character string) (const :fullscreen))))
   :group 'ewm-input)
 
+(defcustom ewm-surface-emulate-keys
+  '((?\s-c . "ctrl")
+    (?\s-v . "ctrl"))
+  "Super+KEY bindings that translate to Ctrl+KEY for non-Emacs surfaces.
+Each entry is (KEY-EVENT . TARGET-MOD) where TARGET-MOD is \"ctrl\",
+\"alt\", or \"shift\".
+
+When a non-Emacs Wayland surface has focus, these keys are translated
+\(e.g., s-c becomes C-c for clipboard copy in Firefox).  When Emacs
+has focus, the original binding from `ewm-mode-map' is used."
+  :type '(alist :key-type character :value-type string)
+  :initialize 'custom-initialize-default
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when ewm--module-mode
+           (ewm--send-intercept-keys)))
+  :group 'ewm-input)
+
 ;;; Mouse-follows-focus
 
 (defun ewm-input--pointer-in-window-p (window)
@@ -295,9 +313,10 @@ EWM owns frame selection via `ewm--handle-focus'."
 
 ;;; Key scanning and interception
 
-(defun ewm--event-to-intercept-spec (event &optional fullscreen)
+(defun ewm--event-to-intercept-spec (event &optional fullscreen emulate)
   "Convert EVENT to an intercept specification for the compositor.
-Returns a plist with :key, modifier flags, and :fullscreen."
+Returns a plist with :key, modifier flags, :fullscreen, and optionally :emulate.
+EMULATE is a target modifier string (e.g. \"ctrl\") for key emulation."
   (let* ((mods (event-modifiers event))
          (base (event-basic-type event))
          ;; base is either an integer (ASCII) or a symbol (special key)
@@ -306,12 +325,15 @@ Returns a plist with :key, modifier flags, and :fullscreen."
                      ((symbolp base) (symbol-name base))
                      (t nil))))
     (when key-value
-      `(:key ,key-value
-        :ctrl ,(if (memq 'control mods) t :false)
-        :alt ,(if (memq 'meta mods) t :false)
-        :shift ,(if (memq 'shift mods) t :false)
-        :super ,(if (memq 'super mods) t :false)
-        :fullscreen ,(if fullscreen t :false)))))
+      (let ((spec `(:key ,key-value
+                    :ctrl ,(if (memq 'control mods) t :false)
+                    :alt ,(if (memq 'meta mods) t :false)
+                    :shift ,(if (memq 'shift mods) t :false)
+                    :super ,(if (memq 'super mods) t :false)
+                    :fullscreen ,(if fullscreen t :false))))
+        (when emulate
+          (setq spec (append spec (list :emulate emulate))))
+        spec))))
 
 (defun ewm--parse-intercept-entry (entry)
   "Parse ENTRY from `ewm-intercept-prefixes'.
@@ -330,9 +352,14 @@ Returns (event . fullscreen-p) or nil."
 (defun ewm--send-intercept-keys ()
   "Send intercepted keys configuration to compositor.
 Scans `ewm-intercept-prefixes' first (so :fullscreen flags win),
-then `ewm-mode-map' bindings."
+then `ewm-mode-map' bindings.  Keys in `ewm-surface-emulate-keys'
+get an :emulate flag for modifier translation on non-Emacs surfaces."
   (let ((specs '())
-        (fs-events (make-hash-table :test 'eql)))
+        (fs-events (make-hash-table :test 'eql))
+        (emulate-map (make-hash-table :test 'eql)))
+    ;; Build emulate lookup
+    (dolist (entry ewm-surface-emulate-keys)
+      (puthash (car entry) (cdr entry) emulate-map))
     ;; Intercept prefixes first — :fullscreen entries populate fs-events
     (dolist (entry ewm-intercept-prefixes)
       (when-let ((parsed (ewm--parse-intercept-entry entry)))
@@ -341,12 +368,14 @@ then `ewm-mode-map' bindings."
             (puthash event t fs-events))
           (when-let ((spec (ewm--event-to-intercept-spec event (cdr parsed))))
             (push spec specs)))))
-    ;; Keymap bindings — fullscreen flag looked up from fs-events
+    ;; Keymap bindings — fullscreen flag and emulate looked up
     (map-keymap
      (lambda (event binding)
        (when (and binding (not (eq binding 'undefined)) (not (eq binding 'ignore)))
          (when-let ((spec (ewm--event-to-intercept-spec
-                           event (gethash event fs-events))))
+                           event
+                           (gethash event fs-events)
+                           (gethash event emulate-map))))
            (push spec specs))))
      ewm-mode-map)
     (ewm-intercept-keys-module (vconcat (nreverse specs)))))

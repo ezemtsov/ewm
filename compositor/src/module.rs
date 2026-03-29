@@ -58,6 +58,7 @@ use_symbols! {
     kw_alt         => ":alt"
     kw_shift       => ":shift"
     kw_super       => ":super"
+    kw_emulate     => ":emulate"
     kw_name   => ":name"
     kw_active => ":active"
     // configure_output_module: marker for "not provided" (distinct from nil)
@@ -110,7 +111,7 @@ use smithay::reexports::calloop::LoopSignal;
 use crate::event::Event;
 use smithay::input::keyboard::{keysyms, xkb};
 
-use crate::{InterceptedKey, LayoutEntry};
+use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
 
 // ============================================================================
 // Shared State (read by Emacs, written by compositor)
@@ -168,6 +169,18 @@ fn intercepted_keys() -> &'static RwLock<Vec<InterceptedKey>> {
 /// Get intercepted keys (called by compositor during input handling).
 pub fn get_intercepted_keys() -> Vec<InterceptedKey> {
     intercepted_keys().read().unwrap().clone()
+}
+
+/// Emulated keys (synchronous, like intercepted keys)
+static EMULATED_KEYS: OnceLock<RwLock<Vec<EmulatedKey>>> = OnceLock::new();
+
+fn emulated_keys() -> &'static RwLock<Vec<EmulatedKey>> {
+    EMULATED_KEYS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Get emulated keys (called by compositor during input handling).
+pub fn get_emulated_keys() -> Vec<EmulatedKey> {
+    emulated_keys().read().unwrap().clone()
 }
 
 /// Flag indicating we're in an incomplete prefix key sequence.
@@ -837,11 +850,13 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
     no_symbol
 }
 
-/// Set intercepted keys (module mode).
+/// Set intercepted and emulated keys (module mode).
 /// KEYS is a vector of plists with :key :ctrl :alt :shift :super keys.
+/// Keys with :emulate "ctrl" (etc.) go into the emulated set; the rest are intercepted.
 #[defun]
 fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
     let mut parsed_keys = Vec::new();
+    let mut parsed_emulated = Vec::new();
 
     let len: i64 = env.call(length, (keys,))?.into_rust()?;
 
@@ -881,20 +896,35 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         let super_val = env.call(plist_get, (key_spec, kw_super))?;
         let allow_fullscreen_val = env.call(plist_get, (key_spec, kw_fullscreen))?;
 
-        parsed_keys.push(InterceptedKey {
-            keysym: keysym.raw(),
-            ctrl: is_true(ctrl_val),
-            alt: is_true(alt_val),
-            shift: is_true(shift_val),
-            logo: is_true(super_val),
-            allow_fullscreen: is_true(allow_fullscreen_val),
-        });
+        // Check :emulate flag — keys with this go to emulated set
+        let emulate_val = env.call(plist_get, (key_spec, kw_emulate))?;
+        if let Ok(target_mod) = emulate_val.into_rust::<String>() {
+            parsed_emulated.push(EmulatedKey {
+                keysym: keysym.raw(),
+                ctrl: is_true(ctrl_val),
+                alt: is_true(alt_val),
+                shift: is_true(shift_val),
+                logo: is_true(super_val),
+                target_mod,
+            });
+        } else {
+            parsed_keys.push(InterceptedKey {
+                keysym: keysym.raw(),
+                ctrl: is_true(ctrl_val),
+                alt: is_true(alt_val),
+                shift: is_true(shift_val),
+                logo: is_true(super_val),
+                allow_fullscreen: is_true(allow_fullscreen_val),
+            });
+        }
     }
 
     *intercepted_keys().write().unwrap() = parsed_keys;
+    *emulated_keys().write().unwrap() = parsed_emulated;
     tracing::info!(
-        "Intercepted keys set ({} keys)",
-        intercepted_keys().read().unwrap().len()
+        "Intercepted keys set ({} intercept, {} emulate)",
+        intercepted_keys().read().unwrap().len(),
+        emulated_keys().read().unwrap().len(),
     );
     Ok(())
 }

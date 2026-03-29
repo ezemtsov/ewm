@@ -700,6 +700,67 @@ mod intercepted_key_tests {
     }
 }
 
+/// Emulated key: a key combo that is translated to different modifiers
+/// when forwarded to non-Emacs surfaces.
+///
+/// Example: Super+c → Ctrl+c (universal clipboard copy for Wayland clients).
+/// When Emacs has focus, the original key works normally via `ewm-mode-map`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EmulatedKey {
+    pub keysym: u32,
+    #[serde(default)]
+    pub ctrl: bool,
+    #[serde(default)]
+    pub alt: bool,
+    #[serde(default)]
+    pub shift: bool,
+    #[serde(rename = "super", default)]
+    pub logo: bool,
+    /// Target modifier to substitute (e.g. "ctrl" replaces the source Super)
+    pub target_mod: String,
+}
+
+impl EmulatedKey {
+    /// Check if this emulated key matches the given keysym and modifiers.
+    /// Uses the same matching logic as `InterceptedKey::matches`.
+    pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
+        let raw_match = self.keysym == raw_keysym
+            || (raw_keysym >= keysyms::KEY_A
+                && raw_keysym <= keysyms::KEY_Z
+                && self.keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
+
+        if raw_match {
+            return self.ctrl == mods.ctrl
+                && self.alt == mods.alt
+                && (self.shift == mods.shift
+                    || (raw_keysym >= keysyms::KEY_A && raw_keysym <= keysyms::KEY_Z))
+                && self.logo == mods.logo;
+        }
+
+        if raw_keysym != modified_keysym && self.keysym == modified_keysym {
+            return self.ctrl == mods.ctrl && self.alt == mods.alt && self.logo == mods.logo;
+        }
+
+        false
+    }
+
+    /// Build the target ModifiersState: source modifiers with logo replaced by target_mod.
+    pub fn target_modifiers(&self, current: &ModifiersState) -> ModifiersState {
+        let mut mods = *current;
+        // Remove logo (the source modifier being replaced)
+        mods.logo = false;
+        // Add target modifier
+        match self.target_mod.as_str() {
+            "ctrl" => mods.ctrl = true,
+            "alt" => mods.alt = true,
+            "shift" => mods.shift = true,
+            "super" => mods.logo = true,
+            _ => {}
+        }
+        mods
+    }
+}
+
 /// DnD icon surface attached to the pointer during a drag operation.
 #[derive(Debug)]
 pub struct DndIcon {
@@ -890,6 +951,10 @@ pub struct Ewm {
     // XKB layout state
     pub xkb_layout_names: Vec<String>,
     pub xkb_current_layout: usize,
+
+    /// Keycodes currently being emulated — their release must also be emulated.
+    /// Maps keycode → target modifier name (e.g. "ctrl").
+    pub emulated_keycodes: HashMap<u32, String>,
 
     // IM relay keepalive — Smithay requires an input_method_v2 instance
     // for text_input_v3. Commits bypass the relay (direct TextInputHandle).
@@ -1087,6 +1152,7 @@ impl Ewm {
             window_cast_output: HashMap::new(),
             xkb_layout_names: vec!["us".to_string()],
             xkb_current_layout: 0,
+            emulated_keycodes: HashMap::new(),
             im_relay: None,
             loop_handle: loop_handle_clone,
             satellite: None,
@@ -5515,6 +5581,7 @@ impl State {
                     "layer_surfaces": layer_surfaces_info,
                     "pointer_location": self.ewm.pointer_location(),
                     "intercepted_keys": module::get_intercepted_keys(),
+                    "emulated_keys": module::get_emulated_keys(),
                     "emacs_pid": self.ewm.emacs_pid,
                     "text_input_intercept": self.ewm.text_input_intercept,
                     "text_input_active": self.ewm.text_input_active,
