@@ -288,6 +288,10 @@ pub enum ModuleCommand {
         timeout_secs: Option<u64>,
         action: String,
     },
+    /// Configure focus follows mouse
+    ConfigureFocusFollowsMouse {
+        state: bool,
+    },
 }
 
 /// Tab info sent from Emacs for workspace protocol
@@ -958,6 +962,16 @@ fn configure_idle_module(timeout: Option<i64>, action: Option<String>) -> Result
     push_command(ModuleCommand::ConfigureIdle {
         timeout_secs,
         action: action.unwrap_or_else(|| "blank".to_string()),
+    });
+    Ok(())
+}
+
+/// Configure focus follows mouse (module mode).
+/// STATE is the state of focus follows mouse mode (nil to disable).
+#[defun]
+fn set_focus_follows_mouse(state: Value<'_>) -> Result<()> {
+    push_command(ModuleCommand::ConfigureFocusFollowsMouse {
+        state: state.is_not_nil(),
     });
     Ok(())
 }

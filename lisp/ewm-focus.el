@@ -27,6 +27,9 @@
 (defvar ewm--module-mode)
 (defvar ewm--surfaces)
 (defvar ewm-surface-id)
+(defvar ewm-focus-follows-mouse)
+(defvar ewm--is-ffm-focus-event)
+(defvar ewm--mff-last-window)
 
 (defun ewm--minibuffer-active-p ()
   "Return non-nil if minibuffer is currently active."
@@ -73,20 +76,35 @@ Calls `ewm-focus' only when the target differs from current focus."
   "Handle focus EVENT from compositor.
 Selects the window displaying the surface's buffer, or displays it if hidden.
 When multiple windows show the same buffer, picks the one under the pointer."
-  (let ((id (alist-get 'id event)))
-    (when-let* (((not (ewm--minibuffer-active-p)))
-                (buf (gethash id ewm--surfaces))
-                ((buffer-live-p buf)))
-      (let ((win (or (cl-find-if #'ewm-input--pointer-in-window-p
-                                 (get-buffer-window-list buf nil t))
-                     (get-buffer-window buf t))))
-        (if win
-            ;; select-frame (not select-frame-set-input-focus) to avoid
-            ;; xdg_activation stealing focus back from the compositor.
-            (progn
-              (select-frame (window-frame win))
-              (select-window win))
-          (pop-to-buffer-same-window buf))))))
+  (let* ((id (alist-get 'id event))
+         (x (alist-get 'x event))
+         (y (alist-get 'y event))
+         ;; if coordinates are attached, it's a ffm event
+         ;; this being non nil disables mouse warping in `ewm-input--mouse-triggered-p'
+         (ewm--is-ffm-focus-event (and ewm-focus-follows-mouse x y)))
+    ;; handle wayland surfaces
+    (if-let* (((not (ewm--minibuffer-active-p)))
+              (buf (gethash id ewm--surfaces))
+              ((buffer-live-p buf)))
+        (let ((win (or (cl-find-if #'ewm-input--pointer-in-window-p
+                                   (get-buffer-window-list buf nil t))
+                       (get-buffer-window buf t))))
+          (if win
+              ;; select-frame (not select-frame-set-input-focus) to avoid
+              ;; xdg_activation stealing focus back from the compositor.
+              (progn
+                (select-frame (window-frame win))
+                (select-window win))
+            (pop-to-buffer-same-window buf)))
+      ;; handle emacs windows with mouse hover
+      (when (and ewm--is-ffm-focus-event (not (ewm--minibuffer-active-p)))
+        (let* ((frame (cl-find id (frame-list)
+                               :key (lambda (f) (frame-parameter f 'ewm-surface-id))))
+               (window (window-at-x-y x y frame)))
+          (unless (minibufferp (window-buffer window))
+            (setq ewm--mff-last-window nil)
+            (select-frame frame)
+            (select-window window)))))))
 
 (provide 'ewm-focus)
 ;;; ewm-focus.el ends here

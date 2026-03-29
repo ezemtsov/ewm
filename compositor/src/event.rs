@@ -70,7 +70,13 @@ pub enum Event {
     Title { id: u64, app: String, title: String },
     /// Focus changed to surface
     #[serde(rename = "focus")]
-    Focus { id: u64 },
+    Focus {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+    },
     /// Output connected
     #[serde(rename = "output_detected")]
     OutputDetected(OutputInfo),

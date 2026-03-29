@@ -873,6 +873,10 @@ pub fn handle_pointer_motion<B: InputBackend>(
         state.ewm.pointer_focus.as_ref().map(|(s, _)| s) != under.as_ref().map(|(s, _)| s);
     state.ewm.pointer_focus = under.clone();
 
+    if state.ewm.focus_follows_mouse_mode && focus_changed {
+        state.ewm.focus_follows_mouse(&under, (new_x, new_y).into());
+    }
+
     pointer.motion(
         state,
         under.clone(),
@@ -973,6 +977,10 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     let focus_changed =
         state.ewm.pointer_focus.as_ref().map(|(s, _)| s) != under.as_ref().map(|(s, _)| s);
     state.ewm.pointer_focus = under.clone();
+
+    if state.ewm.focus_follows_mouse_mode && focus_changed {
+        state.ewm.focus_follows_mouse(&under, pos);
+    }
 
     pointer.motion(
         state,

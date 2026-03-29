@@ -47,6 +47,7 @@
 (declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-start "ewm-core")
 (declare-function ewm-list-xdg-apps "ewm-core")
+(declare-function ewm-set-focus-follows-mouse "ewm-core")
 
 ;;; Logging
 
@@ -123,6 +124,24 @@ When non-nil, warps the pointer to the center of the focused window."
 
 (defvar ewm--mff-last-window nil
   "Last window for mouse-follows-focus, to avoid redundant warps.")
+
+(defcustom ewm-focus-follows-mouse nil
+  "Whether moving the mouse pointer should focus applications.
+When non-nil, also sets `mouse-autoselect-window' and `focus-follows-mouse'
+so that Emacs windows within a frame follow the pointer too."
+  :type 'boolean
+  :group 'ewm
+  :set (lambda (sym val)
+         (set-default sym val)
+         (setq mouse-autoselect-window val)
+         (setq focus-follows-mouse (and val t))
+         (when (fboundp 'ewm-set-focus-follows-mouse)
+           (ewm-set-focus-follows-mouse val))))
+
+(defvar ewm--is-ffm-focus-event nil
+  "Whether the current event was triggered by focus follows mouse.
+Used in `ewm-input--mouse-triggered-p' to avoid unnecessary mouse warps.
+This shouldn't be touched, it is let bound in `ewm--handle-focus'.")
 
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to buffer.")
@@ -922,6 +941,8 @@ now that a graphical FRAME exists."
     (add-hook 'after-init-hook #'ewm--send-intercept-keys))
   (ewm--send-input-config)
   (ewm--send-idle-config)
+  (when (and (not ewm-focus-follows-mouse) mouse-autoselect-window)
+    (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode-enable)
   (ewm--enable-process-advice)
   (setq ewm--saved-interprogram-cut-function interprogram-cut-function)

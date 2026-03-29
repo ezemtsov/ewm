@@ -101,6 +101,7 @@ Override individual bindings with `use-package':
 (defvar ewm--module-mode)
 (defvar ewm-mouse-follows-focus)
 (defvar ewm--mff-last-window)
+(defvar ewm--is-ffm-focus-event)
 
 (defgroup ewm-input nil
   "EWM input handling."
@@ -222,7 +223,8 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
 
 (defun ewm-input--mouse-triggered-p ()
   "Return non-nil if current focus change was triggered by mouse."
-  (or (mouse-event-p last-input-event)
+  (or ewm--is-ffm-focus-event
+      (mouse-event-p last-input-event)
       (eq this-command 'handle-select-window)))
 
 (defun ewm-input--on-select-window (window &optional norecord)

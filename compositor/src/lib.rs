@@ -759,6 +759,8 @@ pub struct Ewm {
     pub keyboard_focus_dirty: bool,
     /// Output geometry or working areas changed; shared active_outputs need recomputation.
     pub active_outputs_dirty: bool,
+    /// Focus follows mouse
+    pub focus_follows_mouse_mode: bool,
 
     // Libinput device configuration
     pub input_configs: Vec<input::InputConfigEntry>,
@@ -1038,6 +1040,7 @@ impl Ewm {
             keyboard_focus: None,
             keyboard_focus_dirty: false,
             active_outputs_dirty: true,
+            focus_follows_mouse_mode: false,
             input_configs: Vec::new(),
             emacs_pid: None,
             emacs_surfaces: HashMap::new(),
@@ -2780,7 +2783,30 @@ impl Ewm {
         self.focused_surface_id = id;
         self.keyboard_focus_dirty = true;
         if notify_emacs {
-            self.queue_event(Event::Focus { id });
+            self.queue_event(Event::Focus {
+                id,
+                x: None,
+                y: None,
+            });
+        }
+    }
+
+    /// Handle focus-follows-mouse: focus the surface under the pointer and
+    /// notify Emacs with frame-local coordinates for `window-at-x-y`.
+    pub fn focus_follows_mouse(
+        &mut self,
+        under: &Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        if let Some((surface, origin)) = under {
+            if let Some(id) = self.surface_id(surface) {
+                self.set_focus(id, false, "pointer_motion", None);
+                self.queue_event(Event::Focus {
+                    id,
+                    x: Some(pos.x - origin.x),
+                    y: Some(pos.y - origin.y),
+                });
+            }
         }
     }
 
@@ -5673,6 +5699,9 @@ impl State {
                 };
                 self.ewm
                     .configure_idle(timeout_secs.map(Duration::from_secs), idle_action);
+            }
+            ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
+                self.ewm.focus_follows_mouse_mode = setting;
             }
         }
     }
