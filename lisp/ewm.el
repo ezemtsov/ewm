@@ -34,7 +34,6 @@
 
 ;; Functions provided by the ewm-core dynamic module
 (declare-function ewm-init-event-channel "ewm-core")
-(declare-function ewm-set-selection-module "ewm-core")
 (declare-function ewm-output-layout-module "ewm-core")
 (declare-function ewm-close-module "ewm-core")
 (declare-function ewm-warp-pointer-module "ewm-core")
@@ -238,7 +237,6 @@ Called with one argument: t when entering idle, nil when waking.")
       ("key" (ewm--handle-key event))
       ("debug_state" (ewm--handle-debug-state event))
       ("working_area" (ewm--handle-working-area event))
-      ("selection-changed" (ewm--handle-selection-changed event))
       ("activate_workspace" (ewm--handle-activate-workspace event))
       ("fullscreen_request" (ewm--handle-fullscreen-request event))
       ("unfullscreen_request" (ewm--handle-unfullscreen-request event))
@@ -474,10 +472,18 @@ changing the available area for Emacs frames."
             (alist-get 'height event) (alist-get 'x event)
             (alist-get 'y event)))
 
-;;; Clipboard integration
+;;; Clipboard integration (via wl-copy/wl-paste)
+;;
+;; Emacs is the compositor host, not a Wayland client, so it cannot
+;; participate in wl_data_device directly.  We bridge the clipboard
+;; through wl-copy/wl-paste which use the wlr-data-control protocol.
+;; This handles text (kill-ring) AND binary data (images for yank-media).
 
-(defvar ewm--last-selection nil
-  "Last selection text received from compositor, to avoid echo.")
+(defvar ewm--wl-copy (executable-find "wl-copy")
+  "Path to wl-copy, or nil if not installed.")
+
+(defvar ewm--wl-paste (executable-find "wl-paste")
+  "Path to wl-paste, or nil if not installed.")
 
 (defvar ewm--saved-interprogram-cut-function nil
   "Saved value of `interprogram-cut-function' before EWM override.")
@@ -485,21 +491,65 @@ changing the available area for Emacs frames."
 (defvar ewm--saved-interprogram-paste-function nil
   "Saved value of `interprogram-paste-function' before EWM override.")
 
-(defun ewm--handle-selection-changed (event)
-  "Handle selection-changed EVENT from compositor.
-Push the text onto the kill ring."
-  (let ((text (alist-get 'text event)))
-    (when (and text (not (string-empty-p text))
-               (not (equal text (car kill-ring))))
-      (setq ewm--last-selection text)
-      (kill-new text))))
-
 (defun ewm--interprogram-cut-function (text)
-  "Send TEXT to Wayland clipboard via compositor."
-  (when (and (ewm--compositor-active-p)
-             (not (equal text ewm--last-selection)))
-    (setq ewm--last-selection text)
-    (ewm-set-selection-module text)))
+  "Send TEXT to Wayland clipboard via wl-copy."
+  (when ewm--wl-copy
+    (let ((process-connection-type nil))
+      (let ((proc (start-process "wl-copy" nil ewm--wl-copy)))
+        (process-send-string proc text)
+        (process-send-eof proc)))))
+
+(defun ewm--interprogram-paste-function ()
+  "Get text from Wayland clipboard via wl-paste.
+Returns nil if clipboard is empty or wl-paste is unavailable."
+  (when ewm--wl-paste
+    (let ((text (with-output-to-string
+                  (with-current-buffer standard-output
+                    (call-process ewm--wl-paste nil t nil
+                                  "--no-newline" "--type" "text/plain")))))
+      (unless (string-empty-p text)
+        text))))
+
+(defun ewm--gui-get-selection (orig-fun selection-symbol target-type)
+  "Advice for `gui-get-selection' to use wl-paste in EWM.
+Intercepts CLIPBOARD requests so that `yank-media' can access
+image and other non-text clipboard data."
+  (if (and ewm--wl-paste
+           (eq selection-symbol 'CLIPBOARD))
+      (pcase target-type
+        ('TARGETS
+         (let ((out (with-output-to-string
+                      (with-current-buffer standard-output
+                        (call-process ewm--wl-paste nil t nil
+                                      "--list-types")))))
+           (unless (string-empty-p out)
+             (vconcat (mapcar #'intern (split-string out "\n" t))))))
+        (_
+         (let ((mime (if (symbolp target-type)
+                         (symbol-name target-type)
+                       target-type)))
+           (with-temp-buffer
+             (set-buffer-multibyte nil)
+             (when (zerop (call-process ewm--wl-paste nil t nil
+                                        "--no-newline" "--type" mime))
+               (buffer-string))))))
+    (funcall orig-fun selection-symbol target-type)))
+
+(defun ewm--clipboard-enable ()
+  "Enable clipboard integration via wl-copy/wl-paste."
+  (setq ewm--saved-interprogram-cut-function interprogram-cut-function)
+  (setq ewm--saved-interprogram-paste-function interprogram-paste-function)
+  (when ewm--wl-copy
+    (setq interprogram-cut-function #'ewm--interprogram-cut-function))
+  (when ewm--wl-paste
+    (setq interprogram-paste-function #'ewm--interprogram-paste-function)
+    (advice-add 'gui-get-selection :around #'ewm--gui-get-selection)))
+
+(defun ewm--clipboard-disable ()
+  "Disable clipboard integration."
+  (setq interprogram-cut-function ewm--saved-interprogram-cut-function)
+  (setq interprogram-paste-function ewm--saved-interprogram-paste-function)
+  (advice-remove 'gui-get-selection #'ewm--gui-get-selection))
 
 (defun ewm--handle-activate-workspace (event)
   "Handle activate_workspace EVENT from compositor.
@@ -945,10 +995,7 @@ now that a graphical FRAME exists."
     (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode-enable)
   (ewm--enable-process-advice)
-  (setq ewm--saved-interprogram-cut-function interprogram-cut-function)
-  (setq interprogram-cut-function #'ewm--interprogram-cut-function)
-  (setq ewm--saved-interprogram-paste-function interprogram-paste-function)
-  (setq interprogram-paste-function nil)
+  (ewm--clipboard-enable)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion)
   (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
@@ -959,8 +1006,7 @@ now that a graphical FRAME exists."
   (ewm-input--disable)
   (ewm-text-input-auto-mode-disable)
   (ewm--disable-process-advice)
-  (setq interprogram-cut-function ewm--saved-interprogram-cut-function)
-  (setq interprogram-paste-function ewm--saved-interprogram-paste-function)
+  (ewm--clipboard-disable)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (advice-remove 'delete-frame #'ewm--prevent-frame-deletion)
   (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)

@@ -132,9 +132,6 @@ pub enum Event {
         scale: f64,
         transform: i32,
     },
-    /// Clipboard selection changed (Wayland client copied text)
-    #[serde(rename = "selection-changed")]
-    SelectionChanged { text: String },
     /// Workspace activation requested (e.g. waybar click)
     #[serde(rename = "activate_workspace")]
     ActivateWorkspace { output: String, tab_index: usize },

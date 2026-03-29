@@ -269,10 +269,6 @@ pub enum ModuleCommand {
     GetDebugState,
     /// Request activation token creation (compositor will push to ACTIVATION_TOKEN_POOL)
     CreateActivationToken,
-    /// Set clipboard selection from Emacs
-    SetSelection {
-        text: String,
-    },
     /// Declarative per-output layout (includes workspace tab state)
     OutputLayout {
         output: String,
@@ -943,13 +939,6 @@ fn get_layouts_module() -> Result<()> {
 #[defun]
 fn get_debug_state_module() -> Result<()> {
     push_command(ModuleCommand::GetDebugState);
-    Ok(())
-}
-
-/// Set clipboard selection from Emacs (module mode).
-#[defun]
-fn set_selection_module(text: String) -> Result<()> {
-    push_command(ModuleCommand::SetSelection { text });
     Ok(())
 }
 

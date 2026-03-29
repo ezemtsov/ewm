@@ -1,114 +1,91 @@
-# Clipboard Integration — Emacs as Clipboard Manager
+# Clipboard Integration via wl-copy/wl-paste
 
 ## Problem
 
-Standard Wayland clipboard has three limitations for EWM:
-
-1. **Clipboard dies when source app closes** — the app owns the data, no persistence
-2. **Emacs is isolated** — it's the compositor host, not a Wayland client, so it can't
-   participate in clipboard exchange via normal protocols
-3. **No `wlr-data-control`** — clipboard manager tools (`wl-copy`, `wl-paste`, `cliphist`)
-   don't work
+Emacs is the compositor host, not a Wayland client, so it cannot participate
+in `wl_data_device` clipboard exchange directly. We need a bridge for both
+text (kill-ring) and binary data (images for `yank-media`).
 
 ## Solution
 
-Emacs acts as the central clipboard hub. When a Wayland client copies text, it flows
-to Emacs's kill ring. When Emacs kills text, Wayland clients can paste it. Clipboard
-persists because Emacs holds it. The `wlr-data-control` protocol is also enabled for
-external tools.
+The compositor enables `wlr-data-control-unstable-v1`, which allows
+`wl-copy`/`wl-paste` (from `wl-clipboard`) to access the Wayland clipboard.
+Emacs shells out to these tools for all clipboard operations. No custom Rust
+clipboard logic is needed — Smithay's default `SelectionHandler` handles
+client-to-client clipboard natively.
 
 ## Architecture
-
-### Data Flow: Wayland Client → Emacs
-
-```
-Client copies text
-  → Smithay calls SelectionHandler::new_selection()
-  → Compositor creates UnixStream pair, asks client to write via
-    request_data_device_client_selection()
-  → Background thread reads from socket, pushes SelectionChanged event
-  → Emacs receives event via pipe fd → ewm--handle-selection-changed
-  → Text pushed to kill ring via kill-new
-```
 
 ### Data Flow: Emacs → Wayland Client
 
 ```
 Emacs kills/copies text
-  → interprogram-cut-function calls ewm-set-selection-module
-  → ModuleCommand::SetSelection pushed to command queue
-  → Compositor calls set_data_device_selection() with Arc<[u8]> user data
-  → Client pastes → Smithay calls SelectionHandler::send_selection()
-  → Background thread writes user data to client's fd
+  → interprogram-cut-function calls ewm--interprogram-cut-function
+  → start-process "wl-copy" with text on stdin
+  → wl-copy sets clipboard via wlr-data-control protocol
+  → Client pastes normally via wl_data_device
 ```
 
-### Echo Prevention
+### Data Flow: Wayland Client → Emacs
 
-`ewm--last-selection` tracks the most recent clipboard text to prevent infinite
-loops: Emacs copy → compositor → SelectionChanged → kill-new → interprogram-cut →
-compositor... The guard checks `(not (equal text ewm--last-selection))` on both sides.
+```
+Client copies (text or image)
+  → Data available on Wayland clipboard
+  → Emacs yanks (C-y or yank-media)
+  → interprogram-paste-function calls ewm--interprogram-paste-function
+  → call-process "wl-paste" to read clipboard
+  → Text returned to kill-ring / binary data to yank-media handler
+```
+
+### Image Support (yank-media)
+
+`gui-get-selection` is advised to call `wl-paste` for CLIPBOARD requests:
+
+- `TARGETS` → `wl-paste --list-types` → returns available mime types
+- `image/png` (etc.) → `wl-paste --no-newline --type image/png` → raw binary
+
+This allows `yank-media` (Emacs 29+) to paste images into modes that
+register handlers (e.g., Org mode, telega.el).
 
 ## Implementation
 
-### Compositor (`compositor/src/lib.rs`)
+### Compositor
 
-**SelectionHandler** — `SelectionUserData` is `Arc<[u8]>` (reference-counted byte
-slice), matching niri's pattern. Two methods:
+Minimal — just enables the protocol:
 
-- `new_selection()` — called when any client (including via `wlr-data-control`) sets
-  a clipboard selection. Filters for text mime types, then calls
-  `read_client_selection_to_emacs()`.
-- `send_selection()` — called when a client requests paste. Clears `O_NONBLOCK` on the
-  fd (otherwise `write_all` stops halfway), then writes the `Arc<[u8]>` data in a
-  background thread.
-
-**read_client_selection_to_emacs()** — creates a `UnixStream::pair()` (used instead of
-`rustix::pipe` because the pipe feature isn't enabled in Smithay's rustix re-export),
-passes the write end to `request_data_device_client_selection()`, reads from the read
-end in a background thread, and pushes a `SelectionChanged` event to Emacs.
-
-**DataControlHandler** — enables `wlr-data-control-unstable-v1` protocol so external
-tools (`wl-copy`, `wl-paste`, `cliphist`) can access the clipboard. Initialized with
-primary selection support and no client filtering (`|_| true`).
-
-**SetSelection command** — converts text to `Arc<[u8]>` and calls
-`set_data_device_selection()` with three mime types: `text/plain;charset=utf-8`,
-`text/plain`, and `UTF8_STRING`.
+- `DataControlState::new()` enables `wlr-data-control` for `wl-copy`/`wl-paste`
+- `SelectionHandler` uses default `type SelectionUserData = ()`
+- No custom `new_selection()` or `send_selection()` overrides
 
 ### Emacs (`lisp/ewm.el`)
 
-- `ewm--handle-selection-changed` — pushes received text to kill ring, deduplicating
-  against current `car kill-ring`
-- `ewm--interprogram-cut-function` — set as `interprogram-cut-function` when EWM mode
-  is active; sends kill ring additions to compositor
-- No `interprogram-paste-function` needed — clipboard is kept in sync via push-based
-  `SelectionChanged` events rather than polling
+- `ewm--wl-copy` / `ewm--wl-paste` — cached `executable-find` results
+- `ewm--interprogram-cut-function` — async `start-process` to `wl-copy`
+- `ewm--interprogram-paste-function` — sync `call-process` to `wl-paste`
+- `ewm--gui-get-selection` — `:around` advice on `gui-get-selection` for
+  binary clipboard data (images, etc.)
+- `ewm--clipboard-enable` / `ewm--clipboard-disable` — called from mode
+  enable/disable; no-op if `wl-copy`/`wl-paste` are not installed
+
+## Dependencies
+
+`wl-clipboard` package must be installed for clipboard to work. If absent,
+clipboard functions silently no-op.
 
 ## Files
 
 | File | What |
 |------|------|
-| `compositor/src/lib.rs` | `SelectionHandler` (`Arc<[u8]>`, `new_selection`, `send_selection`), `DataControlHandler`, `read_client_selection_to_emacs`, `SetSelection` handling |
-| `compositor/src/module.rs` | `SetSelection` command variant, `set_selection_module` defun |
-| `compositor/src/event.rs` | `SelectionChanged { text }` event variant |
-| `lisp/ewm.el` | Event handler, `interprogram-cut-function`, echo prevention |
-
-## Smithay APIs
-
-| API | Purpose |
-|-----|---------|
-| `set_data_device_selection()` | Compositor sets clipboard (Emacs → clients) |
-| `request_data_device_client_selection()` | Read client's clipboard into an fd |
-| `DataControlState::new()` | Enable `wlr-data-control` protocol |
-| `SelectionHandler::new_selection()` | Intercept clipboard changes |
-| `SelectionHandler::send_selection()` | Serve clipboard data to requesting clients |
+| `compositor/src/lib.rs` | `DataControlHandler`, minimal `SelectionHandler` |
+| `lisp/ewm.el` | `wl-copy`/`wl-paste` bridge, `gui-get-selection` advice |
 
 ## Testing
 
-**Automated**: `cargo test` — all existing tests pass (clipboard doesn't affect headless tests).
+**Automated**: `cargo test` — clipboard doesn't affect headless tests.
 
 **Manual**:
 1. Emacs → client: `M-w` in Emacs, `Ctrl+Shift+V` in foot
 2. Client → Emacs: `Ctrl+Shift+C` in foot, `C-y` in Emacs
-3. Persistence: copy in app, close app, paste in another app
+3. Image: screenshot → `yank-media` in telega/org buffer
 4. wl-clipboard: `echo test | wl-copy` then `C-y`; copy in Emacs then `wl-paste`
+5. No wl-clipboard: verify no errors when `wl-copy`/`wl-paste` are absent
