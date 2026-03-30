@@ -139,8 +139,7 @@ so that Emacs windows within a frame follow the pointer too."
 
 (defvar ewm--is-ffm-focus-event nil
   "Whether the current event was triggered by focus follows mouse.
-Used in `ewm-input--mouse-triggered-p' to avoid unnecessary mouse warps.
-This shouldn't be touched, it is let bound in `ewm--handle-focus'.")
+Let-bound in `ewm--handle-focus' to gate the Emacs-window hover branch.")
 
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to buffer.")

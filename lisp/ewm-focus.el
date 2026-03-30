@@ -79,8 +79,6 @@ When multiple windows show the same buffer, picks the one under the pointer."
   (let* ((id (alist-get 'id event))
          (x (alist-get 'x event))
          (y (alist-get 'y event))
-         ;; if coordinates are attached, it's a ffm event
-         ;; this being non nil disables mouse warping in `ewm-input--mouse-triggered-p'
          (ewm--is-ffm-focus-event (and ewm-focus-follows-mouse x y)))
     ;; handle wayland surfaces
     (if-let* (((not (ewm--minibuffer-active-p)))
@@ -94,7 +92,8 @@ When multiple windows show the same buffer, picks the one under the pointer."
               ;; xdg_activation stealing focus back from the compositor.
               (progn
                 (select-frame (window-frame win))
-                (select-window win))
+                (select-window win)
+                (setq ewm--mff-last-window win))
             (pop-to-buffer-same-window buf)))
       ;; handle emacs windows with mouse hover
       (when (and ewm--is-ffm-focus-event (not (ewm--minibuffer-active-p)))
@@ -102,9 +101,9 @@ When multiple windows show the same buffer, picks the one under the pointer."
                                :key (lambda (f) (frame-parameter f 'ewm-surface-id))))
                (window (window-at-x-y x y frame)))
           (unless (minibufferp (window-buffer window))
-            (setq ewm--mff-last-window nil)
             (select-frame frame)
-            (select-window window)))))))
+            (select-window window)
+            (setq ewm--mff-last-window window)))))))
 
 (provide 'ewm-focus)
 ;;; ewm-focus.el ends here

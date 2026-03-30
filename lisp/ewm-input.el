@@ -101,7 +101,6 @@ Override individual bindings with `use-package':
 (defvar ewm--module-mode)
 (defvar ewm-mouse-follows-focus)
 (defvar ewm--mff-last-window)
-(defvar ewm--is-ffm-focus-event)
 
 (defgroup ewm-input nil
   "EWM input handling."
@@ -239,26 +238,14 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
            (y (+ (cdr output-origin) (/ (+ (nth 1 edges) (nth 3 edges)) 2))))
       (ewm-warp-pointer (float x) (float y)))))
 
-(defun ewm-input--mouse-triggered-p ()
-  "Return non-nil if current focus change was triggered by mouse."
-  (or ewm--is-ffm-focus-event
-      (mouse-event-p last-input-event)
-      (eq this-command 'handle-select-window)))
-
-(defun ewm-input--on-select-window (window &optional norecord)
-  "Advice for `select-window' to implement mouse-follows-focus."
-  (when (and ewm-mouse-follows-focus
-             (not norecord)
-             (not (eq window ewm--mff-last-window))
-             (not (ewm-input--mouse-triggered-p)))
-    (setq ewm--mff-last-window window)
-    (ewm-input--warp-pointer-to-window window)))
-
-(defun ewm-input--on-select-frame (frame &optional _norecord)
-  "Advice for `select-frame-set-input-focus' to implement mouse-follows-focus."
-  (when (and ewm-mouse-follows-focus
-             (not (ewm-input--mouse-triggered-p)))
-    (let ((window (frame-selected-window frame)))
+(defun ewm-input--on-window-selection-change (_frame)
+  "Warp pointer when selected window changes.
+Runs in `window-selection-change-functions', which fires once after
+all intermediate `select-window' calls settle.  This avoids spurious
+warps from packages that temporarily switch windows internally
+\(e.g., Gnus `save-window-excursion')."
+  (when ewm-mouse-follows-focus
+    (let ((window (selected-window)))
       (unless (eq window ewm--mff-last-window)
         (setq ewm--mff-last-window window)
         (ewm-input--warp-pointer-to-window window)))))
@@ -297,9 +284,7 @@ EWM owns frame selection via `ewm--handle-focus'."
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
   (add-hook 'post-command-hook #'ewm-input--clear-prefix)
-  ;; Mouse-follows-focus hooks
-  (advice-add 'select-window :after #'ewm-input--on-select-window)
-  (advice-add 'select-frame-set-input-focus :after #'ewm-input--on-select-frame)
+  (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   ;; Suppress GDK-triggered frame switching (compositor handles this)
   (advice-add 'handle-switch-frame :around #'ewm-input--suppress-switch-frame))
 
@@ -307,8 +292,7 @@ EWM owns frame selection via `ewm--handle-focus'."
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
   (remove-hook 'post-command-hook #'ewm-input--clear-prefix)
-  (advice-remove 'select-window #'ewm-input--on-select-window)
-  (advice-remove 'select-frame-set-input-focus #'ewm-input--on-select-frame)
+  (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (advice-remove 'handle-switch-frame #'ewm-input--suppress-switch-frame))
 
 ;;; Key scanning and interception
