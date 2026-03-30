@@ -3411,6 +3411,9 @@ impl Ewm {
         self.recalculate_output_size();
         self.active_outputs_dirty = true;
         self.check_working_area_change(output);
+        // Always reposition Emacs frames: the output position may have changed
+        // even when the working area (relative to the output) didn't.
+        self.update_frames_for_working_area(output);
         self.queue_redraw_all();
 
         // Notify Emacs of the applied config
