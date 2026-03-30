@@ -810,10 +810,12 @@ The frame will be fully assigned when the compositor responds."
 
 (defun ewm--prevent-frame-deletion (orig-fun &optional frame force)
   "Around advice for `delete-frame' to protect output frames.
-Prevents deletion of the last frame for an output unless FORCE is non-nil."
+Prevents deletion of the last frame for an active output unless FORCE is non-nil.
+Frames for disconnected outputs are always allowed to be deleted."
   (let* ((f (or frame (selected-frame)))
          (output (frame-parameter f 'ewm-output)))
     (if (and output (not force)
+             (member output (ewm-get-active-outputs))
              (not (cl-some (lambda (other)
                              (and (not (eq other f))
                                   (ewm--output-managed-p other)
