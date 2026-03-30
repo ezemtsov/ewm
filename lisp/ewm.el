@@ -250,7 +250,8 @@ Called with one argument: t when entering idle, nil when waking.")
 (defun ewm--cleanup-orphan-frames ()
   "Delete frames that have no ewm-output assigned."
   (dolist (f (frame-list))
-    (unless (frame-parameter f 'ewm-output)
+    (when (and (ewm--output-managed-p f)
+               (not (frame-parameter f 'ewm-output)))
       (ignore-errors (delete-frame f)))))
 
 (defun ewm--assign-pending-frame (id output pending)
@@ -768,6 +769,12 @@ ARGS is a plist with optional keys:
 
 ;;; Frame management
 
+(defun ewm--output-managed-p (frame)
+  "Return non-nil if FRAME is bound to a compositor output.
+Only output-bound frames participate in frame-output parity.
+Excludes TTY frames and (in the future) floating frames."
+  (eq (framep-on-display frame) 'pgtk))
+
 (defun ewm--frame-for-output (output-name)
   "Return the frame assigned to OUTPUT-NAME, or nil."
   (cl-find output-name (frame-list)
@@ -788,6 +795,8 @@ The frame will be fully assigned when the compositor responds."
   (when ewm-mode
     (ewm--fixup-display-customs frame)
     (cond
+     ((not (ewm--output-managed-p frame))
+      nil)
      ((frame-parameter frame 'ewm-output)
       nil)
      (ewm--pending-output-for-next-frame
@@ -807,6 +816,7 @@ Prevents deletion of the last frame for an output unless FORCE is non-nil."
     (if (and output (not force)
              (not (cl-some (lambda (other)
                              (and (not (eq other f))
+                                  (ewm--output-managed-p other)
                                   (string= output
                                            (frame-parameter other 'ewm-output))))
                            (frame-list))))
@@ -820,6 +830,8 @@ Prevents deletion of the last frame for an output unless FORCE is non-nil."
     (dolist (frame (frame-list))
       (let ((output (frame-parameter frame 'ewm-output)))
         (cond
+         ((not (ewm--output-managed-p frame))
+          nil)
          ((rassq frame ewm--pending-frame-outputs)
           nil)
          ((null output)
