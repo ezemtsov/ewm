@@ -104,7 +104,7 @@ Focus suppression in `ewm--focus-target`:
       (ewm-in-prefix-sequence-p)
       (and overriding-terminal-local-map
            (keymapp overriding-terminal-local-map)))
-  nil)  ; suppress — don't change focus
+  nil)  ; suppress: don't change focus
  ((ewm--minibuffer-active-p)
   (frame-parameter (selected-frame) 'ewm-surface-id))
  (t
@@ -119,14 +119,14 @@ Focus suppression in `ewm--focus-target`:
    `post-command-hook` (after the full command completes) clears it.
 
 2. **Synchronous focus sync**: `ewm-input--clear-prefix` runs directly from
-   `post-command-hook` — no timer or debouncing. This works because
+   `post-command-hook`, with no timer or debouncing. This works because
    `post-command-hook` only fires after complete commands, not mid-sequence.
    Layout sync is decoupled via `window-selection-change-functions`.
 
 3. **Only clear when active**: `ewm-input--clear-prefix` only acts when
    `ewm-in-prefix-sequence-p` is true. It clears the flag and calls
    `ewm--sync-focus` to restore focus. When no prefix sequence is active,
-   it's a no-op — other hooks handle normal focus changes.
+   it's a no-op; other hooks handle normal focus changes.
 
 ### Frame-Switch Suppression
 
@@ -208,14 +208,14 @@ Source: [refocus.mmd](diagrams/refocus.mmd)
 - `ewm--handle-focus(event)`: Handle Focus event from compositor. Guarded by `ewm--minibuffer-active-p`. Finds the correct window using `ewm-input--pointer-in-window-p` when multiple windows show the same buffer. Falls back to `pop-to-buffer-same-window` when no window displays the buffer.
 - `ewm--sync-focus`: Computes focus target via `ewm--focus-target`, deduplicates against current compositor focus, sends `ewm-focus` only when changed. Called from window/buffer change hooks and `ewm-input--clear-prefix`.
 - `ewm-input--clear-prefix`: `post-command-hook` handler. Only acts during prefix sequences: clears flag, calls `ewm--sync-focus` to restore focus. No-op otherwise.
-- `ewm-input--suppress-switch-frame`: `:around` advice on `handle-switch-frame`. Suppresses it when `ewm--module-mode` is active — EWM owns frame selection.
+- `ewm-input--suppress-switch-frame`: `:around` advice on `handle-switch-frame`. Suppresses it when `ewm--module-mode` is active. EWM owns frame selection.
 - `ewm--focus-target`: Returns target surface ID, or nil to suppress sync during prefix sequences, prefix args, or transient keymaps. During minibuffer, returns the frame's surface ID.
 - `ewm--minibuffer-active-p`: Guard used by event handlers (Focus, New surface, ActivateWorkspace) to prevent focus-stealing from minibuffer.
 - `ewm--on-window-selection-change`: `window-selection-change-functions` handler, sends layouts and syncs focus whenever selected window changes.
 
 Note: Focus sync and layout sync are coupled in `ewm--on-window-selection-change`
 (calls both `ewm-layout--send-layouts` and `ewm--sync-focus`) but can also fire
-independently — `ewm-input--clear-prefix` syncs focus without sending layouts,
+independently: `ewm-input--clear-prefix` syncs focus without sending layouts,
 and `ewm--window-config-change` sends layouts without syncing focus.
 
 ## Multi-Monitor Behavior
@@ -260,13 +260,13 @@ always receives a Focus event and can select the correct window.
 Each layout entry has two independent flags:
 
 **`focused`** (Emacs → compositor): Marks the entry for `selected-window`. Set by
-Emacs in `ewm-layout--send-layouts`. Used for **output association** — focus
+Emacs in `ewm-layout--send-layouts`. Used for **output association**: focus
 routing, intercept redirect, popup placement. The compositor uses
 `focused_output_for_surface()` to find the output where the user is interacting.
 
 **`primary`** (compositor-computed): Marks the entry with the largest pixel area
 for a given surface across all outputs. Computed in `apply_output_layout` step 7
-by scanning all `output_layouts`. Used for **configure and rendering** — only
+by scanning all `output_layouts`. Used for **configure and rendering**: only
 primary entries send `send_configure()` with their size + scale; primary entries
 render at native size (with crop for client min-size overflow); non-primary
 entries use uniform fill+crop preserving aspect ratio.
@@ -279,14 +279,14 @@ area for rendering).
 
 Layout updates (including focused flags) are triggered by
 `window-selection-change-functions`, which fires whenever `selected-window`
-changes — regardless of whether the change came from keyboard navigation,
+changes, regardless of whether the change came from keyboard navigation,
 click-to-focus, or programmatic selection.
 
 ## Layout Synchronization
 
 ### Per-Output Declarative Layout
 
-Emacs sends one `OutputLayout` command per output — a complete declaration of
+Emacs sends one `OutputLayout` command per output, a complete declaration of
 what's visible on that output with frame-relative coordinates. The compositor
 materializes it via `apply_output_layout`, which is the single entry point for
 positioning, output association, and scale notification.
@@ -310,7 +310,7 @@ diffs surface ID sets to send `wl_surface.enter`/`leave` incrementally.
 
 ### Deduplication
 
-Click/scroll `Focus` events are **not** deduplicated — they always notify Emacs,
+Click/scroll `Focus` events are **not** deduplicated; they always notify Emacs,
 because the same surface ID may appear in multiple Emacs windows and Emacs needs
 the event to select the correct one.
 
@@ -334,7 +334,7 @@ EWM tracks focus at two levels that must stay in sync:
 2. **Wayland keyboard focus** (`keyboard.set_focus()`): The actual Wayland protocol
    state that determines which surface receives key events.
 
-A bug where these diverge is invisible — the surface appears focused (renders with
+A bug where these diverge is invisible: the surface appears focused (renders with
 focus decorations, Emacs shows its buffer) but keyboard input goes elsewhere.
 
 ### Comparison with Niri
@@ -376,7 +376,7 @@ which requires the focus change to happen first.
 
 A second constraint is **layout ownership**. Niri's `update_keyboard_focus()`
 recomputes focus from scratch each cycle because the compositor owns the full
-layout state. In EWM, layout lives in Emacs — the compositor only knows
+layout state. In EWM, layout lives in Emacs, so the compositor only knows
 `focused_surface_id`. It cannot derive "who should have focus" from layout state;
 it must track focus incrementally.
 
@@ -446,7 +446,7 @@ Niri can recompute focus from layout state because the compositor owns the full
 layout: workspace assignments, column ordering, window stacking. Could EWM move
 layout ownership to the compositor for the same robustness?
 
-No — Emacs IS the layout engine:
+No. Emacs IS the layout engine:
 
 1. **Window tree**: Emacs's window tree (splits, sizing, ordering) is the layout.
    Reimplementing `split-window`, `balance-windows`, `display-buffer-alist` in
@@ -463,7 +463,7 @@ No — Emacs IS the layout engine:
    `display-buffer-alist` rules). Moving layout to the compositor would require
    a new configuration language for something Elisp already handles well.
 
-The current model — Emacs owns layout, compositor owns rendering and input —
+The current model (Emacs owns layout, compositor owns rendering and input)
 matches the natural boundary. The hybrid keyboard focus sync (deferred + dirty
 flag) provides robustness without requiring the compositor to understand layout.
 
@@ -472,12 +472,12 @@ flag) provides robustness without requiring the compositor to understand layout.
 ### Design Principle: Lock as a Mode
 
 Session lock is a **global mode** that overrides normal compositor behavior. It is
-NOT a special surface type — it's a state that changes how every subsystem operates.
+NOT a special surface type. It's a state that changes how every subsystem operates.
 Every subsystem must check lock state at its entry point and branch early, rather
 than sprinkling lock checks throughout normal logic.
 
 Reference: [niri](https://github.com/YaLTeR/niri) treats lock as a priority branch
-in `update_keyboard_focus()`, `commit()`, rendering, and input — the same pattern
+in `update_keyboard_focus()`, `commit()`, rendering, and input, the same pattern
 EWM follows.
 
 ### State Machine
@@ -524,7 +524,7 @@ new_surface() stores lock surface
 ```
 
 The input handler (`input.rs`) also sets focus directly on each key event as a
-**redundant immediate path** — this handles the race where keys arrive before the
+**redundant immediate path**: this handles the race where keys arrive before the
 first sync tick. Both paths set the same target (lock surface), so they don't
 conflict.
 
@@ -544,8 +544,8 @@ internal keyboard state pointing at the destroyed lock surface.
 ### Per-Output State
 
 Each output tracks independently:
-- `lock_surface: Option<LockSurface>` — the lock surface for this output
-- `lock_render_state: LockRenderState` — whether a locked frame has been rendered
+- `lock_surface: Option<LockSurface>`: the lock surface for this output
+- `lock_render_state: LockRenderState`: whether a locked frame has been rendered
 
 Lock is confirmed (`Locking` → `Locked`) only when ALL outputs have
 `lock_render_state == Locked`. This prevents briefly showing unlocked content
@@ -554,11 +554,11 @@ on a slow output.
 ### Commit Handler: Surface Type Dispatch
 
 `CompositorHandler::commit()` dispatches by surface type in this order:
-1. **Layer surfaces** — `handle_layer_surface_commit()` (early return)
-2. **Popups** — `popups.commit()` + initial configure
-3. **Windows** — `space.elements()` lookup → `on_commit()` + redraw
-4. **Lock surfaces** — `is_locked()` + output scan → redraw
+1. **Layer surfaces**: `handle_layer_surface_commit()` (early return)
+2. **Popups**: `popups.commit()` + initial configure
+3. **Windows**: `space.elements()` lookup → `on_commit()` + redraw
+4. **Lock surfaces**: `is_locked()` + output scan → redraw
 
 If adding a new surface type, it must be added to this dispatch chain.
 Lock surfaces need special handling because they aren't tracked in
-`space.elements()` — they're stored per-output in `OutputState`.
+`space.elements()`; they're stored per-output in `OutputState`.

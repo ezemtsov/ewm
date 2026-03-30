@@ -133,7 +133,7 @@ fn push_constrained(
 /// 2. Accurate damage tracking - elements from other outputs don't trigger false damage
 ///
 /// Returns `(content_elements, cursor_elements)`. Cursor elements are split out
-/// to allow separate damage tracking for screencast — when only the cursor moves,
+/// to allow separate damage tracking for screencast. When only the cursor moves,
 /// the screencast can skip a full re-render.
 ///
 /// Rendering order (front to back):
@@ -252,7 +252,7 @@ pub fn collect_render_elements_for_output(
 
     // Collect all layer elements in a tight scope to avoid holding the RefCell
     // borrow across the rest of the function. layer_map_for_output() returns
-    // RefMut<LayerMap> — calling it again (e.g. via get_working_area) while
+    // RefMut<LayerMap>; calling it again (e.g. via get_working_area) while
     // this borrow is alive would panic.
     let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = {
         let layer_map = layer_map_for_output(output);
@@ -271,7 +271,7 @@ pub fn collect_render_elements_for_output(
     // 2. Overlay layer
     elements.append(&mut overlay_elems);
 
-    // 3. Top layer — deferred if fullscreen (fullscreen covers Top layer)
+    // 3. Top layer, deferred if fullscreen (fullscreen covers Top layer)
     let above_top_layer = ewm.render_above_top_layer(output);
 
     if !above_top_layer {
@@ -286,7 +286,7 @@ pub fn collect_render_elements_for_output(
     if let Some(entries) = ewm.output_layouts.get(&output.name()) {
         for entry in entries {
             // When fullscreen is active, non-fullscreen entries are behind the
-            // fullscreen backdrop — skip them to avoid rendering on top.
+            // fullscreen backdrop, so skip them to avoid rendering on top.
             if above_top_layer && !entry.fullscreen {
                 continue;
             }
@@ -365,7 +365,7 @@ pub fn collect_render_elements_for_output(
                 let entry_size: Size<i32, Physical> =
                     Size::from((entry.w as i32, entry.h as i32)).to_physical_precise_round(scale);
 
-                // Crop to entry bounds — clients may render larger than configured
+                // Crop to entry bounds. Clients may render larger than configured
                 // (e.g. Electron apps with a minimum window size).
                 let constrain = Rectangle::new(loc_physical, entry_size);
 
@@ -639,7 +639,7 @@ pub fn process_screencopies_for_output(
                 output,
                 RenderTarget::Output,
             );
-            // Screencopy doesn't need separate cursor tracking — merge them
+            // Screencopy doesn't need separate cursor tracking; merge them
             content.splice(0..0, cursor);
             content
         });
@@ -768,7 +768,7 @@ pub fn render_screencopy_immediate(
         &output,
         RenderTarget::Output,
     );
-    // Screencopy doesn't need separate cursor tracking — merge them
+    // Screencopy doesn't need separate cursor tracking; merge them
     content.splice(0..0, cursor);
     let elements = content;
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Fullscreen is a per-window declarative layout property. Emacs is the authority —
+Fullscreen is a per-window declarative layout property. Emacs is the authority:
 client fullscreen requests become events that Emacs handles by setting
 `ewm-fullscreen` on the window parameter. The compositor renders fullscreen
 surfaces at full output size with a black backdrop, defers the Top layer behind
@@ -52,7 +52,7 @@ Unfullscreen follows the reverse path. The user can also toggle with `s-f`
 ### XDG Shell Handlers
 
 - `fullscreen_request()`: Pushes `Event::FullscreenRequest { id, output }` to
-  Emacs. Does NOT immediately configure — waits for Emacs layout update.
+  Emacs. Does NOT immediately configure; waits for Emacs layout update.
 - `unfullscreen_request()`: Pushes `Event::UnfullscreenRequest { id }`.
 
 ### Intercepted Keys
@@ -72,7 +72,7 @@ gate fullscreen keys through to Emacs even during fullscreen.
 ### Toggle Command
 
 `ewm-toggle-fullscreen` (`s-f`): Toggles the `ewm-fullscreen` window parameter
-and refreshes layout. Guarded by `ewm-surface-id` — only works for Wayland
+and refreshes layout. Guarded by `ewm-surface-id`, so only works for Wayland
 surfaces.
 
 ### Layout (`ewm-layout.el`)
@@ -86,7 +86,7 @@ to the compositor.
 Extending `s-f` to work on regular Emacs buffers (non-surface) would provide a
 universal distraction-free mode. Key challenges:
 
-- The Emacs frame must cover the full output (compositor side — straightforward)
+- The Emacs frame must cover the full output (compositor side, straightforward)
 - The minibuffer must be hidden or inaccessible (Emacs architectural constraint)
 - Window configuration must be restored exactly on exit
 - Frame-output parity enforcement must accommodate auxiliary frames

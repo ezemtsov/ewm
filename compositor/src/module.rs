@@ -113,9 +113,7 @@ use smithay::input::keyboard::{keysyms, xkb};
 
 use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
 
-// ============================================================================
 // Shared State (read by Emacs, written by compositor)
-// ============================================================================
 
 /// Compositor state snapshot, updated once per tick in `update_shared_state()`.
 /// Only contains fields that Emacs reads synchronously via per-field defuns.
@@ -198,7 +196,7 @@ pub fn get_in_prefix_sequence() -> bool {
 }
 
 // Per-field accessors: thin defuns for hot-path reads.
-// Each locks SharedState briefly and returns a single value — no alist construction.
+// Each locks SharedState briefly and returns a single value, no alist construction.
 
 /// Query focused surface ID (called by Emacs on every post-command-hook).
 #[defun]
@@ -236,9 +234,7 @@ fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
     env.cons(x, y)
 }
 
-// ============================================================================
 // Module Commands (Emacs -> Compositor)
-// ============================================================================
 
 /// Commands sent from Emacs to the compositor via the module interface.
 #[derive(Debug, Clone)]
@@ -368,9 +364,7 @@ pub static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
 /// Event loop signal for waking the compositor from Emacs thread
 pub static LOOP_SIGNAL: OnceLock<LoopSignal> = OnceLock::new();
 
-// ============================================================================
 // Activation Token Pool (for XDG activation)
-// ============================================================================
 
 /// Pool of pre-generated activation tokens.
 /// Compositor pushes tokens here, Emacs pops them for spawning processes.
@@ -415,9 +409,7 @@ fn create_activation_token() -> Result<Option<String>> {
     Ok(None)
 }
 
-// ============================================================================
 // Focus History (for debugging focus issues)
-// ============================================================================
 
 /// Maximum focus history entries
 const FOCUS_HISTORY_SIZE: usize = 20;
@@ -469,9 +461,7 @@ pub fn get_focus_history() -> Vec<FocusEvent> {
     focus_history().lock().unwrap().iter().cloned().collect()
 }
 
-// ============================================================================
-// Event Pipe (compositor → Emacs via open_channel fd)
-// ============================================================================
+// Event Pipe (compositor -> Emacs via open_channel fd)
 
 /// Pipe writer for sending events to Emacs.
 /// Set by `init_event_channel`, written to by `push_event`.
@@ -493,7 +483,7 @@ pub fn push_event(event: Event) {
         let mut buf = serde_json::to_vec(&event).unwrap_or_default();
         buf.push(b'\n');
         if w.write_all(&buf).is_err() {
-            // Pipe broken (Emacs closed the process) — drop silently
+            // Pipe broken (Emacs closed the process); drop silently
         }
     }
 }
@@ -636,9 +626,7 @@ fn socket() -> Result<Option<String>> {
     Ok(std::env::var("EWM_WAYLAND_DISPLAY").ok())
 }
 
-// ============================================================================
-// Module Command Functions (direct Emacs → Compositor)
-// ============================================================================
+// Module Command Functions (direct Emacs -> Compositor)
 
 /// Set declarative layout for an output (module mode).
 /// OUTPUT is the output name. SURFACES is a vector of plists with :id :x :y :w :h :primary keys.
@@ -897,7 +885,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         let super_val = env.call(plist_get, (key_spec, kw_super))?;
         let allow_fullscreen_val = env.call(plist_get, (key_spec, kw_fullscreen))?;
 
-        // Check :emulate flag — keys with this go to emulated set
+        // Check :emulate flag: keys with this go to emulated set
         let emulate_val = env.call(plist_get, (key_spec, kw_emulate))?;
         if let Ok(target_mod) = emulate_val.into_rust::<String>() {
             parsed_emulated.push(EmulatedKey {
@@ -1010,7 +998,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
         let mut entry = input::InputConfigEntry::default();
 
         // Walk plist key/value pairs. Compare the key symbol Value directly against
-        // cached GlobalRefs — avoids symbol-name → String → match on every iteration.
+        // cached GlobalRefs, avoiding symbol-name → String → match on every iteration.
         let mut rest = plist;
         while rest.is_not_nil() {
             let key = env.call(car, (rest,))?;

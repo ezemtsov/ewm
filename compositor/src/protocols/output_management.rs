@@ -269,7 +269,7 @@ impl OutputManagementState {
     }
 }
 
-// --- GlobalDispatch for ZwlrOutputManagerV1 ---
+// GlobalDispatch for ZwlrOutputManagerV1
 
 impl<D> GlobalDispatch<ZwlrOutputManagerV1, OutputManagementGlobalData, D> for OutputManagementState
 where
@@ -309,7 +309,7 @@ where
     }
 }
 
-// --- Dispatch for ZwlrOutputManagerV1 ---
+// Dispatch for ZwlrOutputManagerV1
 
 impl<D> Dispatch<ZwlrOutputManagerV1, (), D> for OutputManagementState
 where
@@ -359,7 +359,7 @@ where
     }
 }
 
-// --- Dispatch for ZwlrOutputConfigurationV1 ---
+// Dispatch for ZwlrOutputConfigurationV1
 
 impl<D> Dispatch<ZwlrOutputConfigurationV1, u32, D> for OutputManagementState
 where
@@ -547,7 +547,7 @@ where
     }
 }
 
-// --- Dispatch for ZwlrOutputConfigurationHeadV1 ---
+// Dispatch for ZwlrOutputConfigurationHeadV1
 
 impl<D> Dispatch<ZwlrOutputConfigurationHeadV1, OutputConfigurationHeadState, D>
     for OutputManagementState
@@ -683,7 +683,7 @@ where
     }
 }
 
-// --- Dispatch for ZwlrOutputHeadV1 ---
+// Dispatch for ZwlrOutputHeadV1
 
 impl<D> Dispatch<ZwlrOutputHeadV1, String, D> for OutputManagementState
 where
@@ -718,7 +718,7 @@ where
     }
 }
 
-// --- Dispatch for ZwlrOutputModeV1 ---
+// Dispatch for ZwlrOutputModeV1
 
 impl<D> Dispatch<ZwlrOutputModeV1, (), D> for OutputManagementState
 where
@@ -747,7 +747,7 @@ where
     }
 }
 
-// --- Delegate macro ---
+// Delegate macro
 
 #[macro_export]
 macro_rules! delegate_output_management {
@@ -773,7 +773,7 @@ macro_rules! delegate_output_management {
     };
 }
 
-// --- Helper functions ---
+// Helper functions
 
 fn notify_removed_head(clients: &mut HashMap<ClientId, ClientData>, output_name: &str) {
     for data in clients.values_mut() {

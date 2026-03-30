@@ -193,7 +193,7 @@ impl HeadlessBackend {
 
     /// Render a single output in headless mode.
     ///
-    /// In headless mode, we don't render to a real display — we just track
+    /// In headless mode, we don't render to a real display. We just track
     /// render counts for test assertions. Returns Submitted unconditionally.
     pub fn render(
         &mut self,

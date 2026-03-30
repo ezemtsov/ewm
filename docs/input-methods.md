@@ -16,14 +16,14 @@
 
 ### Priority
 
-**Preedit** is the most impactful missing feature — it's required for proper
+**Preedit** is the most impactful missing feature. It's required for proper
 CJK input (Japanese, Chinese, Korean) in external apps. Without it, composing
 characters only appear in Emacs's echo area, not inline in the client text field.
 
 **Surrounding text + delete** together enable clipboard operations (cut/copy)
 in surface buffers via the protocol rather than synthetic keypresses:
 
-1. Client sends `set_surrounding_text(text, cursor, anchor)` — when
+1. Client sends `set_surrounding_text(text, cursor, anchor)`. When
    `cursor != anchor`, the text between them is the selection.
 2. Emacs extracts the selected portion and puts it on the clipboard.
 3. For cut, compositor sends `delete_surrounding_text` via `input_method_v2`
@@ -78,7 +78,7 @@ between groups is fast (no keymap recompilation). XKB options like
 When an intercepted key (e.g., `s-d`, `C-x`) redirects focus to Emacs, the
 compositor temporarily switches to the base layout (index 0) so Emacs
 receives Latin keysyms for keybinding dispatch. The layout is restored
-immediately after the key is forwarded — no persistent change occurs.
+immediately after the key is forwarded; no persistent change occurs.
 
 For prefix sequences (`C-x ...`), the same temporary reset is applied to
 each subsequent key while the sequence is active, using the existing
@@ -86,7 +86,7 @@ each subsequent key while the sequence is active, using the existing
 to the external surface, the user's chosen layout is intact.
 
 This is implemented entirely with local variables in `handle_keyboard_event`
-— no cross-function state needed.
+with no cross-function state needed.
 
 ## Text Input (Emacs IM in External Apps)
 

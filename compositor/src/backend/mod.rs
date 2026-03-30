@@ -201,7 +201,7 @@ impl Backend {
         }
     }
 
-    // --- DRM-specific methods (panic on Headless) ---
+    // DRM-specific methods (panic on Headless)
     // These are only called from DRM backend callbacks
 
     /// Handle session pause (VT switch away)

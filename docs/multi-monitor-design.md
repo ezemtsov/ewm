@@ -129,7 +129,7 @@ When the laptop lid is closed, the compositor receives a libinput `SwitchToggle`
 event. Behavior depends on whether an external monitor is connected:
 
 - **With external display**: The laptop panel (identified by `eDP` prefix) is
-  disconnected — its output is removed and Emacs closes the frame, moving windows
+  disconnected: its output is removed and Emacs closes the frame, moving windows
   to remaining outputs. The external display continues working normally.
 - **Without external display**: All monitors are deactivated (blanked). The
   session remains running and will resume when the lid opens.
@@ -146,7 +146,7 @@ standard `OutputDetected` → frame creation path runs.
 - **Resume**: Activates monitors, re-scans connectors (handles displays
   added/removed while suspended), redraws all outputs, sends `OutputsComplete`
   to Emacs.
-- `OutputsComplete` is the universal "output topology settled" signal — it fires
+- `OutputsComplete` is the universal "output topology settled" signal. It fires
   on startup, hotplug, and resume. Emacs uses it to apply output config, enforce
   frame parity, refresh layouts, and sync focus.
 

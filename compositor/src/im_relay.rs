@@ -1,4 +1,4 @@
-//! Input method relay — keepalive self-connection for input_method_v2.
+//! Input method relay: keepalive self-connection for input_method_v2.
 //!
 //! Smithay's text_input_v3 requires an input_method_v2 instance (`has_instance()`).
 //! This relay satisfies that by connecting to our own compositor as a Wayland client.
@@ -25,7 +25,7 @@ pub enum ImEvent {
     Deactivated,
 }
 
-/// Must stay alive for the compositor lifetime — dropping destroys the
+/// Must stay alive for the compositor lifetime. Dropping destroys the
 /// input_method_v2 instance and disables text_input_v3.
 pub struct ImRelay {
     _handle: thread::JoinHandle<()>,
@@ -85,7 +85,7 @@ struct RelayState {
     event_tx: Sender<ImEvent>,
 }
 
-// Required Dispatch impls — only ZwpInputMethodV2 events are meaningful.
+// Required Dispatch impls. Only ZwpInputMethodV2 events are meaningful.
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for RelayState {
     fn event(

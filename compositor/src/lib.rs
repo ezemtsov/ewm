@@ -387,7 +387,7 @@ impl Default for OutputState {
 
 /// Frame callback throttle duration.
 /// Surfaces that haven't received a frame callback within this duration will
-/// get one regardless of the throttling state, as a safety net.
+/// get one regardless of the throttling state, as a fallback.
 const FRAME_CALLBACK_THROTTLE: Option<Duration> = Some(Duration::from_millis(995));
 
 /// Per-surface state tracking when the last frame callback was sent.
@@ -418,7 +418,7 @@ struct SurfaceInfo {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LayoutEntry {
     /// Compositor-assigned unique identity per view (not from Emacs).
-    /// Analogous to an Emacs window — distinguishes mirrors of the same surface.
+    /// Analogous to an Emacs window; distinguishes mirrors of the same surface.
     #[serde(default)]
     pub view_id: u64,
     /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
@@ -428,13 +428,13 @@ pub struct LayoutEntry {
     pub y: i32,
     pub w: u32,
     pub h: u32,
-    /// Selected/active view — sent by Emacs (selected-window).
+    /// Selected/active view, sent by Emacs (selected-window).
     /// Determines output association for focus routing, popups, etc.
     pub focused: bool,
-    /// Largest view per surface — computed by compositor from entry dimensions.
+    /// Largest view per surface, computed by compositor from entry dimensions.
     /// Drives send_configure() size + scale and native-size rendering.
     pub primary: bool,
-    /// Fullscreen mode — surface covers full output, bypassing working area.
+    /// Fullscreen mode. Surface covers full output, bypassing working area.
     #[serde(default)]
     pub fullscreen: bool,
 }
@@ -521,7 +521,7 @@ fn unconstrain_with_padding(
         return geo;
     }
 
-    // Padded didn't fit — fall back to the full target.
+    // Padded didn't fit; fall back to the full target.
     positioner.get_unconstrained_geometry(target)
 }
 
@@ -635,7 +635,7 @@ mod intercepted_key_tests {
     fn modifier_mismatch_rejects() {
         // C-x: Emacs sends keysym=x, ctrl=true
         let ik = key(keysyms::KEY_x, true, false, false, false);
-        // Physical: x pressed but ctrl NOT held — should not match
+        // Physical: x pressed but ctrl NOT held, should not match
         assert!(!ik.matches(
             keysyms::KEY_x,
             keysyms::KEY_x,
@@ -678,7 +678,7 @@ mod intercepted_key_tests {
             &mods(false, true, false, false)
         ));
         // Physical: raw=semicolon, modified=colon (shift held), mods={alt, shift}
-        // Should NOT match — we want semicolon but got shift+semicolon
+        // Should NOT match: we want semicolon but got shift+semicolon
         assert!(!ik.matches(
             keysyms::KEY_semicolon,
             keysyms::KEY_colon,
@@ -954,11 +954,11 @@ pub struct Ewm {
     pub xkb_layout_names: Vec<String>,
     pub xkb_current_layout: usize,
 
-    /// Keycodes currently being emulated — their release must also be emulated.
+    /// Keycodes currently being emulated. Their release must also be emulated.
     /// Maps keycode → target modifier name (e.g. "ctrl").
     pub emulated_keycodes: HashMap<u32, String>,
 
-    // IM relay keepalive — Smithay requires an input_method_v2 instance
+    // IM relay keepalive. Smithay requires an input_method_v2 instance
     // for text_input_v3. Commits bypass the relay (direct TextInputHandle).
     pub im_relay: Option<im_relay::ImRelay>,
 
@@ -1260,7 +1260,7 @@ impl Ewm {
     }
 
     /// Remove dead windows from the space.
-    /// This replaces Space::refresh() — we manage output enter/leave explicitly
+    /// This replaces Space::refresh(). We manage output enter/leave explicitly
     /// rather than relying on automatic spatial overlap detection.
     pub fn cleanup_dead_windows(&mut self) {
         // Clean Emacs frames from space
@@ -1604,7 +1604,7 @@ impl Ewm {
                 return Some((surface, global_loc));
             }
 
-            // Fullscreen covers the entire output — no entries below are visible.
+            // Fullscreen covers the entire output; no entries below are visible.
             if entry.fullscreen {
                 break;
             }
@@ -1633,7 +1633,7 @@ impl Ewm {
 
     /// Hit-test layout surfaces under a global position, returning the surface ID.
     ///
-    /// Simpler than layout_surface_under — just rectangle containment, no subsurface precision.
+    /// Simpler than layout_surface_under: just rectangle containment, no subsurface precision.
     pub fn layout_surface_id_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -1692,7 +1692,7 @@ impl Ewm {
         }
 
         // 4. Handle newly added surfaces (new - old): enter only.
-        // Scale is sent in step 8 for active surfaces — the active output's
+        // Scale is sent in step 8 for active surfaces. The active output's
         // scale is the canonical one (wp_fractional_scale_v1 is per-surface).
         for &id in new_ids.difference(&old_ids) {
             if let Some(window) = self.id_windows.get(&id) {
@@ -1779,7 +1779,7 @@ impl Ewm {
 
         // 8. Configure primary surfaces: size + scale from this output.
         // wp_fractional_scale_v1 is per-surface, so the primary output's scale
-        // is the canonical one — the client renders at this scale.
+        // is the canonical one; the client renders at this scale.
         let output_scale = output.current_scale();
         let output_transform = output.current_transform();
         if let Some(entries) = self.output_layouts.get(output_name) {
@@ -1874,7 +1874,7 @@ impl Ewm {
     }
 
     /// Current pointer location, read from Smithay's pointer handle.
-    /// This is the single source of truth — updated by `pointer.motion()`,
+    /// This is the single source of truth, updated by `pointer.motion()`,
     /// `pointer.set_location()`, and `cursor_position_hint`.
     pub fn pointer_location(&self) -> (f64, f64) {
         let pos = self.pointer.current_location();
@@ -1982,7 +1982,7 @@ impl Ewm {
 
         let elapsed = self.idle_timeout.last_activity.elapsed();
         if elapsed < timeout {
-            // Activity happened since timer was set — reschedule for remaining time
+            // Activity happened since timer was set; reschedule for remaining time
             let remaining = timeout - elapsed;
             self.start_idle_timer(remaining);
             return false;
@@ -2034,7 +2034,7 @@ impl Ewm {
     }
 
     /// Record user activity. If idle, wakes immediately.
-    /// Otherwise just updates the timestamp — the timer callback
+    /// Otherwise just updates the timestamp. The timer callback
     /// will check elapsed time and reschedule if needed.
     pub fn reset_idle_timer(&mut self) {
         if self.idle_timeout.is_idle {
@@ -2490,14 +2490,14 @@ impl Ewm {
         }
     }
 
-    /// Fallback frame callback sender — safety net for stuck surfaces.
+    /// Fallback frame callback sender for stuck surfaces.
     ///
     /// Sends frame callbacks to ALL surfaces regardless of output, bypassing
     /// primary scanout output matching. The `FRAME_CALLBACK_THROTTLE` (995ms)
     /// prevents busy-looping since it won't re-send if a callback was already
     /// sent recently through the normal path.
     pub fn send_frame_callbacks_on_fallback_timer(&self) {
-        // Bogus output — the should_send closure returns None so the output
+        // Bogus output: the should_send closure returns None so the output
         // is never used for matching, but send_frame requires a reference.
         let output = Output::new(
             String::new(),
@@ -3129,7 +3129,7 @@ impl Ewm {
                 return Some(result);
             }
 
-            // 2. Top layer — only before windows when not fullscreen
+            // 2. Top layer, only before windows when not fullscreen
             if !above_top_layer {
                 if let Some(result) =
                     self.layer_surface_under(output, Layer::Top, pos_within_output, geo.loc)
@@ -3665,7 +3665,7 @@ impl Ewm {
 
     /// Compute the available rectangle for a popup in geometry-local coordinates.
     ///
-    /// Derived from the layout entry position — no dependency on window.geometry(),
+    /// Derived from the layout entry position, with no dependency on window.geometry(),
     /// so centering offsets and CSD geometry don't affect the result.
     /// Fullscreen: full output. Normal: entry width × output height (horizontally
     /// constrained to the entry, vertically to the full output).
@@ -3810,7 +3810,7 @@ impl Ewm {
         }
 
         // Associate window with target output for scale detection.
-        // Output association is managed explicitly — not via space.refresh().
+        // Output association is managed explicitly (not via space.refresh()).
         // We send scale info and enter the output before the client's first commit
         // so it knows the correct scale to render at.
         let scale_output = target_output
@@ -3824,14 +3824,14 @@ impl Ewm {
             window.with_surfaces(|surface, data| {
                 crate::utils::send_scale_transform(surface, data, scale, transform);
             });
-            // Direct output enter — bypasses SpaceElement::output_enter which would
+            // Direct output enter, bypassing SpaceElement::output_enter which would
             // trigger output_update → leave for uncommitted surfaces.
             if let Some(surface) = window.wl_surface() {
                 output.enter(&surface);
             }
         }
 
-        // Only map Emacs frames into the space — layout surfaces are
+        // Only map Emacs frames into the space; layout surfaces are
         // positioned exclusively via output_layouts.
         if let Some(ref output_name) = frame_output {
             let position = self
@@ -4019,7 +4019,7 @@ impl Ewm {
                     title: title.clone(),
                 },
             );
-            // Skip Title event for Emacs surfaces — Emacs already knows its own titles
+            // Skip Title event for Emacs surfaces; Emacs already knows its own titles
             if !self.emacs_surfaces.contains_key(&id) {
                 self.queue_event(Event::Title {
                     id,
@@ -4829,7 +4829,7 @@ impl OutputManagementHandler for State {
         // Merge each config into ewm.output_config and apply.
         // The backend sets output_heads_changed = true; the deferred
         // refresh_output_management() call (before next render) will
-        // send protocol updates to clients — after the Dispatch handler
+        // send protocol updates to clients, after the Dispatch handler
         // has already sent succeeded().
         for (name, config) in configs {
             self.ewm.output_config.insert(name.clone(), config);
@@ -5167,7 +5167,7 @@ impl Ewm {
 
 /// Shared state for compositor event loop (passed to all handlers)
 ///
-/// Note: Display is owned by the event loop (via Generic source), not by State.
+/// Display is owned by the event loop (via Generic source), not by State.
 /// The Backend enum allows using either DRM (production) or Headless (testing) backends.
 pub struct State {
     pub backend: backend::Backend,
@@ -5404,7 +5404,7 @@ impl State {
         }
 
         // Render queued outputs, focused first. Between outputs, check for
-        // commands that arrived during render — process them and defer remaining redraws.
+        // commands that arrived during render. Process them and defer remaining redraws.
         let focused = self.ewm.get_focused_output();
         let mut rendered_focused = false;
 
@@ -5539,7 +5539,7 @@ impl State {
                 if delivered {
                     text_input.done(false);
                 } else {
-                    // Client in disable→enable gap — drain on next Activated.
+                    // Client in disable→enable gap; drain on next Activated.
                     debug!("ImCommit: queued (surface_id={surface_id})");
                     self.ewm.pending_im_commits.push(text);
                 }

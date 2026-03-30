@@ -92,7 +92,7 @@ pub fn push_event(event: Event) {
 
 `emacs-module-rs`'s `open_channel` creates a pipe whose read end is registered
 with Emacs's event loop as a process. Data written to the write end triggers
-the process filter at the next safe point — same integration as network or
+the process filter at the next safe point, the same integration as network or
 subprocess output. Unlike SIGUSR1, pipe writes are never coalesced: each
 JSON line is delivered exactly once. Serde serialization replaces the manual
 `event_to_lisp` converter, keeping the Event enum as the single source of truth.

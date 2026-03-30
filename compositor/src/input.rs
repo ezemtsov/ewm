@@ -55,7 +55,7 @@ fn notify_activity(state: &mut State) {
 }
 
 /// Unified decision from the keyboard filter.
-/// Returned by `input_intercept` — the caller decides how to forward.
+/// Returned by `input_intercept`. The caller decides how to forward.
 #[derive(Debug, Clone)]
 enum KeyAction {
     /// Forward to focused client as-is
@@ -64,7 +64,7 @@ enum KeyAction {
     Emulate(String),
     /// Redirect to Emacs (intercepted key)
     Redirect(u32),
-    /// Text input intercept — printable key for Emacs IM processing
+    /// Text input intercept: printable key for Emacs IM processing
     TextInput(u32, Option<String>),
     /// VT switch (Ctrl+Alt+F1-F12)
     VtSwitch(i32),
@@ -157,7 +157,7 @@ pub fn handle_keyboard_event(
     }
 
     // Check if a fullscreen surface is logically focused (Emacs selected-window).
-    // Uses the layout's `focused` flag, NOT keyboard focus — after intercept_redirect
+    // Uses the layout's `focused` flag, NOT keyboard focus. After intercept_redirect
     // keyboard focus is temporarily on Emacs even though the surface is fullscreen.
     let fullscreen_surface_id = state
         .ewm
@@ -198,7 +198,7 @@ pub fn handle_keyboard_event(
         None
     };
 
-    // === Key emulation release ===
+    // Key emulation release
     // If this is a release of a key we previously emulated, translate its
     // modifiers too so the client sees a consistent press/release pair.
     if !is_press {
@@ -251,7 +251,7 @@ pub fn handle_keyboard_event(
             let keysym = raw_latin.unwrap_or(modified);
             let keysym_raw = keysym.raw();
 
-            // === Emulation check (before interception) ===
+            // Emulation check (before interception)
             // Emulated keys translate modifiers for non-Emacs surfaces
             // (e.g. Super+c → Ctrl+c for clipboard copy)
             if !focus_on_emacs {
@@ -263,7 +263,7 @@ pub fn handle_keyboard_event(
                 }
             }
 
-            // === Interception check ===
+            // Interception check
             let matched_key = intercepted_keys
                 .iter()
                 .find(|ik| ik.matches(keysym_raw, modified_raw, mods));
@@ -305,7 +305,7 @@ pub fn handle_keyboard_event(
         });
     }
 
-    // === Handle the filter decision ===
+    // Handle the filter decision
     match action {
         KeyAction::Forward => {
             keyboard.input_forward(state, keycode.into(), key_state, serial, time, mods_changed);
@@ -393,7 +393,7 @@ pub fn handle_keyboard_event(
                             |_, _, _| FilterResult::Forward,
                         );
 
-                        // Restore layout — external surface keeps its layout
+                        // Restore layout: external surface keeps its layout
                         if saved_layout != 0 {
                             keyboard.with_xkb_state(state, |mut context| {
                                 context.set_layout(smithay::input::keyboard::Layout(
@@ -473,9 +473,7 @@ pub fn restore_focus(state: &mut State, surface_id: u64) {
     }
 }
 
-// ============================================================================
 // Pointer event handling
-// ============================================================================
 
 use smithay::{
     backend::input::{
@@ -490,9 +488,7 @@ use smithay::{
     },
 };
 
-// ============================================================================
 // Libinput device configuration
-// ============================================================================
 
 use smithay::reexports::input as libinput;
 
@@ -584,7 +580,7 @@ impl DeviceType {
     }
 }
 
-/// A single input configuration entry — either a type default or device-specific.
+/// A single input configuration entry, either a type default or device-specific.
 ///
 /// Type defaults have `device: None` and `device_type: Some(...)`.
 /// Device-specific overrides have `device: Some("name")` and optional `device_type`.
@@ -801,7 +797,7 @@ pub fn parse_tap_button_map(s: &str) -> Option<TapButtonMap> {
 
 /// Result of checking for an active pointer constraint.
 enum ActiveConstraint {
-    /// Pointer is locked in place — no position change allowed.
+    /// Pointer is locked in place, no position change allowed.
     Locked,
     /// Pointer is confined to a surface, optionally within a region.
     Confined(Option<RegionAttributes>),
@@ -856,7 +852,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
 
         match active_constraint(surface, &pointer, pos_within_surface) {
             Some(ActiveConstraint::Locked) => {
-                // Pointer locked — send only relative motion, no position change.
+                // Pointer locked: send only relative motion, no position change.
                 pointer.relative_motion(
                     state,
                     state.ewm.pointer_focus.clone(),

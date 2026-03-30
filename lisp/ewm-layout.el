@@ -56,7 +56,7 @@ The compositor independently computes which entry is `primary'
             (let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
               (when id
                 (push (list output id window) window-entries)))))))
-    ;; Build entries — mark selected-window as focused
+    ;; Build entries, mark selected-window as focused
     (pcase-dolist (`(,output ,id ,window) (nreverse window-entries))
       (let* ((focused-p (eq window sel-window))
              (view (ewm-layout--make-output-view window focused-p)))
@@ -77,7 +77,7 @@ The compositor independently computes which entry is `primary'
 (defun ewm-layout--make-output-view (window focused-p)
   "Create a view plist for WINDOW with frame-relative coordinates.
 Returns (:x X :y Y :w W :h H :focused FOCUSED-P :fullscreen FS).
-Coordinates are relative to the output's working area — the compositor
+Coordinates are relative to the output's working area. The compositor
 converts to global positions using output geometry + working area offset."
   (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
          (x (pop edges))

@@ -4,8 +4,8 @@
 
 EWM implements screen sharing through two complementary protocols:
 
-1. **wlr-screencopy** — Wayland-native protocol for tools like `grim` and `wf-recorder`
-2. **PipeWire ScreenCast** — D-Bus interface for xdg-desktop-portal (Firefox, OBS, etc.)
+1. **wlr-screencopy**: Wayland-native protocol for tools like `grim` and `wf-recorder`
+2. **PipeWire ScreenCast**: D-Bus interface for xdg-desktop-portal (Firefox, OBS, etc.)
 
 ## Architecture
 
@@ -26,8 +26,8 @@ EWM compositor rendering
 ### Protocol (`compositor/src/protocols/screencopy.rs`)
 
 Implements `zwlr_screencopy_manager_v1` and `zwlr_screencopy_frame_v1`:
-- `capture_output(output)` — full output capture
-- `capture_output_region(output, x, y, w, h)` — region capture
+- `capture_output(output)`: full output capture
+- `capture_output_region(output, x, y, w, h)`: region capture
 - Supports both SHM and DMA-BUF buffers
 - Requires `xdg-output-manager` for tools like `grim` to detect output layout
 
@@ -35,9 +35,9 @@ Implements `zwlr_screencopy_manager_v1` and `zwlr_screencopy_frame_v1`:
 
 The `ScreencopyHandler::frame()` handler splits requests by type:
 
-- **`Copy`** — rendered immediately via `Backend::with_renderer()`. Screenshot
+- **`Copy`**: rendered immediately via `Backend::with_renderer()`. Screenshot
   tools like `grim` get a response without waiting for the next VBlank.
-- **`CopyWithDamage`** — queued for processing during the output redraw cycle,
+- **`CopyWithDamage`**: queued for processing during the output redraw cycle,
   where per-queue damage tracking can skip no-change frames.
 
 ### Per-Queue Damage Tracking (`compositor/src/render.rs`)
@@ -48,7 +48,7 @@ capture:
 
 - `process_screencopies_for_output()` iterates queues, computes damage via
   `damage_tracker.damage_output()`, and skips rendering when `CopyWithDamage`
-  sees no damage — the request stays in the queue until the next redraw.
+  sees no damage, so the request stays in the queue until the next redraw.
 - Damage rectangles are converted from Physical to Buffer coordinates before
   being sent to the client.
 - On render failure, the damage tracker resets to `(0,0)` so the next attempt
@@ -64,12 +64,12 @@ taken via `mem::take` to avoid borrow conflicts with element collection.
 
 ### PipeWire Integration (`compositor/src/pipewire/`)
 
-**`mod.rs`** — PipeWire initialization:
+**`mod.rs`**: PipeWire initialization:
 - MainLoop/Context/Core setup
 - Event loop integration with calloop via fd polling
 - Fatal error detection (EPIPE on connection loss)
 
-**`stream.rs`** — `Cast` struct for video streaming:
+**`stream.rs`**: `Cast` struct for video streaming:
 - DMA-BUF buffer allocation via GBM device
 - Format negotiation with SPA pod builder (DONT_FIXATE + dual modifier offer)
 - 3-state machine: `ResizePending` → `ConfirmationPending` → `Ready`
@@ -81,16 +81,16 @@ taken via `mem::take` to avoid borrow conflicts with element collection.
 
 ### D-Bus Interfaces (`compositor/src/dbus/`)
 
-**`screen_cast.rs`** — `org.gnome.Mutter.ScreenCast` (version 4):
-- `ScreenCast` — main interface with `CreateSession()`
-- `Session` — per-session with `Start()`, `Stop()`, `RecordMonitor()`
-- `Stream` — per-stream with `parameters` property, `PipeWireStreamAdded` signal
+**`screen_cast.rs`**: `org.gnome.Mutter.ScreenCast` (version 4):
+- `ScreenCast`: main interface with `CreateSession()`
+- `Session`: per-session with `Start()`, `Stop()`, `RecordMonitor()`
+- `Stream`: per-stream with `parameters` property, `PipeWireStreamAdded` signal
 
-**`display_config.rs`** — `org.gnome.Mutter.DisplayConfig`:
+**`display_config.rs`**: `org.gnome.Mutter.DisplayConfig`:
 - Required by xdg-desktop-portal-gnome for monitor enumeration
 - Provides `GetCurrentState()` with monitor info
 
-**`service_channel.rs`** — `org.gnome.Mutter.ServiceChannel`:
+**`service_channel.rs`**: `org.gnome.Mutter.ServiceChannel`:
 - Provides Wayland connection to xdg-desktop-portal-gnome
 - Creates Unix socket pair, inserts portal as Wayland client
 
@@ -158,8 +158,8 @@ Screencast rendering runs in `DrmBackendState::post_render()`, called from
 `Ewm::redraw()` after the main frame is submitted. For each active cast on
 the output:
 
-1. `check_time_and_schedule()` — skip if too soon, schedule timer redraw
-2. Element collection — lazy, shared across all casts for the same output
+1. `check_time_and_schedule()`: skip if too soon, schedule timer redraw
+2. Element collection: lazy, shared across all casts for the same output
 3. Render to PipeWire DMA-BUF buffer via `dequeue_buffer_and_render()`
 4. Non-blocking queue via `queue_after_sync()`
 5. Update `last_frame_time`
@@ -237,7 +237,7 @@ EWM uses full DRM connector names matching Smithay's `connector.interface()`:
 ## Portal Configuration
 
 EWM implements `org.gnome.Mutter.ScreenCast` (the GNOME D-Bus interface), so
-the portal backend must be `xdg-desktop-portal-gnome` — not `xdg-desktop-portal-wlr`
+the portal backend must be `xdg-desktop-portal-gnome`, not `xdg-desktop-portal-wlr`
 which uses `wlr-screencopy`.
 
 The NixOS module (`nix/service.nix`) configures:

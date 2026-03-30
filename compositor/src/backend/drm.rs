@@ -124,7 +124,7 @@ fn resolve_drm_mode(
             .min_by_key(|m| (Mode::from(**m).refresh - target_mhz).abs())
             .copied()
     } else {
-        // No refresh specified — pick highest available
+        // No refresh specified; pick highest available
         matching.max_by_key(|m| Mode::from(**m).refresh).copied()
     }
 }
@@ -180,7 +180,7 @@ fn build_surface_dmabuf_feedback(
         .copied()
         .collect();
 
-    // Limit scanout formats to those we can also render — ensures a fallback path
+    // Limit scanout formats to those we can also render, ensuring a fallback path
     let primary_scanout_formats: Vec<_> = primary_plane_formats
         .intersection(&render_formats)
         .copied()
@@ -506,7 +506,7 @@ pub struct DrmBackend;
 /// Field order matters for Drop: device must drop before session.
 /// See https://github.com/Smithay/smithay/issues/1102
 ///
-/// IMPORTANT: We implement Drop to remove the session notifier from the event
+/// We implement Drop to remove the session notifier from the event
 /// loop BEFORE the session is dropped. The notifier holds references to session
 /// internals that become invalid after session drop. This is critical for
 /// embedded mode where process exit doesn't clean up resources.
@@ -665,7 +665,7 @@ impl DrmBackendState {
                         }
                     }
                 } else {
-                    // No pending change — restore previous gamma state
+                    // No pending change; restore previous gamma state
                     if let Some(ref gamma_props) = surface.gamma_props {
                         if let Err(err) = gamma_props.restore_gamma(&device.drm) {
                             warn!(
@@ -846,7 +846,7 @@ impl DrmBackendState {
             return;
         };
 
-        // --- Resolve and apply DRM mode ---
+        // Resolve and apply DRM mode
         let new_drm_mode = if let Some((w, h, refresh)) = config.mode {
             let connector_info = match device.drm.get_connector(surface.connector, false) {
                 Ok(info) => info,
@@ -881,7 +881,7 @@ impl DrmBackendState {
             }
         }
 
-        // --- Build final Smithay state and apply in one call ---
+        // Build final Smithay state and apply in one call
         let smithay_mode = new_drm_mode.map(Mode::from);
         let scale = config
             .scale
@@ -899,7 +899,7 @@ impl DrmBackendState {
             ewm.space.map_output(&output, (x, y));
         }
 
-        // --- Update frame clock refresh interval ---
+        // Update frame clock refresh interval
         if let Some(drm_mode) = new_drm_mode {
             if let Some(output_state) = ewm.output_state.get_mut(&output) {
                 output_state.frame_clock =
@@ -907,7 +907,7 @@ impl DrmBackendState {
             }
         }
 
-        // --- Update all backend-agnostic bookkeeping ---
+        // Update all backend-agnostic bookkeeping
         ewm.output_config_changed(&output);
 
         info!(
@@ -1114,7 +1114,7 @@ impl DrmBackendState {
         let now = crate::utils::get_monotonic_time();
         let mut duration = target_presentation_time.saturating_sub(now);
 
-        // Don't set a zero timer — frame callbacks are sent right after render anyway
+        // Don't set a zero timer; frame callbacks are sent right after render anyway
         if duration.is_zero() {
             duration = output_state
                 .frame_clock
@@ -2204,7 +2204,7 @@ fn initialize_drm(
                             drm.process_vblank(crtc, meta, &mut state.ewm);
                         })
                     {
-                        return; // Throttled — deferred via timer
+                        return; // Throttled, deferred via timer
                     }
                 }
 
@@ -2650,7 +2650,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             })?;
     state.backend.as_drm_mut().unwrap().session_notifier_token = Some(session_notifier_token);
 
-    // Fallback frame callback timer — safety net for surfaces that somehow
+    // Fallback frame callback timer for surfaces that somehow
     // didn't receive frame callbacks through the normal render path.
     // Fires every second and sends callbacks to all surfaces unconditionally,
     // relying on FRAME_CALLBACK_THROTTLE (995ms) to prevent busy-looping.

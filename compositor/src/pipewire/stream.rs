@@ -365,7 +365,7 @@ impl Cast {
                             }
                         }
 
-                        // Modifier is already fixated — verify it matches if we're confirming
+                        // Modifier is already fixated; verify it matches if we're confirming
                         let modifier = Modifier::from(format.modifier());
                         let plane_count = match &*state_ref {
                             CastState::ConfirmationPending {

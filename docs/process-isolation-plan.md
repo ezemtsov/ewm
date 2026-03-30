@@ -2,12 +2,12 @@
 
 ## Problem
 
-EWM's compositor runs as a thread inside Emacs — they share a single process
+EWM's compositor runs as a thread inside Emacs, so they share a single process
 and therefore a single cgroup. When Emacs spawns a child application (e.g. a
 browser via `ewm-launch-app`), that child inherits the same cgroup.
 
 If the child application consumes excessive memory and triggers the Linux OOM
-killer, the kernel may kill the entire cgroup — taking down Emacs and the
+killer, the kernel may kill the entire cgroup, taking down Emacs and the
 compositor along with the misbehaving application.
 
 ## Solution
@@ -43,7 +43,7 @@ There is a small window between spawn and scope assignment where the child
 lives in the Emacs cgroup. If this matters in practice, the child can be
 spawned stopped (SIGSTOP), assigned to its scope, then resumed (SIGCONT).
 
-In practice the race is unlikely to cause problems — the OOM killer would need
+In practice the race is unlikely to cause problems; the OOM killer would need
 to trigger in the milliseconds between spawn and scope creation.
 
 ### Scope

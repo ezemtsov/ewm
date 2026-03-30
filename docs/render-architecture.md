@@ -22,7 +22,7 @@ pub enum Backend {
 
 The `Backend` enum dispatches to the active backend. Backend-specific operations (render, post-render, early-import) are methods on `Backend` that delegate to the inner variant. Backend-agnostic orchestration (redraw loop, state transitions, frame callbacks) lives on `Ewm`.
 
-Note: The Wayland `Display` is owned by the event loop (via `Generic` source), not by `State`. This ensures the display outlives all handlers. Communication with Emacs happens via shared state (mutexes) and a pipe fd for events — no IPC socket needed.
+Note: The Wayland `Display` is owned by the event loop (via `Generic` source), not by `State`. This ensures the display outlives all handlers. Communication with Emacs happens via shared state (mutexes) and a pipe fd for events, no IPC socket needed.
 
 ### Event Loop Integration
 
@@ -63,7 +63,7 @@ impl State {
         }
 
         // 4. Render queued outputs, focused first. Between outputs, check for
-        //    commands that arrived during render — process them and defer
+        //    commands that arrived during render; process them and defer
         //    remaining redraws (picked up next VBlank cycle).
         let focused = self.ewm.get_focused_output();
         let mut rendered_focused = false;
@@ -99,7 +99,7 @@ This pattern avoids `Rc<RefCell<>>` wrapping, providing:
 - No runtime borrow checking (compile-time safety)
 - Clear ownership and proper Drop ordering
 - Direct mutable references to state
-- Backend is never `None` — no Option unwrapping needed
+- Backend is never `None`, so no Option unwrapping needed
 
 ## Per-Output Rendering
 
@@ -196,7 +196,7 @@ impl Ewm {
 }
 ```
 
-The `queue_redraw()` method is idempotent — calling it multiple times won't queue duplicate redraws.
+The `queue_redraw()` method is idempotent: calling it multiple times won't queue duplicate redraws.
 
 ## Render Loop
 
@@ -249,7 +249,7 @@ Orchestration:
 4. Update lock render state if session is locked
 
 5. Send frame callbacks to clients
-   └─► send_frame_callbacks() — throttled by frame_callback_sequence
+   └─► send_frame_callbacks(), throttled by frame_callback_sequence
 
 6. Process screencopy and screencast via backend
    └─► backend.post_render(ewm, output)
@@ -287,12 +287,12 @@ Some buggy drivers deliver VBlank events too early (< 50% of the expected refres
 ```rust
 impl VBlankThrottle {
     pub fn throttle<F>(&mut self, ..., callback: F) -> bool
-    // Returns true if throttled (caller should NOT proceed — deferred via timer)
+    // Returns true if throttled (caller should NOT proceed, deferred via timer)
     // Returns false if not throttled (caller should proceed normally)
 }
 ```
 
-Each DRM output surface has its own `VBlankThrottle`. The VBlank handler calls `throttle()` before processing — if the VBlank arrived too early, processing is deferred to a timer that fires at the expected time.
+Each DRM output surface has its own `VBlankThrottle`. The VBlank handler calls `throttle()` before processing. If the VBlank arrived too early, processing is deferred to a timer that fires at the expected time.
 
 ### Real VBlank
 
@@ -343,7 +343,7 @@ fn queue_estimated_vblank_timer(&mut self, output, ewm, target_presentation_time
     let now = get_monotonic_time();
     let mut duration = target_presentation_time.saturating_sub(now);
 
-    // Don't set a zero timer — frame callbacks are sent right after render anyway
+    // Don't set a zero timer; frame callbacks are sent right after render anyway
     if duration.is_zero() {
         duration = frame_clock.refresh_interval().unwrap_or(Duration::from_micros(16_667));
     }
@@ -368,7 +368,7 @@ pub fn send_frame_callbacks(&self, output: &Output) {
 
     // For each surface: check if primary scanout output matches,
     // then check if already sent at this sequence number.
-    // Skip if (last_output, last_sequence) matches current — prevents
+    // Skip if (last_output, last_sequence) matches current; prevents
     // double-sending within the same refresh cycle.
 }
 ```
@@ -420,8 +420,8 @@ VT switch back → SessionEvent::ActivateSession
     ├─► Resume libinput
     ├─► Activate DRM device (acquire DRM master)
     ├─► Reset DRM compositor state on all surfaces
-    │     ├─► reset_state() — re-read hardware state
-    │     └─► reset_buffers() — clear stale buffer references
+    │     ├─► reset_state() (re-read hardware state)
+    │     └─► reset_buffers() (clear stale buffer references)
     └─► Queue redraws for all outputs
 ```
 
@@ -482,24 +482,24 @@ This ensures clean shutdown when running as a dynamic module within Emacs.
 Comparison performed against niri commit `ae14fa12`. All correctness gaps have
 been resolved. Animations are excluded (not yet implemented).
 
-### 1. DMA-BUF Feedback — RESOLVED
+### 1. DMA-BUF Feedback (RESOLVED)
 
 `SurfaceDmabufFeedback { render, scanout }` built per output surface at connect
 time. `Ewm::send_dmabuf_feedbacks()` sends per-surface feedback after each render,
 using `select_dmabuf_feedback` to choose scanout vs render feedback based on
 primary scanout output tracking. Single-GPU simplification: `render = scanout.clone()`.
 
-### 2. Lock Render State — RESOLVED
+### 2. Lock Render State (RESOLVED)
 
 `Ewm::redraw()` now sets `lock_render_state` to `Locked` or `Unlocked` on every
 non-Skipped render, matching niri's bidirectional pattern.
 
-### 3. Cursor and DnD Frame Callbacks — N/A
+### 3. Cursor and DnD Frame Callbacks (N/A)
 
 EWM uses a static fallback cursor (`MemoryRenderBuffer`), not client cursor
 surfaces. No DnD icon tracking implemented. Gap doesn't apply.
 
-### 4. Screencopy Damage Tracking — RESOLVED
+### 4. Screencopy Damage Tracking (RESOLVED)
 
 Per-queue `OutputDamageTracker` computes actual damage between frames.
 `CopyWithDamage` requests skip rendering when no damage exists, staying in the
@@ -507,18 +507,18 @@ queue until the next redraw. `Copy` requests render immediately via
 `Backend::with_renderer()` for low-latency screenshots. Both paths update the
 damage tracker to keep subsequent `CopyWithDamage` calls accurate.
 
-### 5. Fallback Frame Callback Timer — RESOLVED
+### 5. Fallback Frame Callback Timer (RESOLVED)
 
 1-second recurring timer sends frame callbacks to all surfaces (windows, layers,
 lock surfaces) unconditionally, preventing stuck surfaces.
 
-### 6. Session Resume Connector Re-scan — RESOLVED
+### 6. Session Resume Connector Re-scan (RESOLVED)
 
 `resume()` now calls `on_device_changed()` after DRM activate to detect monitors
 added/removed during VT switch. Deferred output config and gamma restoration
 deferred to when those features are needed.
 
-### 7. Screencast in Compositor vs Backend — N/A (Structural Only)
+### 7. Screencast in Compositor vs Backend: N/A (Structural Only)
 
 EWM's `Backend::post_render()` pattern is functionally equivalent to niri's
 compositor-level approach. Both produce identical results with per-output

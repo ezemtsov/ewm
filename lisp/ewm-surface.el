@@ -51,7 +51,7 @@ forwarded to the client text field via `ewm-im-commit'."
 
 (define-derived-mode ewm-surface-mode fundamental-mode "Surface"
   "Major mode for EWM surface buffers."
-  ;; Surface buffers are visual proxies — no editable text content.
+  ;; Surface buffers are visual proxies, not editable text content.
   ;; Insertions are intercepted and routed to the client text field.
   (buffer-disable-undo)
   (add-hook 'after-change-functions #'ewm-surface--after-change nil t)

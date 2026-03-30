@@ -74,7 +74,7 @@ pub fn propagate_preferred_scale(surface: &WlSurface, parent: &WlSurface) {
 ///
 /// Sends integer scale via `send_surface_state` (for legacy clients) and fractional
 /// scale via `with_fractional_scale` (for clients that support wp-fractional-scale-v1).
-/// Must be called whenever a surface needs to know about its output's scale/transform —
+/// Must be called whenever a surface needs to know about its output's scale/transform:
 /// on creation, output assignment, and config changes.
 pub fn send_scale_transform(
     surface: &WlSurface,

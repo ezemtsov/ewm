@@ -37,7 +37,7 @@ This document outlines Wayland protocols to implement for broader application co
 **Enables**:
 - Browser tab detach-and-reattach (Chromium supports this, Firefox planned)
 - Detachable panels, sidebars, and tool windows
-- Distinguishing "new surface from drag" vs "new surface from launch" —
+- Distinguishing "new surface from drag" vs "new surface from launch":
   Emacs can split the window for dragged surfaces while replacing the
   buffer for explicitly launched apps
 
@@ -53,7 +53,7 @@ compositor-side handler yet (tracked in Smithay#781). Implementation
 requires building the handler against raw `wayland-protocols` bindings,
 similar to our `screencopy` and `output-management` custom protocols.
 
-**Complexity**: Medium — intercept DnD grab, bind toplevel to drag
+**Complexity**: Medium. Intercept DnD grab, bind toplevel to drag
 session, position toplevel at pointer during drag, handle drop/cancel
 
 ### pointer-constraints-unstable-v1

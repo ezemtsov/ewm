@@ -284,7 +284,7 @@ Only acts when a prefix sequence was active."
 ;; `handle-switch-frame' fires when PGTK's `pgtk_focus_frame' updates GDK
 ;; state during `select-frame'.  In multi-output setups this targets the
 ;; wrong frame, overriding compositor click-to-focus.  Suppress it entirely
-;; — EWM owns frame selection via `ewm--handle-focus'.  Same pattern as
+;; EWM owns frame selection via `ewm--handle-focus'.  Same pattern as
 ;; EXWM suppressing `handle-focus-in'/`handle-focus-out'.
 
 (defun ewm-input--suppress-switch-frame (orig-fn event)
@@ -360,7 +360,7 @@ get an :emulate flag for modifier translation on non-Emacs surfaces."
     ;; Build emulate lookup
     (dolist (entry ewm-surface-emulate-keys)
       (puthash (car entry) (cdr entry) emulate-map))
-    ;; Intercept prefixes first — :fullscreen entries populate fs-events
+    ;; Intercept prefixes first; :fullscreen entries populate fs-events
     (dolist (entry ewm-intercept-prefixes)
       (when-let ((parsed (ewm--parse-intercept-entry entry)))
         (let ((event (car parsed)))
@@ -368,7 +368,7 @@ get an :emulate flag for modifier translation on non-Emacs surfaces."
             (puthash event t fs-events))
           (when-let ((spec (ewm--event-to-intercept-spec event (cdr parsed))))
             (push spec specs)))))
-    ;; Keymap bindings — fullscreen flag and emulate looked up
+    ;; Keymap bindings: fullscreen flag and emulate looked up
     (map-keymap
      (lambda (event binding)
        (when (and binding (not (eq binding 'undefined)) (not (eq binding 'ignore)))

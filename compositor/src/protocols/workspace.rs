@@ -275,7 +275,7 @@ pub fn refresh<'a, D>(
             };
 
             if let Some(ws) = workspace_state.workspaces.get_mut(&key) {
-                // Existing workspace — diff properties.
+                // Existing workspace: diff properties.
                 if ws.name != display_name {
                     ws.name = display_name.clone();
                     for inst in &ws.instances {
@@ -387,9 +387,7 @@ fn send_workspace_leave(
     }
 }
 
-// ---------------------------------------------------------------------------
 // GlobalDispatch: new client binds to the workspace manager global
-// ---------------------------------------------------------------------------
 
 impl<D> GlobalDispatch<ExtWorkspaceManagerV1, WorkspaceGlobalData, D> for WorkspaceManagerState
 where
@@ -449,9 +447,7 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
 // Dispatch for manager requests
-// ---------------------------------------------------------------------------
 
 impl<D> Dispatch<ExtWorkspaceManagerV1, (), D> for WorkspaceManagerState
 where
@@ -523,9 +519,7 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
 // Dispatch for group handle requests
-// ---------------------------------------------------------------------------
 
 impl<D> Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1, D> for WorkspaceManagerState
 where
@@ -561,9 +555,7 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
 // Dispatch for workspace handle requests
-// ---------------------------------------------------------------------------
 
 impl<D> Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1, D> for WorkspaceManagerState
 where

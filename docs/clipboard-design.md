@@ -11,7 +11,7 @@ text (kill-ring) and binary data (images for `yank-media`).
 The compositor enables `wlr-data-control-unstable-v1`, which allows
 `wl-copy`/`wl-paste` (from `wl-clipboard`) to access the Wayland clipboard.
 Emacs shells out to these tools for all clipboard operations. No custom Rust
-clipboard logic is needed — Smithay's default `SelectionHandler` handles
+clipboard logic is needed. Smithay's default `SelectionHandler` handles
 client-to-client clipboard natively.
 
 ## Architecture
@@ -51,7 +51,7 @@ register handlers (e.g., Org mode, telega.el).
 
 ### Compositor
 
-Minimal — just enables the protocol:
+Minimal, just enables the protocol:
 
 - `DataControlState::new()` enables `wlr-data-control` for `wl-copy`/`wl-paste`
 - `SelectionHandler` uses default `type SelectionUserData = ()`
@@ -59,12 +59,12 @@ Minimal — just enables the protocol:
 
 ### Emacs (`lisp/ewm.el`)
 
-- `ewm--wl-copy` / `ewm--wl-paste` — cached `executable-find` results
-- `ewm--interprogram-cut-function` — async `start-process` to `wl-copy`
-- `ewm--interprogram-paste-function` — sync `call-process` to `wl-paste`
-- `ewm--gui-get-selection` — `:around` advice on `gui-get-selection` for
+- `ewm--wl-copy` / `ewm--wl-paste`: cached `executable-find` results
+- `ewm--interprogram-cut-function`: async `start-process` to `wl-copy`
+- `ewm--interprogram-paste-function`: sync `call-process` to `wl-paste`
+- `ewm--gui-get-selection`: `:around` advice on `gui-get-selection` for
   binary clipboard data (images, etc.)
-- `ewm--clipboard-enable` / `ewm--clipboard-disable` — called from mode
+- `ewm--clipboard-enable` / `ewm--clipboard-disable`: called from mode
   enable/disable; no-op if `wl-copy`/`wl-paste` are not installed
 
 ## Dependencies
@@ -81,7 +81,7 @@ clipboard functions silently no-op.
 
 ## Testing
 
-**Automated**: `cargo test` — clipboard doesn't affect headless tests.
+**Automated**: `cargo test` (clipboard doesn't affect headless tests).
 
 **Manual**:
 1. Emacs → client: `M-w` in Emacs, `Ctrl+Shift+V` in foot

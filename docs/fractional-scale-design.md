@@ -155,7 +155,7 @@ delegate_fractional_scale!(State);
 ```
 
 Scale is not sent in `new_fractional_scale` because that callback fires when the
-client binds `get_fractional_scale` on a surface — at that point, Smithay
+client binds `get_fractional_scale` on a surface. At that point, Smithay
 automatically sends any `preferred_scale` already stored in the surface's data map.
 The lifecycle handlers above ensure the value is stored before the client binds.
 
@@ -250,7 +250,7 @@ Firefox creates `wp_fractional_scale_v1` on a **subsurface**, not the toplevel.
 Without `preferred_scale` on the subsurface, Firefox's CSS DPR defaults to 1.
 
 The `CompositorHandler::new_subsurface` callback and popup handling both use
-`propagate_preferred_scale()` — a shared helper that walks from parent to root
+`propagate_preferred_scale()`, a shared helper that walks from parent to root
 surface and copies the stored `preferred_scale`:
 
 ```rust
@@ -316,7 +316,7 @@ If a client shows wrong DPR despite correct output scale:
 
 1. Check `WAYLAND_DEBUG=1` for `wp_fractional_scale_v1.preferred_scale(N)` events.
    At 1.5x, N should be 180 (180/120 = 1.5).
-2. Check which surface the client creates `wp_fractional_scale_v1` on — it may be
+2. Check which surface the client creates `wp_fractional_scale_v1` on; it may be
    a subsurface, not the toplevel.
 3. Verify `wl_surface.enter` is sent before the client binds fractional scale.
    Without output enter, there's no integer scale either.
