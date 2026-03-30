@@ -562,28 +562,27 @@ Switch to the requested tab on the appropriate frame."
         (with-selected-frame frame
           (tab-bar-select-tab tab-index))))))
 
-(defun ewm--set-fullscreen (buf value)
-  "Set fullscreen state to VALUE on surface buffer BUF."
-  (when (buffer-live-p buf)
-    (with-current-buffer buf
-      (setq ewm-surface-fullscreen value))))
+(defun ewm--set-fullscreen-windows (buf value)
+  "Set fullscreen window parameter to VALUE on all windows showing BUF."
+  (dolist (win (get-buffer-window-list buf nil t))
+    (set-window-parameter win 'ewm-fullscreen value)))
 
 (defun ewm--handle-fullscreen-request (event)
   "Handle fullscreen request EVENT: set fullscreen flag and refresh layout.
-Sets on all windows of the buffer on the target frame."
+Sets on all windows showing the surface."
   (let ((id (alist-get 'id event)))
     (when-let* ((buf (gethash id ewm--surfaces))
                 (win (get-buffer-window buf t)))
-      (ewm--set-fullscreen buf t)
+      (ewm--set-fullscreen-windows buf t)
       (ewm-layout--refresh))))
 
 (defun ewm--handle-unfullscreen-request (event)
   "Handle unfullscreen request EVENT: clear fullscreen flag and refresh layout.
-Clears on the focused frame only, so other outputs remain fullscreen."
+Clears on all windows showing the surface."
   (let ((id (alist-get 'id event)))
     (when-let* ((buf (gethash id ewm--surfaces))
                 (win (get-buffer-window buf t)))
-      (ewm--set-fullscreen buf nil)
+      (ewm--set-fullscreen-windows buf nil)
       (ewm-layout--refresh))))
 
 ;;; Idle timeout
@@ -642,8 +641,8 @@ Clears on the focused frame only, so other outputs remain fullscreen."
   "Toggle fullscreen for the surface in the current window."
   (interactive)
   (when ewm-surface-id
-    (let ((new-val (not ewm-surface-fullscreen)))
-      (ewm--set-fullscreen (current-buffer) new-val))
+    (set-window-parameter nil 'ewm-fullscreen
+                          (not (window-parameter nil 'ewm-fullscreen)))
     (ewm-layout--refresh)))
 
 (defun ewm-get-window-info (&optional id)

@@ -169,7 +169,7 @@ pub fn handle_keyboard_event(
         .values()
         .flat_map(|entries| entries.iter())
         .find(|e| e.focused && e.fullscreen)
-        .map(|e| e.id);
+        .map(|e| e.surface_id);
 
     // When a fullscreen surface exists, ensure keyboard focus is on it before processing keys.
     // After intercept_redirect (e.g. s-f to enter fullscreen), Wayland keyboard focus stays on
@@ -937,7 +937,10 @@ pub fn handle_pointer_motion<B: InputBackend>(
         state.ewm.pointer_focus.as_ref().map(|(s, _)| s) != under.as_ref().map(|(s, _)| s);
     state.ewm.pointer_focus = under.clone();
 
-    if state.ewm.focus_follows_mouse_mode && focus_changed {
+    let view_id = state.ewm.view_id_under((new_x, new_y).into());
+    let entry_changed = std::mem::replace(&mut state.ewm.pointer_view_id, view_id) != view_id;
+
+    if state.ewm.focus_follows_mouse_mode && (focus_changed || entry_changed) {
         state.ewm.focus_follows_mouse(&under, (new_x, new_y).into());
     }
 
@@ -1042,7 +1045,10 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
         state.ewm.pointer_focus.as_ref().map(|(s, _)| s) != under.as_ref().map(|(s, _)| s);
     state.ewm.pointer_focus = under.clone();
 
-    if state.ewm.focus_follows_mouse_mode && focus_changed {
+    let view_id = state.ewm.view_id_under(pos);
+    let entry_changed = std::mem::replace(&mut state.ewm.pointer_view_id, view_id) != view_id;
+
+    if state.ewm.focus_follows_mouse_mode && (focus_changed || entry_changed) {
         state.ewm.focus_follows_mouse(&under, pos);
     }
 

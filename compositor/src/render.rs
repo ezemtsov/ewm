@@ -290,7 +290,7 @@ pub fn collect_render_elements_for_output(
             if above_top_layer && !entry.fullscreen {
                 continue;
             }
-            if let Some(window) = ewm.id_windows.get(&entry.id) {
+            if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
                 if entry.fullscreen {
                     // Fullscreen: surface + backdrop at output origin, bypassing working area.
                     // Elements are front-to-back: surface first, then backdrop behind it.

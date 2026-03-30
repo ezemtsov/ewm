@@ -670,7 +670,8 @@ fn output_layout_module(
         let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
 
         entries.push(LayoutEntry {
-            id: id as u64,
+            view_id: 0, // assigned by apply_output_layout
+            surface_id: id as u64,
             x: x as i32,
             y: y as i32,
             w: w as u32,

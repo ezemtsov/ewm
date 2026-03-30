@@ -424,7 +424,13 @@ struct SurfaceInfo {
 /// Coordinates are relative to the output's working area (frame-relative).
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LayoutEntry {
-    pub id: u64,
+    /// Compositor-assigned unique identity per view (not from Emacs).
+    /// Analogous to an Emacs window — distinguishes mirrors of the same surface.
+    #[serde(default)]
+    pub view_id: u64,
+    /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
+    #[serde(rename = "id")]
+    pub surface_id: u64,
     pub x: i32,
     pub y: i32,
     pub w: u32,
@@ -791,6 +797,7 @@ pub struct Ewm {
 
     // Surface tracking
     next_surface_id: u64,
+    next_view_id: u64,
     pub window_ids: HashMap<Window, u64>,
     pub id_windows: HashMap<u64, Window>,
     surface_info: HashMap<u64, SurfaceInfo>,
@@ -820,6 +827,8 @@ pub struct Ewm {
     pub active_outputs_dirty: bool,
     /// Focus follows mouse
     pub focus_follows_mouse_mode: bool,
+    /// UID of the layout entry currently under the pointer (for FFM mirror detection).
+    pub pointer_view_id: u64,
 
     // Libinput device configuration
     pub input_configs: Vec<input::InputConfigEntry>,
@@ -1088,6 +1097,7 @@ impl Ewm {
             pointer,
             keyboard,
             next_surface_id: 1,
+            next_view_id: 1,
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
@@ -1104,6 +1114,7 @@ impl Ewm {
             keyboard_focus_dirty: false,
             active_outputs_dirty: true,
             focus_follows_mouse_mode: false,
+            pointer_view_id: 0,
             input_configs: Vec::new(),
             emacs_pid: None,
             emacs_surfaces: HashMap::new(),
@@ -1177,7 +1188,7 @@ impl Ewm {
     fn remove_surface_from_layouts(&mut self, id: u64) {
         self.surface_outputs.remove(&id);
         for entries in self.output_layouts.values_mut() {
-            entries.retain(|e| e.id != id);
+            entries.retain(|e| e.surface_id != id);
         }
     }
 
@@ -1227,10 +1238,10 @@ impl Ewm {
         // Clean up layout state
         if let Some(old_entries) = self.output_layouts.remove(&output_name) {
             for entry in &old_entries {
-                if let Some(outputs) = self.surface_outputs.get_mut(&entry.id) {
+                if let Some(outputs) = self.surface_outputs.get_mut(&entry.surface_id) {
                     outputs.remove(&output_name);
                     if outputs.is_empty() {
-                        self.surface_outputs.remove(&entry.id);
+                        self.surface_outputs.remove(&entry.surface_id);
                     }
                 }
             }
@@ -1380,7 +1391,7 @@ impl Ewm {
     /// Used for output association (focus routing, popups).
     fn focused_output_for_surface(&self, id: u64) -> Option<(&str, &LayoutEntry)> {
         for (output_name, entries) in &self.output_layouts {
-            if let Some(entry) = entries.iter().find(|e| e.id == id && e.focused) {
+            if let Some(entry) = entries.iter().find(|e| e.surface_id == id && e.focused) {
                 return Some((output_name.as_str(), entry));
             }
         }
@@ -1393,7 +1404,7 @@ impl Ewm {
     /// Used as fallback when no focused entry exists (e.g. popup positioning).
     fn primary_output_for_surface(&self, id: u64) -> Option<(&str, &LayoutEntry)> {
         for (output_name, entries) in &self.output_layouts {
-            if let Some(entry) = entries.iter().find(|e| e.id == id && e.primary) {
+            if let Some(entry) = entries.iter().find(|e| e.surface_id == id && e.primary) {
                 return Some((output_name.as_str(), entry));
             }
         }
@@ -1505,7 +1516,7 @@ impl Ewm {
         let entries = self.output_layouts.get(&output.name())?;
 
         for entry in entries.iter() {
-            let window = match self.id_windows.get(&entry.id) {
+            let window = match self.id_windows.get(&entry.surface_id) {
                 Some(w) => w,
                 None => continue,
             };
@@ -1579,7 +1590,7 @@ impl Ewm {
                          surface_offset={},{} global_loc={:.0},{:.0} \
                          geo.loc={},{} geo.size={}x{} center={:.0},{:.0}",
                         if is_toplevel { "toplevel" } else { "popup" },
-                        entry.id,
+                        entry.surface_id,
                         entry.fullscreen,
                         pos.x,
                         pos.y,
@@ -1613,7 +1624,7 @@ impl Ewm {
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
         self.output_layouts
             .values()
-            .any(|entries| entries.iter().any(|e| e.id == id && e.fullscreen))
+            .any(|entries| entries.iter().any(|e| e.surface_id == id && e.fullscreen))
     }
 
     /// Whether layout surfaces render (and receive input) above the Top layer on this output.
@@ -1634,7 +1645,12 @@ impl Ewm {
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) -> Option<u64> {
-        self.layout_entry_under(pos).map(|(entry, _, _)| entry.id)
+        self.layout_entry_under(pos).map(|(entry, _, _)| entry.surface_id)
+    }
+
+    /// Get the unique layout entry UID under a point, or 0 if none.
+    pub fn view_id_under(&self, pos: Point<f64, Logical>) -> u64 {
+        self.layout_entry_under(pos).map(|(e, _, _)| e.view_id).unwrap_or(0)
     }
 
     /// Apply a declarative per-output layout.
@@ -1642,7 +1658,13 @@ impl Ewm {
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
     /// and scale notification.
-    pub fn apply_output_layout(&mut self, output_name: &str, entries: Vec<LayoutEntry>) {
+    pub fn apply_output_layout(&mut self, output_name: &str, mut entries: Vec<LayoutEntry>) {
+        // 0. Assign unique identities to each entry
+        for entry in entries.iter_mut() {
+            entry.view_id = self.next_view_id;
+            self.next_view_id += 1;
+        }
+
         // 1. Find the output
         let output = match self.space.outputs().find(|o| o.name() == output_name) {
             Some(o) => o.clone(),
@@ -1656,9 +1678,9 @@ impl Ewm {
         let old_ids: HashSet<u64> = self
             .output_layouts
             .get(output_name)
-            .map(|entries| entries.iter().map(|e| e.id).collect())
+            .map(|entries| entries.iter().map(|e| e.surface_id).collect())
             .unwrap_or_default();
-        let new_ids: HashSet<u64> = entries.iter().map(|e| e.id).collect();
+        let new_ids: HashSet<u64> = entries.iter().map(|e| e.surface_id).collect();
 
         // 3. Handle removed surfaces (old - new)
         for &id in old_ids.difference(&new_ids) {
@@ -1732,7 +1754,7 @@ impl Ewm {
                 for entry in entries {
                     let area = entry_area(entry, oname);
                     best_area
-                        .entry(entry.id)
+                        .entry(entry.surface_id)
                         .and_modify(|a| *a = (*a).max(area))
                         .or_insert(area);
                 }
@@ -1741,9 +1763,9 @@ impl Ewm {
             let mut assigned: HashSet<u64> = HashSet::new();
             for (oname, entries) in self.output_layouts.iter_mut() {
                 for entry in entries.iter_mut() {
-                    let dominated = best_area.get(&entry.id).copied().unwrap_or(0);
+                    let dominated = best_area.get(&entry.surface_id).copied().unwrap_or(0);
                     entry.primary =
-                        entry_area(entry, oname) == dominated && assigned.insert(entry.id);
+                        entry_area(entry, oname) == dominated && assigned.insert(entry.surface_id);
                 }
             }
         }
@@ -1756,7 +1778,7 @@ impl Ewm {
                 for entry in entries {
                     if entry.primary {
                         self.window_cast_output
-                            .insert(entry.id, oname.clone());
+                            .insert(entry.surface_id, oname.clone());
                     }
                 }
             }
@@ -1770,7 +1792,7 @@ impl Ewm {
         if let Some(entries) = self.output_layouts.get(output_name) {
             for entry in entries {
                 if entry.primary {
-                    if let Some(window) = self.id_windows.get(&entry.id) {
+                    if let Some(window) = self.id_windows.get(&entry.surface_id) {
                         window.with_surfaces(|s, data| {
                             crate::utils::send_scale_transform(
                                 s,
@@ -2760,7 +2782,7 @@ impl Ewm {
                         map.non_exclusive_zone()
                     };
                     for entry in entries {
-                        if entry.id != window_id {
+                        if entry.surface_id != window_id {
                             continue;
                         }
                         let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
@@ -3425,7 +3447,7 @@ impl Ewm {
         // Notify declared surfaces on this output
         if let Some(entries) = self.output_layouts.get(&output.name()) {
             for entry in entries {
-                if let Some(window) = self.id_windows.get(&entry.id) {
+                if let Some(window) = self.id_windows.get(&entry.surface_id) {
                     window.with_surfaces(|surface, data| {
                         crate::utils::send_scale_transform(surface, data, scale, transform);
                     });
@@ -5616,8 +5638,11 @@ impl State {
                 tabs,
             } => {
                 self.ewm.apply_output_layout(&output, surfaces);
-                // Re-evaluate pointer focus after layout change
+                // Re-evaluate tracked layout entry UID (entries got fresh UIDs)
                 let (px, py) = self.ewm.pointer_location();
+                self.ewm.pointer_view_id =
+                    self.ewm.view_id_under((px, py).into());
+                // Re-evaluate pointer focus after layout change
                 let under = self
                     .ewm
                     .surface_under_point(smithay::utils::Point::from((px, py)));

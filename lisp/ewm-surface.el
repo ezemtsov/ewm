@@ -28,8 +28,6 @@ Similar to `exwm-title'.")
 (defvar-local ewm-surface-pid nil
   "Client PID for this surface.")
 
-(defvar-local ewm-surface-fullscreen nil
-  "Non-nil when this surface is in fullscreen mode.")
 
 (defun ewm--kill-buffer-query-function ()
   "Run in `kill-buffer-query-functions' for surface buffers.
