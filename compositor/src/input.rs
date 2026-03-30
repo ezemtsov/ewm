@@ -29,7 +29,7 @@ use smithay::{
     wayland::seat::WaylandFocus,
 };
 
-use crate::{is_kill_combo, module, State};
+use crate::{module, State};
 
 /// Build target modifier state: replace logo (Super) with the target modifier.
 fn emulate_modifiers(current: &ModifiersState, target_mod: &str) -> ModifiersState {
@@ -64,8 +64,6 @@ enum KeyAction {
     Emulate(String),
     /// Redirect to Emacs (intercepted key)
     Redirect(u32),
-    /// Kill combo (Ctrl+Alt+Backspace)
-    Kill,
     /// Text input intercept — printable key for Emacs IM processing
     TextInput(u32, Option<String>),
     /// VT switch (Ctrl+Alt+F1-F12)
@@ -79,8 +77,6 @@ pub enum KeyboardAction {
     Forward,
     /// Prefix key intercepted - redirect focus to Emacs
     RedirectToEmacs,
-    /// Kill combo pressed - shut down compositor
-    Shutdown,
     /// Key intercepted for text input (sent to Emacs via IPC)
     TextInputIntercepted,
     /// VT switch requested (Ctrl+Alt+F1-F12)
@@ -255,11 +251,6 @@ pub fn handle_keyboard_event(
             let keysym = raw_latin.unwrap_or(modified);
             let keysym_raw = keysym.raw();
 
-            // Check for kill combo (Ctrl+Alt+Backspace)
-            if is_kill_combo(keysym_raw, mods.ctrl, mods.alt) {
-                return KeyAction::Kill;
-            }
-
             // === Emulation check (before interception) ===
             // Emulated keys translate modifiers for non-Emacs surfaces
             // (e.g. Super+c → Ctrl+c for clipboard copy)
@@ -347,8 +338,6 @@ pub fn handle_keyboard_event(
             notify_activity(state);
             return KeyboardAction::Emulated;
         }
-
-        KeyAction::Kill => return KeyboardAction::Shutdown,
 
         KeyAction::TextInput(keysym, ref utf8) => {
             state.ewm.queue_event(crate::Event::Key {

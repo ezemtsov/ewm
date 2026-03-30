@@ -406,13 +406,6 @@ impl Default for SurfaceFrameThrottlingState {
     }
 }
 
-/// Kill combo: Ctrl+Alt+Backspace
-/// Returns true if this key event is the kill combo (keysym-based)
-pub fn is_kill_combo(keysym: u32, ctrl: bool, alt: bool) -> bool {
-    // BackSpace = 0xff08 (standard X11/XKB keysym)
-    keysym == 0xff08 && ctrl && alt
-}
-
 /// Cached surface info for change detection
 #[derive(Clone, Default, Serialize)]
 struct SurfaceInfo {

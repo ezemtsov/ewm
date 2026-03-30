@@ -2725,10 +2725,6 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     Event::time_msec(&kb_event),
                 );
                 match action {
-                    KeyboardAction::Shutdown => {
-                        info!("Kill combo pressed, shutting down");
-                        state.ewm.stop();
-                    }
                     KeyboardAction::ChangeVt(vt) => {
                         state.backend.change_vt(vt);
                     }
