@@ -506,7 +506,7 @@ Returns nil if clipboard is empty or wl-paste is unavailable."
     (let ((text (with-output-to-string
                   (with-current-buffer standard-output
                     (call-process ewm--wl-paste nil t nil
-                                  "--no-newline" "--type" "text/plain")))))
+                                  "--no-newline" "--type" "text/plain;charset=utf-8")))))
       (unless (string-empty-p text)
         text))))
 
