@@ -885,7 +885,7 @@ The compositor runs as a thread within the Emacs process."
         ;; Enable EWM mode (needed for frame creation hooks)
         (ewm-mode 1)
         ;; Wait for compositor ready event (with timeout)
-        (let ((timeout 50))  ; 5 seconds max
+        (let ((timeout 300))  ; 30 seconds max
           (while (and (> timeout 0)
                       (not ewm--compositor-ready))
             (accept-process-output ewm--event-process 0.1)
