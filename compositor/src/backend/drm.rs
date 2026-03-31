@@ -2291,8 +2291,18 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         ewm.connect_im_relay(path);
     }
 
-    // Find primary GPU
-    let gpu_path = primary_gpu(&seat_name)?.ok_or("No GPU found")?;
+    // Find primary GPU: env override or udev detection
+    let gpu_path = match std::env::var("EWM_RENDER_DEVICE") {
+        Ok(ref p) if std::path::Path::new(p).exists() => {
+            info!("Using render device from EWM_RENDER_DEVICE: {:?}", p);
+            std::path::PathBuf::from(p)
+        }
+        Ok(p) => {
+            warn!("EWM_RENDER_DEVICE {:?} not found, falling back to auto-detection", p);
+            primary_gpu(&seat_name)?.ok_or("No GPU found")?
+        }
+        Err(_) => primary_gpu(&seat_name)?.ok_or("No GPU found")?,
+    };
     info!("Primary GPU: {:?}", gpu_path);
 
     // Initialize libinput

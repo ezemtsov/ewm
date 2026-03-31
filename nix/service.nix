@@ -74,6 +74,13 @@ in
       example = "--no-site-lisp --eval '(foo)'";
     };
 
+    renderDevice = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "DRM render device path for GPU selection (e.g. /dev/dri/renderD129). When null, the primary GPU is auto-detected.";
+      example = "/dev/dri/renderD129";
+    };
+
     screencast.enable = lib.mkEnableOption "screen casting via PipeWire" // {
       default = true;
     };
@@ -83,6 +90,9 @@ in
     environment.systemPackages = [ ewmSystemPackage ];
     services.displayManager.sessionPackages = [ ewmSystemPackage ];
     systemd.packages = [ ewmSystemPackage ];
+    systemd.user.services.ewm.environment = lib.optionalAttrs (cfg.renderDevice != null) {
+      EWM_RENDER_DEVICE = cfg.renderDevice;
+    };
     security.polkit.enable = true;
 
     # Provides fonts, xdg-utils, graphics, PipeWire, inotify limits, etc.
