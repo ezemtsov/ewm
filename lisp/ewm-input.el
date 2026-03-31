@@ -214,7 +214,7 @@ Coordinates are in compositor space."
   (let* ((frame (window-frame window))
          (output (frame-parameter frame 'ewm-output))
          (output-origin (ewm--get-output-origin output))
-         (edges (window-inside-pixel-edges window))
+         (edges (window-pixel-edges window))
          (left (+ (car output-origin) (nth 0 edges)))
          (top (+ (cdr output-origin) (nth 1 edges)))
          (right (+ (car output-origin) (nth 2 edges)))
