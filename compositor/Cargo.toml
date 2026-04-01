@@ -24,7 +24,7 @@ tracing-journald = "0.3"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"
-rev = "ae14fa12f6ee3fc4dd4c766ffb21848f991a6a18"
+rev = "d28cf3808e7424defb52a2f27087146e480766d8"
 default-features = false
 features = [
     "backend_drm",
@@ -42,7 +42,7 @@ features = [
 
 [dependencies.smithay-drm-extras]
 git = "https://github.com/Smithay/smithay.git"
-rev = "ae14fa12f6ee3fc4dd4c766ffb21848f991a6a18"
+rev = "d28cf3808e7424defb52a2f27087146e480766d8"
 default-features = false
 features = ["display-info"]
 

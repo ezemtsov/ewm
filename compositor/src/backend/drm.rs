@@ -1665,7 +1665,7 @@ impl DrmBackendState {
         // Create DrmCompositor
         let cursor_size = device.drm.cursor_size();
         let compositor = match DrmCompositor::new(
-            OutputModeSource::Auto(output.clone()),
+            OutputModeSource::Auto(output.downgrade()),
             drm_surface,
             None,
             allocator.clone(),
@@ -1693,7 +1693,7 @@ impl DrmBackendState {
                     .create_surface(crtc, mode, &[connector.handle()])?;
 
                 DrmCompositor::new(
-                    OutputModeSource::Auto(output.clone()),
+                    OutputModeSource::Auto(output.downgrade()),
                     drm_surface,
                     None,
                     allocator,
@@ -2000,7 +2000,12 @@ impl LogindState {
             "/org/freedesktop/login1",
             Some("org.freedesktop.login1.Manager"),
             "Inhibit",
-            &("handle-lid-switch", "ewm", "Compositor manages lid switch", "block"),
+            &(
+                "handle-lid-switch",
+                "ewm",
+                "Compositor manages lid switch",
+                "block",
+            ),
         );
 
         match reply {
@@ -2148,6 +2153,7 @@ fn initialize_drm(
                     None
                 }
                 DrmScanEvent::Disconnected { .. } => None,
+                DrmScanEvent::Changed { .. } => None,
             })
             .collect()
     };
@@ -2315,7 +2321,10 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             std::path::PathBuf::from(p)
         }
         Ok(p) => {
-            warn!("EWM_RENDER_DEVICE {:?} not found, falling back to auto-detection", p);
+            warn!(
+                "EWM_RENDER_DEVICE {:?} not found, falling back to auto-detection",
+                p
+            );
             primary_gpu(&seat_name)?.ok_or("No GPU found")?
         }
         Err(_) => primary_gpu(&seat_name)?.ok_or("No GPU found")?,

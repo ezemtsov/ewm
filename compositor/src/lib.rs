@@ -95,8 +95,8 @@ use smithay::{
     delegate_fractional_scale, delegate_idle_notify, delegate_input_method_manager,
     delegate_layer_shell, delegate_output, delegate_pointer_constraints,
     delegate_primary_selection, delegate_relative_pointer, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_text_input_manager, delegate_viewporter, delegate_xdg_activation,
-    delegate_xdg_shell,
+    delegate_shm, delegate_text_input_manager, delegate_viewporter,
+    delegate_virtual_keyboard_manager, delegate_xdg_activation, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
         utils::{
@@ -171,6 +171,7 @@ use smithay::{
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
         viewporter::ViewporterState,
+        virtual_keyboard::VirtualKeyboardManagerState,
         xdg_activation::{
             XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
         },
@@ -861,6 +862,10 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub input_method_state: InputMethodManagerState,
 
+    // Virtual keyboard state (zwp-virtual-keyboard-v1 protocol)
+    #[allow(dead_code)]
+    pub virtual_keyboard_state: VirtualKeyboardManagerState,
+
     // When true, intercept all keys and send to Emacs for text input
     pub text_input_intercept: bool,
     // Deduplicate IM relay activate/deactivate events
@@ -1024,6 +1029,10 @@ impl Ewm {
         let input_method_state =
             InputMethodManagerState::new::<State, _>(&display_handle, |_| true);
 
+        // Initialize virtual keyboard (zwp-virtual-keyboard-v1)
+        let virtual_keyboard_state =
+            VirtualKeyboardManagerState::new::<State, _>(&display_handle, |_| true);
+
         // Initialize layer shell for panels, notifications, etc.
         let layer_shell_state = WlrLayerShellState::new::<State>(&display_handle);
 
@@ -1121,6 +1130,7 @@ impl Ewm {
             output_manager_state,
             text_input_state,
             input_method_state,
+            virtual_keyboard_state,
             text_input_intercept: false,
             text_input_active: false,
             pending_im_commits: Vec::new(),
@@ -2203,6 +2213,7 @@ impl Ewm {
                     surface,
                     output,
                     states,
+                    None,
                     render_element_states,
                     // Windows are shown on one output at a time
                     |_, _, output, _| output,
@@ -2218,6 +2229,7 @@ impl Ewm {
                     surface,
                     output,
                     states,
+                    None,
                     render_element_states,
                     // Layer surfaces are shown on one output at a time
                     |_, _, output, _| output,
@@ -2238,6 +2250,7 @@ impl Ewm {
                             surface,
                             output,
                             states,
+                            None,
                             render_element_states,
                             |_, _, output, _| output,
                         );
@@ -2258,6 +2271,7 @@ impl Ewm {
                         surface,
                         output,
                         states,
+                        None,
                         render_element_states,
                         |_, _, output, _| output,
                     );
@@ -2362,7 +2376,7 @@ impl Ewm {
                 &mut feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
-                    surface_presentation_feedback_flags_from_states(surface, render_element_states)
+                    surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
                 },
             );
         }
@@ -2374,7 +2388,7 @@ impl Ewm {
                 &mut feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
-                    surface_presentation_feedback_flags_from_states(surface, render_element_states)
+                    surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
                 },
             );
         }
@@ -2390,6 +2404,7 @@ impl Ewm {
                     |surface, _| {
                         surface_presentation_feedback_flags_from_states(
                             surface,
+                            None,
                             render_element_states,
                         )
                     },
@@ -2404,7 +2419,7 @@ impl Ewm {
                 &mut feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
-                    surface_presentation_feedback_flags_from_states(surface, render_element_states)
+                    surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
                 },
             );
         }
@@ -4463,6 +4478,11 @@ impl InputMethodHandler for State {
     }
 }
 delegate_input_method_manager!(State);
+
+// Virtual Keyboard (zwp-virtual-keyboard-v1: allows clients like wtype to inject key events)
+// Smithay handles key forwarding directly to the focused surface, bypassing the
+// compositor's keyboard input pipeline. No VirtualKeyboardHandler impl needed.
+delegate_virtual_keyboard_manager!(State);
 
 // XDG Shell
 impl XdgShellHandler for State {

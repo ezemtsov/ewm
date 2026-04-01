@@ -577,7 +577,7 @@ fn render_elements_impl(
         if let Some(mut damage) = output_rect.intersection(dst) {
             damage.loc -= dst.loc;
             element
-                .draw(&mut frame, src, dst, &[damage], &[])
+                .draw(&mut frame, src, dst, &[damage], &[], None)
                 .context("error drawing element")?;
         }
     }
