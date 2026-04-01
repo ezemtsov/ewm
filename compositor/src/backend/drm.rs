@@ -1852,6 +1852,13 @@ impl DrmBackendState {
             return;
         };
 
+        // Remove the wl_output global before dropping the surface.
+        // Without this, each reconnect cycle creates a new global while the
+        // old one remains advertised to clients, causing duplicates.
+        if let Some(dh) = &self.display_handle {
+            dh.remove_global::<State>(surface.global_id);
+        }
+
         ewm.remove_output(&surface.output);
     }
 
@@ -1872,6 +1879,9 @@ impl DrmBackendState {
                     surface.output.name(),
                     surface.global_id
                 );
+                // Remove the old (invalid) global before creating a new one
+                // to avoid duplicate wl_output globals.
+                dh.remove_global::<State>(surface.global_id.clone());
                 surface.global_id = surface.output.create_global::<State>(dh);
                 warn!(
                     "Re-created wl_output global for {}: {:?}",
