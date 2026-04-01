@@ -24,6 +24,9 @@ let
 
   # Launch script that runs EWM in the provided Emacs.
   launchScript = pkgs.writeShellScript "ewm-launch" ''
+    ${lib.optionalString (cfg.renderDevice != null) ''
+      export EWM_RENDER_DEVICE=${lib.escapeShellArg cfg.renderDevice}
+    ''}
     exec ${cfg.emacsPackage}/bin/emacs \
       --fg-daemon \
       --eval "(require 'ewm)" \
@@ -90,9 +93,6 @@ in
     environment.systemPackages = [ ewmSystemPackage ];
     services.displayManager.sessionPackages = [ ewmSystemPackage ];
     systemd.packages = [ ewmSystemPackage ];
-    systemd.user.services.ewm.environment = lib.optionalAttrs (cfg.renderDevice != null) {
-      EWM_RENDER_DEVICE = cfg.renderDevice;
-    };
     security.polkit.enable = true;
 
     # Provides fonts, xdg-utils, graphics, PipeWire, inotify limits, etc.
