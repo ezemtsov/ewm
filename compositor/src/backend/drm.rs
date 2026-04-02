@@ -1911,6 +1911,13 @@ impl DrmBackendState {
                 for crtc in to_disconnect {
                     self.disconnect_output(crtc, ewm);
                 }
+            } else {
+                // No external monitor — deactivate and suspend
+                ewm.deactivate_monitors();
+                if let Some(logind) = &self.logind {
+                    info!("Lid closed with no external display, suspending");
+                    logind.suspend();
+                }
             }
 
             // Kill idle child process (e.g., screensaver) on lid close
