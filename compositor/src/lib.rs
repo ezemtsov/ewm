@@ -150,14 +150,15 @@ use smithay::{
         seat::WaylandFocus,
         selection::{
             data_device::{
-                set_data_device_focus, DataDeviceHandler, DataDeviceState,
+                request_data_device_client_selection, set_data_device_focus,
+                set_data_device_selection, DataDeviceHandler, DataDeviceState,
                 WaylandDndGrabHandler,
             },
             primary_selection::{
                 set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
             },
             wlr_data_control::{DataControlHandler, DataControlState},
-            SelectionHandler,
+            SelectionHandler, SelectionSource, SelectionTarget,
         },
         session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
         shell::wlr_layer::{Layer, WlrLayerShellHandler, WlrLayerShellState},
@@ -178,6 +179,7 @@ use smithay::{
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -4319,7 +4321,44 @@ delegate_seat!(State);
 
 // Data device / selection
 impl SelectionHandler for State {
-    type SelectionUserData = ();
+    type SelectionUserData = Arc<[u8]>;
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        if ty == SelectionTarget::Clipboard {
+            if let Some(source) = &source {
+                let mime_types = source.mime_types();
+                if mime_types.iter().any(|m| m.contains("text")) {
+                    self.read_client_selection_to_emacs();
+                }
+            }
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        _ty: SelectionTarget,
+        _mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        user_data: &Self::SelectionUserData,
+    ) {
+        let buf = user_data.clone();
+        std::thread::spawn(move || {
+            use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
+            use std::io::Write;
+            if let Err(err) = fcntl_setfl(&fd, OFlags::empty()) {
+                warn!("error clearing flags on selection fd: {err:?}");
+            }
+            if let Err(err) = std::fs::File::from(fd).write_all(&buf) {
+                warn!("error writing selection: {err:?}");
+            }
+        });
+    }
 }
 impl WaylandDndGrabHandler for State {
     fn dnd_requested<S: dnd::Source>(
@@ -5628,6 +5667,20 @@ impl State {
                 debug!("Created activation token for Emacs: {}", token_str);
                 module::push_activation_token(token_str);
             }
+            ModuleCommand::SetSelection { text } => {
+                let data: Arc<[u8]> = Arc::from(text.into_bytes().into_boxed_slice());
+                set_data_device_selection(
+                    &self.ewm.display_handle,
+                    &self.ewm.seat,
+                    vec![
+                        "text/plain;charset=utf-8".into(),
+                        "text/plain".into(),
+                        "UTF8_STRING".into(),
+                    ],
+                    data,
+                );
+                debug!("Selection set from Emacs");
+            }
             ModuleCommand::OutputLayout {
                 output,
                 surfaces,
@@ -5739,6 +5792,41 @@ impl State {
                 self.ewm.focus_follows_mouse_mode = setting;
             }
         }
+    }
+
+    /// Read clipboard data from the current client selection and forward to Emacs.
+    ///
+    /// Deferred to an idle callback because `new_selection()` is called before
+    /// Smithay updates `SeatData`, so `request_data_device_client_selection()`
+    /// would read the old selection if called synchronously.
+    fn read_client_selection_to_emacs(&mut self) {
+        self.ewm.loop_handle.insert_idle(|state| {
+            let (read_end, write_end) =
+                std::os::unix::net::UnixStream::pair().expect("UnixStream::pair failed");
+
+            let write_fd: OwnedFd = write_end.into();
+            let mime = "text/plain;charset=utf-8".to_string();
+            match request_data_device_client_selection(&state.ewm.seat, mime, write_fd) {
+                Ok(()) => {
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
+                        let mut read_end = read_end;
+                        let mut buf = Vec::new();
+                        if let Err(e) = read_end.read_to_end(&mut buf) {
+                            warn!("error reading client selection: {e:?}");
+                            return;
+                        }
+                        if let Ok(text) = String::from_utf8(buf) {
+                            if !text.is_empty() {
+                                module::push_event(Event::SelectionChanged { text });
+                            }
+                        }
+                    });
+                }
+                Err(_) => {}
+            }
+        });
     }
 
     /// Handle lid open/close from libinput switch events.
