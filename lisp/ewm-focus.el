@@ -97,9 +97,9 @@ When multiple windows show the same buffer, picks the one under the pointer."
             (pop-to-buffer-same-window buf)))
       ;; handle emacs windows with mouse hover
       (when (and ewm--is-ffm-focus-event (not (ewm--minibuffer-active-p)))
-        (let* ((frame (cl-find id (frame-list)
-                               :key (lambda (f) (frame-parameter f 'ewm-surface-id))))
-               (window (window-at-x-y x y frame)))
+        (when-let* ((frame (cl-find id (frame-list)
+                                    :key (lambda (f) (frame-parameter f 'ewm-surface-id))))
+                    (window (window-at-x-y x y frame)))
           (unless (minibufferp (window-buffer window))
             (select-frame frame)
             (select-window window)
