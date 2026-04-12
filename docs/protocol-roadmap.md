@@ -19,6 +19,7 @@ This document outlines Wayland protocols to implement for broader application co
 | `wlr-foreign-toplevel-v1` | Exposes windows to external tools |
 | `ext-session-lock-v1` | Secure screen locking (swaylock) |
 | `ext-idle-notify-v1` | Idle detection (swayidle) |
+| `zwp-idle-inhibit-v1` | Idle inhibition (video players, games) |
 | `ext-workspace-v1` | Workspace state for panels (tab-bar integration) |
 | `wlr-data-control-v1` | Clipboard access for external tools (wl-copy, cliphist) |
 | `zwp-primary-selection-v1` | Primary (middle-click) selection |
@@ -168,7 +169,7 @@ session, position toplevel at pointer during drag, handle drop/cancel
 | output-management | `wlr-randr`, DankMaterialShell | Done |
 | data-device (DnD) | Nemo file drag, Firefox tab drag | Done |
 | pointer-constraints | `pointer-constraints-demo` | TODO |
-| idle-inhibit | Video player, `wayland-info` | TODO |
+| idle-inhibit | Video player, `wayland-info` | Done |
 | xdg-toplevel-drag | Chromium tab detach | TODO |
 
 ## References

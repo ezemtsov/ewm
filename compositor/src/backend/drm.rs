@@ -2652,6 +2652,19 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("D-Bus ScreenCast and Introspect servers started");
     }
 
+    // Start org.freedesktop.ScreenSaver D-Bus interface for idle inhibition.
+    // This allows apps like Firefox and Chrome to inhibit the screensaver via D-Bus.
+    let screen_saver =
+        crate::dbus_screensaver::ScreenSaver::new(state.ewm.is_fdo_idle_inhibited.clone());
+    match screen_saver.start() {
+        Ok(conn) => {
+            state.ewm.dbus_screensaver_conn = Some(conn);
+        }
+        Err(err) => {
+            warn!("failed to start org.freedesktop.ScreenSaver D-Bus interface: {err:?}");
+        }
+    }
+
     // Notify systemd we're ready. This must be outside the #[cfg(feature = "screencast")]
     // block so it fires unconditionally.
     if let Err(err) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {

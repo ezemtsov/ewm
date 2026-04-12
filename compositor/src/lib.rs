@@ -37,6 +37,7 @@ pub mod backend;
 pub mod cursor;
 #[cfg(feature = "screencast")]
 pub mod dbus;
+pub mod dbus_screensaver;
 pub mod event;
 pub mod frame_clock;
 pub mod im_relay;
@@ -92,11 +93,12 @@ use smithay::{
     backend::renderer::element::utils::select_dmabuf_feedback,
     backend::renderer::element::{solid::SolidColorBuffer, RenderElementStates},
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_fractional_scale, delegate_idle_notify, delegate_input_method_manager,
-    delegate_layer_shell, delegate_output, delegate_pointer_constraints,
-    delegate_primary_selection, delegate_relative_pointer, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_text_input_manager, delegate_viewporter,
-    delegate_virtual_keyboard_manager, delegate_xdg_activation, delegate_xdg_shell,
+    delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
+    delegate_input_method_manager, delegate_layer_shell, delegate_output,
+    delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
+    delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
+    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_activation,
+    delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
         utils::{
@@ -138,6 +140,7 @@ use smithay::{
         },
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState},
+        idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState},
         idle_notify::{IdleNotifierHandler, IdleNotifierState},
         input_method::{
             InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface,
@@ -909,6 +912,25 @@ pub struct Ewm {
     // Idle notify state (ext-idle-notify-v1 protocol)
     pub idle_notifier_state: IdleNotifierState<State>,
 
+    // Idle inhibit state (zwp-idle-inhibit-v1 protocol)
+    pub idle_inhibit_manager_state: IdleInhibitManagerState,
+    /// Surfaces that have requested idle inhibition via the Wayland protocol.
+    /// Only visible surfaces actually inhibit idle (checked in refresh_idle_inhibit).
+    pub idle_inhibiting_surfaces: std::collections::HashSet<WlSurface>,
+
+    /// Whether the freedesktop ScreenSaver D-Bus interface reports inhibition.
+    /// Shared with the D-Bus thread via Arc<AtomicBool>.
+    pub is_fdo_idle_inhibited: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// Whether idle is currently inhibited (cached from last refresh_idle_inhibit).
+    pub idle_is_inhibited: bool,
+
+    /// Manually inhibited from Emacs (e.g., `ewm-idle-inhibit-mode').
+    pub manual_idle_inhibited: bool,
+
+    // D-Bus ScreenSaver connection (must be kept alive for the interface to work)
+    pub dbus_screensaver_conn: Option<zbus::blocking::Connection>,
+
     // Gamma control state (wlr-gamma-control-unstable-v1 protocol)
     pub gamma_control_state: crate::protocols::gamma_control::GammaControlManagerState,
 
@@ -1060,6 +1082,9 @@ impl Ewm {
         // Initialize idle notifier (ext-idle-notify-v1)
         let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle);
 
+        // Initialize idle inhibit manager (zwp-idle-inhibit-v1)
+        let idle_inhibit_manager_state = IdleInhibitManagerState::new::<State>(&display_handle);
+
         // Initialize gamma control (wlr-gamma-control-unstable-v1)
         // Only advertise the global on DRM backends where gamma is actually supported
         let gamma_control_state = crate::protocols::gamma_control::GammaControlManagerState::new::<
@@ -1148,6 +1173,12 @@ impl Ewm {
             lock_state: LockState::Unlocked,
             pre_lock_focus: None,
             idle_notifier_state,
+            idle_inhibit_manager_state,
+            idle_inhibiting_surfaces: std::collections::HashSet::new(),
+            is_fdo_idle_inhibited: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            idle_is_inhibited: false,
+            manual_idle_inhibited: false,
+            dbus_screensaver_conn: None,
             gamma_control_state,
             fractional_scale_state,
             viewporter_state,
@@ -1983,10 +2014,18 @@ impl Ewm {
 
     /// Called when the calloop timer fires. Checks whether enough idle time
     /// has actually elapsed (activity may have occurred since the timer was set).
-    /// If not, reschedules for the remaining time instead of firing the action.
+    /// If not, reschedules for the remaining time instead of firing.
     /// Returns `true` if the idle action was actually fired.
     fn on_idle_timer_fired(&mut self) -> bool {
         self.idle_timeout.timer_token = None;
+
+        // Must refresh here: calloop may have been sleeping when D-Bus
+        // inhibit arrived, so the per-iteration refresh hasn't run yet.
+        self.refresh_idle_inhibit();
+        if self.idle_is_inhibited {
+            info!("Idle timer fired while inhibited, skipping idle action");
+            return false;
+        }
 
         let Some(timeout) = self.idle_timeout.timeout else {
             return false;
@@ -2054,6 +2093,78 @@ impl Ewm {
         } else {
             self.idle_timeout.last_activity = std::time::Instant::now();
         }
+    }
+
+    /// Refresh the idle inhibition state.
+    ///
+    /// Combines three sources of idle inhibition:
+    /// 1. **FDO ScreenSaver D-Bus**: Firefox, Chrome, and other apps use
+    ///    `org.freedesktop.ScreenSaver.Inhibit()` to prevent screensaver.
+    /// 2. **Wayland idle-inhibit protocol**: Video players create
+    ///    `zwp_idle_inhibitor_v1` on their surface.
+    /// 3. **Fullscreen heuristic**: A fullscreen surface that is currently
+    ///    focused is treated as an idle inhibitor (covers video players
+    ///    and games that don't implement the protocol).
+    ///
+    /// For Wayland protocol inhibitors, only visible surfaces count
+    /// (checked via `surface_primary_scanout_output`), matching niri's behavior.
+    /// This prevents a minimized/hidden app from keeping the screen awake.
+    ///
+    /// The result is propagated to both the ext-idle-notify protocol (for
+    /// swayidle) and the native idle timeout (monitor blanking/command).
+    pub fn refresh_idle_inhibit(&mut self) {
+        use smithay::wayland::compositor::with_states;
+
+        // Clean up dead surfaces
+        self.idle_inhibiting_surfaces.retain(|s| s.is_alive());
+
+        let is_inhibited = self.manual_idle_inhibited
+            || self.is_fdo_idle_inhibited.load(std::sync::atomic::Ordering::SeqCst)
+            || self.idle_inhibiting_surfaces.iter().any(|surface| {
+                with_states(surface, |states| {
+                    surface_primary_scanout_output(surface, states).is_some()
+                })
+            })
+            || self.fullscreen_surface_inhibits_idle();
+
+        if is_inhibited != self.idle_is_inhibited {
+            info!(
+                "Idle inhibition changed: {} -> {}",
+                self.idle_is_inhibited, is_inhibited
+            );
+            self.idle_is_inhibited = is_inhibited;
+
+            // Propagate to ext-idle-notify protocol (for swayidle)
+            self.idle_notifier_state.set_is_inhibited(is_inhibited);
+
+            // Propagate to native idle timeout
+            if is_inhibited {
+                // Cancel the idle timer to prevent monitor blanking
+                self.cancel_idle_timer();
+                // If already idle, wake up
+                if self.idle_timeout.is_idle {
+                    self.wake_from_idle();
+                }
+            } else {
+                // Restart the idle timer if configured
+                if let Some(duration) = self.idle_timeout.timeout {
+                    self.start_idle_timer(duration);
+                }
+            }
+        }
+    }
+
+    /// Check if a focused fullscreen surface should inhibit idle.
+    /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
+    fn fullscreen_surface_inhibits_idle(&self) -> bool {
+        for entries in self.output_layouts.values() {
+            for entry in entries {
+                if entry.fullscreen && entry.focused {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Kill idle child process (e.g., on lid close).
@@ -5039,6 +5150,18 @@ impl IdleNotifierHandler for State {
 }
 delegate_idle_notify!(State);
 
+// Idle inhibit protocol (zwp-idle-inhibit-v1)
+impl IdleInhibitHandler for State {
+    fn inhibit(&mut self, surface: WlSurface) {
+        self.ewm.idle_inhibiting_surfaces.insert(surface);
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.ewm.idle_inhibiting_surfaces.remove(&surface);
+    }
+}
+delegate_idle_inhibit!(State);
+
 // Gamma control protocol (wlr-gamma-control-unstable-v1)
 impl crate::protocols::gamma_control::GammaControlHandler for State {
     fn gamma_control_manager_state(
@@ -5449,6 +5572,8 @@ impl State {
 
         self.process_pending_commands();
 
+        self.ewm.refresh_idle_inhibit();
+
         // Refresh workspace protocol state (pull model: diff source of truth vs mirrors).
         crate::protocols::workspace::refresh::<State>(
             &mut self.ewm.workspace_state,
@@ -5810,6 +5935,9 @@ impl State {
             }
             ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
                 self.ewm.focus_follows_mouse_mode = setting;
+            }
+            ModuleCommand::SetIdleInhibited { inhibited } => {
+                self.ewm.manual_idle_inhibited = inhibited;
             }
         }
     }

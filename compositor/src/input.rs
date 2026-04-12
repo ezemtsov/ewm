@@ -225,11 +225,8 @@ pub fn handle_keyboard_event(
 
     // Use input_intercept + explicit input_forward so we can handle
     // emulation (modifier translation) between the two steps.
-    let (action, mods_changed) = keyboard.input_intercept(
-        state,
-        keycode.into(),
-        key_state,
-        |_, mods, handle| {
+    let (action, mods_changed) =
+        keyboard.input_intercept(state, keycode.into(), key_state, |_, mods, handle| {
             if !is_press {
                 return KeyAction::Forward;
             }
@@ -295,8 +292,7 @@ pub fn handle_keyboard_event(
             } else {
                 KeyAction::Forward
             }
-        },
-    );
+        });
 
     // Restore layout after prefix sequence temp reset
     if let Some(saved) = prefix_saved_layout {

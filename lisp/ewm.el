@@ -208,6 +208,12 @@ Examples:
   "Hook run when idle state changes.
 Called with one argument: t when entering idle, nil when waking.")
 
+(defvar ewm-idle-inhibited nil
+  "Whether idle is manually inhibited from Emacs.
+When non-nil, the idle timeout and idle notifications (swayidle) are
+suppressed.  This overrides all other idle inhibition sources.
+Use `ewm-idle-inhibit-mode' to toggle interactively.")
+
 ;; Load submodules (before event handlers that reference them)
 (require 'ewm-surface)
 (require 'ewm-focus)
@@ -555,6 +561,35 @@ Clears on all windows showing the surface."
        (ewm-configure-idle-module ewm-idle "blank"))
       (`(,(and (pred integerp) secs) . ,(and (pred stringp) cmd))
        (ewm-configure-idle-module secs cmd)))))
+
+(defun ewm-idle-inhibit (&optional arg)
+  "Manually inhibit idle timeout and idle notifications.
+With prefix ARG, turn inhibition on.  Without ARG, toggle.
+When idle is inhibited, the screen won't blank and swayidle won't
+fire regardless of inactivity.  Useful when watching a video or
+giving a presentation.
+
+See also `ewm-idle-inhibit-mode' for a minor mode version."
+  (interactive "P")
+  (let ((new-state (if arg
+                       t
+                     (not ewm-idle-inhibited))))
+    (setq ewm-idle-inhibited new-state)
+    (when (ewm--compositor-active-p)
+      (ewm-set-idle-inhibited (if new-state 1 nil)))
+    (message "Idle inhibition %s" (if new-state "enabled" "disabled"))))
+
+(define-minor-mode ewm-idle-inhibit-mode
+  "Minor mode to inhibit idle timeout and notifications.
+When enabled, the screen won't blank and swayidle won't fire
+regardless of inactivity.  Useful when watching a video or
+giving a presentation.
+
+This is the minor-mode equivalent of `ewm-idle-inhibit'."
+  :global t
+  :variable ewm-idle-inhibited
+  (when (ewm--compositor-active-p)
+    (ewm-set-idle-inhibited (if ewm-idle-inhibited 1 nil))))
 
 ;;; Commands
 

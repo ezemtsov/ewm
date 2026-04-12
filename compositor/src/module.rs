@@ -301,6 +301,10 @@ pub enum ModuleCommand {
     ConfigureFocusFollowsMouse {
         state: bool,
     },
+    /// Set manual idle inhibition (from Emacs)
+    SetIdleInhibited {
+        inhibited: bool,
+    },
 }
 
 /// Tab info sent from Emacs for workspace protocol
@@ -991,6 +995,19 @@ fn configure_idle_module(timeout: Option<i64>, action: Option<String>) -> Result
 fn set_focus_follows_mouse(state: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::ConfigureFocusFollowsMouse {
         state: state.is_not_nil(),
+    });
+    Ok(())
+}
+
+/// Set manual idle inhibition (module mode).
+/// When INHIBITED is non-nil, idle timeout and idle notifications are
+/// suppressed regardless of other inhibition sources.  When nil, manual
+/// inhibition is lifted (other sources like D-Bus or Wayland protocol
+/// may still inhibit idle).
+#[defun]
+fn set_idle_inhibited(inhibited: Value<'_>) -> Result<()> {
+    push_command(ModuleCommand::SetIdleInhibited {
+        inhibited: inhibited.is_not_nil(),
     });
     Ok(())
 }
