@@ -821,7 +821,6 @@ pub struct Ewm {
     pointer_output: Option<Output>,
     pub focused_surface_id: u64,
     pub keyboard_focus: Option<WlSurface>,
-    pub keyboard_focus_dirty: bool,
     /// Output geometry or working areas changed; shared active_outputs need recomputation.
     pub active_outputs_dirty: bool,
     /// Focus follows mouse
@@ -1140,7 +1139,6 @@ impl Ewm {
             pointer_output: None,
             focused_surface_id: 0,
             keyboard_focus: None,
-            keyboard_focus_dirty: false,
             active_outputs_dirty: true,
             focus_follows_mouse_mode: false,
             pointer_view_id: 0,
@@ -2981,14 +2979,11 @@ impl Ewm {
         self.emacs_surfaces.contains_key(&self.focused_surface_id)
     }
 
-    /// Set focus to a surface and notify Emacs.
-    /// Marks keyboard focus dirty for deferred sync.
     /// Focus a surface with source tracking for debugging.
-    /// Marks keyboard focus dirty for deferred sync via sync_keyboard_focus().
+    /// Keyboard focus is synced on the next frame or input event.
     pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str, context: Option<&str>) {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
-        self.keyboard_focus_dirty = true;
         if notify_emacs {
             self.queue_event(Event::Focus {
                 id,
@@ -3027,7 +3022,6 @@ impl Ewm {
             if surface.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand {
                 if self.layer_shell_on_demand_focus.as_ref() != Some(&surface) {
                     self.layer_shell_on_demand_focus = Some(surface);
-                    self.keyboard_focus_dirty = true;
                 }
                 return;
             }
@@ -3036,7 +3030,6 @@ impl Ewm {
         // Something else got clicked, clear on-demand layer-shell focus
         if self.layer_shell_on_demand_focus.is_some() {
             self.layer_shell_on_demand_focus = None;
-            self.keyboard_focus_dirty = true;
         }
     }
 
@@ -4217,7 +4210,6 @@ impl Ewm {
                     let was_unmapped = self.unmapped_layer_surfaces.remove(surface);
                     if was_unmapped {
                         debug!("Layer surface mapped");
-                        self.keyboard_focus_dirty = true;
 
                         // Auto-focus newly mapped OnDemand surfaces
                         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
@@ -4800,8 +4792,6 @@ impl WlrLayerShellHandler for State {
             map.arrange();
             drop(map);
 
-            self.ewm.keyboard_focus_dirty = true;
-
             // Check for working area expansion (panel removed)
             self.ewm.check_working_area_change(&output);
 
@@ -5133,9 +5123,6 @@ impl SessionLockHandler for State {
         if let Some(state) = self.ewm.output_state.get_mut(&output) {
             state.lock_surface = Some(surface);
         }
-
-        // Trigger keyboard focus sync to the lock surface
-        self.ewm.keyboard_focus_dirty = true;
 
         self.ewm.queue_redraw(&output);
     }
@@ -5485,24 +5472,14 @@ impl State {
         self.warp_pointer(x, y);
     }
 
-    /// Synchronize Wayland keyboard focus with focused_surface_id.
+    /// Synchronize Wayland keyboard focus with current state.
     ///
-    /// This is the primary mechanism for keeping logical focus (focused_surface_id)
-    /// in sync with Wayland keyboard focus (keyboard.set_focus). Most focus-changing
-    /// code paths just set focused_surface_id + keyboard_focus_dirty=true, and this
-    /// function resolves the actual WlSurface and calls keyboard.set_focus().
-    ///
-    /// Called from: handle_keyboard_event (before filter), after module command
-    /// batch, and main loop tick. The intercept_redirect path is the only code
-    /// that calls keyboard.set_focus() directly (it must be atomic with key
-    /// forwarding).
+    /// Called unconditionally every frame, and before key forwarding in
+    /// input handlers. Derives the correct focus from layer shell
+    /// interactivity and focused_surface_id. Only calls keyboard.set_focus()
+    /// when the resolved focus differs from current.
     pub fn sync_keyboard_focus(&mut self) {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
-
-        if !self.ewm.keyboard_focus_dirty {
-            return;
-        }
-        self.ewm.keyboard_focus_dirty = false;
 
         // When locked, focus the lock surface
         if self.ewm.is_locked() {
@@ -5571,6 +5548,7 @@ impl State {
         }
 
         self.process_pending_commands();
+        self.sync_keyboard_focus();
 
         self.ewm.refresh_idle_inhibit();
 

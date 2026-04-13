@@ -304,6 +304,7 @@ pub fn handle_keyboard_event(
     // Handle the filter decision
     match action {
         KeyAction::Forward => {
+            state.sync_keyboard_focus();
             keyboard.input_forward(state, keycode.into(), key_state, serial, time, mods_changed);
         }
 
@@ -357,7 +358,6 @@ pub fn handle_keyboard_event(
                 let context = format!("keycode={} keysym=0x{:x}", keycode, keysym_val);
                 module::record_focus(emacs_id, "intercept_redirect", Some(&context));
                 state.ewm.focused_surface_id = emacs_id;
-                state.ewm.keyboard_focus_dirty = false;
                 if let Some(window) = state.ewm.id_windows.get(&emacs_id) {
                     if let Some(surface) = window.wl_surface() {
                         let emacs_surface: WlSurface = surface.into_owned();
@@ -403,9 +403,6 @@ pub fn handle_keyboard_event(
             return KeyboardAction::RedirectToEmacs;
         }
     }
-
-    // Normal key handling - ensure Wayland keyboard focus matches focused_surface_id
-    state.sync_keyboard_focus();
 
     // Check if XKB layout changed (e.g., via grp:caps_toggle)
     let current_layout = keyboard.with_xkb_state(state, |context| {
@@ -464,7 +461,6 @@ pub fn release_all_keys(state: &mut State) {
 pub fn restore_focus(state: &mut State, surface_id: u64) {
     if state.ewm.id_windows.contains_key(&surface_id) {
         state.ewm.focused_surface_id = surface_id;
-        state.ewm.keyboard_focus_dirty = true;
         state.sync_keyboard_focus();
     }
 }
