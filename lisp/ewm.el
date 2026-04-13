@@ -261,6 +261,10 @@ Called with one argument: t when entering idle, nil when waking.")
     (setq ewm--pending-frame-outputs (delete pending ewm--pending-frame-outputs))
     (set-frame-parameter frame 'ewm-output output)
     (set-frame-parameter frame 'ewm-surface-id id)
+    ;; PGTK workaround: redisplay only flushes the Cairo context to the
+    ;; Wayland surface for the selected frame.  Without this, the initial
+    ;; surface commit is transparent until an external event arrives.
+    (with-selected-frame frame (redisplay t))
     (when (null ewm--pending-frame-outputs)
       (ewm--cleanup-orphan-frames))))
 
