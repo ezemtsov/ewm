@@ -3481,7 +3481,7 @@ impl Ewm {
                 out_info.x = current_geo.loc.x;
                 out_info.y = current_geo.loc.y;
                 for mode_info in &mut out_info.modes {
-                    mode_info.preferred = mode_info.width == current_mode.size.w
+                    mode_info.current = mode_info.width == current_mode.size.w
                         && mode_info.height == current_mode.size.h
                         && mode_info.refresh == current_mode.refresh;
                 }

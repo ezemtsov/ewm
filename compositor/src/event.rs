@@ -14,6 +14,7 @@ pub struct OutputMode {
     pub height: i32,
     pub refresh: i32, // mHz
     pub preferred: bool,
+    pub current: bool,
 }
 
 /// Output information sent to Emacs
@@ -22,6 +23,8 @@ pub struct OutputInfo {
     pub name: String,
     pub make: String,
     pub model: String,
+    /// Serial number from EDID, empty string if unavailable.
+    pub serial: String,
     pub width_mm: i32,
     pub height_mm: i32,
     pub x: i32,

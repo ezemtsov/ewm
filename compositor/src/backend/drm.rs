@@ -1810,6 +1810,7 @@ impl DrmBackendState {
                     height: smithay.size.h,
                     refresh: smithay.refresh,
                     preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
+                    current: smithay == smithay_mode,
                 }
             })
             .collect();
@@ -1826,6 +1827,7 @@ impl DrmBackendState {
             name: connector_name.clone(),
             make,
             model,
+            serial: serial_number,
             width_mm: physical_size.0 as i32,
             height_mm: physical_size.1 as i32,
             x: x_offset,

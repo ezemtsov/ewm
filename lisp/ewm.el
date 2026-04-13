@@ -156,6 +156,12 @@ We match by output name to find the corresponding frame.")
 Set this before calling `make-frame' to have the on-make-frame hook
 register the frame as pending for that output instead of deleting it.")
 
+(defvar ewm--output-info nil
+  "Alist of (CONNECTOR-NAME . EVENT-ALIST) for currently connected outputs.
+Each value is the full output_detected event alist, including make, model,
+serial, modes, scale, position and physical size.
+Updated on output_detected and output_disconnected events.")
+
 (defcustom ewm-output-config nil
   "Output configuration alist.
 Each entry is (OUTPUT-NAME . PLIST) where PLIST can contain:
@@ -170,11 +176,17 @@ Each entry is (OUTPUT-NAME . PLIST) where PLIST can contain:
                4=Flipped 5=Flipped90 6=Flipped180 7=Flipped270
   :enabled   - whether output is enabled (default t)
 
+OUTPUT-NAME can be either a connector name (e.g. \"DP-1\") or a
+Make-Model-Serial string (e.g. \"Dell U2722D ABC123\").  The MMS form is
+preferred because it survives connector re-numbering when cables are
+replugged.  Use `ewm-list-outputs' to see both forms for each connected
+output and copy a ready-to-use config entry.
+
 Configuration is stored in the compositor and re-applied when outputs
 reconnect (hot-plug), so values persist across connect/disconnect cycles.
 
 Example:
-  \\='((\"DP-1\" :width 2560 :height 1440 :scale 1.5)
+  \\='((\"Dell U2722D ABC123\" :width 2560 :height 1440 :scale 1.5)
     (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0 :transform 0))"
   :type '(alist :key-type string :value-type plist)
   :set (lambda (sym val)
@@ -401,12 +413,30 @@ Updates buffer-local variables and renames the buffer."
 (defun ewm--handle-output-detected (event)
   "Handle output detected EVENT. Creates a frame if needed."
   (let ((name (alist-get 'name event)))
+    (setf (alist-get name ewm--output-info nil nil #'string=) event)
     (unless (ewm--frame-for-output name)
       (ewm--create-frame-for-output name))))
 
 (defun ewm--handle-output-config-changed (event)
   "Handle output config changed EVENT.
-Runs `ewm-output-config-changed-hook' with the applied configuration."
+Patches `ewm--output-info' with the new values, then runs
+`ewm-output-config-changed-hook'."
+  (let ((name (alist-get 'name event)))
+    (when-let ((info (alist-get name ewm--output-info nil nil #'string=)))
+      ;; Patch scalar fields
+      (setf (alist-get 'scale info)     (alist-get 'scale event))
+      (setf (alist-get 'transform info) (alist-get 'transform event))
+      (setf (alist-get 'x info)         (alist-get 'x event))
+      (setf (alist-get 'y info)         (alist-get 'y event))
+      ;; Update current flag on modes to match the new active mode
+      (let ((new-w (alist-get 'width event))
+            (new-h (alist-get 'height event))
+            (new-r (alist-get 'refresh event)))
+        (dolist (m (alist-get 'modes info))
+          (setf (alist-get 'current m)
+                (and (= (alist-get 'width m) new-w)
+                     (= (alist-get 'height m) new-h)
+                     (= (alist-get 'refresh m) new-r)))))))
   (run-hook-with-args 'ewm-output-config-changed-hook event))
 
 (defvar ewm-output-config-changed-hook nil
@@ -419,6 +449,8 @@ Each function receives the event alist with symbol keys:
 Deletes the frame for that output. Surface buffers remain in Emacs but are
 hidden by the compositor since no windows display them."
   (let ((name (alist-get 'name event)))
+    (setq ewm--output-info
+          (assoc-delete-all name ewm--output-info #'string=))
     (when-let ((frame (ewm--frame-for-output name)))
       (delete-frame frame t))))
 
@@ -685,6 +717,79 @@ State will be displayed in *ewm-state* buffer when received."
   (ewm-get-debug-state-module)
   (ewm--log "Requested compositor state..."))
 
+(defun ewm-list-outputs ()
+  "Display connected outputs with properties and ewm-output-config suggestions.
+Shows connector name, Make-Model-Serial, current mode, scale, position,
+physical size, all available modes, and a ready-to-use config entry.
+
+Output is written to the *ewm-outputs* buffer.  The suggested config key
+uses the Make-Model-Serial form when make/model are known so that the entry
+survives connector re-numbering when cables are replugged."
+  (interactive)
+  (if (null ewm--output-info)
+      (message "No output info available (is the compositor running?)")
+    (with-current-buffer (get-buffer-create "*ewm-outputs*")
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (dolist (entry ewm--output-info)
+          (let* ((info        (cdr entry))
+                 (name        (alist-get 'name      info))
+                 (make        (or (alist-get 'make   info) "Unknown"))
+                 (model       (or (alist-get 'model  info) "Unknown"))
+                 (mms         (ewm--output-mms info))
+                 (config-key  (ewm--output-config-key info))
+                 (x           (or (alist-get 'x         info) 0))
+                 (y           (or (alist-get 'y         info) 0))
+                 (scale       (or (alist-get 'scale     info) 1.0))
+                 (transform   (or (alist-get 'transform info) 0))
+                 (width-mm    (or (alist-get 'width_mm  info) 0))
+                 (height-mm   (or (alist-get 'height_mm info) 0))
+                 (modes       (alist-get 'modes info))
+                 (cur (when modes
+                        (seq-find (lambda (m) (alist-get 'current m)) modes)))
+                 (transform-str
+                  (pcase transform
+                    (0 "Normal")   (1 "90°")          (2 "180°")
+                    (3 "270°")     (4 "Flipped")       (5 "Flipped+90°")
+                    (6 "Flipped+180°") (7 "Flipped+270°")
+                    (_ (number-to-string transform)))))
+            (insert (format "Output \"%s\" (%s)\n" mms name))
+            (if cur
+                (insert (format "  Current mode: %dx%d @ %.3f Hz%s\n"
+                                (alist-get 'width   cur)
+                                (alist-get 'height  cur)
+                                (/ (float (alist-get 'refresh cur)) 1000.0)
+                                (if (alist-get 'preferred cur) " (preferred)" "")))
+              (insert "  Disabled / no current mode\n"))
+            (insert (format "  Scale: %g\n" scale))
+            (insert (format "  Transform: %s\n" transform-str))
+            (insert (format "  Position: %d, %d\n" x y))
+            (when (or (> width-mm 0) (> height-mm 0))
+              (insert (format "  Physical size: %dx%d mm\n" width-mm height-mm)))
+            (when modes
+              (insert "  Available modes:\n")
+              (seq-do
+               (lambda (m)
+                 (insert
+                  (format "    %dx%d @ %.3f Hz%s\n"
+                          (alist-get 'width  m)
+                          (alist-get 'height m)
+                          (/ (float (alist-get 'refresh m)) 1000.0)
+                          (concat
+                           (if (alist-get 'current   m) " (current)"   "")
+                           (if (alist-get 'preferred m) " (preferred)" "")))))
+               modes))
+            (when cur
+              (insert (format "\n  Suggested ewm-output-config entry:\n"))
+              (insert (format "    (\"%s\" :width %d :height %d :scale %g)\n"
+                              config-key
+                              (alist-get 'width  cur)
+                              (alist-get 'height cur)
+                              scale)))
+            (insert "\n")))
+        (goto-char (point-min)))
+      (display-buffer (current-buffer)))))
+
 (defun ewm-debug-mode (&optional enable)
   "Toggle compositor debug mode for verbose logging.
 With prefix arg, ENABLE if positive, disable if zero or negative.
@@ -733,27 +838,73 @@ ARGS is a plist with optional keys:
   "Return (x . y) origin for OUTPUT-NAME, or (0 . 0) if not found."
   (or (ewm-get-output-origin output-name) '(0 . 0)))
 
+(defun ewm--output-mms (info)
+  "Return \"Make Model Serial\" string for output INFO event alist.
+Uses \"Unknown\" for any component absent from EDID, matching niri's convention
+so config keys written from `ewm-list-outputs' round-trip correctly."
+  (let* ((make   (or (alist-get 'make   info) "Unknown"))
+         (model  (or (alist-get 'model  info) "Unknown"))
+         (serial (or (alist-get 'serial info) ""))
+         (serial-str (if (string-empty-p serial) "Unknown" serial)))
+    (format "%s %s %s" make model serial-str)))
+
+(defun ewm--output-config-key (info)
+  "Return the recommended ewm-output-config key for output INFO.
+Uses the Make-Model-Serial string when make/model are known (survives
+connector re-numbering after cable changes), otherwise the connector name."
+  (let ((make  (or (alist-get 'make  info) "Unknown"))
+        (model (or (alist-get 'model info) "Unknown")))
+    (if (and (string= make "Unknown") (string= model "Unknown"))
+        (alist-get 'name info)
+      (ewm--output-mms info))))
+
+(defun ewm--find-connector-for-config (config-name)
+  "Resolve CONFIG-NAME to a live connector name.
+CONFIG-NAME may be a connector name (e.g. \"DP-1\") or a Make-Model-Serial
+string (e.g. \"Dell U2722D ABC123\").  Tries exact connector match first,
+then case-insensitive MMS match against `ewm--output-info'.
+Returns CONFIG-NAME itself when no live output matches, so the compositor
+still stores the config for future hot-plug."
+  (let ((result nil))
+    (dolist (entry ewm--output-info)
+      (unless result
+        (let ((connector (car entry))
+              (info      (cdr entry)))
+          (when (or (string= config-name connector)
+                    (string-equal-ignore-case config-name
+                                             (ewm--output-mms info)))
+            (setq result connector)))))
+    (or result config-name)))
+
 (defun ewm--apply-output-config ()
-  "Apply user output configuration from `ewm-output-config'."
+  "Apply user output configuration from `ewm-output-config'.
+Config keys may be connector names (\"DP-1\") or Make-Model-Serial strings
+(\"Dell U2722D ABC123\"); the latter are resolved to the live connector name
+via `ewm--find-connector-for-config' before sending to the compositor."
   (dolist (config ewm-output-config)
-    (let* ((name (car config))
-           (props (cdr config))
-           (width (plist-get props :width))
-           (height (plist-get props :height))
-           (refresh (plist-get props :refresh))
-           (x (plist-get props :x))
-           (y (plist-get props :y))
-           (scale (plist-get props :scale))
+    (let* ((config-name (car config))
+           (props       (cdr config))
+           (connector   (ewm--find-connector-for-config config-name))
+           (width     (plist-get props :width))
+           (height    (plist-get props :height))
+           (refresh   (plist-get props :refresh))
+           (x         (plist-get props :x))
+           (y         (plist-get props :y))
+           (scale     (plist-get props :scale))
            (transform (plist-get props :transform)))
-      (when (or width height refresh scale transform x y)
-        (ewm-configure-output name
-                              :width width
-                              :height height
-                              :refresh refresh
-                              :x x
-                              :y y
-                              :scale scale
-                              :transform transform)))))
+      (let ((has-enabled (plist-member props :enabled))
+            (enabled     (plist-get props :enabled)))
+        (when (or width height refresh scale transform x y has-enabled)
+          (apply #'ewm-configure-output connector
+                 (append
+                  (when width     (list :width width))
+                  (when height    (list :height height))
+                  (when refresh   (list :refresh refresh))
+                  (when x         (list :x x))
+                  (when y         (list :y y))
+                  (when scale     (list :scale scale))
+                  (when transform (list :transform transform))
+                  (when has-enabled (list :enabled enabled)))))))))
 
 ;;; Frame management
 
@@ -900,6 +1051,7 @@ The compositor runs as a thread within the Emacs process."
     (ewm--destroy-event-channel)
     (setq ewm--module-mode nil)
     (setq ewm--compositor-ready nil)
+    (setq ewm--output-info nil)
     (ewm-mode -1)))
 
 (defun ewm--kill-emacs-hook ()

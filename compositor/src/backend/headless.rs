@@ -155,6 +155,7 @@ impl HeadlessBackend {
             name: name.to_string(),
             make: "EWM".to_string(),
             model: "Virtual".to_string(),
+            serial: String::new(),
             width_mm: width,
             height_mm: height,
             x: x_offset,
@@ -166,6 +167,7 @@ impl HeadlessBackend {
                 height,
                 refresh: 60_000,
                 preferred: true,
+                current: true,
             }],
         };
 
