@@ -432,7 +432,7 @@ Patches `ewm--output-info' with the new values, then runs
       (let ((new-w (alist-get 'width event))
             (new-h (alist-get 'height event))
             (new-r (alist-get 'refresh event)))
-        (dolist (m (alist-get 'modes info))
+        (seq-doseq (m (alist-get 'modes info))
           (setf (alist-get 'current m)
                 (and (= (alist-get 'width m) new-w)
                      (= (alist-get 'height m) new-h)
