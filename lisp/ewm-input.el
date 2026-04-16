@@ -230,13 +230,13 @@ Coordinates are in compositor space."
 Does nothing if pointer is already inside the window or if it's a minibuffer."
   (unless (or (minibufferp (window-buffer window))
               (ewm-input--pointer-in-window-p window))
-    (let* ((frame (window-frame window))
-           (output (frame-parameter frame 'ewm-output))
-           (output-origin (ewm--get-output-origin output))
-           (edges (window-inside-pixel-edges window))
-           (x (+ (car output-origin) (/ (+ (nth 0 edges) (nth 2 edges)) 2)))
-           (y (+ (cdr output-origin) (/ (+ (nth 1 edges) (nth 3 edges)) 2))))
-      (ewm-warp-pointer (float x) (float y)))))
+    (when-let* ((frame (window-frame window))
+                (output (frame-parameter frame 'ewm-output))
+                (output-origin (ewm--get-output-origin output)))
+      (let* ((edges (window-inside-pixel-edges window))
+             (x (+ (car output-origin) (/ (+ (nth 0 edges) (nth 2 edges)) 2)))
+             (y (+ (cdr output-origin) (/ (+ (nth 1 edges) (nth 3 edges)) 2))))
+        (ewm-warp-pointer (float x) (float y))))))
 
 (defun ewm-input--on-window-selection-change (_frame)
   "Warp pointer when selected window changes.
