@@ -703,7 +703,7 @@ Coordinates are relative to the output's working area."
 
 (defun ewm-warp-pointer (x y)
   "Warp pointer to absolute position X, Y."
-  (ewm-warp-pointer-module (float x) (float y)))
+  (ewm-warp-pointer-module x y))
 
 (defun ewm-screenshot (&optional path)
   "Take a screenshot of the compositor."

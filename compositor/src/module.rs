@@ -113,6 +113,12 @@ use smithay::input::keyboard::{keysyms, xkb};
 
 use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
 
+/// Extract a number from a Lisp value as f64, accepting both int and float.
+fn value_as_f64(val: Value<'_>) -> Result<f64> {
+    val.into_rust::<f64>()
+        .or_else(|_| val.into_rust::<i64>().map(|i| i as f64))
+}
+
 // Shared State (read by Emacs, written by compositor)
 
 /// Compositor state snapshot, updated once per tick in `update_shared_state()`.
@@ -719,8 +725,11 @@ fn focus_module(id: i64) -> Result<()> {
 
 /// Warp pointer to absolute position (module mode).
 #[defun]
-fn warp_pointer_module(x: f64, y: f64) -> Result<()> {
-    push_command(ModuleCommand::WarpPointer { x, y });
+fn warp_pointer_module(x: Value<'_>, y: Value<'_>) -> Result<()> {
+    push_command(ModuleCommand::WarpPointer {
+        x: value_as_f64(x)?,
+        y: value_as_f64(y)?,
+    });
     Ok(())
 }
 
@@ -750,10 +759,15 @@ fn configure_output_module(
     width: Option<i64>,
     height: Option<i64>,
     refresh: Option<i64>,
-    scale: Option<f64>,
+    scale: Value<'_>,
     transform: Option<i64>,
     enabled: Value<'_>,
 ) -> Result<()> {
+    let scale = if scale.is_not_nil() {
+        Some(value_as_f64(scale)?)
+    } else {
+        None
+    };
     // Convert enabled value: t -> Some(true), nil -> Some(false), unspecified -> None
     // We use a special marker to detect "not provided" vs nil
     let enabled_opt = if enabled.is_not_nil() {
@@ -1059,7 +1073,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                 entry.middle_emulation = Some(val.is_not_nil());
             } else if key == *kw_accel_speed {
                 if val.is_not_nil() {
-                    entry.accel_speed = Some(val.into_rust()?);
+                    entry.accel_speed = Some(value_as_f64(val)?);
                 }
             } else if key == *kw_accel_profile {
                 if val.is_not_nil() {
