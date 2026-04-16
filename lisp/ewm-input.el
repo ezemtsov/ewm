@@ -346,17 +346,17 @@ get an :emulate flag for modifier translation on non-Emacs surfaces."
       (puthash (car entry) (cdr entry) emulate-map))
     ;; Intercept prefixes first; :fullscreen entries populate fs-events
     (dolist (entry ewm-intercept-prefixes)
-      (when-let ((parsed (ewm--parse-intercept-entry entry)))
+      (when-let* ((parsed (ewm--parse-intercept-entry entry)))
         (let ((event (car parsed)))
           (when (cdr parsed)
             (puthash event t fs-events))
-          (when-let ((spec (ewm--event-to-intercept-spec event (cdr parsed))))
+          (when-let* ((spec (ewm--event-to-intercept-spec event (cdr parsed))))
             (push spec specs)))))
     ;; Keymap bindings: fullscreen flag and emulate looked up
     (map-keymap
      (lambda (event binding)
        (when (and binding (not (eq binding 'undefined)) (not (eq binding 'ignore)))
-         (when-let ((spec (ewm--event-to-intercept-spec
+         (when-let* ((spec (ewm--event-to-intercept-spec
                            event
                            (gethash event fs-events)
                            (gethash event emulate-map))))

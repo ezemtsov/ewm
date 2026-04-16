@@ -66,7 +66,7 @@ a surface buffer is selected."
   "Sync compositor focus from Emacs state.
 Calls `ewm-focus' only when the target differs from current focus."
   (when ewm--module-mode
-    (when-let ((target (ewm--focus-target)))
+    (when-let* ((target (ewm--focus-target)))
       (unless (eq target (ewm-get-focused-id))
         (ewm-focus target)))))
 

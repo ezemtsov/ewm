@@ -321,7 +321,7 @@ Otherwise, creates a buffer for external surface."
   "Handle close surface EVENT.
 Kills the surface buffer."
   (let ((id (alist-get 'id event)))
-    (when-let ((buf (gethash id ewm--surfaces)))
+    (when-let* ((buf (gethash id ewm--surfaces)))
       (when (buffer-live-p buf)
         (with-current-buffer buf
           (remove-hook 'kill-buffer-query-functions
@@ -333,7 +333,7 @@ Kills the surface buffer."
   "Handle minimize surface EVENT.
 Buries the surface buffer, causing it to be hidden by the layout system."
   (let ((id (alist-get 'id event)))
-    (when-let ((buf (gethash id ewm--surfaces)))
+    (when-let* ((buf (gethash id ewm--surfaces)))
       (when (buffer-live-p buf)
         (with-current-buffer buf
           (bury-buffer))))))
@@ -385,7 +385,7 @@ No-op: tiling layout has no maximized state to restore."
 (defun ewm--report-cwd (shell-pid cwd)
   "Report that shell with SHELL-PID has changed directory to CWD.
 Called by shell hooks via emacsclient."
-  (when-let ((buf (ewm--cwd-find-buffer shell-pid)))
+  (when-let* ((buf (ewm--cwd-find-buffer shell-pid)))
     (with-current-buffer buf
       (setq default-directory (file-name-as-directory cwd)))))
 
@@ -402,7 +402,7 @@ Updates buffer-local variables and renames the buffer."
   (let ((id (alist-get 'id event))
         (app (alist-get 'app event))
         (title (alist-get 'title event)))
-    (when-let ((buf (gethash id ewm--surfaces)))
+    (when-let* ((buf (gethash id ewm--surfaces)))
       (when (buffer-live-p buf)
         (with-current-buffer buf
           (setq-local ewm-surface-app app)
@@ -422,7 +422,7 @@ Updates buffer-local variables and renames the buffer."
 Patches `ewm--output-info' with the new values, then runs
 `ewm-output-config-changed-hook'."
   (let ((name (alist-get 'name event)))
-    (when-let ((info (alist-get name ewm--output-info nil nil #'string=)))
+    (when-let* ((info (alist-get name ewm--output-info nil nil #'string=)))
       ;; Patch scalar fields
       (setf (alist-get 'scale info)     (alist-get 'scale event))
       (setf (alist-get 'transform info) (alist-get 'transform event))
@@ -451,7 +451,7 @@ hidden by the compositor since no windows display them."
   (let ((name (alist-get 'name event)))
     (setq ewm--output-info
           (assoc-delete-all name ewm--output-info #'string=))
-    (when-let ((frame (ewm--frame-for-output name)))
+    (when-let* ((frame (ewm--frame-for-output name)))
       (delete-frame frame t))))
 
 (defun ewm--rename-buffer ()
@@ -872,7 +872,7 @@ still stores the config for future hot-plug."
               (info      (cdr entry)))
           (when (or (string= config-name connector)
                     (string-equal-ignore-case config-name
-                                             (ewm--output-mms info)))
+                                              (ewm--output-mms info)))
             (setq result connector)))))
     (or result config-name)))
 
@@ -1124,12 +1124,12 @@ now that a graphical FRAME exists."
        (lambda (sym)
          (when-let* ((std (get sym 'standard-value))
                      (form (car-safe std)))
-            (when (and (boundp sym)
-                       (null (symbol-value sym))
-                       (not (get sym 'saved-value))
-                       (not (get sym 'customized-value))
-                       (string-match-p probe-re (prin1-to-string form)))
-              (custom-reevaluate-setting sym))))))))
+           (when (and (boundp sym)
+                      (null (symbol-value sym))
+                      (not (get sym 'saved-value))
+                      (not (get sym 'customized-value))
+                      (string-match-p probe-re (prin1-to-string form)))
+             (custom-reevaluate-setting sym))))))))
 
 
 ;;; Global minor mode
