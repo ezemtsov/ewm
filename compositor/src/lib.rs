@@ -50,6 +50,7 @@ pub mod render;
 pub mod tracy;
 pub mod utils;
 pub mod vblank_throttle;
+pub mod workspace_transition;
 pub mod xwayland;
 pub use tracy::VBlankFrameTracker;
 
@@ -344,6 +345,8 @@ pub struct OutputState {
     pub frame_callback_sequence: u32,
     /// Black backdrop for fullscreen surfaces (covers entire output)
     pub fullscreen_backdrop: SolidColorBuffer,
+    /// Active workspace transition animation, if any.
+    pub workspace_transition: Option<workspace_transition::WorkspaceTransition>,
 }
 
 impl OutputState {
@@ -360,6 +363,7 @@ impl OutputState {
             lock_color_buffer: SolidColorBuffer::new(size, [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
             fullscreen_backdrop: SolidColorBuffer::new(size, [0.0, 0.0, 0.0, 1.0]),
+            workspace_transition: None,
         }
     }
 
@@ -387,6 +391,7 @@ impl Default for OutputState {
             lock_color_buffer: SolidColorBuffer::new((1920, 1080), [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
             fullscreen_backdrop: SolidColorBuffer::new((1920, 1080), [0.0, 0.0, 0.0, 1.0]),
+            workspace_transition: None,
         }
     }
 }
@@ -2227,6 +2232,24 @@ impl Ewm {
             .map(|(o, _)| o.clone())
     }
 
+    /// Sweep and clear finished animations for the given output.
+    ///
+    /// Called before each render so the `unfinished_animations_remain` flag
+    /// reflects only live animations.
+    fn advance_animations(&mut self, output: &Output) {
+        let Some(state) = self.output_state.get_mut(output) else {
+            return;
+        };
+
+        if state
+            .workspace_transition
+            .as_ref()
+            .is_some_and(|t| t.is_done())
+        {
+            state.workspace_transition = None;
+        }
+    }
+
     /// Orchestrate a single output redraw.
     ///
     /// Orchestrate a single output redraw:
@@ -2250,6 +2273,9 @@ impl Ewm {
             ));
             state.frame_clock.next_presentation_time()
         };
+
+        // Sweep finished animations so render-path flag reflects live ones.
+        self.advance_animations(output);
 
         // Refresh protocol state before rendering
         self.refresh_foreign_toplevel();
@@ -2287,8 +2313,9 @@ impl Ewm {
 
             // Compute whether animations need another frame on this output.
             // When true, VBlank handlers queue another redraw to keep animations pumping.
-            // TODO: check resize/crossfade animations, animated cursor, layer surface animations
+            // Done animations are already cleared by advance_animations() above.
             state.unfinished_animations_remain = false;
+            state.unfinished_animations_remain |= state.workspace_transition.is_some();
         }
 
         // Check lock confirmation requirements
