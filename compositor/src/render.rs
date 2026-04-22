@@ -175,6 +175,20 @@ pub fn collect_render_elements_for_output(
     let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
     let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
 
+    // Workspace transition: slide content (windows/popups) while layer
+    // surfaces stay fixed. content_offset is the per-frame translation
+    // applied to every content element; 0 when no transition is active.
+    let transition = ewm
+        .output_state
+        .get(output)
+        .and_then(|s| s.workspace_transition.as_ref());
+    let content_offset: Point<i32, Physical> = if let Some(t) = transition {
+        let offset_logical = t.direction() as f64 * (1.0 - t.progress()) * output_size.w as f64;
+        Point::from(((offset_logical * scale.x) as i32, 0))
+    } else {
+        Point::from((0, 0))
+    };
+
     // The cursor goes on top.
     if include_cursor {
         let (pointer_x, pointer_y) = ewm.pointer_location();
@@ -303,7 +317,7 @@ pub fn collect_render_elements_for_output(
                         .unwrap_or_default();
                     let output_physical: Size<i32, Physical> =
                         output_logical_size.to_physical_precise_round(scale);
-                    let constrain = Rectangle::new(Point::from((0, 0)), output_physical);
+                    let constrain = Rectangle::new(content_offset, output_physical);
 
                     if entry.primary {
                         // Primary: native size, centered, crop to output bounds.
@@ -312,7 +326,8 @@ pub fn collect_render_elements_for_output(
                             output_logical_size,
                         );
                         let loc_physical: Point<i32, Physical> =
-                            Point::from((offset_x, offset_y)).to_physical_precise_round(scale);
+                            Point::from((offset_x, offset_y)).to_physical_precise_round(scale)
+                                + content_offset;
                         let view_elements =
                             window.render_elements(renderer, loc_physical, scale, 1.0);
                         push_constrained(
@@ -325,7 +340,7 @@ pub fn collect_render_elements_for_output(
                         );
                     } else {
                         // Non-primary: uniform stretch to fill output, crop overflow.
-                        let loc_physical: Point<i32, Physical> = Point::from((0, 0));
+                        let loc_physical: Point<i32, Physical> = content_offset;
                         let view_elements =
                             window.render_elements(renderer, loc_physical, scale, 1.0);
                         let buf_size: Size<i32, Physical> =
@@ -348,7 +363,7 @@ pub fn collect_render_elements_for_output(
                     if let Some(state) = ewm.output_state.get(output) {
                         let bg = SolidColorRenderElement::from_buffer(
                             &state.fullscreen_backdrop,
-                            (0, 0),
+                            content_offset,
                             scale,
                             1.0,
                             Kind::Unspecified,
@@ -361,7 +376,8 @@ pub fn collect_render_elements_for_output(
                 // Frame-relative → output-local (working_area.loc is relative to output origin)
                 let location =
                     Point::from((working_area.loc.x + entry.x, working_area.loc.y + entry.y));
-                let loc_physical: Point<i32, Physical> = location.to_physical_precise_round(scale);
+                let loc_physical: Point<i32, Physical> =
+                    location.to_physical_precise_round(scale) + content_offset;
                 let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     window.render_elements(renderer, loc_physical, scale, 1.0);
                 let entry_size: Size<i32, Physical> =
@@ -429,7 +445,7 @@ pub fn collect_render_elements_for_output(
         }
 
         let loc_offset = Point::from((loc.x - output_pos.x, loc.y - output_pos.y));
-        let loc_physical = loc_offset.to_physical_precise_round(scale);
+        let loc_physical = loc_offset.to_physical_precise_round(scale) + content_offset;
 
         let window_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
             window.render_elements(renderer, loc_physical, scale, 1.0);
@@ -464,7 +480,7 @@ pub fn collect_render_elements_for_output(
                     render_elements_from_surface_tree(
                         renderer,
                         popup.wl_surface(),
-                        render_loc.to_physical_precise_round(scale),
+                        render_loc.to_physical_precise_round(scale) + content_offset,
                         scale,
                         1.0,
                         Kind::Unspecified,
@@ -477,11 +493,10 @@ pub fn collect_render_elements_for_output(
     // Insert popups after top layer but before windows
     elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
 
-    // Workspace transition overlay: on top of all content, below cursor.
-    if let Some(output_state) = ewm.output_state.get(output) {
-        if let Some(transition) = &output_state.workspace_transition {
-            elements.insert(0, transition.render_element(scale));
-        }
+    // Workspace transition snapshot: in front of content (windows/popups),
+    // behind layer surfaces (Overlay/Top) — so DankMaterialShell stays put.
+    if let Some(t) = transition {
+        elements.insert(popup_insert_pos, t.render_element(scale));
     }
 
     (elements, cursor_elements)
