@@ -495,6 +495,33 @@ pub fn render_to_dmabuf(
     render_elements_impl(renderer, &mut target, size, scale, transform, elements)
 }
 
+/// Render elements into a fresh `GlesTexture`.
+///
+/// The texture is allocated at the given physical size in the requested format.
+/// Callers own the returned texture and can bind it again to sample from.
+pub fn render_to_texture(
+    renderer: &mut GlesRenderer,
+    size: Size<i32, Physical>,
+    scale: Scale<f64>,
+    transform: Transform,
+    fourcc: Fourcc,
+    elements: impl Iterator<Item = impl RenderElement<GlesRenderer>>,
+) -> anyhow::Result<(GlesTexture, SyncPoint)> {
+    let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+    let mut texture: GlesTexture = renderer
+        .create_buffer(fourcc, buffer_size)
+        .context("error creating texture")?;
+
+    let sync_point = {
+        let mut target = renderer
+            .bind(&mut texture)
+            .context("error binding texture")?;
+        render_elements_impl(renderer, &mut target, size, scale, transform, elements)?
+    };
+
+    Ok((texture, sync_point))
+}
+
 /// Render elements to an SHM buffer for screencopy
 pub fn render_to_shm(
     renderer: &mut GlesRenderer,
@@ -514,22 +541,11 @@ pub fn render_to_shm(
             "invalid buffer format or size"
         );
 
-        // Render to a texture first
-        let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
-        let mut texture: GlesTexture = renderer
-            .create_buffer(Fourcc::Xrgb8888, buffer_size)
-            .context("error creating texture")?;
-
-        {
-            let mut target = renderer
-                .bind(&mut texture)
-                .context("error binding texture")?;
-
-            // Render elements
-            let _ = render_elements_impl(renderer, &mut target, size, scale, transform, elements)?;
-        }
+        let (mut texture, _sync_point) =
+            render_to_texture(renderer, size, scale, transform, Fourcc::Xrgb8888, elements)?;
 
         // Download the result (re-bind to get framebuffer for copy)
+        let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
         let target = renderer
             .bind(&mut texture)
             .context("error binding texture for copy")?;
