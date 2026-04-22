@@ -564,6 +564,62 @@ layout updates apply under the animating snapshot."
   (when (ewm--compositor-active-p)
     (ewm-start-workspace-transition-module output direction)))
 
+(defun ewm--focus-edge-window (direction)
+  "Select the leftmost (`left') or rightmost (`right') window of the frame.
+Picks the target in a single pass by window x-edge, so only one
+`select-window' call happens — and that call is a no-op (no hook
+firing) when the saved selected window already is the outmost."
+  (select-window
+   (car (seq-sort-by (lambda (w) (car (window-edges w)))
+                     (if (eq direction 'left) #'< #'>)
+                     (window-list nil 'no-minibuf)))))
+
+(defun ewm-windmove-left ()
+  "Move to the Emacs window to the left, or pan to the previous tab.
+If no window exists to the left and a previous tab is available on
+this frame, slide to that tab and focus its leftmost window so that
+pressing `s-<left>' again continues straight into the tab before it.
+
+This \"outmost\" landing point optimizes cross-tab traversal over
+window-by-window inspection.  Use `s-<right>' from the landed window
+to step back into the tab you just entered."
+  (interactive)
+  (condition-case err
+      (windmove-left)
+    (user-error
+     (let ((output (frame-parameter nil 'ewm-output))
+           (current-idx (tab-bar--current-tab-index)))
+       (if (and output (> current-idx 0))
+           (progn
+             (ewm-start-workspace-transition output -1)
+             ;; 0-based current equals 1-based prev.
+             (tab-bar-select-tab current-idx)
+             (ewm--focus-edge-window 'left))
+         (signal (car err) (cdr err)))))))
+
+(defun ewm-windmove-right ()
+  "Move to the Emacs window to the right, or pan to the next tab.
+If no window exists to the right and a next tab is available on this
+frame, slide to that tab and focus its rightmost window so that
+pressing `s-<right>' again continues straight into the tab after it.
+
+This \"outmost\" landing point optimizes cross-tab traversal over
+window-by-window inspection.  Use `s-<left>' from the landed window
+to step back into the tab you just entered."
+  (interactive)
+  (condition-case err
+      (windmove-right)
+    (user-error
+     (let* ((output (frame-parameter nil 'ewm-output))
+            (current-idx (tab-bar--current-tab-index))
+            (count (length (funcall tab-bar-tabs-function))))
+       (if (and output (< current-idx (1- count)))
+           (progn
+             (ewm-start-workspace-transition output 1)
+             (tab-bar-select-tab (+ current-idx 2))
+             (ewm--focus-edge-window 'right))
+         (signal (car err) (cdr err)))))))
+
 (defun ewm--set-fullscreen-windows (buf value)
   "Set fullscreen window parameter to VALUE on all windows showing BUF."
   (dolist (win (get-buffer-window-list buf nil t))

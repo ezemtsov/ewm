@@ -49,9 +49,11 @@ Reads the digit from `last-command-event' for i3-style back-and-forth."
     (define-key map (kbd "<AudioMicMute>")      (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
     (define-key map (kbd "<MonBrightnessUp>")   (ewm--cmd "brightnessctl" "set" "5%+"))
     (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
-    ;; Window navigation (super + arrows)
-    (define-key map (kbd "s-<left>") #'windmove-left)
-    (define-key map (kbd "s-<right>") #'windmove-right)
+    ;; Window navigation (super + arrows). Left/right fall through to the
+    ;; adjacent tab with a slide animation when there's no window in that
+    ;; direction — tab boundaries feel seamless during horizontal traversal.
+    (define-key map (kbd "s-<left>") #'ewm-windmove-left)
+    (define-key map (kbd "s-<right>") #'ewm-windmove-right)
     (define-key map (kbd "s-<down>") #'windmove-down)
     (define-key map (kbd "s-<up>") #'windmove-up)
     ;; Clipboard
@@ -96,6 +98,8 @@ Override individual bindings with `use-package':
 (declare-function ewm-launch-app "ewm")
 (declare-function ewm-toggle-fullscreen "ewm")
 (declare-function ewm-lock-session "ewm")
+(declare-function ewm-windmove-left "ewm")
+(declare-function ewm-windmove-right "ewm")
 
 (defvar ewm-surface-id)
 (defvar ewm--module-mode)
