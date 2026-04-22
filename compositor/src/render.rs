@@ -852,3 +852,48 @@ pub fn render_screencopy_immediate(
         }
     }
 }
+
+/// Capture an output's current scene into a fresh `GlesTexture`.
+///
+/// Renders the full content layer (no cursor) at the output's native physical
+/// size and transform, in `Abgr8888`. Intended for building snapshots used by
+/// transition animations — the returned texture captures what the output shows
+/// right now, independent of any subsequent state changes.
+pub fn capture_output_to_texture(
+    ewm: &Ewm,
+    renderer: &mut GlesRenderer,
+    cursor_buffer: &cursor::CursorBuffer,
+    output: &Output,
+) -> anyhow::Result<(GlesTexture, SyncPoint)> {
+    let mode = output
+        .current_mode()
+        .context("output has no current mode")?;
+    let size = mode.size;
+    let output_scale = Scale::from(output.current_scale().fractional_scale());
+    let output_transform = output.current_transform();
+    let output_geo = ewm
+        .space
+        .output_geometry(output)
+        .context("output not mapped in space")?;
+
+    let (content, _cursor) = collect_render_elements_for_output(
+        ewm,
+        renderer,
+        output_scale,
+        cursor_buffer,
+        output_geo.loc,
+        output_geo.size,
+        false,
+        output,
+        RenderTarget::Output,
+    );
+
+    render_to_texture(
+        renderer,
+        size,
+        output_scale,
+        output_transform,
+        Fourcc::Abgr8888,
+        content.iter().rev(),
+    )
+}
