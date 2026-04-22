@@ -33,6 +33,7 @@ use smithay::{
                 render_elements,
                 solid::SolidColorRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                texture::TextureRenderElement,
                 utils::{CropRenderElement, RescaleRenderElement},
                 Kind, RenderElement,
             },
@@ -77,6 +78,7 @@ render_elements! {
     Constrained=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     SolidColor=SolidColorRenderElement,
+    Texture=TextureRenderElement<GlesTexture>,
 }
 
 /// Render layer surfaces on a specific layer to element list.
