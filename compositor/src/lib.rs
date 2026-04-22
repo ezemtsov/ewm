@@ -5944,7 +5944,84 @@ impl State {
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;
             }
+            ModuleCommand::StartWorkspaceTransition { output, direction } => {
+                self.start_workspace_transition(&output, direction);
+            }
         }
+    }
+
+    /// Start a content-slide transition on `output_name`. No-op if the
+    /// output isn't present, the session is locked, or direction is invalid.
+    fn start_workspace_transition(&mut self, output_name: &str, direction: i32) {
+        use smithay::backend::renderer::element::texture::TextureBuffer;
+        use workspace_transition::WorkspaceTransition;
+
+        if direction != 1 && direction != -1 {
+            warn!(
+                "start_workspace_transition: invalid direction {}",
+                direction
+            );
+            return;
+        }
+        if self.ewm.is_locked() {
+            return;
+        }
+        let Some(output) = self
+            .ewm
+            .space
+            .outputs()
+            .find(|o| o.name() == output_name)
+            .cloned()
+        else {
+            warn!("start_workspace_transition: output {} not found", output_name);
+            return;
+        };
+        let Some(geo) = self.ewm.space.output_geometry(&output) else {
+            return;
+        };
+        let output_size = geo.size;
+        let integer_scale = output.current_scale().integer_scale();
+        let transform = output.current_transform();
+
+        // Re-entrance policy: cancel any in-flight transition before capturing,
+        // so content_offset is zero during the capture (we snapshot the
+        // natural-position scene, not a partially-slid one).
+        if let Some(state) = self.ewm.output_state.get_mut(&output) {
+            state.workspace_transition = None;
+        }
+
+        let State { backend, ewm } = self;
+        let mut buffer: Option<TextureBuffer<_>> = None;
+        backend.with_renderer(|renderer, cursor_buffer, _| {
+            match crate::render::capture_output_to_texture(ewm, renderer, cursor_buffer, &output) {
+                Ok((texture, _sync)) => {
+                    buffer = Some(TextureBuffer::from_texture(
+                        renderer,
+                        texture,
+                        integer_scale,
+                        transform,
+                        None,
+                    ));
+                }
+                Err(e) => warn!("capture_output_to_texture failed: {:?}", e),
+            }
+        });
+
+        let Some(buffer) = buffer else {
+            return;
+        };
+
+        let transition = WorkspaceTransition::new(
+            buffer,
+            output_size,
+            direction,
+            Duration::from_millis(250),
+        );
+
+        if let Some(state) = self.ewm.output_state.get_mut(&output) {
+            state.workspace_transition = Some(transition);
+        }
+        self.ewm.queue_redraw(&output);
     }
 
     /// Read clipboard data from the current client selection and forward to Emacs.

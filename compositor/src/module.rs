@@ -311,6 +311,14 @@ pub enum ModuleCommand {
     SetIdleInhibited {
         inhibited: bool,
     },
+    /// Start a workspace-transition animation on an output.
+    /// Captured against the current layout; subsequent OutputLayout
+    /// commands apply under the animating snapshot.
+    StartWorkspaceTransition {
+        output: String,
+        /// +1 panning right (next tab), -1 panning left (prev tab).
+        direction: i32,
+    },
 }
 
 /// Tab info sent from Emacs for workspace protocol
@@ -737,6 +745,19 @@ fn warp_pointer_module(x: Value<'_>, y: Value<'_>) -> Result<()> {
 #[defun]
 fn screenshot_module(path: Option<String>) -> Result<()> {
     push_command(ModuleCommand::Screenshot { path });
+    Ok(())
+}
+
+/// Start a workspace-transition animation on OUTPUT.
+///
+/// DIRECTION must be +1 (pan right, i.e. next tab) or -1 (pan left, prev).
+/// Intended call order from Lisp: invoke this, then `tab-bar-select-tab`.
+#[defun]
+fn start_workspace_transition_module(output: String, direction: i64) -> Result<()> {
+    push_command(ModuleCommand::StartWorkspaceTransition {
+        output,
+        direction: direction as i32,
+    });
     Ok(())
 }
 

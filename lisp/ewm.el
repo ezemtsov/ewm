@@ -39,6 +39,7 @@
 (declare-function ewm-close-module "ewm-core")
 (declare-function ewm-warp-pointer-module "ewm-core")
 (declare-function ewm-screenshot-module "ewm-core")
+(declare-function ewm-start-workspace-transition-module "ewm-core")
 (declare-function ewm-get-debug-state-module "ewm-core")
 (declare-function ewm-debug-mode-module "ewm-core")
 (declare-function ewm-configure-output-module "ewm-core")
@@ -553,6 +554,15 @@ Switch to the requested tab on the appropriate frame."
       (when frame
         (with-selected-frame frame
           (tab-bar-select-tab tab-index))))))
+
+(defun ewm-start-workspace-transition (output direction)
+  "Start a workspace-slide animation on OUTPUT.
+DIRECTION must be +1 (pan right, next tab) or -1 (pan left, prev tab).
+Intended call order: invoke this, then `tab-bar-select-tab'.
+The compositor captures the current scene synchronously; subsequent
+layout updates apply under the animating snapshot."
+  (when (ewm--compositor-active-p)
+    (ewm-start-workspace-transition-module output direction)))
 
 (defun ewm--set-fullscreen-windows (buf value)
   "Set fullscreen window parameter to VALUE on all windows showing BUF."
