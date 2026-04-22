@@ -974,6 +974,7 @@ impl DrmBackendState {
             output_pos,
             output_size,
             true, // include_cursor
+            true, // include_layers
             output,
             RenderTarget::Output,
         );
@@ -1252,6 +1253,7 @@ impl DrmBackendState {
                                 output_pos,
                                 output_size,
                                 include_cursor,
+                                true, // include_layers
                                 output,
                                 RenderTarget::Screencast,
                             )

@@ -152,6 +152,9 @@ fn push_constrained(
 /// - `output_pos`: The output's position in global logical space
 /// - `output_size`: The output's size in logical coordinates
 /// - `include_cursor`: Whether to include the cursor element
+/// - `include_layers`: Whether to include layer surfaces and the DnD icon.
+///   Set to `false` for workspace-transition snapshots so the captured
+///   texture doesn't re-draw panels on top of the live layer surfaces.
 /// - `target`: The render target (Output vs Screencast); currently unused
 ///   but threaded through for future per-window privacy filtering.
 pub fn collect_render_elements_for_output(
@@ -162,6 +165,7 @@ pub fn collect_render_elements_for_output(
     output_pos: Point<i32, smithay::utils::Logical>,
     output_size: Size<i32, smithay::utils::Logical>,
     include_cursor: bool,
+    include_layers: bool,
     output: &Output,
     _target: RenderTarget,
 ) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
@@ -219,22 +223,24 @@ pub fn collect_render_elements_for_output(
     }
 
     // DnD icon renders above everything except the cursor.
-    if let Some(dnd_icon) = ewm.dnd_icon.as_ref() {
-        let (pointer_x, pointer_y) = ewm.pointer_location();
-        let icon_pos = Point::from((
-            pointer_x + dnd_icon.offset.x as f64 - output_pos.x as f64,
-            pointer_y + dnd_icon.offset.y as f64 - output_pos.y as f64,
-        ));
-        let icon_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-            render_elements_from_surface_tree(
-                renderer,
-                &dnd_icon.surface,
-                icon_pos.to_physical_precise_round(scale),
-                scale,
-                1.,
-                Kind::ScanoutCandidate,
-            );
-        elements.extend(icon_elements.into_iter().map(EwmRenderElement::Surface));
+    if include_layers {
+        if let Some(dnd_icon) = ewm.dnd_icon.as_ref() {
+            let (pointer_x, pointer_y) = ewm.pointer_location();
+            let icon_pos = Point::from((
+                pointer_x + dnd_icon.offset.x as f64 - output_pos.x as f64,
+                pointer_y + dnd_icon.offset.y as f64 - output_pos.y as f64,
+            ));
+            let icon_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                render_elements_from_surface_tree(
+                    renderer,
+                    &dnd_icon.surface,
+                    icon_pos.to_physical_precise_round(scale),
+                    scale,
+                    1.,
+                    Kind::ScanoutCandidate,
+                );
+            elements.extend(icon_elements.into_iter().map(EwmRenderElement::Surface));
+        }
     }
 
     // If the session is locked, draw the lock surface.
@@ -270,7 +276,7 @@ pub fn collect_render_elements_for_output(
     // borrow across the rest of the function. layer_map_for_output() returns
     // RefMut<LayerMap>; calling it again (e.g. via get_working_area) while
     // this borrow is alive would panic.
-    let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = {
+    let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = if include_layers {
         let layer_map = layer_map_for_output(output);
         let mut overlay = Vec::new();
         let mut top = Vec::new();
@@ -282,6 +288,8 @@ pub fn collect_render_elements_for_output(
         render_layer(&layer_map, Layer::Background, renderer, scale, &mut bg);
         (overlay, top, bottom, bg)
         // layer_map (RefMut) dropped here
+    } else {
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
     };
 
     // 2. Overlay layer
@@ -676,6 +684,7 @@ pub fn process_screencopies_for_output(
                 output_pos,
                 output_size,
                 true, // include_cursor
+                true, // include_layers
                 output,
                 RenderTarget::Output,
             );
@@ -804,7 +813,8 @@ pub fn render_screencopy_immediate(
         cursor_buffer,
         output_geo.loc,
         output_geo.size,
-        true,
+        true,  // include_cursor
+        true,  // include_layers
         &output,
         RenderTarget::Output,
     );
@@ -875,12 +885,12 @@ pub fn render_screencopy_immediate(
     }
 }
 
-/// Capture an output's current scene into a fresh `GlesTexture`.
+/// Capture an output's content (windows + popups + fullscreen) into a
+/// fresh `GlesTexture`, in `Abgr8888`.
 ///
-/// Renders the full content layer (no cursor) at the output's native physical
-/// size and transform, in `Abgr8888`. Intended for building snapshots used by
-/// transition animations — the returned texture captures what the output shows
-/// right now, independent of any subsequent state changes.
+/// Skips cursor, DnD icon, and layer surfaces so the snapshot can be
+/// composed over the live layer surfaces during a workspace transition
+/// without doubling up panels like DankMaterialShell.
 pub fn capture_output_to_texture(
     ewm: &Ewm,
     renderer: &mut GlesRenderer,
@@ -905,7 +915,8 @@ pub fn capture_output_to_texture(
         cursor_buffer,
         output_geo.loc,
         output_geo.size,
-        false,
+        false, // include_cursor
+        false, // include_layers
         output,
         RenderTarget::Output,
     );
