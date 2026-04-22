@@ -477,6 +477,13 @@ pub fn collect_render_elements_for_output(
     // Insert popups after top layer but before windows
     elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
 
+    // Workspace transition overlay: on top of all content, below cursor.
+    if let Some(output_state) = ewm.output_state.get(output) {
+        if let Some(transition) = &output_state.workspace_transition {
+            elements.insert(0, transition.render_element(scale));
+        }
+    }
+
     (elements, cursor_elements)
 }
 
