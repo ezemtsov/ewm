@@ -432,31 +432,29 @@ pub fn collect_render_elements_for_output(
         elements.append(&mut top_elems);
     }
 
-    // 5. Render surfaces from the space that are NOT in output_layouts (like Emacs frames)
-    for window in ewm.space.elements() {
-        let window_id = ewm.window_ids.get(window).copied().unwrap_or(0);
-
-        // Skip surfaces managed by output_layouts
-        if ewm.surface_outputs.contains_key(&window_id) {
+    // 5. Emacs frames declared to live on this output.
+    //
+    // Iterating `emacs_surfaces` (id → output name) lets us render based
+    // on explicit per-output ownership instead of deriving output membership
+    // from `space.elements()` + overlap filtering against `output_rect`,
+    // which was brittle and would silently skip frames whose space position
+    // lagged a resize/hot-plug. Working-area origin is the authoritative
+    // frame position (update_frames_for_working_area keeps the space in
+    // sync with it, not the other way around).
+    let working_area_loc_physical =
+        Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
+            .to_physical_precise_round(scale)
+            + content_offset;
+    for (&id, owner) in &ewm.emacs_surfaces {
+        if owner.as_str() != output.name().as_str() {
             continue;
         }
-
-        let loc = ewm.space.element_location(window).unwrap_or_default();
-        let window_geo = window.geometry();
-
-        let window_rect: Rectangle<i32, Logical> =
-            Rectangle::new(loc, Size::from((window_geo.size.w, window_geo.size.h)));
-
-        if !output_rect.overlaps(window_rect) {
+        let Some(window) = ewm.id_windows.get(&id) else {
             continue;
-        }
-
-        let loc_offset = Point::from((loc.x - output_pos.x, loc.y - output_pos.y));
-        let loc_physical = loc_offset.to_physical_precise_round(scale) + content_offset;
-
-        let window_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-            window.render_elements(renderer, loc_physical, scale, 1.0);
-        elements.extend(window_elements.into_iter().map(EwmRenderElement::Surface));
+        };
+        let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+            window.render_elements(renderer, working_area_loc_physical, scale, 1.0);
+        elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
     }
 
     // 6. Bottom layer
