@@ -22,18 +22,37 @@
 
 (require 'cl-lib)
 
+(defun ewm--maybe-animate-tab-move (target)
+  "Start a workspace-transition animation for a move toward TARGET.
+TARGET is a 0-based tab index or nil.  No-op when TARGET is nil, it
+equals the current tab, or the frame has no ewm output."
+  (when-let* ((target)
+              (current (tab-bar--current-tab-index))
+              ((/= target current))
+              (output (frame-parameter nil 'ewm-output)))
+    (ewm-start-workspace-transition output (if (> target current) 1 -1))))
+
 (defun ewm-tab-select-or-return ()
   "Select tab by number, or switch to recent if already on that tab.
-Reads the digit from `last-command-event' for i3-style back-and-forth."
+Reads the digit from `last-command-event' for i3-style back-and-forth.
+
+On an ewm-managed frame, a horizontal slide animation plays during
+the switch; direction follows the sign of the target-minus-current
+index delta.  `tab-bar--tab-index-recent' resolves the same-press
+destination up front so the animation matches where we'll land.
+
+Focus inside the landing tab is whatever the tab had saved — indexed
+jumps preserve per-tab window state, unlike `ewm-windmove-left' /
+`ewm-windmove-right' which reposition to the outmost window."
   (interactive)
-  (let* ((key (event-basic-type last-command-event))
-         (tab (if (and (characterp key) (>= key ?1) (<= key ?9))
-                  (- key ?0)
-                0))
-         (current (1+ (tab-bar--current-tab-index))))
-    (if (eq tab current)
-        (tab-recent)
-      (tab-bar-select-tab tab))))
+  (let* ((pressed (- (event-basic-type last-command-event) ?0))
+         (same-press (= pressed (1+ (tab-bar--current-tab-index))))
+         (target (if same-press
+                     (tab-bar--tab-index-recent 1)
+                   (and (<= pressed (length (funcall tab-bar-tabs-function)))
+                        (1- pressed)))))
+    (ewm--maybe-animate-tab-move target)
+    (if same-press (tab-recent) (tab-bar-select-tab pressed))))
 
 (defmacro ewm--cmd (&rest args)
   "Create an interactive command that runs ARGS as a subprocess."
@@ -100,6 +119,7 @@ Override individual bindings with `use-package':
 (declare-function ewm-lock-session "ewm")
 (declare-function ewm-windmove-left "ewm")
 (declare-function ewm-windmove-right "ewm")
+(declare-function ewm-start-workspace-transition "ewm")
 
 (defvar ewm-surface-id)
 (defvar ewm--module-mode)
