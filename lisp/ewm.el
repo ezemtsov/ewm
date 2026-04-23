@@ -123,6 +123,14 @@ When non-nil, warps the pointer to the center of the focused window."
   :type 'boolean
   :group 'ewm)
 
+(defcustom ewm-animations-enabled t
+  "Whether cross-tab slide animations play during navigation.
+Set to nil to disable all workspace-transition animations.  Bind
+dynamically via `let' to suppress animations for a single operation
+without changing the global preference."
+  :type 'boolean
+  :group 'ewm)
+
 (defvar ewm--mff-last-window nil
   "Last window for mouse-follows-focus, to avoid redundant warps.")
 
@@ -560,8 +568,12 @@ Switch to the requested tab on the appropriate frame."
 DIRECTION must be +1 (pan right, next tab) or -1 (pan left, prev tab).
 Intended call order: invoke this, then `tab-bar-select-tab'.
 The compositor captures the current scene synchronously; subsequent
-layout updates apply under the animating snapshot."
-  (when (ewm--compositor-active-p)
+layout updates apply under the animating snapshot.
+
+No-op when `ewm-animations-enabled' is nil or the compositor isn't
+active, so every animation-emitting caller automatically respects the
+preference without its own check."
+  (when (and ewm-animations-enabled (ewm--compositor-active-p))
     (ewm-start-workspace-transition-module output direction)))
 
 (defun ewm--focus-edge-window (direction)
