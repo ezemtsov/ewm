@@ -89,8 +89,8 @@ jumps preserve per-tab window state, unlike `ewm-windmove-left' /
     ;; Emacs sees S-Tab as iso-lefttab; compositor sees Tab+Shift.  Need both.
     (define-key map (kbd "s-<iso-lefttab>") #'ewm-prev-surface-buffer)
     (define-key map (kbd "s-S-<tab>") #'ewm-prev-surface-buffer)
-    (define-key map (kbd "s-t") #'tab-new)
-    (define-key map (kbd "s-w") #'tab-close)
+    (define-key map (kbd "s-t") #'ewm-tab-new)
+    (define-key map (kbd "s-w") #'ewm-tab-close)
     ;; Buffer movement
     (define-key map (kbd "C-s-<left>") #'buf-move-left)
     (define-key map (kbd "C-s-<right>") #'buf-move-right)
@@ -119,6 +119,8 @@ Override individual bindings with `use-package':
 (declare-function ewm-lock-session "ewm")
 (declare-function ewm-windmove-left "ewm")
 (declare-function ewm-windmove-right "ewm")
+(declare-function ewm-tab-new "ewm")
+(declare-function ewm-tab-close "ewm")
 (declare-function ewm-start-workspace-transition "ewm")
 
 (defvar ewm-surface-id)
