@@ -52,10 +52,12 @@ impl WorkspaceTransition {
         get_monotonic_time().saturating_sub(self.start) >= self.duration
     }
 
-    /// Linear progress 0.0 → 1.0. Easing comes later.
+    /// Eased progress 0.0 → 1.0 via EaseOutCubic (y = 1 - (1 - t)^3).
+    /// Fast start, gentle settle — keeps focus change feeling immediate.
     pub fn progress(&self) -> f64 {
         let elapsed = get_monotonic_time().saturating_sub(self.start);
-        (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0)
+        let t = (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0);
+        1.0 - (1.0 - t).powi(3)
     }
 
     pub fn direction(&self) -> i32 {
