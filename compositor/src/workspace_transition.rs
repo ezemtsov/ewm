@@ -8,14 +8,12 @@
 
 use std::time::Duration;
 
-use smithay::backend::renderer::element::{
-    texture::{TextureBuffer, TextureRenderElement},
-    Kind,
-};
+use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesTexture;
 use smithay::utils::{Logical, Point, Scale, Size};
 
 use crate::render::EwmRenderElement;
+use crate::texture::{TextureBuffer, TextureRenderElement};
 use crate::utils::get_monotonic_time;
 
 /// In-flight transition for a single output.
@@ -73,20 +71,14 @@ impl WorkspaceTransition {
     /// At progress=0 the snapshot sits at (0, 0); at progress=1 it has
     /// translated fully off-screen in the `-direction` direction (i.e.
     /// opposite of where the new content pans in from).
-    pub fn render_element(&self, scale: Scale<f64>) -> EwmRenderElement {
+    pub fn render_element(&self, _scale: Scale<f64>) -> EwmRenderElement {
         let offset_logical = -self.direction as f64 * self.progress() * self.output_size.w as f64;
-        let offset_physical_x = (offset_logical * scale.x) as i32;
-        // Force the element's logical size to match the output. Without this,
-        // smithay derives it from texture.size() / buffer.scale (integer),
-        // which shrinks the snapshot on fractional-scale outputs where the
-        // capture was rendered at a larger physical size than the integer
-        // scale implies.
         let elem = TextureRenderElement::from_texture_buffer(
-            Point::<f64, _>::from((offset_physical_x as f64, 0.0)),
-            &self.buffer,
+            self.buffer.clone(),
+            Point::<f64, Logical>::from((offset_logical, 0.0)),
+            1.0,
             None,
             None,
-            Some(self.output_size),
             Kind::Unspecified,
         );
         EwmRenderElement::Texture(elem)

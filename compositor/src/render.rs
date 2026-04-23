@@ -33,7 +33,6 @@ use smithay::{
                 render_elements,
                 solid::SolidColorRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-                texture::TextureRenderElement,
                 utils::{CropRenderElement, RescaleRenderElement},
                 Kind, RenderElement,
             },
@@ -78,7 +77,7 @@ render_elements! {
     Constrained=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     SolidColor=SolidColorRenderElement,
-    Texture=TextureRenderElement<GlesTexture>,
+    Texture=crate::texture::TextureRenderElement<GlesTexture>,
 }
 
 /// Render layer surfaces on a specific layer to element list.
@@ -896,23 +895,20 @@ pub fn capture_output_to_texture(
     renderer: &mut GlesRenderer,
     cursor_buffer: &cursor::CursorBuffer,
     output: &Output,
-) -> anyhow::Result<(GlesTexture, SyncPoint)> {
+) -> anyhow::Result<crate::texture::TextureBuffer<GlesTexture>> {
     let output_transform = output.current_transform();
     let output_geo = ewm
         .space
         .output_geometry(output)
         .context("output not mapped in space")?;
 
-    // Render and size at integer scale. smithay's TextureBuffer only
-    // carries an integer scale; using the fractional scale here would
-    // desync buffer_scale vs texture_size and make the snapshot sample
-    // outside its own bounds (tiling) on fractional-scale outputs.
-    // Slightly oversamples content on fractional outputs but keeps all
-    // scale declarations consistent.
-    let scale_i = output.current_scale().integer_scale();
-    let output_scale = Scale::from(scale_i as f64);
+    // Render at the output's actual fractional scale. Wrapping the texture
+    // in our fractional-scale-aware TextureBuffer (with Scale<f64>) keeps
+    // buffer_scale and texture_size in lock-step, so the snapshot samples
+    // pixel-for-pixel correctly without oversampling.
+    let output_scale = Scale::from(output.current_scale().fractional_scale());
     let texture_size: Size<i32, Physical> =
-        (output_geo.size.w * scale_i, output_geo.size.h * scale_i).into();
+        output_geo.size.to_f64().to_physical(output_scale).to_i32_round();
 
     let (content, _cursor) = collect_render_elements_for_output(
         ewm,
@@ -927,12 +923,20 @@ pub fn capture_output_to_texture(
         RenderTarget::Output,
     );
 
-    render_to_texture(
+    let (texture, _sync) = render_to_texture(
         renderer,
         texture_size,
         output_scale,
         output_transform,
         Fourcc::Abgr8888,
         content.iter().rev(),
-    )
+    )?;
+
+    Ok(crate::texture::TextureBuffer::from_texture(
+        renderer,
+        texture,
+        output_scale,
+        output_transform,
+        Vec::new(),
+    ))
 }

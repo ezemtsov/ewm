@@ -47,6 +47,7 @@ mod module;
 pub mod pipewire;
 pub mod protocols;
 pub mod render;
+pub mod texture;
 pub mod tracy;
 pub mod utils;
 pub mod vblank_throttle;
@@ -5953,7 +5954,6 @@ impl State {
     /// Start a content-slide transition on `output_name`. No-op if the
     /// output isn't present, the session is locked, or direction is invalid.
     fn start_workspace_transition(&mut self, output_name: &str, direction: i32) {
-        use smithay::backend::renderer::element::texture::TextureBuffer;
         use workspace_transition::WorkspaceTransition;
 
         if direction != 1 && direction != -1 {
@@ -5980,8 +5980,6 @@ impl State {
             return;
         };
         let output_size = geo.size;
-        let integer_scale = output.current_scale().integer_scale();
-        let transform = output.current_transform();
 
         // Re-entrance policy: cancel any in-flight transition before capturing,
         // so content_offset is zero during the capture (we snapshot the
@@ -5991,18 +5989,10 @@ impl State {
         }
 
         let State { backend, ewm } = self;
-        let mut buffer: Option<TextureBuffer<_>> = None;
+        let mut buffer: Option<crate::texture::TextureBuffer<_>> = None;
         backend.with_renderer(|renderer, cursor_buffer, _| {
             match crate::render::capture_output_to_texture(ewm, renderer, cursor_buffer, &output) {
-                Ok((texture, _sync)) => {
-                    buffer = Some(TextureBuffer::from_texture(
-                        renderer,
-                        texture,
-                        integer_scale,
-                        transform,
-                        None,
-                    ));
-                }
+                Ok(b) => buffer = Some(b),
                 Err(e) => warn!("capture_output_to_texture failed: {:?}", e),
             }
         });
