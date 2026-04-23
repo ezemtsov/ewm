@@ -897,16 +897,22 @@ pub fn capture_output_to_texture(
     cursor_buffer: &cursor::CursorBuffer,
     output: &Output,
 ) -> anyhow::Result<(GlesTexture, SyncPoint)> {
-    let mode = output
-        .current_mode()
-        .context("output has no current mode")?;
-    let size = mode.size;
-    let output_scale = Scale::from(output.current_scale().fractional_scale());
     let output_transform = output.current_transform();
     let output_geo = ewm
         .space
         .output_geometry(output)
         .context("output not mapped in space")?;
+
+    // Render and size at integer scale. smithay's TextureBuffer only
+    // carries an integer scale; using the fractional scale here would
+    // desync buffer_scale vs texture_size and make the snapshot sample
+    // outside its own bounds (tiling) on fractional-scale outputs.
+    // Slightly oversamples content on fractional outputs but keeps all
+    // scale declarations consistent.
+    let scale_i = output.current_scale().integer_scale();
+    let output_scale = Scale::from(scale_i as f64);
+    let texture_size: Size<i32, Physical> =
+        (output_geo.size.w * scale_i, output_geo.size.h * scale_i).into();
 
     let (content, _cursor) = collect_render_elements_for_output(
         ewm,
@@ -923,7 +929,7 @@ pub fn capture_output_to_texture(
 
     render_to_texture(
         renderer,
-        size,
+        texture_size,
         output_scale,
         output_transform,
         Fourcc::Abgr8888,

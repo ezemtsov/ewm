@@ -74,12 +74,17 @@ impl WorkspaceTransition {
     pub fn render_element(&self, scale: Scale<f64>) -> EwmRenderElement {
         let offset_logical = -self.direction as f64 * self.progress() * self.output_size.w as f64;
         let offset_physical_x = (offset_logical * scale.x) as i32;
+        // Force the element's logical size to match the output. Without this,
+        // smithay derives it from texture.size() / buffer.scale (integer),
+        // which shrinks the snapshot on fractional-scale outputs where the
+        // capture was rendered at a larger physical size than the integer
+        // scale implies.
         let elem = TextureRenderElement::from_texture_buffer(
             Point::<f64, _>::from((offset_physical_x as f64, 0.0)),
             &self.buffer,
             None,
             None,
-            None,
+            Some(self.output_size),
             Kind::Unspecified,
         );
         EwmRenderElement::Texture(elem)
