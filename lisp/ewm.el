@@ -632,24 +632,51 @@ to step back into the tab you just entered."
              (ewm--focus-edge-window 'right))
          (signal (car err) (cdr err)))))))
 
-(defun ewm-tab-new ()
-  "Create a new tab with a rightward slide animation."
-  (interactive)
-  (when-let ((output (frame-parameter nil 'ewm-output)))
-    (ewm-start-workspace-transition output 1))
-  (tab-new))
+(defun ewm--animate-tab-direction (direction)
+  "Push a workspace-transition animation in DIRECTION (+1 or -1).
+No-op when the compositor is inactive or the frame has no ewm output."
+  (when-let (((ewm--compositor-active-p))
+             (output (frame-parameter nil 'ewm-output)))
+    (ewm-start-workspace-transition output direction)))
 
-(defun ewm-tab-close ()
-  "Close the current tab with a leftward slide animation.
-Flips to a rightward slide when closing the leftmost tab, where the
-only remaining neighbor sits to the right."
-  (interactive)
-  (let ((output (frame-parameter nil 'ewm-output))
-        (count (length (funcall tab-bar-tabs-function)))
-        (current-idx (tab-bar--current-tab-index)))
-    (when (and output (> count 1))
-      (ewm-start-workspace-transition output (if (zerop current-idx) 1 -1))))
-  (tab-close))
+(defun ewm--advise-tab-next (&optional arg)
+  "Before-advice for `tab-next': animate when the move stays in-bounds.
+Animation skipped when the underlying wrap-around would fire —
+keeping our tab-strip-not-ring convention for the animation even
+though the built-in itself still wraps."
+  (let* ((current (tab-bar--current-tab-index))
+         (target (+ current (or arg 1))))
+    (when (< target (length (funcall tab-bar-tabs-function)))
+      (ewm--animate-tab-direction 1))))
+
+(defun ewm--advise-tab-previous (&optional arg)
+  "Before-advice for `tab-previous': animate when the move stays in-bounds."
+  (let* ((current (tab-bar--current-tab-index))
+         (target (- current (or arg 1))))
+    (when (>= target 0)
+      (ewm--animate-tab-direction -1))))
+
+(defun ewm--advise-tab-new (&rest _)
+  "Before-advice for `tab-new'.
+Direction follows `tab-bar-new-tab-to'; defaults to rightward."
+  (ewm--animate-tab-direction
+   (pcase tab-bar-new-tab-to
+     ((or 'left 'leftmost) -1)
+     (_ 1))))
+
+(defun ewm--advise-tab-close (&rest _)
+  "Before-advice for `tab-bar-close-tab'.
+Leftward slide except when closing the leftmost tab, where the only
+neighbor sits to the right."
+  (let ((count (length (funcall tab-bar-tabs-function)))
+        (current (tab-bar--current-tab-index)))
+    (when (> count 1)
+      (ewm--animate-tab-direction (if (zerop current) 1 -1)))))
+
+(advice-add 'tab-next :before #'ewm--advise-tab-next)
+(advice-add 'tab-previous :before #'ewm--advise-tab-previous)
+(advice-add 'tab-new :before #'ewm--advise-tab-new)
+(advice-add 'tab-bar-close-tab :before #'ewm--advise-tab-close)
 
 (defun ewm--set-fullscreen-windows (buf value)
   "Set fullscreen window parameter to VALUE on all windows showing BUF."
