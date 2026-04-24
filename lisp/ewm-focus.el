@@ -95,15 +95,23 @@ When multiple windows show the same buffer, picks the one under the pointer."
                 (select-window win)
                 (setq ewm--mff-last-window win))
             (pop-to-buffer-same-window buf)))
-      ;; handle emacs windows with mouse hover
-      (when (and ewm--is-ffm-focus-event (not (ewm--minibuffer-active-p)))
-        (when-let* ((frame (cl-find id (frame-list)
-                                    :key (lambda (f) (frame-parameter f 'ewm-surface-id))))
-                    (window (window-at-x-y x y frame)))
-          (unless (minibufferp (window-buffer window))
-            (select-frame frame)
-            (select-window window)
-            (setq ewm--mff-last-window window)))))))
+      ;; handle emacs frames (surface id belongs to a frame, not a buffer)
+      (let ((frame (cl-find id (frame-list)
+                            :key (lambda (f) (frame-parameter f 'ewm-surface-id)))))
+        (when frame
+          (cond
+           ;; Focus-follows-mouse with coordinates: select window under pointer
+           ((and ewm--is-ffm-focus-event x y (not (ewm--minibuffer-active-p)))
+            (when-let* ((window (window-at-x-y x y frame)))
+              (unless (minibufferp (window-buffer window))
+                (select-frame frame)
+                (select-window window)
+                (setq ewm--mff-last-window window))))
+           ;; No coordinates (initial focus, activation): always select the frame
+           ;; even if minibuffer is active -- needed at startup when Doom init
+           ;; leaves the minibuffer active on the invisible daemon frame.
+           ((not x)
+            (select-frame frame))))))))
 
 (provide 'ewm-focus)
 ;;; ewm-focus.el ends here

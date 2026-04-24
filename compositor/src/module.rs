@@ -319,6 +319,9 @@ pub enum ModuleCommand {
         /// +1 panning right (next tab), -1 panning left (prev tab).
         direction: i32,
     },
+    /// Client init done; force-resend wl_keyboard.enter (PGTK drops the
+    /// pre-roundtrip one).
+    Initialized,
 }
 
 /// Tab info sent from Emacs for workspace protocol
@@ -728,6 +731,13 @@ fn close_module(id: i64) -> Result<()> {
 #[defun]
 fn focus_module(id: i64) -> Result<()> {
     push_command(ModuleCommand::Focus { id: id as u64 });
+    Ok(())
+}
+
+/// Notify compositor that the client has finished its own initialization.
+#[defun]
+fn notify_initialized_module() -> Result<()> {
+    push_command(ModuleCommand::Initialized);
     Ok(())
 }
 

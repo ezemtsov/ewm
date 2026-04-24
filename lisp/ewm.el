@@ -49,6 +49,7 @@
 (declare-function ewm-start "ewm-core")
 (declare-function ewm-list-xdg-apps "ewm-core")
 (declare-function ewm-set-focus-follows-mouse "ewm-core")
+(declare-function ewm-notify-initialized-module "ewm-core")
 
 ;;; Logging
 
@@ -1156,7 +1157,12 @@ The compositor runs as a thread within the Emacs process."
             (ewm--destroy-event-channel)
             (ewm-mode -1)
             (setq ewm--module-mode nil)
-            (error "Compositor failed to become ready"))))
+            (error "Compositor failed to become ready")))
+        ;; Tell the compositor when init is fully done so it can replay the
+        ;; first wl_keyboard.enter (PGTK drops it pre-roundtrip).
+        (if after-init-time
+            (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)
+          (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module)))
     (ewm--destroy-event-channel)
     (error "Failed to start compositor")))
 

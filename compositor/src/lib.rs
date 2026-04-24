@@ -3907,7 +3907,7 @@ impl Ewm {
         }
     }
 
-    /// Handle new toplevel surface from XdgShellHandler
+    /// Handle new toplevel surface from XdgShellHandler.
     pub fn handle_new_toplevel(&mut self, surface: ToplevelSurface) {
         let id = self.next_surface_id;
         self.next_surface_id += 1;
@@ -4024,13 +4024,30 @@ impl Ewm {
             },
         );
 
-        // Send event to Emacs
+        // Auto-focus the first Emacs surface so keyboard input works without
+        // a pointer event. Keyboard.enter is replayed on Initialized command;
+        // PGTK drops enters sent before its surface's first roundtrip.
+        let auto_focus = is_emacs && self.focused_surface_id == 0;
+        if auto_focus {
+            self.set_focus(id, false, "initial_surface", None);
+        }
+
         self.queue_event(Event::New {
             id,
             app: app.clone(),
             output: target_output.clone(),
             pid: client_pid,
         });
+        // Sent after New so the lisp side has assigned ewm-surface-id by the
+        // time the Focus event is processed.
+        if auto_focus {
+            info!("Auto-focusing initial Emacs surface {}", id);
+            self.queue_event(Event::Focus {
+                id,
+                x: None,
+                y: None,
+            });
+        }
         info!(
             "New toplevel {} ({}) -> {:?}",
             id,
@@ -5945,8 +5962,17 @@ impl State {
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;
             }
+
             ModuleCommand::StartWorkspaceTransition { output, direction } => {
                 self.start_workspace_transition(&output, direction);
+            }
+
+            ModuleCommand::Initialized => {
+                // Force-resend keyboard.enter; PGTK silently dropped the
+                // initial one (sent before its first surface roundtrip).
+                info!("Client initialized; replaying keyboard focus");
+                self.ewm.keyboard_focus = None;
+                self.sync_keyboard_focus();
             }
         }
     }
