@@ -12,19 +12,19 @@ sequenceDiagram
     rect rgb(240, 248, 255)
         Note over LI,C: 1. Key Reception
         LI->>C: KeyboardEvent (keycode, state)
-        C->>C: XKB lookup → keysym + UTF-8
+        C->>C: XKB lookup -> keysym + UTF-8
         C->>C: text_input_intercept enabled?
         Note right of C: Intercept if: no Ctrl/Alt/Super,<br/>text input active, IM enabled,<br/>surface is not Emacs
     end
 
     rect rgb(255, 248, 240)
-        Note over C,E: 2. Compositor → Emacs (FIFO)
-        C->>EP: serde_json → write JSON + newline
+        Note over C,E: 2. Compositor -> Emacs (FIFO)
+        C->>EP: serde_json -> write JSON + newline
         EP-->>E: process filter triggered
         Note right of EP: Pipe fd delivers events<br/>directly to Emacs event loop
 
         loop for each JSON line in ewm--event-filter
-            E->>E: json-parse-string → alist
+            E->>E: json-parse-string -> alist
             E->>E: Input method translation<br/>(per focused surface buffer)
             E->>CQ: ewm-im-commit-module(text)
         end
@@ -32,7 +32,7 @@ sequenceDiagram
     end
 
     rect rgb(240, 255, 240)
-        Note over CQ,App: 3. Emacs → Client (FIFO)
+        Note over CQ,App: 3. Emacs -> Client (FIFO)
         C->>CQ: drain_commands() pre-render + between outputs
         CQ-->>C: Vec<ImCommit> in push order
         loop for each ImCommit
@@ -44,4 +44,4 @@ sequenceDiagram
         Note right of C: Focused output renders first.<br/>Commands arriving mid-render are<br/>processed between outputs, deferring<br/>remaining redraws to next VBlank.
     end
 
-    Note over LI,App: Fast typing → keys buffer in pipe, process with latency but never reorder
+    Note over LI,App: Fast typing -> keys buffer in pipe, process with latency but never reorder

@@ -306,7 +306,7 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       (setq-local ewm-surface-pid pid))
     ;; Display on target frame unless minibuffer is active.
     ;; select-frame + pop-to-buffer changes selected-window, which triggers
-    ;; window-selection-change-functions → ewm--sync-focus naturally.
+    ;; window-selection-change-functions -> ewm--sync-focus naturally.
     (unless (ewm--minibuffer-active-p)
       (let ((target-frame (ewm--frame-for-output output)))
         (when target-frame
@@ -579,7 +579,7 @@ preference without its own check."
 (defun ewm--focus-edge-window (direction)
   "Select the leftmost (`left') or rightmost (`right') window of the frame.
 Picks the target in a single pass by window x-edge, so only one
-`select-window' call happens — and that call is a no-op (no hook
+`select-window' call happens -- and that call is a no-op (no hook
 firing) when the saved selected window already is the outmost."
   (select-window
    (car (seq-sort-by (lambda (w) (car (window-edges w)))
@@ -641,7 +641,7 @@ No-op when the compositor is inactive or the frame has no ewm output."
 
 (defun ewm--advise-tab-next (&optional arg)
   "Before-advice for `tab-next': animate when the move stays in-bounds.
-Animation skipped when the underlying wrap-around would fire —
+Animation skipped when the underlying wrap-around would fire --
 keeping our tab-strip-not-ring convention for the animation even
 though the built-in itself still wraps."
   (let* ((current (tab-bar--current-tab-index))

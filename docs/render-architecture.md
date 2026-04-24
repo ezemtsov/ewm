@@ -239,7 +239,7 @@ Orchestration:
    └─► frame_clock.next_presentation_time()
 
 2. Render via backend
-   └─► backend.render(ewm, output, target_presentation_time) → RenderResult
+   └─► backend.render(ewm, output, target_presentation_time) -> RenderResult
 
 3. Handle state transitions based on RenderResult
    ├─► Submitted: DRM backend transitions to WaitingForVBlank internally
@@ -410,13 +410,13 @@ Screen sharing orchestration happens in `Backend::post_render()`, called by `Ewm
 VT switching triggers session pause/resume:
 
 ```
-VT switch away → SessionEvent::PauseSession
+VT switch away -> SessionEvent::PauseSession
     ├─► Suspend libinput
     ├─► Pause DRM device
     ├─► Cancel all estimated VBlank timers
     └─► Set all output states to Idle, set paused = true
 
-VT switch back → SessionEvent::ActivateSession
+VT switch back -> SessionEvent::ActivateSession
     ├─► Resume libinput
     ├─► Activate DRM device (acquire DRM master)
     ├─► Reset DRM compositor state on all surfaces
@@ -470,7 +470,7 @@ impl Drop for DrmBackendState {
         if let (Some(handle), Some(token)) = (&self.loop_handle, self.session_notifier_token.take()) {
             handle.remove(token);
         }
-        // Fields then drop in declaration order: device → libinput → session
+        // Fields then drop in declaration order: device -> libinput -> session
     }
 }
 ```

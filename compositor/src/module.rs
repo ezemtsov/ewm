@@ -4,10 +4,10 @@
 //!
 //! 1. **Thread safety**: The compositor runs in a separate thread from Emacs.
 //!    Communication uses queues, pipes, and shared state:
-//!    - `COMMAND_QUEUE`: Emacs → Compositor commands (layouts, focus, etc.)
-//!    - `EVENT_WRITER`: Compositor → Emacs events via pipe fd (open_channel)
-//!    - `SHARED_STATE`: Compositor → Emacs snapshot (focus, pointer, outputs)
-//!    - `ACTIVATION_TOKEN_POOL`: Compositor → Emacs pre-generated XDG activation tokens
+//!    - `COMMAND_QUEUE`: Emacs -> Compositor commands (layouts, focus, etc.)
+//!    - `EVENT_WRITER`: Compositor -> Emacs events via pipe fd (open_channel)
+//!    - `SHARED_STATE`: Compositor -> Emacs snapshot (focus, pointer, outputs)
+//!    - `ACTIVATION_TOKEN_POOL`: Compositor -> Emacs pre-generated XDG activation tokens
 //!    - `IN_PREFIX_SEQUENCE`: Bidirectional atomic (hot input path)
 //!
 //! 2. **No blocking**: Module functions called from Emacs must never block.
@@ -818,7 +818,7 @@ fn configure_output_module(
 
 /// Emacs key names that don't round-trip through simple transformations.
 /// Emacs lowercases and replaces underscores with hyphens, but also compounds
-/// words (e.g., XKB "ISO_Left_Tab" → Emacs "iso-lefttab"), losing word boundaries.
+/// words (e.g., XKB "ISO_Left_Tab" -> Emacs "iso-lefttab"), losing word boundaries.
 const EMACS_TO_XKB_NAMES: &[(&str, &str)] = &[
     ("iso-lefttab", "ISO_Left_Tab"),
     ("iso-move-line-up", "ISO_Move_Line_Up"),
@@ -844,9 +844,9 @@ const EMACS_TO_XKB_NAMES: &[(&str, &str)] = &[
 ];
 
 /// Resolve an Emacs key name to an XKB keysym.
-/// Handles: case differences (Emacs "left" → XKB "Left"),
-/// hyphens vs underscores (Emacs "kp-add" → XKB "KP_Add"),
-/// XF86 prefix (Emacs "AudioMute" → XKB "XF86AudioMute"),
+/// Handles: case differences (Emacs "left" -> XKB "Left"),
+/// hyphens vs underscores (Emacs "kp-add" -> XKB "KP_Add"),
+/// XF86 prefix (Emacs "AudioMute" -> XKB "XF86AudioMute"),
 /// and compound-word lossy names via fallback table.
 fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
     let no_symbol: xkb::Keysym = keysyms::KEY_NoSymbol.into();
@@ -857,7 +857,7 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
         return sym;
     }
 
-    // Try with hyphens replaced by underscores (Emacs convention → XKB convention)
+    // Try with hyphens replaced by underscores (Emacs convention -> XKB convention)
     if name.contains('-') {
         let underscored = name.replace('-', "_");
         let sym = xkb::keysym_from_name(&underscored, xkb::KEYSYM_CASE_INSENSITIVE);
@@ -963,7 +963,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
 
 /// Commit text to a client text field.
 /// SURFACE-ID identifies the target surface, used for queuing commits
-/// that arrive while the client is in a disable→enable gap.
+/// that arrive while the client is in a disable->enable gap.
 #[defun]
 fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
     push_command(ModuleCommand::ImCommit {
@@ -1061,7 +1061,7 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
         let mut entry = input::InputConfigEntry::default();
 
         // Walk plist key/value pairs. Compare the key symbol Value directly against
-        // cached GlobalRefs, avoiding symbol-name → String → match on every iteration.
+        // cached GlobalRefs, avoiding symbol-name -> String -> match on every iteration.
         let mut rest = plist;
         while rest.is_not_nil() {
             let key = env.call(car, (rest,))?;

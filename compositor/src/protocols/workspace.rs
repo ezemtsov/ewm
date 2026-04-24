@@ -145,9 +145,9 @@ pub struct WorkspaceManagerState {
     display: DisplayHandle,
     /// Per-manager-binding action queue, drained on Commit.
     instances: HashMap<ExtWorkspaceManagerV1, Vec<Action>>,
-    /// output_name → group
+    /// output_name -> group
     groups: HashMap<String, GroupData>,
-    /// (output_name, tab_index) → workspace
+    /// (output_name, tab_index) -> workspace
     workspaces: HashMap<WorkspaceKey, WorkspaceData>,
 }
 

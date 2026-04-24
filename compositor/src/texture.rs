@@ -2,7 +2,7 @@
 //!
 //! smithay's built-in `TextureBuffer` stores scale as `i32`, so a texture
 //! rendered at a fractional output scale (say 1.5x) can't be described
-//! correctly — the mismatch between declared scale and actual pixel size
+//! correctly -- the mismatch between declared scale and actual pixel size
 //! either shrinks or tiles the element. This module mirrors smithay's
 //! API but uses `Scale<f64>` and resolves `src` directly from the
 //! texture's own dimensions, so fractional-scale outputs render

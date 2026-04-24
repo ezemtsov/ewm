@@ -53,7 +53,7 @@ use crate::State;
 /// Allowance for frame timing - if delay is below this, proceed anyway
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 
-/// Cast state machine: ResizePending → ConfirmationPending → Ready
+/// Cast state machine: ResizePending -> ConfirmationPending -> Ready
 #[derive(Debug)]
 enum CastState {
     /// Waiting for PipeWire to negotiate format at the requested size.

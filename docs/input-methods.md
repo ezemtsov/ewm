@@ -52,7 +52,7 @@ On startup, Emacs configures XKB via the dynamic module.
 
 ### Module Interface
 
-**Emacs → Compositor (module functions):**
+**Emacs -> Compositor (module functions):**
 
 ```elisp
 (ewm-configure-xkb-module layouts options)  ; Set layouts and XKB options
@@ -60,7 +60,7 @@ On startup, Emacs configures XKB via the dynamic module.
 (ewm-get-layouts-module)                    ; Query current layouts
 ```
 
-**Compositor → Emacs (events via pipe fd):**
+**Compositor -> Emacs (events via pipe fd):**
 
 | Event | Fields | Purpose |
 |-------|--------|---------|
@@ -109,13 +109,13 @@ Application                    Compositor                      Emacs
 ```
 
 Commits are applied directly on the compositor thread via `TextInputHandle`,
-avoiding cross-thread serial races. If the client is in a disable→enable gap
+avoiding cross-thread serial races. If the client is in a disable->enable gap
 (e.g., after focus returned from the minibuffer), commits are queued and
 drained on the next Activated event.
 
 ### Module Interface
 
-**Compositor → Emacs (events via pipe fd):**
+**Compositor -> Emacs (events via pipe fd):**
 
 | Event | Fields | Purpose |
 |-------|--------|---------|
@@ -123,7 +123,7 @@ drained on the next Activated event.
 | `text_input_deactivated` | - | Text field unfocused |
 | `key` | `keysym`, `utf8` | Key press in text field |
 
-**Emacs → Compositor (module functions):**
+**Emacs -> Compositor (module functions):**
 
 ```elisp
 (ewm-im-commit-module text surface-id)   ; Insert text into focused field

@@ -72,7 +72,7 @@ taken via `mem::take` to avoid borrow conflicts with element collection.
 **`stream.rs`**: `Cast` struct for video streaming:
 - DMA-BUF buffer allocation via GBM device
 - Format negotiation with SPA pod builder (DONT_FIXATE + dual modifier offer)
-- 3-state machine: `ResizePending` → `ConfirmationPending` → `Ready`
+- 3-state machine: `ResizePending` -> `ConfirmationPending` -> `Ready`
 - Non-blocking GPU sync via fence FD export + calloop source
 - Damage-based frame skipping via `OutputDamageTracker`
 - Timer-based scheduled redraws stored on Cast (cancellable)
@@ -123,7 +123,7 @@ D-Bus Thread                          Compositor (calloop)
 ### Cast State Machine
 
 ```
-ResizePending ──→ ConfirmationPending ──→ Ready
+ResizePending ──-> ConfirmationPending ──-> Ready
     ↑                                       │
     └───────── output resize ───────────────┘
 ```
@@ -184,7 +184,7 @@ Both screencopy and screencast use `OutputDamageTracker` to detect when
 content hasn't changed:
 - Screencopy: per-queue tracker, `CopyWithDamage` requests skip when idle
 - Screencast: per-cast tracker inside `Cast::dequeue_buffer_and_render()`
-- No damage → no render → reduced CPU/GPU usage
+- No damage -> no render -> reduced CPU/GPU usage
 
 ### Per-Output Redraw Tracking
 
@@ -282,7 +282,7 @@ wf-recorder -f /tmp/recording.mp4
 firefox https://meet.jit.si/test
 
 # OBS capture (PipeWire)
-obs  # Add source → Screen Capture (PipeWire)
+obs  # Add source -> Screen Capture (PipeWire)
 
 # Verify D-Bus interface
 busctl --user introspect org.gnome.Mutter.ScreenCast /org/gnome/Mutter/ScreenCast

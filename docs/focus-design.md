@@ -70,11 +70,11 @@ prefix keys (bound to keymaps). The compositor uses this to track state:
 
 ```
 Initialization:
-  Emacs scans keymaps → sends intercept specs with :is-prefix flag
+  Emacs scans keymaps -> sends intercept specs with :is-prefix flag
 
 Runtime:
-  Prefix key intercepted → compositor sets IN_PREFIX_SEQUENCE=true
-  post-command-hook fires → ewm-input--clear-prefix clears flag → syncs focus
+  Prefix key intercepted -> compositor sets IN_PREFIX_SEQUENCE=true
+  post-command-hook fires -> ewm-input--clear-prefix clears flag -> syncs focus
 ```
 
 Key insight: Compositor only SETS the flag true on prefix keys, never clears it.
@@ -162,8 +162,8 @@ Previous design had keyboard focus only change on click. This caused issues:
 - M-x would route to primary monitor (last clicked) instead of external
 
 With input-to-focus:
-- Scroll Firefox → Firefox has focus, external monitor is "active"
-- Press M-x → routes to Emacs frame on external monitor
+- Scroll Firefox -> Firefox has focus, external monitor is "active"
+- Press M-x -> routes to Emacs frame on external monitor
 
 ## Module Events
 
@@ -199,7 +199,7 @@ Source: [refocus.mmd](diagrams/refocus.mmd)
 ### Compositor (Rust)
 
 - `set_focus(id, notify_emacs, source, context)`: Single entry point for all focus changes. Sets logical focus, marks keyboard dirty, optionally sends Focus event to Emacs. Debug source/context tracked in focus history.
-- `sync_keyboard_focus()`: Resolve `focused_surface_id` → `WlSurface`, call `keyboard.set_focus()` if dirty
+- `sync_keyboard_focus()`: Resolve `focused_surface_id` -> `WlSurface`, call `keyboard.set_focus()` if dirty
 - `get_emacs_surface_for_focused_output()`: Find Emacs frame on same output as focused surface
 
 ### Emacs (ewm.el / ewm-input.el / ewm-layout.el)
@@ -259,7 +259,7 @@ always receives a Focus event and can select the correct window.
 
 Each layout entry has two independent flags:
 
-**`focused`** (Emacs → compositor): Marks the entry for `selected-window`. Set by
+**`focused`** (Emacs -> compositor): Marks the entry for `selected-window`. Set by
 Emacs in `ewm-layout--send-layouts`. Used for **output association**: focus
 routing, intercept redirect, popup placement. The compositor uses
 `focused_output_for_surface()` to find the output where the user is interacting.
@@ -410,21 +410,21 @@ it must track focus incrementally.
               │         │                 │                      │
               │         │ if dirty:       │                      │
               │         │   resolve id    │                      │
-              │         │   → WlSurface   │                      │
+              │         │   -> WlSurface  │                      │
               │         │   kbd.set_focus │                      │
               │         │   dirty = false │                      │
               │         └─────────────────┘                      │
               │            Called from:                           │
-              │            • handle_keyboard_event (top)         │
-              │            • after ModuleCommand batch           │
-              │            • main loop tick                      │
+              │            - handle_keyboard_event (top)         │
+              │            - after ModuleCommand batch           │
+              │            - main loop tick                      │
               └──────────────────────────────────────────────────┘
 ```
 
 **Deferred path**: Most focus changes set `focused_surface_id` + dirty flag.
 The `sync_keyboard_focus()` function resolves the ID to a `WlSurface` and calls
 `keyboard.set_focus()`. This catches missed syncs and handles surface replacement
-(e.g., Firefox surface 2 → 3) naturally.
+(e.g., Firefox surface 2 -> 3) naturally.
 
 **Immediate path**: Only `intercept_redirect` calls `keyboard.set_focus()`
 directly, because it must forward the key in the same handler. It also clears the
@@ -517,10 +517,10 @@ Lock surface focus follows the **deferred path** via `sync_keyboard_focus()`:
 
 ```
 new_surface() stores lock surface
-  → sets keyboard_focus_dirty = true
-  → sync_keyboard_focus() runs on next tick
-  → is_locked() = true → resolve to lock_surface_focus()
-  → keyboard.set_focus(lock_surface)
+  -> sets keyboard_focus_dirty = true
+  -> sync_keyboard_focus() runs on next tick
+  -> is_locked() = true -> resolve to lock_surface_focus()
+  -> keyboard.set_focus(lock_surface)
 ```
 
 The input handler (`input.rs`) also sets focus directly on each key event as a
@@ -547,7 +547,7 @@ Each output tracks independently:
 - `lock_surface: Option<LockSurface>`: the lock surface for this output
 - `lock_render_state: LockRenderState`: whether a locked frame has been rendered
 
-Lock is confirmed (`Locking` → `Locked`) only when ALL outputs have
+Lock is confirmed (`Locking` -> `Locked`) only when ALL outputs have
 `lock_render_state == Locked`. This prevents briefly showing unlocked content
 on a slow output.
 
@@ -556,8 +556,8 @@ on a slow output.
 `CompositorHandler::commit()` dispatches by surface type in this order:
 1. **Layer surfaces**: `handle_layer_surface_commit()` (early return)
 2. **Popups**: `popups.commit()` + initial configure
-3. **Windows**: `space.elements()` lookup → `on_commit()` + redraw
-4. **Lock surfaces**: `is_locked()` + output scan → redraw
+3. **Windows**: `space.elements()` lookup -> `on_commit()` + redraw
+4. **Lock surfaces**: `is_locked()` + output scan -> redraw
 
 If adding a new surface type, it must be added to this dispatch chain.
 Lock surfaces need special handling because they aren't tracked in

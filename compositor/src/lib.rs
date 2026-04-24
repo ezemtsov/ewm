@@ -15,8 +15,8 @@
 //!    and its ID becomes invalid.
 //!
 //! 3. **Redraw state machine**: Each output has independent redraw state:
-//!    `Idle` → `Queued` → `WaitingForVBlank` → `Idle` (real VBlank path)
-//!    `Idle` → `Queued` → `WaitingForEstimatedVBlank` → `Idle` (no-damage path)
+//!    `Idle` -> `Queued` -> `WaitingForVBlank` -> `Idle` (real VBlank path)
+//!    `Idle` -> `Queued` -> `WaitingForEstimatedVBlank` -> `Idle` (no-damage path)
 //!    The estimated-VBlank variants use a timer when no damage occurs.
 //!    `WaitingForVBlank { redraw_needed }` and `WaitingForEstimatedVBlankAndQueued`
 //!    handle redraws requested while waiting. State is owned by
@@ -561,7 +561,7 @@ impl InterceptedKey {
     ///
     /// `raw_keysym` is the layout-independent keysym (physical key, no
     /// modifiers).  `modified_keysym` is the keysym after XKB applies
-    /// modifiers (e.g. Shift+`;` → `colon`).
+    /// modifiers (e.g. Shift+`;` -> `colon`).
     ///
     /// We try `raw_keysym` first for layout-independent matching, then
     /// fall back to `modified_keysym` for shifted punctuation (`:`, `&`,
@@ -714,7 +714,7 @@ mod intercepted_key_tests {
 /// Emulated key: a key combo that is translated to different modifiers
 /// when forwarded to non-Emacs surfaces.
 ///
-/// Example: Super+c → Ctrl+c (universal clipboard copy for Wayland clients).
+/// Example: Super+c -> Ctrl+c (universal clipboard copy for Wayland clients).
 /// When Emacs has focus, the original key works normally via `ewm-mode-map`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmulatedKey {
@@ -806,11 +806,11 @@ pub struct Ewm {
     pub window_ids: HashMap<Window, u64>,
     pub id_windows: HashMap<u64, Window>,
     surface_info: HashMap<u64, SurfaceInfo>,
-    /// Declared layout per output: output_name → entries
+    /// Declared layout per output: output_name -> entries
     pub output_layouts: HashMap<String, Vec<LayoutEntry>>,
-    /// Per-output workspace (tab) state from Emacs: output_name → tab info
+    /// Per-output workspace (tab) state from Emacs: output_name -> tab info
     pub output_workspaces: HashMap<String, Vec<module::TabInfo>>,
-    /// Reverse index: surface_id → set of output names it appears on
+    /// Reverse index: surface_id -> set of output names it appears on
     pub surface_outputs: HashMap<u64, HashSet<String>>,
 
     // Output
@@ -878,7 +878,7 @@ pub struct Ewm {
     pub text_input_intercept: bool,
     // Deduplicate IM relay activate/deactivate events
     pub text_input_active: bool,
-    // Commits queued during the client's disable→enable gap
+    // Commits queued during the client's disable->enable gap
     pub pending_im_commits: Vec<String>,
 
     // Popup manager for XDG popups
@@ -979,7 +979,7 @@ pub struct Ewm {
     #[cfg(feature = "screencast")]
     pub introspect_reply_tx: Option<async_channel::Sender<dbus::CompositorToIntrospect>>,
 
-    // Cached mapping: window ID → primary output name (for screencast)
+    // Cached mapping: window ID -> primary output name (for screencast)
     // Rebuilt in apply_output_layout()
     #[cfg(feature = "screencast")]
     pub window_cast_output: HashMap<u64, String>,
@@ -989,7 +989,7 @@ pub struct Ewm {
     pub xkb_current_layout: usize,
 
     /// Keycodes currently being emulated. Their release must also be emulated.
-    /// Maps keycode → target modifier name (e.g. "ctrl").
+    /// Maps keycode -> target modifier name (e.g. "ctrl").
     pub emulated_keycodes: HashMap<u32, String>,
 
     // IM relay keepalive. Smithay requires an input_method_v2 instance
@@ -2255,7 +2255,7 @@ impl Ewm {
     ///
     /// Orchestrate a single output redraw:
     /// 1. Get target presentation time from frame clock
-    /// 2. Call backend.render() → RenderResult
+    /// 2. Call backend.render() -> RenderResult
     /// 3. Handle state transitions based on result
     /// 4. Update lock render state
     /// 5. Send frame callbacks
@@ -3136,7 +3136,7 @@ impl Ewm {
     ///
     /// Emacs surfaces and None both clear text_input (leave + set_focus(None)),
     /// causing the client to disable. Commits that arrive during the resulting
-    /// disable→enable gap are queued in `pending_im_commits` and drained on
+    /// disable->enable gap are queued in `pending_im_commits` and drained on
     /// the next `ImEvent::Activated`.
     pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u64>) {
         use smithay::wayland::text_input::TextInputSeat;
@@ -3249,10 +3249,10 @@ impl Ewm {
     /// Find the surface under a point, checking layers and popups in render order.
     ///
     /// When no fullscreen surface is active:
-    ///   Overlay → Top → [popups] → [layout surfaces] → [Emacs frames] → Bottom → Background
+    ///   Overlay -> Top -> [popups] -> [layout surfaces] -> [Emacs frames] -> Bottom -> Background
     ///
     /// When a fullscreen surface is active on the output (`render_above_top_layer`):
-    ///   Overlay → [popups] → [layout surfaces] → [Emacs frames] → Top → Bottom → Background
+    ///   Overlay -> [popups] -> [layout surfaces] -> [Emacs frames] -> Top -> Bottom -> Background
     ///
     /// This ensures the input hit-testing order matches the visual render order.
     pub fn surface_under_point(
@@ -3974,7 +3974,7 @@ impl Ewm {
                 crate::utils::send_scale_transform(surface, data, scale, transform);
             });
             // Direct output enter, bypassing SpaceElement::output_enter which would
-            // trigger output_update → leave for uncommitted surfaces.
+            // trigger output_update -> leave for uncommitted surfaces.
             if let Some(surface) = window.wl_surface() {
                 output.enter(&surface);
             }
@@ -5729,7 +5729,7 @@ impl State {
                 if delivered {
                     text_input.done(false);
                 } else {
-                    // Client in disable→enable gap; drain on next Activated.
+                    // Client in disable->enable gap; drain on next Activated.
                     debug!("ImCommit: queued (surface_id={surface_id})");
                     self.ewm.pending_im_commits.push(text);
                 }
@@ -6081,7 +6081,7 @@ impl State {
                         self.ewm.queue_event(Event::TextInputActivated);
                     }
 
-                    // Drain commits queued during the disable→enable gap.
+                    // Drain commits queued during the disable->enable gap.
                     if !self.ewm.pending_im_commits.is_empty() {
                         use smithay::wayland::text_input::TextInputSeat;
                         let text_input = self.ewm.seat.text_input();

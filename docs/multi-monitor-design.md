@@ -53,7 +53,7 @@ The compositor runs as a dynamic module thread within Emacs. Communication happe
 via shared state protected by mutexes, with events delivered over a pipe fd
 (newline-delimited JSON via `open_channel`).
 
-### Compositor → Emacs Events
+### Compositor -> Emacs Events
 
 Events are serialized to JSON and written to a pipe fd:
 
@@ -63,7 +63,7 @@ Events are serialized to JSON and written to a pipe fd:
 | `output_disconnected` | name | Monitor removed |
 | `new` | id, app, output | Surface created |
 
-### Emacs → Compositor Functions
+### Emacs -> Compositor Functions
 
 Emacs calls module functions directly (no serialization needed):
 
@@ -116,8 +116,8 @@ Emacs calls module functions directly (no serialization needed):
 
 The compositor uses UdevBackend to detect monitor connect/disconnect events at runtime. Hotplug uses the exact same codepath as startup:
 
-- **Connect**: Compositor sends `OutputDetected` → Emacs creates frame for it
-- **Disconnect**: Compositor sends `OutputDisconnected` → Emacs closes the frame, moves windows to remaining frames
+- **Connect**: Compositor sends `OutputDetected` -> Emacs creates frame for it
+- **Disconnect**: Compositor sends `OutputDisconnected` -> Emacs closes the frame, moves windows to remaining frames
 
 This uniformity means no special cases for "first output" vs "hotplugged output".
 
@@ -137,7 +137,7 @@ event. Behavior depends on whether an external monitor is connected:
 ### Lid Open
 
 Re-scans DRM connectors to discover outputs. If the laptop panel reappears, the
-standard `OutputDetected` → frame creation path runs.
+standard `OutputDetected` -> frame creation path runs.
 
 ### Session Suspend/Resume
 

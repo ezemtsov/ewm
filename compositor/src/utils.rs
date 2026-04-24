@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_to_physical_precise_round() {
-        // At scale 1.5, logical 101 → physical 151.5 → rounds to 152
+        // At scale 1.5, logical 101 -> physical 151.5 -> rounds to 152
         let result: i32 = to_physical_precise_round(1.5, 101i32);
         assert_eq!(result, 152);
 
@@ -108,16 +108,16 @@ mod tests {
 
         // Fractional scale with precise rounding
         let result: i32 = to_physical_precise_round(1.25, 10i32);
-        assert_eq!(result, 13); // 10 * 1.25 = 12.5 → rounds to 13
+        assert_eq!(result, 13); // 10 * 1.25 = 12.5 -> rounds to 13
     }
 
     #[test]
     fn test_round_logical_in_physical() {
-        // At scale 1.5: 10.3 * 1.5 = 15.45 → round to 15 → 15 / 1.5 = 10.0
+        // At scale 1.5: 10.3 * 1.5 = 15.45 -> round to 15 -> 15 / 1.5 = 10.0
         let result = round_logical_in_physical(1.5, 10.3);
         assert!((result - 10.0).abs() < 1e-10);
 
-        // At scale 1.5: 10.5 * 1.5 = 15.75 → round to 16 → 16 / 1.5 = 10.666...
+        // At scale 1.5: 10.5 * 1.5 = 15.75 -> round to 16 -> 16 / 1.5 = 10.666...
         let result = round_logical_in_physical(1.5, 10.5);
         assert!((result - 16.0 / 1.5).abs() < 1e-10);
 

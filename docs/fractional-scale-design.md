@@ -72,7 +72,7 @@ Arbitrary values like 1.3333 become 160/120 = 1.33333... which round-trips corre
 Fractional scales require precise coordinate conversion to avoid pixel gaps:
 
 ```rust
-// Logical → physical with proper rounding (avoids truncation artifacts)
+// Logical -> physical with proper rounding (avoids truncation artifacts)
 pub fn to_physical_precise_round<N: Coordinate>(scale: f64, logical: impl Coordinate) -> N {
     N::from_f64((logical.to_f64() * scale).round())
 }
@@ -139,7 +139,7 @@ Scale is sent at every surface lifecycle point:
 |----------------|----------|-------------|
 | Toplevel created | `handle_new_toplevel()` | `send_scale_transform` + direct `output.enter()` |
 | Subsurface created | `new_subsurface()` | `propagate_preferred_scale` from root surface |
-| Popup initial commit | `commit()` | `output_for_popup` → `send_scale_transform` |
+| Popup initial commit | `commit()` | `output_for_popup` -> `send_scale_transform` |
 | Layer surface created | `new_layer_surface()` | `send_scale_transform` with output's scale |
 | Lock surface created | `configure_lock_surface()` | `send_scale_transform` with output's scale |
 | Output config changed | `apply_output_config()` | `send_scale_transform_to_output_surfaces()` |
@@ -168,9 +168,9 @@ Smithay's `Space::refresh()` iterates ALL elements against ALL outputs, calling
 
 ```
 space.refresh()
-  → Window::refresh()           (SpaceElement trait)
-    → output_update(output, overlap, surface)
-      → if overlap.is_none():
+  -> Window::refresh()           (SpaceElement trait)
+    -> output_update(output, overlap, surface)
+      -> if overlap.is_none():
           output.leave(wl_surface)     ← sends wl_surface.leave
 ```
 
@@ -299,8 +299,8 @@ if let PopupKind::Xdg(ref xdg_popup) = popup {
 }
 ```
 
-`output_for_popup` finds the popup's output by resolving root surface → window →
-position → output geometry. It also checks layer surfaces as popup parents:
+`output_for_popup` finds the popup's output by resolving root surface -> window ->
+position -> output geometry. It also checks layer surfaces as popup parents:
 
 ```rust
 pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
@@ -333,13 +333,13 @@ apply_output_config()
   ├─► output.change_current_state(mode, transform, scale, position)
   │
   ├─► send_scale_transform_to_output_surfaces(&output)
-  │     ├─► iterate space.elements() → send_scale_transform per window
-  │     └─► iterate layer_map.layers() → send_scale_transform per layer
+  │     ├─► iterate space.elements() -> send_scale_transform per window
+  │     └─► iterate layer_map.layers() -> send_scale_transform per layer
   │
   ├─► resize lock buffer (if locked)
   ├─► reconfigure lock surface (if locked)
   │
-  ├─► check_working_area_change() → update_frames_for_working_area()
+  ├─► check_working_area_change() -> update_frames_for_working_area()
   │     └─► sends WorkingArea event to Emacs with new logical dimensions
   │
   └─► send OutputConfigChanged event to Emacs
@@ -394,7 +394,7 @@ emacsclient --socket-name=vt2 -e '(ewm-configure-output "DP-1" :scale 1.5)'
 | App ignores scale change | `send_scale_transform_to_output_surfaces` not called | Ensure `apply_output_config` notifies surfaces |
 | Cursor offset at fractional scale | Integer truncation in cursor position | Use `to_physical_precise_round(scale)` |
 | Window loses output after hide/show | `space.refresh()` calls `output.leave()` for off-screen windows | Use `cleanup_dead_windows()` instead |
-| GTK4 popup blurry | No `send_scale_transform` before initial configure | `output_for_popup` → `send_scale_transform` in `commit()` |
+| GTK4 popup blurry | No `send_scale_transform` before initial configure | `output_for_popup` -> `send_scale_transform` in `commit()` |
 | Working area wrong after scale change | `check_working_area_change` not called | Ensure `apply_output_config` calls it after state change |
 
 ### Key Code Locations

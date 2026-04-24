@@ -7,12 +7,12 @@
 
 ;; Bidirectional focus synchronization between Emacs and the compositor.
 ;;
-;; Emacs → compositor:
+;; Emacs -> compositor:
 ;;   ewm--focus-target  (compute target)
 ;;   ewm--sync-focus    (send if changed)
 ;;   ewm-focus          (module call)
 ;;
-;; Compositor → Emacs:
+;; Compositor -> Emacs:
 ;;   ewm--handle-focus  (select window for clicked surface)
 
 ;;; Code:
@@ -37,7 +37,7 @@
       (> (minibuffer-depth) 0)
       (minibufferp)))
 
-;;; Emacs → compositor
+;;; Emacs -> compositor
 
 (defun ewm-focus (id)
   "Focus surface ID in the compositor."
@@ -70,7 +70,7 @@ Calls `ewm-focus' only when the target differs from current focus."
       (unless (eq target (ewm-get-focused-id))
         (ewm-focus target)))))
 
-;;; Compositor → Emacs
+;;; Compositor -> Emacs
 
 (defun ewm--handle-focus (event)
   "Handle focus EVENT from compositor.

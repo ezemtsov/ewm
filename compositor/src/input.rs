@@ -235,7 +235,7 @@ pub fn handle_keyboard_event(
             let modified = handle.modified_sym();
             let modified_raw = modified.raw();
 
-            // Check for VT switch keys (Ctrl+Alt+F1-F12 → XF86Switch_VT_*)
+            // Check for VT switch keys (Ctrl+Alt+F1-F12 -> XF86Switch_VT_*)
             if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
                 .contains(&modified_raw)
             {
@@ -250,7 +250,7 @@ pub fn handle_keyboard_event(
 
             // Emulation check (before interception)
             // Emulated keys translate modifiers for non-Emacs surfaces
-            // (e.g. Super+c → Ctrl+c for clipboard copy)
+            // (e.g. Super+c -> Ctrl+c for clipboard copy)
             if !focus_on_emacs {
                 if let Some(ek) = emulated_keys
                     .iter()
@@ -315,7 +315,7 @@ pub fn handle_keyboard_event(
                 .emulated_keycodes
                 .insert(keycode, target_mod.clone());
 
-            // Swap modifiers (e.g. Super → Ctrl) and forward to the surface.
+            // Swap modifiers (e.g. Super -> Ctrl) and forward to the surface.
             // Smithay sends key BEFORE modifiers in input_forward, but the client
             // needs the new modifiers BEFORE the key to interpret it correctly.
             // So: advertise modifiers first, then forward key without modifiers.
@@ -631,7 +631,7 @@ fn detect_device_type(device: &libinput::Device) -> Option<DeviceType> {
     }
 }
 
-/// Resolve a config value: device-specific → type-default → hardware default.
+/// Resolve a config value: device-specific -> type-default -> hardware default.
 macro_rules! resolve {
     ($device_cfg:expr, $type_cfg:expr, $field:ident, $default:expr) => {
         $device_cfg
@@ -653,7 +653,7 @@ macro_rules! resolve_opt {
 }
 
 /// Apply libinput settings to a device using 3-level cascade:
-/// device-specific config → type-default config → hardware default.
+/// device-specific config -> type-default config -> hardware default.
 pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputConfigEntry]) {
     let detected_type = match detect_device_type(device) {
         Some(t) => t,

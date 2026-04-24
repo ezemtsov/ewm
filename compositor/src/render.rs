@@ -12,7 +12,7 @@
 //!    critical for efficient rendering, accurate damage tracking, and screen sharing.
 //!
 //! 2. **Rendering order**: Elements are collected front-to-back:
-//!    Cursor → Overlay → Top → Popups → Windows → Bottom → Background
+//!    Cursor -> Overlay -> Top -> Popups -> Windows -> Bottom -> Background
 //!    This order matches typical desktop compositor layering.
 //!
 //! 3. **Layout-based rendering**: Surfaces with entries in `output_layouts` are
@@ -380,7 +380,7 @@ pub fn collect_render_elements_for_output(
                     continue;
                 }
 
-                // Frame-relative → output-local (working_area.loc is relative to output origin)
+                // Frame-relative -> output-local (working_area.loc is relative to output origin)
                 let location =
                     Point::from((working_area.loc.x + entry.x, working_area.loc.y + entry.y));
                 let loc_physical: Point<i32, Physical> =
@@ -434,7 +434,7 @@ pub fn collect_render_elements_for_output(
 
     // 5. Emacs frames declared to live on this output.
     //
-    // Iterating `emacs_surfaces` (id → output name) lets us render based
+    // Iterating `emacs_surfaces` (id -> output name) lets us render based
     // on explicit per-output ownership instead of deriving output membership
     // from `space.elements()` + overlap filtering against `output_rect`,
     // which was brittle and would silently skip frames whose space position
@@ -499,7 +499,7 @@ pub fn collect_render_elements_for_output(
     elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
 
     // Workspace transition snapshot: in front of content (windows/popups),
-    // behind layer surfaces (Overlay/Top) — so DankMaterialShell stays put.
+    // behind layer surfaces (Overlay/Top) -- so DankMaterialShell stays put.
     if let Some(t) = transition {
         elements.insert(popup_insert_pos, t.render_element(scale));
     }
@@ -754,7 +754,7 @@ pub fn process_screencopies_for_output(
             Ok(sync) => {
                 if with_damage {
                     if let Some(damages) = damages {
-                        // Convert Physical → Buffer coordinates
+                        // Convert Physical -> Buffer coordinates
                         let physical_size = output_transform.transform_size(size);
                         let buffer_damages = damages.iter().map(|dmg| {
                             dmg.to_logical(1).to_buffer(

@@ -16,12 +16,12 @@ non-surface buffers) is not yet implemented.
 
 ```
 Client (e.g. Firefox)
-  → xdg_toplevel.set_fullscreen
-    → Compositor pushes FullscreenRequest event to Emacs
-      → Emacs sets ewm-fullscreen window parameter
-        → ewm-layout--refresh sends LayoutEntry with :fullscreen t
-          → Compositor apply_output_layout configures surface at full output size
-            → Renderer draws backdrop + centered surface, defers Top layer
+  -> xdg_toplevel.set_fullscreen
+    -> Compositor pushes FullscreenRequest event to Emacs
+      -> Emacs sets ewm-fullscreen window parameter
+        -> ewm-layout--refresh sends LayoutEntry with :fullscreen t
+          -> Compositor apply_output_layout configures surface at full output size
+            -> Renderer draws backdrop + centered surface, defers Top layer
 ```
 
 Unfullscreen follows the reverse path. The user can also toggle with `s-f`

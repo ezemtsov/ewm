@@ -41,7 +41,7 @@ the switch; direction follows the sign of the target-minus-current
 index delta.  `tab-bar--tab-index-recent' resolves the same-press
 destination up front so the animation matches where we'll land.
 
-Focus inside the landing tab is whatever the tab had saved — indexed
+Focus inside the landing tab is whatever the tab had saved -- indexed
 jumps preserve per-tab window state, unlike `ewm-windmove-left' /
 `ewm-windmove-right' which reposition to the outmost window."
   (interactive)
@@ -70,7 +70,7 @@ jumps preserve per-tab window state, unlike `ewm-windmove-left' /
     (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
     ;; Window navigation (super + arrows). Left/right fall through to the
     ;; adjacent tab with a slide animation when there's no window in that
-    ;; direction — tab boundaries feel seamless during horizontal traversal.
+    ;; direction -- tab boundaries feel seamless during horizontal traversal.
     (define-key map (kbd "s-<left>") #'ewm-windmove-left)
     (define-key map (kbd "s-<right>") #'ewm-windmove-right)
     (define-key map (kbd "s-<down>") #'windmove-down)

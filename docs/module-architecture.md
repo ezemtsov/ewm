@@ -42,7 +42,7 @@ Communication uses shared queues protected by `Mutex`, with locks released
 before crossing thread boundaries. Events flow from compositor to Emacs via
 a pipe fd (newline-delimited JSON).
 
-## Event Delivery: Compositor → Emacs
+## Event Delivery: Compositor -> Emacs
 
 The compositor serializes events to JSON and writes them to a pipe fd created
 via `emacs-module-rs`'s `open_channel`. Emacs receives them through a process
@@ -55,7 +55,7 @@ push_event(Event::Focus{...})  │
   └─ serde_json::to_vec(event) │
   └─ write to pipe fd ────────►│  ewm--event-filter receives data
                                │    └─ split on newlines
-                               │    └─ json-parse-string → alist
+                               │    └─ json-parse-string -> alist
                                │    └─ ewm--handle-event(alist)
 ```
 
@@ -111,7 +111,7 @@ JSON line is delivered exactly once. Serde serialization replaces the manual
 | `outputs_complete` | `Event::OutputsComplete` | All outputs sent |
 | `key` | `Event::Key{keysym,utf8}` | Intercepted key |
 
-## Command Delivery: Emacs → Compositor
+## Command Delivery: Emacs -> Compositor
 
 Commands flow in the opposite direction via `COMMAND_QUEUE`:
 

@@ -223,7 +223,7 @@ fn preferred_drm_mode(modes: &[DrmMode]) -> Option<DrmMode> {
         .copied()
 }
 
-/// Data passed through `queue_frame()` → `frame_submitted()` for presentation feedback.
+/// Data passed through `queue_frame()` -> `frame_submitted()` for presentation feedback.
 type FrameData = (OutputPresentationFeedback, Duration);
 
 /// Type alias for our DRM compositor
@@ -533,7 +533,7 @@ pub struct DrmBackendState {
     /// Connected libinput devices for re-applying configuration on change
     libinput_devices: std::collections::HashSet<smithay::reexports::input::Device>,
     // SAFETY: Fields below are dropped in declaration order.
-    // device must drop before session (surfaces → drm → libseat).
+    // device must drop before session (surfaces -> drm -> libseat).
     // See https://github.com/Smithay/smithay/issues/1102
     device: Option<DrmDeviceState>,
     libinput: Libinput,
@@ -552,7 +552,7 @@ impl Drop for DrmBackendState {
             handle.remove(token);
         }
         info!("DrmBackendState dropping - session will be released");
-        // After this, fields drop in declaration order: device → libinput → session
+        // After this, fields drop in declaration order: device -> libinput -> session
     }
 }
 
@@ -1918,7 +1918,7 @@ impl DrmBackendState {
                     self.disconnect_output(crtc, ewm);
                 }
             } else {
-                // No external monitor — deactivate and suspend
+                // No external monitor -- deactivate and suspend
                 ewm.deactivate_monitors();
                 if let Some(logind) = &self.logind {
                     info!("Lid closed with no external display, suspending");
