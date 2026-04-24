@@ -858,8 +858,6 @@ survives connector re-numbering when cables are replugged."
         (dolist (entry ewm--output-info)
           (let* ((info        (cdr entry))
                  (name        (alist-get 'name      info))
-                 (make        (or (alist-get 'make   info) "Unknown"))
-                 (model       (or (alist-get 'model  info) "Unknown"))
                  (mms         (ewm--output-mms info))
                  (config-key  (ewm--output-config-key info))
                  (x           (or (alist-get 'x         info) 0))
@@ -1073,7 +1071,8 @@ The frame will be fully assigned when the compositor responds."
 
 (defun ewm--prevent-frame-deletion (orig-fun &optional frame force)
   "Around advice for `delete-frame' to protect output frames.
-Prevents deletion of the last frame for an active output unless FORCE is non-nil.
+Prevents deletion of the last frame for an active output unless
+FORCE is non-nil.
 Frames for disconnected outputs are always allowed to be deleted."
   (let* ((f (or frame (selected-frame)))
          (output (frame-parameter f 'ewm-output)))
@@ -1112,7 +1111,8 @@ Frames for disconnected outputs are always allowed to be deleted."
 
 (defun ewm--disable-csd ()
   "Disable client-side decorations and bars for all frames.
-Sets frames to undecorated mode and removes bars since EWM manages windows directly."
+Sets frames to undecorated mode and removes bars since EWM manages
+windows directly."
   ;; Set current frame to undecorated
   (set-frame-parameter nil 'undecorated t)
   ;; Ensure future frames are also undecorated

@@ -151,7 +151,8 @@ PROPS is a plist of settings (omitted properties use device defaults):
   :scroll-method STRING - \"no-scroll\", \"two-finger\", \"edge\", \"on-button-down\"
   :left-handed BOOL     - Swap left/right buttons
   :middle-emulation BOOL - Emulate middle button
-  :tap-button-map STRING - \"left-right-middle\" or \"left-middle-right\" (touchpad only)
+  :tap-button-map STRING - \"left-right-middle\" or
+                           \"left-middle-right\" (touchpad only)
 
   Keyboard:
   :repeat-delay INT     - Key repeat delay in milliseconds (default 200)
