@@ -1117,14 +1117,12 @@ windows directly."
   (set-frame-parameter nil 'undecorated t)
   ;; Ensure future frames are also undecorated
   (add-to-list 'default-frame-alist '(undecorated . t))
-  ;; Disable menu-bar, tool-bar, and tab-bar if enabled
-  ;; These add to the Y-offset and must be accounted for
+  ;; Disable menu-bar, tool-bar, and scroll-bar if enabled.
+  ;; These add to the Y-offset and must be accounted for.
   (when (bound-and-true-p menu-bar-mode)
     (menu-bar-mode -1))
   (when (bound-and-true-p tool-bar-mode)
     (tool-bar-mode -1))
-  (when (bound-and-true-p tab-bar-mode)
-    (tab-bar-mode -1))
   (when (bound-and-true-p scroll-bar-mode)
     (scroll-bar-mode -1)))
 
