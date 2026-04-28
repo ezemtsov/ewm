@@ -14,8 +14,8 @@ use smithay::utils::{Physical, Point, Size, Transform};
 /// This is a simple left_ptr style cursor.
 static FALLBACK_CURSOR_DATA: &[u8] = include_bytes!("../resources/cursor.rgba");
 
-/// Cursor hotspot (where the click point is relative to top-left)
-pub const CURSOR_HOTSPOT: (i32, i32) = (1, 1);
+/// Cursor hotspot (where the click point is relative to top-left).
+pub const CURSOR_HOTSPOT: (i32, i32) = (0, 0);
 
 /// Cursor width
 const CURSOR_WIDTH: i32 = 64;
