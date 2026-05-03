@@ -3177,6 +3177,60 @@ impl Ewm {
             .or_else(|| self.space.outputs().next())
     }
 
+    /// Find the Output whose geometry strictly contains `pos`.
+    ///
+    /// Unlike [`Self::output_at`], returns `None` when `pos` lies in dead
+    /// space between or outside outputs instead of falling back to an
+    /// arbitrary output.
+    fn output_containing(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<&Output> {
+        let point = smithay::utils::Point::from((pos.x as i32, pos.y as i32));
+        self.space.outputs().find(|o| {
+            self.space
+                .output_geometry(o)
+                .map_or(false, |geo| geo.contains(point))
+        })
+    }
+
+    /// Clamp a pointer target into the union of output geometries.
+    ///
+    /// If `target` already lies on an output, returns it unchanged.
+    /// Otherwise clips the movement against the geometry of the output
+    /// containing `previous` (the pointer's prior position), so the
+    /// pointer can never wander into dead space between outputs.
+    /// Falls back to the centre of the first output if neither point is
+    /// on any output.
+    pub(crate) fn clamp_pointer_to_outputs(
+        &self,
+        target: smithay::utils::Point<f64, smithay::utils::Logical>,
+        previous: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> smithay::utils::Point<f64, smithay::utils::Logical> {
+        if self.output_containing(target).is_some() {
+            return target;
+        }
+        if let Some(output) = self.output_containing(previous) {
+            let geom = self.space.output_geometry(output).unwrap();
+            let x = target
+                .x
+                .clamp(geom.loc.x as f64, (geom.loc.x + geom.size.w - 1) as f64);
+            let y = target
+                .y
+                .clamp(geom.loc.y as f64, (geom.loc.y + geom.size.h - 1) as f64);
+            return smithay::utils::Point::from((x, y));
+        }
+        let Some(output) = self.space.outputs().next() else {
+            return target;
+        };
+        let Some(geom) = self.space.output_geometry(output) else {
+            return target;
+        };
+        let cx = geom.loc.x as f64 + geom.size.w as f64 / 2.0;
+        let cy = geom.loc.y as f64 + geom.size.h as f64 / 2.0;
+        smithay::utils::Point::from((cx, cy))
+    }
+
     /// Check layer surfaces on a specific layer for a surface under the point.
     /// `pos_within_output` is the point relative to the output origin.
     /// Returns the WlSurface and its location in global coordinates.
@@ -5272,11 +5326,12 @@ impl PointerConstraintsHandler for State {
             return;
         }
 
-        // Clamp hint to output bounds
+        // Clip hint against the union of output geometries.
+        let (cx, cy) = self.ewm.pointer_location();
         let target = origin + location;
-        let clamped_x = target.x.clamp(0.0, self.ewm.output_size.w as f64);
-        let clamped_y = target.y.clamp(0.0, self.ewm.output_size.h as f64);
-        pointer.set_location((clamped_x, clamped_y).into());
+        let previous = Point::from((cx, cy));
+        let clamped = self.ewm.clamp_pointer_to_outputs(target, previous);
+        pointer.set_location(clamped);
 
         // Redraw to update cursor position visually
         self.ewm.queue_redraw_for_pointer();

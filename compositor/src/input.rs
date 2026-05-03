@@ -828,11 +828,15 @@ pub fn handle_pointer_motion<B: InputBackend>(
     tracy_span!("handle_pointer_motion");
     let (current_x, current_y) = state.ewm.pointer_location();
     let delta = event.delta();
-    let output_size = state.ewm.output_size;
 
-    // Calculate new position, clamped to output bounds
-    let new_x = (current_x + delta.x).clamp(0.0, output_size.w as f64);
-    let new_y = (current_y + delta.y).clamp(0.0, output_size.h as f64);
+    // Clip motion against the union of output geometries: if the new
+    // position lands in dead space between/outside outputs, snap it back
+    // to the previous output's bounds.
+    let target = Point::from((current_x + delta.x, current_y + delta.y));
+    let previous = Point::from((current_x, current_y));
+    let new_pos = state.ewm.clamp_pointer_to_outputs(target, previous);
+    let new_x = new_pos.x;
+    let new_y = new_pos.y;
 
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
