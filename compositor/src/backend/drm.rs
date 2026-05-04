@@ -2378,8 +2378,6 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         ("WAYLAND_DISPLAY".into(), socket_name_str),
         ("XDG_CURRENT_DESKTOP".into(), "ewm".into()),
         ("XDG_SESSION_TYPE".into(), "wayland".into()),
-        ("GTK_IM_MODULE".into(), "wayland".into()),
-        ("QT_IM_MODULE".into(), "wayland".into()),
     ]);
     if let Some(satellite) = &state.ewm.satellite {
         let display_name = satellite.display_name().to_owned();
@@ -2391,7 +2389,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Set C-level environment (pgtk needs WAYLAND_DISPLAY for wl_display_connect,
-    // GTK/Qt read IM_MODULE at init, satellite needs WAYLAND_DISPLAY to connect)
+    // satellite needs WAYLAND_DISPLAY to connect)
     // SAFETY: still single-threaded at this point
     unsafe {
         for (k, v) in &env_vars {
