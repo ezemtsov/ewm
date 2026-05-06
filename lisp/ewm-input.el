@@ -158,6 +158,8 @@ PROPS is a plist of settings (omitted properties use device defaults):
   :repeat-delay INT     - Key repeat delay in milliseconds (default 200)
   :repeat-rate INT      - Key repeat rate in Hz (default 25)
   :xkb-layouts STRING   - Comma-separated XKB layout names (e.g. \"us,ru\")
+  :xkb-variants STRING  - Comma-separated XKB variants, parallel to layouts
+                          (e.g. \"dvorak,\" or \",ergol\"; empty entry = default)
   :xkb-options STRING   - XKB options (e.g. \"ctrl:nocaps\")
 
 Device-specific entries override type defaults for matching settings.

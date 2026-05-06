@@ -597,6 +597,7 @@ pub struct InputConfigEntry {
     pub repeat_delay: Option<i32>,
     pub repeat_rate: Option<i32>,
     pub xkb_layouts: Option<String>,
+    pub xkb_variants: Option<String>,
     pub xkb_options: Option<String>,
 }
 

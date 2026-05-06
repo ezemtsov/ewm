@@ -5781,9 +5781,9 @@ impl State {
                     .iter()
                     .find(|c| c.device_type == Some(crate::input::DeviceType::Keyboard))
                     .and_then(|kb| {
-                        kb.xkb_layouts
-                            .clone()
-                            .map(|layouts| (layouts, kb.xkb_options.clone()))
+                        kb.xkb_layouts.clone().map(|layouts| {
+                            (layouts, kb.xkb_variants.clone(), kb.xkb_options.clone())
+                        })
                     });
 
                 self.ewm.input_configs = configs;
@@ -5798,15 +5798,17 @@ impl State {
                 }
 
                 // Apply XKB layout settings
-                if let Some((layouts_str, options)) = kb_xkb {
+                if let Some((layouts_str, variants, options)) = kb_xkb {
                     let layout_names: Vec<String> = layouts_str
                         .split(',')
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
                     if !layout_names.is_empty() {
+                        let variants_str = variants.as_deref().unwrap_or("");
                         let xkb_config = smithay::input::keyboard::XkbConfig {
                             layout: &layouts_str,
+                            variant: variants_str,
                             options: options.clone(),
                             ..Default::default()
                         };
@@ -5817,8 +5819,8 @@ impl State {
                             self.ewm.xkb_layout_names = layout_names.clone();
                             self.ewm.xkb_current_layout = 0;
                             info!(
-                                "Configured XKB layouts: {:?}, options: {:?}",
-                                layout_names, options
+                                "Configured XKB layouts: {:?}, variants: {:?}, options: {:?}",
+                                layout_names, variants, options
                             );
                             self.ewm.queue_event(Event::Layouts {
                                 layouts: layout_names,

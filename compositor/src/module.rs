@@ -79,6 +79,7 @@ use_symbols! {
     kw_repeat_delay    => ":repeat-delay"
     kw_repeat_rate     => ":repeat-rate"
     kw_xkb_layouts     => ":xkb-layouts"
+    kw_xkb_variants    => ":xkb-variants"
     kw_xkb_options     => ":xkb-options"
 }
 
@@ -1163,6 +1164,10 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
             } else if key == *kw_xkb_layouts {
                 if val.is_not_nil() {
                     entry.xkb_layouts = Some(val.into_rust()?);
+                }
+            } else if key == *kw_xkb_variants {
+                if val.is_not_nil() {
+                    entry.xkb_variants = Some(val.into_rust()?);
                 }
             } else if key == *kw_xkb_options {
                 if val.is_not_nil() {
