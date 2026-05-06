@@ -14,6 +14,7 @@ use zbus::zvariant::{DeserializeDict, OwnedObjectPath, Type, Value};
 use zbus::{fdo, interface, ObjectServer};
 
 use super::{OutputInfo, Start};
+use crate::screencasting::CastSessionId;
 
 /// Target for a screen cast stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,13 +36,13 @@ struct RecordWindowProperties {
 /// Messages sent from D-Bus to compositor
 pub enum ScreenCastToCompositor {
     StartCast {
-        session_id: usize,
+        session_id: CastSessionId,
         target: CastTarget,
         signal_ctx: SignalEmitter<'static>,
         cursor_mode: u32,
     },
     StopCast {
-        session_id: usize,
+        session_id: CastSessionId,
     },
 }
 
@@ -69,7 +70,7 @@ impl std::fmt::Debug for ScreenCastToCompositor {
 pub struct ScreenCast {
     outputs: Arc<Mutex<Vec<OutputInfo>>>,
     to_compositor: Sender<ScreenCastToCompositor>,
-    sessions: Arc<Mutex<Vec<usize>>>,
+    sessions: Arc<Mutex<Vec<CastSessionId>>>,
 }
 
 impl ScreenCast {
@@ -85,8 +86,6 @@ impl ScreenCast {
     }
 }
 
-static SESSION_ID: AtomicUsize = AtomicUsize::new(0);
-
 #[interface(name = "org.gnome.Mutter.ScreenCast")]
 impl ScreenCast {
     async fn create_session(
@@ -94,7 +93,7 @@ impl ScreenCast {
         #[zbus(object_server)] server: &ObjectServer,
         properties: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<OwnedObjectPath> {
-        let session_id = SESSION_ID.fetch_add(1, Ordering::SeqCst);
+        let session_id = CastSessionId::next();
         let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
@@ -145,7 +144,7 @@ struct StreamInfo {
 /// Session interface
 #[derive(Clone)]
 pub struct Session {
-    id: usize,
+    id: CastSessionId,
     outputs: Arc<Mutex<Vec<OutputInfo>>>,
     to_compositor: Sender<ScreenCastToCompositor>,
     streams: Arc<Mutex<Vec<StreamInfo>>>,
@@ -155,7 +154,7 @@ pub struct Session {
 
 impl Session {
     fn new(
-        id: usize,
+        id: CastSessionId,
         outputs: Arc<Mutex<Vec<OutputInfo>>>,
         to_compositor: Sender<ScreenCastToCompositor>,
         cursor_mode: u32,
@@ -205,7 +204,7 @@ impl Session {
         // Signal that session is closed
         if let Err(err) = Session::closed(&ctxt).await {
             warn!(
-                session_id = self.id,
+                session_id = %self.id,
                 "failed to emit Closed signal: {err:?}"
             );
         }
@@ -372,7 +371,7 @@ pub struct Stream {
     #[allow(dead_code)]
     id: usize,
     #[allow(dead_code)]
-    session_id: usize,
+    session_id: CastSessionId,
     target: StreamTarget,
     to_compositor: Sender<ScreenCastToCompositor>,
     was_started: Arc<AtomicBool>,
@@ -381,7 +380,7 @@ pub struct Stream {
 impl Stream {
     fn new_output(
         id: usize,
-        session_id: usize,
+        session_id: CastSessionId,
         output: OutputInfo,
         to_compositor: Sender<ScreenCastToCompositor>,
     ) -> Self {
@@ -396,7 +395,7 @@ impl Stream {
 
     fn new_window(
         id: usize,
-        session_id: usize,
+        session_id: CastSessionId,
         window_id: u64,
         to_compositor: Sender<ScreenCastToCompositor>,
     ) -> Self {
@@ -411,7 +410,7 @@ impl Stream {
 
     fn start(
         &self,
-        session_id: usize,
+        session_id: CastSessionId,
         cast_target: CastTarget,
         signal_ctx: SignalEmitter<'static>,
         cursor_mode: u32,

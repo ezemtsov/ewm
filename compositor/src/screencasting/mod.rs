@@ -19,7 +19,7 @@ use smithay::utils::{Physical, Point, Scale, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, info, warn};
 
-pub use pw_utils::{Cast, CastSizeChange, PipeWire, PwToCompositor};
+pub use pw_utils::{Cast, CastSessionId, CastSizeChange, PipeWire, PwToCompositor};
 
 use crate::cursor;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
@@ -34,9 +34,9 @@ pub struct Screencasting {
     /// stays registered across reinits after `FatalError`.
     pub pw_to_compositor: Sender<PwToCompositor>,
 
-    /// Cached map: window id -> primary output name. Populated in
+    /// Cached map: window id -> primary output. Populated in
     /// `apply_output_layout()`.
-    pub window_cast_output: HashMap<u64, String>,
+    pub mapped_cast_output: HashMap<u64, Output>,
 
     // Drop PipeWire last, specifically after `casts`, to prevent a
     // double-free: each Cast's StreamRc holds a clone of the core, and
@@ -59,7 +59,7 @@ impl Screencasting {
         Self {
             casts: Vec::new(),
             pw_to_compositor,
-            window_cast_output: HashMap::new(),
+            mapped_cast_output: HashMap::new(),
             pipewire: None,
         }
     }
@@ -80,7 +80,7 @@ impl State {
 
         if self.ewm.casting.pipewire.is_none() {
             let pw = PipeWire::new(
-                &self.ewm.loop_handle,
+                self.ewm.loop_handle.clone(),
                 self.ewm.casting.pw_to_compositor.clone(),
             )
             .context("error initializing PipeWire")?;
@@ -106,7 +106,7 @@ impl State {
                 // Stop active casts before dropping pw so streams can
                 // disconnect against a live core. Going through stop_cast
                 // makes D-Bus emit Closed to consumers (xdp-gnome, ...).
-                let session_ids: Vec<usize> =
+                let session_ids: Vec<CastSessionId> =
                     self.ewm.casting.casts.iter().map(|c| c.session_id).collect();
                 for id in session_ids {
                     self.ewm.stop_cast(id);
@@ -114,6 +114,9 @@ impl State {
                 if let Some(pw) = self.ewm.casting.pipewire.take() {
                     self.ewm.loop_handle.remove(pw.token);
                 }
+            }
+            PwToCompositor::StopCast { session_id } => {
+                self.ewm.stop_cast(session_id);
             }
             PwToCompositor::Redraw { session_id } => {
                 let Some(cast) = self
@@ -125,20 +128,15 @@ impl State {
                 else {
                     return;
                 };
-                let output_name = match &cast.target {
-                    CastTarget::Output { name } => Some(name.clone()),
-                    CastTarget::Window { id } => self.ewm.window_output_name(*id),
+                let output = match &cast.target {
+                    CastTarget::Output { name } => {
+                        self.ewm.space.outputs().find(|o| &o.name() == name).cloned()
+                    }
+                    CastTarget::Window { id } => {
+                        self.ewm.casting.mapped_cast_output.get(id).cloned()
+                    }
                 };
-                let Some(name) = output_name else { return };
-                let Some(output) = self
-                    .ewm
-                    .space
-                    .outputs()
-                    .find(|o| o.name() == name)
-                    .cloned()
-                else {
-                    return;
-                };
+                let Some(output) = output else { return };
                 self.ewm.queue_redraw(&output);
             }
         }
@@ -183,24 +181,14 @@ impl State {
                             self.ewm.stop_cast(session_id);
                             return;
                         };
-                        let output_name = self.ewm.window_output_name(*id);
-                        let scale = output_name
-                            .as_ref()
-                            .and_then(|name| {
-                                self.ewm.space.outputs().find(|o| o.name() == *name)
-                            })
+                        let output = self.ewm.casting.mapped_cast_output.get(id);
+                        let scale = output
                             .map(|o| Scale::from(o.current_scale().fractional_scale()))
                             .unwrap_or(Scale::from(1.0));
                         let bbox = window.bbox_with_popups().to_physical_precise_up(scale);
-                        let refresh = output_name
-                            .and_then(|name| {
-                                self.ewm
-                                    .space
-                                    .outputs()
-                                    .find(|o| o.name() == name)
-                                    .and_then(|o| o.current_mode())
-                                    .map(|m| (m.refresh / 1000) as u32)
-                            })
+                        let refresh = output
+                            .and_then(|o| o.current_mode())
+                            .map(|m| (m.refresh / 1000) as u32)
                             .unwrap_or(60);
                         Some((bbox.size, refresh))
                     }
@@ -212,10 +200,7 @@ impl State {
                 };
 
                 let pw = self.ewm.casting.pipewire.as_ref().unwrap();
-                match Cast::new(
-                    pw,
-                    self.ewm.loop_handle.clone(),
-                    self.ewm.casting.pw_to_compositor.clone(),
+                match pw.start_cast(
                     session_id,
                     gbm,
                     size,
@@ -251,8 +236,8 @@ impl Ewm {
     /// Stop a screen cast session: remove from active list (Drop disconnects
     /// the PipeWire stream) and emit the D-Bus Closed signal so the consumer
     /// knows.
-    pub fn stop_cast(&mut self, session_id: usize) {
-        debug!(session_id, "stop_cast");
+    pub fn stop_cast(&mut self, session_id: CastSessionId) {
+        debug!(%session_id, "stop_cast");
 
         let Some(idx) = self
             .casting
@@ -283,7 +268,7 @@ impl Ewm {
     /// window closes).
     pub fn stop_casts_for_window(&mut self, window_id: u64) {
         let target = CastTarget::Window { id: window_id };
-        let sessions_to_stop: Vec<usize> = self
+        let sessions_to_stop: Vec<CastSessionId> = self
             .casting
             .casts
             .iter()
@@ -291,16 +276,9 @@ impl Ewm {
             .map(|c| c.session_id)
             .collect();
         for session_id in sessions_to_stop {
-            info!(session_id, window_id, "stopping window cast (window closed)");
+            info!(%session_id, window_id, "stopping window cast (window closed)");
             self.stop_cast(session_id);
         }
-    }
-
-    /// Find which output a window is on (by compositor window ID).
-    /// Uses the cached `window_cast_output` map populated in
-    /// `apply_output_layout()`.
-    pub fn window_output_name(&self, window_id: u64) -> Option<String> {
-        self.casting.window_cast_output.get(&window_id).cloned()
     }
 
     /// Render a window into a screencast buffer.
@@ -337,7 +315,13 @@ impl Ewm {
             Ok(CastSizeChange::Ready) => (),
             Ok(CastSizeChange::Pending) => return false,
             Err(err) => {
-                warn!("error updating stream size: {err:?}");
+                warn!(session_id = %cast.session_id, "ensure_size failed: {err:?}");
+                let _ = self
+                    .casting
+                    .pw_to_compositor
+                    .send(PwToCompositor::StopCast {
+                        session_id: cast.session_id,
+                    });
                 return false;
             }
         }
@@ -431,12 +415,11 @@ impl Ewm {
         }
     }
 
-    /// Render every output cast targeting `output`. Returns the
-    /// session ids of casts that errored and should be stopped.
-    ///
-    /// Element collection (`collect_render_elements_for_output`) is
-    /// done lazily — only when at least one cast is actually about to
-    /// render — so outputs without any cast attention pay nothing.
+    /// Render every output cast targeting `output`. Element collection
+    /// (`collect_render_elements_for_output`) is lazy — only when at
+    /// least one cast is actually about to render — so outputs without
+    /// any cast attention pay nothing. Casts that hit an unrecoverable
+    /// error self-stop via `PwToCompositor::StopCast`.
     pub fn render_for_screen_cast(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -447,21 +430,15 @@ impl Ewm {
         output_size_physical: Size<i32, Physical>,
         output_scale: Scale<f64>,
         target_frame_time: Duration,
-    ) -> Vec<usize> {
+    ) {
         use std::collections::HashSet;
 
-        let mut to_stop: Vec<usize> = Vec::new();
         let valid_outputs: HashSet<String> = self.space.outputs().map(|o| o.name()).collect();
         let mut casts = std::mem::take(&mut self.casting.casts);
         let mut elements: Option<(Vec<EwmRenderElement>, Vec<EwmRenderElement>)> = None;
 
         for cast in casts.iter_mut() {
-            let session_id = cast.session_id;
-            if cast.has_error() {
-                to_stop.push(session_id);
-                continue;
-            }
-            if !cast.is_streaming() {
+            if !cast.is_active() {
                 continue;
             }
             let CastTarget::Output { name } = &cast.target else {
@@ -482,8 +459,13 @@ impl Ewm {
                     continue;
                 }
                 Err(err) => {
-                    warn!(session_id, "ensure_size failed: {err:?}");
-                    to_stop.push(session_id);
+                    warn!(session_id = %cast.session_id, "ensure_size failed: {err:?}");
+                    let _ = self
+                        .casting
+                        .pw_to_compositor
+                        .send(PwToCompositor::StopCast {
+                            session_id: cast.session_id,
+                        });
                     continue;
                 }
             }
@@ -526,11 +508,11 @@ impl Ewm {
         }
 
         self.casting.casts = casts;
-        to_stop
     }
 
     /// Render every window cast whose target window currently lives on
-    /// `output`. Returns the session ids of casts that errored.
+    /// `output`. Casts that hit an unrecoverable error self-stop via
+    /// `PwToCompositor::StopCast`.
     pub fn render_windows_for_screen_cast(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -538,23 +520,17 @@ impl Ewm {
         cursor_buffer: &cursor::CursorBuffer,
         output_scale: Scale<f64>,
         target_frame_time: Duration,
-    ) -> Vec<usize> {
-        let mut to_stop: Vec<usize> = Vec::new();
+    ) {
         let mut casts = std::mem::take(&mut self.casting.casts);
 
         for cast in casts.iter_mut() {
-            let session_id = cast.session_id;
-            if cast.has_error() {
-                to_stop.push(session_id);
-                continue;
-            }
-            if !cast.is_streaming() {
+            if !cast.is_active() {
                 continue;
             }
             let CastTarget::Window { id } = cast.target else {
                 continue;
             };
-            if self.window_output_name(id).as_deref() != Some(&output.name()) {
+            if self.casting.mapped_cast_output.get(&id) != Some(output) {
                 continue;
             }
 
@@ -570,6 +546,5 @@ impl Ewm {
         }
 
         self.casting.casts = casts;
-        to_stop
     }
 }

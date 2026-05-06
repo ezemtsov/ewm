@@ -1248,7 +1248,7 @@ impl Ewm {
             let target = dbus::CastTarget::Output {
                 name: output_name.to_string(),
             };
-            let sessions_to_stop: Vec<usize> = self
+            let sessions_to_stop: Vec<screencasting::CastSessionId> = self
                 .casting
                 .casts
                 .iter()
@@ -1256,7 +1256,7 @@ impl Ewm {
                 .map(|cast| cast.session_id)
                 .collect();
             for session_id in sessions_to_stop {
-                info!(output = %output_name, session_id, "stopping cast due to output disconnect");
+                info!(output = %output_name, %session_id, "stopping cast due to output disconnect");
                 self.stop_cast(session_id);
             }
         }
@@ -1827,13 +1827,17 @@ impl Ewm {
         // 7b. Rebuild window-output cache for screencast lookups.
         #[cfg(feature = "screencast")]
         {
-            self.casting.window_cast_output.clear();
+            self.casting.mapped_cast_output.clear();
             for (oname, entries) in &self.output_layouts {
+                let Some(output) = self.space.outputs().find(|o| &o.name() == oname).cloned()
+                else {
+                    continue;
+                };
                 for entry in entries {
                     if entry.primary {
                         self.casting
-                            .window_cast_output
-                            .insert(entry.surface_id, oname.clone());
+                            .mapped_cast_output
+                            .insert(entry.surface_id, output.clone());
                     }
                 }
             }
@@ -3427,7 +3431,7 @@ impl Ewm {
                 if cast.target == target {
                     cast.set_refresh(refresh);
                     if let Err(err) = cast.ensure_size(physical_size) {
-                        warn!(session_id = cast.session_id, "ensure_size failed: {err:?}");
+                        warn!(session_id = %cast.session_id, "ensure_size failed: {err:?}");
                     }
                 }
             }

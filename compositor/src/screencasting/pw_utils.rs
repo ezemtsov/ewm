@@ -2,7 +2,7 @@
 //! PipeWire connection (`PipeWire`), the per-cast stream (`Cast`),
 //! and the callback-driven format negotiation state machine.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::mem;
@@ -59,6 +59,30 @@ pub struct PipeWire {
     _context: ContextRc,
     pub core: CoreRc,
     pub token: RegistrationToken,
+    event_loop: LoopHandle<'static, State>,
+    to_compositor: Sender<PwToCompositor>,
+}
+
+/// Unique id for a screencast session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CastSessionId(u64);
+
+impl CastSessionId {
+    pub fn next() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for CastSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 /// Events from PipeWire callbacks back to the compositor main thread.
@@ -68,22 +92,26 @@ pub enum PwToCompositor {
     /// stop active casts and drop the `PipeWire` instance; the next
     /// `StartCast` will lazy-reinit.
     FatalError,
+    /// Stop the cast with this session id. Sent on stream errors that
+    /// the compositor can't recover from at the callback site (e.g.
+    /// `StreamState::Error`, signal-emit failures).
+    StopCast { session_id: CastSessionId },
     /// Queue a redraw on the output of the cast with this session id.
     /// Sent when a stream first reaches `Streaming`, so the consumer
     /// receives an initial frame even if no other activity drives
     /// renders.
-    Redraw { session_id: usize },
+    Redraw { session_id: CastSessionId },
 }
 
 impl PipeWire {
     /// Initialize PipeWire and integrate with the calloop event loop.
     ///
-    /// `tx` is a persistent sender owned by the compositor; each new
-    /// `PipeWire` clones it. The receiver side stays registered across
-    /// PipeWire reinits.
-    pub fn new<D: 'static>(
-        event_loop: &LoopHandle<'static, D>,
-        tx: Sender<PwToCompositor>,
+    /// `to_compositor` is a persistent sender owned by the compositor;
+    /// each `PipeWire` instance clones it. The receiver side stays
+    /// registered across PipeWire reinits.
+    pub fn new(
+        event_loop: LoopHandle<'static, State>,
+        to_compositor: Sender<PwToCompositor>,
     ) -> anyhow::Result<Self> {
         info!("Initializing PipeWire");
 
@@ -94,20 +122,20 @@ impl PipeWire {
             .connect_rc(None)
             .context("error connecting to PipeWire")?;
 
+        let to_compositor_listener = to_compositor.clone();
         let listener = core
             .add_listener_local()
             .error(move |id, seq, res, message| {
                 warn!(id, seq, res, message, "PipeWire error");
                 if id == PW_ID_CORE && res == -32 {
-                    if let Err(err) = tx.send(PwToCompositor::FatalError) {
+                    if let Err(err) = to_compositor_listener.send(PwToCompositor::FatalError) {
                         warn!("error sending PipeWire FatalError: {err:?}");
                     }
                 }
             })
             .register();
-        // Listener leaks intentionally. The captured `tx` clone leaks
-        // too, but it's just a Sender and the receiver outlives all
-        // senders.
+        // Listener leaks intentionally; captured Sender clone leaks too,
+        // but the receiver outlives all senders.
         mem::forget(listener);
 
         struct MainLoopFd(MainLoopRc);
@@ -119,7 +147,7 @@ impl PipeWire {
 
         let generic = Generic::new(MainLoopFd(main_loop), Interest::READ, Mode::Level);
         let token = event_loop
-            .insert_source(generic, move |_, wrapper, _| {
+            .insert_source(generic, move |_, wrapper, _: &mut State| {
                 wrapper.0.loop_().iterate(Duration::ZERO);
                 Ok(PostAction::Continue)
             })
@@ -131,6 +159,8 @@ impl PipeWire {
             _context: context,
             core,
             token,
+            event_loop,
+            to_compositor,
         })
     }
 }
@@ -195,23 +225,14 @@ impl CastState {
 /// A screen cast session
 pub struct Cast {
     event_loop: LoopHandle<'static, State>,
-    pub session_id: usize,
+    pub session_id: CastSessionId,
     // Listener is dropped before Stream to prevent a use-after-free.
     _listener: StreamListener<()>,
     pub stream: StreamRc,
-    pub is_active: Rc<Cell<bool>>,
-    pub size: Size<u32, Physical>,
-    pub node_id: Rc<Cell<Option<u32>>>,
     /// What this cast is capturing (output or window)
     pub target: CastTarget,
-    state: Rc<RefCell<CastState>>,
-    dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>>,
     /// Monotonic time of last frame capture
     pub last_frame_time: Duration,
-    /// Minimum time between frames (set during format negotiation)
-    min_time_between_frames: Rc<Cell<Duration>>,
-    /// Flag indicating a fatal error occurred (e.g., signal emission failed)
-    had_error: Rc<Cell<bool>>,
     /// Frame sequence counter for SPA_META_Header
     sequence_counter: u64,
     /// Cursor mode: 0=Hidden, 1=Embedded, 2=Metadata
@@ -220,24 +241,33 @@ pub struct Cast {
     alpha: bool,
     /// Render formats (modifier list) for renegotiation on resize
     render_formats: Vec<i64>,
-    /// Output refresh rate for renegotiation on resize
-    refresh: u32,
     /// Timer token for scheduled redraw (cancelled on next frame or cast stop)
     scheduled_redraw: Option<RegistrationToken>,
-    /// Buffers dequeued from PipeWire awaiting GPU render completion.
-    /// Stored oldest-first; completed buffers are queued back in order.
-    /// Shared with PipeWire callbacks (remove_buffer cleans up on buffer removal).
-    rendering_buffers: Rc<RefCell<Vec<(NonNull<pw_buffer>, SyncPoint)>>>,
+    /// State shared with PipeWire callbacks. Wrapped in Rc<RefCell> so
+    /// every closure clones the Rc and `borrow_mut`s the inner fields
+    /// rather than each field being its own Rc<Cell>.
+    inner: Rc<RefCell<CastInner>>,
 }
 
-impl Cast {
-    /// Create a new screen cast stream
+/// Mutable Cast state shared across PipeWire callbacks.
+struct CastInner {
+    is_active: bool,
+    node_id: Option<u32>,
+    state: CastState,
+    refresh: u32,
+    min_time_between_frames: Duration,
+    dmabufs: HashMap<i64, Dmabuf>,
+    /// Buffers dequeued from PipeWire awaiting GPU render completion.
+    /// Stored oldest-first; completed buffers are queued back in order.
+    rendering_buffers: Vec<(NonNull<pw_buffer>, SyncPoint)>,
+}
+
+impl PipeWire {
+    /// Create a new screen cast stream attached to this PipeWire core.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        pipewire: &PipeWire,
-        event_loop: LoopHandle<'static, State>,
-        to_compositor: Sender<PwToCompositor>,
-        session_id: usize,
+    pub fn start_cast(
+        &self,
+        session_id: CastSessionId,
         gbm: GbmDevice<DrmDeviceFd>,
         size: Size<i32, Physical>,
         refresh: u32,
@@ -246,93 +276,108 @@ impl Cast {
         signal_ctx: SignalEmitter<'static>,
         render_formats: Vec<i64>,
         cursor_mode: u32,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<Cast> {
+        let event_loop = self.event_loop.clone();
+        let to_compositor = self.to_compositor.clone();
         let size = Size::from((size.w as u32, size.h as u32));
 
         let stream = StreamRc::new(
-            pipewire.core.clone(),
+            self.core.clone(),
             "ewm-screen-cast",
             PropertiesBox::new(),
         )
         .context("error creating PipeWire stream")?;
 
-        let node_id = Rc::new(Cell::new(None));
-        let is_active = Rc::new(Cell::new(false));
-        let state = Rc::new(RefCell::new(CastState::ResizePending {
-            pending_size: size,
+        let inner = Rc::new(RefCell::new(CastInner {
+            is_active: false,
+            node_id: None,
+            state: CastState::ResizePending { pending_size: size },
+            refresh,
+            min_time_between_frames: Duration::ZERO,
+            dmabufs: HashMap::new(),
+            rendering_buffers: Vec::new(),
         }));
-        let dmabufs: Rc<RefCell<HashMap<i64, Dmabuf>>> = Rc::new(RefCell::new(HashMap::new()));
-        let min_time_between_frames = Rc::new(Cell::new(Duration::ZERO));
-        let had_error = Rc::new(Cell::new(false));
-        let rendering_bufs: Rc<RefCell<Vec<(NonNull<pw_buffer>, SyncPoint)>>> =
-            Rc::new(RefCell::new(Vec::new()));
 
-        let node_id_clone = node_id.clone();
-        let is_active_clone = is_active.clone();
-        let had_error_clone = had_error.clone();
-        let rendering_bufs_clone = rendering_bufs.clone();
+        // Sent when the cast hits an unrecoverable error. State::on_pw_msg
+        // calls Ewm::stop_cast which removes the cast and emits D-Bus
+        // Closed.
+        let stop_cast = {
+            let to_compositor = to_compositor.clone();
+            move || {
+                if let Err(err) = to_compositor.send(PwToCompositor::StopCast { session_id }) {
+                    warn!(%session_id, "error sending StopCast: {err:?}");
+                }
+            }
+        };
+
         let to_compositor_clone = to_compositor.clone();
-
-        let state_clone = state.clone();
+        let stop_cast_state_changed = stop_cast.clone();
         let gbm_clone = gbm.clone();
-        let min_time_between_frames_clone = min_time_between_frames.clone();
 
         let listener =
             stream
                 .add_local_listener_with_user_data(())
-                .state_changed(move |stream: &Stream, (), old, new| {
-                    debug!("PipeWire stream state: {old:?} -> {new:?}");
+                .state_changed({
+                    let inner = inner.clone();
+                    let stop_cast = stop_cast_state_changed;
+                    move |stream: &Stream, (), old, new| {
+                        debug!("PipeWire stream state: {old:?} -> {new:?}");
+                        let mut inner = inner.borrow_mut();
 
-                    match new {
-                        StreamState::Paused => {
-                            if node_id_clone.get().is_none() {
-                                let id = stream.node_id();
-                                info!("PipeWire stream paused, node_id: {id}");
-                                node_id_clone.set(Some(id));
+                        match new {
+                            StreamState::Paused => {
+                                if inner.node_id.is_none() {
+                                    let id = stream.node_id();
+                                    info!("PipeWire stream paused, node_id: {id}");
+                                    inner.node_id = Some(id);
 
-                                info!("Emitting PipeWireStreamAdded signal with node_id={}", id);
-                                async_io::block_on(async {
-                                    let res = screen_cast::Stream::pipe_wire_stream_added(
-                                        &signal_ctx,
-                                        id,
-                                    )
-                                    .await;
-
-                                    if let Err(err) = res {
-                                        warn!("Error sending PipeWireStreamAdded: {err:?}");
-                                        had_error_clone.set(true);
-                                    } else {
-                                        info!("PipeWireStreamAdded signal emitted successfully");
-                                    }
-                                });
+                                    info!(
+                                        "Emitting PipeWireStreamAdded signal with node_id={}",
+                                        id
+                                    );
+                                    async_io::block_on(async {
+                                        let res = screen_cast::Stream::pipe_wire_stream_added(
+                                            &signal_ctx,
+                                            id,
+                                        )
+                                        .await;
+                                        if let Err(err) = res {
+                                            warn!("Error sending PipeWireStreamAdded: {err:?}");
+                                            stop_cast();
+                                        } else {
+                                            info!("PipeWireStreamAdded signal emitted successfully");
+                                        }
+                                    });
+                                }
+                                inner.is_active = false;
                             }
-                            is_active_clone.set(false);
-                        }
-                        StreamState::Streaming => {
-                            info!("PipeWire stream now streaming");
-                            is_active_clone.set(true);
-                            // Kick a redraw so the consumer gets an
-                            // initial frame even if nothing else is
-                            // driving renders on this output.
-                            if let Err(err) =
-                                to_compositor_clone.send(PwToCompositor::Redraw { session_id })
-                            {
-                                warn!("error sending Redraw to compositor: {err:?}");
+                            StreamState::Streaming => {
+                                info!("PipeWire stream now streaming");
+                                inner.is_active = true;
+                                // Kick a redraw so the consumer gets an
+                                // initial frame even if nothing else is
+                                // driving renders on this output.
+                                if let Err(err) =
+                                    to_compositor_clone.send(PwToCompositor::Redraw { session_id })
+                                {
+                                    warn!("error sending Redraw to compositor: {err:?}");
+                                }
                             }
+                            StreamState::Error(msg) => {
+                                warn!("PipeWire stream error: {msg}");
+                                if inner.is_active {
+                                    inner.is_active = false;
+                                    stop_cast();
+                                }
+                            }
+                            _ => {}
                         }
-                        StreamState::Error(msg) => {
-                            warn!("PipeWire stream error: {msg}");
-                            is_active_clone.set(false);
-                            had_error_clone.set(true);
-                        }
-                        _ => {}
                     }
                 })
                 .param_changed({
-                    let state = state_clone.clone();
-                    let had_error = had_error.clone();
+                    let inner = inner.clone();
+                    let stop_cast = stop_cast.clone();
                     let gbm = gbm_clone.clone();
-                    let min_time_between_frames = min_time_between_frames_clone.clone();
                     let param_render_formats = render_formats.clone();
                     let param_alpha = alpha;
                     move |stream: &Stream, (), id, pod| {
@@ -363,12 +408,14 @@ impl Cast {
 
                         let format_size = Size::from((format.size().width, format.size().height));
 
+                        let mut inner = inner.borrow_mut();
+                        let inner = &mut *inner;
+
                         // Validate format size against expected size
-                        let mut state_ref = state.borrow_mut();
-                        if format_size != state_ref.expected_format_size() {
-                            if !matches!(&*state_ref, CastState::ResizePending { .. }) {
+                        if format_size != inner.state.expected_format_size() {
+                            if !matches!(&inner.state, CastState::ResizePending { .. }) {
                                 warn!("unexpected format size, stopping cast");
-                                had_error.set(true);
+                                stop_cast();
                                 return;
                             }
                             debug!("wrong size during resize, waiting");
@@ -382,7 +429,7 @@ impl Cast {
                                 1_000_000 * u64::from(max_frame_rate.denom)
                                     / u64::from(max_frame_rate.num),
                             );
-                            min_time_between_frames.set(min_frame_time);
+                            inner.min_time_between_frames = min_frame_time;
                             debug!("min_time_between_frames set to {:?}", min_frame_time);
                         }
 
@@ -402,13 +449,13 @@ impl Cast {
                                     )
                                 else {
                                     warn!("wrong modifier property type");
-                                    had_error.set(true);
+                                    stop_cast();
                                     return;
                                 };
 
                                 let ChoiceEnum::Enum { alternatives, .. } = modifiers.1 else {
                                     warn!("wrong modifier choice type");
-                                    had_error.set(true);
+                                    stop_cast();
                                     return;
                                 };
 
@@ -426,7 +473,7 @@ impl Cast {
                                     Ok(x) => x,
                                     Err(err) => {
                                         warn!("couldn't find preferred modifier: {err:?}");
-                                        had_error.set(true);
+                                        stop_cast();
                                         return;
                                     }
                                 };
@@ -436,23 +483,22 @@ impl Cast {
                                      moving to confirmation pending"
                                 );
 
-                                *state_ref = CastState::ConfirmationPending {
+                                inner.state = CastState::ConfirmationPending {
                                     size: format_size,
                                     modifier,
                                     plane_count: plane_count as i32,
                                 };
-                                drop(state_ref);
 
                                 // Offer fixated format first, original as fallback
                                 let fixated_obj = make_video_params_fixated(
                                     format_size,
-                                    refresh,
+                                    inner.refresh,
                                     modifier,
                                     param_alpha,
                                 );
                                 let fallback_obj = make_video_params(
                                     format_size,
-                                    refresh,
+                                    inner.refresh,
                                     &param_render_formats,
                                     param_alpha,
                                 );
@@ -470,7 +516,7 @@ impl Cast {
 
                         // Modifier is already fixated; verify it matches if we're confirming
                         let modifier = Modifier::from(format.modifier());
-                        let plane_count = match &*state_ref {
+                        let plane_count = match &inner.state {
                             CastState::ConfirmationPending {
                                 modifier: expected_mod,
                                 plane_count,
@@ -496,7 +542,7 @@ impl Cast {
                                     Ok(x) => x,
                                     Err(err) => {
                                         warn!("test allocation failed: {err:?}");
-                                        had_error.set(true);
+                                        stop_cast();
                                         return;
                                     }
                                 };
@@ -505,7 +551,7 @@ impl Cast {
                             }
                         };
 
-                        *state_ref = CastState::Ready {
+                        inner.state = CastState::Ready {
                             size: format_size,
                             modifier,
                             plane_count,
@@ -513,7 +559,6 @@ impl Cast {
                             cursor_damage_tracker: None,
                             last_cursor_location: None,
                         };
-                        drop(state_ref);
 
                         // Set buffer params + meta header
                         let buffer_obj = pod::object!(
@@ -567,21 +612,20 @@ impl Cast {
                     }
                 })
                 .add_buffer({
-                    let state = state_clone.clone();
-                    let dmabufs = dmabufs.clone();
+                    let inner = inner.clone();
                     let gbm = gbm_clone.clone();
                     let add_buf_event_loop = event_loop.clone();
                     let add_buf_target = target.clone();
                     let add_buf_alpha = alpha;
                     move |stream, (), buffer| {
-                        let state_ref = state.borrow();
-                        let CastState::Ready { size, modifier, .. } = &*state_ref else {
+                        let mut inner = inner.borrow_mut();
+
+                        let CastState::Ready { size, modifier, .. } = &inner.state else {
                             trace!("add_buffer but not ready yet");
                             return;
                         };
                         let size = *size;
                         let modifier = *modifier;
-                        drop(state_ref);
 
                         trace!("add_buffer: size={size:?}, modifier={modifier:?}");
 
@@ -619,32 +663,28 @@ impl Cast {
                             }
 
                             let fd = (*(*spa_buffer).datas).fd;
-                            dmabufs.borrow_mut().insert(fd, dmabuf);
+                            inner.dmabufs.insert(fd, dmabuf);
                         }
 
                         // During size re-negotiation, force a redraw once we got a newly sized buffer.
-                        if dmabufs.borrow().len() == 1 && stream.state() == StreamState::Streaming {
+                        if inner.dmabufs.len() == 1 && stream.state() == StreamState::Streaming {
                             let redraw_target = add_buf_target.clone();
                             let _ = add_buf_event_loop.insert_source(
                                 Timer::from_duration(Duration::ZERO),
                                 move |_, _, state| {
-                                    // For window casts, find which output the window is on
-                                    let output_name = match &redraw_target {
-                                        CastTarget::Output { name } => Some(name.clone()),
-                                        CastTarget::Window { id } => {
-                                            state.ewm.window_output_name(*id)
-                                        }
-                                    };
-                                    if let Some(name) = output_name {
-                                        let output = state
+                                    let output = match &redraw_target {
+                                        CastTarget::Output { name } => state
                                             .ewm
                                             .space
                                             .outputs()
-                                            .find(|o| o.name() == name)
-                                            .cloned();
-                                        if let Some(output) = output {
-                                            state.ewm.queue_redraw(&output);
+                                            .find(|o| &o.name() == name)
+                                            .cloned(),
+                                        CastTarget::Window { id } => {
+                                            state.ewm.casting.mapped_cast_output.get(id).cloned()
                                         }
+                                    };
+                                    if let Some(output) = output {
+                                        state.ewm.queue_redraw(&output);
                                     }
                                     TimeoutAction::Drop
                                 },
@@ -653,19 +693,19 @@ impl Cast {
                     }
                 })
                 .remove_buffer({
-                    let dmabufs = dmabufs.clone();
-                    let rendering_bufs = rendering_bufs_clone.clone();
+                    let inner = inner.clone();
                     move |_stream, (), buffer| {
                         trace!("remove_buffer");
-                        rendering_bufs
-                            .borrow_mut()
+                        let mut inner = inner.borrow_mut();
+                        inner
+                            .rendering_buffers
                             .retain(|(buf, _)| buf.as_ptr() != buffer);
                         unsafe {
                             let spa_buffer = (*buffer).buffer;
                             let spa_data = (*spa_buffer).datas;
                             if (*spa_buffer).n_datas > 0 {
                                 let fd = (*spa_data).fd;
-                                dmabufs.borrow_mut().remove(&fd);
+                                inner.dmabufs.remove(&fd);
                             }
                         }
                     }
@@ -689,38 +729,31 @@ impl Cast {
 
         info!("PipeWire stream created for {:?} size {:?}", target, size);
 
-        Ok(Self {
+        Ok(Cast {
             event_loop,
             session_id,
             _listener: listener,
             stream,
-            is_active,
-            size,
-            node_id,
             target,
-            state,
-            dmabufs,
             last_frame_time: Duration::ZERO,
-            min_time_between_frames,
-            had_error,
             sequence_counter: 0,
             cursor_mode,
             alpha,
             render_formats,
-            refresh,
             scheduled_redraw: None,
-            rendering_buffers: rendering_bufs,
+            inner,
         })
     }
+}
 
-    /// Check if the stream is actively streaming (and hasn't had a fatal error)
-    pub fn is_streaming(&self) -> bool {
-        self.is_active.get() && !self.had_error.get()
-    }
+impl Cast {
 
-    /// Check if the stream has encountered a fatal error
-    pub fn has_error(&self) -> bool {
-        self.had_error.get()
+    /// Whether the stream has reached `Streaming`. Once an unrecoverable
+    /// error occurs, the cast sends itself a `StopCast` and is removed
+    /// from `Screencasting.casts`, so callers don't need a separate
+    /// "errored" probe.
+    pub fn is_active(&self) -> bool {
+        self.inner.borrow().is_active
     }
 
     /// Renegotiate stream size if needed. Returns `Ready` when the stream
@@ -728,22 +761,20 @@ impl Cast {
     /// for PipeWire to confirm the resize. Use `set_refresh` separately
     /// to update the refresh rate.
     pub fn ensure_size(
-        &mut self,
+        &self,
         new_size: Size<i32, Physical>,
     ) -> anyhow::Result<CastSizeChange> {
+        let mut inner = self.inner.borrow_mut();
         let new_size = Size::from((new_size.w as u32, new_size.h as u32));
 
-        {
-            let state = self.state.borrow();
-            match &*state {
-                CastState::Ready { size, .. } if *size == new_size => {
-                    return Ok(CastSizeChange::Ready);
-                }
-                _ if state.pending_size() == Some(new_size) => {
-                    return Ok(CastSizeChange::Pending);
-                }
-                _ => {}
+        match &inner.state {
+            CastState::Ready { size, .. } if *size == new_size => {
+                return Ok(CastSizeChange::Ready);
             }
+            _ if inner.state.pending_size() == Some(new_size) => {
+                return Ok(CastSizeChange::Pending);
+            }
+            _ => {}
         }
 
         info!(
@@ -752,12 +783,11 @@ impl Cast {
             "size changed, renegotiating PipeWire stream"
         );
 
-        self.size = new_size;
-        *self.state.borrow_mut() = CastState::ResizePending {
+        inner.state = CastState::ResizePending {
             pending_size: new_size,
         };
 
-        let obj = make_video_params(new_size, self.refresh, &self.render_formats, self.alpha);
+        let obj = make_video_params(new_size, inner.refresh, &self.render_formats, self.alpha);
         let mut buffer = Vec::new();
         let params = make_pod(&mut buffer, obj);
 
@@ -771,7 +801,7 @@ impl Cast {
     /// Compute extra delay needed before capturing next frame.
     fn compute_extra_delay(&self, target_frame_time: Duration) -> Duration {
         let last = self.last_frame_time;
-        let min = self.min_time_between_frames.get();
+        let min = self.inner.borrow().min_time_between_frames;
 
         if last.is_zero() {
             trace!(
@@ -878,8 +908,9 @@ impl Cast {
             }
         };
 
-        self.rendering_buffers
+        self.inner
             .borrow_mut()
+            .rendering_buffers
             .push((pw_buffer, sync_point));
 
         match sync_fd {
@@ -911,7 +942,8 @@ impl Cast {
 
     /// Queue all completed (GPU-done) buffers back to PipeWire in order.
     fn queue_completed_buffers(&self) {
-        let mut bufs = self.rendering_buffers.borrow_mut();
+        let mut inner = self.inner.borrow_mut();
+        let bufs = &mut inner.rendering_buffers;
 
         // Queue buffers in order up to the first still-rendering one.
         let first_in_progress = bufs
@@ -928,15 +960,16 @@ impl Cast {
     }
 
     /// Update the stream's refresh rate (renegotiate if changed).
-    pub fn set_refresh(&mut self, refresh: u32) {
-        if self.refresh == refresh {
+    pub fn set_refresh(&self, refresh: u32) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.refresh == refresh {
             return;
         }
 
         debug!("cast FPS changed, updating stream FPS");
-        self.refresh = refresh;
+        inner.refresh = refresh;
 
-        let size = self.state.borrow().expected_format_size();
+        let size = inner.state.expected_format_size();
         let obj = make_video_params(size, refresh, &self.render_formats, self.alpha);
         let mut buffer = Vec::new();
         let params = make_pod(&mut buffer, obj);
@@ -966,19 +999,19 @@ impl Cast {
     where
         E: RenderElement<GlesRenderer>,
     {
-        if !self.is_streaming() {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.is_active {
             return false;
         }
 
         // Get ready state and check damage
-        let mut state = self.state.borrow_mut();
         let CastState::Ready {
             size: ready_size,
             damage_tracker,
             cursor_damage_tracker,
             last_cursor_location,
             ..
-        } = &mut *state
+        } = &mut inner.state
         else {
             trace!("dequeue_buffer_and_render: not ready yet");
             return false;
@@ -1034,8 +1067,6 @@ impl Cast {
             "PipeWire frame has damage"
         );
 
-        drop(state);
-
         // Use raw buffer API for direct spa_buffer access
         let pw_buffer = unsafe { NonNull::new(self.stream.dequeue_raw_buffer()) };
         let Some(pw_buffer) = pw_buffer else {
@@ -1046,14 +1077,13 @@ impl Cast {
         unsafe {
             let spa_buf = (*pw_buffer.as_ptr()).buffer;
             let fd = (*(*spa_buf).datas).fd;
-            let dmabufs = self.dmabufs.borrow();
-            let Some(dmabuf) = dmabufs.get(&fd) else {
+            let Some(dmabuf) = inner.dmabufs.get(&fd) else {
                 warn!("dmabuf not found for fd {}", fd);
                 return_unused_buffer(&self.stream, pw_buffer);
                 return false;
             };
             let dmabuf = dmabuf.clone();
-            drop(dmabufs);
+            drop(inner);
 
             // Chain cursor elements (front) onto content elements for rendering
             match crate::render::render_to_dmabuf(

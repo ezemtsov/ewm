@@ -1228,7 +1228,7 @@ impl DrmBackendState {
 
             let target_frame_time = get_monotonic_time();
 
-            let mut to_stop = ewm.render_for_screen_cast(
+            ewm.render_for_screen_cast(
                 renderer,
                 output,
                 cursor_buffer,
@@ -1238,17 +1238,13 @@ impl DrmBackendState {
                 output_scale,
                 target_frame_time,
             );
-            to_stop.append(&mut ewm.render_windows_for_screen_cast(
+            ewm.render_windows_for_screen_cast(
                 renderer,
                 output,
                 cursor_buffer,
                 output_scale,
                 target_frame_time,
-            ));
-            for session_id in to_stop {
-                warn!(session_id, "stopping errored screen cast");
-                ewm.stop_cast(session_id);
-            }
+            );
         }
     }
 
