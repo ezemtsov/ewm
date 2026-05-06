@@ -3429,7 +3429,9 @@ impl Ewm {
             };
             for cast in self.casting.casts.iter_mut() {
                 if cast.target == target {
-                    cast.set_refresh(refresh);
+                    if let Err(err) = cast.set_refresh(refresh) {
+                        warn!(session_id = %cast.session_id, "set_refresh failed: {err:?}");
+                    }
                     if let Err(err) = cast.ensure_size(physical_size) {
                         warn!(session_id = %cast.session_id, "ensure_size failed: {err:?}");
                     }

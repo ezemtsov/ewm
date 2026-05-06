@@ -663,7 +663,14 @@ impl PipeWire {
                             }
 
                             let fd = (*(*spa_buffer).datas).fd;
-                            inner.dmabufs.insert(fd, dmabuf);
+                            let prev = inner.dmabufs.insert(fd, dmabuf);
+                            // PipeWire shouldn't hand us the same fd twice
+                            // for the same stream. The insert must always
+                            // happen (not inside debug_assert!, which is
+                            // a no-op in release builds and would silently
+                            // drop the dmabuf - closing its fds before
+                            // PipeWire serializes them to the consumer).
+                            debug_assert!(prev.is_none());
                         }
 
                         // During size re-negotiation, force a redraw once we got a newly sized buffer.
@@ -959,11 +966,11 @@ impl Cast {
         }
     }
 
-    /// Update the stream's refresh rate (renegotiate if changed).
-    pub fn set_refresh(&self, refresh: u32) {
+    /// Update the stream's refresh rate, renegotiating if changed.
+    pub fn set_refresh(&self, refresh: u32) -> anyhow::Result<()> {
         let mut inner = self.inner.borrow_mut();
         if inner.refresh == refresh {
-            return;
+            return Ok(());
         }
 
         debug!("cast FPS changed, updating stream FPS");
@@ -974,9 +981,10 @@ impl Cast {
         let mut buffer = Vec::new();
         let params = make_pod(&mut buffer, obj);
 
-        if let Err(err) = self.stream.update_params(&mut [params]) {
-            warn!("error updating stream params for refresh: {err:?}");
-        }
+        self.stream
+            .update_params(&mut [params])
+            .context("error updating stream params for refresh")?;
+        Ok(())
     }
 
     /// Dequeue a buffer, render to it, and queue it back.

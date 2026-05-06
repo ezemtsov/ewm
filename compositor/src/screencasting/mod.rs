@@ -310,7 +310,16 @@ impl Ewm {
             .map(|m| (m.refresh / 1000) as u32)
             .unwrap_or(60);
 
-        cast.set_refresh(refresh);
+        if let Err(err) = cast.set_refresh(refresh) {
+            warn!(session_id = %cast.session_id, "set_refresh failed: {err:?}");
+            let _ = self
+                .casting
+                .pw_to_compositor
+                .send(PwToCompositor::StopCast {
+                    session_id: cast.session_id,
+                });
+            return false;
+        }
         match cast.ensure_size(window_size) {
             Ok(CastSizeChange::Ready) => (),
             Ok(CastSizeChange::Pending) => return false,

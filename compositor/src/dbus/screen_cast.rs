@@ -31,6 +31,21 @@ pub enum CastTarget {
 struct RecordWindowProperties {
     #[zvariant(rename = "window-id")]
     window_id: u64,
+    #[zvariant(rename = "cursor-mode")]
+    cursor_mode: Option<u32>,
+}
+
+/// Parse the optional `cursor-mode` u32 from a method-call properties
+/// dict, falling back to the session-level cursor_mode if absent or
+/// not a u32.
+fn parse_cursor_mode(properties: &HashMap<&str, Value<'_>>, session_default: u32) -> u32 {
+    properties
+        .get("cursor-mode")
+        .and_then(|v| match v {
+            Value::U32(m) => Some(*m),
+            _ => None,
+        })
+        .unwrap_or(session_default)
 }
 
 /// Messages sent from D-Bus to compositor
@@ -184,7 +199,6 @@ impl Session {
                 self.id,
                 stream_info.target.clone(),
                 stream_info.iface.signal_emitter().clone(),
-                self.cursor_mode,
             );
         }
     }
@@ -235,8 +249,9 @@ impl Session {
         &self,
         #[zbus(object_server)] server: &ObjectServer,
         connector: &str,
-        _properties: HashMap<&str, Value<'_>>,
+        properties: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<OwnedObjectPath> {
+        let cursor_mode = parse_cursor_mode(&properties, self.cursor_mode);
         // Find the output
         let output = {
             let outputs = self.outputs.lock().unwrap();
@@ -264,7 +279,13 @@ impl Session {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let stream = Stream::new_output(stream_id, self.id, output, self.to_compositor.clone());
+        let stream = Stream::new_output(
+            stream_id,
+            self.id,
+            output,
+            self.to_compositor.clone(),
+            cursor_mode,
+        );
 
         // Register stream with D-Bus and get InterfaceRef
         let iface = match server.at(&path, stream.clone()).await {
@@ -304,6 +325,7 @@ impl Session {
         properties: RecordWindowProperties,
     ) -> fdo::Result<OwnedObjectPath> {
         let window_id = properties.window_id;
+        let cursor_mode = properties.cursor_mode.unwrap_or(self.cursor_mode);
         info!("RecordWindow: window_id={}", window_id);
 
         let target = CastTarget::Window { id: window_id };
@@ -313,7 +335,13 @@ impl Session {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let stream = Stream::new_window(stream_id, self.id, window_id, self.to_compositor.clone());
+        let stream = Stream::new_window(
+            stream_id,
+            self.id,
+            window_id,
+            self.to_compositor.clone(),
+            cursor_mode,
+        );
 
         // Register stream with D-Bus and get InterfaceRef
         let iface = match server.at(&path, stream.clone()).await {
@@ -375,6 +403,11 @@ pub struct Stream {
     target: StreamTarget,
     to_compositor: Sender<ScreenCastToCompositor>,
     was_started: Arc<AtomicBool>,
+    /// Per-stream cursor-mode (0=Hidden, 1=Embedded, 2=Metadata),
+    /// taken from the per-call `cursor-mode` property in
+    /// RecordMonitor/RecordWindow if present, else inherited from
+    /// the session.
+    cursor_mode: u32,
 }
 
 impl Stream {
@@ -383,6 +416,7 @@ impl Stream {
         session_id: CastSessionId,
         output: OutputInfo,
         to_compositor: Sender<ScreenCastToCompositor>,
+        cursor_mode: u32,
     ) -> Self {
         Self {
             id,
@@ -390,6 +424,7 @@ impl Stream {
             target: StreamTarget::Output(output),
             to_compositor,
             was_started: Arc::new(AtomicBool::new(false)),
+            cursor_mode,
         }
     }
 
@@ -398,6 +433,7 @@ impl Stream {
         session_id: CastSessionId,
         window_id: u64,
         to_compositor: Sender<ScreenCastToCompositor>,
+        cursor_mode: u32,
     ) -> Self {
         Self {
             id,
@@ -405,6 +441,7 @@ impl Stream {
             target: StreamTarget::Window { id: window_id },
             to_compositor,
             was_started: Arc::new(AtomicBool::new(false)),
+            cursor_mode,
         }
     }
 
@@ -413,7 +450,6 @@ impl Stream {
         session_id: CastSessionId,
         cast_target: CastTarget,
         signal_ctx: SignalEmitter<'static>,
-        cursor_mode: u32,
     ) {
         if self.was_started.swap(true, Ordering::SeqCst) {
             return;
@@ -421,14 +457,14 @@ impl Stream {
 
         info!(
             "Stream {} starting for {:?} (cursor_mode={})",
-            self.id, cast_target, cursor_mode
+            self.id, cast_target, self.cursor_mode
         );
 
         if let Err(err) = self.to_compositor.send(ScreenCastToCompositor::StartCast {
             session_id,
             target: cast_target,
             signal_ctx,
-            cursor_mode,
+            cursor_mode: self.cursor_mode,
         }) {
             warn!("Failed to send StartCast: {err:?}");
         }
