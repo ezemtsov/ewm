@@ -308,13 +308,14 @@ pub fn collect_render_elements_for_output(
     let working_area = ewm.get_working_area(output);
     if let Some(entries) = ewm.output_layouts.get(&output.name()) {
         for entry in entries {
+            let effective_fs = ewm.effective_fullscreen(entry);
             // When fullscreen is active, non-fullscreen entries are behind the
             // fullscreen backdrop, so skip them to avoid rendering on top.
-            if above_top_layer && !entry.fullscreen {
+            if above_top_layer && !effective_fs {
                 continue;
             }
             if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
-                if entry.fullscreen {
+                if effective_fs {
                     // Fullscreen: surface + backdrop at output origin, bypassing working area.
                     // Elements are front-to-back: surface first, then backdrop behind it.
                     let output_logical_size = ewm

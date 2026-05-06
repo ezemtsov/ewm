@@ -164,7 +164,7 @@ pub fn handle_keyboard_event(
         .output_layouts
         .values()
         .flat_map(|entries| entries.iter())
-        .find(|e| e.focused && e.fullscreen)
+        .find(|e| e.focused && state.ewm.effective_fullscreen(e))
         .map(|e| e.surface_id);
 
     // When a fullscreen surface exists, ensure keyboard focus is on it before processing keys.

@@ -1472,7 +1472,7 @@ impl Ewm {
             let output = self.space.outputs().find(|o| o.name() == output_name)?;
             let output_geo = self.space.output_geometry(output)?;
 
-            if entry.fullscreen {
+            if self.effective_fullscreen(entry) {
                 if entry.primary {
                     let (ox, oy) =
                         fullscreen_center_offset(window.geometry().size, output_geo.size);
@@ -1513,7 +1513,7 @@ impl Ewm {
 
         // Iterate forward (first = topmost, matching render element order)
         for entry in entries.iter() {
-            if entry.fullscreen {
+            if self.effective_fullscreen(entry) {
                 // Fullscreen covers entire output
                 return Some((entry, output_geo.loc.x, output_geo.loc.y));
             }
@@ -1561,8 +1561,9 @@ impl Ewm {
                 None => continue,
             };
             let window_geo = window.geometry();
+            let effective_fs = self.effective_fullscreen(entry);
 
-            let (entry_x, entry_y) = if entry.fullscreen {
+            let (entry_x, entry_y) = if effective_fs {
                 (output_geo.loc.x, output_geo.loc.y)
             } else {
                 (
@@ -1577,7 +1578,7 @@ impl Ewm {
             // Scale pointer coords from entry space to window space.
             // Primary/fullscreen-primary use 1:1 mapping. Non-primary entries use
             // uniform fill+crop inverse: min(buf/entry) applied to both axes.
-            let (pointer_scale, center_offset_x, center_offset_y) = if entry.fullscreen {
+            let (pointer_scale, center_offset_x, center_offset_y) = if effective_fs {
                 if entry.primary {
                     let (cx, cy) = fullscreen_center_offset(window_geo.size, output_geo.size);
                     (1.0, cx as f64, cy as f64)
@@ -1623,7 +1624,7 @@ impl Ewm {
                 ));
                 // Log all hits in fullscreen, and popup/subsurface hits always
                 let is_toplevel = window.wl_surface().map_or(false, |ws| *ws == surface);
-                if entry.fullscreen || !is_toplevel {
+                if effective_fs || !is_toplevel {
                     info!(
                         "surface_under: {} entry {} (fs={}) \
                          pos={:.0},{:.0} pos_in_window={:.0},{:.0} \
@@ -1631,7 +1632,7 @@ impl Ewm {
                          geo.loc={},{} geo.size={}x{} center={:.0},{:.0}",
                         if is_toplevel { "toplevel" } else { "popup" },
                         entry.surface_id,
-                        entry.fullscreen,
+                        effective_fs,
                         pos.x,
                         pos.y,
                         pos_in_window.x,
@@ -1652,7 +1653,7 @@ impl Ewm {
             }
 
             // Fullscreen covers the entire output; no entries below are visible.
-            if entry.fullscreen {
+            if effective_fs {
                 break;
             }
         }
@@ -1660,11 +1661,35 @@ impl Ewm {
         None
     }
 
-    /// Check if a surface has fullscreen set in any output layout.
+    /// True iff the toplevel's last-acked-and-committed state has Fullscreen set.
+    /// Differs from `LayoutEntry::fullscreen` (the requested state) during the
+    /// in-flight configure → ack → commit gap. Render and hit-test paths gate
+    /// on this so they don't flip until the client has caught up; otherwise the
+    /// position recomputes against stale geometry and the surface jumps twice.
+    pub(crate) fn surface_committed_fullscreen(&self, id: u64) -> bool {
+        self.id_windows
+            .get(&id)
+            .and_then(|w| w.toplevel())
+            .map_or(false, |t| {
+                t.with_committed_state(|s| {
+                    s.map_or(false, |s| s.states.contains(XdgToplevelState::Fullscreen))
+                })
+            })
+    }
+
+    /// Per-entry render-side fullscreen flag: true iff the entry was requested
+    /// fullscreen *and* the client is currently committing fullscreen buffers.
+    /// Mirroring case (entry.fullscreen=false on a different output) stays false
+    /// even when the surface is committed fullscreen elsewhere.
+    pub(crate) fn effective_fullscreen(&self, entry: &LayoutEntry) -> bool {
+        entry.fullscreen && self.surface_committed_fullscreen(entry.surface_id)
+    }
+
+    /// Check if a surface is currently displaying as fullscreen on any output.
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
         self.output_layouts
             .values()
-            .any(|entries| entries.iter().any(|e| e.surface_id == id && e.fullscreen))
+            .any(|entries| entries.iter().any(|e| e.surface_id == id && self.effective_fullscreen(e)))
     }
 
     /// Whether layout surfaces render (and receive input) above the Top layer on this output.
@@ -1675,7 +1700,7 @@ impl Ewm {
     pub fn render_above_top_layer(&self, output: &Output) -> bool {
         self.output_layouts
             .get(&output.name())
-            .map_or(false, |entries| entries.iter().any(|e| e.fullscreen))
+            .map_or(false, |entries| entries.iter().any(|e| self.effective_fullscreen(e)))
     }
 
     /// Hit-test layout surfaces under a global position, returning the surface ID.
@@ -3879,7 +3904,7 @@ impl Ewm {
         let output = self.space.outputs().find(|o| o.name() == output_name)?;
         let output_geo = self.space.output_geometry(output)?;
 
-        if entry.fullscreen {
+        if self.effective_fullscreen(entry) {
             return Some(Rectangle::from_size(output_geo.size));
         }
 
