@@ -313,6 +313,10 @@ pub enum ModuleCommand {
     ConfigureFocusFollowsMouse {
         state: bool,
     },
+    /// Set alpha multiplier for unfocused toplevels (1.0 = disabled).
+    ConfigureUnfocusedAlpha {
+        alpha: f32,
+    },
     /// Set manual idle inhibition (from Emacs)
     SetIdleInhibited {
         inhibited: bool,
@@ -1060,6 +1064,15 @@ fn set_focus_follows_mouse(state: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::ConfigureFocusFollowsMouse {
         state: state.is_not_nil(),
     });
+    Ok(())
+}
+
+/// Set alpha multiplier for unfocused toplevels (module mode).
+/// ALPHA is clamped to 0.0..=1.0; 1.0 disables the effect.
+#[defun]
+fn set_unfocused_alpha(alpha: f64) -> Result<()> {
+    let alpha = alpha.clamp(0.0, 1.0) as f32;
+    push_command(ModuleCommand::ConfigureUnfocusedAlpha { alpha });
     Ok(())
 }
 

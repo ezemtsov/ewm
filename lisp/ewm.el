@@ -49,6 +49,7 @@
 (declare-function ewm-start "ewm-core")
 (declare-function ewm-list-xdg-apps "ewm-core")
 (declare-function ewm-set-focus-follows-mouse "ewm-core")
+(declare-function ewm-set-unfocused-alpha "ewm-core")
 (declare-function ewm-notify-initialized-module "ewm-core")
 
 ;;; Logging
@@ -147,6 +148,18 @@ so that Emacs windows within a frame follow the pointer too."
          (setq focus-follows-mouse (and val t))
          (when (fboundp 'ewm-set-focus-follows-mouse)
            (ewm-set-focus-follows-mouse val))))
+
+(defcustom ewm-unfocused-alpha 1.0
+  "Alpha multiplier for unfocused application toplevels.
+A float in 0.0..1.0; 1.0 (default) disables the effect.  Lower values
+dim non-focused windows so the focused one stands out.  Emacs frames
+and layer surfaces (panels, lock screen) are never dimmed."
+  :type 'float
+  :group 'ewm
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (fboundp 'ewm-set-unfocused-alpha)
+           (ewm-set-unfocused-alpha (float val)))))
 
 (defvar ewm--is-ffm-focus-event nil
   "Whether the current event was triggered by focus follows mouse.
@@ -1310,6 +1323,7 @@ now that a graphical FRAME exists."
   (ewm--send-input-config)
   (ewm--send-idle-config)
   (ewm--send-cursor-hide-config)
+  (ewm-set-unfocused-alpha (float ewm-unfocused-alpha))
   (when (and (not ewm-focus-follows-mouse) mouse-autoselect-window)
     (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode-enable)

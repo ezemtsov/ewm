@@ -844,6 +844,8 @@ pub struct Ewm {
     pub active_outputs_dirty: bool,
     /// Focus follows mouse
     pub focus_follows_mouse_mode: bool,
+    /// Alpha multiplier for inactive layout entries; 1.0 disables.
+    pub unfocused_alpha: f32,
     /// UID of the layout entry currently under the pointer (for FFM mirror detection).
     pub pointer_view_id: u64,
 
@@ -1161,6 +1163,7 @@ impl Ewm {
             keyboard_focus: None,
             active_outputs_dirty: true,
             focus_follows_mouse_mode: false,
+            unfocused_alpha: 1.0,
             pointer_view_id: 0,
             input_configs: Vec::new(),
             emacs_pid: None,
@@ -5986,6 +5989,9 @@ impl State {
             }
             ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
                 self.ewm.focus_follows_mouse_mode = setting;
+            }
+            ModuleCommand::ConfigureUnfocusedAlpha { alpha } => {
+                self.ewm.unfocused_alpha = alpha.clamp(0.0, 1.0);
             }
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;

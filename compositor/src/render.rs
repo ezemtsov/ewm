@@ -315,6 +315,12 @@ pub fn collect_render_elements_for_output(
                 continue;
             }
             if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
+                // Fullscreen forced opaque so the backdrop doesn't bleed through.
+                let entry_alpha = if effective_fs || entry.focused {
+                    1.0
+                } else {
+                    ewm.unfocused_alpha
+                };
                 if effective_fs {
                     // Fullscreen: surface + backdrop at output origin, bypassing working area.
                     // Elements are front-to-back: surface first, then backdrop behind it.
@@ -337,7 +343,7 @@ pub fn collect_render_elements_for_output(
                             Point::from((offset_x, offset_y)).to_physical_precise_round(scale)
                                 + content_offset;
                         let view_elements =
-                            window.render_elements(renderer, loc_physical, scale, 1.0);
+                            window.render_elements(renderer, loc_physical, scale, entry_alpha);
                         push_constrained(
                             &mut elements,
                             view_elements,
@@ -350,7 +356,7 @@ pub fn collect_render_elements_for_output(
                         // Non-primary: uniform stretch to fill output, crop overflow.
                         let loc_physical: Point<i32, Physical> = content_offset;
                         let view_elements =
-                            window.render_elements(renderer, loc_physical, scale, 1.0);
+                            window.render_elements(renderer, loc_physical, scale, entry_alpha);
                         let buf_size: Size<i32, Physical> =
                             window.geometry().size.to_physical_precise_round(scale);
                         let uniform = f64::max(
@@ -387,7 +393,7 @@ pub fn collect_render_elements_for_output(
                 let loc_physical: Point<i32, Physical> =
                     location.to_physical_precise_round(scale) + content_offset;
                 let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    window.render_elements(renderer, loc_physical, scale, 1.0);
+                    window.render_elements(renderer, loc_physical, scale, entry_alpha);
                 let entry_size: Size<i32, Physical> =
                     Size::from((entry.w as i32, entry.h as i32)).to_physical_precise_round(scale);
 
