@@ -165,7 +165,7 @@ PROPS is a plist of settings (omitted properties use device defaults):
 Device-specific entries override type defaults for matching settings.
 
 Example:
-  (setq ewm-input-config
+  (setopt ewm-input-config
     \\='((touchpad :natural-scroll t :tap t)
       (mouse :accel-profile \"flat\")
       (keyboard :repeat-delay 200 :repeat-rate 25
@@ -208,11 +208,18 @@ surface has focus.  Keys can be character literals or strings.
 
 Bindings in `ewm-mode-map' are always intercepted (without :fullscreen).
 
-Add more as needed:
-  (add-to-list \\='ewm-intercept-prefixes ?\\M-\\`)  ; tmm-menubar
-  (add-to-list \\='ewm-intercept-prefixes \\='(\"<print>\" :fullscreen))"
+Set with `setopt' (or `:custom' in `use-package'):
+
+  (setopt ewm-intercept-prefixes
+          \\='(\"C-x\" \"C-u\" \"C-h\" \"M-x\" \"M-`\"
+            (\"<Print>\" :fullscreen)))"
   :type '(repeat (choice character string
                           (list (choice character string) (const :fullscreen))))
+  :initialize 'custom-initialize-default
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when ewm--module-mode
+           (ewm--send-intercept-keys)))
   :group 'ewm-input)
 
 (defcustom ewm-surface-emulate-keys
