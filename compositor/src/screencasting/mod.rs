@@ -19,7 +19,7 @@ use smithay::utils::{Physical, Point, Scale, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, info, warn};
 
-pub use pw_utils::{Cast, PipeWire, PwToCompositor};
+pub use pw_utils::{Cast, CastSizeChange, PipeWire, PwToCompositor};
 
 use crate::cursor;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
@@ -38,7 +38,9 @@ pub struct Screencasting {
     /// `apply_output_layout()`.
     pub window_cast_output: HashMap<u64, String>,
 
-    // Declared after `casts` so it drops last (after Cast's StreamRc).
+    // Drop PipeWire last, specifically after `casts`, to prevent a
+    // double-free: each Cast's StreamRc holds a clone of the core, and
+    // dropping core before the streams gets us free()-then-use.
     pub pipewire: Option<PipeWire>,
 }
 
@@ -330,10 +332,14 @@ impl Ewm {
             .map(|m| (m.refresh / 1000) as u32)
             .unwrap_or(60);
 
-        cast.ensure_size(window_size, refresh);
-
-        if cast.is_resize_pending() {
-            return false;
+        cast.set_refresh(refresh);
+        match cast.ensure_size(window_size) {
+            Ok(CastSizeChange::Ready) => (),
+            Ok(CastSizeChange::Pending) => return false,
+            Err(err) => {
+                warn!("error updating stream size: {err:?}");
+                return false;
+            }
         }
 
         if cast.check_time_and_schedule(output, target_frame_time) {
@@ -423,5 +429,147 @@ impl Ewm {
         } else {
             false
         }
+    }
+
+    /// Render every output cast targeting `output`. Returns the
+    /// session ids of casts that errored and should be stopped.
+    ///
+    /// Element collection (`collect_render_elements_for_output`) is
+    /// done lazily — only when at least one cast is actually about to
+    /// render — so outputs without any cast attention pay nothing.
+    pub fn render_for_screen_cast(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        cursor_buffer: &cursor::CursorBuffer,
+        output_pos: Point<i32, smithay::utils::Logical>,
+        output_size: Size<i32, smithay::utils::Logical>,
+        output_size_physical: Size<i32, Physical>,
+        output_scale: Scale<f64>,
+        target_frame_time: Duration,
+    ) -> Vec<usize> {
+        use std::collections::HashSet;
+
+        let mut to_stop: Vec<usize> = Vec::new();
+        let valid_outputs: HashSet<String> = self.space.outputs().map(|o| o.name()).collect();
+        let mut casts = std::mem::take(&mut self.casting.casts);
+        let mut elements: Option<(Vec<EwmRenderElement>, Vec<EwmRenderElement>)> = None;
+
+        for cast in casts.iter_mut() {
+            let session_id = cast.session_id;
+            if cast.has_error() {
+                to_stop.push(session_id);
+                continue;
+            }
+            if !cast.is_streaming() {
+                continue;
+            }
+            let CastTarget::Output { name } = &cast.target else {
+                continue;
+            };
+            if !valid_outputs.contains(name) {
+                tracing::trace!(output = %name, "skipping orphaned cast");
+                continue;
+            }
+            if *name != output.name() {
+                continue;
+            }
+
+            match cast.ensure_size(output_size_physical) {
+                Ok(CastSizeChange::Ready) => (),
+                Ok(CastSizeChange::Pending) => {
+                    tracing::trace!("cast is resize pending, skipping");
+                    continue;
+                }
+                Err(err) => {
+                    warn!(session_id, "ensure_size failed: {err:?}");
+                    to_stop.push(session_id);
+                    continue;
+                }
+            }
+
+            if cast.check_time_and_schedule(output, target_frame_time) {
+                continue;
+            }
+
+            let include_cursor = cast.cursor_mode != 0;
+            let (content, cursor) = elements.get_or_insert_with(|| {
+                crate::render::collect_render_elements_for_output(
+                    self,
+                    renderer,
+                    output_scale,
+                    cursor_buffer,
+                    output_pos,
+                    output_size,
+                    include_cursor,
+                    true,
+                    output,
+                    crate::render::RenderTarget::Screencast,
+                )
+            });
+
+            let cursor_location = {
+                let (px, py) = self.pointer_location();
+                Point::<i32, Physical>::from((px as i32, py as i32))
+            };
+
+            if cast.dequeue_buffer_and_render(
+                renderer,
+                content,
+                cursor,
+                cursor_location,
+                output_size_physical,
+                output_scale,
+            ) {
+                cast.last_frame_time = target_frame_time;
+            }
+        }
+
+        self.casting.casts = casts;
+        to_stop
+    }
+
+    /// Render every window cast whose target window currently lives on
+    /// `output`. Returns the session ids of casts that errored.
+    pub fn render_windows_for_screen_cast(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        cursor_buffer: &cursor::CursorBuffer,
+        output_scale: Scale<f64>,
+        target_frame_time: Duration,
+    ) -> Vec<usize> {
+        let mut to_stop: Vec<usize> = Vec::new();
+        let mut casts = std::mem::take(&mut self.casting.casts);
+
+        for cast in casts.iter_mut() {
+            let session_id = cast.session_id;
+            if cast.has_error() {
+                to_stop.push(session_id);
+                continue;
+            }
+            if !cast.is_streaming() {
+                continue;
+            }
+            let CastTarget::Window { id } = cast.target else {
+                continue;
+            };
+            if self.window_output_name(id).as_deref() != Some(&output.name()) {
+                continue;
+            }
+
+            self.render_window_for_screen_cast(
+                renderer,
+                cast,
+                id,
+                output,
+                cursor_buffer,
+                output_scale,
+                target_frame_time,
+            );
+        }
+
+        self.casting.casts = casts;
+        to_stop
     }
 }

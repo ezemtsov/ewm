@@ -3425,8 +3425,10 @@ impl Ewm {
             };
             for cast in self.casting.casts.iter_mut() {
                 if cast.target == target {
-                    cast.ensure_size(physical_size, refresh);
                     cast.set_refresh(refresh);
+                    if let Err(err) = cast.ensure_size(physical_size) {
+                        warn!(session_id = cast.session_id, "ensure_size failed: {err:?}");
+                    }
                 }
             }
         }

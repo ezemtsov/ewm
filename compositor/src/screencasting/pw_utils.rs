@@ -138,6 +138,14 @@ impl PipeWire {
 /// Allowance for frame timing - if delay is below this, proceed anyway
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 
+/// Result of `Cast::ensure_size`. Callers branch on this each frame:
+/// `Ready` -> render now; `Pending` -> skip this frame, retry next time.
+#[derive(PartialEq, Eq)]
+pub enum CastSizeChange {
+    Ready,
+    Pending,
+}
+
 /// Cast state machine: ResizePending -> ConfirmationPending -> Ready
 #[derive(Debug)]
 enum CastState {
@@ -715,20 +723,25 @@ impl Cast {
         self.had_error.get()
     }
 
-    /// Check if the cast is not yet ready to render
-    pub fn is_resize_pending(&self) -> bool {
-        !matches!(*self.state.borrow(), CastState::Ready { .. })
-    }
-
-    /// Handle size change by renegotiating with PipeWire.
-    pub fn ensure_size(&mut self, new_size: Size<i32, Physical>, refresh: u32) {
+    /// Renegotiate stream size if needed. Returns `Ready` when the stream
+    /// is at `new_size` and ready to render, or `Pending` while waiting
+    /// for PipeWire to confirm the resize. Use `set_refresh` separately
+    /// to update the refresh rate.
+    pub fn ensure_size(
+        &mut self,
+        new_size: Size<i32, Physical>,
+    ) -> anyhow::Result<CastSizeChange> {
         let new_size = Size::from((new_size.w as u32, new_size.h as u32));
 
         {
             let state = self.state.borrow();
             match &*state {
-                CastState::Ready { size, .. } if *size == new_size => return,
-                _ if state.pending_size() == Some(new_size) => return,
+                CastState::Ready { size, .. } if *size == new_size => {
+                    return Ok(CastSizeChange::Ready);
+                }
+                _ if state.pending_size() == Some(new_size) => {
+                    return Ok(CastSizeChange::Pending);
+                }
                 _ => {}
             }
         }
@@ -740,18 +753,19 @@ impl Cast {
         );
 
         self.size = new_size;
-        self.refresh = refresh;
         *self.state.borrow_mut() = CastState::ResizePending {
             pending_size: new_size,
         };
 
-        let obj = make_video_params(new_size, refresh, &self.render_formats, self.alpha);
+        let obj = make_video_params(new_size, self.refresh, &self.render_formats, self.alpha);
         let mut buffer = Vec::new();
         let params = make_pod(&mut buffer, obj);
 
-        if let Err(err) = self.stream.update_params(&mut [params]) {
-            warn!("error updating stream params for resize: {err:?}");
-        }
+        self.stream
+            .update_params(&mut [params])
+            .context("error updating stream params")?;
+
+        Ok(CastSizeChange::Pending)
     }
 
     /// Compute extra delay needed before capturing next frame.

@@ -1228,103 +1228,24 @@ impl DrmBackendState {
 
             let target_frame_time = get_monotonic_time();
 
-            let mut casts = std::mem::take(&mut ewm.casting.casts);
-            let mut sc_elements = None;
-            let mut errored_sessions = Vec::new();
-
-            let valid_outputs: std::collections::HashSet<String> =
-                ewm.space.outputs().map(|o| o.name()).collect();
-
-            for cast in casts.iter_mut() {
-                let session_id = cast.session_id;
-                if cast.has_error() {
-                    errored_sessions.push(session_id);
-                    continue;
-                }
-
-                if !cast.is_streaming() {
-                    continue;
-                }
-
-                match &cast.target {
-                    crate::dbus::CastTarget::Output { name } => {
-                        // Output cast: only render if this is the matching output
-                        if !valid_outputs.contains(name) {
-                            trace!(output = %name, "skipping orphaned cast");
-                            continue;
-                        }
-                        if *name != output.name() {
-                            continue;
-                        }
-
-                        if cast.is_resize_pending() {
-                            trace!("cast is resize pending, skipping");
-                            continue;
-                        }
-
-                        if cast.check_time_and_schedule(output, target_frame_time) {
-                            continue;
-                        }
-
-                        let include_cursor = cast.cursor_mode != 0;
-
-                        let (content, cursor) = sc_elements.get_or_insert_with(|| {
-                            collect_render_elements_for_output(
-                                ewm,
-                                renderer,
-                                output_scale,
-                                cursor_buffer,
-                                output_pos,
-                                output_size,
-                                include_cursor,
-                                true, // include_layers
-                                output,
-                                RenderTarget::Screencast,
-                            )
-                        });
-
-                        let cursor_location = {
-                            let (px, py) = ewm.pointer_location();
-                            smithay::utils::Point::<i32, smithay::utils::Physical>::from((
-                                px as i32, py as i32,
-                            ))
-                        };
-
-                        if cast.dequeue_buffer_and_render(
-                            renderer,
-                            content,
-                            cursor,
-                            cursor_location,
-                            output_size_physical,
-                            output_scale,
-                        ) {
-                            cast.last_frame_time = target_frame_time;
-                        }
-                    }
-                    crate::dbus::CastTarget::Window { id } => {
-                        // Window cast: check if the window is on this output
-                        let window_output = ewm.window_output_name(*id);
-                        if window_output.as_deref() != Some(&output.name()) {
-                            continue;
-                        }
-
-                        ewm.render_window_for_screen_cast(
-                            renderer,
-                            cast,
-                            *id,
-                            output,
-                            cursor_buffer,
-                            output_scale,
-                            target_frame_time,
-                        );
-                    }
-                }
-            }
-
-            ewm.casting.casts = casts;
-
-            // Stop errored casts
-            for session_id in errored_sessions {
+            let mut to_stop = ewm.render_for_screen_cast(
+                renderer,
+                output,
+                cursor_buffer,
+                output_pos,
+                output_size,
+                output_size_physical,
+                output_scale,
+                target_frame_time,
+            );
+            to_stop.append(&mut ewm.render_windows_for_screen_cast(
+                renderer,
+                output,
+                cursor_buffer,
+                output_scale,
+                target_frame_time,
+            ));
+            for session_id in to_stop {
                 warn!(session_id, "stopping errored screen cast");
                 ewm.stop_cast(session_id);
             }
