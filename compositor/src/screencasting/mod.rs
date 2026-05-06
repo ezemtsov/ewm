@@ -19,7 +19,7 @@ use smithay::utils::{Physical, Point, Scale, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, info, warn};
 
-pub use pw_utils::{Cast, CastSessionId, CastSizeChange, PipeWire, PwToCompositor};
+pub use pw_utils::{Cast, CastSessionId, CastSizeChange, CastStreamId, PipeWire, PwToCompositor};
 
 use crate::cursor;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};

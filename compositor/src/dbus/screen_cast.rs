@@ -3,7 +3,7 @@
 //! Based on niri's `dbus/mutter_screen_cast.rs`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use smithay::reexports::calloop::channel::Sender;
@@ -14,7 +14,7 @@ use zbus::zvariant::{DeserializeDict, OwnedObjectPath, Type, Value};
 use zbus::{fdo, interface, ObjectServer};
 
 use super::{OutputInfo, Start};
-use crate::screencasting::CastSessionId;
+use crate::screencasting::{CastSessionId, CastStreamId};
 
 /// Target for a screen cast stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,8 +185,6 @@ impl Session {
     }
 }
 
-static STREAM_ID: AtomicUsize = AtomicUsize::new(0);
-
 #[interface(name = "org.gnome.Mutter.ScreenCast.Session")]
 impl Session {
     async fn start(&self) {
@@ -274,7 +272,7 @@ impl Session {
             name: connector.to_string(),
         };
 
-        let stream_id = STREAM_ID.fetch_add(1, Ordering::SeqCst);
+        let stream_id = CastStreamId::next();
         let path = format!("/org/gnome/Mutter/ScreenCast/Stream/u{}", stream_id);
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
@@ -330,7 +328,7 @@ impl Session {
 
         let target = CastTarget::Window { id: window_id };
 
-        let stream_id = STREAM_ID.fetch_add(1, Ordering::SeqCst);
+        let stream_id = CastStreamId::next();
         let path = format!("/org/gnome/Mutter/ScreenCast/Stream/u{}", stream_id);
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
@@ -397,7 +395,7 @@ enum StreamTarget {
 #[derive(Clone)]
 pub struct Stream {
     #[allow(dead_code)]
-    id: usize,
+    id: CastStreamId,
     #[allow(dead_code)]
     session_id: CastSessionId,
     target: StreamTarget,
@@ -412,7 +410,7 @@ pub struct Stream {
 
 impl Stream {
     fn new_output(
-        id: usize,
+        id: CastStreamId,
         session_id: CastSessionId,
         output: OutputInfo,
         to_compositor: Sender<ScreenCastToCompositor>,
@@ -429,7 +427,7 @@ impl Stream {
     }
 
     fn new_window(
-        id: usize,
+        id: CastStreamId,
         session_id: CastSessionId,
         window_id: u64,
         to_compositor: Sender<ScreenCastToCompositor>,

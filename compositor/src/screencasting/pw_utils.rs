@@ -85,6 +85,31 @@ impl std::fmt::Display for CastSessionId {
     }
 }
 
+/// Unique id for a screencast stream within a session. EWM emits one
+/// stream per session today, but the type stays distinct to match the
+/// reference design and to keep a stream's identity stable if/when
+/// multi-stream sessions are added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CastStreamId(u64);
+
+impl CastStreamId {
+    pub fn next() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for CastStreamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Events from PipeWire callbacks back to the compositor main thread.
 #[derive(Debug)]
 pub enum PwToCompositor {
