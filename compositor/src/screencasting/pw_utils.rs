@@ -1,18 +1,21 @@
-//! PipeWire video stream for screen casting
-//!
-//! Ported from niri's PipeWire stream implementation (`screencasting/pw_utils.rs`).
-//! Implements PipeWire video streaming for screen sharing.
+//! Ported from niri's `src/screencasting/pw_utils.rs`. Owns the
+//! PipeWire connection (`PipeWire`), the per-cast stream (`Cast`),
+//! and the callback-driven format negotiation state machine.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::mem;
 use std::mem::size_of;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use pipewire::context::ContextRc;
+use pipewire::core::{CoreRc, PW_ID_CORE};
+use pipewire::main_loop::MainLoopRc;
 use pipewire::properties::PropertiesBox;
 use pipewire::spa::buffer::DataType;
 use pipewire::spa::param::format::{FormatProperties, MediaSubtype, MediaType};
@@ -37,6 +40,7 @@ use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::output::{Output, OutputModeSource};
+use smithay::reexports::calloop::channel::Sender;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
@@ -45,10 +49,91 @@ use smithay::utils::{Physical, Point, Scale, Size, Transform};
 use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
-use super::PipeWire;
 use crate::dbus::screen_cast;
 use crate::dbus::CastTarget;
 use crate::State;
+
+/// PipeWire connection state. Outer code drops and recreates this on
+/// `PwToCompositor::FatalError`.
+pub struct PipeWire {
+    _context: ContextRc,
+    pub core: CoreRc,
+    pub token: RegistrationToken,
+}
+
+/// Events from PipeWire callbacks back to the compositor main thread.
+#[derive(Debug)]
+pub enum PwToCompositor {
+    /// Core connection died (EPIPE on PW_ID_CORE). The compositor should
+    /// stop active casts and drop the `PipeWire` instance; the next
+    /// `StartCast` will lazy-reinit.
+    FatalError,
+    /// Queue a redraw on the output of the cast with this session id.
+    /// Sent when a stream first reaches `Streaming`, so the consumer
+    /// receives an initial frame even if no other activity drives
+    /// renders.
+    Redraw { session_id: usize },
+}
+
+impl PipeWire {
+    /// Initialize PipeWire and integrate with the calloop event loop.
+    ///
+    /// `tx` is a persistent sender owned by the compositor; each new
+    /// `PipeWire` clones it. The receiver side stays registered across
+    /// PipeWire reinits.
+    pub fn new<D: 'static>(
+        event_loop: &LoopHandle<'static, D>,
+        tx: Sender<PwToCompositor>,
+    ) -> anyhow::Result<Self> {
+        info!("Initializing PipeWire");
+
+        let main_loop = MainLoopRc::new(None).context("error creating PipeWire MainLoop")?;
+        let context =
+            ContextRc::new(&main_loop, None).context("error creating PipeWire Context")?;
+        let core = context
+            .connect_rc(None)
+            .context("error connecting to PipeWire")?;
+
+        let listener = core
+            .add_listener_local()
+            .error(move |id, seq, res, message| {
+                warn!(id, seq, res, message, "PipeWire error");
+                if id == PW_ID_CORE && res == -32 {
+                    if let Err(err) = tx.send(PwToCompositor::FatalError) {
+                        warn!("error sending PipeWire FatalError: {err:?}");
+                    }
+                }
+            })
+            .register();
+        // Listener leaks intentionally. The captured `tx` clone leaks
+        // too, but it's just a Sender and the receiver outlives all
+        // senders.
+        mem::forget(listener);
+
+        struct MainLoopFd(MainLoopRc);
+        impl AsFd for MainLoopFd {
+            fn as_fd(&self) -> BorrowedFd<'_> {
+                self.0.loop_().fd()
+            }
+        }
+
+        let generic = Generic::new(MainLoopFd(main_loop), Interest::READ, Mode::Level);
+        let token = event_loop
+            .insert_source(generic, move |_, wrapper, _| {
+                wrapper.0.loop_().iterate(Duration::ZERO);
+                Ok(PostAction::Continue)
+            })
+            .map_err(|e| anyhow::anyhow!("error inserting PipeWire source: {}", e))?;
+
+        info!("PipeWire initialized successfully");
+
+        Ok(Self {
+            _context: context,
+            core,
+            token,
+        })
+    }
+}
 
 /// Allowance for frame timing - if delay is below this, proceed anyway
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
@@ -143,6 +228,7 @@ impl Cast {
     pub fn new(
         pipewire: &PipeWire,
         event_loop: LoopHandle<'static, State>,
+        to_compositor: Sender<PwToCompositor>,
         session_id: usize,
         gbm: GbmDevice<DrmDeviceFd>,
         size: Size<i32, Physical>,
@@ -177,6 +263,7 @@ impl Cast {
         let is_active_clone = is_active.clone();
         let had_error_clone = had_error.clone();
         let rendering_bufs_clone = rendering_bufs.clone();
+        let to_compositor_clone = to_compositor.clone();
 
         let state_clone = state.clone();
         let gbm_clone = gbm.clone();
@@ -216,6 +303,14 @@ impl Cast {
                         StreamState::Streaming => {
                             info!("PipeWire stream now streaming");
                             is_active_clone.set(true);
+                            // Kick a redraw so the consumer gets an
+                            // initial frame even if nothing else is
+                            // driving renders on this output.
+                            if let Err(err) =
+                                to_compositor_clone.send(PwToCompositor::Redraw { session_id })
+                            {
+                                warn!("error sending Redraw to compositor: {err:?}");
+                            }
                         }
                         StreamState::Error(msg) => {
                             warn!("PipeWire stream error: {msg}");
@@ -784,7 +879,13 @@ impl Cast {
                 let source = Generic::new(sync_fd, Interest::READ, Mode::OneShot);
                 self.event_loop
                     .insert_source(source, move |_, _, state| {
-                        if let Some(cast) = state.ewm.screen_casts.get_mut(&session_id) {
+                        if let Some(cast) = state
+                            .ewm
+                            .casting
+                            .casts
+                            .iter_mut()
+                            .find(|c| c.session_id == session_id)
+                        {
                             cast.queue_completed_buffers();
                         }
                         Ok(PostAction::Remove)
@@ -921,7 +1022,7 @@ impl Cast {
 
         drop(state);
 
-        // Use raw buffer API for direct spa_buffer access (following niri)
+        // Use raw buffer API for direct spa_buffer access
         let pw_buffer = unsafe { NonNull::new(self.stream.dequeue_raw_buffer()) };
         let Some(pw_buffer) = pw_buffer else {
             trace!("no available buffer in pw stream");

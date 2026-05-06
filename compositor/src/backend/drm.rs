@@ -578,6 +578,29 @@ impl DrmBackendState {
         self.device.as_ref().map(|d| d.gbm.clone())
     }
 
+    /// DMA-BUF modifiers the renderer can produce for `fourcc`. Used by
+    /// screencast format negotiation.
+    #[cfg(feature = "screencast")]
+    pub fn render_formats_for_fourcc(
+        &mut self,
+        fourcc: smithay::backend::allocator::Fourcc,
+    ) -> Vec<i64> {
+        let Some(device) = self.device.as_mut() else {
+            return vec![u64::from(smithay::reexports::gbm::Modifier::Linear) as i64];
+        };
+        let Ok(renderer) = device.gpu_manager.single_renderer(&device.render_node) else {
+            return vec![u64::from(smithay::reexports::gbm::Modifier::Linear) as i64];
+        };
+        renderer
+            .as_ref()
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .filter(|f| f.code == fourcc)
+            .map(|f| u64::from(f.modifier) as i64)
+            .collect()
+    }
+
     /// Check if any output has a redraw queued (checks Ewm output_state)
     pub fn has_queued_redraws(&self, ewm: &Ewm) -> bool {
         ewm.output_state
@@ -1205,16 +1228,17 @@ impl DrmBackendState {
 
             let target_frame_time = get_monotonic_time();
 
-            let mut screen_casts = std::mem::take(&mut ewm.screen_casts);
+            let mut casts = std::mem::take(&mut ewm.casting.casts);
             let mut sc_elements = None;
             let mut errored_sessions = Vec::new();
 
             let valid_outputs: std::collections::HashSet<String> =
                 ewm.space.outputs().map(|o| o.name()).collect();
 
-            for (session_id, cast) in screen_casts.iter_mut() {
+            for cast in casts.iter_mut() {
+                let session_id = cast.session_id;
                 if cast.has_error() {
-                    errored_sessions.push(*session_id);
+                    errored_sessions.push(session_id);
                     continue;
                 }
 
@@ -1297,7 +1321,7 @@ impl DrmBackendState {
                 }
             }
 
-            ewm.screen_casts = screen_casts;
+            ewm.casting.casts = casts;
 
             // Stop errored casts
             for session_id in errored_sessions {
@@ -2424,50 +2448,13 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     // Send to Emacs for process-environment (so child processes inherit)
     crate::module::push_event(crate::event::Event::Environment { vars: env_vars });
 
-    // Initialize PipeWire and D-Bus for screen sharing
+    // Initialize D-Bus for screen sharing. The PipeWire connection
+    // and its event channel are owned by `Ewm.casting` and were set up
+    // in `Ewm::new`. PipeWire itself is created lazily on first cast.
     #[cfg(feature = "screencast")]
     {
-        use crate::pipewire::PipeWire;
-        match PipeWire::new(&event_loop.handle(), || {
-            tracing::warn!("PipeWire fatal error callback triggered");
-        }) {
-            Ok(mut pw) => {
-                tracing::info!("PipeWire initialized successfully");
-
-                // Register handler for PipeWire fatal errors
-                // Take the channel out of the Option since it can only be consumed once
-                if let Some(fatal_error_rx) = pw.fatal_error_rx.take() {
-                    event_loop
-                        .handle()
-                        .insert_source(fatal_error_rx, |event, _, state| {
-                            use smithay::reexports::calloop::channel::Event as ChannelEvent;
-                            if let ChannelEvent::Msg(()) = event {
-                                tracing::error!("PipeWire fatal error, stopping all screen casts");
-                                // Clear all screen casts - they will be dropped and cleaned up
-                                let count = state.ewm.screen_casts.len();
-                                state.ewm.screen_casts.clear();
-                                if count > 0 {
-                                    tracing::info!(
-                                        "Stopped {} screen cast(s) due to PipeWire error",
-                                        count
-                                    );
-                                }
-                            }
-                        })
-                        .expect("Failed to register PipeWire fatal error handler");
-                }
-
-                state.ewm.pipewire = Some(pw);
-            }
-            Err(err) => {
-                tracing::warn!("PipeWire initialization failed: {err:?}");
-            }
-        }
-
-        // Start D-Bus servers
         use crate::dbus::{
-            CastTarget, CompositorToIntrospect, DBusServers, IntrospectToCompositor,
-            ScreenCastToCompositor, WindowProperties,
+            CompositorToIntrospect, DBusServers, IntrospectToCompositor, WindowProperties,
         };
         use smithay::reexports::calloop::channel::Event as ChannelEvent;
 
@@ -2478,156 +2465,12 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         state.ewm.dbus_servers = Some(dbus_servers);
         state.ewm.introspect_reply_tx = Some(introspect_reply_tx);
 
-        // Register the ScreenCast receiver to handle D-Bus messages
+        // Register the ScreenCast receiver - dispatches to State::on_screen_cast_msg
         event_loop
             .handle()
             .insert_source(sc_receiver, |event, _, state| {
                 if let ChannelEvent::Msg(msg) = event {
-                    match msg {
-                        ScreenCastToCompositor::StartCast {
-                            session_id,
-                            target,
-                            signal_ctx,
-                            cursor_mode,
-                        } => {
-                            tracing::info!(
-                                "StartCast: session={}, target={:?}, cursor_mode={}",
-                                session_id,
-                                target,
-                                cursor_mode,
-                            );
-
-                            let alpha = matches!(target, CastTarget::Window { .. });
-                            let filter_fourcc = if alpha {
-                                smithay::backend::allocator::Fourcc::Argb8888
-                            } else {
-                                smithay::backend::allocator::Fourcc::Xrgb8888
-                            };
-
-                            // Extract modifiers from render formats for the appropriate fourcc
-                            let render_formats: Vec<i64> = state
-                                .backend
-                                .as_drm_mut()
-                                .and_then(|drm| drm.device.as_mut())
-                                .map(|device| {
-                                    let Ok(renderer) =
-                                        device.gpu_manager.single_renderer(&device.render_node)
-                                    else {
-                                        return vec![u64::from(Modifier::Linear) as i64];
-                                    };
-                                    renderer
-                                        .as_ref()
-                                        .egl_context()
-                                        .dmabuf_render_formats()
-                                        .iter()
-                                        .filter(|f| f.code == filter_fourcc)
-                                        .map(|f| u64::from(f.modifier) as i64)
-                                        .collect()
-                                })
-                                .unwrap_or_else(|| vec![u64::from(Modifier::Linear) as i64]);
-
-                            let pw = state.ewm.pipewire.as_ref();
-                            let gbm = state.backend.gbm_device();
-
-                            if let (Some(pw), Some(gbm)) = (pw, gbm) {
-                                // Determine size and refresh based on target
-                                let cast_info: Option<(smithay::utils::Size<i32, smithay::utils::Physical>, u32)> =
-                                    match &target {
-                                        CastTarget::Output { name } => {
-                                            state
-                                                .ewm
-                                                .dbus_outputs
-                                                .lock()
-                                                .unwrap()
-                                                .iter()
-                                                .find(|o| o.name == *name)
-                                                .map(|info| {
-                                                    (
-                                                        smithay::utils::Size::from((info.width, info.height)),
-                                                        info.refresh,
-                                                    )
-                                                })
-                                        }
-                                        CastTarget::Window { id } => {
-                                            let window = state.ewm.id_windows.get(id);
-                                            if let Some(window) = window {
-                                                // Use bbox_with_popups for accurate size including popups
-                                                let output_name = state.ewm.window_output_name(*id);
-                                                let scale = output_name
-                                                    .as_ref()
-                                                    .and_then(|name| {
-                                                        state.ewm.space.outputs()
-                                                            .find(|o| o.name() == *name)
-                                                    })
-                                                    .map(|o| smithay::utils::Scale::from(o.current_scale().fractional_scale()))
-                                                    .unwrap_or(smithay::utils::Scale::from(1.0));
-                                                let bbox = window.bbox_with_popups().to_physical_precise_up(scale);
-                                                let size = bbox.size;
-                                                // Find the output this window is on for refresh rate
-                                                let refresh = output_name
-                                                    .and_then(|name| {
-                                                        state
-                                                            .ewm
-                                                            .space
-                                                            .outputs()
-                                                            .find(|o| o.name() == name)
-                                                            .and_then(|o| o.current_mode())
-                                                            .map(|m| (m.refresh / 1000) as u32)
-                                                    })
-                                                    .unwrap_or(60);
-                                                Some((size, refresh))
-                                            } else {
-                                                tracing::warn!("StartCast: window {} not found", id);
-                                                None
-                                            }
-                                        }
-                                    };
-
-                                if let Some((size, refresh)) = cast_info {
-                                    use crate::pipewire::stream::Cast;
-
-                                    let event_loop_handle = state
-                                        .backend
-                                        .as_drm()
-                                        .and_then(|drm| drm.loop_handle.clone())
-                                        .expect("loop_handle must exist for screencast");
-
-                                    match Cast::new(
-                                        pw,
-                                        event_loop_handle,
-                                        session_id,
-                                        gbm,
-                                        size,
-                                        refresh,
-                                        target.clone(),
-                                        alpha,
-                                        signal_ctx,
-                                        render_formats,
-                                        cursor_mode,
-                                    ) {
-                                        Ok(cast) => {
-                                            tracing::info!(
-                                                "PipeWire stream created for {:?}, waiting for state change",
-                                                target,
-                                            );
-                                            state.ewm.screen_casts.insert(session_id, cast);
-                                        }
-                                        Err(err) => {
-                                            tracing::warn!(
-                                                "Failed to create PipeWire stream: {err:?}"
-                                            );
-                                        }
-                                    }
-                                }
-                            } else {
-                                tracing::warn!("PipeWire or GBM not available for screen cast");
-                            }
-                        }
-                        ScreenCastToCompositor::StopCast { session_id } => {
-                            tracing::info!("StopCast: session={}", session_id);
-                            state.ewm.stop_cast(session_id);
-                        }
-                    }
+                    state.on_screen_cast_msg(msg);
                 }
             })
             .expect("Failed to register D-Bus ScreenCast receiver");

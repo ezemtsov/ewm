@@ -1,0 +1,427 @@
+//! Ported from niri's `src/screencasting/`. Implements screen casting
+//! via the org.gnome.Mutter.ScreenCast D-Bus interface.
+
+pub mod pw_utils;
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use anyhow::Context as _;
+use smithay::backend::allocator::gbm::GbmDevice;
+use smithay::backend::drm::DrmDeviceFd;
+use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::output::Output;
+use smithay::reexports::calloop::channel::{self, Sender};
+use smithay::reexports::calloop::LoopHandle;
+use smithay::utils::{Physical, Point, Scale, Size};
+use smithay::wayland::seat::WaylandFocus;
+use tracing::{debug, info, warn};
+
+pub use pw_utils::{Cast, PipeWire, PwToCompositor};
+
+use crate::cursor;
+use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
+use crate::render::EwmRenderElement;
+use crate::{Ewm, State};
+
+pub struct Screencasting {
+    pub casts: Vec<Cast>,
+
+    /// Persistent sender given to every `PipeWire` instance. Outlives
+    /// any single connection so the calloop source on the receiver side
+    /// stays registered across reinits after `FatalError`.
+    pub pw_to_compositor: Sender<PwToCompositor>,
+
+    /// Cached map: window id -> primary output name. Populated in
+    /// `apply_output_layout()`.
+    pub window_cast_output: HashMap<u64, String>,
+
+    // Declared after `casts` so it drops last (after Cast's StreamRc).
+    pub pipewire: Option<PipeWire>,
+}
+
+impl Screencasting {
+    pub fn new(event_loop: &LoopHandle<'static, State>) -> Self {
+        let pw_to_compositor = {
+            let (tx, rx) = channel::channel();
+            event_loop
+                .insert_source(rx, move |event, _, state| match event {
+                    channel::Event::Msg(msg) => state.on_pw_msg(msg),
+                    channel::Event::Closed => (),
+                })
+                .expect("failed to register PipeWire event source");
+            tx
+        };
+        Self {
+            casts: Vec::new(),
+            pw_to_compositor,
+            window_cast_output: HashMap::new(),
+            pipewire: None,
+        }
+    }
+}
+
+impl State {
+    /// Lazily create the PipeWire connection on the first cast and
+    /// after any `FatalError`-driven teardown. Returns the GBM device
+    /// and modifier list used by the new cast.
+    fn prepare_pw_cast(
+        &mut self,
+        alpha: bool,
+    ) -> anyhow::Result<(GbmDevice<DrmDeviceFd>, Vec<i64>)> {
+        let gbm = self
+            .backend
+            .gbm_device()
+            .context("no GBM device available")?;
+
+        if self.ewm.casting.pipewire.is_none() {
+            let pw = PipeWire::new(
+                &self.ewm.loop_handle,
+                self.ewm.casting.pw_to_compositor.clone(),
+            )
+            .context("error initializing PipeWire")?;
+            self.ewm.casting.pipewire = Some(pw);
+        }
+
+        // Filter render formats to the fourcc we'll negotiate. Window
+        // casts use ARGB (alpha for transparency); output casts use XRGB.
+        let fourcc = if alpha {
+            smithay::backend::allocator::Fourcc::Argb8888
+        } else {
+            smithay::backend::allocator::Fourcc::Xrgb8888
+        };
+        let render_formats = self.backend.render_formats_for_fourcc(fourcc);
+
+        Ok((gbm, render_formats))
+    }
+
+    pub fn on_pw_msg(&mut self, msg: PwToCompositor) {
+        match msg {
+            PwToCompositor::FatalError => {
+                tracing::error!("PipeWire fatal error, tearing down");
+                // Stop active casts before dropping pw so streams can
+                // disconnect against a live core. Going through stop_cast
+                // makes D-Bus emit Closed to consumers (xdp-gnome, ...).
+                let session_ids: Vec<usize> =
+                    self.ewm.casting.casts.iter().map(|c| c.session_id).collect();
+                for id in session_ids {
+                    self.ewm.stop_cast(id);
+                }
+                if let Some(pw) = self.ewm.casting.pipewire.take() {
+                    self.ewm.loop_handle.remove(pw.token);
+                }
+            }
+            PwToCompositor::Redraw { session_id } => {
+                let Some(cast) = self
+                    .ewm
+                    .casting
+                    .casts
+                    .iter()
+                    .find(|c| c.session_id == session_id)
+                else {
+                    return;
+                };
+                let output_name = match &cast.target {
+                    CastTarget::Output { name } => Some(name.clone()),
+                    CastTarget::Window { id } => self.ewm.window_output_name(*id),
+                };
+                let Some(name) = output_name else { return };
+                let Some(output) = self
+                    .ewm
+                    .space
+                    .outputs()
+                    .find(|o| o.name() == name)
+                    .cloned()
+                else {
+                    return;
+                };
+                self.ewm.queue_redraw(&output);
+            }
+        }
+    }
+
+    pub fn on_screen_cast_msg(&mut self, msg: ScreenCastToCompositor) {
+        match msg {
+            ScreenCastToCompositor::StartCast {
+                session_id,
+                target,
+                signal_ctx,
+                cursor_mode,
+            } => {
+                info!(
+                    "StartCast: session={}, target={:?}, cursor_mode={}",
+                    session_id, target, cursor_mode,
+                );
+
+                let alpha = matches!(target, CastTarget::Window { .. });
+
+                let (gbm, render_formats) = match self.prepare_pw_cast(alpha) {
+                    Ok(x) => x,
+                    Err(err) => {
+                        warn!("error starting screencast: {err:?}");
+                        self.ewm.stop_cast(session_id);
+                        return;
+                    }
+                };
+
+                let cast_info: Option<(Size<i32, Physical>, u32)> = match &target {
+                    CastTarget::Output { name } => self
+                        .ewm
+                        .dbus_outputs
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .find(|o| o.name == *name)
+                        .map(|info| (Size::from((info.width, info.height)), info.refresh)),
+                    CastTarget::Window { id } => {
+                        let Some(window) = self.ewm.id_windows.get(id) else {
+                            warn!("StartCast: window {} not found", id);
+                            self.ewm.stop_cast(session_id);
+                            return;
+                        };
+                        let output_name = self.ewm.window_output_name(*id);
+                        let scale = output_name
+                            .as_ref()
+                            .and_then(|name| {
+                                self.ewm.space.outputs().find(|o| o.name() == *name)
+                            })
+                            .map(|o| Scale::from(o.current_scale().fractional_scale()))
+                            .unwrap_or(Scale::from(1.0));
+                        let bbox = window.bbox_with_popups().to_physical_precise_up(scale);
+                        let refresh = output_name
+                            .and_then(|name| {
+                                self.ewm
+                                    .space
+                                    .outputs()
+                                    .find(|o| o.name() == name)
+                                    .and_then(|o| o.current_mode())
+                                    .map(|m| (m.refresh / 1000) as u32)
+                            })
+                            .unwrap_or(60);
+                        Some((bbox.size, refresh))
+                    }
+                };
+
+                let Some((size, refresh)) = cast_info else {
+                    self.ewm.stop_cast(session_id);
+                    return;
+                };
+
+                let pw = self.ewm.casting.pipewire.as_ref().unwrap();
+                match Cast::new(
+                    pw,
+                    self.ewm.loop_handle.clone(),
+                    self.ewm.casting.pw_to_compositor.clone(),
+                    session_id,
+                    gbm,
+                    size,
+                    refresh,
+                    target.clone(),
+                    alpha,
+                    signal_ctx,
+                    render_formats,
+                    cursor_mode,
+                ) {
+                    Ok(cast) => {
+                        info!(
+                            "PipeWire stream created for {:?}, waiting for state change",
+                            target,
+                        );
+                        self.ewm.casting.casts.push(cast);
+                    }
+                    Err(err) => {
+                        warn!("Failed to create PipeWire stream: {err:?}");
+                        self.ewm.stop_cast(session_id);
+                    }
+                }
+            }
+            ScreenCastToCompositor::StopCast { session_id } => {
+                info!("StopCast: session={}", session_id);
+                self.ewm.stop_cast(session_id);
+            }
+        }
+    }
+}
+
+impl Ewm {
+    /// Stop a screen cast session: remove from active list (Drop disconnects
+    /// the PipeWire stream) and emit the D-Bus Closed signal so the consumer
+    /// knows.
+    pub fn stop_cast(&mut self, session_id: usize) {
+        debug!(session_id, "stop_cast");
+
+        let Some(idx) = self
+            .casting
+            .casts
+            .iter()
+            .position(|c| c.session_id == session_id)
+        else {
+            return;
+        };
+        let _ = self.casting.casts.swap_remove(idx);
+
+        if let Some(ref dbus) = self.dbus_servers {
+            if let Some(ref conn) = dbus.conn_screen_cast {
+                let server = conn.object_server();
+                let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
+                if let Ok(iface) = server.interface::<_, dbus::screen_cast::Session>(path.as_str())
+                {
+                    async_io::block_on(async {
+                        let signal_emitter = iface.signal_emitter().clone();
+                        iface.get().stop(server.inner(), signal_emitter).await
+                    });
+                }
+            }
+        }
+    }
+
+    /// Stop all screen casts targeting a specific window (called when the
+    /// window closes).
+    pub fn stop_casts_for_window(&mut self, window_id: u64) {
+        let target = CastTarget::Window { id: window_id };
+        let sessions_to_stop: Vec<usize> = self
+            .casting
+            .casts
+            .iter()
+            .filter(|c| c.target == target)
+            .map(|c| c.session_id)
+            .collect();
+        for session_id in sessions_to_stop {
+            info!(session_id, window_id, "stopping window cast (window closed)");
+            self.stop_cast(session_id);
+        }
+    }
+
+    /// Find which output a window is on (by compositor window ID).
+    /// Uses the cached `window_cast_output` map populated in
+    /// `apply_output_layout()`.
+    pub fn window_output_name(&self, window_id: u64) -> Option<String> {
+        self.casting.window_cast_output.get(&window_id).cloned()
+    }
+
+    /// Render a window into a screencast buffer.
+    ///
+    /// Returns true if a frame was rendered. The `cast` is passed
+    /// separately because `casting.casts` is detached from `self`
+    /// during the render loop.
+    pub fn render_window_for_screen_cast(
+        &self,
+        renderer: &mut GlesRenderer,
+        cast: &mut Cast,
+        window_id: u64,
+        output: &Output,
+        cursor_buffer: &cursor::CursorBuffer,
+        output_scale: Scale<f64>,
+        target_frame_time: Duration,
+    ) -> bool {
+        let Some(window) = self.id_windows.get(&window_id) else {
+            return false;
+        };
+
+        // Use bbox_with_popups for accurate size including popups, scaled
+        // to physical pixels via the output's fractional scale.
+        let bbox = window.bbox_with_popups().to_physical_precise_up(output_scale);
+        let window_size = bbox.size;
+
+        let refresh = output
+            .current_mode()
+            .map(|m| (m.refresh / 1000) as u32)
+            .unwrap_or(60);
+
+        cast.ensure_size(window_size, refresh);
+
+        if cast.is_resize_pending() {
+            return false;
+        }
+
+        if cast.check_time_and_schedule(output, target_frame_time) {
+            return false;
+        }
+
+        // bbox.loc is the offset of the bounding box from the window origin;
+        // negate it so popups extending beyond the window are visible.
+        let render_offset = Point::from((-bbox.loc.x, -bbox.loc.y));
+
+        let window_elements: Vec<EwmRenderElement> = if let Some(surface) = window.wl_surface() {
+            let elems: Vec<_> = render_elements_from_surface_tree(
+                renderer,
+                &surface,
+                render_offset,
+                output_scale,
+                1.0,
+                Kind::Unspecified,
+            );
+            elems.into_iter().map(EwmRenderElement::Surface).collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
+        let mut cursor_location = Point::<i32, Physical>::from((0, 0));
+
+        if cast.cursor_mode != 0 {
+            let (px, py) = self.pointer_location();
+            let output_geo = self.space.output_geometry(output);
+
+            if let Some(output_geo) = output_geo {
+                if let Some(entries) = self.output_layouts.get(&output.name()) {
+                    let working_area = {
+                        let map = smithay::desktop::layer_map_for_output(output);
+                        map.non_exclusive_zone()
+                    };
+                    for entry in entries {
+                        if entry.surface_id != window_id {
+                            continue;
+                        }
+                        let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
+                        let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
+
+                        if px >= entry_x as f64
+                            && py >= entry_y as f64
+                            && px < (entry_x + entry.w as i32) as f64
+                            && py < (entry_y + entry.h as i32) as f64
+                        {
+                            let bbox_logical = bbox.loc.to_f64().to_logical(output_scale);
+                            let cursor_x =
+                                px - entry_x as f64 - bbox_logical.x - cursor::CURSOR_HOTSPOT.0 as f64;
+                            let cursor_y =
+                                py - entry_y as f64 - bbox_logical.y - cursor::CURSOR_HOTSPOT.1 as f64;
+                            let cursor_pos: Point<i32, Physical> =
+                                Point::from((cursor_x, cursor_y))
+                                    .to_physical_precise_round(output_scale);
+
+                            // cursor_location for SPA_META_Cursor (without hotspot offset)
+                            let loc_x = px - entry_x as f64 - bbox_logical.x;
+                            let loc_y = py - entry_y as f64 - bbox_logical.y;
+                            cursor_location = Point::from((loc_x, loc_y))
+                                .to_physical_precise_round(output_scale);
+
+                            if let Ok(cursor_element) =
+                                cursor_buffer.render_element(renderer, cursor_pos)
+                            {
+                                cursor_elements.push(EwmRenderElement::Cursor(cursor_element));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        if cast.dequeue_buffer_and_render(
+            renderer,
+            &window_elements,
+            &cursor_elements,
+            cursor_location,
+            window_size,
+            output_scale,
+        ) {
+            cast.last_frame_time = target_frame_time;
+            true
+        } else {
+            false
+        }
+    }
+}

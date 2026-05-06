@@ -44,7 +44,7 @@ pub mod im_relay;
 pub mod input;
 mod module;
 #[cfg(feature = "screencast")]
-pub mod pipewire;
+pub mod screencasting;
 pub mod protocols;
 pub mod render;
 pub mod texture;
@@ -959,17 +959,14 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub pointer_constraints_state: PointerConstraintsState,
 
-    // PipeWire for screen sharing (initialized lazily)
+    // Screencasting state: PipeWire connection, active casts,
+    // window->output cache.
     #[cfg(feature = "screencast")]
-    pub pipewire: Option<pipewire::PipeWire>,
+    pub casting: screencasting::Screencasting,
 
     // Shared output info for D-Bus ScreenCast (thread-safe)
     #[cfg(feature = "screencast")]
     pub dbus_outputs: std::sync::Arc<std::sync::Mutex<Vec<dbus::OutputInfo>>>,
-
-    // Active screen cast sessions (keyed by session_id)
-    #[cfg(feature = "screencast")]
-    pub screen_casts: std::collections::HashMap<usize, pipewire::stream::Cast>,
 
     // D-Bus servers (must be kept alive for interfaces to work)
     #[cfg(feature = "screencast")]
@@ -978,11 +975,6 @@ pub struct Ewm {
     // Channel to reply to Introspect GetWindows requests
     #[cfg(feature = "screencast")]
     pub introspect_reply_tx: Option<async_channel::Sender<dbus::CompositorToIntrospect>>,
-
-    // Cached mapping: window ID -> primary output name (for screencast)
-    // Rebuilt in apply_output_layout()
-    #[cfg(feature = "screencast")]
-    pub window_cast_output: HashMap<u64, String>,
 
     // XKB layout state
     pub xkb_layout_names: Vec<String>,
@@ -1190,17 +1182,13 @@ impl Ewm {
             relative_pointer_state,
             pointer_constraints_state,
             #[cfg(feature = "screencast")]
-            pipewire: None,
+            casting: screencasting::Screencasting::new(&loop_handle_clone),
             #[cfg(feature = "screencast")]
             dbus_outputs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            #[cfg(feature = "screencast")]
-            screen_casts: std::collections::HashMap::new(),
             #[cfg(feature = "screencast")]
             dbus_servers: None,
             #[cfg(feature = "screencast")]
             introspect_reply_tx: None,
-            #[cfg(feature = "screencast")]
-            window_cast_output: HashMap::new(),
             xkb_layout_names: vec!["us".to_string()],
             xkb_current_layout: 0,
             emulated_keycodes: HashMap::new(),
@@ -1261,10 +1249,11 @@ impl Ewm {
                 name: output_name.to_string(),
             };
             let sessions_to_stop: Vec<usize> = self
-                .screen_casts
+                .casting
+                .casts
                 .iter()
-                .filter(|(_, cast)| cast.target == target)
-                .map(|(id, _)| *id)
+                .filter(|cast| cast.target == target)
+                .map(|cast| cast.session_id)
                 .collect();
             for session_id in sessions_to_stop {
                 info!(output = %output_name, session_id, "stopping cast due to output disconnect");
@@ -1838,11 +1827,12 @@ impl Ewm {
         // 7b. Rebuild window-output cache for screencast lookups.
         #[cfg(feature = "screencast")]
         {
-            self.window_cast_output.clear();
+            self.casting.window_cast_output.clear();
             for (oname, entries) in &self.output_layouts {
                 for entry in entries {
                     if entry.primary {
-                        self.window_cast_output
+                        self.casting
+                            .window_cast_output
                             .insert(entry.surface_id, oname.clone());
                     }
                 }
@@ -2814,200 +2804,6 @@ impl Ewm {
             .cloned()
     }
 
-    /// Stop a screen cast session properly (PipeWire + D-Bus cleanup)
-    #[cfg(feature = "screencast")]
-    pub fn stop_cast(&mut self, session_id: usize) {
-        use tracing::debug;
-
-        debug!(session_id, "stop_cast");
-
-        // Remove cast from our map (Drop impl disconnects PipeWire stream)
-        if self.screen_casts.remove(&session_id).is_none() {
-            return; // Cast not found
-        }
-
-        // Call Session::stop() on D-Bus to emit Closed signal
-        if let Some(ref dbus) = self.dbus_servers {
-            if let Some(ref conn) = dbus.conn_screen_cast {
-                let server = conn.object_server();
-                let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
-
-                if let Ok(iface) = server.interface::<_, dbus::screen_cast::Session>(path.as_str())
-                {
-                    async_io::block_on(async {
-                        let signal_emitter = iface.signal_emitter().clone();
-                        iface.get().stop(server.inner(), signal_emitter).await
-                    });
-                }
-            }
-        }
-    }
-
-    /// Find which output a window is on (by compositor window ID).
-    /// Returns the output name, or None if the window is not found.
-    /// Uses the cached `window_cast_output` map, populated in `apply_output_layout()`.
-    #[cfg(feature = "screencast")]
-    pub fn window_output_name(&self, window_id: u64) -> Option<String> {
-        self.window_cast_output.get(&window_id).cloned()
-    }
-
-    /// Stop all screen casts targeting a specific window.
-    #[cfg(feature = "screencast")]
-    pub fn stop_casts_for_window(&mut self, window_id: u64) {
-        let target = dbus::CastTarget::Window {
-            id: window_id,
-        };
-        let sessions_to_stop: Vec<usize> = self
-            .screen_casts
-            .iter()
-            .filter(|(_, cast)| cast.target == target)
-            .map(|(session_id, _)| *session_id)
-            .collect();
-        for session_id in sessions_to_stop {
-            tracing::info!(
-                session_id,
-                window_id,
-                "stopping window cast (window closed)"
-            );
-            self.stop_cast(session_id);
-        }
-    }
-
-    /// Render a window into a screencast buffer.
-    ///
-    /// Returns true if a frame was rendered. The `cast` is passed separately
-    /// because `screen_casts` is detached from `self` during the render loop.
-    #[cfg(feature = "screencast")]
-    pub fn render_window_for_screen_cast(
-        &self,
-        renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
-        cast: &mut pipewire::stream::Cast,
-        window_id: u64,
-        output: &Output,
-        cursor_buffer: &cursor::CursorBuffer,
-        output_scale: smithay::utils::Scale<f64>,
-        target_frame_time: std::time::Duration,
-    ) -> bool {
-        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
-        use smithay::backend::renderer::element::Kind;
-        use smithay::wayland::seat::WaylandFocus;
-
-        let Some(window) = self.id_windows.get(&window_id) else {
-            return false;
-        };
-
-        // Use bbox_with_popups for accurate size including popups,
-        // scaled to physical pixels via the output's fractional scale.
-        let bbox = window.bbox_with_popups().to_physical_precise_up(output_scale);
-        let window_size = bbox.size;
-
-        let refresh = output
-            .current_mode()
-            .map(|m| (m.refresh / 1000) as u32)
-            .unwrap_or(60);
-
-        cast.ensure_size(window_size, refresh);
-
-        if cast.is_resize_pending() {
-            return false;
-        }
-
-        if cast.check_time_and_schedule(output, target_frame_time) {
-            return false;
-        }
-
-        // bbox.loc is the offset of the bounding box from the window origin;
-        // negate it so popups extending beyond the window are visible.
-        let render_offset = smithay::utils::Point::from((-bbox.loc.x, -bbox.loc.y));
-
-        let window_elements: Vec<render::EwmRenderElement> =
-            if let Some(surface) = window.wl_surface() {
-                let elems: Vec<_> = render_elements_from_surface_tree(
-                    renderer,
-                    &surface,
-                    render_offset,
-                    output_scale,
-                    1.0,
-                    Kind::Unspecified,
-                );
-                elems
-                    .into_iter()
-                    .map(render::EwmRenderElement::Surface)
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-        // Render cursor into window cast if cursor_mode != 0
-        let mut cursor_elements: Vec<render::EwmRenderElement> = Vec::new();
-        let mut cursor_location =
-            smithay::utils::Point::<i32, smithay::utils::Physical>::from((0, 0));
-
-        if cast.cursor_mode != 0 {
-            let (px, py) = self.pointer_location();
-            let output_geo = self.space.output_geometry(output);
-
-            if let Some(output_geo) = output_geo {
-                if let Some(entries) = self.output_layouts.get(&output.name()) {
-                    let working_area = {
-                        let map = smithay::desktop::layer_map_for_output(output);
-                        map.non_exclusive_zone()
-                    };
-                    for entry in entries {
-                        if entry.surface_id != window_id {
-                            continue;
-                        }
-                        let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
-                        let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
-
-                        if px >= entry_x as f64
-                            && py >= entry_y as f64
-                            && px < (entry_x + entry.w as i32) as f64
-                            && py < (entry_y + entry.h as i32) as f64
-                        {
-                            // Cursor position relative to the screencast buffer
-                            let bbox_logical = bbox.loc.to_f64().to_logical(output_scale);
-                            let cursor_x =
-                                px - entry_x as f64 - bbox_logical.x - cursor::CURSOR_HOTSPOT.0 as f64;
-                            let cursor_y =
-                                py - entry_y as f64 - bbox_logical.y - cursor::CURSOR_HOTSPOT.1 as f64;
-                            let cursor_pos: smithay::utils::Point<i32, smithay::utils::Physical> =
-                                smithay::utils::Point::from((cursor_x, cursor_y))
-                                    .to_physical_precise_round(output_scale);
-
-                            // cursor_location for SPA_META_Cursor (without hotspot offset)
-                            let loc_x = px - entry_x as f64 - bbox_logical.x;
-                            let loc_y = py - entry_y as f64 - bbox_logical.y;
-                            cursor_location = smithay::utils::Point::from((loc_x, loc_y))
-                                .to_physical_precise_round(output_scale);
-
-                            if let Ok(cursor_element) =
-                                cursor_buffer.render_element(renderer, cursor_pos)
-                            {
-                                cursor_elements
-                                    .push(render::EwmRenderElement::Cursor(cursor_element));
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        if cast.dequeue_buffer_and_render(
-            renderer,
-            &window_elements,
-            &cursor_elements,
-            cursor_location,
-            window_size,
-            output_scale,
-        ) {
-            cast.last_frame_time = target_frame_time;
-            true
-        } else {
-            false
-        }
-    }
 
     /// Set the Emacs process PID for client identification
     pub fn set_emacs_pid(&mut self, pid: u32) {
@@ -3627,7 +3423,7 @@ impl Ewm {
             let target = dbus::CastTarget::Output {
                 name: output_name.to_string(),
             };
-            for cast in self.screen_casts.values_mut() {
+            for cast in self.casting.casts.iter_mut() {
                 if cast.target == target {
                     cast.ensure_size(physical_size, refresh);
                     cast.set_refresh(refresh);

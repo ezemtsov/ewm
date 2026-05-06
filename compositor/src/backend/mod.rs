@@ -189,6 +189,21 @@ impl Backend {
         }
     }
 
+    /// DMA-BUF modifiers the renderer can produce for `fourcc`.
+    /// Used by screencast format negotiation.
+    #[cfg(feature = "screencast")]
+    pub fn render_formats_for_fourcc(
+        &mut self,
+        fourcc: smithay::backend::allocator::Fourcc,
+    ) -> Vec<i64> {
+        match self {
+            Backend::Drm(drm) => drm.render_formats_for_fourcc(fourcc),
+            Backend::Headless(_) => {
+                vec![u64::from(smithay::reexports::gbm::Modifier::Linear) as i64]
+            }
+        }
+    }
+
     /// Apply stored output configuration for the named output.
     ///
     /// Looks up `ewm.output_config` and applies mode, scale, transform,
