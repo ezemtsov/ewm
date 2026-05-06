@@ -867,17 +867,6 @@ impl Cast {
         Duration::ZERO
     }
 
-    /// Returns the delay before the next frame can be captured.
-    /// Duration::ZERO means the frame can be captured now.
-    pub fn frame_delay(&self, target_frame_time: Duration) -> Duration {
-        let delay = self.compute_extra_delay(target_frame_time);
-        if delay < CAST_DELAY_ALLOWANCE {
-            Duration::ZERO
-        } else {
-            delay
-        }
-    }
-
     /// Check frame timing and schedule a redraw if too early.
     /// Returns true if the frame was delayed (caller should skip rendering).
     pub fn check_time_and_schedule(
