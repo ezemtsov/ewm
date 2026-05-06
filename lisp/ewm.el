@@ -230,6 +230,33 @@ Examples:
   "Hook run when idle state changes.
 Called with one argument: t when entering idle, nil when waking.")
 
+(defcustom ewm-cursor-auto-hide nil
+  "Hide the mouse cursor after this many seconds of pointer inactivity.
+nil disables auto-hide.  Only pointer motion and button events restore
+the cursor; keyboard input and scrolling do not.
+
+Examples:
+  nil   ; disabled
+  5     ; hide after 5 seconds of no pointer activity"
+  :type '(choice (const :tag "Disabled" nil)
+                 (integer :tag "Hide after N seconds"))
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (fboundp 'ewm--send-cursor-hide-config)
+           (ewm--send-cursor-hide-config)))
+  :group 'ewm)
+
+(defcustom ewm-cursor-hide-when-typing nil
+  "When non-nil, hide the mouse cursor on key press.
+Pointer motion restores it.  Independent from `ewm-cursor-auto-hide';
+both can be enabled together."
+  :type 'boolean
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (fboundp 'ewm--send-cursor-hide-config)
+           (ewm--send-cursor-hide-config)))
+  :group 'ewm)
+
 (defvar ewm-idle-inhibited nil
   "Whether idle is manually inhibited from Emacs.
 When non-nil, the idle timeout and idle notifications (swayidle) are
@@ -718,6 +745,16 @@ Clears on all windows showing the surface."
        (ewm-configure-idle-module ewm-idle "blank"))
       (`(,(and (pred integerp) secs) . ,(and (pred stringp) cmd))
        (ewm-configure-idle-module secs cmd)))))
+
+(defun ewm--send-cursor-hide-config ()
+  "Send cursor auto-hide configuration to compositor.
+Uses `bound-and-true-p' for the inputs so this is safe to call from a
+`:set' that fires before the other defcustom has been evaluated."
+  (when (ewm--compositor-active-p)
+    (ewm-configure-cursor-hide-module
+     (let ((v (bound-and-true-p ewm-cursor-auto-hide)))
+       (and (integerp v) v))
+     (bound-and-true-p ewm-cursor-hide-when-typing))))
 
 (defun ewm-idle-inhibit (&optional arg)
   "Manually inhibit idle timeout and idle notifications.
@@ -1272,6 +1309,7 @@ now that a graphical FRAME exists."
     (add-hook 'after-init-hook #'ewm--send-intercept-keys))
   (ewm--send-input-config)
   (ewm--send-idle-config)
+  (ewm--send-cursor-hide-config)
   (when (and (not ewm-focus-follows-mouse) mouse-autoselect-window)
     (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode-enable)

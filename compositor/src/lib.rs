@@ -295,6 +295,19 @@ pub struct IdleTimeoutState {
     pub last_activity: std::time::Instant,
 }
 
+/// State for cursor auto-hide on inactivity and hide-on-typing.
+///
+/// Kept separate from `cursor_image_status` so client cursor requests are
+/// preserved across hide/show transitions.
+pub struct CursorHideState {
+    pub timeout: Option<Duration>,
+    pub timer_token: Option<RegistrationToken>,
+    pub is_hidden: bool,
+    pub last_activity: std::time::Instant,
+    /// Hide the cursor immediately on key press; pointer motion restores it.
+    pub hide_when_typing: bool,
+}
+
 /// Desired output configuration (from Emacs).
 /// Stored per output name; looked up on connect and config changes.
 #[derive(Debug, Clone)]
@@ -997,6 +1010,15 @@ pub struct Ewm {
     // Native idle timeout state
     pub idle_timeout: IdleTimeoutState,
 
+    // Auto-hide cursor on pointer inactivity
+    pub cursor_hide: CursorHideState,
+
+    /// Whether the (idle notifier) activity was notified this event loop iteration.
+    ///
+    /// Used for limiting the notify to once per iteration, so that it's not spammed with high
+    /// resolution mice.
+    pub notified_activity_this_iteration: bool,
+
     // Client cursor image status (Hidden/Surface/Named)
     pub cursor_image_status: CursorImageStatus,
 }
@@ -1203,6 +1225,14 @@ impl Ewm {
                 is_idle: false,
                 last_activity: std::time::Instant::now(),
             },
+            cursor_hide: CursorHideState {
+                timeout: None,
+                timer_token: None,
+                is_hidden: false,
+                last_activity: std::time::Instant::now(),
+                hide_when_typing: false,
+            },
+            notified_activity_this_iteration: false,
             cursor_image_status: CursorImageStatus::default_named(),
         }
     }
@@ -2115,6 +2145,107 @@ impl Ewm {
             self.wake_from_idle();
         } else {
             self.idle_timeout.last_activity = std::time::Instant::now();
+        }
+    }
+
+    pub fn notify_activity(&mut self) {
+        if self.notified_activity_this_iteration {
+            return;
+        }
+
+        tracy_span!("Ewm::notify_activity");
+
+        self.idle_notifier_state.notify_activity(&self.seat);
+
+        self.notified_activity_this_iteration = true;
+    }
+
+    pub fn configure_cursor_hide(&mut self, timeout: Option<Duration>, hide_when_typing: bool) {
+        if self.cursor_hide.is_hidden {
+            self.cursor_hide.is_hidden = false;
+            self.queue_redraw_for_pointer();
+        }
+
+        self.cancel_cursor_hide_timer();
+        self.cursor_hide.timeout = timeout;
+        self.cursor_hide.hide_when_typing = hide_when_typing;
+        self.cursor_hide.last_activity = std::time::Instant::now();
+
+        if let Some(duration) = timeout {
+            self.start_cursor_hide_timer(duration);
+        }
+        info!(
+            "Cursor auto-hide configured: timeout={:?}, hide_when_typing={}",
+            timeout, hide_when_typing
+        );
+    }
+
+    pub fn hide_cursor_for_typing(&mut self) {
+        // If the cursor is already invisible, don't redraw on every keystroke.
+        if self.cursor_hide.is_hidden {
+            return;
+        }
+
+        if !self.cursor_hide.hide_when_typing {
+            return;
+        }
+
+        self.cursor_hide.is_hidden = true;
+        self.queue_redraw_for_pointer();
+    }
+
+    fn start_cursor_hide_timer(&mut self, duration: Duration) {
+        self.cancel_cursor_hide_timer();
+        let timer = Timer::from_duration(duration);
+        match self.loop_handle.insert_source(timer, |_, _, state| {
+            state.ewm.on_cursor_hide_timer_fired();
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        }) {
+            Ok(token) => {
+                self.cursor_hide.timer_token = Some(token);
+            }
+            Err(err) => {
+                warn!("Failed to insert cursor-hide timer: {:?}", err);
+            }
+        }
+    }
+
+    pub(crate) fn cancel_cursor_hide_timer(&mut self) {
+        if let Some(token) = self.cursor_hide.timer_token.take() {
+            self.loop_handle.remove(token);
+        }
+    }
+
+    fn on_cursor_hide_timer_fired(&mut self) {
+        self.cursor_hide.timer_token = None;
+
+        let Some(timeout) = self.cursor_hide.timeout else {
+            return;
+        };
+
+        let elapsed = self.cursor_hide.last_activity.elapsed();
+        if elapsed < timeout {
+            self.start_cursor_hide_timer(timeout - elapsed);
+            return;
+        }
+
+        if !self.cursor_hide.is_hidden {
+            self.cursor_hide.is_hidden = true;
+            self.queue_redraw_for_pointer();
+        }
+    }
+
+    pub fn reset_cursor_hide_timer(&mut self) {
+        if self.cursor_hide.timeout.is_none() && !self.cursor_hide.hide_when_typing {
+            return;
+        }
+        self.cursor_hide.last_activity = std::time::Instant::now();
+        if self.cursor_hide.is_hidden {
+            self.cursor_hide.is_hidden = false;
+            self.queue_redraw_for_pointer();
+            if let Some(duration) = self.cursor_hide.timeout {
+                self.start_cursor_hide_timer(duration);
+            }
         }
     }
 
@@ -5527,6 +5658,8 @@ impl State {
         if let Err(e) = self.ewm.display_handle.flush_clients() {
             tracing::warn!("Failed to flush Wayland clients: {e}");
         }
+
+        self.ewm.notified_activity_this_iteration = false;
     }
 
     /// Update the shared state snapshot that Emacs reads synchronously.
@@ -5841,6 +5974,15 @@ impl State {
                 };
                 self.ewm
                     .configure_idle(timeout_secs.map(Duration::from_secs), idle_action);
+            }
+            ModuleCommand::ConfigureCursorHide {
+                timeout_secs,
+                hide_when_typing,
+            } => {
+                self.ewm.configure_cursor_hide(
+                    timeout_secs.map(Duration::from_secs),
+                    hide_when_typing,
+                );
             }
             ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
                 self.ewm.focus_follows_mouse_mode = setting;

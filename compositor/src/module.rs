@@ -304,6 +304,11 @@ pub enum ModuleCommand {
         timeout_secs: Option<u64>,
         action: String,
     },
+    /// Configure cursor auto-hide (inactivity timeout + hide-on-typing)
+    ConfigureCursorHide {
+        timeout_secs: Option<u64>,
+        hide_when_typing: bool,
+    },
     /// Configure focus follows mouse
     ConfigureFocusFollowsMouse {
         state: bool,
@@ -1031,6 +1036,19 @@ fn configure_idle_module(timeout: Option<i64>, action: Option<String>) -> Result
     push_command(ModuleCommand::ConfigureIdle {
         timeout_secs,
         action: action.unwrap_or_else(|| "blank".to_string()),
+    });
+    Ok(())
+}
+
+/// Configure cursor auto-hide (module mode).
+/// TIMEOUT is seconds of pointer inactivity before hiding (nil to disable).
+/// HIDE-WHEN-TYPING (t/nil) hides the cursor on key press; pointer motion restores it.
+#[defun]
+fn configure_cursor_hide_module(timeout: Option<i64>, hide_when_typing: Value<'_>) -> Result<()> {
+    let timeout_secs = timeout.and_then(|t| if t > 0 { Some(t as u64) } else { None });
+    push_command(ModuleCommand::ConfigureCursorHide {
+        timeout_secs,
+        hide_when_typing: hide_when_typing.is_not_nil(),
     });
     Ok(())
 }

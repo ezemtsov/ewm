@@ -193,7 +193,7 @@ pub fn collect_render_elements_for_output(
     };
 
     // The cursor goes on top.
-    if include_cursor {
+    if include_cursor && !ewm.cursor_hide.is_hidden {
         let (pointer_x, pointer_y) = ewm.pointer_location();
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
 

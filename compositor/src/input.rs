@@ -47,11 +47,14 @@ fn emulate_modifiers(current: &ModifiersState, target_mod: &str) -> ModifiersSta
 
 /// Notify the idle notifier of user activity and reset native idle timer
 fn notify_activity(state: &mut State) {
-    state
-        .ewm
-        .idle_notifier_state
-        .notify_activity(&state.ewm.seat);
+    state.ewm.notify_activity();
     state.ewm.reset_idle_timer();
+}
+
+/// Pointer-specific activity: idle notify plus cursor un-hide.
+fn notify_pointer_activity(state: &mut State) {
+    notify_activity(state);
+    state.ewm.reset_cursor_hide_timer();
 }
 
 /// Unified decision from the keyboard filter.
@@ -104,6 +107,10 @@ pub fn handle_keyboard_event(
 
     let serial = SERIAL_COUNTER.next_serial();
     let is_press = key_state == KeyState::Pressed;
+
+    if is_press {
+        state.ewm.hide_cursor_for_typing();
+    }
 
     // Handle locked state: only allow VT switch, forward everything else to lock surface
     if state.ewm.is_locked() {
@@ -899,7 +906,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
                 },
             );
             pointer.frame(state);
-            notify_activity(state);
+            notify_pointer_activity(state);
             return true;
         }
     }
@@ -950,7 +957,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
     pointer.frame(state);
 
     // Notify idle notifier of user activity
-    notify_activity(state);
+    notify_pointer_activity(state);
 
     if focus_changed {
         state.maybe_activate_pointer_constraint();
@@ -1007,7 +1014,7 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
 
         if prevent {
             pointer.frame(state);
-            notify_activity(state);
+            notify_pointer_activity(state);
             return true;
         }
     }
@@ -1046,7 +1053,7 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     pointer.frame(state);
 
     // Notify idle notifier of user activity
-    notify_activity(state);
+    notify_pointer_activity(state);
 
     if focus_changed {
         state.maybe_activate_pointer_constraint();
@@ -1112,7 +1119,7 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
     pointer.frame(state);
 
     // Notify idle notifier of user activity
-    notify_activity(state);
+    notify_pointer_activity(state);
 }
 
 /// Handle pointer axis (scroll wheel, touchpad scroll)
