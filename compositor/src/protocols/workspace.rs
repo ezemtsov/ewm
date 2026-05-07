@@ -25,7 +25,10 @@ use smithay::reexports::wayland_server::{
 
 const VERSION: u32 = 1;
 
-type WorkspaceKey = (String, usize); // (output_name, frame_index)
+/// Workspace identity is the Emacs frame's xdg_toplevel surface id -- stable
+/// across reorders and cross-output moves, so external clients can track a
+/// workspace through its lifetime regardless of position.
+type WorkspaceKey = u64;
 
 pub trait WorkspaceHandler {
     fn workspace_manager_state(&mut self) -> &mut WorkspaceManagerState;
@@ -87,6 +90,12 @@ impl GroupData {
 
 /// Per-workspace protocol mirror, stores current state for diffing.
 struct WorkspaceData {
+    /// Output this workspace currently belongs to.  Tracked here so a
+    /// cross-output move can be detected as a leave-from-old/enter-new on
+    /// the same workspace handle.
+    output: String,
+    /// Stable id sent in the protocol's `id` event (decimal surface_id).
+    id: String,
     name: String,
     coordinates: [u32; 2],
     state: ext_workspace_handle_v1::State,
@@ -95,8 +104,10 @@ struct WorkspaceData {
 }
 
 impl WorkspaceData {
-    fn new(name: String, index: usize, active: bool) -> Self {
+    fn new(output: String, id: String, name: String, index: usize, active: bool) -> Self {
         Self {
+            output,
+            id,
             name,
             coordinates: [0, index as u32],
             state: if active {
@@ -127,7 +138,7 @@ impl WorkspaceData {
         manager.workspace(&handle);
 
         handle.name(self.name.clone());
-        handle.id(self.name.clone());
+        handle.id(self.id.clone());
         handle.coordinates(
             self.coordinates
                 .iter()
@@ -198,16 +209,16 @@ pub fn refresh<'a, D>(
     // Build map of live outputs by name.
     let live_outputs: HashMap<String, Output> = outputs.map(|o| (o.name(), o.clone())).collect();
 
-    // Build "seen" set of (output_name, frame_index) from source of truth.
+    // Build "seen" set of surface ids from source of truth.
     let mut seen_workspaces: std::collections::HashSet<WorkspaceKey> =
         std::collections::HashSet::new();
-    for (output_name, strip) in output_strips {
-        for (i, _) in strip.frames.iter().enumerate() {
-            seen_workspaces.insert((output_name.clone(), i));
+    for strip in output_strips.values() {
+        for frame in &strip.frames {
+            seen_workspaces.insert(frame.surface_id);
         }
     }
 
-    // 1. Remove dead workspaces (not in source of truth or output gone).
+    // 1. Remove dead workspaces (frame closed).
     let dead_ws_keys: Vec<WorkspaceKey> = workspace_state
         .workspaces
         .keys()
@@ -217,7 +228,7 @@ pub fn refresh<'a, D>(
     for key in dead_ws_keys {
         if let Some(ws) = workspace_state.workspaces.remove(&key) {
             // Send workspace_leave from group.
-            if let Some(group) = workspace_state.groups.get(&key.0) {
+            if let Some(group) = workspace_state.groups.get(&ws.output) {
                 send_workspace_leave(&group.instances, &ws.instances);
             }
             for inst in &ws.instances {
@@ -267,13 +278,14 @@ pub fn refresh<'a, D>(
         }
 
         for (i, frame) in frames.iter().enumerate() {
-            let key = (output_name.clone(), i);
+            let key = frame.surface_id;
             let display_name = frame_display_name(i);
             let new_state = if frame.active {
                 ext_workspace_handle_v1::State::Active
             } else {
                 ext_workspace_handle_v1::State::empty()
             };
+            let new_coords = [0u32, i as u32];
 
             if let Some(ws) = workspace_state.workspaces.get_mut(&key) {
                 // Existing workspace: diff properties.
@@ -281,7 +293,15 @@ pub fn refresh<'a, D>(
                     ws.name = display_name.clone();
                     for inst in &ws.instances {
                         inst.name(display_name.clone());
-                        inst.id(display_name.clone());
+                    }
+                    changed = true;
+                }
+                if ws.coordinates != new_coords {
+                    ws.coordinates = new_coords;
+                    let bytes: Vec<u8> =
+                        new_coords.iter().flat_map(|x| x.to_ne_bytes()).collect();
+                    for inst in &ws.instances {
+                        inst.coordinates(bytes.clone());
                     }
                     changed = true;
                 }
@@ -292,8 +312,18 @@ pub fn refresh<'a, D>(
                     }
                     changed = true;
                 }
-                // Re-associate with new group after output reconnect.
-                if group_is_new {
+                // Cross-output move: leave old group, enter new.
+                if ws.output != *output_name {
+                    if let Some(old_group) = workspace_state.groups.get(&ws.output) {
+                        send_workspace_leave(&old_group.instances, &ws.instances);
+                    }
+                    ws.output = output_name.clone();
+                    if let Some(new_group) = workspace_state.groups.get(output_name) {
+                        send_workspace_enter(&new_group.instances, &ws.instances);
+                    }
+                    changed = true;
+                } else if group_is_new {
+                    // Output reconnected: re-enter the freshly-created group.
                     if let Some(group) = workspace_state.groups.get(output_name) {
                         send_workspace_enter(&group.instances, &ws.instances);
                     }
@@ -301,7 +331,13 @@ pub fn refresh<'a, D>(
                 }
             } else {
                 // New workspace.
-                let mut ws = WorkspaceData::new(display_name, i, frame.active);
+                let mut ws = WorkspaceData::new(
+                    output_name.clone(),
+                    frame.surface_id.to_string(),
+                    display_name,
+                    i,
+                    frame.active,
+                );
                 for manager in workspace_state.instances.keys() {
                     if let Some(client) = manager.client() {
                         ws.add_instance::<D>(&workspace_state.display, &client, manager);
@@ -409,16 +445,18 @@ where
         let manager = data_init.init(resource, ());
         let ps = state.workspace_manager_state();
 
-        // Create workspace instances for the new client (keyed by output for workspace_enter).
-        let mut new_ws_by_output: HashMap<String, Vec<usize>> = HashMap::new();
+        // Create workspace instances for the new client, grouped by their
+        // current output so the freshly-created group can issue
+        // workspace_enter for each.
+        let mut new_ws_by_output: HashMap<String, Vec<WorkspaceKey>> = HashMap::new();
         let ws_keys: Vec<WorkspaceKey> = ps.workspaces.keys().cloned().collect();
-        for (output_name, index) in ws_keys {
-            let ws_data = ps
-                .workspaces
-                .get_mut(&(output_name.clone(), index))
-                .unwrap();
+        for key in ws_keys {
+            let ws_data = ps.workspaces.get_mut(&key).unwrap();
             ws_data.add_instance::<D>(&ps.display, client, &manager);
-            new_ws_by_output.entry(output_name).or_default().push(index);
+            new_ws_by_output
+                .entry(ws_data.output.clone())
+                .or_default()
+                .push(key);
         }
 
         // Create group instances for all tracked outputs, with workspace_enter.
@@ -429,8 +467,7 @@ where
 
             // Send workspace_enter for workspaces on this output.
             let group_handle = group_data.instances.last().unwrap();
-            for &idx in new_ws_by_output.get(&output_name).into_iter().flatten() {
-                let key = (output_name.clone(), idx);
+            for &key in new_ws_by_output.get(&output_name).into_iter().flatten() {
                 if let Some(ws) = ps.workspaces.get(&key) {
                     if let Some(ws_inst) = ws.instances.last() {
                         group_handle.workspace_enter(ws_inst);
@@ -574,17 +611,20 @@ where
     ) {
         match request {
             ext_workspace_handle_v1::Request::Activate => {
-                // Find which workspace this handle belongs to.
+                // Look up the workspace by handle, then resolve its current
+                // strip position. The lisp side activates by 1-based
+                // (output, frame_index); compute it from the workspace's
+                // current `coordinates`.
                 let ps = state.workspace_manager_state();
-                let Some(((output_name, frame_index), _)) = ps
+                let Some(ws) = ps
                     .workspaces
-                    .iter()
-                    .find(|(_, ws)| ws.instances.contains(resource))
+                    .values()
+                    .find(|ws| ws.instances.contains(resource))
                 else {
                     return;
                 };
-                let output_name = output_name.clone();
-                let frame_index = *frame_index + 1; // 1-based for Emacs
+                let output_name = ws.output.clone();
+                let frame_index = ws.coordinates[1] as usize + 1;
 
                 // Queue for processing on Commit.
                 if let Some(actions) = ps.instances.get_mut(data) {

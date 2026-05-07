@@ -1820,12 +1820,12 @@ impl Ewm {
                 .insert(output_name.to_string());
         }
 
-        // 6. Store the layout under the strip. Animate `view_offset` when
-        //    the active frame changes so the viewport visibly slides
-        //    instead of jumping. The animation starts from
-        //    `column_x(prev_active) - column_x(new_active)` (keeping the
-        //    previous frame visually pinned for an instant) and decays to
-        //    zero.
+        // 6. Store the layout under the strip. Animation key is active
+        //    *surface* identity, not active *index*: a real focus switch
+        //    slides the viewport from the old column to the new; a
+        //    reorder (same surface at a new column index) snaps so the
+        //    user keeps looking at the same content while neighbors
+        //    rearrange around it.
         let prev_active_id = self
             .output_strips
             .get(output_name)
@@ -1841,17 +1841,21 @@ impl Ewm {
             .output_strips
             .entry(output_name.to_string())
             .or_default();
+        let new_active_id = frames.get(new_active_idx).map(|f| f.surface_id);
         let prev_view_pos = strip_entry.target_view_pos();
         strip_entry.frames = frames;
         strip_entry.active_idx = new_active_idx;
-        let new_active_x = strip_entry.column_x(new_active_idx);
-        let from_offset = prev_view_pos - new_active_x;
-        if from_offset.abs() > f64::EPSILON {
-            strip_entry.view_offset = strip::ViewOffset::Animation(strip::ViewAnimation::new(
-                from_offset,
-                0.0,
-                strip::DEFAULT_ANIM_DURATION,
-            ));
+        if prev_active_id != new_active_id {
+            let new_active_x = strip_entry.column_x(new_active_idx);
+            let from_offset = prev_view_pos - new_active_x;
+            if from_offset.abs() > f64::EPSILON {
+                strip_entry.view_offset = strip::ViewOffset::Animation(
+                    strip::ViewAnimation::new(from_offset, 0.0, strip::DEFAULT_ANIM_DURATION),
+                );
+            }
+        } else {
+            // Swap or no-op: cancel any in-flight slide and rest at 0.
+            strip_entry.view_offset = strip::ViewOffset::Static(0.0);
         }
 
         // 7. Compute primary flags: largest area per surface across all outputs.

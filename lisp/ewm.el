@@ -1076,14 +1076,56 @@ enforced by `ewm--prevent-frame-deletion'."
   (delete-frame))
 
 (defun ewm--frame-shift-on-output (delta)
-  "Move strip focus by DELTA on the current output (no wrap-around)."
+  "Move strip focus by DELTA on the current output (no wrap-around).
+Returns the target frame on success, nil at the strip edge."
   (let* ((current (selected-frame))
          (output (frame-parameter current 'ewm-output))
          (frames (ewm--frames-for-output output))
          (idx (cl-position current frames))
          (target-idx (and idx (+ idx delta))))
     (when (and target-idx (>= target-idx 0) (< target-idx (length frames)))
-      (select-frame-set-input-focus (nth target-idx frames)))))
+      (let ((target (nth target-idx frames)))
+        (select-frame-set-input-focus target)
+        target))))
+
+(defun ewm--focus-edge-window (direction)
+  "Select the leftmost (`left') or rightmost (`right') window of the frame.
+Picks by window x-edge in a single pass so only one `select-window'
+call happens -- a no-op when the saved selected window already is the
+outmost one."
+  (select-window
+   (car (seq-sort-by (lambda (w) (car (window-edges w)))
+                     (if (eq direction 'left) #'< #'>)
+                     (window-list nil 'no-minibuf)))))
+
+(defun ewm-windmove-left ()
+  "Move to the Emacs window to the left, or slide to the previous frame.
+When `windmove-left' would error and a previous frame exists on the
+output's strip, slide to it and focus its leftmost window so that
+pressing `s-<left>' again continues straight into the frame before it.
+
+This \"outmost\" landing optimizes cross-frame traversal over
+window-by-window inspection.  Use `s-<right>' to step back."
+  (interactive)
+  (condition-case err
+      (windmove-left)
+    (user-error
+     (if (ewm--frame-shift-on-output -1)
+         (ewm--focus-edge-window 'left)
+       (signal (car err) (cdr err))))))
+
+(defun ewm-windmove-right ()
+  "Move to the Emacs window to the right, or slide to the next frame.
+When `windmove-right' would error and a next frame exists on the
+output's strip, slide to it and focus its rightmost window so that
+pressing `s-<right>' again continues straight into the frame after it."
+  (interactive)
+  (condition-case err
+      (windmove-right)
+    (user-error
+     (if (ewm--frame-shift-on-output 1)
+         (ewm--focus-edge-window 'right)
+       (signal (car err) (cdr err))))))
 
 (defun ewm-frame-next ()
   "Switch to the next frame on the current output.  Linear strip, no wrap."
@@ -1107,6 +1149,36 @@ number of frames on this output."
                       (nth (1- pressed) frames))))
     (when target
       (select-frame-set-input-focus target))))
+
+(defun ewm--frame-swap-on-output (delta)
+  "Swap the active frame's strip position with its DELTA neighbor.
+Returns the neighbor on success, nil at the strip edge.  Focus stays
+on the same surface; the compositor snaps view_offset rather than
+animating, so the strip rearranges around the user without scrolling."
+  (let* ((current (selected-frame))
+         (output (frame-parameter current 'ewm-output))
+         (frames (ewm--frames-for-output output))
+         (idx (cl-position current frames))
+         (target-idx (and idx (+ idx delta)))
+         (target (and target-idx (>= target-idx 0) (< target-idx (length frames))
+                      (nth target-idx frames))))
+    (when target
+      (let ((cur-idx (frame-parameter current 'ewm-strip-index))
+            (tgt-idx (frame-parameter target 'ewm-strip-index)))
+        (set-frame-parameter current 'ewm-strip-index tgt-idx)
+        (set-frame-parameter target 'ewm-strip-index cur-idx)
+        (ewm-layout--refresh)
+        target))))
+
+(defun ewm-frame-move-left ()
+  "Swap the selected frame with its left neighbor in the strip."
+  (interactive)
+  (ewm--frame-swap-on-output -1))
+
+(defun ewm-frame-move-right ()
+  "Swap the selected frame with its right neighbor in the strip."
+  (interactive)
+  (ewm--frame-swap-on-output 1))
 
 (defun ewm--enforce-frame-output-parity ()
   "Delete orphan/stale frames but keep N frames per output.

@@ -36,10 +36,9 @@
     (define-key map (kbd "<AudioMicMute>")      (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
     (define-key map (kbd "<MonBrightnessUp>")   (ewm--cmd "brightnessctl" "set" "5%+"))
     (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
-    ;; Window navigation (super + arrows). M5 will reintroduce cross-frame
-    ;; fall-through with a slide animation on left/right edges.
-    (define-key map (kbd "s-<left>") #'windmove-left)
-    (define-key map (kbd "s-<right>") #'windmove-right)
+    ;; Window navigation; horizontal moves fall through to the adjacent frame.
+    (define-key map (kbd "s-<left>") #'ewm-windmove-left)
+    (define-key map (kbd "s-<right>") #'ewm-windmove-right)
     (define-key map (kbd "s-<down>") #'windmove-down)
     (define-key map (kbd "s-<up>") #'windmove-up)
     ;; Clipboard
@@ -59,13 +58,12 @@
     ;; Frame strip
     (define-key map (kbd "s-t") #'ewm-frame-new)
     (define-key map (kbd "s-w") #'ewm-frame-close)
-    ;; Buffer movement
-    (define-key map (kbd "C-s-<left>") #'buf-move-left)
-    (define-key map (kbd "C-s-<right>") #'buf-move-right)
+    ;; Reorder frames horizontally; reorder windows within a frame vertically.
+    (define-key map (kbd "C-s-<left>") #'ewm-frame-move-left)
+    (define-key map (kbd "C-s-<right>") #'ewm-frame-move-right)
     (define-key map (kbd "C-s-<up>") #'buf-move-up)
     (define-key map (kbd "C-s-<down>") #'buf-move-down)
-    ;; Strip-position shortcuts: s-1 .. s-9 select the Nth frame on the
-    ;; current output's strip.
+    ;; Select Nth frame on current output's strip.
     (dotimes (i 9)
       (define-key map (kbd (format "s-%d" (1+ i))) #'ewm-frame-select))
     map)
@@ -89,6 +87,10 @@ Override individual bindings with `use-package':
 (declare-function ewm-frame-new "ewm")
 (declare-function ewm-frame-close "ewm")
 (declare-function ewm-frame-select "ewm")
+(declare-function ewm-windmove-left "ewm")
+(declare-function ewm-windmove-right "ewm")
+(declare-function ewm-frame-move-left "ewm")
+(declare-function ewm-frame-move-right "ewm")
 
 (defvar ewm-surface-id)
 (defvar ewm--module-mode)
