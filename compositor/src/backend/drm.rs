@@ -76,7 +76,7 @@ use smithay::{
         },
     },
     utils::{DeviceFd, Scale, Transform},
-    wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder},
+    wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlobal},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
@@ -556,8 +556,8 @@ pub struct DrmBackendState {
     primary_render_node: Option<DrmNode>,
     /// Global GPU manager used by all DRM devices.
     gpu_manager: Option<GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>>,
-    /// Whether the zwp_linux_dmabuf global has been advertised.
-    dmabuf_global_created: bool,
+    /// zwp_linux_dmabuf global; `Some` once the primary render node is up.
+    dmabuf_global: Option<DmabufGlobal>,
     // SAFETY: Fields below are dropped in declaration order.
     // devices must drop before session (surfaces -> drm -> libseat).
     // See https://github.com/Smithay/smithay/issues/1102
@@ -2059,7 +2059,7 @@ impl DrmBackendState {
             gpu_manager.as_mut().add_node(render_node, gbm.clone())?;
         }
 
-        if self.primary_render_node == Some(render_node) && !self.dmabuf_global_created {
+        if self.primary_render_node == Some(render_node) && self.dmabuf_global.is_none() {
             let display_handle = self
                 .display_handle
                 .as_ref()
@@ -2075,13 +2075,13 @@ impl DrmBackendState {
             if let Ok(default_feedback) =
                 DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats).build()
             {
-                let _global = ewm
+                let global = ewm
                     .dmabuf_state
                     .create_global_with_default_feedback::<State>(
                         display_handle,
                         &default_feedback,
                     );
-                self.dmabuf_global_created = true;
+                self.dmabuf_global = Some(global);
                 info!("Dmabuf global created");
             }
         }
@@ -2214,6 +2214,39 @@ impl DrmBackendState {
                 .values()
                 .any(|other| other.render_node == render_node);
             if was_last {
+                if self.primary_render_node == Some(render_node) {
+                    debug!("destroying the primary renderer");
+                    match gpu_manager.single_renderer(&render_node) {
+                        Ok(mut renderer) => renderer.unbind_wl_display(),
+                        Err(err) => warn!("error creating renderer during device removal: {err}"),
+                    }
+
+                    if let (Some(global), Some(display_handle)) =
+                        (self.dmabuf_global.take(), self.display_handle.clone())
+                    {
+                        ewm.dmabuf_state
+                            .disable_global::<State>(&display_handle, &global);
+                        if let Some(handle) = &self.loop_handle {
+                            let _ = handle.insert_source(
+                                Timer::from_duration(Duration::from_secs(10)),
+                                move |_, _, state| {
+                                    state.ewm.dmabuf_state.destroy_global::<State>(
+                                        &state.ewm.display_handle,
+                                        global.clone(),
+                                    );
+                                    TimeoutAction::Drop
+                                },
+                            );
+                        }
+
+                        for device in self.devices.values_mut() {
+                            for surface in device.surfaces.values_mut() {
+                                surface.dmabuf_feedback = None;
+                            }
+                        }
+                    }
+                }
+
                 gpu_manager.as_mut().remove_node(&render_node);
                 let _ = gpu_manager.devices();
             }
@@ -2484,7 +2517,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         primary_node: None,
         primary_render_node: None,
         gpu_manager: None,
-        dmabuf_global_created: false,
+        dmabuf_global: None,
         devices: HashMap::new(),
     };
 
