@@ -168,9 +168,9 @@ pub fn handle_keyboard_event(
     // keyboard focus is temporarily on Emacs even though the surface is fullscreen.
     let fullscreen_surface_id = state
         .ewm
-        .output_layouts
+        .output_strips
         .values()
-        .flat_map(|entries| entries.iter())
+        .flat_map(|strip| strip.surfaces())
         .find(|e| e.focused && state.ewm.effective_fullscreen(e))
         .map(|e| e.surface_id);
 

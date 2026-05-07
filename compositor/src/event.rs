@@ -140,7 +140,7 @@ pub enum Event {
     SelectionChanged { text: String },
     /// Workspace activation requested (e.g. waybar click)
     #[serde(rename = "activate_workspace")]
-    ActivateWorkspace { output: String, tab_index: usize },
+    ActivateWorkspace { output: String, frame_index: usize },
     /// Surface requests fullscreen mode
     #[serde(rename = "fullscreen_request")]
     FullscreenRequest {

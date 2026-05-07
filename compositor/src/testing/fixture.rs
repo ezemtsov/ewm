@@ -155,7 +155,7 @@ impl Fixture {
         // Refresh workspace protocol state (pull model)
         crate::protocols::workspace::refresh::<crate::State>(
             &mut self.state.ewm.workspace_state,
-            &self.state.ewm.output_workspaces,
+            &self.state.ewm.output_strips,
             self.state.ewm.space.outputs(),
         );
 
@@ -189,13 +189,8 @@ impl Fixture {
                     }
                 }
             }
-            ModuleCommand::OutputLayout {
-                output,
-                surfaces,
-                tabs,
-            } => {
-                self.state.ewm.apply_output_layout(&output, surfaces);
-                self.state.ewm.output_workspaces.insert(output, tabs);
+            ModuleCommand::OutputLayout { output, frames } => {
+                self.state.ewm.apply_output_layout(&output, frames);
             }
             // Other commands can be added as needed for testing
             _ => {}

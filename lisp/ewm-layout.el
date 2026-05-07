@@ -37,37 +37,45 @@ This version correctly handles tab-lines on Emacs prior to v31."
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
 (defun ewm-layout--send-layouts ()
-  "Build and send per-output layout declarations.
-Groups surface entries by output and sends them to the compositor.
-The `focused' flag marks the selected-window entry for each surface.
-The compositor uses it for focus routing and popup placement.
-The compositor independently computes which entry is `primary'
-\(largest area) for configure size and rendering decisions."
-  (let ((output-surfaces (make-hash-table :test 'equal))
-        (window-entries nil)
-        (sel-window (selected-window)))
-    ;; Collect entries
+  "Build and send per-output layout declarations as nested frame strips.
+For each output, emits the strip in `ewm-strip-index' ascending order.
+Each frame plist carries :name :surface-id :active :width :surfaces;
+each surface plist holds :id :x :y :w :h :focused :fullscreen.
+The compositor uses :focused for input/popup routing, :surface-id to
+position each Emacs frame xdg_toplevel at its strip column, and
+independently computes :primary across outputs."
+  (let ((output-frames (make-hash-table :test 'equal))
+        (sel-window (selected-window))
+        (sel-frame (selected-frame)))
     (dolist (frame (frame-list))
-      (let ((output (frame-parameter frame 'ewm-output)))
-        (when output
-          (unless (gethash output output-surfaces)
-            (puthash output nil output-surfaces))
+      ;; In-flight frames (no strip-index yet) would land at strip
+      ;; position 0; skip until the compositor assigns one.
+      (when-let ((output (frame-parameter frame 'ewm-output))
+                 (strip-index (frame-parameter frame 'ewm-strip-index)))
+        (let ((surfaces nil))
           (dolist (window (window-list frame 'no-minibuf))
-            (let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
-              (when id
-                (push (list output id window) window-entries)))))))
-    ;; Build entries, mark selected-window as focused
-    (pcase-dolist (`(,output ,id ,window) (nreverse window-entries))
-      (let* ((focused-p (eq window sel-window))
-             (view (ewm-layout--make-output-view window focused-p)))
-        (push `(:id ,id ,@view) (gethash output output-surfaces))))
-    ;; Send per-output declarations with tab state
+            (when-let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
+              (let* ((focused-p (eq window sel-window))
+                     (view (ewm-layout--make-output-view window focused-p)))
+                (push `(:id ,id ,@view) surfaces))))
+          (let ((frame-plist
+                 (list :name (or (frame-parameter frame 'name) "")
+                       :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
+                       :active (if (eq frame sel-frame) t :false)
+                       :width (float (frame-pixel-width frame))
+                       :strip-index strip-index
+                       :surfaces (vconcat (nreverse surfaces)))))
+            (puthash output
+                     (cons frame-plist (gethash output output-frames))
+                     output-frames)))))
     (maphash
-     (lambda (output entries)
-       (ewm-output-layout output
-                          (vconcat (nreverse entries))
-                          (ewm-layout--collect-tabs output)))
-     output-surfaces)))
+     (lambda (output frames)
+       (let ((sorted (sort frames
+                           (lambda (a b)
+                             (< (plist-get a :strip-index)
+                                (plist-get b :strip-index))))))
+         (ewm-output-layout output (vconcat sorted))))
+     output-frames)))
 
 (defun ewm-layout--refresh ()
   "Send current window layouts to the compositor."
@@ -103,22 +111,6 @@ Catches minibuffer height changes that window-configuration-change misses."
 Primary flag depends on selected-window, so re-send layouts."
   (ewm-layout--send-layouts)
   (ewm--sync-focus))
-
-(defun ewm-layout--collect-tabs (output)
-  "Collect tab state for OUTPUT as a vector of plists.
-Each element is a plist with :name and :active keys."
-  (let ((frame (cl-find-if (lambda (f)
-                             (equal (frame-parameter f 'ewm-output) output))
-                           (frame-list))))
-    (if frame
-        (let ((tabs (funcall tab-bar-tabs-function frame)))
-          (vconcat
-           (mapcar (lambda (tab)
-                     (let ((name (alist-get 'name tab)))
-                       (list :name (or name "")
-                             :active (if (eq (car tab) 'current-tab) t :false))))
-                   tabs)))
-      (vector))))
 
 (defun ewm--on-window-buffer-change (_frame)
   "Resolve focus when a buffer changes within a window.

@@ -15,7 +15,7 @@
 //!    Cursor -> Overlay -> Top -> Popups -> Windows -> Bottom -> Background
 //!    This order matches typical desktop compositor layering.
 //!
-//! 3. **Layout-based rendering**: Surfaces with entries in `output_layouts` are
+//! 3. **Layout-based rendering**: Surfaces with entries in `output_strips` are
 //!    rendered at their declared positions. Surfaces without layout entries use
 //!    space positions (for Emacs frames).
 
@@ -178,19 +178,9 @@ pub fn collect_render_elements_for_output(
     let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
     let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
 
-    // Workspace transition: slide content (windows/popups) while layer
-    // surfaces stay fixed. content_offset is the per-frame translation
-    // applied to every content element; 0 when no transition is active.
-    let transition = ewm
-        .output_state
-        .get(output)
-        .and_then(|s| s.workspace_transition.as_ref());
-    let content_offset: Point<i32, Physical> = if let Some(t) = transition {
-        let offset_logical = t.direction() as f64 * (1.0 - t.progress()) * output_size.w as f64;
-        Point::from(((offset_logical * scale.x) as i32, 0))
-    } else {
-        Point::from((0, 0))
-    };
+    // Per-frame screen-space x-offset for layout surfaces is derived from
+    // the strip's `view_offset` and `column_x` (see `Strip::screen_x_of_frame`).
+    // Layer surfaces (waybar, etc.) stay fixed -- only frame contents slide.
 
     // The cursor goes on top.
     if include_cursor && !ewm.cursor_hide.is_hidden {
@@ -304,10 +294,16 @@ pub fn collect_render_elements_for_output(
     // Track position for popup insertion (after top layer / before windows)
     let popup_insert_pos = elements.len();
 
-    // 4. Render declared surfaces from output_layouts (authoritative, no intersection test)
+    // 4. Render declared surfaces from output_strips (authoritative, no intersection test)
     let working_area = ewm.get_working_area(output);
-    if let Some(entries) = ewm.output_layouts.get(&output.name()) {
-        for entry in entries {
+    if let Some(strip) = ewm.output_strips.get(&output.name()) {
+        for (frame_idx, entry) in strip.surfaces_with_frame() {
+            // Frame's screen-space x relative to working area origin.
+            // Active frame at rest yields 0 (no shift); mid-animation or
+            // off-screen neighbors yield the strip's column offset.
+            let frame_dx_logical = strip.screen_x_of_frame(frame_idx);
+            let frame_offset: Point<i32, Physical> =
+                Point::from(((frame_dx_logical * scale.x) as i32, 0));
             let effective_fs = ewm.effective_fullscreen(entry);
             // When fullscreen is active, non-fullscreen entries are behind the
             // fullscreen backdrop, so skip them to avoid rendering on top.
@@ -331,7 +327,7 @@ pub fn collect_render_elements_for_output(
                         .unwrap_or_default();
                     let output_physical: Size<i32, Physical> =
                         output_logical_size.to_physical_precise_round(scale);
-                    let constrain = Rectangle::new(content_offset, output_physical);
+                    let constrain = Rectangle::new(frame_offset, output_physical);
 
                     if entry.primary {
                         // Primary: native size, centered, crop to output bounds.
@@ -341,7 +337,7 @@ pub fn collect_render_elements_for_output(
                         );
                         let loc_physical: Point<i32, Physical> =
                             Point::from((offset_x, offset_y)).to_physical_precise_round(scale)
-                                + content_offset;
+                                + frame_offset;
                         let view_elements =
                             window.render_elements(renderer, loc_physical, scale, entry_alpha);
                         push_constrained(
@@ -354,7 +350,7 @@ pub fn collect_render_elements_for_output(
                         );
                     } else {
                         // Non-primary: uniform stretch to fill output, crop overflow.
-                        let loc_physical: Point<i32, Physical> = content_offset;
+                        let loc_physical: Point<i32, Physical> = frame_offset;
                         let view_elements =
                             window.render_elements(renderer, loc_physical, scale, entry_alpha);
                         let buf_size: Size<i32, Physical> =
@@ -377,7 +373,7 @@ pub fn collect_render_elements_for_output(
                     if let Some(state) = ewm.output_state.get(output) {
                         let bg = SolidColorRenderElement::from_buffer(
                             &state.fullscreen_backdrop,
-                            content_offset,
+                            frame_offset,
                             scale,
                             1.0,
                             Kind::Unspecified,
@@ -391,7 +387,7 @@ pub fn collect_render_elements_for_output(
                 let location =
                     Point::from((working_area.loc.x + entry.x, working_area.loc.y + entry.y));
                 let loc_physical: Point<i32, Physical> =
-                    location.to_physical_precise_round(scale) + content_offset;
+                    location.to_physical_precise_round(scale) + frame_offset;
                 let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     window.render_elements(renderer, loc_physical, scale, entry_alpha);
                 let entry_size: Size<i32, Physical> =
@@ -441,17 +437,14 @@ pub fn collect_render_elements_for_output(
 
     // 5. Emacs frames declared to live on this output.
     //
-    // Iterating `emacs_surfaces` (id -> output name) lets us render based
-    // on explicit per-output ownership instead of deriving output membership
-    // from `space.elements()` + overlap filtering against `output_rect`,
-    // which was brittle and would silently skip frames whose space position
-    // lagged a resize/hot-plug. Working-area origin is the authoritative
-    // frame position (update_frames_for_working_area keeps the space in
-    // sync with it, not the other way around).
+    // Each frame's xdg_toplevel renders at `working_area + screen_x_of_frame(idx)`
+    // in x, where `idx` is the frame's column in the strip. With one frame
+    // at rest the offset is zero and the surface lands at the working-area
+    // origin (current behavior). With N frames or mid-animation, each
+    // frame's chrome slides with its column.
     let working_area_loc_physical =
         Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
-            .to_physical_precise_round(scale)
-            + content_offset;
+            .to_physical_precise_round(scale);
     for (&id, owner) in &ewm.emacs_surfaces {
         if owner.as_str() != output.name().as_str() {
             continue;
@@ -459,8 +452,20 @@ pub fn collect_render_elements_for_output(
         let Some(window) = ewm.id_windows.get(&id) else {
             continue;
         };
-        let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-            window.render_elements(renderer, working_area_loc_physical, scale, 1.0);
+        let frame_dx_logical = ewm
+            .output_strips
+            .get(&output.name())
+            .and_then(|s| s.frames.iter().position(|f| f.surface_id == id).map(|i| s.screen_x_of_frame(i)))
+            .unwrap_or(0.0);
+        let frame_offset_emacs: Point<i32, Physical> =
+            Point::from(((frame_dx_logical * scale.x) as i32, 0));
+        let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
+            .render_elements(
+                renderer,
+                working_area_loc_physical + frame_offset_emacs,
+                scale,
+                1.0,
+            );
         elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
     }
 
@@ -492,7 +497,7 @@ pub fn collect_render_elements_for_output(
                     render_elements_from_surface_tree(
                         renderer,
                         popup.wl_surface(),
-                        render_loc.to_physical_precise_round(scale) + content_offset,
+                        render_loc.to_physical_precise_round(scale),
                         scale,
                         1.0,
                         Kind::Unspecified,
@@ -504,12 +509,6 @@ pub fn collect_render_elements_for_output(
 
     // Insert popups after top layer but before windows
     elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
-
-    // Workspace transition snapshot: in front of content (windows/popups),
-    // behind layer surfaces (Overlay/Top) -- so DankMaterialShell stays put.
-    if let Some(t) = transition {
-        elements.insert(popup_insert_pos, t.render_element(scale));
-    }
 
     (elements, cursor_elements)
 }

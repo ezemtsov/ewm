@@ -39,7 +39,6 @@
 (declare-function ewm-close-module "ewm-core")
 (declare-function ewm-warp-pointer-module "ewm-core")
 (declare-function ewm-screenshot-module "ewm-core")
-(declare-function ewm-start-workspace-transition-module "ewm-core")
 (declare-function ewm-get-debug-state-module "ewm-core")
 (declare-function ewm-debug-mode-module "ewm-core")
 (declare-function ewm-configure-output-module "ewm-core")
@@ -126,8 +125,8 @@ When non-nil, warps the pointer to the center of the focused window."
   :group 'ewm)
 
 (defcustom ewm-animations-enabled t
-  "Whether cross-tab slide animations play during navigation.
-Set to nil to disable all workspace-transition animations.  Bind
+  "Whether cross-frame slide animations play during navigation.
+Set to nil to disable all strip-transition animations.  Bind
 dynamically via `let' to suppress animations for a single operation
 without changing the global preference."
   :type 'boolean
@@ -329,10 +328,18 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
     (setq ewm--pending-frame-outputs (delete pending ewm--pending-frame-outputs))
     (set-frame-parameter frame 'ewm-output output)
     (set-frame-parameter frame 'ewm-surface-id id)
+    (unless (frame-parameter frame 'ewm-strip-index)
+      (set-frame-parameter frame 'ewm-strip-index
+                           (ewm--next-strip-index output)))
     ;; PGTK workaround: redisplay only flushes the Cairo context to the
     ;; Wayland surface for the selected frame.  Without this, the initial
     ;; surface commit is transparent until an external event arrives.
     (with-selected-frame frame (redisplay t))
+    (when (frame-parameter frame 'ewm-focus-on-create)
+      (set-frame-parameter frame 'ewm-focus-on-create nil)
+      (select-frame-set-input-focus frame))
+    ;; Layout hooks are no-ops when FRAME was already selected; push it.
+    (ewm-layout--refresh)
     (when (null ewm--pending-frame-outputs)
       (ewm--cleanup-orphan-frames))))
 
@@ -595,129 +602,16 @@ Push the text onto the kill ring."
 
 (defun ewm--handle-activate-workspace (event)
   "Handle activate_workspace EVENT from compositor.
-Switch to the requested tab on the appropriate frame."
+Select the Nth Emacs frame on the requested output (1-based index)."
   (unless (ewm--minibuffer-active-p)
     (let* ((output (alist-get 'output event))
-           (tab-index (alist-get 'tab_index event))
-           (frame (ewm--frame-for-output output)))
-      (when frame
-        (with-selected-frame frame
-          (tab-bar-select-tab tab-index))))))
-
-(defun ewm-start-workspace-transition (output direction)
-  "Start a workspace-slide animation on OUTPUT.
-DIRECTION must be +1 (pan right, next tab) or -1 (pan left, prev tab).
-Intended call order: invoke this, then `tab-bar-select-tab'.
-The compositor captures the current scene synchronously; subsequent
-layout updates apply under the animating snapshot.
-
-No-op when `ewm-animations-enabled' is nil or the compositor isn't
-active, so every animation-emitting caller automatically respects the
-preference without its own check."
-  (when (and ewm-animations-enabled (ewm--compositor-active-p))
-    (ewm-start-workspace-transition-module output direction)))
-
-(defun ewm--focus-edge-window (direction)
-  "Select the leftmost (`left') or rightmost (`right') window of the frame.
-Picks the target in a single pass by window x-edge, so only one
-`select-window' call happens -- and that call is a no-op (no hook
-firing) when the saved selected window already is the outmost."
-  (select-window
-   (car (seq-sort-by (lambda (w) (car (window-edges w)))
-                     (if (eq direction 'left) #'< #'>)
-                     (window-list nil 'no-minibuf)))))
-
-(defun ewm-windmove-left ()
-  "Move to the Emacs window to the left, or pan to the previous tab.
-If no window exists to the left and a previous tab is available on
-this frame, slide to that tab and focus its leftmost window so that
-pressing `s-<left>' again continues straight into the tab before it.
-
-This \"outmost\" landing point optimizes cross-tab traversal over
-window-by-window inspection.  Use `s-<right>' from the landed window
-to step back into the tab you just entered."
-  (interactive)
-  (condition-case err
-      (windmove-left)
-    (user-error
-     (let ((output (frame-parameter nil 'ewm-output))
-           (current-idx (tab-bar--current-tab-index)))
-       (if (and output (> current-idx 0))
-           (progn
-             (ewm-start-workspace-transition output -1)
-             ;; 0-based current equals 1-based prev.
-             (tab-bar-select-tab current-idx)
-             (ewm--focus-edge-window 'left))
-         (signal (car err) (cdr err)))))))
-
-(defun ewm-windmove-right ()
-  "Move to the Emacs window to the right, or pan to the next tab.
-If no window exists to the right and a next tab is available on this
-frame, slide to that tab and focus its rightmost window so that
-pressing `s-<right>' again continues straight into the tab after it.
-
-This \"outmost\" landing point optimizes cross-tab traversal over
-window-by-window inspection.  Use `s-<left>' from the landed window
-to step back into the tab you just entered."
-  (interactive)
-  (condition-case err
-      (windmove-right)
-    (user-error
-     (let* ((output (frame-parameter nil 'ewm-output))
-            (current-idx (tab-bar--current-tab-index))
-            (count (length (funcall tab-bar-tabs-function))))
-       (if (and output (< current-idx (1- count)))
-           (progn
-             (ewm-start-workspace-transition output 1)
-             (tab-bar-select-tab (+ current-idx 2))
-             (ewm--focus-edge-window 'right))
-         (signal (car err) (cdr err)))))))
-
-(defun ewm--animate-tab-direction (direction)
-  "Push a workspace-transition animation in DIRECTION (+1 or -1).
-No-op when the compositor is inactive or the frame has no ewm output."
-  (when-let (((ewm--compositor-active-p))
-             (output (frame-parameter nil 'ewm-output)))
-    (ewm-start-workspace-transition output direction)))
-
-(defun ewm--advise-tab-next (&optional arg)
-  "Before-advice for `tab-next': animate when the move stays in-bounds.
-Animation skipped when the underlying wrap-around would fire --
-keeping our tab-strip-not-ring convention for the animation even
-though the built-in itself still wraps."
-  (let* ((current (tab-bar--current-tab-index))
-         (target (+ current (or arg 1))))
-    (when (< target (length (funcall tab-bar-tabs-function)))
-      (ewm--animate-tab-direction 1))))
-
-(defun ewm--advise-tab-previous (&optional arg)
-  "Before-advice for `tab-previous': animate when the move stays in-bounds."
-  (let* ((current (tab-bar--current-tab-index))
-         (target (- current (or arg 1))))
-    (when (>= target 0)
-      (ewm--animate-tab-direction -1))))
-
-(defun ewm--advise-tab-new (&rest _)
-  "Before-advice for `tab-new'.
-Direction follows `tab-bar-new-tab-to'; defaults to rightward."
-  (ewm--animate-tab-direction
-   (pcase tab-bar-new-tab-to
-     ((or 'left 'leftmost) -1)
-     (_ 1))))
-
-(defun ewm--advise-tab-close (&rest _)
-  "Before-advice for `tab-bar-close-tab'.
-Leftward slide except when closing the leftmost tab, where the only
-neighbor sits to the right."
-  (let ((count (length (funcall tab-bar-tabs-function)))
-        (current (tab-bar--current-tab-index)))
-    (when (> count 1)
-      (ewm--animate-tab-direction (if (zerop current) 1 -1)))))
-
-(advice-add 'tab-next :before #'ewm--advise-tab-next)
-(advice-add 'tab-previous :before #'ewm--advise-tab-previous)
-(advice-add 'tab-new :before #'ewm--advise-tab-new)
-(advice-add 'tab-bar-close-tab :before #'ewm--advise-tab-close)
+           (frame-index (alist-get 'frame_index event))
+           (frames (cl-remove-if-not
+                    (lambda (f) (equal (frame-parameter f 'ewm-output) output))
+                    (frame-list)))
+           (target (nth (1- frame-index) frames)))
+      (when target
+        (select-frame-set-input-focus target)))))
 
 (defun ewm--set-fullscreen-windows (buf value)
   "Set fullscreen window parameter to VALUE on all windows showing BUF."
@@ -865,12 +759,14 @@ For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
                      (title . ,(frame-parameter nil 'name))
                      (pid . ,(emacs-pid))))))
 
-(defun ewm-output-layout (output surfaces tabs)
-  "Set declarative layout for OUTPUT.
-SURFACES is a vector of plists with :id :x :y :w :h :primary keys.
-TABS is a vector of booleans (t for active tab, nil for inactive).
-Coordinates are relative to the output's working area."
-  (ewm-output-layout-module output surfaces tabs))
+(defun ewm-output-layout (output frames)
+  "Set declarative layout for OUTPUT as a nested frame strip.
+FRAMES is a vector of plists describing the Emacs frame strip on the
+output, left-to-right.  Each frame plist has:
+  :name NAME :active BOOL :width FLOAT :surfaces SURFACES
+where SURFACES is a vector of plists `:id :x :y :w :h :focused :fullscreen'.
+Surface coordinates are relative to the owning frame's working area."
+  (ewm-output-layout-module output frames))
 
 (defun ewm-close (id)
   "Request surface ID to close gracefully."
@@ -1138,10 +1034,86 @@ Frames for disconnected outputs are always allowed to be deleted."
         (message "Cannot delete the only frame on output %s" output)
       (funcall orig-fun frame force))))
 
+(defun ewm--frames-for-output (output)
+  "Return frames assigned to OUTPUT in left-to-right strip order.
+Sort key is `ewm-strip-index'; frames missing it sort first
+(usually the first frame ever made for the output)."
+  (sort
+   (cl-remove-if-not
+    (lambda (f) (equal (frame-parameter f 'ewm-output) output))
+    (frame-list))
+   (lambda (a b)
+     (< (or (frame-parameter a 'ewm-strip-index) -1)
+        (or (frame-parameter b 'ewm-strip-index) -1)))))
+
+(defun ewm--next-strip-index (output)
+  "Return the next free strip index for OUTPUT (one past the max)."
+  (1+ (apply #'max -1
+             (delq nil
+                   (mapcar (lambda (f) (frame-parameter f 'ewm-strip-index))
+                           (cl-remove-if-not
+                            (lambda (f)
+                              (equal (frame-parameter f 'ewm-output) output))
+                            (frame-list)))))))
+
+(defun ewm-frame-new ()
+  "Append a new Emacs frame to the right of the current output's strip
+and focus it once the compositor confirms its surface."
+  (interactive)
+  (let ((output (frame-parameter (selected-frame) 'ewm-output)))
+    (unless output
+      (user-error "Current frame has no ewm-output"))
+    (let* ((idx (ewm--next-strip-index output))
+           (new-frame (ewm--create-frame-for-output output)))
+      (set-frame-parameter new-frame 'ewm-strip-index idx)
+      (set-frame-parameter new-frame 'ewm-focus-on-create t))))
+
+(defun ewm-frame-close ()
+  "Close the selected frame.
+The last frame on an active output cannot be deleted; this is
+enforced by `ewm--prevent-frame-deletion'."
+  (interactive)
+  (delete-frame))
+
+(defun ewm--frame-shift-on-output (delta)
+  "Move strip focus by DELTA on the current output (no wrap-around)."
+  (let* ((current (selected-frame))
+         (output (frame-parameter current 'ewm-output))
+         (frames (ewm--frames-for-output output))
+         (idx (cl-position current frames))
+         (target-idx (and idx (+ idx delta))))
+    (when (and target-idx (>= target-idx 0) (< target-idx (length frames)))
+      (select-frame-set-input-focus (nth target-idx frames)))))
+
+(defun ewm-frame-next ()
+  "Switch to the next frame on the current output.  Linear strip, no wrap."
+  (interactive)
+  (ewm--frame-shift-on-output 1))
+
+(defun ewm-frame-previous ()
+  "Switch to the previous frame on the current output.  Linear strip, no wrap."
+  (interactive)
+  (ewm--frame-shift-on-output -1))
+
+(defun ewm-frame-select ()
+  "Select the Nth frame (1-based) on the current output.
+Reads the digit from `last-command-event'.  No-op if N is past the
+number of frames on this output."
+  (interactive)
+  (let* ((pressed (- (event-basic-type last-command-event) ?0))
+         (output (frame-parameter (selected-frame) 'ewm-output))
+         (frames (ewm--frames-for-output output))
+         (target (and (>= pressed 1) (<= pressed (length frames))
+                      (nth (1- pressed) frames))))
+    (when target
+      (select-frame-set-input-focus target))))
+
 (defun ewm--enforce-frame-output-parity ()
-  "Ensure one frame per active output. Delete orphans, stale, and duplicates."
-  (let ((seen (make-hash-table :test 'equal))
-        (active-outputs (ewm-get-active-outputs)))
+  "Delete orphan/stale frames but keep N frames per output.
+Frames may live on a strip multiple-deep; the duplicate-frame rule
+that one-output-one-frame implied is gone -- the user explicitly
+manages the strip via `ewm-frame-new'/`ewm-frame-close'."
+  (let ((active-outputs (ewm-get-active-outputs)))
     (dolist (frame (frame-list))
       (let ((output (frame-parameter frame 'ewm-output)))
         (cond
@@ -1152,11 +1124,7 @@ Frames for disconnected outputs are always allowed to be deleted."
          ((null output)
           (ignore-errors (delete-frame frame)))
          ((not (member output active-outputs))
-          (ignore-errors (delete-frame frame)))
-         ((gethash output seen)
-          (ignore-errors (delete-frame frame)))
-         (t
-          (puthash output frame seen)))))))
+          (ignore-errors (delete-frame frame))))))))
 
 ;;; Public API
 

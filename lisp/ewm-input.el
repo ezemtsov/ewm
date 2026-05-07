@@ -22,38 +22,6 @@
 
 (require 'cl-lib)
 
-(defun ewm--maybe-animate-tab-move (target)
-  "Start a workspace-transition animation for a move toward TARGET.
-TARGET is a 0-based tab index or nil.  No-op when TARGET is nil, it
-equals the current tab, or the frame has no ewm output."
-  (when-let* ((target)
-              (current (tab-bar--current-tab-index))
-              ((/= target current))
-              (output (frame-parameter nil 'ewm-output)))
-    (ewm-start-workspace-transition output (if (> target current) 1 -1))))
-
-(defun ewm-tab-select-or-return ()
-  "Select tab by number, or switch to recent if already on that tab.
-Reads the digit from `last-command-event' for i3-style back-and-forth.
-
-On an ewm-managed frame, a horizontal slide animation plays during
-the switch; direction follows the sign of the target-minus-current
-index delta.  `tab-bar--tab-index-recent' resolves the same-press
-destination up front so the animation matches where we'll land.
-
-Focus inside the landing tab is whatever the tab had saved -- indexed
-jumps preserve per-tab window state, unlike `ewm-windmove-left' /
-`ewm-windmove-right' which reposition to the outmost window."
-  (interactive)
-  (let* ((pressed (- (event-basic-type last-command-event) ?0))
-         (same-press (= pressed (1+ (tab-bar--current-tab-index))))
-         (target (if same-press
-                     (tab-bar--tab-index-recent 1)
-                   (and (<= pressed (length (funcall tab-bar-tabs-function)))
-                        (1- pressed)))))
-    (ewm--maybe-animate-tab-move target)
-    (if same-press (tab-recent) (tab-bar-select-tab pressed))))
-
 (defmacro ewm--cmd (&rest args)
   "Create an interactive command that runs ARGS as a subprocess."
   `(lambda () (interactive) (start-process ,(car args) nil ,@args)))
@@ -68,11 +36,10 @@ jumps preserve per-tab window state, unlike `ewm-windmove-left' /
     (define-key map (kbd "<AudioMicMute>")      (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
     (define-key map (kbd "<MonBrightnessUp>")   (ewm--cmd "brightnessctl" "set" "5%+"))
     (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
-    ;; Window navigation (super + arrows). Left/right fall through to the
-    ;; adjacent tab with a slide animation when there's no window in that
-    ;; direction -- tab boundaries feel seamless during horizontal traversal.
-    (define-key map (kbd "s-<left>") #'ewm-windmove-left)
-    (define-key map (kbd "s-<right>") #'ewm-windmove-right)
+    ;; Window navigation (super + arrows). M5 will reintroduce cross-frame
+    ;; fall-through with a slide animation on left/right edges.
+    (define-key map (kbd "s-<left>") #'windmove-left)
+    (define-key map (kbd "s-<right>") #'windmove-right)
     (define-key map (kbd "s-<down>") #'windmove-down)
     (define-key map (kbd "s-<up>") #'windmove-up)
     ;; Clipboard
@@ -89,16 +56,18 @@ jumps preserve per-tab window state, unlike `ewm-windmove-left' /
     ;; Emacs sees S-Tab as iso-lefttab; compositor sees Tab+Shift.  Need both.
     (define-key map (kbd "s-<iso-lefttab>") #'ewm-prev-surface-buffer)
     (define-key map (kbd "s-S-<tab>") #'ewm-prev-surface-buffer)
-    (define-key map (kbd "s-t") #'tab-new)
-    (define-key map (kbd "s-w") #'tab-close)
+    ;; Frame strip
+    (define-key map (kbd "s-t") #'ewm-frame-new)
+    (define-key map (kbd "s-w") #'ewm-frame-close)
     ;; Buffer movement
     (define-key map (kbd "C-s-<left>") #'buf-move-left)
     (define-key map (kbd "C-s-<right>") #'buf-move-right)
     (define-key map (kbd "C-s-<up>") #'buf-move-up)
     (define-key map (kbd "C-s-<down>") #'buf-move-down)
-    ;; Workspace shortcuts
+    ;; Strip-position shortcuts: s-1 .. s-9 select the Nth frame on the
+    ;; current output's strip.
     (dotimes (i 9)
-      (define-key map (kbd (format "s-%d" (1+ i))) #'ewm-tab-select-or-return))
+      (define-key map (kbd (format "s-%d" (1+ i))) #'ewm-frame-select))
     map)
   "Keymap for `ewm-mode'.
 Default super-key bindings for window management.
@@ -117,9 +86,9 @@ Override individual bindings with `use-package':
 (declare-function ewm-launch-app "ewm")
 (declare-function ewm-toggle-fullscreen "ewm")
 (declare-function ewm-lock-session "ewm")
-(declare-function ewm-windmove-left "ewm")
-(declare-function ewm-windmove-right "ewm")
-(declare-function ewm-start-workspace-transition "ewm")
+(declare-function ewm-frame-new "ewm")
+(declare-function ewm-frame-close "ewm")
+(declare-function ewm-frame-select "ewm")
 
 (defvar ewm-surface-id)
 (defvar ewm--module-mode)

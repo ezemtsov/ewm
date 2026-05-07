@@ -48,11 +48,11 @@ mod module;
 pub mod screencasting;
 pub mod protocols;
 pub mod render;
+pub mod strip;
 pub mod texture;
 pub mod tracy;
 pub mod utils;
 pub mod vblank_throttle;
-pub mod workspace_transition;
 pub mod xwayland;
 pub use tracy::VBlankFrameTracker;
 
@@ -360,8 +360,6 @@ pub struct OutputState {
     pub frame_callback_sequence: u32,
     /// Black backdrop for fullscreen surfaces (covers entire output)
     pub fullscreen_backdrop: SolidColorBuffer,
-    /// Active workspace transition animation, if any.
-    pub workspace_transition: Option<workspace_transition::WorkspaceTransition>,
 }
 
 impl OutputState {
@@ -378,7 +376,6 @@ impl OutputState {
             lock_color_buffer: SolidColorBuffer::new(size, [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
             fullscreen_backdrop: SolidColorBuffer::new(size, [0.0, 0.0, 0.0, 1.0]),
-            workspace_transition: None,
         }
     }
 
@@ -406,7 +403,6 @@ impl Default for OutputState {
             lock_color_buffer: SolidColorBuffer::new((1920, 1080), [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
             fullscreen_backdrop: SolidColorBuffer::new((1920, 1080), [0.0, 0.0, 0.0, 1.0]),
-            workspace_transition: None,
         }
     }
 }
@@ -820,10 +816,9 @@ pub struct Ewm {
     pub window_ids: HashMap<Window, u64>,
     pub id_windows: HashMap<u64, Window>,
     surface_info: HashMap<u64, SurfaceInfo>,
-    /// Declared layout per output: output_name -> entries
-    pub output_layouts: HashMap<String, Vec<LayoutEntry>>,
-    /// Per-output workspace (tab) state from Emacs: output_name -> tab info
-    pub output_workspaces: HashMap<String, Vec<module::TabInfo>>,
+    /// Per-output strip state from Emacs: surfaces nest inside frames inside the strip.
+    /// This is the single source of truth for what's visible on each output.
+    pub output_strips: HashMap<String, strip::Strip>,
     /// Reverse index: surface_id -> set of output names it appears on
     pub surface_outputs: HashMap<u64, HashSet<String>>,
 
@@ -918,7 +913,7 @@ pub struct Ewm {
     // Foreign toplevel state (exposes windows to external tools)
     pub foreign_toplevel_state: ForeignToplevelManagerState,
 
-    // Workspace state (ext-workspace-v1: exposes Emacs tabs to external tools)
+    // Workspace state (ext-workspace-v1: exposes Emacs frames to external tools)
     pub workspace_state: WorkspaceManagerState,
 
     // Output management state (wlr-output-management-unstable-v1)
@@ -1087,7 +1082,7 @@ impl Ewm {
         let foreign_toplevel_state =
             ForeignToplevelManagerState::new::<State, _>(&display_handle, |_| true);
 
-        // Initialize workspace management (ext-workspace-v1: Emacs tabs as workspaces)
+        // Initialize workspace management (ext-workspace-v1: Emacs frames as workspaces)
         let workspace_state = WorkspaceManagerState::new::<State, _>(&display_handle, |_| true);
 
         // Initialize output management (wlr-output-management-unstable-v1)
@@ -1152,8 +1147,7 @@ impl Ewm {
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
-            output_layouts: HashMap::new(),
-            output_workspaces: HashMap::new(),
+            output_strips: HashMap::new(),
             surface_outputs: HashMap::new(),
             output_size: Size::from((0, 0)),
             outputs: Vec::new(),
@@ -1246,11 +1240,13 @@ impl Ewm {
         self.im_relay = Some(im_relay::ImRelay::connect(socket_path));
     }
 
-    /// Remove a surface from all output layouts and the reverse index.
+    /// Remove a surface from all output strips and the reverse index.
     fn remove_surface_from_layouts(&mut self, id: u64) {
         self.surface_outputs.remove(&id);
-        for entries in self.output_layouts.values_mut() {
-            entries.retain(|e| e.surface_id != id);
+        for strip in self.output_strips.values_mut() {
+            for frame in &mut strip.frames {
+                frame.surfaces.retain(|e| e.surface_id != id);
+            }
         }
     }
 
@@ -1299,8 +1295,8 @@ impl Ewm {
         self.space.unmap_output(output);
 
         // Clean up layout state
-        if let Some(old_entries) = self.output_layouts.remove(&output_name) {
-            for entry in &old_entries {
+        if let Some(old_strip) = self.output_strips.remove(&output_name) {
+            for entry in old_strip.surfaces() {
                 if let Some(outputs) = self.surface_outputs.get_mut(&entry.surface_id) {
                     outputs.remove(&output_name);
                     if outputs.is_empty() {
@@ -1309,7 +1305,6 @@ impl Ewm {
                 }
             }
         }
-        self.output_workspaces.remove(&output_name);
         self.working_areas.remove(&output_name);
 
         // Remove from outputs list
@@ -1450,25 +1445,31 @@ impl Ewm {
 
     /// Find the focused output layout entry for a surface.
     ///
-    /// Scans all output_layouts for a focused entry matching the given surface ID.
-    /// Used for output association (focus routing, popups).
-    fn focused_output_for_surface(&self, id: u64) -> Option<(&str, &LayoutEntry)> {
-        for (output_name, entries) in &self.output_layouts {
-            if let Some(entry) = entries.iter().find(|e| e.surface_id == id && e.focused) {
-                return Some((output_name.as_str(), entry));
+    /// Returns (output_name, frame_idx, entry). The frame_idx feeds
+    /// `Strip::screen_x_of_frame` so callers can apply the per-frame slide
+    /// offset when computing global positions.
+    fn focused_output_for_surface(&self, id: u64) -> Option<(&str, usize, &LayoutEntry)> {
+        for (output_name, strip) in &self.output_strips {
+            if let Some((idx, entry)) = strip
+                .surfaces_with_frame()
+                .find(|(_, e)| e.surface_id == id && e.focused)
+            {
+                return Some((output_name.as_str(), idx, entry));
             }
         }
         None
     }
 
     /// Find the primary output layout entry for a surface.
-    ///
-    /// Scans all output_layouts for a primary entry matching the given surface ID.
-    /// Used as fallback when no focused entry exists (e.g. popup positioning).
-    fn primary_output_for_surface(&self, id: u64) -> Option<(&str, &LayoutEntry)> {
-        for (output_name, entries) in &self.output_layouts {
-            if let Some(entry) = entries.iter().find(|e| e.surface_id == id && e.primary) {
-                return Some((output_name.as_str(), entry));
+    /// Same shape as `focused_output_for_surface`; used as fallback when
+    /// no focused entry exists (e.g. popup positioning).
+    fn primary_output_for_surface(&self, id: u64) -> Option<(&str, usize, &LayoutEntry)> {
+        for (output_name, strip) in &self.output_strips {
+            if let Some((idx, entry)) = strip
+                .surfaces_with_frame()
+                .find(|(_, e)| e.surface_id == id && e.primary)
+            {
+                return Some((output_name.as_str(), idx, entry));
             }
         }
         None
@@ -1476,7 +1477,7 @@ impl Ewm {
 
     /// Get the global position of a window.
     ///
-    /// For layout surfaces (managed via output_layouts): uses the primary entry's
+    /// For layout surfaces (managed via output_strips): uses the primary entry's
     /// position relative to the output's working area.
     /// For non-layout surfaces (Emacs frames): uses space.element_location().
     pub fn window_global_position(
@@ -1489,7 +1490,7 @@ impl Ewm {
 
         // Layout surface: use focused entry for output association, fall back to primary
         if self.surface_outputs.contains_key(&id) {
-            let (output_name, entry) = self
+            let (output_name, frame_idx, entry) = self
                 .focused_output_for_surface(id)
                 .or_else(|| self.primary_output_for_surface(id))?;
             let output = self.space.outputs().find(|o| o.name() == output_name)?;
@@ -1510,8 +1511,13 @@ impl Ewm {
                 let map = layer_map_for_output(output);
                 map.non_exclusive_zone()
             };
+            let frame_dx = self
+                .output_strips
+                .get(output_name)
+                .map(|s| s.screen_x_of_frame(frame_idx))
+                .unwrap_or(0.0) as i32;
             return Some(Point::from((
-                output_geo.loc.x + working_area.loc.x + entry.x,
+                output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
                 output_geo.loc.y + working_area.loc.y + entry.y,
             )));
         }
@@ -1532,16 +1538,17 @@ impl Ewm {
             let map = layer_map_for_output(output);
             map.non_exclusive_zone()
         };
-        let entries = self.output_layouts.get(&output.name())?;
+        let strip = self.output_strips.get(&output.name())?;
 
         // Iterate forward (first = topmost, matching render element order)
-        for entry in entries.iter() {
+        for (frame_idx, entry) in strip.surfaces_with_frame() {
             if self.effective_fullscreen(entry) {
                 // Fullscreen covers entire output
                 return Some((entry, output_geo.loc.x, output_geo.loc.y));
             }
 
-            let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
+            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+            let entry_x = output_geo.loc.x + working_area.loc.x + frame_dx + entry.x;
             let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
 
             if pos.x >= entry_x as f64
@@ -1576,9 +1583,9 @@ impl Ewm {
             let map = layer_map_for_output(output);
             map.non_exclusive_zone()
         };
-        let entries = self.output_layouts.get(&output.name())?;
+        let strip = self.output_strips.get(&output.name())?;
 
-        for entry in entries.iter() {
+        for (frame_idx, entry) in strip.surfaces_with_frame() {
             let window = match self.id_windows.get(&entry.surface_id) {
                 Some(w) => w,
                 None => continue,
@@ -1586,11 +1593,12 @@ impl Ewm {
             let window_geo = window.geometry();
             let effective_fs = self.effective_fullscreen(entry);
 
+            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
             let (entry_x, entry_y) = if effective_fs {
                 (output_geo.loc.x, output_geo.loc.y)
             } else {
                 (
-                    output_geo.loc.x + working_area.loc.x + entry.x,
+                    output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
                     output_geo.loc.y + working_area.loc.y + entry.y,
                 )
             };
@@ -1710,9 +1718,9 @@ impl Ewm {
 
     /// Check if a surface is currently displaying as fullscreen on any output.
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
-        self.output_layouts
+        self.output_strips
             .values()
-            .any(|entries| entries.iter().any(|e| e.surface_id == id && self.effective_fullscreen(e)))
+            .any(|strip| strip.surfaces().any(|e| e.surface_id == id && self.effective_fullscreen(e)))
     }
 
     /// Whether layout surfaces render (and receive input) above the Top layer on this output.
@@ -1721,9 +1729,9 @@ impl Ewm {
     /// element list and the input hit-testing chain so that the fullscreen surface
     /// occludes Top/Bottom/Background layers for input as well as visually.
     pub fn render_above_top_layer(&self, output: &Output) -> bool {
-        self.output_layouts
+        self.output_strips
             .get(&output.name())
-            .map_or(false, |entries| entries.iter().any(|e| self.effective_fullscreen(e)))
+            .map_or(false, |strip| strip.surfaces().any(|e| self.effective_fullscreen(e)))
     }
 
     /// Hit-test layout surfaces under a global position, returning the surface ID.
@@ -1746,11 +1754,13 @@ impl Ewm {
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
     /// and scale notification.
-    pub fn apply_output_layout(&mut self, output_name: &str, mut entries: Vec<LayoutEntry>) {
+    pub fn apply_output_layout(&mut self, output_name: &str, mut frames: Vec<strip::Frame>) {
         // 0. Assign unique identities to each entry
-        for entry in entries.iter_mut() {
-            entry.view_id = self.next_view_id;
-            self.next_view_id += 1;
+        for frame in frames.iter_mut() {
+            for entry in frame.surfaces.iter_mut() {
+                entry.view_id = self.next_view_id;
+                self.next_view_id += 1;
+            }
         }
 
         // 1. Find the output
@@ -1764,11 +1774,14 @@ impl Ewm {
 
         // 2. Diff old vs new surface IDs
         let old_ids: HashSet<u64> = self
-            .output_layouts
+            .output_strips
             .get(output_name)
-            .map(|entries| entries.iter().map(|e| e.surface_id).collect())
+            .map(|s| s.surfaces().map(|e| e.surface_id).collect())
             .unwrap_or_default();
-        let new_ids: HashSet<u64> = entries.iter().map(|e| e.surface_id).collect();
+        let new_ids: HashSet<u64> = frames
+            .iter()
+            .flat_map(|f| f.surfaces.iter().map(|e| e.surface_id))
+            .collect();
 
         // 3. Handle removed surfaces (old - new)
         for &id in old_ids.difference(&new_ids) {
@@ -1807,8 +1820,39 @@ impl Ewm {
                 .insert(output_name.to_string());
         }
 
-        // 6. Store the layout
-        self.output_layouts.insert(output_name.to_string(), entries);
+        // 6. Store the layout under the strip. Animate `view_offset` when
+        //    the active frame changes so the viewport visibly slides
+        //    instead of jumping. The animation starts from
+        //    `column_x(prev_active) - column_x(new_active)` (keeping the
+        //    previous frame visually pinned for an instant) and decays to
+        //    zero.
+        let prev_active_id = self
+            .output_strips
+            .get(output_name)
+            .and_then(|s| s.frames.get(s.active_idx).map(|f| f.surface_id));
+        let new_active_idx = match frames.iter().position(|f| f.active) {
+            Some(i) => i,
+            // `selected-frame' is on another output; preserve ours.
+            None => prev_active_id
+                .and_then(|id| frames.iter().position(|f| f.surface_id == id))
+                .unwrap_or(0),
+        };
+        let strip_entry = self
+            .output_strips
+            .entry(output_name.to_string())
+            .or_default();
+        let prev_view_pos = strip_entry.target_view_pos();
+        strip_entry.frames = frames;
+        strip_entry.active_idx = new_active_idx;
+        let new_active_x = strip_entry.column_x(new_active_idx);
+        let from_offset = prev_view_pos - new_active_x;
+        if from_offset.abs() > f64::EPSILON {
+            strip_entry.view_offset = strip::ViewOffset::Animation(strip::ViewAnimation::new(
+                from_offset,
+                0.0,
+                strip::DEFAULT_ANIM_DURATION,
+            ));
+        }
 
         // 7. Compute primary flags: largest area per surface across all outputs.
         // Fullscreen entries use the output's logical size (the surface is
@@ -1838,8 +1882,8 @@ impl Ewm {
 
             let mut best_area: HashMap<u64, u64> = HashMap::new();
             // First pass: find the largest area per surface
-            for (oname, entries) in &self.output_layouts {
-                for entry in entries {
+            for (oname, strip) in &self.output_strips {
+                for entry in strip.surfaces() {
                     let area = entry_area(entry, oname);
                     best_area
                         .entry(entry.surface_id)
@@ -1849,8 +1893,8 @@ impl Ewm {
             }
             // Second pass: mark primary on the matching entry
             let mut assigned: HashSet<u64> = HashSet::new();
-            for (oname, entries) in self.output_layouts.iter_mut() {
-                for entry in entries.iter_mut() {
+            for (oname, strip) in self.output_strips.iter_mut() {
+                for entry in strip.surfaces_mut() {
                     let dominated = best_area.get(&entry.surface_id).copied().unwrap_or(0);
                     entry.primary =
                         entry_area(entry, oname) == dominated && assigned.insert(entry.surface_id);
@@ -1862,12 +1906,12 @@ impl Ewm {
         #[cfg(feature = "screencast")]
         {
             self.casting.mapped_cast_output.clear();
-            for (oname, entries) in &self.output_layouts {
+            for (oname, strip) in &self.output_strips {
                 let Some(output) = self.space.outputs().find(|o| &o.name() == oname).cloned()
                 else {
                     continue;
                 };
-                for entry in entries {
+                for entry in strip.surfaces() {
                     if entry.primary {
                         self.casting
                             .mapped_cast_output
@@ -1882,8 +1926,8 @@ impl Ewm {
         // is the canonical one; the client renders at this scale.
         let output_scale = output.current_scale();
         let output_transform = output.current_transform();
-        if let Some(entries) = self.output_layouts.get(output_name) {
-            for entry in entries {
+        if let Some(strip) = self.output_strips.get(output_name) {
+            for entry in strip.surfaces() {
                 if entry.primary {
                     if let Some(window) = self.id_windows.get(&entry.surface_id) {
                         window.with_surfaces(|s, data| {
@@ -2315,14 +2359,9 @@ impl Ewm {
     /// Check if a focused fullscreen surface should inhibit idle.
     /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
     fn fullscreen_surface_inhibits_idle(&self) -> bool {
-        for entries in self.output_layouts.values() {
-            for entry in entries {
-                if entry.fullscreen && entry.focused {
-                    return true;
-                }
-            }
-        }
-        false
+        self.output_strips
+            .values()
+            .any(|s| s.surfaces().any(|e| e.fullscreen && e.focused))
     }
 
     /// Kill idle child process (e.g., on lid close).
@@ -2392,16 +2431,8 @@ impl Ewm {
     /// Called before each render so the `unfinished_animations_remain` flag
     /// reflects only live animations.
     fn advance_animations(&mut self, output: &Output) {
-        let Some(state) = self.output_state.get_mut(output) else {
-            return;
-        };
-
-        if state
-            .workspace_transition
-            .as_ref()
-            .is_some_and(|t| t.is_done())
-        {
-            state.workspace_transition = None;
+        if let Some(strip) = self.output_strips.get_mut(&output.name()) {
+            strip.advance();
         }
     }
 
@@ -2470,7 +2501,13 @@ impl Ewm {
             // When true, VBlank handlers queue another redraw to keep animations pumping.
             // Done animations are already cleared by advance_animations() above.
             state.unfinished_animations_remain = false;
-            state.unfinished_animations_remain |= state.workspace_transition.is_some();
+        }
+        if let Some(strip) = self.output_strips.get(&output.name()) {
+            if strip.view_offset.is_animation_ongoing() {
+                if let Some(state) = self.output_state.get_mut(output) {
+                    state.unfinished_animations_remain = true;
+                }
+            }
         }
 
         // Check lock confirmation requirements
@@ -2920,7 +2957,7 @@ impl Ewm {
     fn find_surface_output(&self, surface_id: u64) -> Option<smithay::output::Output> {
         // Layout surfaces: prefer focused output, then any
         if self.surface_outputs.contains_key(&surface_id) {
-            if let Some((name, _)) = self.focused_output_for_surface(surface_id) {
+            if let Some((name, _, _)) = self.focused_output_for_surface(surface_id) {
                 return self.space.outputs().find(|o| o.name() == name).cloned();
             }
             if let Some(output_names) = self.surface_outputs.get(&surface_id) {
@@ -3302,7 +3339,7 @@ impl Ewm {
             }
         }
 
-        // 3. Layout surfaces (output_layouts-managed, includes popup/subsurface hit-testing)
+        // 3. Layout surfaces (output_strips-managed, includes popup/subsurface hit-testing)
         if let Some(result) = self.layout_surface_under(pos) {
             return Some(result);
         }
@@ -3608,8 +3645,8 @@ impl Ewm {
         let transform = output.current_transform();
 
         // Notify declared surfaces on this output
-        if let Some(entries) = self.output_layouts.get(&output.name()) {
-            for entry in entries {
+        if let Some(strip) = self.output_strips.get(&output.name()) {
+            for entry in strip.surfaces() {
                 if let Some(window) = self.id_windows.get(&entry.surface_id) {
                     window.with_surfaces(|surface, data| {
                         crate::utils::send_scale_transform(surface, data, scale, transform);
@@ -3622,7 +3659,7 @@ impl Ewm {
         for window in self.space.elements() {
             let window_id = self.window_ids.get(window).copied().unwrap_or(0);
             if self.surface_outputs.contains_key(&window_id) {
-                continue; // managed by output_layouts, already handled above
+                continue; // managed by output_strips, already handled above
             }
             let loc = self.space.element_location(window).unwrap_or_default();
             let output_geo = self.space.output_geometry(output).unwrap_or_default();
@@ -3803,7 +3840,7 @@ impl Ewm {
         // Check windows (layout surfaces + Emacs frames)
         if let Some((window, id)) = self.find_window_by_surface(&root) {
             // Layout surface: prefer focused output
-            if let Some((name, _)) = self.focused_output_for_surface(id) {
+            if let Some((name, _, _)) = self.focused_output_for_surface(id) {
                 return self.space.outputs().find(|o| o.name() == name);
             }
             // Fallback: any output from surface_outputs
@@ -3837,7 +3874,7 @@ impl Ewm {
     /// Fullscreen: full output. Normal: entry width × output height (horizontally
     /// constrained to the entry, vertically to the full output).
     fn popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
-        let (output_name, entry) = self
+        let (output_name, _frame_idx, entry) = self
             .focused_output_for_surface(id)
             .or_else(|| self.primary_output_for_surface(id))?;
         let output = self.space.outputs().find(|o| o.name() == output_name)?;
@@ -3999,7 +4036,7 @@ impl Ewm {
         }
 
         // Only map Emacs frames into the space; layout surfaces are
-        // positioned exclusively via output_layouts.
+        // positioned exclusively via output_strips.
         if let Some(ref output_name) = frame_output {
             let position = self
                 .space
@@ -5030,14 +5067,14 @@ impl ForeignToplevelHandler for State {
 }
 delegate_foreign_toplevel!(State);
 
-// Workspace protocol (ext-workspace-v1: Emacs tabs as workspaces)
+// Workspace protocol (ext-workspace-v1: Emacs frames as workspaces)
 impl WorkspaceHandler for State {
     fn workspace_manager_state(&mut self) -> &mut WorkspaceManagerState {
         &mut self.ewm.workspace_state
     }
 
-    fn activate_workspace(&mut self, output: String, tab_index: usize) {
-        module::push_event(Event::ActivateWorkspace { output, tab_index });
+    fn activate_workspace(&mut self, output: String, frame_index: usize) {
+        module::push_event(Event::ActivateWorkspace { output, frame_index });
     }
 }
 delegate_workspace!(State);
@@ -5619,7 +5656,7 @@ impl State {
         // Refresh workspace protocol state (pull model: diff source of truth vs mirrors).
         crate::protocols::workspace::refresh::<State>(
             &mut self.ewm.workspace_state,
-            &self.ewm.output_workspaces,
+            &self.ewm.output_strips,
             self.ewm.space.outputs(),
         );
 
@@ -5817,8 +5854,7 @@ impl State {
                 let state = serde_json::json!({
                     "surfaces": self.ewm.surface_info,
                     "emacs_surfaces": self.ewm.emacs_surfaces,
-                    "output_layouts": self.ewm.output_layouts,
-                    "output_workspaces": self.ewm.output_workspaces,
+                    "output_strips": self.ewm.output_strips,
                     "surface_outputs": self.ewm.surface_outputs,
                     "focused_surface_id": self.ewm.focused_surface_id,
                     "id_windows": id_window_keys,
@@ -5870,12 +5906,8 @@ impl State {
                 );
                 debug!("Selection set from Emacs");
             }
-            ModuleCommand::OutputLayout {
-                output,
-                surfaces,
-                tabs,
-            } => {
-                self.ewm.apply_output_layout(&output, surfaces);
+            ModuleCommand::OutputLayout { output, frames } => {
+                self.ewm.apply_output_layout(&output, frames);
                 // Re-evaluate tracked layout entry UID (entries got fresh UIDs)
                 let (px, py) = self.ewm.pointer_location();
                 self.ewm.pointer_view_id =
@@ -5897,8 +5929,6 @@ impl State {
                 );
                 pointer.frame(self);
 
-                // Store tab state (source of truth for workspace::refresh)
-                self.ewm.output_workspaces.insert(output, tabs);
             }
             ModuleCommand::ConfigureInput { configs } => {
                 info!("Input config updated: {} entries", configs.len());
@@ -5998,10 +6028,6 @@ impl State {
                 self.ewm.manual_idle_inhibited = inhibited;
             }
 
-            ModuleCommand::StartWorkspaceTransition { output, direction } => {
-                self.start_workspace_transition(&output, direction);
-            }
-
             ModuleCommand::Initialized => {
                 // Force-resend keyboard.enter; PGTK silently dropped the
                 // initial one (sent before its first surface roundtrip).
@@ -6010,69 +6036,6 @@ impl State {
                 self.sync_keyboard_focus();
             }
         }
-    }
-
-    /// Start a content-slide transition on `output_name`. No-op if the
-    /// output isn't present, the session is locked, or direction is invalid.
-    fn start_workspace_transition(&mut self, output_name: &str, direction: i32) {
-        use workspace_transition::WorkspaceTransition;
-
-        if direction != 1 && direction != -1 {
-            warn!(
-                "start_workspace_transition: invalid direction {}",
-                direction
-            );
-            return;
-        }
-        if self.ewm.is_locked() {
-            return;
-        }
-        let Some(output) = self
-            .ewm
-            .space
-            .outputs()
-            .find(|o| o.name() == output_name)
-            .cloned()
-        else {
-            warn!("start_workspace_transition: output {} not found", output_name);
-            return;
-        };
-        let Some(geo) = self.ewm.space.output_geometry(&output) else {
-            return;
-        };
-        let output_size = geo.size;
-
-        // Re-entrance policy: cancel any in-flight transition before capturing,
-        // so content_offset is zero during the capture (we snapshot the
-        // natural-position scene, not a partially-slid one).
-        if let Some(state) = self.ewm.output_state.get_mut(&output) {
-            state.workspace_transition = None;
-        }
-
-        let State { backend, ewm } = self;
-        let mut buffer: Option<crate::texture::TextureBuffer<_>> = None;
-        backend.with_renderer(|renderer, cursor_buffer, _| {
-            match crate::render::capture_output_to_texture(ewm, renderer, cursor_buffer, &output) {
-                Ok(b) => buffer = Some(b),
-                Err(e) => warn!("capture_output_to_texture failed: {:?}", e),
-            }
-        });
-
-        let Some(buffer) = buffer else {
-            return;
-        };
-
-        let transition = WorkspaceTransition::new(
-            buffer,
-            output_size,
-            direction,
-            Duration::from_millis(250),
-        );
-
-        if let Some(state) = self.ewm.output_state.get_mut(&output) {
-            state.workspace_transition = Some(transition);
-        }
-        self.ewm.queue_redraw(&output);
     }
 
     /// Read clipboard data from the current client selection and forward to Emacs.

@@ -680,7 +680,6 @@ impl DrmBackendState {
                         }
                     }
                     output_state.redraw_state = RedrawState::Idle;
-                    output_state.workspace_transition = None;
                     output_state.unfinished_animations_remain = false;
                 }
             }

@@ -59,8 +59,11 @@ use_symbols! {
     kw_shift       => ":shift"
     kw_super       => ":super"
     kw_emulate     => ":emulate"
-    kw_name   => ":name"
-    kw_active => ":active"
+    kw_name       => ":name"
+    kw_active     => ":active"
+    kw_width      => ":width"
+    kw_surfaces   => ":surfaces"
+    kw_surface_id => ":surface-id"
     // configure_output_module: marker for "not provided" (distinct from nil)
     kw_unset  => ":unset"
     // configure_input_module plist property names
@@ -112,6 +115,7 @@ use smithay::reexports::calloop::LoopSignal;
 use crate::event::Event;
 use smithay::input::keyboard::{keysyms, xkb};
 
+use crate::strip::Frame;
 use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
 
 /// Extract a number from a Lisp value as f64, accepting both int and float.
@@ -289,11 +293,11 @@ pub enum ModuleCommand {
     SetSelection {
         text: String,
     },
-    /// Declarative per-output layout (includes workspace tab state)
+    /// Declarative per-output layout: the strip of Emacs frames, each
+    /// carrying its own surfaces.
     OutputLayout {
         output: String,
-        surfaces: Vec<LayoutEntry>,
-        tabs: Vec<TabInfo>,
+        frames: Vec<Frame>,
     },
     /// Configure input devices (unified)
     ConfigureInput {
@@ -321,24 +325,9 @@ pub enum ModuleCommand {
     SetIdleInhibited {
         inhibited: bool,
     },
-    /// Start a workspace-transition animation on an output.
-    /// Captured against the current layout; subsequent OutputLayout
-    /// commands apply under the animating snapshot.
-    StartWorkspaceTransition {
-        output: String,
-        /// +1 panning right (next tab), -1 panning left (prev tab).
-        direction: i32,
-    },
     /// Client init done; force-resend wl_keyboard.enter (PGTK drops the
     /// pre-roundtrip one).
     Initialized,
-}
-
-/// Tab info sent from Emacs for workspace protocol
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct TabInfo {
-    pub name: String,
-    pub active: bool,
 }
 
 /// Command queue shared between Emacs thread and compositor
@@ -670,68 +659,82 @@ fn socket() -> Result<Option<String>> {
 // Module Command Functions (direct Emacs -> Compositor)
 
 /// Set declarative layout for an output (module mode).
-/// OUTPUT is the output name. SURFACES is a vector of plists with :id :x :y :w :h :primary keys.
-/// TABS is a vector of plists (each a vector [:name NAME :active ACTIVE]).
-/// Coordinates are relative to the output's working area (frame-relative).
+///
+/// OUTPUT is the output name. FRAMES is a vector of plists describing the
+/// strip of Emacs frames left-to-right. Each frame plist has:
+///   :name NAME :active BOOL :width FLOAT :surfaces [SURFACE ...]
+/// where each SURFACE is a plist `:id :x :y :w :h :focused :fullscreen`.
+/// Surface coordinates are relative to the owning frame's working area.
 #[defun]
-fn output_layout_module(
-    env: &Env,
-    output: String,
-    surfaces: Value<'_>,
-    tabs: Value<'_>,
-) -> Result<()> {
-    let mut entries = Vec::new();
+fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
+    let frames_len: i64 = env.call(length, (frames,))?.into_rust()?;
+    let mut parsed_frames = Vec::with_capacity(frames_len as usize);
 
-    let len: i64 = env.call(length, (surfaces,))?.into_rust()?;
-    for i in 0..len {
-        let entry = env.call(aref, (surfaces, i))?;
-
-        let id: i64 = env.call(plist_get, (entry, kw_id))?.into_rust()?;
-        let x: i64 = env.call(plist_get, (entry, kw_x))?.into_rust()?;
-        let y: i64 = env.call(plist_get, (entry, kw_y))?.into_rust()?;
-        let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
-        let h: i64 = env.call(plist_get, (entry, kw_h))?.into_rust()?;
-
-        let focused_val = env.call(plist_get, (entry, kw_focused))?;
-        let focused = focused_val.is_not_nil() && focused_val != *kw_false;
-
-        let fullscreen_val = env.call(plist_get, (entry, kw_fullscreen))?;
-        let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
-
-        entries.push(LayoutEntry {
-            view_id: 0, // assigned by apply_output_layout
-            surface_id: id as u64,
-            x: x as i32,
-            y: y as i32,
-            w: w as u32,
-            h: h as u32,
-            focused,
-            primary: false, // computed by apply_output_layout
-            fullscreen,
-        });
-    }
-
-    let mut parsed_tabs = Vec::new();
-    let tabs_len: i64 = env.call(length, (tabs,))?.into_rust()?;
-
-    for i in 0..tabs_len {
-        let tab = env.call(aref, (tabs, i))?;
+    for i in 0..frames_len {
+        let frame = env.call(aref, (frames, i))?;
 
         let name: String = env
-            .call(plist_get, (tab, kw_name))?
+            .call(plist_get, (frame, kw_name))?
             .into_rust()
             .unwrap_or_default();
 
-        let active_val = env.call(plist_get, (tab, kw_active))?;
+        let surface_id = env
+            .call(plist_get, (frame, kw_surface_id))?
+            .into_rust::<i64>()
+            .unwrap_or(0) as u64;
+
+        let active_val = env.call(plist_get, (frame, kw_active))?;
         let active = active_val.is_not_nil() && active_val != *kw_false;
 
-        parsed_tabs.push(TabInfo { name, active });
+        let width = value_as_f64(env.call(plist_get, (frame, kw_width))?).unwrap_or(0.0);
+
+        let surfaces_val = env.call(plist_get, (frame, kw_surfaces))?;
+        let surfaces_len: i64 = if surfaces_val.is_not_nil() {
+            env.call(length, (surfaces_val,))?.into_rust()?
+        } else {
+            0
+        };
+        let mut surfaces = Vec::with_capacity(surfaces_len as usize);
+        for j in 0..surfaces_len {
+            let entry = env.call(aref, (surfaces_val, j))?;
+
+            let id: i64 = env.call(plist_get, (entry, kw_id))?.into_rust()?;
+            let x: i64 = env.call(plist_get, (entry, kw_x))?.into_rust()?;
+            let y: i64 = env.call(plist_get, (entry, kw_y))?.into_rust()?;
+            let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
+            let h: i64 = env.call(plist_get, (entry, kw_h))?.into_rust()?;
+
+            let focused_val = env.call(plist_get, (entry, kw_focused))?;
+            let focused = focused_val.is_not_nil() && focused_val != *kw_false;
+
+            let fullscreen_val = env.call(plist_get, (entry, kw_fullscreen))?;
+            let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
+
+            surfaces.push(LayoutEntry {
+                view_id: 0, // assigned by apply_output_layout
+                surface_id: id as u64,
+                x: x as i32,
+                y: y as i32,
+                w: w as u32,
+                h: h as u32,
+                focused,
+                primary: false, // computed by apply_output_layout
+                fullscreen,
+            });
+        }
+
+        parsed_frames.push(Frame {
+            name,
+            surface_id,
+            width,
+            active,
+            surfaces,
+        });
     }
 
     push_command(ModuleCommand::OutputLayout {
         output,
-        surfaces: entries,
-        tabs: parsed_tabs,
+        frames: parsed_frames,
     });
     Ok(())
 }
@@ -771,19 +774,6 @@ fn warp_pointer_module(x: Value<'_>, y: Value<'_>) -> Result<()> {
 #[defun]
 fn screenshot_module(path: Option<String>) -> Result<()> {
     push_command(ModuleCommand::Screenshot { path });
-    Ok(())
-}
-
-/// Start a workspace-transition animation on OUTPUT.
-///
-/// DIRECTION must be +1 (pan right, i.e. next tab) or -1 (pan left, prev).
-/// Intended call order from Lisp: invoke this, then `tab-bar-select-tab`.
-#[defun]
-fn start_workspace_transition_module(output: String, direction: i64) -> Result<()> {
-    push_command(ModuleCommand::StartWorkspaceTransition {
-        output,
-        direction: direction as i32,
-    });
     Ok(())
 }
 

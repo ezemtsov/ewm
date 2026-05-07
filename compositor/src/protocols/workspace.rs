@@ -1,16 +1,16 @@
 //! ext-workspace-v1 protocol implementation
 //!
-//! Exposes Emacs tabs as workspaces to external tools (waybar, quickshell, etc.)
-//! Each output maps to a workspace group, each tab maps to a workspace.
+//! Exposes Emacs frames as workspaces to external tools (waybar, quickshell, etc.)
+//! Each output maps to a workspace group, each frame maps to a workspace.
 //!
 //! Uses a pull/refresh model: `refresh()` runs every event-loop iteration,
-//! reads the full layout from `Ewm.output_workspaces`, diffs against protocol
+//! reads the full layout from `Ewm.output_strips`, diffs against protocol
 //! mirrors, and sends only changes. Clients always get current state because
 //! `refresh()` runs after bind.
 
 use std::collections::HashMap;
 
-use crate::module::TabInfo;
+use crate::strip::Strip;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
@@ -25,18 +25,18 @@ use smithay::reexports::wayland_server::{
 
 const VERSION: u32 = 1;
 
-type WorkspaceKey = (String, usize); // (output_name, tab_index)
+type WorkspaceKey = (String, usize); // (output_name, frame_index)
 
 pub trait WorkspaceHandler {
     fn workspace_manager_state(&mut self) -> &mut WorkspaceManagerState;
-    fn activate_workspace(&mut self, output: String, tab_index: usize);
+    fn activate_workspace(&mut self, output: String, frame_index: usize);
 }
 
 /// Queued client request, executed on Commit.
 enum Action {
     Activate {
         output_name: String,
-        tab_index: usize,
+        frame_index: usize,
     },
 }
 
@@ -176,18 +176,18 @@ impl WorkspaceManagerState {
     }
 }
 
-/// Compute the display name for a tab (1-based index).
-fn tab_display_name(index: usize) -> String {
+/// Compute the display name for a frame (1-based index).
+fn frame_display_name(index: usize) -> String {
     (index + 1).to_string()
 }
 
-/// Refresh workspace protocol state to match `output_workspaces` (source of truth).
+/// Refresh workspace protocol state to match `output_strips` (source of truth).
 ///
 /// Runs every event-loop iteration. Diffs current mirrors against source of truth
 /// and sends only changed events. Creates/removes groups and workspaces as needed.
 pub fn refresh<'a, D>(
     workspace_state: &mut WorkspaceManagerState,
-    output_workspaces: &HashMap<String, Vec<TabInfo>>,
+    output_strips: &HashMap<String, Strip>,
     outputs: impl Iterator<Item = &'a Output>,
 ) where
     D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
@@ -198,11 +198,11 @@ pub fn refresh<'a, D>(
     // Build map of live outputs by name.
     let live_outputs: HashMap<String, Output> = outputs.map(|o| (o.name(), o.clone())).collect();
 
-    // Build "seen" set of (output_name, tab_index) from source of truth.
+    // Build "seen" set of (output_name, frame_index) from source of truth.
     let mut seen_workspaces: std::collections::HashSet<WorkspaceKey> =
         std::collections::HashSet::new();
-    for (output_name, tabs) in output_workspaces {
-        for (i, _) in tabs.iter().enumerate() {
+    for (output_name, strip) in output_strips {
+        for (i, _) in strip.frames.iter().enumerate() {
             seen_workspaces.insert((output_name.clone(), i));
         }
     }
@@ -244,10 +244,11 @@ pub fn refresh<'a, D>(
     }
 
     // 3. Update/create workspaces and groups.
-    for (output_name, tabs) in output_workspaces {
+    for (output_name, strip) in output_strips {
         let Some(output) = live_outputs.get(output_name) else {
             continue;
         };
+        let frames = &strip.frames;
 
         // Ensure group exists.
         let group_is_new = !workspace_state.groups.contains_key(output_name);
@@ -265,10 +266,10 @@ pub fn refresh<'a, D>(
             changed = true;
         }
 
-        for (i, tab) in tabs.iter().enumerate() {
+        for (i, frame) in frames.iter().enumerate() {
             let key = (output_name.clone(), i);
-            let display_name = tab_display_name(i);
-            let new_state = if tab.active {
+            let display_name = frame_display_name(i);
+            let new_state = if frame.active {
                 ext_workspace_handle_v1::State::Active
             } else {
                 ext_workspace_handle_v1::State::empty()
@@ -300,7 +301,7 @@ pub fn refresh<'a, D>(
                 }
             } else {
                 // New workspace.
-                let mut ws = WorkspaceData::new(display_name, i, tab.active);
+                let mut ws = WorkspaceData::new(display_name, i, frame.active);
                 for manager in workspace_state.instances.keys() {
                     if let Some(client) = manager.client() {
                         ws.add_instance::<D>(&workspace_state.display, &client, manager);
@@ -476,9 +477,9 @@ where
                     match action {
                         Action::Activate {
                             output_name,
-                            tab_index,
+                            frame_index,
                         } => {
-                            state.activate_workspace(output_name, tab_index);
+                            state.activate_workspace(output_name, frame_index);
                         }
                     }
                 }
@@ -575,7 +576,7 @@ where
             ext_workspace_handle_v1::Request::Activate => {
                 // Find which workspace this handle belongs to.
                 let ps = state.workspace_manager_state();
-                let Some(((output_name, tab_index), _)) = ps
+                let Some(((output_name, frame_index), _)) = ps
                     .workspaces
                     .iter()
                     .find(|(_, ws)| ws.instances.contains(resource))
@@ -583,13 +584,13 @@ where
                     return;
                 };
                 let output_name = output_name.clone();
-                let tab_index = *tab_index + 1; // 1-based for Emacs
+                let frame_index = *frame_index + 1; // 1-based for Emacs
 
                 // Queue for processing on Commit.
                 if let Some(actions) = ps.instances.get_mut(data) {
                     actions.push(Action::Activate {
                         output_name,
-                        tab_index,
+                        frame_index,
                     });
                 }
             }

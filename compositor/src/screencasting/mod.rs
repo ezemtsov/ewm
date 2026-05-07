@@ -365,12 +365,12 @@ impl Ewm {
             let output_geo = self.space.output_geometry(output);
 
             if let Some(output_geo) = output_geo {
-                if let Some(entries) = self.output_layouts.get(&output.name()) {
+                if let Some(strip) = self.output_strips.get(&output.name()) {
                     let working_area = {
                         let map = smithay::desktop::layer_map_for_output(output);
                         map.non_exclusive_zone()
                     };
-                    for entry in entries {
+                    for entry in strip.surfaces() {
                         if entry.surface_id != window_id {
                             continue;
                         }
