@@ -243,7 +243,7 @@ Examples:
   "Hook run when idle state changes.
 Called with one argument: t when entering idle, nil when waking.")
 
-(defcustom ewm-cursor-auto-hide nil
+(defcustom ewm-cursor-auto-hide 5
   "Hide the mouse cursor after this many seconds of pointer inactivity.
 nil disables auto-hide.  Only pointer motion and button events restore
 the cursor; keyboard input and scrolling do not.
