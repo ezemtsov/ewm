@@ -696,7 +696,35 @@ impl DrmBackendState {
             warn!("Error resuming libinput");
         }
 
+        // GPUs may have been added or removed during the pause; reconcile the
+        // device map with what udev currently reports.
+        let mut device_list: HashMap<libc::dev_t, PathBuf> = match self
+            .session
+            .as_ref()
+            .map(|s| s.seat())
+            .and_then(|seat| UdevBackend::new(&seat).ok())
+        {
+            Some(udev) => udev
+                .device_list()
+                .map(|(id, path)| (id, path.to_owned()))
+                .collect(),
+            None => HashMap::new(),
+        };
+
+        let removed: Vec<libc::dev_t> = self
+            .devices
+            .keys()
+            .copied()
+            .filter(|node| !device_list.contains_key(&node.dev_id()))
+            .map(|node| node.dev_id())
+            .collect();
+        for device_id in removed {
+            device_list.remove(&device_id);
+            self.device_removed(device_id, ewm);
+        }
+
         for device in self.devices.values_mut() {
+            device_list.remove(&device.node.dev_id());
             if let Err(err) = device.drm.activate(true) {
                 warn!("Error activating DRM device {:?}: {:?}", device.node, err);
             } else {
@@ -746,6 +774,17 @@ impl DrmBackendState {
                         }
                     }
                 }
+            }
+        }
+
+        // Add devices that appeared during the pause, primary first so later
+        // nodes can depend on the primary render node being available.
+        let primary_id = self.primary_node.map(|n| n.dev_id());
+        let mut new_devices: Vec<_> = device_list.into_iter().collect();
+        new_devices.sort_by_key(|(id, _)| if Some(*id) == primary_id { 0 } else { 1 });
+        for (device_id, path) in new_devices {
+            if let Err(err) = self.device_added(device_id, &path, ewm) {
+                warn!("Error adding device {device_id} on resume: {err:?}");
             }
         }
 
