@@ -509,7 +509,7 @@ pub fn window_title_and_app_id(window: &Window) -> (String, String) {
 }
 
 /// Unconstrain a popup with 8px padding, falling back to no padding if it
-/// doesn't fit. Ported from niri's `unconstrain_with_padding`.
+/// doesn't fit.
 fn unconstrain_with_padding(
     positioner: PositionerState,
     target: Rectangle<i32, Logical>,
@@ -2264,8 +2264,8 @@ impl Ewm {
     ///    and games that don't implement the protocol).
     ///
     /// For Wayland protocol inhibitors, only visible surfaces count
-    /// (checked via `surface_primary_scanout_output`), matching niri's behavior.
-    /// This prevents a minimized/hidden app from keeping the screen awake.
+    /// (checked via `surface_primary_scanout_output`).  This prevents a
+    /// minimized/hidden app from keeping the screen awake.
     ///
     /// The result is propagated to both the ext-idle-notify protocol (for
     /// swayidle) and the native idle timeout (monitor blanking/command).
@@ -3864,9 +3864,9 @@ impl Ewm {
     /// Unconstrain a popup's position to keep it within screen bounds.
     ///
     /// For window popups, computes the target from the layout entry position
-    /// (not window.geometry()), matching niri's popup_target_rect pattern.
-    /// For layer-shell popups, uses the output bounds adjusted for the layer
-    /// surface position and non-exclusive zone.
+    /// (not window.geometry()) so centering offsets and CSD geometry don't
+    /// affect placement.  For layer-shell popups, uses the output bounds
+    /// adjusted for the layer surface position and non-exclusive zone.
     pub fn unconstrain_popup(&self, popup: &PopupSurface) {
         let popup_kind = PopupKind::Xdg(popup.clone());
         let Ok(root) = find_popup_root_surface(&popup_kind) else {

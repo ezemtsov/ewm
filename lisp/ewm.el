@@ -1013,8 +1013,8 @@ ARGS is a plist with optional keys:
 
 (defun ewm--output-mms (info)
   "Return \"Make Model Serial\" string for output INFO event alist.
-Uses \"Unknown\" for any component absent from EDID, matching niri's convention
-so config keys written from `ewm-list-outputs' round-trip correctly."
+Uses \"Unknown\" for any component absent from EDID so config keys
+written from `ewm-list-outputs' round-trip correctly."
   (let* ((make   (or (alist-get 'make   info) "Unknown"))
          (model  (or (alist-get 'model  info) "Unknown"))
          (serial (or (alist-get 'serial info) ""))

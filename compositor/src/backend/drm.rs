@@ -193,8 +193,8 @@ fn build_surface_dmabuf_feedback(
         .collect();
 
     // Cross-device scanout with shared non-linear modifiers can produce glitched
-    // output on some AMD iGPU+dGPU systems. Match niri and only advertise Linear
-    // scanout modifiers when the output is not driven by the primary render node.
+    // output on some AMD iGPU+dGPU systems. Only advertise Linear scanout
+    // modifiers when the output is not driven by the primary render node.
     if surface_render_node != Some(primary_render_node) {
         primary_scanout_formats.retain(|format| format.modifier == Modifier::Linear);
         overlay_scanout_formats.retain(|format| format.modifier == Modifier::Linear);
@@ -2395,7 +2395,7 @@ fn initialize_drm(
         drm_backend.gpu_manager = Some(gpu_manager);
     }
 
-    // Enumerate all DRM primary nodes on the seat, adding the primary device first like niri.
+    // Enumerate all DRM primary nodes on the seat, adding the primary device first.
     let udev_backend = UdevBackend::new(&pending.seat_name)?;
     let mut devices: Vec<(libc::dev_t, PathBuf)> = udev_backend
         .device_list()

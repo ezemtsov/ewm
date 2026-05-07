@@ -505,7 +505,7 @@ where
                 }
 
                 state.apply_output_config(new_config);
-                // Assume success (same as niri: FIXME for verification)
+                // FIXME: assumes apply_output_config always succeeds.
                 conf.succeeded();
             }
             zwlr_output_configuration_v1::Request::Test => {

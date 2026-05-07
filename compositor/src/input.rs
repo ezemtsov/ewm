@@ -610,7 +610,6 @@ pub struct InputConfigEntry {
 
 /// Detect the type of a libinput device.
 ///
-/// Detection follows the same logic as niri/Mutter:
 /// - Touchpad: `config_tap_finger_count() > 0`
 /// - Trackball/trackpoint: udev properties `ID_INPUT_TRACKBALL` / `ID_INPUT_POINTINGSTICK`
 /// - Mouse: has Pointer capability and is not touchpad/trackball/trackpoint
