@@ -137,13 +137,12 @@ without changing the global preference."
 
 (defcustom ewm-focus-follows-mouse nil
   "Whether moving the mouse pointer should focus applications.
-When non-nil, also sets `mouse-autoselect-window' and `focus-follows-mouse'
-so that Emacs windows within a frame follow the pointer too."
+The compositor sends focus events with cursor coordinates; intra-frame
+window switching is handled by `ewm--handle-focus' from those events."
   :type 'boolean
   :group 'ewm
   :set (lambda (sym val)
          (set-default sym val)
-         (setq mouse-autoselect-window val)
          (setq focus-follows-mouse (and val t))
          (when (fboundp 'ewm-set-focus-follows-mouse)
            (ewm-set-focus-follows-mouse val))))
@@ -343,8 +342,17 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
     (when (null ewm--pending-frame-outputs)
       (ewm--cleanup-orphan-frames))))
 
-(defun ewm--create-surface-buffer (id app output pid)
-  "Create buffer for regular surface ID with APP on OUTPUT and PID."
+(defun ewm--frame-by-surface-id (surface-id)
+  "Return the Emacs frame whose `ewm-surface-id' parameter is SURFACE-ID."
+  (and surface-id
+       (cl-find surface-id (frame-list)
+                :key (lambda (f) (frame-parameter f 'ewm-surface-id)))))
+
+(defun ewm--create-surface-buffer (id app output frame-surface-id pid)
+  "Create buffer for surface ID (APP on OUTPUT, PID) and display it.
+FRAME-SURFACE-ID, when non-nil, is the Emacs frame the compositor
+chose to host this surface (parent's frame, or the active frame on
+the surface's output).  Falls back to first match on OUTPUT."
   (let ((buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
     (puthash id buf ewm--surfaces)
     (with-current-buffer buf
@@ -352,14 +360,11 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       (setq-local ewm-surface-id id)
       (setq-local ewm-surface-app app)
       (setq-local ewm-surface-pid pid))
-    ;; Display on target frame unless minibuffer is active.
-    ;; select-frame + pop-to-buffer changes selected-window, which triggers
-    ;; window-selection-change-functions -> ewm--sync-focus naturally.
     (unless (ewm--minibuffer-active-p)
-      (let ((target-frame (ewm--frame-for-output output)))
-        (when target-frame
-          (select-frame target-frame))
-        (pop-to-buffer-same-window buf)))))
+      (when-let ((target-frame (or (ewm--frame-by-surface-id frame-surface-id)
+                                   (ewm--frame-for-output output))))
+        (select-frame target-frame))
+      (pop-to-buffer-same-window buf))))
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
@@ -368,11 +373,12 @@ Otherwise, creates a buffer for external surface."
   (let ((id (alist-get 'id event))
         (app (alist-get 'app event))
         (output (alist-get 'output event))
+        (frame-surface-id (alist-get 'frame_surface_id event))
         (pid (alist-get 'pid event)))
     (let ((pending (and output (assoc output ewm--pending-frame-outputs))))
       (if pending
           (ewm--assign-pending-frame id output pending)
-        (ewm--create-surface-buffer id app output pid)))))
+        (ewm--create-surface-buffer id app output frame-surface-id pid)))))
 
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.

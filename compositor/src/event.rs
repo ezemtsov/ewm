@@ -53,13 +53,20 @@ pub enum Event {
     /// Compositor is ready
     #[serde(rename = "ready")]
     Ready,
-    /// New surface created
+    /// New surface created.
+    ///
+    /// `frame_surface_id` is the xdg_toplevel id of the Emacs frame the
+    /// surface should be placed in.  Resolution order: parent toplevel's
+    /// frame -> active frame on the active output.  When unset, the lisp
+    /// side falls back to first-match on `output`.
     #[serde(rename = "new")]
     New {
         id: u64,
         app: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        frame_surface_id: Option<u64>,
         pid: i32,
     },
     /// Surface closed

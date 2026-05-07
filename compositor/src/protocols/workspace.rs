@@ -280,7 +280,8 @@ pub fn refresh<'a, D>(
         for (i, frame) in frames.iter().enumerate() {
             let key = frame.surface_id;
             let display_name = frame_display_name(i);
-            let new_state = if frame.active {
+            let is_active = i == strip.active_idx;
+            let new_state = if is_active {
                 ext_workspace_handle_v1::State::Active
             } else {
                 ext_workspace_handle_v1::State::empty()
@@ -336,7 +337,7 @@ pub fn refresh<'a, D>(
                     frame.surface_id.to_string(),
                     display_name,
                     i,
-                    frame.active,
+                    is_active,
                 );
                 for manager in workspace_state.instances.keys() {
                     if let Some(client) = manager.client() {

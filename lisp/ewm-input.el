@@ -273,32 +273,27 @@ Only acts when a prefix sequence was active."
 
 ;;; Frame-switch suppression
 ;;
-;; `handle-switch-frame' fires when PGTK's `pgtk_focus_frame' updates GDK
-;; state during `select-frame'.  In multi-output setups this targets the
-;; wrong frame, overriding compositor click-to-focus.  Suppress it entirely
-;; EWM owns frame selection via `ewm--handle-focus'.  Same pattern as
-;; EXWM suppressing `handle-focus-in'/`handle-focus-out'.
-
-(defun ewm-input--suppress-switch-frame (orig-fn event)
-  "Suppress `handle-switch-frame' when EWM is active.
-EWM owns frame selection via `ewm--handle-focus'."
-  (unless ewm--module-mode
-    (funcall orig-fn event)))
+;; PGTK delivers GDK focus changes as `switch-frame' events.  In stock
+;; Emacs these are bound to `handle-switch-frame' in `global-map', so they
+;; fan out through the command loop -- firing `post-command-hook' between
+;; the keys of an in-flight prefix sequence and clobbering EWM state like
+;; the prefix flag.  Route them to `special-event-map' instead (alongside
+;; `focus-in'/`focus-out'), where they're consumed without entering the
+;; command loop.  EWM owns frame selection via `ewm--handle-focus'.
 
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
   (add-hook 'post-command-hook #'ewm-input--clear-prefix)
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  ;; Suppress GDK-triggered frame switching (compositor handles this)
-  (advice-add 'handle-switch-frame :around #'ewm-input--suppress-switch-frame))
+  (define-key special-event-map [switch-frame] #'ignore))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
   (remove-hook 'post-command-hook #'ewm-input--clear-prefix)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
-  (advice-remove 'handle-switch-frame #'ewm-input--suppress-switch-frame))
+  (define-key special-event-map [switch-frame] nil))
 
 ;;; Key scanning and interception
 

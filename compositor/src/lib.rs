@@ -1443,6 +1443,22 @@ impl Ewm {
         })
     }
 
+    /// Surface id of the Emacs frame whose strip-frame currently hosts
+    /// `surface_id`, or `None` if the surface is not under any frame.
+    pub fn frame_for_surface(&self, surface_id: u64) -> Option<u64> {
+        self.output_strips
+            .values()
+            .flat_map(|s| s.frames.iter())
+            .find(|f| f.surfaces.iter().any(|e| e.surface_id == surface_id))
+            .map(|f| f.surface_id)
+    }
+
+    /// Surface id of the active Emacs frame on `output_name`.
+    pub fn active_frame_surface_id(&self, output_name: &str) -> Option<u64> {
+        let strip = self.output_strips.get(output_name)?;
+        strip.frames.get(strip.active_idx).map(|f| f.surface_id)
+    }
+
     /// Find the focused output layout entry for a surface.
     ///
     /// Returns (output_name, frame_idx, entry). The frame_idx feeds
@@ -3418,15 +3434,13 @@ impl Ewm {
             .or_else(|| self.space.outputs().next().map(|o| o.name()))
     }
 
-    /// Find the Emacs surface on the same output as the focused surface
+    /// Pick the Emacs frame to redirect intercepted keys to.
     pub fn get_emacs_surface_for_focused_output(&self) -> Option<u64> {
-        let focused_output = self.get_focused_output()?;
-
-        // Find an Emacs surface assigned to the focused output
-        self.emacs_surfaces
-            .iter()
-            .find(|(_, out)| *out == &focused_output)
-            .map(|(&id, _)| id)
+        if self.emacs_surfaces.contains_key(&self.focused_surface_id) {
+            return Some(self.focused_surface_id);
+        }
+        let output = self.get_focused_output()?;
+        self.active_frame_surface_id(&output)
             .or_else(|| self.emacs_surfaces.keys().next().copied())
     }
 
@@ -3997,6 +4011,13 @@ impl Ewm {
             .map(|creds| creds.pid)
             .unwrap_or(0);
 
+        // Extract parent's surface id before consuming `surface` -- used
+        // below to place dialogs in the same Emacs frame as their owner.
+        let parent_id = surface
+            .parent()
+            .and_then(|wl| self.find_window_by_surface(&wl))
+            .map(|(_, id)| id);
+
         surface.with_pending_state(|state| {
             state.size = Some(self.output_size);
             state.states.set(XdgToplevelState::Maximized);
@@ -4091,10 +4112,27 @@ impl Ewm {
             self.set_focus(id, false, "initial_surface", None);
         }
 
+        // Resolve which Emacs frame should host this surface.  Emacs
+        // frame xdg_toplevels are themselves frames, so they skip this.
+        // For app surfaces, parent-frame wins so dialogs stick with their
+        // owner; otherwise land on the active frame of the target output.
+        let frame_surface_id = if is_emacs {
+            None
+        } else {
+            parent_id
+                .and_then(|pid| self.frame_for_surface(pid))
+                .or_else(|| {
+                    target_output
+                        .as_deref()
+                        .and_then(|o| self.active_frame_surface_id(o))
+                })
+        };
+
         self.queue_event(Event::New {
             id,
             app: app.clone(),
             output: target_output.clone(),
+            frame_surface_id,
             pid: client_pid,
         });
         // Sent after New so the lisp side has assigned ewm-surface-id by the
@@ -4974,9 +5012,15 @@ impl XdgActivationHandler for State {
                 .find(|(w, _)| w.wl_surface().map(|s| &*s == &surface).unwrap_or(false))
                 .map(|(_, id)| id)
             {
-                // Focus the surface and notify Emacs (keyboard sync deferred)
-                self.ewm.set_focus(id, true, "xdg_activation", None);
-                info!("xdg_activation: granted for surface {}", id);
+                // Lisp owns Emacs frame focus via select-frame-set-input-focus;
+                // honoring GTK's echo activation here would loop with our own
+                // ewm-focus calls.
+                if self.ewm.emacs_surfaces.contains_key(&id) {
+                    debug!("xdg_activation: ignored for Emacs frame {}", id);
+                } else {
+                    self.ewm.set_focus(id, true, "xdg_activation", None);
+                    info!("xdg_activation: granted for surface {}", id);
+                }
             } else {
                 debug!("xdg_activation: surface not found in window_ids");
             }

@@ -107,11 +107,14 @@ When multiple windows show the same buffer, picks the one under the pointer."
                 (select-frame frame)
                 (select-window window)
                 (setq ewm--mff-last-window window))))
-           ;; No coordinates (initial focus, activation): always select the frame
-           ;; even if minibuffer is active -- needed at startup when Doom init
-           ;; leaves the minibuffer active on the invisible daemon frame.
+           ;; No coordinates (initial focus, activation): select the frame
+           ;; unless it's already selected -- this guard breaks the focus
+           ;; echo loop where our `select-frame-set-input-focus' triggers
+           ;; xdg_activation, which the compositor reports back as a Focus
+           ;; event, which would re-select and fire activation again.
            ((not x)
-            (select-frame frame))))))))
+            (unless (eq frame (selected-frame))
+              (select-frame frame)))))))))
 
 (provide 'ewm-focus)
 ;;; ewm-focus.el ends here
