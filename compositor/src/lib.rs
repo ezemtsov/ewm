@@ -1994,6 +1994,18 @@ impl Ewm {
             );
         }
 
+        if let Some(frame) = active_idx.and_then(|i| strip_entry.frames.get(i)) {
+            let target_id = frame
+                .surfaces
+                .iter()
+                .find(|e| e.focused)
+                .map(|e| e.surface_id)
+                .unwrap_or(frame.surface_id);
+            if self.focused_surface_id != target_id {
+                self.set_focus(target_id, false, "layout_active", None);
+            }
+        }
+
         // 7. Compute primary flags: largest area per surface across all outputs.
         // Fullscreen entries use the output's logical size (the surface is
         // configured at full output size), not entry.w/h from Emacs.
