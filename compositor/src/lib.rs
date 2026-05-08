@@ -821,6 +821,13 @@ pub struct Ewm {
     pub output_strips: HashMap<String, strip::Strip>,
     /// Reverse index: surface_id -> set of output names it appears on
     pub surface_outputs: HashMap<u64, HashSet<String>>,
+    /// Per-surface open-fade, seeded on the first buffer-bearing commit.
+    /// Entries GC'd in `advance_animations` once finished or surface gone.
+    pub surface_open_anims: HashMap<u64, strip::ViewAnimation>,
+    /// Toplevels that haven't yet committed a buffer. One-shot gate for
+    /// seeding `surface_open_anims`: drained on the unmapped->mapped
+    /// transition so the fade starts exactly once per surface lifetime.
+    pub unmapped_surfaces: HashSet<u64>,
 
     // Output
     pub output_size: Size<i32, Logical>,
@@ -1149,6 +1156,8 @@ impl Ewm {
             surface_info: HashMap::new(),
             output_strips: HashMap::new(),
             surface_outputs: HashMap::new(),
+            surface_open_anims: HashMap::new(),
+            unmapped_surfaces: HashSet::new(),
             output_size: Size::from((0, 0)),
             outputs: Vec::new(),
             output_config: HashMap::new(),
@@ -2462,6 +2471,9 @@ impl Ewm {
         if let Some(strip) = self.output_strips.get_mut(&output.name()) {
             strip.advance();
         }
+        let id_windows = &self.id_windows;
+        self.surface_open_anims
+            .retain(|id, a| !a.is_done() && id_windows.contains_key(id));
     }
 
     /// Orchestrate a single output redraw.
@@ -2531,7 +2543,14 @@ impl Ewm {
             state.unfinished_animations_remain = false;
         }
         if let Some(strip) = self.output_strips.get(&output.name()) {
-            if strip.view_offset.is_animation_ongoing() {
+            let any_open_fade = strip
+                .surfaces()
+                .any(|e| self.surface_open_anims.contains_key(&e.surface_id))
+                || strip
+                    .frames
+                    .iter()
+                    .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
+            if strip.view_offset.is_animation_ongoing() || any_open_fade {
                 if let Some(state) = self.output_state.get_mut(output) {
                     state.unfinished_animations_remain = true;
                 }
@@ -3998,6 +4017,9 @@ impl Ewm {
         if is_emacs {
             info!("Surface {} is an Emacs surface", id);
         }
+        if !is_emacs {
+            self.unmapped_surfaces.insert(id);
+        }
 
         let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -4508,6 +4530,26 @@ impl CompositorHandler for State {
 
         if let Some((window, id)) = window_and_id {
             window.on_commit();
+
+            // unmapped->mapped transition: seed the open-fade once. The
+            // 16ms delay holds alpha at 0 for one vblank so the empty/white
+            // initial buffer some clients ship is rendered invisibly.
+            let is_mapped = smithay::backend::renderer::utils::with_renderer_surface_state(
+                &root_surface,
+                |state| state.buffer().is_some(),
+            )
+            .unwrap_or(false);
+            if is_mapped && self.ewm.unmapped_surfaces.remove(&id) {
+                self.ewm.surface_open_anims.insert(
+                    id,
+                    strip::ViewAnimation::delayed(
+                        std::time::Duration::from_millis(16),
+                        0.0,
+                        1.0,
+                        strip::OPEN_ANIM_DURATION,
+                    ),
+                );
+            }
 
             self.ewm.queue_redraw_for_surface(id);
 

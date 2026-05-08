@@ -15,6 +15,9 @@ use crate::LayoutEntry;
 /// Default duration for view-offset slides between frames.
 pub const DEFAULT_ANIM_DURATION: Duration = Duration::from_millis(250);
 
+/// Fade-in duration for a surface's first buffer-bearing commit.
+pub const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
+
 /// Ease-out-cubic interpolation between two scalar view offsets
 /// (`y = 1 - (1 - t)^3` -- fast start, gentle settle).
 #[derive(Debug, Clone)]
@@ -28,6 +31,13 @@ pub struct ViewAnimation {
 impl ViewAnimation {
     pub fn new(from: f64, to: f64, duration: Duration) -> Self {
         Self::new_at(get_monotonic_time(), from, to, duration)
+    }
+
+    /// Animation whose ramp does not begin until `delay` has elapsed.
+    /// During the delay `value()` is clamped to `from` (start time hasn't
+    /// arrived yet, so `saturating_sub` returns 0).
+    pub fn delayed(delay: Duration, from: f64, to: f64, duration: Duration) -> Self {
+        Self::new_at(get_monotonic_time() + delay, from, to, duration)
     }
 
     fn new_at(start: Duration, from: f64, to: f64, duration: Duration) -> Self {

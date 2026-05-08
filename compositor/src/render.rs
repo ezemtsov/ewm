@@ -312,11 +312,14 @@ pub fn collect_render_elements_for_output(
             }
             if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
                 // Fullscreen forced opaque so the backdrop doesn't bleed through.
-                let entry_alpha = if effective_fs || entry.focused {
+                let mut entry_alpha = if effective_fs || entry.focused {
                     1.0
                 } else {
                     ewm.unfocused_alpha
                 };
+                if let Some(a) = ewm.surface_open_anims.get(&entry.surface_id) {
+                    entry_alpha *= a.value() as f32;
+                }
                 if effective_fs {
                     // Fullscreen: surface + backdrop at output origin, bypassing working area.
                     // Elements are front-to-back: surface first, then backdrop behind it.
@@ -459,12 +462,17 @@ pub fn collect_render_elements_for_output(
             .unwrap_or(0.0);
         let frame_offset_emacs: Point<i32, Physical> =
             Point::from(((frame_dx_logical * scale.x) as i32, 0));
+        let frame_alpha = ewm
+            .surface_open_anims
+            .get(&id)
+            .map(|a| a.value() as f32)
+            .unwrap_or(1.0);
         let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
             .render_elements(
                 renderer,
                 working_area_loc_physical + frame_offset_emacs,
                 scale,
-                1.0,
+                frame_alpha,
             );
         elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
     }
