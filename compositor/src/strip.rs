@@ -157,16 +157,44 @@ pub struct Frame {
 /// Frame positions are derived from prefix-sum of widths via `column_x`.
 /// The viewport's left edge is `column_x(active_idx) + view_offset.current()`
 /// -- focusing a frame moves the strip under the viewport.
+///
+/// `active_idx` is private; `set_active` is the single mutator.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Strip {
     pub frames: Vec<Frame>,
     pub gap: f64,
-    pub active_idx: usize,
+    active_idx: usize,
     #[serde(skip)]
     pub view_offset: ViewOffset,
 }
 
 impl Strip {
+    pub fn active_idx(&self) -> usize {
+        self.active_idx
+    }
+
+    /// Activate frame `idx` (clamped); re-anchors and animates `view_offset`
+    /// so the active frame ends up centered on the viewport.
+    pub fn set_active(&mut self, idx: usize) {
+        if self.frames.is_empty() {
+            self.active_idx = 0;
+            self.view_offset = ViewOffset::Static(0.0);
+            return;
+        }
+        let idx = idx.min(self.frames.len() - 1);
+        let delta = self.column_x(self.active_idx) - self.column_x(idx);
+        if delta != 0.0 {
+            self.view_offset.offset(delta);
+        }
+        self.active_idx = idx;
+        let cur = self.view_offset.current();
+        self.view_offset = if cur.abs() < f64::EPSILON {
+            ViewOffset::Static(0.0)
+        } else {
+            ViewOffset::Animation(ViewAnimation::new(cur, 0.0, DEFAULT_ANIM_DURATION))
+        };
+    }
+
     /// X position of frame `idx` relative to the strip origin.
     /// `column_x(0)` is always 0; subsequent columns accumulate `width + gap`.
     pub fn column_x(&self, idx: usize) -> f64 {
@@ -225,6 +253,25 @@ impl Strip {
             .iter()
             .enumerate()
             .flat_map(|(i, f)| f.surfaces.iter().map(move |s| (i, s)))
+    }
+
+    /// Drop frame `idx`; active slides to the next frame, or stays put if
+    /// the removal was to its left.
+    pub fn remove_frame_at(&mut self, idx: usize) {
+        if idx >= self.frames.len() {
+            return;
+        }
+        let prev_active = self.active_idx;
+        self.frames.remove(idx);
+
+        let new_active = if idx < prev_active {
+            prev_active - 1
+        } else if idx == prev_active {
+            prev_active.min(self.frames.len().saturating_sub(1))
+        } else {
+            prev_active
+        };
+        self.set_active(new_active);
     }
 }
 

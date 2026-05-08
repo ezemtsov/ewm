@@ -1257,6 +1257,15 @@ impl Ewm {
         }
     }
 
+    /// Drop the Emacs frame chrome `id` from its strip, niri-style.
+    /// No-op if `id` isn't a tracked Emacs frame.
+    fn remove_emacs_frame_from_strip(&mut self, id: u64) {
+        let Some(out) = self.emacs_surfaces.get(&id) else { return };
+        let Some(strip) = self.output_strips.get_mut(out) else { return };
+        let Some(idx) = strip.frames.iter().position(|f| f.surface_id == id) else { return };
+        strip.remove_frame_at(idx);
+    }
+
     /// Clean up all Ewm state for a removed output.
     ///
     /// Called by backends after their own teardown (e.g. DRM surface removal).
@@ -1523,34 +1532,35 @@ impl Ewm {
     /// Surface id of the active Emacs frame on `output_name`.
     pub fn active_frame_surface_id(&self, output_name: &str) -> Option<u64> {
         let strip = self.output_strips.get(output_name)?;
-        strip.frames.get(strip.active_idx).map(|f| f.surface_id)
+        strip.frames.get(strip.active_idx()).map(|f| f.surface_id)
     }
 
-    /// Mark `new_idx` as active on `output_name`, animating the view to
-    /// follow.  Re-anchors any in-flight slide via `ViewOffset::offset` so
-    /// a second activation mid-animation continues smoothly instead of
-    /// restarting.  No-op if the index is unchanged.
+    /// Mark `new_idx` as active on `output_name`.
     pub fn activate_frame(&mut self, output_name: &str, new_idx: usize) {
-        let Some(strip) = self.output_strips.get_mut(output_name) else {
-            return;
-        };
-        if new_idx >= strip.frames.len() || new_idx == strip.active_idx {
-            return;
+        if let Some(strip) = self.output_strips.get_mut(output_name) {
+            let prev_idx = strip.active_idx();
+            let frames_len = strip.frames.len();
+            let prev_offset = strip.view_offset.current();
+            strip.set_active(new_idx);
+            if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::debug!(
+                    "activate_frame: {} {} -> {} (frames={}) view_offset {:.1} -> {:.1}",
+                    output_name,
+                    prev_idx,
+                    strip.active_idx(),
+                    frames_len,
+                    prev_offset,
+                    strip.view_offset.current(),
+                );
+            }
         }
-        let prev_x = strip.column_x(strip.active_idx);
-        let new_x = strip.column_x(new_idx);
-        let anchor_delta = prev_x - new_x;
-        if anchor_delta != 0.0 {
-            strip.view_offset.offset(anchor_delta);
-        }
-        strip.active_idx = new_idx;
-        let current = strip.view_offset.current();
-        if current.abs() > f64::EPSILON {
-            strip.view_offset = strip::ViewOffset::Animation(strip::ViewAnimation::new(
-                current,
-                0.0,
-                strip::DEFAULT_ANIM_DURATION,
-            ));
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.name() == output_name)
+            .cloned();
+        if let Some(output) = output {
+            self.queue_redraw(&output);
         }
     }
 
@@ -1953,17 +1963,14 @@ impl Ewm {
                 .insert(output_name.to_string());
         }
 
-        // 6. Store the layout under the strip.  `active_idx` is set by
-        //    `set_focus`, not derived from this update; we just clamp
-        //    it to the new frame count.
+        // 6. Store the layout; `set_active` re-anchors view_offset if any
+        //    frame widths changed under us.
         let strip_entry = self
             .output_strips
             .entry(output_name.to_string())
             .or_default();
         strip_entry.frames = frames;
-        strip_entry.active_idx = strip_entry
-            .active_idx
-            .min(strip_entry.frames.len().saturating_sub(1));
+        strip_entry.set_active(strip_entry.active_idx());
 
         // 7. Compute primary flags: largest area per surface across all outputs.
         // Fullscreen entries use the output's logical size (the surface is
@@ -4274,6 +4281,7 @@ impl Ewm {
             self.id_windows.remove(&id);
             self.surface_info.remove(&id);
             self.remove_surface_from_layouts(id);
+            self.remove_emacs_frame_from_strip(id);
             self.emacs_surfaces.remove(&id);
             self.queue_event(Event::Close { id });
             info!("Toplevel {} destroyed", id);

@@ -280,7 +280,7 @@ pub fn refresh<'a, D>(
         for (i, frame) in frames.iter().enumerate() {
             let key = frame.surface_id;
             let display_name = frame_display_name(i);
-            let is_active = i == strip.active_idx;
+            let is_active = i == strip.active_idx();
             let new_state = if is_active {
                 ext_workspace_handle_v1::State::Active
             } else {

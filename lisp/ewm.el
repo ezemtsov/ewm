@@ -1076,11 +1076,13 @@ and focus it once the compositor confirms its surface."
       (set-frame-parameter new-frame 'ewm-focus-on-create t))))
 
 (defun ewm-frame-close ()
-  "Close the selected frame.
+  "Close the selected frame, focusing a same-output neighbor first.
 The last frame on an active output cannot be deleted; this is
 enforced by `ewm--prevent-frame-deletion'."
   (interactive)
-  (delete-frame))
+  (let ((current (selected-frame)))
+    (or (ewm-frame-next) (ewm-frame-previous))
+    (delete-frame current)))
 
 (defun ewm--frame-shift-on-output (delta)
   "Move strip focus by DELTA on the current output (no wrap-around).

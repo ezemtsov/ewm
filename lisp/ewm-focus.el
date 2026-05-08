@@ -59,7 +59,8 @@ KIND is `view' for a mirror or `frame' for an Emacs frame's chrome."
     nil)
    ((ewm--minibuffer-active-p)
     (cons 'frame (frame-parameter (selected-frame) 'ewm-surface-id)))
-   ((window-parameter (selected-window) 'ewm-view-id)
+   ((and (buffer-local-value 'ewm-surface-id (window-buffer (selected-window)))
+         (window-parameter (selected-window) 'ewm-view-id))
     (cons 'view (window-parameter (selected-window) 'ewm-view-id)))
    (t
     (cons 'frame (frame-parameter (selected-frame) 'ewm-surface-id)))))
