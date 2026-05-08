@@ -63,6 +63,7 @@ use_symbols! {
     kw_width      => ":width"
     kw_surfaces   => ":surfaces"
     kw_surface_id => ":surface-id"
+    kw_view_id    => ":view-id"
     // configure_output_module: marker for "not provided" (distinct from nil)
     kw_unset  => ":unset"
     // configure_input_module plist property names
@@ -695,6 +696,10 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             let entry = env.call(aref, (surfaces_val, j))?;
 
             let id: i64 = env.call(plist_get, (entry, kw_id))?.into_rust()?;
+            let view_id: i64 = env
+                .call(plist_get, (entry, kw_view_id))?
+                .into_rust()
+                .unwrap_or(0);
             let x: i64 = env.call(plist_get, (entry, kw_x))?.into_rust()?;
             let y: i64 = env.call(plist_get, (entry, kw_y))?.into_rust()?;
             let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
@@ -707,14 +712,14 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
 
             surfaces.push(LayoutEntry {
-                view_id: 0, // assigned by apply_output_layout
+                view_id: view_id as u64,
                 surface_id: id as u64,
                 x: x as i32,
                 y: y as i32,
                 w: w as u32,
                 h: h as u32,
                 focused,
-                primary: false, // computed by apply_output_layout
+                primary: false,
                 fullscreen,
             });
         }

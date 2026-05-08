@@ -20,6 +20,17 @@
 (defvar ewm--surfaces)
 (defvar ewm-surface-id)
 
+(defun ewm-layout--ensure-view-id (window surface-id)
+  "Return a stable view id for WINDOW showing SURFACE-ID."
+  (let ((stored (window-parameter window 'ewm-view-id))
+        (cached (window-parameter window 'ewm-view-surface)))
+    (if (and stored (eql cached surface-id))
+        stored
+      (let ((id (random most-positive-fixnum)))
+        (set-window-parameter window 'ewm-view-id id)
+        (set-window-parameter window 'ewm-view-surface surface-id)
+        id))))
+
 ;; Compatibility wrapper for window-inside-absolute-pixel-edges
 ;; Fixes tab-line handling for Emacs < 31 (from exwm-core.el)
 (defalias 'ewm--window-inside-absolute-pixel-edges
@@ -53,8 +64,9 @@ emission carries no `:active' flag."
           (dolist (window (window-list frame 'no-minibuf))
             (when-let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
               (let* ((focused-p (eq window sel-window))
+                     (view-id (ewm-layout--ensure-view-id window id))
                      (view (ewm-layout--make-output-view window focused-p)))
-                (push `(:id ,id ,@view) surfaces))))
+                (push `(:id ,id :view-id ,view-id ,@view) surfaces))))
           (let ((frame-plist
                  (list :name (or (frame-parameter frame 'name) "")
                        :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)

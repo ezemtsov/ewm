@@ -812,7 +812,6 @@ pub struct Ewm {
 
     // Surface tracking
     next_surface_id: u64,
-    next_view_id: u64,
     pub window_ids: HashMap<Window, u64>,
     pub id_windows: HashMap<u64, Window>,
     surface_info: HashMap<u64, SurfaceInfo>,
@@ -1150,7 +1149,6 @@ impl Ewm {
             pointer,
             keyboard,
             next_surface_id: 1,
-            next_view_id: 1,
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
@@ -1841,15 +1839,7 @@ impl Ewm {
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
     /// and scale notification.
-    pub fn apply_output_layout(&mut self, output_name: &str, mut frames: Vec<strip::Frame>) {
-        // 0. Assign unique identities to each entry
-        for frame in frames.iter_mut() {
-            for entry in frame.surfaces.iter_mut() {
-                entry.view_id = self.next_view_id;
-                self.next_view_id += 1;
-            }
-        }
-
+    pub fn apply_output_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
         // 1. Find the output
         let output = match self.space.outputs().find(|o| o.name() == output_name) {
             Some(o) => o.clone(),
