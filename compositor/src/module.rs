@@ -535,6 +535,12 @@ fn version() -> Result<String> {
     Ok(env!("CARGO_PKG_VERSION").to_string())
 }
 
+/// Install a CSS string on the host Emacs's default GTK screen.
+#[defun]
+fn gtk_set_style(css: String) -> Result<()> {
+    crate::gtk_css::set_style(&css)
+}
+
 // Compositor state
 struct CompositorState {
     thread: Option<JoinHandle<()>>,

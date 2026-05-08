@@ -1212,7 +1212,11 @@ The compositor runs as a thread within the Emacs process."
         ;; first wl_keyboard.enter (PGTK drops it pre-roundtrip).
         (if after-init-time
             (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)
-          (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module)))
+          (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module))
+        ;; Color the GTK widget background so new frames don't flash white
+        ;; before redisplay paints. Re-apply on theme change.
+        (ewm--apply-gtk-bg-css)
+        (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css))
     (ewm--destroy-event-channel)
     (error "Failed to start compositor")))
 
@@ -1231,6 +1235,17 @@ The compositor runs as a thread within the Emacs process."
     (setq ewm--compositor-ready nil)
     (setq ewm--output-info nil)
     (ewm-mode -1)))
+
+(declare-function ewm-gtk-set-style "ewm-core")
+
+(defun ewm--apply-gtk-bg-css (&rest _)
+  "Push the default face background to the GTK widget for new frames.
+Without this, pgtk's first commit renders the widget's white default
+before redisplay paints (bug#53232)."
+  (when-let* ((bg (face-attribute 'default :background))
+              ((stringp bg)))
+    (ignore-errors
+      (ewm-gtk-set-style (format "window { background-color: %s; }" bg)))))
 
 (defun ewm--kill-emacs-hook ()
   "Stop compositor gracefully before Emacs exits.

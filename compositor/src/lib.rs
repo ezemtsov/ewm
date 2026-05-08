@@ -40,6 +40,7 @@ pub mod dbus;
 pub mod dbus_screensaver;
 pub mod event;
 pub mod frame_clock;
+pub mod gtk_css;
 pub mod im_relay;
 pub mod input;
 mod module;
