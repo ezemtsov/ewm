@@ -1836,12 +1836,17 @@ impl Ewm {
                 .insert(output_name.to_string());
         }
 
-        // 6. Store the layout under the strip. Animation key is active
-        //    *surface* identity, not active *index*: a real focus switch
-        //    slides the viewport from the old column to the new; a
-        //    reorder (same surface at a new column index) snaps so the
-        //    user keeps looking at the same content while neighbors
-        //    rearrange around it.
+        // 6. Store the layout under the strip and update view_offset:
+        //    - active surface changed (focus switch): re-anchor the
+        //      current view_offset to the new active column's frame of
+        //      reference (preserving any in-flight slide via
+        //      `ViewOffset::offset`), then animate from there to 0;
+        //    - same surface, different column_x (reorder swap): snap so
+        //      the user's eye stays on the active content (per-column
+        //      animations would visualize the swap, but we don't have
+        //      those yet);
+        //    - same surface, same column_x (redundant refresh): leave
+        //      view_offset alone so an in-flight animation continues.
         let prev_active_id = self
             .output_strips
             .get(output_name)
@@ -1858,19 +1863,22 @@ impl Ewm {
             .entry(output_name.to_string())
             .or_default();
         let new_active_id = frames.get(new_active_idx).map(|f| f.surface_id);
-        let prev_view_pos = strip_entry.target_view_pos();
+        let prev_active_x = strip_entry.column_x(strip_entry.active_idx);
         strip_entry.frames = frames;
         strip_entry.active_idx = new_active_idx;
+        let new_active_x = strip_entry.column_x(new_active_idx);
+        let anchor_delta = prev_active_x - new_active_x;
         if prev_active_id != new_active_id {
-            let new_active_x = strip_entry.column_x(new_active_idx);
-            let from_offset = prev_view_pos - new_active_x;
-            if from_offset.abs() > f64::EPSILON {
+            if anchor_delta != 0.0 {
+                strip_entry.view_offset.offset(anchor_delta);
+            }
+            let current = strip_entry.view_offset.current();
+            if current.abs() > f64::EPSILON {
                 strip_entry.view_offset = strip::ViewOffset::Animation(
-                    strip::ViewAnimation::new(from_offset, 0.0, strip::DEFAULT_ANIM_DURATION),
+                    strip::ViewAnimation::new(current, 0.0, strip::DEFAULT_ANIM_DURATION),
                 );
             }
-        } else {
-            // Swap or no-op: cancel any in-flight slide and rest at 0.
+        } else if anchor_delta.abs() > f64::EPSILON {
             strip_entry.view_offset = strip::ViewOffset::Static(0.0);
         }
 

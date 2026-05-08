@@ -43,6 +43,14 @@ impl ViewAnimation {
         self.to
     }
 
+    /// Shift both endpoints by `delta`.  The interpolated value at any time
+    /// also shifts by `delta`, so the running animation continues smoothly
+    /// in the new coordinate system instead of jumping.
+    pub fn offset(&mut self, delta: f64) {
+        self.from += delta;
+        self.to += delta;
+    }
+
     pub fn value(&self) -> f64 {
         self.value_at(get_monotonic_time())
     }
@@ -108,6 +116,16 @@ impl ViewOffset {
             if a.is_done() {
                 *self = ViewOffset::Static(a.target());
             }
+        }
+    }
+
+    /// Apply a constant `delta` to the current state, preserving any running
+    /// animation by re-anchoring its endpoints rather than clobbering them.
+    /// Used when the coordinate system shifts (e.g. active column changes).
+    pub fn offset(&mut self, delta: f64) {
+        match self {
+            ViewOffset::Static(x) => *x += delta,
+            ViewOffset::Animation(a) => a.offset(delta),
         }
     }
 }
@@ -262,6 +280,28 @@ mod tests {
         let s = strip_with(vec![100.0, 200.0, 50.0], 10.0, 1);
         assert_eq!(s.screen_x_of_frame(0), -110.0);
         assert_eq!(s.screen_x_of_frame(2), 210.0);
+    }
+
+    #[test]
+    fn offset_shifts_static_value() {
+        let mut vo = ViewOffset::Static(10.0);
+        vo.offset(5.0);
+        assert_eq!(vo.current(), 15.0);
+        assert_eq!(vo.target(), 15.0);
+    }
+
+    #[test]
+    fn offset_preserves_animation_value_at_each_instant() {
+        // Build an animation, sample its midpoint, then offset by delta.
+        // Both `from` and `to` shift by delta, so value_at(now) shifts by
+        // exactly delta (no jump).
+        let now = Duration::from_secs(0);
+        let mut a = ViewAnimation::new_at(now, -100.0, 0.0, Duration::from_millis(100));
+        let mid_before = a.value_at(now + Duration::from_millis(50));
+        a.offset(40.0);
+        let mid_after = a.value_at(now + Duration::from_millis(50));
+        assert!((mid_after - (mid_before + 40.0)).abs() < 1e-9);
+        assert_eq!(a.target(), 40.0);
     }
 
     #[test]
