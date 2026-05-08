@@ -1060,15 +1060,19 @@ Sort key is `ewm-strip-index'; frames missing it sort first
                             (frame-list)))))))
 
 (defun ewm-frame-new ()
-  "Append a new Emacs frame to the right of the current output's strip
-and focus it once the compositor confirms its surface."
+  "Open a new Emacs frame after the active one on the same output."
   (interactive)
-  (let ((output (frame-parameter (selected-frame) 'ewm-output)))
-    (unless output
-      (user-error "Current frame has no ewm-output"))
-    (let* ((idx (ewm--next-strip-index output))
+  (let* ((current (selected-frame))
+         (output (frame-parameter current 'ewm-output)))
+    (unless output (user-error "Current frame has no ewm-output"))
+    (let* ((target (1+ (or (frame-parameter current 'ewm-strip-index) -1)))
            (new-frame (ewm--create-frame-for-output output)))
-      (set-frame-parameter new-frame 'ewm-strip-index idx)
+      (dolist (f (frame-list))
+        (when-let* ((idx (frame-parameter f 'ewm-strip-index))
+                    ((equal (frame-parameter f 'ewm-output) output))
+                    ((>= idx target)))
+          (set-frame-parameter f 'ewm-strip-index (1+ idx))))
+      (set-frame-parameter new-frame 'ewm-strip-index target)
       (set-frame-parameter new-frame 'ewm-focus-on-create t))))
 
 (defun ewm-frame-close ()
