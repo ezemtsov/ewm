@@ -154,7 +154,7 @@ pub fn handle_keyboard_event(
     // Process any pending focus command before handling the key.
     // This ensures focus changes from Emacs are applied immediately,
     // avoiding race conditions where keys arrive before focus is synced.
-    if let Some(focus_id) = module::take_pending_focus() {
+    if let Some(focus_id) = module::take_pending_focus(&state.ewm) {
         if state.ewm.focused_surface_id != focus_id && state.ewm.id_windows.contains_key(&focus_id)
         {
             state

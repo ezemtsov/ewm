@@ -19,7 +19,8 @@
 
 (require 'cl-lib)
 
-(declare-function ewm-focus-module "ewm-core")
+(declare-function ewm-focus-view-module "ewm-core")
+(declare-function ewm-focus-frame-module "ewm-core")
 (declare-function ewm-get-focused-id "ewm-core")
 (declare-function ewm-in-prefix-sequence-p "ewm-core")
 (declare-function ewm-input--pointer-in-window-p "ewm-input")
@@ -39,16 +40,17 @@
 
 ;;; Emacs -> compositor
 
-(defun ewm-focus (id)
-  "Focus surface ID in the compositor."
-  (ewm-focus-module id))
+(defun ewm-focus-view (view-id)
+  "Focus the mirror identified by VIEW-ID."
+  (ewm-focus-view-module view-id))
+
+(defun ewm-focus-frame (frame-surface-id)
+  "Focus an Emacs frame by its xdg_toplevel FRAME-SURFACE-ID."
+  (ewm-focus-frame-module frame-surface-id))
 
 (defun ewm--focus-target ()
-  "Compute the surface ID that should have compositor focus, or nil.
-Returns nil when focus should not change (prefix sequence, key reading).
-Returns the frame's surface ID when the minibuffer is active or a
-non-surface buffer is selected.  Returns the buffer's surface ID when
-a surface buffer is selected."
+  "Return (KIND . ID) for compositor focus, or nil to skip.
+KIND is `view' for a mirror or `frame' for an Emacs frame's chrome."
   (cond
    ((or prefix-arg
         (ewm-in-prefix-sequence-p)
@@ -56,15 +58,14 @@ a surface buffer is selected."
              (keymapp overriding-terminal-local-map)))
     nil)
    ((ewm--minibuffer-active-p)
-    (frame-parameter (selected-frame) 'ewm-surface-id))
+    (cons 'frame (frame-parameter (selected-frame) 'ewm-surface-id)))
+   ((window-parameter (selected-window) 'ewm-view-id)
+    (cons 'view (window-parameter (selected-window) 'ewm-view-id)))
    (t
-    (or (buffer-local-value 'ewm-surface-id
-                            (window-buffer (selected-window)))
-        (frame-parameter (selected-frame) 'ewm-surface-id)))))
+    (cons 'frame (frame-parameter (selected-frame) 'ewm-surface-id)))))
 
 (defun ewm--sync-focus ()
-  "Sync compositor focus from Emacs state.
-Calls `ewm-focus' only when the target differs from current focus."
+  "Sync compositor focus from Emacs state."
   (when ewm--module-mode
     (let ((target (ewm--focus-target)))
       (when (fboundp 'ewm--log)
@@ -75,9 +76,11 @@ Calls `ewm-focus' only when the target differs from current focus."
                   (frame-parameter (selected-frame) 'ewm-surface-id)
                   (buffer-name (window-buffer (selected-window)))
                   this-command))
-      (when target
-        (unless (eq target (ewm-get-focused-id))
-          (ewm-focus target))))))
+      (pcase target
+        (`(view . ,id) (ewm-focus-view id))
+        (`(frame . ,id)
+         (unless (eql id (ewm-get-focused-id))
+           (ewm-focus-frame id)))))))
 
 ;;; Compositor -> Emacs
 

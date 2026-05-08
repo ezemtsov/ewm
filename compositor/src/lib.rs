@@ -1439,6 +1439,62 @@ impl Ewm {
         })
     }
 
+    /// Resolve `view_id` to its `(output_name, frame_idx, surface_id)`.
+    pub fn lookup_view(&self, view_id: u64) -> Option<(String, usize, u64)> {
+        for (output, strip) in &self.output_strips {
+            for (idx, frame) in strip.frames.iter().enumerate() {
+                if let Some(entry) = frame.surfaces.iter().find(|e| e.view_id == view_id) {
+                    return Some((output.clone(), idx, entry.surface_id));
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve a frame's xdg_toplevel `surface_id` to `(output_name, frame_idx)`.
+    pub fn lookup_frame(&self, frame_surface_id: u64) -> Option<(String, usize)> {
+        for (output, strip) in &self.output_strips {
+            if let Some(idx) = strip
+                .frames
+                .iter()
+                .position(|f| f.surface_id == frame_surface_id)
+            {
+                return Some((output.clone(), idx));
+            }
+        }
+        None
+    }
+
+    /// Focus the mirror identified by `view_id`.
+    pub fn set_focus_view(&mut self, view_id: u64, source: &str) {
+        let Some((output, idx, surface_id)) = self.lookup_view(view_id) else {
+            return;
+        };
+        module::record_focus(surface_id, source, None);
+        self.focused_surface_id = surface_id;
+        self.activate_frame(&output, idx);
+        self.queue_event(Event::Focus {
+            id: surface_id,
+            x: None,
+            y: None,
+        });
+    }
+
+    /// Focus an Emacs frame's chrome.
+    pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str) {
+        let Some((output, idx)) = self.lookup_frame(frame_surface_id) else {
+            return;
+        };
+        module::record_focus(frame_surface_id, source, None);
+        self.focused_surface_id = frame_surface_id;
+        self.activate_frame(&output, idx);
+        self.queue_event(Event::Focus {
+            id: frame_surface_id,
+            x: None,
+            y: None,
+        });
+    }
+
     /// Surface id of the Emacs frame whose strip-frame currently hosts
     /// `surface_id`, or `None` if the surface is not under any frame.
     pub fn frame_for_surface(&self, surface_id: u64) -> Option<u64> {
@@ -5779,11 +5835,11 @@ impl State {
                     }
                 }
             }
-            ModuleCommand::Focus { id } => {
-                // Skip if already focused (keyboard sync deferred to after command batch)
-                if self.ewm.focused_surface_id != id && self.ewm.id_windows.contains_key(&id) {
-                    self.ewm.set_focus(id, false, "emacs_command", None);
-                }
+            ModuleCommand::FocusView { view_id } => {
+                self.ewm.set_focus_view(view_id, "emacs_command");
+            }
+            ModuleCommand::FocusFrame { frame_surface_id } => {
+                self.ewm.set_focus_frame(frame_surface_id, "emacs_command");
             }
             ModuleCommand::WarpPointer { x, y } => {
                 self.warp_pointer(x, y);

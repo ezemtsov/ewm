@@ -336,7 +336,7 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
     (with-selected-frame frame (redisplay t))
     (when (frame-parameter frame 'ewm-focus-on-create)
       (set-frame-parameter frame 'ewm-focus-on-create nil)
-      (select-frame-set-input-focus frame))
+      (ewm-focus-frame id))
     ;; Layout hooks are no-ops when FRAME was already selected; push it.
     (ewm-layout--refresh)
     (when (null ewm--pending-frame-outputs)

@@ -253,8 +253,13 @@ pub enum ModuleCommand {
     Close {
         id: u64,
     },
-    Focus {
-        id: u64,
+    /// Focus the mirror identified by `view_id`.
+    FocusView {
+        view_id: u64,
+    },
+    /// Focus an Emacs frame's chrome by its xdg_toplevel surface id.
+    FocusFrame {
+        frame_surface_id: u64,
     },
     WarpPointer {
         x: f64,
@@ -343,21 +348,26 @@ pub fn drain_commands() -> Vec<ModuleCommand> {
     command_queue().lock().unwrap().drain(..).collect()
 }
 
-/// Get the pending focus target, if any.
+/// Drain pending FocusView/FocusFrame commands and return the last target's
+/// surface id, looked up via `lookup_view`/`lookup_frame` against `state`.
 /// Called before keyboard event handling to ensure focus is synced.
-pub fn take_pending_focus() -> Option<u64> {
+pub fn take_pending_focus(state: &crate::Ewm) -> Option<u64> {
     let mut queue = command_queue().lock().unwrap();
-    let mut focus_id = None;
-    // Find the last Focus command (most recent wins)
-    queue.retain(|cmd| {
-        if let ModuleCommand::Focus { id } = cmd {
-            focus_id = Some(*id);
-            false // Remove from queue
-        } else {
-            true // Keep other commands
+    let mut last_id = None;
+    queue.retain(|cmd| match cmd {
+        ModuleCommand::FocusView { view_id } => {
+            if let Some((_, _, sid)) = state.lookup_view(*view_id) {
+                last_id = Some(sid);
+            }
+            false
         }
+        ModuleCommand::FocusFrame { frame_surface_id } => {
+            last_id = Some(*frame_surface_id);
+            false
+        }
+        _ => true,
     });
-    focus_id
+    last_id
 }
 
 /// Peek at pending commands without draining (for state dump)
@@ -746,10 +756,21 @@ fn close_module(id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Focus a surface (module mode).
+/// Focus the mirror identified by VIEW-ID.
 #[defun]
-fn focus_module(id: i64) -> Result<()> {
-    push_command(ModuleCommand::Focus { id: id as u64 });
+fn focus_view_module(view_id: i64) -> Result<()> {
+    push_command(ModuleCommand::FocusView {
+        view_id: view_id as u64,
+    });
+    Ok(())
+}
+
+/// Focus an Emacs frame's chrome by its xdg_toplevel SURFACE-ID.
+#[defun]
+fn focus_frame_module(surface_id: i64) -> Result<()> {
+    push_command(ModuleCommand::FocusFrame {
+        frame_surface_id: surface_id as u64,
+    });
     Ok(())
 }
 
