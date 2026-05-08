@@ -38,15 +38,12 @@ This version correctly handles tab-lines on Emacs prior to v31."
 
 (defun ewm-layout--send-layouts ()
   "Build and send per-output layout declarations as nested frame strips.
-For each output, emits the strip in `ewm-strip-index' ascending order.
-Each frame plist carries :name :surface-id :active :width :surfaces;
-each surface plist holds :id :x :y :w :h :focused :fullscreen.
-The compositor uses :focused for input/popup routing, :surface-id to
-position each Emacs frame xdg_toplevel at its strip column, and
-independently computes :primary across outputs."
+Each frame plist carries :name :surface-id :width :strip-index :surfaces;
+each surface plist holds :id :x :y :w :h :focused :fullscreen.  The
+compositor owns active-frame state (driven by focus events), so
+emission carries no `:active' flag."
   (let ((output-frames (make-hash-table :test 'equal))
-        (sel-window (selected-window))
-        (sel-frame (selected-frame)))
+        (sel-window (selected-window)))
     (dolist (frame (frame-list))
       ;; In-flight frames (no strip-index yet) would land at strip
       ;; position 0; skip until the compositor assigns one.
@@ -61,7 +58,6 @@ independently computes :primary across outputs."
           (let ((frame-plist
                  (list :name (or (frame-parameter frame 'name) "")
                        :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
-                       :active (if (eq frame sel-frame) t :false)
                        :width (float (frame-pixel-width frame))
                        :strip-index strip-index
                        :surfaces (vconcat (nreverse surfaces)))))

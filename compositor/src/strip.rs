@@ -149,7 +149,6 @@ pub struct Frame {
     pub name: String,
     pub surface_id: u64,
     pub width: f64,
-    pub active: bool,
     pub surfaces: Vec<LayoutEntry>,
 }
 

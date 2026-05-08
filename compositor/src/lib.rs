@@ -1451,10 +1451,53 @@ impl Ewm {
             .map(|f| f.surface_id)
     }
 
+    /// `(output_name, frame_idx)` of the strip frame containing `surface_id`,
+    /// either as the frame's own xdg_toplevel or in its layout entries.
+    pub fn frame_position(&self, surface_id: u64) -> Option<(String, usize)> {
+        for (output_name, strip) in &self.output_strips {
+            for (i, frame) in strip.frames.iter().enumerate() {
+                if frame.surface_id == surface_id
+                    || frame.surfaces.iter().any(|e| e.surface_id == surface_id)
+                {
+                    return Some((output_name.clone(), i));
+                }
+            }
+        }
+        None
+    }
+
     /// Surface id of the active Emacs frame on `output_name`.
     pub fn active_frame_surface_id(&self, output_name: &str) -> Option<u64> {
         let strip = self.output_strips.get(output_name)?;
         strip.frames.get(strip.active_idx).map(|f| f.surface_id)
+    }
+
+    /// Mark `new_idx` as active on `output_name`, animating the view to
+    /// follow.  Re-anchors any in-flight slide via `ViewOffset::offset` so
+    /// a second activation mid-animation continues smoothly instead of
+    /// restarting.  No-op if the index is unchanged.
+    pub fn activate_frame(&mut self, output_name: &str, new_idx: usize) {
+        let Some(strip) = self.output_strips.get_mut(output_name) else {
+            return;
+        };
+        if new_idx >= strip.frames.len() || new_idx == strip.active_idx {
+            return;
+        }
+        let prev_x = strip.column_x(strip.active_idx);
+        let new_x = strip.column_x(new_idx);
+        let anchor_delta = prev_x - new_x;
+        if anchor_delta != 0.0 {
+            strip.view_offset.offset(anchor_delta);
+        }
+        strip.active_idx = new_idx;
+        let current = strip.view_offset.current();
+        if current.abs() > f64::EPSILON {
+            strip.view_offset = strip::ViewOffset::Animation(strip::ViewAnimation::new(
+                current,
+                0.0,
+                strip::DEFAULT_ANIM_DURATION,
+            ));
+        }
     }
 
     /// Global logical top-left of an Emacs frame chrome's working area,
@@ -1864,51 +1907,17 @@ impl Ewm {
                 .insert(output_name.to_string());
         }
 
-        // 6. Store the layout under the strip and update view_offset:
-        //    - active surface changed (focus switch): re-anchor the
-        //      current view_offset to the new active column's frame of
-        //      reference (preserving any in-flight slide via
-        //      `ViewOffset::offset`), then animate from there to 0;
-        //    - same surface, different column_x (reorder swap): snap so
-        //      the user's eye stays on the active content (per-column
-        //      animations would visualize the swap, but we don't have
-        //      those yet);
-        //    - same surface, same column_x (redundant refresh): leave
-        //      view_offset alone so an in-flight animation continues.
-        let prev_active_id = self
-            .output_strips
-            .get(output_name)
-            .and_then(|s| s.frames.get(s.active_idx).map(|f| f.surface_id));
-        let new_active_idx = match frames.iter().position(|f| f.active) {
-            Some(i) => i,
-            // `selected-frame' is on another output; preserve ours.
-            None => prev_active_id
-                .and_then(|id| frames.iter().position(|f| f.surface_id == id))
-                .unwrap_or(0),
-        };
+        // 6. Store the layout under the strip.  `active_idx` is set by
+        //    `set_focus`, not derived from this update; we just clamp
+        //    it to the new frame count.
         let strip_entry = self
             .output_strips
             .entry(output_name.to_string())
             .or_default();
-        let new_active_id = frames.get(new_active_idx).map(|f| f.surface_id);
-        let prev_active_x = strip_entry.column_x(strip_entry.active_idx);
         strip_entry.frames = frames;
-        strip_entry.active_idx = new_active_idx;
-        let new_active_x = strip_entry.column_x(new_active_idx);
-        let anchor_delta = prev_active_x - new_active_x;
-        if prev_active_id != new_active_id {
-            if anchor_delta != 0.0 {
-                strip_entry.view_offset.offset(anchor_delta);
-            }
-            let current = strip_entry.view_offset.current();
-            if current.abs() > f64::EPSILON {
-                strip_entry.view_offset = strip::ViewOffset::Animation(
-                    strip::ViewAnimation::new(current, 0.0, strip::DEFAULT_ANIM_DURATION),
-                );
-            }
-        } else if anchor_delta.abs() > f64::EPSILON {
-            strip_entry.view_offset = strip::ViewOffset::Static(0.0);
-        }
+        strip_entry.active_idx = strip_entry
+            .active_idx
+            .min(strip_entry.frames.len().saturating_sub(1));
 
         // 7. Compute primary flags: largest area per surface across all outputs.
         // Fullscreen entries use the output's logical size (the surface is
@@ -3066,6 +3075,11 @@ impl Ewm {
     pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str, context: Option<&str>) {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
+        // Active frame on each output is derived from focus, not from
+        // lisp emission -- single source of truth.
+        if let Some((output, idx)) = self.frame_position(id) {
+            self.activate_frame(&output, idx);
+        }
         if notify_emacs {
             self.queue_event(Event::Focus {
                 id,

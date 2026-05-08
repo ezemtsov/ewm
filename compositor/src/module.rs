@@ -60,7 +60,6 @@ use_symbols! {
     kw_super       => ":super"
     kw_emulate     => ":emulate"
     kw_name       => ":name"
-    kw_active     => ":active"
     kw_width      => ":width"
     kw_surfaces   => ":surfaces"
     kw_surface_id => ":surface-id"
@@ -662,7 +661,7 @@ fn socket() -> Result<Option<String>> {
 ///
 /// OUTPUT is the output name. FRAMES is a vector of plists describing the
 /// strip of Emacs frames left-to-right. Each frame plist has:
-///   :name NAME :active BOOL :width FLOAT :surfaces [SURFACE ...]
+///   :name NAME :surface-id ID :width FLOAT :strip-index N :surfaces [SURFACE ...]
 /// where each SURFACE is a plist `:id :x :y :w :h :focused :fullscreen`.
 /// Surface coordinates are relative to the owning frame's working area.
 #[defun]
@@ -682,9 +681,6 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             .call(plist_get, (frame, kw_surface_id))?
             .into_rust::<i64>()
             .unwrap_or(0) as u64;
-
-        let active_val = env.call(plist_get, (frame, kw_active))?;
-        let active = active_val.is_not_nil() && active_val != *kw_false;
 
         let width = value_as_f64(env.call(plist_get, (frame, kw_width))?).unwrap_or(0.0);
 
@@ -727,7 +723,6 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             name,
             surface_id,
             width,
-            active,
             surfaces,
         });
     }
