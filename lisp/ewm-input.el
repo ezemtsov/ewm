@@ -281,10 +281,16 @@ Only acts when a prefix sequence was active."
 ;; `focus-in'/`focus-out'), where they're consumed without entering the
 ;; command loop.  EWM owns frame selection via `ewm--handle-focus'.
 
+(defun ewm-input--sync-focus-after-command ()
+  "Sync compositor focus after a user command."
+  (when ewm--module-mode
+    (ewm--sync-focus)))
+
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
   (add-hook 'post-command-hook #'ewm-input--clear-prefix)
+  (add-hook 'post-command-hook #'ewm-input--sync-focus-after-command)
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (define-key special-event-map [switch-frame] #'ignore))
 
@@ -292,6 +298,7 @@ Only acts when a prefix sequence was active."
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
   (remove-hook 'post-command-hook #'ewm-input--clear-prefix)
+  (remove-hook 'post-command-hook #'ewm-input--sync-focus-after-command)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (define-key special-event-map [switch-frame] nil))
 

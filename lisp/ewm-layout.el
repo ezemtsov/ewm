@@ -107,16 +107,15 @@ Catches minibuffer height changes that window-configuration-change misses."
   (ewm-layout--refresh))
 
 (defun ewm--on-window-selection-change (_frame)
-  "Update layouts and resolve focus when selected window changes.
-Primary flag depends on selected-window, so re-send layouts."
-  (ewm-layout--send-layouts)
-  (ewm--sync-focus))
+  "Re-send layouts when selected window changes.
+Compositor focus is driven by user commands (`ewm-frame-select',
+windmove, click), not by Emacs-internal selection churn from process
+filters like telega."
+  (ewm-layout--send-layouts))
 
 (defun ewm--on-window-buffer-change (_frame)
-  "Resolve focus when a buffer changes within a window.
-Catches `switch-to-buffer' and similar operations that change the displayed
-buffer without changing the selected window."
-  (ewm--sync-focus))
+  "Re-send layouts when a buffer changes within a window."
+  (ewm-layout--send-layouts))
 
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."
