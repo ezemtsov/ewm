@@ -66,9 +66,18 @@ a surface buffer is selected."
   "Sync compositor focus from Emacs state.
 Calls `ewm-focus' only when the target differs from current focus."
   (when ewm--module-mode
-    (when-let* ((target (ewm--focus-target)))
-      (unless (eq target (ewm-get-focused-id))
-        (ewm-focus target)))))
+    (let ((target (ewm--focus-target)))
+      (when (fboundp 'ewm--log)
+        (ewm--log "sync-focus: target=%S amw=%S mbd=%d sel-frame-sid=%S sel-win-buf=%S last-cmd=%S"
+                  target
+                  (active-minibuffer-window)
+                  (minibuffer-depth)
+                  (frame-parameter (selected-frame) 'ewm-surface-id)
+                  (buffer-name (window-buffer (selected-window)))
+                  this-command))
+      (when target
+        (unless (eq target (ewm-get-focused-id))
+          (ewm-focus target))))))
 
 ;;; Compositor -> Emacs
 

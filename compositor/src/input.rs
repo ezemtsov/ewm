@@ -313,6 +313,13 @@ pub fn handle_keyboard_event(
         KeyAction::Forward => {
             state.sync_keyboard_focus();
             keyboard.input_forward(state, keycode.into(), key_state, serial, time, mods_changed);
+            if is_press && module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::debug!(
+                    "key forward: keycode={} surface={}",
+                    keycode,
+                    state.ewm.focused_surface_id
+                );
+            }
         }
 
         KeyAction::Emulate(ref target_mod) => {
