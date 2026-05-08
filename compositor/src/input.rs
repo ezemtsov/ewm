@@ -166,22 +166,21 @@ pub fn handle_keyboard_event(
     // Check if a fullscreen surface is logically focused (Emacs selected-window).
     // Uses the layout's `focused` flag, NOT keyboard focus. After intercept_redirect
     // keyboard focus is temporarily on Emacs even though the surface is fullscreen.
-    let fullscreen_surface_id = state
+    let fullscreen_view = state
         .ewm
         .output_strips
         .values()
         .flat_map(|strip| strip.surfaces())
         .find(|e| e.focused && state.ewm.effective_fullscreen(e))
-        .map(|e| e.surface_id);
+        .map(|e| (e.view_id, e.surface_id));
+    let fullscreen_surface_id = fullscreen_view.map(|(_, sid)| sid);
 
     // When a fullscreen surface exists, ensure keyboard focus is on it before processing keys.
     // After intercept_redirect (e.g. s-f to enter fullscreen), Wayland keyboard focus stays on
     // Emacs. Without this, FilterResult::Forward sends keys to Emacs instead of the surface.
-    if let Some(fs_id) = fullscreen_surface_id {
-        if state.ewm.focused_surface_id != fs_id {
-            state
-                .ewm
-                .set_focus(fs_id, false, "fullscreen_focus_redirect", None);
+    if let Some((view_id, surface_id)) = fullscreen_view {
+        if state.ewm.focused_surface_id != surface_id {
+            state.ewm.set_focus_view(view_id, "fullscreen_focus_redirect");
             state.sync_keyboard_focus();
         }
     }
@@ -1091,11 +1090,15 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
             let on_layer = layer_under.is_some();
             state.ewm.focus_layer_surface_if_on_demand(layer_under);
 
-            // Strip-aware: `surface_under_point` covers entries and frame chrome.
+            // Prefer the LayoutEntry under the pointer so mirrored
+            // surfaces resolve to the specific view that was clicked.
             if !on_layer {
-                let focus_info = state.ewm.surface_under_point(pos)
-                    .and_then(|(s, _)| state.ewm.surface_id(&s));
-                if let Some(id) = focus_info {
+                let view_id = state.ewm.view_id_under(pos);
+                if view_id != 0 {
+                    state.ewm.set_focus_view(view_id, "click");
+                } else if let Some(id) = state.ewm.surface_under_point(pos)
+                    .and_then(|(s, _)| state.ewm.surface_id(&s))
+                {
                     state.ewm.set_focus(id, true, "click", None);
                 }
             }
@@ -1137,11 +1140,13 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
         let on_layer = layer_under.is_some();
         state.ewm.focus_layer_surface_if_on_demand(layer_under);
 
-        // Strip-aware: `surface_under_point` covers entries and frame chrome.
         if !on_layer {
-            let focus_info = state.ewm.surface_under_point(pos)
-                .and_then(|(s, _)| state.ewm.surface_id(&s));
-            if let Some(id) = focus_info {
+            let view_id = state.ewm.view_id_under(pos);
+            if view_id != 0 {
+                state.ewm.set_focus_view(view_id, "scroll");
+            } else if let Some(id) = state.ewm.surface_under_point(pos)
+                .and_then(|(s, _)| state.ewm.surface_id(&s))
+            {
                 state.ewm.set_focus(id, true, "scroll", None);
             }
         }
