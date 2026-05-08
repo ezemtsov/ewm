@@ -1976,8 +1976,23 @@ impl Ewm {
             .output_strips
             .entry(output_name.to_string())
             .or_default();
+        let prev_active = strip_entry.active_idx();
+        let prev_offset = strip_entry.view_offset.current();
         strip_entry.frames = frames;
-        strip_entry.set_active(active_idx.unwrap_or_else(|| strip_entry.active_idx()));
+        let target = active_idx.unwrap_or(prev_active);
+        strip_entry.set_active(target);
+        if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::debug!(
+                "apply_output_layout: {} active {} -> {} (lisp={:?}, frames={}) offset {:.1} -> {:.1}",
+                output_name,
+                prev_active,
+                strip_entry.active_idx(),
+                active_idx,
+                strip_entry.frames.len(),
+                prev_offset,
+                strip_entry.view_offset.current(),
+            );
+        }
 
         // 7. Compute primary flags: largest area per surface across all outputs.
         // Fullscreen entries use the output's logical size (the surface is
