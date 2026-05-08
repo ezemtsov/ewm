@@ -1084,17 +1084,10 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
             let on_layer = layer_under.is_some();
             state.ewm.focus_layer_surface_if_on_demand(layer_under);
 
-            // If click is on a toplevel (not a layer surface), do normal focus
+            // Strip-aware: `surface_under_point` covers entries and frame chrome.
             if !on_layer {
-                // Check layout surfaces first, then Emacs frames in space
-                let focus_info = state.ewm.layout_surface_id_under(pos).or_else(|| {
-                    state
-                        .ewm
-                        .space
-                        .element_under(pos)
-                        .and_then(|(window, _)| state.ewm.window_ids.get(&window).copied())
-                });
-
+                let focus_info = state.ewm.surface_under_point(pos)
+                    .and_then(|(s, _)| state.ewm.surface_id(&s));
                 if let Some(id) = focus_info {
                     state.ewm.set_focus(id, true, "click", None);
                 }
@@ -1137,17 +1130,10 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
         let on_layer = layer_under.is_some();
         state.ewm.focus_layer_surface_if_on_demand(layer_under);
 
-        // If scroll is on a toplevel (not a layer surface), do normal focus
+        // Strip-aware: `surface_under_point` covers entries and frame chrome.
         if !on_layer {
-            // Check layout surfaces first, then Emacs frames in space
-            let focus_info = state.ewm.layout_surface_id_under(pos).or_else(|| {
-                state
-                    .ewm
-                    .space
-                    .element_under(pos)
-                    .and_then(|(window, _)| state.ewm.window_ids.get(&window).copied())
-            });
-
+            let focus_info = state.ewm.surface_under_point(pos)
+                .and_then(|(s, _)| state.ewm.surface_id(&s));
             if let Some(id) = focus_info {
                 state.ewm.set_focus(id, true, "scroll", None);
             }

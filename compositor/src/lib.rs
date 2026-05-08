@@ -1337,17 +1337,6 @@ impl Ewm {
     /// This replaces Space::refresh(). We manage output enter/leave explicitly
     /// rather than relying on automatic spatial overlap detection.
     pub fn cleanup_dead_windows(&mut self) {
-        // Clean Emacs frames from space
-        let dead: Vec<Window> = self
-            .space
-            .elements()
-            .filter(|w| !w.alive())
-            .cloned()
-            .collect();
-        for w in dead {
-            self.space.unmap_elem(&w);
-        }
-
         // Clean dead layout surfaces from id_windows
         let dead_ids: Vec<u64> = self
             .id_windows
@@ -1468,6 +1457,28 @@ impl Ewm {
         strip.frames.get(strip.active_idx).map(|f| f.surface_id)
     }
 
+    /// Global logical top-left of an Emacs frame chrome's working area,
+    /// driven by the strip column (frames aren't placed in `space`).
+    pub fn emacs_frame_origin(
+        &self,
+        surface_id: u64,
+    ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
+        use smithay::utils::Point;
+        let output_name = self.emacs_surfaces.get(&surface_id)?;
+        let output = self.space.outputs().find(|o| &o.name() == output_name)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let working_area = layer_map_for_output(output).non_exclusive_zone();
+        let frame_dx = self
+            .output_strips
+            .get(output_name)
+            .and_then(|s| s.frames.iter().position(|f| f.surface_id == surface_id).map(|i| s.screen_x_of_frame(i)))
+            .unwrap_or(0.0) as i32;
+        Some(Point::from((
+            output_geo.loc.x + working_area.loc.x + frame_dx,
+            output_geo.loc.y + working_area.loc.y,
+        )))
+    }
+
     /// Find the focused output layout entry for a surface.
     ///
     /// Returns (output_name, frame_idx, entry). The frame_idx feeds
@@ -1500,11 +1511,8 @@ impl Ewm {
         None
     }
 
-    /// Get the global position of a window.
-    ///
-    /// For layout surfaces (managed via output_strips): uses the primary entry's
-    /// position relative to the output's working area.
-    /// For non-layout surfaces (Emacs frames): uses space.element_location().
+    /// Global position of a window: layout entries use the focused-or-primary
+    /// entry's screen rect, Emacs frames use `emacs_frame_origin`.
     pub fn window_global_position(
         &self,
         window: &Window,
@@ -1547,8 +1555,8 @@ impl Ewm {
             )));
         }
 
-        // Non-layout surface (Emacs frame): use space position
-        self.space.element_location(window)
+        // Emacs frame: use the strip-driven origin.
+        self.emacs_frame_origin(id)
     }
 
     /// Find the topmost layout entry containing `pos`, returning the entry
@@ -1587,12 +1595,8 @@ impl Ewm {
         None
     }
 
-    /// Hit-test layout surfaces under a global position.
-    ///
-    /// Iterates all entries on the pointer's output and calls surface_under(ALL)
-    /// on each window. This catches popups and subsurfaces that extend beyond
-    /// their parent entry bounds, without needing a separate popup iteration pass.
-    /// Entries are checked in topmost-first order (matching render element order).
+    /// Hit-test layout surfaces under a global position; falls back to the
+    /// frame chrome when no entry hits (Emacs-rendered windows live there).
     pub fn layout_surface_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -1610,67 +1614,124 @@ impl Ewm {
         };
         let strip = self.output_strips.get(&output.name())?;
 
-        for (frame_idx, entry) in strip.surfaces_with_frame() {
-            let window = match self.id_windows.get(&entry.surface_id) {
-                Some(w) => w,
-                None => continue,
-            };
-            let window_geo = window.geometry();
-            let effective_fs = self.effective_fullscreen(entry);
-
+        for (frame_idx, frame) in strip.frames.iter().enumerate() {
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            let (entry_x, entry_y) = if effective_fs {
-                (output_geo.loc.x, output_geo.loc.y)
-            } else {
-                (
-                    output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                    output_geo.loc.y + working_area.loc.y + entry.y,
-                )
-            };
+            let mut had_fullscreen = false;
 
-            let pos_in_entry_x = pos.x - entry_x as f64;
-            let pos_in_entry_y = pos.y - entry_y as f64;
+            for entry in &frame.surfaces {
+                let window = match self.id_windows.get(&entry.surface_id) {
+                    Some(w) => w,
+                    None => continue,
+                };
+                let window_geo = window.geometry();
+                let effective_fs = self.effective_fullscreen(entry);
+                had_fullscreen |= effective_fs;
 
-            // Scale pointer coords from entry space to window space.
-            // Primary/fullscreen-primary use 1:1 mapping. Non-primary entries use
-            // uniform fill+crop inverse: min(buf/entry) applied to both axes.
-            let (pointer_scale, center_offset_x, center_offset_y) = if effective_fs {
-                if entry.primary {
-                    let (cx, cy) = fullscreen_center_offset(window_geo.size, output_geo.size);
-                    (1.0, cx as f64, cy as f64)
+                let (entry_x, entry_y) = if effective_fs {
+                    (output_geo.loc.x, output_geo.loc.y)
                 } else {
-                    let uniform = f64::max(
-                        output_geo.size.w as f64 / window_geo.size.w as f64,
-                        output_geo.size.h as f64 / window_geo.size.h as f64,
-                    );
-                    (1.0 / uniform, 0.0, 0.0)
+                    (
+                        output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
+                        output_geo.loc.y + working_area.loc.y + entry.y,
+                    )
+                };
+
+                let pos_in_entry_x = pos.x - entry_x as f64;
+                let pos_in_entry_y = pos.y - entry_y as f64;
+
+                // Inverse of the render-side fill+crop scale for non-primary entries.
+                let (pointer_scale, center_offset_x, center_offset_y) = if effective_fs {
+                    if entry.primary {
+                        let (cx, cy) =
+                            fullscreen_center_offset(window_geo.size, output_geo.size);
+                        (1.0, cx as f64, cy as f64)
+                    } else {
+                        let uniform = f64::max(
+                            output_geo.size.w as f64 / window_geo.size.w as f64,
+                            output_geo.size.h as f64 / window_geo.size.h as f64,
+                        );
+                        (1.0 / uniform, 0.0, 0.0)
+                    }
+                } else if entry.primary {
+                    (1.0, 0.0, 0.0)
+                } else if entry.w > 0 && entry.h > 0 {
+                    (
+                        f64::min(
+                            window_geo.size.w as f64 / entry.w as f64,
+                            window_geo.size.h as f64 / entry.h as f64,
+                        ),
+                        0.0,
+                        0.0,
+                    )
+                } else {
+                    (1.0, 0.0, 0.0)
+                };
+
+                let pos_in_window = Point::from((
+                    (pos_in_entry_x - center_offset_x) * pointer_scale,
+                    (pos_in_entry_y - center_offset_y) * pointer_scale,
+                ));
+                let window_origin: Point<f64, Logical> =
+                    Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
+
+                if let Some((surface, surface_offset)) =
+                    window.surface_under(pos_in_window, WindowSurfaceType::ALL)
+                {
+                    let global_loc = Point::from((
+                        window_origin.x + surface_offset.x as f64,
+                        window_origin.y + surface_offset.y as f64,
+                    ));
+                    let is_toplevel =
+                        window.wl_surface().map_or(false, |ws| *ws == surface);
+                    if effective_fs || !is_toplevel {
+                        info!(
+                            "surface_under: {} entry {} (fs={}) \
+                             pos={:.0},{:.0} pos_in_window={:.0},{:.0} \
+                             surface_offset={},{} global_loc={:.0},{:.0} \
+                             geo.loc={},{} geo.size={}x{} center={:.0},{:.0}",
+                            if is_toplevel { "toplevel" } else { "popup" },
+                            entry.surface_id,
+                            effective_fs,
+                            pos.x,
+                            pos.y,
+                            pos_in_window.x,
+                            pos_in_window.y,
+                            surface_offset.x,
+                            surface_offset.y,
+                            global_loc.x,
+                            global_loc.y,
+                            window_geo.loc.x,
+                            window_geo.loc.y,
+                            window_geo.size.w,
+                            window_geo.size.h,
+                            center_offset_x,
+                            center_offset_y,
+                        );
+                    }
+                    return Some((surface, global_loc));
                 }
-            } else if entry.primary {
-                (1.0, 0.0, 0.0)
-            } else if entry.w > 0 && entry.h > 0 {
-                (
-                    f64::min(
-                        window_geo.size.w as f64 / entry.w as f64,
-                        window_geo.size.h as f64 / entry.h as f64,
-                    ),
-                    0.0,
-                    0.0,
-                )
-            } else {
-                (1.0, 0.0, 0.0)
+            }
+
+            if had_fullscreen {
+                break;
+            }
+
+            let frame_x = output_geo.loc.x + working_area.loc.x + frame_dx;
+            let frame_y = output_geo.loc.y + working_area.loc.y;
+            let in_frame = pos.x >= frame_x as f64
+                && pos.x < (frame_x + frame.width as i32) as f64
+                && pos.y >= frame_y as f64
+                && pos.y < (frame_y + working_area.size.h) as f64;
+            if !in_frame {
+                continue;
+            }
+            let Some(window) = self.id_windows.get(&frame.surface_id) else {
+                continue;
             };
-
-            let pos_in_window = Point::from((
-                (pos_in_entry_x - center_offset_x) * pointer_scale,
-                (pos_in_entry_y - center_offset_y) * pointer_scale,
-            ));
-
-            // Window's global origin: pointer_global - origin = pointer_in_window.
             let window_origin: Point<f64, Logical> =
-                Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
-
-            // surface_under(ALL) traverses the full surface tree: toplevel, popups,
-            // and subsurfaces. Popups extending beyond entry bounds are found here.
+                Point::from((frame_x as f64, frame_y as f64));
+            let pos_in_window =
+                Point::from((pos.x - window_origin.x, pos.y - window_origin.y));
             if let Some((surface, surface_offset)) =
                 window.surface_under(pos_in_window, WindowSurfaceType::ALL)
             {
@@ -1678,39 +1739,7 @@ impl Ewm {
                     window_origin.x + surface_offset.x as f64,
                     window_origin.y + surface_offset.y as f64,
                 ));
-                // Log all hits in fullscreen, and popup/subsurface hits always
-                let is_toplevel = window.wl_surface().map_or(false, |ws| *ws == surface);
-                if effective_fs || !is_toplevel {
-                    info!(
-                        "surface_under: {} entry {} (fs={}) \
-                         pos={:.0},{:.0} pos_in_window={:.0},{:.0} \
-                         surface_offset={},{} global_loc={:.0},{:.0} \
-                         geo.loc={},{} geo.size={}x{} center={:.0},{:.0}",
-                        if is_toplevel { "toplevel" } else { "popup" },
-                        entry.surface_id,
-                        effective_fs,
-                        pos.x,
-                        pos.y,
-                        pos_in_window.x,
-                        pos_in_window.y,
-                        surface_offset.x,
-                        surface_offset.y,
-                        global_loc.x,
-                        global_loc.y,
-                        window_geo.loc.x,
-                        window_geo.loc.y,
-                        window_geo.size.w,
-                        window_geo.size.h,
-                        center_offset_x,
-                        center_offset_y,
-                    );
-                }
                 return Some((surface, global_loc));
-            }
-
-            // Fullscreen covers the entire output; no entries below are visible.
-            if effective_fs {
-                break;
             }
         }
 
@@ -1757,16 +1786,6 @@ impl Ewm {
         self.output_strips
             .get(&output.name())
             .map_or(false, |strip| strip.surfaces().any(|e| self.effective_fullscreen(e)))
-    }
-
-    /// Hit-test layout surfaces under a global position, returning the surface ID.
-    ///
-    /// Simpler than layout_surface_under: just rectangle containment, no subsurface precision.
-    pub fn layout_surface_id_under(
-        &self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<u64> {
-        self.layout_entry_under(pos).map(|(entry, _, _)| entry.surface_id)
     }
 
     /// Get the unique layout entry UID under a point, or 0 if none.
@@ -3013,18 +3032,9 @@ impl Ewm {
                 }
             }
         }
-        // Non-layout surfaces (Emacs frames): use space geometry
-        let window = self.id_windows.get(&surface_id)?;
-        let window_loc = self.space.element_location(window)?;
-        self.space
-            .outputs()
-            .find(|o| {
-                self.space
-                    .output_geometry(o)
-                    .map(|geo| geo.contains(window_loc))
-                    .unwrap_or(false)
-            })
-            .cloned()
+        // Emacs frames: look up via the emacs_surfaces map (frames not in space).
+        let output_name = self.emacs_surfaces.get(&surface_id)?;
+        self.space.outputs().find(|o| &o.name() == output_name).cloned()
     }
 
 
@@ -3360,8 +3370,6 @@ impl Ewm {
         WlSurface,
         smithay::utils::Point<f64, smithay::utils::Logical>,
     )> {
-        use smithay::wayland::seat::WaylandFocus;
-
         let output = self.output_at(pos);
         let output_geo = output.and_then(|o| self.space.output_geometry(o));
         let above_top_layer = output.map_or(false, |o| self.render_above_top_layer(o));
@@ -3386,21 +3394,12 @@ impl Ewm {
             }
         }
 
-        // 3. Layout surfaces (output_strips-managed, includes popup/subsurface hit-testing)
+        // 3. Layout surfaces (entries + frame chrome)
         if let Some(result) = self.layout_surface_under(pos) {
             return Some(result);
         }
 
-        // 4. Emacs frames (still in Space)
-        if let Some(result) = self
-            .space
-            .element_under(pos)
-            .and_then(|(window, loc)| window.wl_surface().map(|s| (s.into_owned(), loc.to_f64())))
-        {
-            return Some(result);
-        }
-
-        // 5. Deferred layers (Top deferred behind fullscreen, then Bottom/Background)
+        // 4. Deferred layers (Top deferred behind fullscreen, then Bottom/Background)
         if let (Some(output), Some(geo)) = (output, output_geo) {
             let pos_within_output = pos - geo.loc.to_f64();
 
@@ -3700,19 +3699,14 @@ impl Ewm {
             }
         }
 
-        // Notify undeclared windows (Emacs frames) that intersect this output
-        for window in self.space.elements() {
-            let window_id = self.window_ids.get(window).copied().unwrap_or(0);
-            if self.surface_outputs.contains_key(&window_id) {
-                continue; // managed by output_strips, already handled above
+        // Notify Emacs frames assigned to this output (frames aren't in `space`).
+        for (&id, window) in &self.id_windows {
+            if self.emacs_surfaces.get(&id).map(|s| s.as_str()) != Some(&*output.name()) {
+                continue;
             }
-            let loc = self.space.element_location(window).unwrap_or_default();
-            let output_geo = self.space.output_geometry(output).unwrap_or_default();
-            if output_geo.contains(loc) {
-                window.with_surfaces(|surface, data| {
-                    crate::utils::send_scale_transform(surface, data, scale, transform);
-                });
-            }
+            window.with_surfaces(|surface, data| {
+                crate::utils::send_scale_transform(surface, data, scale, transform);
+            });
         }
 
         // Notify layer surfaces on this output
@@ -3742,32 +3736,16 @@ impl Ewm {
     /// Called when layer surface exclusive zones change.
     pub fn update_frames_for_working_area(&mut self, output: &Output) {
         let working_area = self.get_working_area(output);
-        let output_geo = match self.space.output_geometry(output) {
-            Some(geo) => geo,
-            None => return,
-        };
 
-        // Find Emacs frame surfaces assigned to this output and update their position/size
+        // Resize Emacs frames on this output to fit the new working area.
         for (&id, window) in &self.id_windows {
-            // Only update Emacs surfaces assigned to this output
             if self.emacs_surfaces.get(&id).map(|s| s.as_str()) != Some(&*output.name()) {
                 continue;
             }
-
-            // Reposition to working area origin (relative to output)
-            let new_pos = (
-                output_geo.loc.x + working_area.loc.x,
-                output_geo.loc.y + working_area.loc.y,
-            );
-
             debug!(
-                "Updating Emacs frame {} position to ({}, {}) size {}x{}",
-                id, new_pos.0, new_pos.1, working_area.size.w, working_area.size.h
+                "Resizing Emacs frame {} to {}x{}",
+                id, working_area.size.w, working_area.size.h
             );
-
-            self.space.map_element(window.clone(), new_pos, false);
-
-            // Resize to working area
             if let Some(toplevel) = window.toplevel() {
                 toplevel.with_pending_state(|state| {
                     state.size = Some(working_area.size);
@@ -3883,7 +3861,7 @@ impl Ewm {
         let root = find_popup_root_surface(popup).ok()?;
 
         // Check windows (layout surfaces + Emacs frames)
-        if let Some((window, id)) = self.find_window_by_surface(&root) {
+        if let Some((_window, id)) = self.find_window_by_surface(&root) {
             // Layout surface: prefer focused output
             if let Some((name, _, _)) = self.focused_output_for_surface(id) {
                 return self.space.outputs().find(|o| o.name() == name);
@@ -3894,14 +3872,11 @@ impl Ewm {
                     return self.space.outputs().find(|o| o.name() == *name);
                 }
             }
-            // Emacs frame: use space geometry
-            let window_loc = self.space.element_location(&window).unwrap_or_default();
-            return self.space.outputs().find(|o| {
-                self.space
-                    .output_geometry(o)
-                    .map(|geo| geo.contains(window_loc))
-                    .unwrap_or(false)
-            });
+            // Emacs frame: look up via emacs_surfaces (frames not in space).
+            if let Some(output_name) = self.emacs_surfaces.get(&id) {
+                return self.space.outputs().find(|o| &o.name() == output_name);
+            }
+            return None;
         }
 
         // Check layer surfaces
@@ -4090,25 +4065,6 @@ impl Ewm {
             }
         }
 
-        // Only map Emacs frames into the space; layout surfaces are
-        // positioned exclusively via output_strips.
-        if let Some(ref output_name) = frame_output {
-            let position = self
-                .space
-                .outputs()
-                .find(|o| o.name() == *output_name)
-                .map(|o| {
-                    let output_geo = self.space.output_geometry(o).unwrap_or_default();
-                    let working_area = self.get_working_area(o);
-                    (
-                        output_geo.loc.x + working_area.loc.x,
-                        output_geo.loc.y + working_area.loc.y,
-                    )
-                })
-                .unwrap_or((-10000, -10000));
-            self.space.map_element(window.clone(), position, false);
-        }
-
         // Resize Emacs frames to fill their working area
         if let Some(ref output_name) = frame_output {
             if let Some(working_area) = self
@@ -4207,9 +4163,6 @@ impl Ewm {
             // Stop any screen casts targeting this window
             #[cfg(feature = "screencast")]
             self.stop_casts_for_window(id);
-
-            // Unmap from space (no-op if not in space)
-            self.space.unmap_elem(&window);
 
             // Return refocus target if needed
             if was_focused {
@@ -4557,7 +4510,7 @@ impl CompositorHandler for State {
             return;
         }
 
-        // 4. Queue redraw for lock surface commits (not in space.elements())
+        // 4. Queue redraw for lock surface commits.
         if self.ewm.is_locked() {
             let output = self
                 .ewm
