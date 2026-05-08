@@ -3520,6 +3520,64 @@ impl Ewm {
             .or_else(|| self.space.outputs().next().map(|o| o.name()))
     }
 
+    /// Output to the left of `current` whose y-band overlaps it.  Picks
+    /// the closest by horizontal center distance; returns `None` at the
+    /// edge of the strip-of-monitors.
+    pub fn output_left_of(&self, current: &Output) -> Option<Output> {
+        let cur = self.space.output_geometry(current)?;
+        let band = Rectangle::new(
+            smithay::utils::Point::from((i32::MIN / 2, cur.loc.y)),
+            Size::from((i32::MAX, cur.size.h)),
+        );
+        let cur_cx = cur.loc.x + cur.size.w / 2;
+        self.space
+            .outputs()
+            .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
+            .filter(|(_, g)| (g.loc.x + g.size.w / 2) < cur_cx && g.overlaps(band))
+            .min_by_key(|(_, g)| cur_cx - (g.loc.x + g.size.w / 2))
+            .map(|(o, _)| o.clone())
+    }
+
+    /// Output to the right of `current`; mirror of `output_left_of`.
+    pub fn output_right_of(&self, current: &Output) -> Option<Output> {
+        let cur = self.space.output_geometry(current)?;
+        let band = Rectangle::new(
+            smithay::utils::Point::from((i32::MIN / 2, cur.loc.y)),
+            Size::from((i32::MAX, cur.size.h)),
+        );
+        let cur_cx = cur.loc.x + cur.size.w / 2;
+        self.space
+            .outputs()
+            .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
+            .filter(|(_, g)| (g.loc.x + g.size.w / 2) > cur_cx && g.overlaps(band))
+            .min_by_key(|(_, g)| (g.loc.x + g.size.w / 2) - cur_cx)
+            .map(|(o, _)| o.clone())
+    }
+
+    /// Focus the active frame on the output spatially adjacent to the
+    /// current one.  `direction` is `-1` for left, `+1` for right; other
+    /// values are a no-op.
+    pub fn focus_output_direction(&mut self, direction: i32) {
+        let cur_name = match self.active_output() {
+            Some(n) => n,
+            None => return,
+        };
+        let cur = match self.space.outputs().find(|o| o.name() == cur_name).cloned() {
+            Some(o) => o,
+            None => return,
+        };
+        let target = match direction {
+            d if d < 0 => self.output_left_of(&cur),
+            d if d > 0 => self.output_right_of(&cur),
+            _ => None,
+        };
+        let Some(target) = target else { return };
+        let Some(id) = self.active_frame_surface_id(&target.name()) else {
+            return;
+        };
+        self.set_focus_frame(id, "focus_output_direction");
+    }
+
     /// Pick the Emacs frame to redirect intercepted keys to.
     pub fn get_emacs_surface_for_focused_output(&self) -> Option<u64> {
         if self.emacs_surfaces.contains_key(&self.focused_surface_id) {
@@ -5840,6 +5898,9 @@ impl State {
             }
             ModuleCommand::FocusFrame { frame_surface_id } => {
                 self.ewm.set_focus_frame(frame_surface_id, "emacs_command");
+            }
+            ModuleCommand::FocusOutputDirection { direction } => {
+                self.ewm.focus_output_direction(direction);
             }
             ModuleCommand::WarpPointer { x, y } => {
                 self.warp_pointer(x, y);

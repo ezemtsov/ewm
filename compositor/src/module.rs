@@ -322,6 +322,11 @@ pub enum ModuleCommand {
     ConfigureFocusFollowsMouse {
         state: bool,
     },
+    /// Focus the active frame on the output adjacent to the current one.
+    /// `direction` is -1 for left, +1 for right.
+    FocusOutputDirection {
+        direction: i32,
+    },
     /// Set alpha multiplier for unfocused toplevels (1.0 = disabled).
     ConfigureUnfocusedAlpha {
         alpha: f32,
@@ -770,6 +775,16 @@ fn focus_view_module(view_id: i64) -> Result<()> {
 fn focus_frame_module(surface_id: i64) -> Result<()> {
     push_command(ModuleCommand::FocusFrame {
         frame_surface_id: surface_id as u64,
+    });
+    Ok(())
+}
+
+/// Focus the active frame on the output adjacent to the current one.
+/// DIRECTION is -1 for left, +1 for right.
+#[defun]
+fn focus_output_direction_module(direction: i64) -> Result<()> {
+    push_command(ModuleCommand::FocusOutputDirection {
+        direction: direction as i32,
     });
     Ok(())
 }

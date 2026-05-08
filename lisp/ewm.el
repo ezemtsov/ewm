@@ -50,6 +50,7 @@
 (declare-function ewm-set-focus-follows-mouse "ewm-core")
 (declare-function ewm-set-unfocused-alpha "ewm-core")
 (declare-function ewm-notify-initialized-module "ewm-core")
+(declare-function ewm-focus-output-direction-module "ewm-core")
 
 ;;; Logging
 
@@ -1185,6 +1186,16 @@ animating, so the strip rearranges around the user without scrolling."
   "Swap the selected frame with its right neighbor in the strip."
   (interactive)
   (ewm--frame-swap-on-output 1))
+
+(defun ewm-output-focus-left ()
+  "Focus the active frame on the output to the left of the current one."
+  (interactive)
+  (ewm-focus-output-direction-module -1))
+
+(defun ewm-output-focus-right ()
+  "Focus the active frame on the output to the right of the current one."
+  (interactive)
+  (ewm-focus-output-direction-module 1))
 
 (defun ewm--enforce-frame-output-parity ()
   "Delete orphan/stale frames but keep N frames per output.
