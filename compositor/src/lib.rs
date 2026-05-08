@@ -4167,13 +4167,8 @@ impl Ewm {
             // Return refocus target if needed
             if was_focused {
                 return output
-                    .as_ref()
-                    .and_then(|out| {
-                        self.emacs_surfaces
-                            .iter()
-                            .find(|(_, o)| o.as_str() == out)
-                            .map(|(&eid, _)| eid)
-                    })
+                    .as_deref()
+                    .and_then(|out| self.active_frame_surface_id(out))
                     .or(Some(1));
             }
         }
