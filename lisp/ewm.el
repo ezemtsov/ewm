@@ -337,7 +337,7 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
     (with-selected-frame frame (redisplay t))
     (when (frame-parameter frame 'ewm-focus-on-create)
       (set-frame-parameter frame 'ewm-focus-on-create nil)
-      (ewm-focus-frame id))
+      (select-frame-set-input-focus frame))
     ;; Layout hooks are no-ops when FRAME was already selected; push it.
     (ewm-layout--refresh)
     (when (null ewm--pending-frame-outputs)
@@ -537,13 +537,10 @@ Similar to `exwm-workspace-rename-buffer'."
 
 (defun ewm--handle-outputs-complete ()
   "Handle outputs_complete event.
-Sent after startup enumeration, hotplug, and session resume.
-Applies user output config, enforces frame-output parity, then
-re-syncs layout and focus with the compositor."
+Sent after startup enumeration, hotplug, and session resume."
   (ewm--apply-output-config)
   (ewm--enforce-frame-output-parity)
-  (ewm-layout--refresh)
-  (ewm--sync-focus))
+  (ewm-layout--refresh))
 
 (defun ewm--handle-environment (event)
   "Handle environment event from compositor.
@@ -721,8 +718,7 @@ This is the minor-mode equivalent of `ewm-idle-inhibit'."
     (when (cdr bufs)
       (let* ((pos (cl-position cur bufs))
              (next (nth (if pos (mod (+ pos delta) (length bufs)) 0) bufs)))
-        (switch-to-buffer next))))
-  (ewm--sync-focus))
+        (switch-to-buffer next)))))
 
 (defun ewm-next-surface-buffer ()
   "Switch to the next surface buffer in the current window."

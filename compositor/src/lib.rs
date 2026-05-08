@@ -1905,7 +1905,12 @@ impl Ewm {
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
     /// and scale notification.
-    pub fn apply_output_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
+    pub fn apply_output_layout(
+        &mut self,
+        output_name: &str,
+        frames: Vec<strip::Frame>,
+        active_idx: Option<usize>,
+    ) {
         // 1. Find the output
         let output = match self.space.outputs().find(|o| o.name() == output_name) {
             Some(o) => o.clone(),
@@ -1963,14 +1968,16 @@ impl Ewm {
                 .insert(output_name.to_string());
         }
 
-        // 6. Store the layout; `set_active` re-anchors view_offset if any
-        //    frame widths changed under us.
+        // 6. Store the layout; `set_active` drives strip activation off the
+        //    layout's `:active` flag (the single source of truth for which
+        //    frame is focused).  `view_offset` is re-anchored if a frame
+        //    width or active index changed.
         let strip_entry = self
             .output_strips
             .entry(output_name.to_string())
             .or_default();
         strip_entry.frames = frames;
-        strip_entry.set_active(strip_entry.active_idx());
+        strip_entry.set_active(active_idx.unwrap_or_else(|| strip_entry.active_idx()));
 
         // 7. Compute primary flags: largest area per surface across all outputs.
         // Fullscreen entries use the output's logical size (the surface is
@@ -5901,12 +5908,6 @@ impl State {
                     }
                 }
             }
-            ModuleCommand::FocusView { view_id } => {
-                self.ewm.set_focus_view(view_id, "emacs_command");
-            }
-            ModuleCommand::FocusFrame { frame_surface_id } => {
-                self.ewm.set_focus_frame(frame_surface_id, "emacs_command");
-            }
             ModuleCommand::FocusOutputDirection { direction } => {
                 self.ewm.focus_output_direction(direction);
             }
@@ -6081,8 +6082,12 @@ impl State {
                 );
                 debug!("Selection set from Emacs");
             }
-            ModuleCommand::OutputLayout { output, frames } => {
-                self.ewm.apply_output_layout(&output, frames);
+            ModuleCommand::OutputLayout {
+                output,
+                frames,
+                active_idx,
+            } => {
+                self.ewm.apply_output_layout(&output, frames, active_idx);
                 // Re-evaluate tracked layout entry UID (entries got fresh UIDs)
                 let (px, py) = self.ewm.pointer_location();
                 self.ewm.pointer_view_id =

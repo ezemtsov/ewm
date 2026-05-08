@@ -14,7 +14,6 @@
 
 (declare-function ewm-output-layout "ewm")
 (declare-function ewm--compositor-active-p "ewm")
-(declare-function ewm--sync-focus "ewm-focus")
 
 (defvar ewm--module-mode)
 (defvar ewm--surfaces)
@@ -49,12 +48,13 @@ This version correctly handles tab-lines on Emacs prior to v31."
 
 (defun ewm-layout--send-layouts ()
   "Build and send per-output layout declarations as nested frame strips.
-Each frame plist carries :name :surface-id :width :strip-index :surfaces;
-each surface plist holds :id :x :y :w :h :focused :fullscreen.  The
-compositor owns active-frame state (driven by focus events), so
-emission carries no `:active' flag."
+Each frame plist carries :name :surface-id :width :strip-index :active
+:surfaces; each surface plist holds :id :x :y :w :h :focused :fullscreen.
+The frame containing `selected-frame' carries `:active t', the single
+source of truth driving compositor strip activation."
   (let ((output-frames (make-hash-table :test 'equal))
-        (sel-window (selected-window)))
+        (sel-window (selected-window))
+        (sel-frame (selected-frame)))
     (dolist (frame (frame-list))
       ;; In-flight frames (no strip-index yet) would land at strip
       ;; position 0; skip until the compositor assigns one.
@@ -72,6 +72,7 @@ emission carries no `:active' flag."
                        :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
                        :width (float (frame-pixel-width frame))
                        :strip-index strip-index
+                       :active (if (eq frame sel-frame) t :false)
                        :surfaces (vconcat (nreverse surfaces)))))
             (puthash output
                      (cons frame-plist (gethash output output-frames))

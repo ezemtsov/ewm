@@ -151,18 +151,6 @@ pub fn handle_keyboard_event(
         return KeyboardAction::Forward;
     }
 
-    // Process any pending focus command before handling the key.
-    // This ensures focus changes from Emacs are applied immediately,
-    // avoiding race conditions where keys arrive before focus is synced.
-    if let Some(focus_id) = module::take_pending_focus(&state.ewm) {
-        if state.ewm.focused_surface_id != focus_id && state.ewm.id_windows.contains_key(&focus_id)
-        {
-            state
-                .ewm
-                .set_focus(focus_id, false, "pending_focus", Some("keyboard_event"));
-        }
-    }
-
     // Check if a fullscreen surface is logically focused (Emacs selected-window).
     // Uses the layout's `focused` flag, NOT keyboard focus. After intercept_redirect
     // keyboard focus is temporarily on Emacs even though the surface is fullscreen.

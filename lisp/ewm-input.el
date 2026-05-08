@@ -80,7 +80,7 @@ Override individual bindings with `use-package':
 (declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-clear-prefix-sequence "ewm-core")
 (declare-function ewm-in-prefix-sequence-p "ewm-core")
-(declare-function ewm--sync-focus "ewm-focus")
+(declare-function ewm-layout--refresh "ewm-layout")
 (declare-function ewm-warp-pointer "ewm")
 (declare-function ewm--get-output-origin "ewm")
 ;; Defined in ewm.el (loaded after ewm-input.el)
@@ -264,17 +264,14 @@ warps from packages that temporarily switch windows internally
 ;;
 ;; When a prefix key (C-x, s-SPC, etc.) is intercepted from an external
 ;; surface, the compositor redirects focus to Emacs and sets the prefix flag.
-;; After the command sequence completes, we clear the flag and restore focus.
-;; Window/buffer change hooks also call `ewm--sync-focus', but commands that
-;; complete without changing windows (e.g. layout switch via s-SPC e) need
-;; this post-command path to restore focus to the pre-intercept surface.
+;; After the command sequence completes, refresh the layout so the active
+;; frame's `:focused' surface entry restores compositor keyboard focus.
 
 (defun ewm-input--clear-prefix ()
-  "Complete prefix sequence: clear flag and restore compositor focus.
-Only acts when a prefix sequence was active."
+  "Complete prefix sequence: clear flag and refresh layout."
   (when (ewm-in-prefix-sequence-p)
     (ewm-clear-prefix-sequence)
-    (ewm--sync-focus)))
+    (ewm-layout--refresh)))
 
 ;;; Frame-switch suppression
 ;;
@@ -286,16 +283,10 @@ Only acts when a prefix sequence was active."
 ;; `focus-in'/`focus-out'), where they're consumed without entering the
 ;; command loop.  EWM owns frame selection via `ewm--handle-focus'.
 
-(defun ewm-input--sync-focus-after-command ()
-  "Sync compositor focus after a user command."
-  (when ewm--module-mode
-    (ewm--sync-focus)))
-
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
   (add-hook 'post-command-hook #'ewm-input--clear-prefix)
-  (add-hook 'post-command-hook #'ewm-input--sync-focus-after-command)
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (define-key special-event-map [switch-frame] #'ignore))
 
@@ -303,7 +294,6 @@ Only acts when a prefix sequence was active."
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
   (remove-hook 'post-command-hook #'ewm-input--clear-prefix)
-  (remove-hook 'post-command-hook #'ewm-input--sync-focus-after-command)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (define-key special-event-map [switch-frame] nil))
 

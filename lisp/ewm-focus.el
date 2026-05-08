@@ -1,28 +1,21 @@
-;;; ewm-focus.el --- Focus management for EWM -*- lexical-binding: t -*-
+;;; ewm-focus.el --- Focus handling for EWM -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
 
-;; Bidirectional focus synchronization between Emacs and the compositor.
+;; Focus handling.  The lisp -> compositor direction is driven by
+;; `ewm-layout--send-layouts': the layout payload's `:active' flag is
+;; the single source of truth for which strip frame is focused.
 ;;
-;; Emacs -> compositor:
-;;   ewm--focus-target  (compute target)
-;;   ewm--sync-focus    (send if changed)
-;;   ewm-focus          (module call)
-;;
-;; Compositor -> Emacs:
-;;   ewm--handle-focus  (select window for clicked surface)
+;; Compositor -> Emacs uses `ewm--handle-focus' to select the window
+;; displaying the clicked surface.
 
 ;;; Code:
 
 (require 'cl-lib)
 
-(declare-function ewm-focus-view-module "ewm-core")
-(declare-function ewm-focus-frame-module "ewm-core")
-(declare-function ewm-get-focused-id "ewm-core")
-(declare-function ewm-in-prefix-sequence-p "ewm-core")
 (declare-function ewm-input--pointer-in-window-p "ewm-input")
 
 (defvar ewm--module-mode)
@@ -37,53 +30,6 @@
   (or (active-minibuffer-window)
       (> (minibuffer-depth) 0)
       (minibufferp)))
-
-;;; Emacs -> compositor
-
-(defun ewm-focus-view (view-id)
-  "Focus the mirror identified by VIEW-ID."
-  (ewm-focus-view-module view-id))
-
-(defun ewm-focus-frame (frame-surface-id)
-  "Focus an Emacs frame by its xdg_toplevel FRAME-SURFACE-ID."
-  (ewm-focus-frame-module frame-surface-id))
-
-(defun ewm--focus-target ()
-  "Return (KIND . ID) for compositor focus, or nil to skip.
-KIND is `view' for a mirror or `frame' for an Emacs frame's chrome."
-  (cond
-   ((or prefix-arg
-        (ewm-in-prefix-sequence-p)
-        (and overriding-terminal-local-map
-             (keymapp overriding-terminal-local-map)))
-    nil)
-   ((ewm--minibuffer-active-p)
-    (cons 'frame (frame-parameter (selected-frame) 'ewm-surface-id)))
-   ((and (buffer-local-value 'ewm-surface-id (window-buffer (selected-window)))
-         (window-parameter (selected-window) 'ewm-view-id))
-    (cons 'view (window-parameter (selected-window) 'ewm-view-id)))
-   (t
-    (cons 'frame (frame-parameter (selected-frame) 'ewm-surface-id)))))
-
-(defun ewm--sync-focus ()
-  "Sync compositor focus from Emacs state."
-  (when ewm--module-mode
-    (let ((target (ewm--focus-target)))
-      (when (fboundp 'ewm--log)
-        (ewm--log "sync-focus: target=%S amw=%S mbd=%d sel-frame-sid=%S sel-win-buf=%S last-cmd=%S"
-                  target
-                  (active-minibuffer-window)
-                  (minibuffer-depth)
-                  (frame-parameter (selected-frame) 'ewm-surface-id)
-                  (buffer-name (window-buffer (selected-window)))
-                  this-command))
-      (pcase target
-        (`(view . ,id) (ewm-focus-view id))
-        (`(frame . ,id)
-         (unless (eql id (ewm-get-focused-id))
-           (ewm-focus-frame id)))))))
-
-;;; Compositor -> Emacs
 
 (defun ewm--handle-focus (event)
   "Handle focus EVENT from compositor.

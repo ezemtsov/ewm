@@ -175,12 +175,6 @@ impl Fixture {
     fn handle_module_command(&mut self, cmd: crate::module::ModuleCommand) {
         use crate::module::ModuleCommand;
         match cmd {
-            ModuleCommand::FocusView { view_id } => {
-                self.state.ewm.set_focus_view(view_id, "test");
-            }
-            ModuleCommand::FocusFrame { frame_surface_id } => {
-                self.state.ewm.set_focus_frame(frame_surface_id, "test");
-            }
             ModuleCommand::Close { id } => {
                 if let Some(window) = self.state.ewm.id_windows.get(&id) {
                     if let Some(toplevel) = window.toplevel() {
@@ -188,8 +182,14 @@ impl Fixture {
                     }
                 }
             }
-            ModuleCommand::OutputLayout { output, frames } => {
-                self.state.ewm.apply_output_layout(&output, frames);
+            ModuleCommand::OutputLayout {
+                output,
+                frames,
+                active_idx,
+            } => {
+                self.state
+                    .ewm
+                    .apply_output_layout(&output, frames, active_idx);
             }
             // Other commands can be added as needed for testing
             _ => {}

@@ -64,6 +64,7 @@ use_symbols! {
     kw_surfaces   => ":surfaces"
     kw_surface_id => ":surface-id"
     kw_view_id    => ":view-id"
+    kw_active     => ":active"
     // configure_output_module: marker for "not provided" (distinct from nil)
     kw_unset  => ":unset"
     // configure_input_module plist property names
@@ -253,14 +254,6 @@ pub enum ModuleCommand {
     Close {
         id: u64,
     },
-    /// Focus the mirror identified by `view_id`.
-    FocusView {
-        view_id: u64,
-    },
-    /// Focus an Emacs frame's chrome by its xdg_toplevel surface id.
-    FocusFrame {
-        frame_surface_id: u64,
-    },
     WarpPointer {
         x: f64,
         y: f64,
@@ -299,10 +292,12 @@ pub enum ModuleCommand {
         text: String,
     },
     /// Declarative per-output layout: the strip of Emacs frames, each
-    /// carrying its own surfaces.
+    /// carrying its own surfaces.  `active_idx` is the frame containing
+    /// Emacs's selected-frame, or `None` if it sits on a different output.
     OutputLayout {
         output: String,
         frames: Vec<Frame>,
+        active_idx: Option<usize>,
     },
     /// Configure input devices (unified)
     ConfigureInput {
@@ -351,28 +346,6 @@ fn command_queue() -> &'static Mutex<Vec<ModuleCommand>> {
 /// Called by the compositor in its main loop.
 pub fn drain_commands() -> Vec<ModuleCommand> {
     command_queue().lock().unwrap().drain(..).collect()
-}
-
-/// Drain pending FocusView/FocusFrame commands and return the last target's
-/// surface id, looked up via `lookup_view`/`lookup_frame` against `state`.
-/// Called before keyboard event handling to ensure focus is synced.
-pub fn take_pending_focus(state: &crate::Ewm) -> Option<u64> {
-    let mut queue = command_queue().lock().unwrap();
-    let mut last_id = None;
-    queue.retain(|cmd| match cmd {
-        ModuleCommand::FocusView { view_id } => {
-            if let Some((_, _, sid)) = state.lookup_view(*view_id) {
-                last_id = Some(sid);
-            }
-            false
-        }
-        ModuleCommand::FocusFrame { frame_surface_id } => {
-            last_id = Some(*frame_surface_id);
-            false
-        }
-        _ => true,
-    });
-    last_id
 }
 
 /// Peek at pending commands without draining (for state dump)
@@ -684,6 +657,7 @@ fn socket() -> Result<Option<String>> {
 fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
     let frames_len: i64 = env.call(length, (frames,))?.into_rust()?;
     let mut parsed_frames = Vec::with_capacity(frames_len as usize);
+    let mut active_idx: Option<usize> = None;
 
     for i in 0..frames_len {
         let frame = env.call(aref, (frames, i))?;
@@ -739,6 +713,11 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             });
         }
 
+        let active_val = env.call(plist_get, (frame, kw_active))?;
+        if active_val.is_not_nil() && active_val != *kw_false {
+            active_idx = Some(parsed_frames.len());
+        }
+
         parsed_frames.push(Frame {
             name,
             surface_id,
@@ -750,6 +729,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
     push_command(ModuleCommand::OutputLayout {
         output,
         frames: parsed_frames,
+        active_idx,
     });
     Ok(())
 }
@@ -758,24 +738,6 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
 #[defun]
 fn close_module(id: i64) -> Result<()> {
     push_command(ModuleCommand::Close { id: id as u64 });
-    Ok(())
-}
-
-/// Focus the mirror identified by VIEW-ID.
-#[defun]
-fn focus_view_module(view_id: i64) -> Result<()> {
-    push_command(ModuleCommand::FocusView {
-        view_id: view_id as u64,
-    });
-    Ok(())
-}
-
-/// Focus an Emacs frame's chrome by its xdg_toplevel SURFACE-ID.
-#[defun]
-fn focus_frame_module(surface_id: i64) -> Result<()> {
-    push_command(ModuleCommand::FocusFrame {
-        frame_surface_id: surface_id as u64,
-    });
     Ok(())
 }
 
