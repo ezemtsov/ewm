@@ -274,15 +274,14 @@ impl Strip {
             .flat_map(|(i, f)| f.surfaces.iter().map(move |s| (i, s)))
     }
 
-    /// Drop frame `idx`; surviving neighbours slide in from the removed
-    /// column's offset so the gap closes visibly.
-    pub fn remove_frame_at(&mut self, idx: usize) {
+    /// Seed move_anim on neighbours of `frames[idx]` so they slide in to
+    /// fill the gap.  Caller is responsible for actually removing the frame.
+    pub fn seed_remove_animation(&mut self, idx: usize) {
         if idx >= self.frames.len() {
             return;
         }
-        let prev_active = self.active_idx;
         let offset = self.frames[idx].width + self.gap;
-        let (slide, from) = if prev_active <= idx {
+        let (slide, from) = if self.active_idx <= idx {
             (&mut self.frames[idx + 1..], offset)
         } else {
             (&mut self.frames[..idx], -offset)
@@ -290,6 +289,16 @@ impl Strip {
         for f in slide {
             f.move_anim = Some(ViewAnimation::new(from, 0.0, DEFAULT_ANIM_DURATION));
         }
+    }
+
+    /// Drop frame `idx`; surviving neighbours slide in from the removed
+    /// column's offset so the gap closes visibly.
+    pub fn remove_frame_at(&mut self, idx: usize) {
+        if idx >= self.frames.len() {
+            return;
+        }
+        self.seed_remove_animation(idx);
+        let prev_active = self.active_idx;
         self.frames.remove(idx);
 
         let new_active = if idx < prev_active {

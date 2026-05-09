@@ -2021,6 +2021,16 @@ impl Ewm {
             .output_strips
             .entry(output_name.to_string())
             .or_default();
+        // Seed slide-in animations for frames the new layout dropped: lisp's
+        // window hooks send a layout without the deleted frame before its
+        // wl_surface destroy reaches us, so `remove_frame_at' alone wouldn't
+        // catch lisp-driven deletions.
+        let new_ids: HashSet<u64> = frames.iter().map(|f| f.surface_id).collect();
+        for i in 0..strip_entry.frames.len() {
+            if !new_ids.contains(&strip_entry.frames[i].surface_id) {
+                strip_entry.seed_remove_animation(i);
+            }
+        }
         // Preserve in-flight slide animations across the layout swap.
         for new_f in &mut frames {
             if let Some(old_f) = strip_entry
