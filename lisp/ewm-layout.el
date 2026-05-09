@@ -48,43 +48,33 @@ This version correctly handles tab-lines on Emacs prior to v31."
 
 (defun ewm-layout--send-layouts ()
   "Build and send per-output layout declarations as nested frame strips.
-Each frame plist carries :name :surface-id :width :strip-index :active
-:surfaces; each surface plist holds :id :x :y :w :h :focused :fullscreen.
-The frame containing `selected-frame' carries `:active t', the single
-source of truth driving compositor strip activation."
-  (let ((output-frames (make-hash-table :test 'equal))
-        (sel-window (selected-window))
+Iterates `ewm--strips' so the order is the strip's own; the frame
+containing `selected-frame' carries `:active t', the single source of
+truth driving compositor strip activation."
+  (let ((sel-window (selected-window))
         (sel-frame (selected-frame)))
-    (dolist (frame (frame-list))
-      ;; In-flight frames (no strip-index yet) would land at strip
-      ;; position 0; skip until the compositor assigns one.
-      (when-let ((output (frame-parameter frame 'ewm-output))
-                 (strip-index (frame-parameter frame 'ewm-strip-index)))
-        (let ((surfaces nil))
-          (dolist (window (window-list frame 'no-minibuf))
-            (when-let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
-              (let* ((focused-p (eq window sel-window))
-                     (view-id (ewm-layout--ensure-view-id window id))
-                     (view (ewm-layout--make-output-view window focused-p)))
-                (push `(:id ,id :view-id ,view-id ,@view) surfaces))))
-          (let ((frame-plist
-                 (list :name (or (frame-parameter frame 'name) "")
-                       :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
-                       :width (float (frame-pixel-width frame))
-                       :strip-index strip-index
-                       :active (if (eq frame sel-frame) t :false)
-                       :surfaces (vconcat (nreverse surfaces)))))
-            (puthash output
-                     (cons frame-plist (gethash output output-frames))
-                     output-frames)))))
-    (maphash
-     (lambda (output frames)
-       (let ((sorted (sort frames
-                           (lambda (a b)
-                             (< (plist-get a :strip-index)
-                                (plist-get b :strip-index))))))
-         (ewm-output-layout output (vconcat sorted))))
-     output-frames)))
+    (dolist (strip ewm--strips)
+      (let ((output (car strip))
+            (frames-out nil))
+        (dolist (frame (cdr strip))
+          (let ((surfaces nil))
+            (dolist (window (window-list frame 'no-minibuf))
+              (when-let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
+                (let* ((focused-p (eq window sel-window))
+                       (view-id (ewm-layout--ensure-view-id window id))
+                       (view (ewm-layout--make-output-view window focused-p)))
+                  (push `(:id ,id :view-id ,view-id ,@view) surfaces))))
+            (push (list :name (or (frame-parameter frame 'name) "")
+                        :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
+                        :width (float (frame-pixel-width frame))
+                        :active (if (eq frame sel-frame) t :false)
+                        :surfaces (vconcat (nreverse surfaces)))
+                  frames-out)))
+        (let ((sorted (nreverse frames-out)))
+          (ewm--log "send-layouts: output=%s sids=%S"
+                    output
+                    (mapcar (lambda (p) (plist-get p :surface-id)) sorted))
+          (ewm-output-layout output (vconcat sorted)))))))
 
 (defun ewm-layout--refresh ()
   "Send current window layouts to the compositor."
