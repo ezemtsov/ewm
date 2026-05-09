@@ -2052,9 +2052,14 @@ impl Ewm {
         }
 
         for (id, prev) in migrations {
+            let Some(window) = self.id_windows.get(&id).cloned() else { continue };
+            let Some(surface) = window.wl_surface() else { continue };
             if let Some(prev_name) = prev {
-                self.notify_emacs_frame_migration(id, &prev_name, output_name);
+                if let Some(prev_out) = self.space.outputs().find(|o| o.name() == prev_name) {
+                    prev_out.leave(&surface);
+                }
             }
+            output.enter(&surface);
         }
 
         // 7. Compute primary flags: largest area per surface across all outputs.
@@ -2169,8 +2174,7 @@ impl Ewm {
             }
         }
 
-        // 9. Queue redraw for just this output
-        self.queue_redraw(&output);
+        self.update_frames_for_working_area(&output);
 
         debug!(
             "apply_output_layout: output '{}' with {} surfaces",
@@ -3942,37 +3946,6 @@ impl Ewm {
         map.non_exclusive_zone()
     }
 
-    /// Send `wl_surface` leave/enter and a configure when an Emacs frame's
-    /// hosting output changes.
-    fn notify_emacs_frame_migration(
-        &mut self,
-        id: u64,
-        prev_output_name: &str,
-        new_output_name: &str,
-    ) {
-        let Some(new_output) = self
-            .space
-            .outputs()
-            .find(|o| o.name() == new_output_name)
-            .cloned()
-        else {
-            return;
-        };
-        let working_area = self.get_working_area(&new_output);
-        let Some(window) = self.id_windows.get(&id).cloned() else {
-            return;
-        };
-        if let Some(surface) = window.wl_surface() {
-            if let Some(prev_out) = self.space.outputs().find(|o| o.name() == prev_output_name) {
-                prev_out.leave(&surface);
-            }
-            new_output.enter(&surface);
-        }
-        if let Some(toplevel) = window.toplevel() {
-            toplevel.with_pending_state(|s| s.size = Some(working_area.size));
-            toplevel.send_configure();
-        }
-    }
 
     /// Update Emacs frames to fit within the working area of an output.
     /// Called when layer surface exclusive zones change.
@@ -3981,19 +3954,19 @@ impl Ewm {
 
         for id in self.emacs_frames_on(&output.name()).collect::<Vec<_>>() {
             let Some(window) = self.id_windows.get(&id) else { continue };
-            debug!(
-                "Resizing Emacs frame {} to {}x{}",
-                id, working_area.size.w, working_area.size.h
-            );
             if let Some(toplevel) = window.toplevel() {
-                toplevel.with_pending_state(|state| {
-                    state.size = Some(working_area.size);
+                let new_size = Some(working_area.size);
+                let changed = toplevel.with_pending_state(|state| {
+                    let changed = state.size != new_size;
+                    state.size = new_size;
+                    changed
                 });
-                toplevel.send_configure();
+                if changed {
+                    toplevel.send_configure();
+                }
             }
         }
 
-        // Queue redraw
         self.queue_redraw(output);
     }
 
