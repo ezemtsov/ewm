@@ -857,7 +857,7 @@ pub struct Ewm {
     // Emacs client tracking - used to identify which surfaces belong to Emacs
     // vs external applications (for key interception)
     pub emacs_pid: Option<u32>,
-    pub emacs_surfaces: HashMap<u64, String>,
+    pub emacs_frame_ids: HashSet<u64>,
 
     // Screenshot request
     pub pending_screenshot: Option<String>,
@@ -1169,7 +1169,7 @@ impl Ewm {
             pointer_view_id: 0,
             input_configs: Vec::new(),
             emacs_pid: None,
-            emacs_surfaces: HashMap::new(),
+            emacs_frame_ids: HashSet::new(),
             pending_screenshot: None,
             output_state: HashMap::new(),
             monitors_active: true,
@@ -1257,11 +1257,10 @@ impl Ewm {
         }
     }
 
-    /// Drop the Emacs frame chrome `id` from its strip, niri-style.
-    /// No-op if `id` isn't a tracked Emacs frame.
+    /// Drop the Emacs frame chrome `id` from whichever strip holds it.
     fn remove_emacs_frame_from_strip(&mut self, id: u64) {
-        let Some(out) = self.emacs_surfaces.get(&id) else { return };
-        let Some(strip) = self.output_strips.get_mut(out) else { return };
+        let Some(out) = self.emacs_frame_output(id).map(String::from) else { return };
+        let Some(strip) = self.output_strips.get_mut(&out) else { return };
         let Some(idx) = strip.frames.iter().position(|f| f.surface_id == id) else { return };
         strip.remove_frame_at(idx);
     }
@@ -1356,8 +1355,9 @@ impl Ewm {
                 self.window_ids.remove(&window);
             }
             self.remove_surface_from_layouts(id);
+            self.remove_emacs_frame_from_strip(id);
             self.surface_info.remove(&id);
-            self.emacs_surfaces.remove(&id);
+            self.emacs_frame_ids.remove(&id);
             self.queue_event(Event::Close { id });
 
             // Stop any screen casts targeting this window
@@ -1458,6 +1458,28 @@ impl Ewm {
             }
         }
         None
+    }
+
+    pub fn is_emacs_frame(&self, id: u64) -> bool {
+        self.emacs_frame_ids.contains(&id)
+    }
+
+    pub fn emacs_frame_output(&self, id: u64) -> Option<&str> {
+        if !self.is_emacs_frame(id) {
+            return None;
+        }
+        self.output_strips
+            .iter()
+            .find(|(_, s)| s.frames.iter().any(|f| f.surface_id == id))
+            .map(|(name, _)| name.as_str())
+    }
+
+    pub fn emacs_frames_on<'a>(&'a self, output_name: &'a str) -> impl Iterator<Item = u64> + 'a {
+        self.output_strips
+            .get(output_name)
+            .into_iter()
+            .flat_map(|s| s.frames.iter().map(|f| f.surface_id))
+            .filter(|&id| id != 0)
     }
 
     /// Resolve a frame's xdg_toplevel `surface_id` to `(output_name, frame_idx)`.
@@ -1571,8 +1593,8 @@ impl Ewm {
         surface_id: u64,
     ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
         use smithay::utils::Point;
-        let output_name = self.emacs_surfaces.get(&surface_id)?;
-        let output = self.space.outputs().find(|o| &o.name() == output_name)?;
+        let output_name = self.emacs_frame_output(surface_id)?;
+        let output = self.space.outputs().find(|o| o.name() == output_name)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = layer_map_for_output(output).non_exclusive_zone();
         let frame_dx = self
@@ -1968,6 +1990,29 @@ impl Ewm {
                 .insert(output_name.to_string());
         }
 
+        // Capture prev outputs before the swap; emacs_frame_output reads strips.
+        let migrations: Vec<(u64, Option<String>)> = frames
+            .iter()
+            .filter_map(|f| {
+                let id = f.surface_id;
+                if id == 0 {
+                    return None;
+                }
+                let prev = self.emacs_frame_output(id).map(String::from);
+                if prev.as_deref() == Some(output_name) {
+                    return None;
+                }
+                Some((id, prev))
+            })
+            .collect();
+        for (id, prev) in &migrations {
+            if let Some(prev_name) = prev {
+                if let Some(prev_strip) = self.output_strips.get_mut(prev_name) {
+                    prev_strip.frames.retain(|f| f.surface_id != *id);
+                }
+            }
+        }
+
         // 6. Store the layout; `set_active` drives strip activation off the
         //    layout's `:active` flag (the single source of truth for which
         //    frame is focused).  `view_offset` is re-anchored if a frame
@@ -2003,6 +2048,12 @@ impl Ewm {
                 .unwrap_or(frame.surface_id);
             if self.focused_surface_id != target_id {
                 self.set_focus(target_id, false, "layout_active", None);
+            }
+        }
+
+        for (id, prev) in migrations {
+            if let Some(prev_name) = prev {
+                self.notify_emacs_frame_migration(id, &prev_name, output_name);
             }
         }
 
@@ -2147,10 +2198,11 @@ impl Ewm {
                 .filter(|o| names.contains(&o.name()))
                 .cloned()
                 .collect()
-        } else if let Some(name) = self.emacs_surfaces.get(&id) {
+        } else if let Some(name) = self.emacs_frame_output(id) {
+            let name = name.to_string();
             self.space
                 .outputs()
-                .filter(|o| o.name() == *name)
+                .filter(|o| o.name() == name)
                 .cloned()
                 .collect()
         } else {
@@ -3128,9 +3180,9 @@ impl Ewm {
                 }
             }
         }
-        // Emacs frames: look up via the emacs_surfaces map (frames not in space).
-        let output_name = self.emacs_surfaces.get(&surface_id)?;
-        self.space.outputs().find(|o| &o.name() == output_name).cloned()
+        // Emacs frames: derived from `output_strips` (frames aren't in `space`).
+        let output_name = self.emacs_frame_output(surface_id)?;
+        self.space.outputs().find(|o| o.name() == output_name).cloned()
     }
 
 
@@ -3154,7 +3206,7 @@ impl Ewm {
 
     /// Check if focus is on an Emacs surface (for key interception decisions)
     pub fn is_focus_on_emacs(&self) -> bool {
-        self.emacs_surfaces.contains_key(&self.focused_surface_id)
+        self.is_emacs_frame(self.focused_surface_id)
     }
 
     /// Focus a surface with source tracking for debugging.
@@ -3297,7 +3349,7 @@ impl Ewm {
         use smithay::wayland::text_input::TextInputSeat;
         let text_input = self.seat.text_input();
 
-        let is_emacs = surface_id.map_or(false, |id| self.emacs_surfaces.contains_key(&id));
+        let is_emacs = surface_id.map_or(false, |id| self.is_emacs_frame(id));
 
         if is_emacs || surface.is_none() {
             text_input.leave();
@@ -3621,12 +3673,12 @@ impl Ewm {
 
     /// Pick the Emacs frame to redirect intercepted keys to.
     pub fn get_emacs_surface_for_focused_output(&self) -> Option<u64> {
-        if self.emacs_surfaces.contains_key(&self.focused_surface_id) {
+        if self.is_emacs_frame(self.focused_surface_id) {
             return Some(self.focused_surface_id);
         }
         let output = self.get_focused_output()?;
         self.active_frame_surface_id(&output)
-            .or_else(|| self.emacs_surfaces.keys().next().copied())
+            .or_else(|| self.emacs_frame_ids.iter().next().copied())
     }
 
     /// Recalculate total output size from current space geometry
@@ -3859,13 +3911,12 @@ impl Ewm {
         }
 
         // Notify Emacs frames assigned to this output (frames aren't in `space`).
-        for (&id, window) in &self.id_windows {
-            if self.emacs_surfaces.get(&id).map(|s| s.as_str()) != Some(&*output.name()) {
-                continue;
+        for id in self.emacs_frames_on(&output.name()).collect::<Vec<_>>() {
+            if let Some(window) = self.id_windows.get(&id) {
+                window.with_surfaces(|surface, data| {
+                    crate::utils::send_scale_transform(surface, data, scale, transform);
+                });
             }
-            window.with_surfaces(|surface, data| {
-                crate::utils::send_scale_transform(surface, data, scale, transform);
-            });
         }
 
         // Notify layer surfaces on this output
@@ -3891,16 +3942,45 @@ impl Ewm {
         map.non_exclusive_zone()
     }
 
+    /// Send `wl_surface` leave/enter and a configure when an Emacs frame's
+    /// hosting output changes.
+    fn notify_emacs_frame_migration(
+        &mut self,
+        id: u64,
+        prev_output_name: &str,
+        new_output_name: &str,
+    ) {
+        let Some(new_output) = self
+            .space
+            .outputs()
+            .find(|o| o.name() == new_output_name)
+            .cloned()
+        else {
+            return;
+        };
+        let working_area = self.get_working_area(&new_output);
+        let Some(window) = self.id_windows.get(&id).cloned() else {
+            return;
+        };
+        if let Some(surface) = window.wl_surface() {
+            if let Some(prev_out) = self.space.outputs().find(|o| o.name() == prev_output_name) {
+                prev_out.leave(&surface);
+            }
+            new_output.enter(&surface);
+        }
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.with_pending_state(|s| s.size = Some(working_area.size));
+            toplevel.send_configure();
+        }
+    }
+
     /// Update Emacs frames to fit within the working area of an output.
     /// Called when layer surface exclusive zones change.
     pub fn update_frames_for_working_area(&mut self, output: &Output) {
         let working_area = self.get_working_area(output);
 
-        // Resize Emacs frames on this output to fit the new working area.
-        for (&id, window) in &self.id_windows {
-            if self.emacs_surfaces.get(&id).map(|s| s.as_str()) != Some(&*output.name()) {
-                continue;
-            }
+        for id in self.emacs_frames_on(&output.name()).collect::<Vec<_>>() {
+            let Some(window) = self.id_windows.get(&id) else { continue };
             debug!(
                 "Resizing Emacs frame {} to {}x{}",
                 id, working_area.size.w, working_area.size.h
@@ -4031,9 +4111,8 @@ impl Ewm {
                     return self.space.outputs().find(|o| o.name() == *name);
                 }
             }
-            // Emacs frame: look up via emacs_surfaces (frames not in space).
-            if let Some(output_name) = self.emacs_surfaces.get(&id) {
-                return self.space.outputs().find(|o| &o.name() == output_name);
+            if let Some(output_name) = self.emacs_frame_output(id) {
+                return self.space.outputs().find(|o| o.name() == output_name);
             }
             return None;
         }
@@ -4197,9 +4276,13 @@ impl Ewm {
         let frame_output = module::take_pending_frame_output();
         let target_output = frame_output.clone().or_else(|| self.active_output());
 
+        info!(
+            "new_toplevel id={} is_emacs={} pending_output={:?} target_output={:?} pending_queue_after_take={:?}",
+            id, is_emacs, frame_output, target_output, module::peek_pending_frame_outputs()
+        );
+
         if is_emacs {
-            self.emacs_surfaces
-                .insert(id, target_output.clone().unwrap_or_default());
+            self.emacs_frame_ids.insert(id);
         }
 
         // Associate window with target output for scale detection.
@@ -4314,11 +4397,15 @@ impl Ewm {
             self.window_ids.remove(&window);
             self.id_windows.remove(&id);
             self.surface_info.remove(&id);
+            let was_emacs = self.emacs_frame_ids.contains(&id);
             self.remove_surface_from_layouts(id);
             self.remove_emacs_frame_from_strip(id);
-            self.emacs_surfaces.remove(&id);
+            self.emacs_frame_ids.remove(&id);
             self.queue_event(Event::Close { id });
-            info!("Toplevel {} destroyed", id);
+            info!(
+                "Toplevel {} destroyed was_focused={} was_emacs={} output={:?}",
+                id, was_focused, was_emacs, output
+            );
 
             // Stop any screen casts targeting this window
             #[cfg(feature = "screencast")]
@@ -4326,10 +4413,12 @@ impl Ewm {
 
             // Return refocus target if needed
             if was_focused {
-                return output
+                let refocus = output
                     .as_deref()
                     .and_then(|out| self.active_frame_surface_id(out))
                     .or(Some(1));
+                info!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
+                return refocus;
             }
         }
         None
@@ -4421,7 +4510,7 @@ impl Ewm {
                 },
             );
             // Skip Title event for Emacs surfaces; Emacs already knows its own titles
-            if !self.emacs_surfaces.contains_key(&id) {
+            if !self.is_emacs_frame(id) {
                 self.queue_event(Event::Title {
                     id,
                     app: app_id,
@@ -5173,7 +5262,7 @@ impl XdgActivationHandler for State {
                 // Lisp owns Emacs frame focus via select-frame-set-input-focus;
                 // honoring GTK's echo activation here would loop with our own
                 // ewm-focus calls.
-                if self.ewm.emacs_surfaces.contains_key(&id) {
+                if self.ewm.is_emacs_frame(id) {
                     debug!("xdg_activation: ignored for Emacs frame {}", id);
                 } else {
                     self.ewm.set_focus(id, true, "xdg_activation", None);
@@ -5204,7 +5293,7 @@ impl ForeignToplevelHandler for State {
     fn is_read_only_surface(&self, wl_surface: &WlSurface) -> bool {
         self.ewm
             .find_window_by_surface(wl_surface)
-            .is_some_and(|(_, id)| self.ewm.emacs_surfaces.contains_key(&id))
+            .is_some_and(|(_, id)| self.ewm.is_emacs_frame(id))
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {
@@ -6054,9 +6143,15 @@ impl State {
             ModuleCommand::GetDebugState => {
                 let id_window_keys: Vec<u64> = self.ewm.id_windows.keys().copied().collect();
                 let layer_surfaces_info = self.ewm.get_layer_surfaces_info();
+                let emacs_surfaces: HashMap<u64, &str> = self
+                    .ewm
+                    .emacs_frame_ids
+                    .iter()
+                    .filter_map(|&id| self.ewm.emacs_frame_output(id).map(|o| (id, o)))
+                    .collect();
                 let state = serde_json::json!({
                     "surfaces": self.ewm.surface_info,
-                    "emacs_surfaces": self.ewm.emacs_surfaces,
+                    "emacs_surfaces": emacs_surfaces,
                     "output_strips": self.ewm.output_strips,
                     "surface_outputs": self.ewm.surface_outputs,
                     "focused_surface_id": self.ewm.focused_surface_id,

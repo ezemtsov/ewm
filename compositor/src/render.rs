@@ -448,10 +448,8 @@ pub fn collect_render_elements_for_output(
     let working_area_loc_physical =
         Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
             .to_physical_precise_round(scale);
-    for (&id, owner) in &ewm.emacs_surfaces {
-        if owner.as_str() != output.name().as_str() {
-            continue;
-        }
+    let output_name = output.name();
+    for id in ewm.emacs_frames_on(&output_name) {
         let Some(window) = ewm.id_windows.get(&id) else {
             continue;
         };
