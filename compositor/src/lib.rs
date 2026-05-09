@@ -1930,7 +1930,7 @@ impl Ewm {
     pub fn apply_output_layout(
         &mut self,
         output_name: &str,
-        frames: Vec<strip::Frame>,
+        mut frames: Vec<strip::Frame>,
         active_idx: Option<usize>,
     ) {
         // 1. Find the output
@@ -2021,6 +2021,16 @@ impl Ewm {
             .output_strips
             .entry(output_name.to_string())
             .or_default();
+        // Preserve in-flight slide animations across the layout swap.
+        for new_f in &mut frames {
+            if let Some(old_f) = strip_entry
+                .frames
+                .iter()
+                .find(|f| f.surface_id == new_f.surface_id)
+            {
+                new_f.move_anim = old_f.move_anim.clone();
+            }
+        }
         let prev_active = strip_entry.active_idx();
         let prev_offset = strip_entry.view_offset.current();
         strip_entry.frames = frames;
@@ -2721,7 +2731,7 @@ impl Ewm {
                     .frames
                     .iter()
                     .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
-            if strip.view_offset.is_animation_ongoing() || any_open_fade {
+            if strip.animations_ongoing() || any_open_fade {
                 if let Some(state) = self.output_state.get_mut(output) {
                     state.unfinished_animations_remain = true;
                 }

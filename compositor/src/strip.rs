@@ -150,6 +150,15 @@ pub struct Frame {
     pub surface_id: u64,
     pub width: f64,
     pub surfaces: Vec<LayoutEntry>,
+    /// Slide-in animation seeded by `Strip::remove_frame_at`.
+    #[serde(skip)]
+    pub move_anim: Option<ViewAnimation>,
+}
+
+impl Frame {
+    pub fn move_offset(&self) -> f64 {
+        self.move_anim.as_ref().map_or(0.0, ViewAnimation::value)
+    }
 }
 
 /// Per-output strip of frames laid out left-to-right.
@@ -210,10 +219,10 @@ impl Strip {
     }
 
     /// Screen-relative x of frame `idx` (0 means flush with the working
-    /// area's left edge). Equals `column_x(idx) - view_pos()`, which is the
-    /// translation a renderer must apply to surfaces inside that frame.
+    /// area's left edge), including any in-flight slide.
     pub fn screen_x_of_frame(&self, idx: usize) -> f64 {
-        self.column_x(idx) - self.view_pos()
+        let move_offset = self.frames.get(idx).map_or(0.0, Frame::move_offset);
+        self.column_x(idx) - self.view_pos() + move_offset
     }
 
     /// Strip-relative viewport left edge once any in-flight animation settles.
@@ -232,9 +241,19 @@ impl Strip {
         }
     }
 
-    /// Drive the state machine forward; settles a finished animation.
+    /// Drive the state machine forward; settles finished animations.
     pub fn advance(&mut self) {
         self.view_offset.advance();
+        for f in &mut self.frames {
+            if f.move_anim.as_ref().is_some_and(ViewAnimation::is_done) {
+                f.move_anim = None;
+            }
+        }
+    }
+
+    pub fn animations_ongoing(&self) -> bool {
+        self.view_offset.is_animation_ongoing()
+            || self.frames.iter().any(|f| f.move_anim.is_some())
     }
 
     /// Flat iterator over all surfaces across all frames, in declared order.
@@ -255,13 +274,22 @@ impl Strip {
             .flat_map(|(i, f)| f.surfaces.iter().map(move |s| (i, s)))
     }
 
-    /// Drop frame `idx`; active slides to the next frame, or stays put if
-    /// the removal was to its left.
+    /// Drop frame `idx`; surviving neighbours slide in from the removed
+    /// column's offset so the gap closes visibly.
     pub fn remove_frame_at(&mut self, idx: usize) {
         if idx >= self.frames.len() {
             return;
         }
         let prev_active = self.active_idx;
+        let offset = self.frames[idx].width + self.gap;
+        let (slide, from) = if prev_active <= idx {
+            (&mut self.frames[idx + 1..], offset)
+        } else {
+            (&mut self.frames[..idx], -offset)
+        };
+        for f in slide {
+            f.move_anim = Some(ViewAnimation::new(from, 0.0, DEFAULT_ANIM_DURATION));
+        }
         self.frames.remove(idx);
 
         let new_active = if idx < prev_active {

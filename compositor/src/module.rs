@@ -723,6 +723,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             surface_id,
             width,
             surfaces,
+            move_anim: None,
         });
     }
 
