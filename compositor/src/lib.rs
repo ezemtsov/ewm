@@ -4498,10 +4498,12 @@ impl Ewm {
         };
 
         if changed && (!app_id.is_empty() || !title.is_empty()) {
-            info!(
-                "Surface {} info changed: app='{}' title='{}'",
-                id, app_id, title
-            );
+            if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+                debug!(
+                    "Surface {} info changed: app='{}' title='{}'",
+                    id, app_id, title
+                );
+            }
             self.surface_info.insert(
                 id,
                 SurfaceInfo {

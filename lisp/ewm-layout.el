@@ -71,9 +71,6 @@ truth driving compositor strip activation."
                         :surfaces (vconcat (nreverse surfaces)))
                   frames-out)))
         (let ((sorted (nreverse frames-out)))
-          (ewm--log "send-layouts: output=%s sids=%S"
-                    output
-                    (mapcar (lambda (p) (plist-get p :surface-id)) sorted))
           (ewm-output-layout output (vconcat sorted)))))))
 
 (defun ewm-layout--refresh ()
@@ -105,27 +102,15 @@ converts to global positions using output geometry + working area offset."
 Catches minibuffer height changes that window-configuration-change misses."
   (ewm-layout--refresh))
 
-(defun ewm--log-selection (source)
-  "Log current frame + selected-window state when debug mode is on."
-  (when ewm--debug
-    (ewm--log "%s: sid=%s win-buf=%s win-sid=%s"
-              source
-              (frame-parameter (selected-frame) 'ewm-surface-id)
-              (buffer-name (window-buffer (selected-window)))
-              (buffer-local-value 'ewm-surface-id
-                                  (window-buffer (selected-window))))))
-
 (defun ewm--on-window-selection-change (_frame)
   "Re-send layouts when selected window changes.
 Compositor focus is driven by user commands (`ewm-frame-select',
 windmove, click), not by Emacs-internal selection churn from process
 filters like telega."
-  (ewm--log-selection "selection-change")
   (ewm-layout--send-layouts))
 
 (defun ewm--on-window-buffer-change (_frame)
   "Re-send layouts when a buffer changes within a window."
-  (ewm--log-selection "buffer-change")
   (ewm-layout--send-layouts))
 
 (defun ewm--enable-layout-sync ()

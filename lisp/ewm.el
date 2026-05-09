@@ -808,8 +808,7 @@ Surface coordinates are relative to the owning frame's working area."
   "Request compositor state dump.
 State will be displayed in *ewm-state* buffer when received."
   (interactive)
-  (ewm-get-debug-state-module)
-  (ewm--log "Requested compositor state..."))
+  (ewm-get-debug-state-module))
 
 (defun ewm-list-outputs ()
   "Display connected outputs with properties and ewm-output-config suggestions.
