@@ -25,11 +25,11 @@ pub fn set_style(css: &str) -> Result<()> {
     let css = std::ffi::CString::new(css).context("CSS contains NUL byte")?;
 
     unsafe {
-        // RTLD_NOLOAD: only ever talk to the libgtk-3 already loaded by
-        // Emacs, never pull in a second copy.
         let lib = libc::dlopen(c"libgtk-3.so.0".as_ptr(), libc::RTLD_LAZY | libc::RTLD_NOLOAD);
         ensure!(!lib.is_null(), "libgtk-3.so.0 is not loaded");
 
+        let init_check: unsafe extern "C" fn(*mut c_int, *mut *mut *mut c_char) -> c_int =
+            std::mem::transmute(sym(lib, c"gtk_init_check")?);
         let provider_new: unsafe extern "C" fn() -> *mut c_void =
             std::mem::transmute(sym(lib, c"gtk_css_provider_new")?);
         let load_from_data: unsafe extern "C" fn(
@@ -41,6 +41,13 @@ pub fn set_style(css: &str) -> Result<()> {
             std::mem::transmute(sym(lib, c"gtk_style_context_add_provider_for_screen")?);
         let g_object_unref: unsafe extern "C" fn(*mut c_void) =
             std::mem::transmute(sym(lib, c"g_object_unref")?);
+
+        // No-op once PGTK has initialized GTK; required when no frame has
+        // been created yet so `gdk_screen_get_default' can return non-null.
+        ensure!(
+            init_check(std::ptr::null_mut(), std::ptr::null_mut()) != 0,
+            "gtk_init_check failed"
+        );
 
         let provider = provider_new();
         if load_from_data(provider, css.as_ptr(), -1, std::ptr::null_mut()) == 0 {

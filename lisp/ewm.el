@@ -480,20 +480,16 @@ Updates buffer-local variables and renames the buffer."
           (run-hooks 'ewm-update-title-hook))))))
 
 (defun ewm--handle-output-detected (event)
-  "Handle output detected EVENT.
-Pulls back frames whose `ewm-home-output' matches; otherwise creates one."
-  (let ((name (alist-get 'name event))
-        (returned 0))
+  "Pull back frames whose `ewm-home-output' matches; new-output frame
+creation happens in `outputs_complete' so scale config is applied first."
+  (let ((name (alist-get 'name event)))
     (setf (alist-get name ewm--output-info nil nil #'string=) event)
     (dolist (f (frame-list))
       (when (and (equal (frame-parameter f 'ewm-home-output) name)
                  (not (equal (frame-parameter f 'ewm-output) name)))
         (ewm--strip-remove f)
         (set-frame-parameter f 'ewm-output name)
-        (ewm--strip-insert f name)
-        (cl-incf returned)))
-    (when (and (zerop returned) (not (ewm--frame-for-output name)))
-      (ewm--create-frame-for-output name))
+        (ewm--strip-insert f name)))
     (ewm-layout--refresh)))
 
 (defun ewm--handle-output-config-changed (event)
@@ -556,9 +552,14 @@ Similar to `exwm-workspace-rename-buffer'."
     (rename-buffer name)))
 
 (defun ewm--handle-outputs-complete ()
-  "Handle outputs_complete event.
-Sent after startup enumeration, hotplug, and session resume."
+  "Apply output config, then create any missing per-output frames."
   (ewm--apply-output-config)
+  ;; CSS goes in before any frame is created so the GTK widget bg is set
+  ;; on the first wl_surface commit.
+  (ewm--apply-gtk-bg-css)
+  (dolist (output (ewm-get-active-outputs))
+    (unless (ewm--frame-for-output output)
+      (ewm--create-frame-for-output output)))
   (ewm--enforce-frame-output-parity)
   (ewm-layout--refresh))
 
@@ -1272,8 +1273,8 @@ The compositor runs as a thread within the Emacs process."
   (if (ewm-start)
       (progn
         (setq ewm--module-mode t)
-        ;; Enable EWM mode (needed for frame creation hooks)
         (ewm-mode 1)
+        (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css)
         ;; Wait for compositor ready event (with timeout)
         (let ((timeout 300))  ; 30 seconds max
           (while (and (> timeout 0)
@@ -1290,10 +1291,10 @@ The compositor runs as a thread within the Emacs process."
         (if after-init-time
             (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)
           (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module))
-        ;; Color the GTK widget background so new frames don't flash white
-        ;; before redisplay paints. Re-apply on theme change.
-        (ewm--apply-gtk-bg-css)
-        (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css))
+        ;; Re-apply now that graphical frames exist: face-attribute returns
+        ;; the real theme bg, so subsequent s-t frames get themed instead
+        ;; of the black fallback used during outputs_complete.
+        (ewm--apply-gtk-bg-css))
     (ewm--destroy-event-channel)
     (error "Failed to start compositor")))
 
@@ -1317,12 +1318,16 @@ The compositor runs as a thread within the Emacs process."
 
 (defun ewm--apply-gtk-bg-css (&rest _)
   "Push the default face background to the GTK widget for new frames.
-Without this, pgtk's first commit renders the widget's white default
-before redisplay paints (bug#53232)."
-  (when-let* ((bg (face-attribute 'default :background))
-              ((stringp bg)))
-    (ignore-errors
-      (ewm-gtk-set-style (format "window { background-color: %s; }" bg)))))
+Falls back to black before any graphical frame exists -- `face-attribute'
+on the daemon's TTY frame returns the sentinel \"unspecified-bg\" which
+isn't a valid CSS color (bug#53232)."
+  (let* ((live (face-attribute 'default :background))
+         (bg (if (and (stringp live) (not (string-prefix-p "unspecified" live)))
+                 live
+               "#000000")))
+    (condition-case err
+        (ewm-gtk-set-style (format "window { background-color: %s; }" bg))
+      (error (message "EWM: ewm-gtk-set-style failed: %s" err)))))
 
 (defun ewm--kill-emacs-hook ()
   "Stop compositor gracefully before Emacs exits.
