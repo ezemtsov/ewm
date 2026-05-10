@@ -101,10 +101,15 @@ FORMAT-STRING and ARGS are passed to `format'."
   "Create a pipe process and register it as the compositor event channel."
   (ewm--destroy-event-channel)
   (setq ewm--event-buffer "")
-  (setq ewm--event-process
-        (make-pipe-process :name "ewm-events"
-                           :noquery t
-                           :filter #'ewm--event-filter))
+  (let ((proc (make-pipe-process :name "ewm-events"
+                                 :noquery t
+                                 :filter #'ewm--event-filter)))
+    ;; Drop the auto-allocated buffer: the filter consumes the pipe
+    ;; directly, and leaving it exposes a kill target in `list-buffers'.
+    (let ((buf (process-buffer proc)))
+      (set-process-buffer proc nil)
+      (when (buffer-live-p buf) (kill-buffer buf)))
+    (setq ewm--event-process proc))
   (ewm-init-event-channel ewm--event-process))
 
 (defun ewm--destroy-event-channel ()
