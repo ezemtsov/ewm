@@ -7,6 +7,7 @@
 //! view_offset.current()` -- focusing a frame moves the strip under the
 //! viewport, not the other way around.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use crate::utils::get_monotonic_time;
@@ -17,6 +18,69 @@ pub const DEFAULT_ANIM_DURATION: Duration = Duration::from_millis(250);
 
 /// Fade-in duration for a surface's first buffer-bearing commit.
 pub const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
+
+/// Touchpad swipe distance that maps to one full working-area-width of strip
+/// movement.  Independent of physical touchpad size.
+pub const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.0;
+
+/// Velocity history window for swipe end-position projection.
+const SWIPE_HISTORY_LIMIT: Duration = Duration::from_millis(150);
+
+/// Touchpad scroll deceleration (matches GNOME Shell).
+const SWIPE_DECELERATION: f64 = 0.997;
+
+/// Rolling history of (delta, timestamp) samples for a swipe gesture; gives
+/// `velocity` and `projected_end_pos` for momentum on release.
+#[derive(Debug, Clone, Default)]
+pub struct SwipeTracker {
+    history: VecDeque<(f64, Duration)>,
+    pos: f64,
+}
+
+impl SwipeTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, delta: f64, timestamp: Duration) {
+        if let Some(&(_, last)) = self.history.back() {
+            if timestamp < last {
+                return;
+            }
+        }
+        self.history.push_back((delta, timestamp));
+        self.pos += delta;
+        while let Some(&(_, first)) = self.history.front() {
+            let &(_, last) = self.history.back().unwrap();
+            if last <= first + SWIPE_HISTORY_LIMIT {
+                break;
+            }
+            self.history.pop_front();
+        }
+    }
+
+    pub fn pos(&self) -> f64 {
+        self.pos
+    }
+
+    /// Average velocity over the retained history window.
+    pub fn velocity(&self) -> f64 {
+        let (Some(&(_, first)), Some(&(_, last))) = (self.history.front(), self.history.back())
+        else {
+            return 0.0;
+        };
+        let total_time = (last - first).as_secs_f64();
+        if total_time == 0.0 {
+            return 0.0;
+        }
+        self.history.iter().map(|&(d, _)| d).sum::<f64>() / total_time
+    }
+
+    /// Position the gesture would settle at after exponential deceleration.
+    pub fn projected_end_pos(&self) -> f64 {
+        self.pos - self.velocity() / (1000.0 * SWIPE_DECELERATION.ln())
+    }
+}
 
 /// Ease-out-cubic interpolation between two scalar view offsets
 /// (`y = 1 - (1 - t)^3` -- fast start, gentle settle).
@@ -81,12 +145,23 @@ impl ViewAnimation {
     }
 }
 
+/// In-progress touchpad swipe.  `current` is the live view offset; `anchor`
+/// is its value at gesture-begin so we add `tracker.pos()` (delta sum) to
+/// it instead of carrying drift.
+#[derive(Debug, Clone)]
+pub struct ViewGesture {
+    pub current: f64,
+    pub anchor: f64,
+    pub tracker: SwipeTracker,
+}
+
 /// View-offset state machine for one output's strip: `Static` at rest,
-/// `Animation` mid-slide.
+/// `Animation` mid-slide, `Gesture` while a touchpad swipe is in flight.
 #[derive(Debug, Clone)]
 pub enum ViewOffset {
     Static(f64),
     Animation(ViewAnimation),
+    Gesture(ViewGesture),
 }
 
 impl Default for ViewOffset {
@@ -101,6 +176,7 @@ impl ViewOffset {
         match self {
             ViewOffset::Static(o) => *o,
             ViewOffset::Animation(a) => a.value(),
+            ViewOffset::Gesture(g) => g.current,
         }
     }
 
@@ -109,6 +185,7 @@ impl ViewOffset {
         match self {
             ViewOffset::Static(o) => *o,
             ViewOffset::Animation(a) => a.target(),
+            ViewOffset::Gesture(g) => g.current,
         }
     }
 
@@ -130,12 +207,16 @@ impl ViewOffset {
     }
 
     /// Apply a constant `delta` to the current state, preserving any running
-    /// animation by re-anchoring its endpoints rather than clobbering them.
-    /// Used when the coordinate system shifts (e.g. active column changes).
+    /// animation or gesture by re-anchoring rather than clobbering.  Used
+    /// when the coordinate system shifts (e.g. active column changes).
     pub fn offset(&mut self, delta: f64) {
         match self {
             ViewOffset::Static(x) => *x += delta,
             ViewOffset::Animation(a) => a.offset(delta),
+            ViewOffset::Gesture(g) => {
+                g.current += delta;
+                g.anchor += delta;
+            }
         }
     }
 }
@@ -289,6 +370,52 @@ impl Strip {
         for f in slide {
             f.move_anim = Some(ViewAnimation::new(from, 0.0, DEFAULT_ANIM_DURATION));
         }
+    }
+
+    /// Begin a touchpad-driven view-offset gesture.  Subsequent
+    /// `gesture_update`s push deltas into the tracker; `gesture_end` snaps
+    /// to the nearest column.
+    pub fn gesture_begin(&mut self) {
+        if self.frames.is_empty() {
+            return;
+        }
+        let current = self.view_offset.current();
+        self.view_offset = ViewOffset::Gesture(ViewGesture {
+            current,
+            anchor: current,
+            tracker: SwipeTracker::new(),
+        });
+    }
+
+    /// Push a swipe delta in unaccelerated touchpad units.  `working_w` is
+    /// the active output's working-area width, used to normalise the swipe.
+    pub fn gesture_update(&mut self, delta_x: f64, timestamp: Duration, working_w: f64) {
+        let ViewOffset::Gesture(g) = &mut self.view_offset else {
+            return;
+        };
+        g.tracker.push(delta_x, timestamp);
+        let norm = working_w / VIEW_GESTURE_WORKING_AREA_MOVEMENT;
+        g.current = g.anchor + g.tracker.pos() * norm;
+    }
+
+    /// End the gesture: project the velocity to a settled position and snap
+    /// to the nearest column via `set_active`, which animates from the
+    /// gesture's final offset to centred-on-active.
+    pub fn gesture_end(&mut self, working_w: f64) {
+        let ViewOffset::Gesture(g) = &self.view_offset else {
+            return;
+        };
+        let norm = working_w / VIEW_GESTURE_WORKING_AREA_MOVEMENT;
+        let projected = g.anchor + g.tracker.projected_end_pos() * norm;
+        let target_view = self.column_x(self.active_idx) + projected;
+        let snap = (0..self.frames.len())
+            .min_by(|&a, &b| {
+                let da = (self.column_x(a) - target_view).abs();
+                let db = (self.column_x(b) - target_view).abs();
+                da.partial_cmp(&db).unwrap()
+            })
+            .unwrap_or(self.active_idx);
+        self.set_active(snap);
     }
 
     /// Drop frame `idx`; surviving neighbours slide in from the removed

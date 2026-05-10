@@ -2817,6 +2817,15 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             InputEvent::PointerAxis { event } => {
                 crate::input::handle_pointer_axis::<LibinputInputBackend>(state, event);
             }
+            InputEvent::GestureSwipeBegin { event } => {
+                crate::input::handle_gesture_swipe_begin::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::GestureSwipeUpdate { event } => {
+                crate::input::handle_gesture_swipe_update::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::GestureSwipeEnd { event } => {
+                crate::input::handle_gesture_swipe_end::<LibinputInputBackend>(state, event);
+            }
             InputEvent::SwitchToggle { event } => {
                 use smithay::backend::input::{
                     Switch, SwitchState, SwitchToggleEvent as SwitchEvt,

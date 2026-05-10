@@ -1112,6 +1112,153 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
     notify_pointer_activity(state);
 }
 
+/// In-flight 3-finger swipe gesture state for strip scrolling.
+#[derive(Default)]
+pub struct GestureState {
+    /// 16px deadzone accumulator before committing to a horizontal axis.
+    pub cumulative: Option<(f64, f64)>,
+    /// Output the gesture is driving (set on horizontal commit).
+    pub active_output: Option<String>,
+}
+
+/// Pixel² threshold before committing the gesture to an axis (matches niri).
+const GESTURE_DEADZONE_SQ: f64 = 16.0 * 16.0;
+
+fn working_area_width(state: &State, name: &str) -> f64 {
+    state
+        .ewm
+        .find_output(name)
+        .map(|o| state.ewm.get_working_area(&o).size.w as f64)
+        .unwrap_or(0.0)
+}
+
+/// Three-finger swipe begin: start the deadzone accumulator and intercept
+/// the gesture from any client.  Other finger counts pass through.
+pub fn handle_gesture_swipe_begin<B: InputBackend>(
+    state: &mut State,
+    event: B::GestureSwipeBeginEvent,
+) {
+    use smithay::backend::input::GestureBeginEvent;
+    if event.fingers() == 3 {
+        state.ewm.gesture.cumulative = Some((0.0, 0.0));
+        return;
+    }
+    let pointer = state.ewm.pointer.clone();
+    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+    pointer.gesture_swipe_begin(
+        state,
+        &smithay::input::pointer::GestureSwipeBeginEvent {
+            serial,
+            time: event.time_msec(),
+            fingers: event.fingers(),
+        },
+    );
+}
+
+/// Three-finger swipe update: accumulate until the deadzone is crossed,
+/// then drive the active output's strip via `gesture_begin`/`gesture_update`.
+pub fn handle_gesture_swipe_update<B: InputBackend>(
+    state: &mut State,
+    event: B::GestureSwipeUpdateEvent,
+) where
+    B::GestureSwipeUpdateEvent: 'static,
+    B::Device: 'static,
+{
+    use smithay::backend::input::{Event, GestureSwipeUpdateEvent};
+    let mut dx = event.delta_x();
+    let mut dy = event.delta_y();
+    // Prefer libinput's unaccelerated deltas so velocity tracking matches the
+    // physical swipe.  Invert when natural-scroll is on, since smithay's
+    // delta has natural-scroll already applied; we want raw direction so the
+    // strip follows the fingers in both modes.
+    if let Some(le) = (&event as &dyn std::any::Any)
+        .downcast_ref::<libinput::event::gesture::GestureSwipeUpdateEvent>()
+    {
+        use libinput::event::gesture::GestureEventCoordinates;
+        dx = le.dx_unaccelerated();
+        dy = le.dy_unaccelerated();
+    }
+    if let Some(dev) = (&event.device() as &dyn std::any::Any).downcast_ref::<libinput::Device>() {
+        if dev.config_scroll_natural_scroll_enabled() {
+            dx = -dx;
+            dy = -dy;
+        }
+    }
+    let timestamp = std::time::Duration::from_micros(event.time());
+
+    if let Some((cx, cy)) = state.ewm.gesture.cumulative.as_mut() {
+        *cx += dx;
+        *cy += dy;
+        let (cx, cy) = (*cx, *cy);
+        if cx * cx + cy * cy >= GESTURE_DEADZONE_SQ {
+            state.ewm.gesture.cumulative = None;
+            if cx.abs() > cy.abs() {
+                if let Some(out) = state.ewm.active_output() {
+                    if let Some(strip) = state.ewm.output_strips.get_mut(&out) {
+                        strip.gesture_begin();
+                    }
+                    state.ewm.gesture.active_output = Some(out);
+                }
+            }
+        }
+        return;
+    }
+
+    if let Some(out) = state.ewm.gesture.active_output.clone() {
+        let w = working_area_width(state, &out);
+        if let Some(strip) = state.ewm.output_strips.get_mut(&out) {
+            strip.gesture_update(dx, timestamp, w);
+        }
+        if let Some(o) = state.ewm.find_output(&out) {
+            state.ewm.queue_redraw(&o);
+        }
+        return;
+    }
+
+    let pointer = state.ewm.pointer.clone();
+    pointer.gesture_swipe_update(
+        state,
+        &smithay::input::pointer::GestureSwipeUpdateEvent {
+            time: event.time_msec(),
+            delta: (dx, dy).into(),
+        },
+    );
+}
+
+/// Three-finger swipe end: snap to the nearest column.  No-op if the
+/// gesture never crossed the deadzone or wasn't 3-finger.
+pub fn handle_gesture_swipe_end<B: InputBackend>(
+    state: &mut State,
+    event: B::GestureSwipeEndEvent,
+) {
+    use smithay::backend::input::{Event, GestureEndEvent};
+    state.ewm.gesture.cumulative = None;
+    if let Some(out) = state.ewm.gesture.active_output.take() {
+        let w = working_area_width(state, &out);
+        let target = state.ewm.output_strips.get_mut(&out).and_then(|s| {
+            s.gesture_end(w);
+            s.frames.get(s.active_idx()).map(|f| f.surface_id)
+        });
+        if let Some(id) = target {
+            state.ewm.set_focus_frame(id, "gesture");
+        }
+        if let Some(o) = state.ewm.find_output(&out) {
+            state.ewm.queue_redraw(&o);
+        }
+        return;
+    }
+    let pointer = state.ewm.pointer.clone();
+    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+    pointer.gesture_swipe_end(
+        state,
+        &smithay::input::pointer::GestureSwipeEndEvent {
+            serial,
+            time: event.time_msec(),
+            cancelled: event.cancelled(),
+        },
+    );
+}
+
 /// Handle pointer axis (scroll wheel, touchpad scroll)
 pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::PointerAxisEvent) {
     tracy_span!("handle_pointer_axis");

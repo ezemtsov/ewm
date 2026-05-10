@@ -859,6 +859,9 @@ pub struct Ewm {
     pub emacs_pid: Option<u32>,
     pub emacs_frame_ids: HashSet<u64>,
 
+    /// In-flight 3-finger swipe gesture for strip scrolling.
+    pub gesture: input::GestureState,
+
     // Screenshot request
     pub pending_screenshot: Option<String>,
 
@@ -1170,6 +1173,7 @@ impl Ewm {
             input_configs: Vec::new(),
             emacs_pid: None,
             emacs_frame_ids: HashSet::new(),
+            gesture: input::GestureState::default(),
             pending_screenshot: None,
             output_state: HashMap::new(),
             monitors_active: true,
@@ -3631,10 +3635,15 @@ impl Ewm {
 
     /// Get active output for placing new non-Emacs surfaces.
     /// Priority: cursor position > focused output > first output
-    fn active_output(&self) -> Option<String> {
+    pub fn active_output(&self) -> Option<String> {
         self.output_under_cursor()
             .or_else(|| self.get_focused_output())
             .or_else(|| self.space.outputs().next().map(|o| o.name()))
+    }
+
+    /// Find an output by name in this `Space`.
+    pub fn find_output(&self, name: &str) -> Option<Output> {
+        self.space.outputs().find(|o| o.name() == name).cloned()
     }
 
     /// Output to the left of `current` whose y-band overlaps it.  Picks
