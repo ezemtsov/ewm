@@ -1749,6 +1749,17 @@ impl Ewm {
 
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+
+            // Gate at the frame, not the entry: popups extending past
+            // `entry.w/h` still hit, while an off-screen frame can't claim
+            // the active frame's boundary.
+            let frame_x = output_geo.loc.x + working_area.loc.x + frame_dx;
+            let frame_y = output_geo.loc.y + working_area.loc.y;
+            let in_frame = pos.x >= frame_x as f64
+                && pos.x < (frame_x + frame.width as i32) as f64
+                && pos.y >= frame_y as f64
+                && pos.y < (frame_y + working_area.size.h) as f64;
+
             let mut had_fullscreen = false;
 
             for entry in &frame.surfaces {
@@ -1759,6 +1770,10 @@ impl Ewm {
                 let window_geo = window.geometry();
                 let effective_fs = self.effective_fullscreen(entry);
                 had_fullscreen |= effective_fs;
+
+                if !effective_fs && !in_frame {
+                    continue;
+                }
 
                 let (entry_x, entry_y) = if effective_fs {
                     (output_geo.loc.x, output_geo.loc.y)
@@ -1849,12 +1864,6 @@ impl Ewm {
                 break;
             }
 
-            let frame_x = output_geo.loc.x + working_area.loc.x + frame_dx;
-            let frame_y = output_geo.loc.y + working_area.loc.y;
-            let in_frame = pos.x >= frame_x as f64
-                && pos.x < (frame_x + frame.width as i32) as f64
-                && pos.y >= frame_y as f64
-                && pos.y < (frame_y + working_area.size.h) as f64;
             if !in_frame {
                 continue;
             }
@@ -3401,14 +3410,9 @@ impl Ewm {
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) -> Option<&Output> {
-        let point = smithay::utils::Point::from((pos.x as i32, pos.y as i32));
         self.space
-            .outputs()
-            .find(|o| {
-                self.space
-                    .output_geometry(o)
-                    .map_or(false, |geo| geo.contains(point))
-            })
+            .output_under(pos)
+            .next()
             .or_else(|| self.space.outputs().next())
     }
 
@@ -3421,12 +3425,7 @@ impl Ewm {
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) -> Option<&Output> {
-        let point = smithay::utils::Point::from((pos.x as i32, pos.y as i32));
-        self.space.outputs().find(|o| {
-            self.space
-                .output_geometry(o)
-                .map_or(false, |geo| geo.contains(point))
-        })
+        self.space.output_under(pos).next()
     }
 
     /// Clamp a pointer target into the union of output geometries.
