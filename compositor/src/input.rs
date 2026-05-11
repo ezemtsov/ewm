@@ -1078,16 +1078,13 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
             let on_layer = layer_under.is_some();
             state.ewm.focus_layer_surface_if_on_demand(layer_under);
 
-            // Prefer the LayoutEntry under the pointer so mirrored
-            // surfaces resolve to the specific view that was clicked.
             if !on_layer {
-                let view_id = state.ewm.view_id_under(pos);
-                if view_id != 0 {
-                    state.ewm.set_focus_view(view_id, "click");
-                } else if let Some(id) = state.ewm.surface_under_point(pos)
-                    .and_then(|(s, _)| state.ewm.surface_id(&s))
-                {
-                    state.ewm.set_focus(id, true, "click", None);
+                if let Some(id) = state.ewm.focus_under(pos, "click") {
+                    state.ewm.queue_event(crate::Event::Focus {
+                        id,
+                        x: None,
+                        y: None,
+                    });
                 }
             }
         }
@@ -1276,13 +1273,12 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
         state.ewm.focus_layer_surface_if_on_demand(layer_under);
 
         if !on_layer {
-            let view_id = state.ewm.view_id_under(pos);
-            if view_id != 0 {
-                state.ewm.set_focus_view(view_id, "scroll");
-            } else if let Some(id) = state.ewm.surface_under_point(pos)
-                .and_then(|(s, _)| state.ewm.surface_id(&s))
-            {
-                state.ewm.set_focus(id, true, "scroll", None);
+            if let Some(id) = state.ewm.focus_under(pos, "scroll") {
+                state.ewm.queue_event(crate::Event::Focus {
+                    id,
+                    x: None,
+                    y: None,
+                });
             }
         }
     }

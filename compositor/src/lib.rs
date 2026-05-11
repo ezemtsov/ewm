@@ -440,7 +440,7 @@ struct SurfaceInfo {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LayoutEntry {
     /// Compositor-assigned unique identity per view (not from Emacs).
-    /// Analogous to an Emacs window; distinguishes mirrors of the same surface.
+    /// Analogous to an Emacs window; distinguishes views of the same surface.
     #[serde(default)]
     pub view_id: u64,
     /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
@@ -848,7 +848,7 @@ pub struct Ewm {
     pub focus_follows_mouse_mode: bool,
     /// Alpha multiplier for inactive layout entries; 1.0 disables.
     pub unfocused_alpha: f32,
-    /// UID of the layout entry currently under the pointer (for FFM mirror detection).
+    /// UID of the layout entry currently under the pointer (for FFM view detection).
     pub pointer_view_id: u64,
 
     // Libinput device configuration
@@ -1500,7 +1500,7 @@ impl Ewm {
         None
     }
 
-    /// Focus the mirror identified by `view_id`.
+    /// Focus the view identified by `view_id`.
     pub fn set_focus_view(&mut self, view_id: u64, source: &str) {
         let Some((output, idx, surface_id)) = self.lookup_view(view_id) else {
             return;
@@ -1543,12 +1543,32 @@ impl Ewm {
     /// `(output_name, frame_idx)` of the strip frame containing `surface_id`,
     /// either as the frame's own xdg_toplevel or in its layout entries.
     pub fn frame_position(&self, surface_id: u64) -> Option<(String, usize)> {
-        for (output_name, strip) in &self.output_strips {
-            for (i, frame) in strip.frames.iter().enumerate() {
-                if frame.surface_id == surface_id
-                    || frame.surfaces.iter().any(|e| e.surface_id == surface_id)
+        // Frame chrome match is unique.
+        for (name, strip) in &self.output_strips {
+            if let Some(idx) = strip.frames.iter().position(|f| f.surface_id == surface_id) {
+                return Some((name.clone(), idx));
+            }
+        }
+        // When a surface has multiple views, prefer the focused output's
+        // active frame so a remote focus request (xdg_activation,
+        // foreign_toplevel, unlock) stays put instead of jumping.
+        if let Some(out) = self.get_focused_output() {
+            if let Some(strip) = self.output_strips.get(&out) {
+                let idx = strip.active_idx();
+                if strip
+                    .frames
+                    .get(idx)
+                    .is_some_and(|f| f.surfaces.iter().any(|e| e.surface_id == surface_id))
                 {
-                    return Some((output_name.clone(), i));
+                    return Some((out, idx));
+                }
+            }
+        }
+        // Fall back to any frame containing the entry.
+        for (name, strip) in &self.output_strips {
+            for (i, frame) in strip.frames.iter().enumerate() {
+                if frame.surfaces.iter().any(|e| e.surface_id == surface_id) {
+                    return Some((name.clone(), i));
                 }
             }
         }
@@ -1906,7 +1926,7 @@ impl Ewm {
 
     /// Per-entry render-side fullscreen flag: true iff the entry was requested
     /// fullscreen *and* the client is currently committing fullscreen buffers.
-    /// Mirroring case (entry.fullscreen=false on a different output) stays false
+    /// Multi-view case (entry.fullscreen=false on a different output) stays false
     /// even when the surface is committed fullscreen elsewhere.
     pub(crate) fn effective_fullscreen(&self, entry: &LayoutEntry) -> bool {
         entry.fullscreen && self.surface_committed_fullscreen(entry.surface_id)
@@ -2080,7 +2100,10 @@ impl Ewm {
                 .map(|e| e.surface_id)
                 .unwrap_or(frame.surface_id);
             if self.focused_surface_id != target_id {
-                self.set_focus(target_id, false, "layout_active", None);
+                // Strip already activated above; bypass `set_focus' so its
+                // view-blind re-activation can't undo us.
+                module::record_focus(target_id, "layout_active", None);
+                self.focused_surface_id = target_id;
             }
         }
 
@@ -3246,13 +3269,11 @@ impl Ewm {
         self.is_emacs_frame(self.focused_surface_id)
     }
 
-    /// Focus a surface with source tracking for debugging.
-    /// Keyboard focus is synced on the next frame or input event.
+    /// Focus a surface with source tracking.  View-blind: picks the first
+    /// frame containing `id`.  Pointer-driven paths use `focus_under' instead.
     pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str, context: Option<&str>) {
         module::record_focus(id, source, context);
         self.focused_surface_id = id;
-        // Active frame on each output is derived from focus, not from
-        // lisp emission -- single source of truth.
         if let Some((output, idx)) = self.frame_position(id) {
             self.activate_frame(&output, idx);
         }
@@ -3267,21 +3288,42 @@ impl Ewm {
 
     /// Handle focus-follows-mouse: focus the surface under the pointer and
     /// notify Emacs with frame-local coordinates for `window-at-x-y`.
+    /// Focus the surface under `pos`, disambiguating views via view_id;
+    /// caller queues the Focus event with whatever payload they need.
+    pub fn focus_under(
+        &mut self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+        source: &str,
+    ) -> Option<u64> {
+        let view_id = self.view_id_under(pos);
+        let (id, target) = if view_id != 0 {
+            let (output, idx, sid) = self.lookup_view(view_id)?;
+            (sid, Some((output, idx)))
+        } else {
+            let (surface, _) = self.surface_under_point(pos)?;
+            let sid = self.surface_id(&surface)?;
+            (sid, self.frame_position(sid))
+        };
+        if let Some((output, idx)) = target {
+            self.activate_frame(&output, idx);
+        }
+        module::record_focus(id, source, None);
+        self.focused_surface_id = id;
+        Some(id)
+    }
+
     pub fn focus_follows_mouse(
         &mut self,
         under: &Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
-        if let Some((surface, origin)) = under {
-            if let Some(id) = self.surface_id(surface) {
-                self.set_focus(id, false, "pointer_motion", None);
-                self.queue_event(Event::Focus {
-                    id,
-                    x: Some(pos.x - origin.x),
-                    y: Some(pos.y - origin.y),
-                });
-            }
-        }
+        let Some((_, origin)) = under else { return };
+        let Some(id) = self.focus_under(pos, "pointer_motion") else { return };
+        self.queue_event(Event::Focus {
+            id,
+            x: Some(pos.x - origin.x),
+            y: Some(pos.y - origin.y),
+        });
     }
 
     /// Update on-demand layer shell keyboard focus.
