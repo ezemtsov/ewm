@@ -1519,7 +1519,7 @@ impl Ewm {
     }
 
     /// Focus the view identified by `view_id`.
-    pub fn set_focus_view(&mut self, view_id: u64, source: &str) {
+    pub fn set_focus_view(&mut self, view_id: u64, source: &str, notify_emacs: bool) {
         let Some((output, idx, surface_id)) = self.lookup_view(view_id) else {
             return;
         };
@@ -1532,33 +1532,32 @@ impl Ewm {
         module::record_focus(surface_id, source, None);
         self.set_focus_state(frame_id, view_id);
         self.activate_frame(&output, idx);
-        self.queue_event(Event::Focus {
-            id: surface_id,
-            x: None,
-            y: None,
-        });
+        if notify_emacs {
+            self.queue_event(Event::Focus {
+                frame_id,
+                view_id,
+                x: None,
+                y: None,
+            });
+        }
     }
 
     /// Focus an Emacs frame.
-    pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str) {
+    pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str, notify_emacs: bool) {
         let Some((output, idx)) = self.lookup_frame(frame_surface_id) else {
             return;
         };
-        let view_id = self
-            .output_strips
-            .get(&output)
-            .and_then(|s| s.frames.get(idx))
-            .and_then(|f| f.surfaces.iter().find(|s| s.focused))
-            .map(|s| s.view_id)
-            .unwrap_or(0);
         module::record_focus(frame_surface_id, source, None);
-        self.set_focus_state(frame_surface_id, view_id);
+        self.set_focus_state(frame_surface_id, 0);
         self.activate_frame(&output, idx);
-        self.queue_event(Event::Focus {
-            id: frame_surface_id,
-            x: None,
-            y: None,
-        });
+        if notify_emacs {
+            self.queue_event(Event::Focus {
+                frame_id: frame_surface_id,
+                view_id: 0,
+                x: None,
+                y: None,
+            });
+        }
     }
 
     /// Surface id of the Emacs frame whose strip-frame currently hosts
@@ -1780,7 +1779,7 @@ impl Ewm {
     }
 
     /// Hit-test layout surfaces under a global position; falls back to the
-    /// frame chrome when no entry hits (Emacs-rendered windows live there).
+    /// frame's own surface when no entry hits.
     pub fn layout_surface_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -1790,85 +1789,47 @@ impl Ewm {
     )> {
         use smithay::utils::Point;
 
-        let output = self.output_at(pos)?;
-        let output_geo = self.space.output_geometry(output)?;
-        let working_area = {
-            let map = layer_map_for_output(output);
-            map.non_exclusive_zone()
-        };
-        let strip = self.output_strips.get(&output.name())?;
-
-        for (frame_idx, frame) in strip.frames.iter().enumerate() {
-            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-
-            // Gate at the frame, not the entry: popups extending past
-            // `entry.w/h` still hit, while an off-screen frame can't claim
-            // the active frame's boundary.
-            let frame_x = output_geo.loc.x + working_area.loc.x + frame_dx;
-            let frame_y = output_geo.loc.y + working_area.loc.y;
-            let in_frame = pos.x >= frame_x as f64
-                && pos.x < (frame_x + frame.width as i32) as f64
-                && pos.y >= frame_y as f64
-                && pos.y < (frame_y + working_area.size.h) as f64;
-
-            let mut had_fullscreen = false;
-
-            for entry in &frame.surfaces {
-                let window = match self.id_windows.get(&entry.surface_id) {
-                    Some(w) => w,
-                    None => continue,
-                };
+        // Entry hit: delegate the rect check to the single authoritative helper.
+        if let Some((entry, entry_x, entry_y)) = self.layout_entry_under(pos) {
+            if let Some(window) = self.id_windows.get(&entry.surface_id) {
                 let window_geo = window.geometry();
                 let effective_fs = self.effective_fullscreen(entry);
-                had_fullscreen |= effective_fs;
+                let output_geo = self
+                    .output_at(pos)
+                    .and_then(|o| self.space.output_geometry(o));
 
-                if !effective_fs && !in_frame {
-                    continue;
-                }
-
-                let (entry_x, entry_y) = if effective_fs {
-                    (output_geo.loc.x, output_geo.loc.y)
-                } else {
-                    (
-                        output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                        output_geo.loc.y + working_area.loc.y + entry.y,
-                    )
-                };
-
-                let pos_in_entry_x = pos.x - entry_x as f64;
-                let pos_in_entry_y = pos.y - entry_y as f64;
-
-                // Inverse of the render-side fill+crop scale for non-primary entries.
-                let (pointer_scale, center_offset_x, center_offset_y) = if effective_fs {
-                    if entry.primary {
-                        let (cx, cy) =
-                            fullscreen_center_offset(window_geo.size, output_geo.size);
-                        (1.0, cx as f64, cy as f64)
+                let (pointer_scale, center_offset_x, center_offset_y) =
+                    if effective_fs {
+                        let out_size = output_geo.map(|g| g.size).unwrap_or_default();
+                        if entry.primary {
+                            let (cx, cy) =
+                                fullscreen_center_offset(window_geo.size, out_size);
+                            (1.0, cx as f64, cy as f64)
+                        } else {
+                            let uniform = f64::max(
+                                out_size.w as f64 / window_geo.size.w as f64,
+                                out_size.h as f64 / window_geo.size.h as f64,
+                            );
+                            (1.0 / uniform, 0.0, 0.0)
+                        }
+                    } else if entry.primary {
+                        (1.0, 0.0, 0.0)
+                    } else if entry.w > 0 && entry.h > 0 {
+                        (
+                            f64::min(
+                                window_geo.size.w as f64 / entry.w as f64,
+                                window_geo.size.h as f64 / entry.h as f64,
+                            ),
+                            0.0,
+                            0.0,
+                        )
                     } else {
-                        let uniform = f64::max(
-                            output_geo.size.w as f64 / window_geo.size.w as f64,
-                            output_geo.size.h as f64 / window_geo.size.h as f64,
-                        );
-                        (1.0 / uniform, 0.0, 0.0)
-                    }
-                } else if entry.primary {
-                    (1.0, 0.0, 0.0)
-                } else if entry.w > 0 && entry.h > 0 {
-                    (
-                        f64::min(
-                            window_geo.size.w as f64 / entry.w as f64,
-                            window_geo.size.h as f64 / entry.h as f64,
-                        ),
-                        0.0,
-                        0.0,
-                    )
-                } else {
-                    (1.0, 0.0, 0.0)
-                };
+                        (1.0, 0.0, 0.0)
+                    };
 
                 let pos_in_window = Point::from((
-                    (pos_in_entry_x - center_offset_x) * pointer_scale,
-                    (pos_in_entry_y - center_offset_y) * pointer_scale,
+                    (pos.x - entry_x as f64 - center_offset_x) * pointer_scale,
+                    (pos.y - entry_y as f64 - center_offset_y) * pointer_scale,
                 ));
                 let window_origin: Point<f64, Logical> =
                     Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
@@ -1880,41 +1841,28 @@ impl Ewm {
                         window_origin.x + surface_offset.x as f64,
                         window_origin.y + surface_offset.y as f64,
                     ));
-                    let is_toplevel =
-                        window.wl_surface().map_or(false, |ws| *ws == surface);
-                    if effective_fs || !is_toplevel {
-                        info!(
-                            "surface_under: {} entry {} (fs={}) \
-                             pos={:.0},{:.0} pos_in_window={:.0},{:.0} \
-                             surface_offset={},{} global_loc={:.0},{:.0} \
-                             geo.loc={},{} geo.size={}x{} center={:.0},{:.0}",
-                            if is_toplevel { "toplevel" } else { "popup" },
-                            entry.surface_id,
-                            effective_fs,
-                            pos.x,
-                            pos.y,
-                            pos_in_window.x,
-                            pos_in_window.y,
-                            surface_offset.x,
-                            surface_offset.y,
-                            global_loc.x,
-                            global_loc.y,
-                            window_geo.loc.x,
-                            window_geo.loc.y,
-                            window_geo.size.w,
-                            window_geo.size.h,
-                            center_offset_x,
-                            center_offset_y,
-                        );
-                    }
                     return Some((surface, global_loc));
                 }
             }
+        }
 
-            if had_fullscreen {
-                break;
-            }
+        // Frame fallback: find the frame containing pos, return its own surface.
+        let output = self.output_at(pos)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let working_area = {
+            let map = layer_map_for_output(output);
+            map.non_exclusive_zone()
+        };
+        let strip = self.output_strips.get(&output.name())?;
 
+        for (frame_idx, frame) in strip.frames.iter().enumerate() {
+            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+            let frame_x = output_geo.loc.x + working_area.loc.x + frame_dx;
+            let frame_y = output_geo.loc.y + working_area.loc.y;
+            let in_frame = pos.x >= frame_x as f64
+                && pos.x < (frame_x + frame.width as i32) as f64
+                && pos.y >= frame_y as f64
+                && pos.y < (frame_y + working_area.size.h) as f64;
             if !in_frame {
                 continue;
             }
@@ -3299,7 +3247,8 @@ impl Ewm {
         }
         if notify_emacs {
             self.queue_event(Event::Focus {
-                id,
+                frame_id,
+                view_id,
                 x: None,
                 y: None,
             });
@@ -3325,15 +3274,14 @@ impl Ewm {
         }
     }
 
-    /// Focus the surface under `pos`, disambiguating views via view_id;
-    /// caller queues the Focus event with whatever payload they need.
+    /// Focus the entity under `pos`; returns `(frame_id, view_id)`.
     pub fn focus_under(
         &mut self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
         source: &str,
-    ) -> Option<u64> {
+    ) -> Option<(u64, u64)> {
         let view_id = self.view_id_under(pos);
-        let (id, target, frame_id, view_id_final) = if view_id != 0 {
+        let (record_id, target, frame_id, view_id) = if view_id != 0 {
             let (output, idx, sid) = self.lookup_view(view_id)?;
             let fid = self
                 .output_strips
@@ -3352,9 +3300,9 @@ impl Ewm {
         if let Some((output, idx)) = target {
             self.activate_frame(&output, idx);
         }
-        module::record_focus(id, source, None);
-        self.set_focus_state(frame_id, view_id_final);
-        Some(id)
+        module::record_focus(record_id, source, None);
+        self.set_focus_state(frame_id, view_id);
+        Some((frame_id, view_id))
     }
 
     pub fn focus_follows_mouse(
@@ -3363,9 +3311,10 @@ impl Ewm {
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
         let Some((_, origin)) = under else { return };
-        let Some(id) = self.focus_under(pos, "pointer_motion") else { return };
+        let Some((frame_id, view_id)) = self.focus_under(pos, "pointer_motion") else { return };
         self.queue_event(Event::Focus {
-            id,
+            frame_id,
+            view_id,
             x: Some(pos.x - origin.x),
             y: Some(pos.y - origin.y),
         });
@@ -3835,7 +3784,7 @@ impl Ewm {
         let Some(id) = self.active_frame_surface_id(&target.name()) else {
             return;
         };
-        self.set_focus_frame(id, "focus_output_direction");
+        self.set_focus_frame(id, "focus_output_direction", true);
     }
 
     /// Pick the Emacs frame to redirect intercepted keys to.
@@ -4504,7 +4453,8 @@ impl Ewm {
         if auto_focus {
             info!("Auto-focusing initial Emacs surface {}", id);
             self.queue_event(Event::Focus {
-                id,
+                frame_id: id,
+                view_id: 0,
                 x: None,
                 y: None,
             });
@@ -6175,8 +6125,12 @@ impl State {
             ModuleCommand::FocusOutputDirection { dx, dy } => {
                 self.ewm.focus_output_direction(dx, dy);
             }
-            ModuleCommand::FocusSurface { id } => {
-                self.ewm.set_focus(id, false, "lisp_request", None);
+            ModuleCommand::FocusView { frame_id, view_id } => {
+                if view_id != 0 {
+                    self.ewm.set_focus_view(view_id, "lisp_request", false);
+                } else {
+                    self.ewm.set_focus_frame(frame_id, "lisp_request", false);
+                }
             }
             ModuleCommand::WarpPointer { x, y } => {
                 self.warp_pointer(x, y);

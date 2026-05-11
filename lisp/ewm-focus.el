@@ -15,7 +15,7 @@
 (require 'cl-lib)
 
 (declare-function ewm-input--pointer-in-window-p "ewm-input")
-(declare-function ewm-focus-surface-module "ewm-core" (id))
+(declare-function ewm-focus-view-module "ewm-core" (frame-id view-id))
 
 (defvar ewm--module-mode)
 (defvar ewm--surfaces)
@@ -28,8 +28,10 @@
   "Override skipping `x-focus-frame' so xdg_activation can't echo back."
   (select-frame frame norecord)
   (when-let* (((bound-and-true-p ewm--module-mode))
-              (id (frame-parameter frame 'ewm-surface-id)))
-    (ewm-focus-surface-module id))
+              (frame-id (frame-parameter frame 'ewm-surface-id)))
+    (let ((view-id (or (window-parameter (frame-selected-window frame) 'ewm-view-id)
+                       0)))
+      (ewm-focus-view-module frame-id view-id)))
   frame)
 
 (defun ewm--minibuffer-active-p ()
@@ -38,33 +40,42 @@
       (> (minibuffer-depth) 0)
       (minibufferp)))
 
+(defun ewm--find-window-by-view-id (view-id)
+  (cl-some
+   (lambda (frame)
+     (cl-find-if (lambda (w) (eql (window-parameter w 'ewm-view-id) view-id))
+                 (window-list frame 'no-minibuf)))
+   (frame-list)))
+
 (defun ewm--handle-focus (event)
   "Mirror compositor focus EVENT into Emacs selection."
   (unless (ewm--minibuffer-active-p)
-    (let* ((id (alist-get 'id event))
+    (let* ((frame-id (alist-get 'frame_id event))
+           (view-id (alist-get 'view_id event))
            (x (alist-get 'x event))
            (y (alist-get 'y event))
-           (ewm--is-ffm-focus-event (and ewm-focus-follows-mouse x y))
-           (buf (gethash id ewm--surfaces)))
+           (ewm--is-ffm-focus-event (and ewm-focus-follows-mouse x y)))
       (cond
-       ((and buf (buffer-live-p buf))
-        (if-let ((win (or (cl-find-if #'ewm-input--pointer-in-window-p
-                                      (get-buffer-window-list buf nil t))
-                          (get-buffer-window buf t))))
-            (progn
-              (select-frame (window-frame win))
-              (select-window win)
-              (setq ewm--mff-last-window win))
-          (pop-to-buffer-same-window buf)))
-       (t
-        (when-let* ((frame (cl-find id (frame-list)
+       ((when-let* (((and view-id (not (zerop view-id))))
+                    (win (ewm--find-window-by-view-id view-id)))
+          (select-frame (window-frame win))
+          (select-window win)
+          (setq ewm--mff-last-window win)
+          t))
+       ((when-let* ((frame (cl-find frame-id (frame-list)
                                     :key (lambda (f) (frame-parameter f 'ewm-surface-id)))))
           (select-frame frame)
           (when-let* ((ewm--is-ffm-focus-event)
                       (window (window-at-x-y x y frame))
                       ((not (minibufferp (window-buffer window)))))
             (select-window window)
-            (setq ewm--mff-last-window window))))))))
+            (setq ewm--mff-last-window window))
+          t))
+       ;; External surface not yet shown: pop it into a window.
+       ((when-let* ((buf (gethash frame-id ewm--surfaces))
+                    ((buffer-live-p buf)))
+          (pop-to-buffer-same-window buf)
+          t))))))
 
 (provide 'ewm-focus)
 ;;; ewm-focus.el ends here

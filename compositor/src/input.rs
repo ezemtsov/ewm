@@ -168,7 +168,7 @@ pub fn handle_keyboard_event(
     // Emacs. Without this, FilterResult::Forward sends keys to Emacs instead of the surface.
     if let Some((view_id, surface_id)) = fullscreen_view {
         if state.ewm.focused_surface_id() != surface_id {
-            state.ewm.set_focus_view(view_id, "fullscreen_focus_redirect");
+            state.ewm.set_focus_view(view_id, "fullscreen_focus_redirect", true);
             state.sync_keyboard_focus();
         }
     }
@@ -1085,9 +1085,10 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
             state.ewm.focus_layer_surface_if_on_demand(layer_under);
 
             if !on_layer {
-                if let Some(id) = state.ewm.focus_under(pos, "click") {
+                if let Some((frame_id, view_id)) = state.ewm.focus_under(pos, "click") {
                     state.ewm.queue_event(crate::Event::Focus {
-                        id,
+                        frame_id,
+                        view_id,
                         x: None,
                         y: None,
                     });
@@ -1243,7 +1244,7 @@ pub fn handle_gesture_swipe_end<B: InputBackend>(
             s.frames.get(s.active_idx()).map(|f| f.surface_id)
         });
         if let Some(id) = target {
-            state.ewm.set_focus_frame(id, "gesture");
+            state.ewm.set_focus_frame(id, "gesture", true);
         }
         if let Some(o) = state.ewm.find_output(&out) {
             state.ewm.queue_redraw(&o);
@@ -1279,9 +1280,10 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
         state.ewm.focus_layer_surface_if_on_demand(layer_under);
 
         if !on_layer {
-            if let Some(id) = state.ewm.focus_under(pos, "scroll") {
+            if let Some((frame_id, view_id)) = state.ewm.focus_under(pos, "scroll") {
                 state.ewm.queue_event(crate::Event::Focus {
-                    id,
+                    frame_id,
+                    view_id,
                     x: None,
                     y: None,
                 });

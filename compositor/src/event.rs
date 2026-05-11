@@ -78,10 +78,10 @@ pub enum Event {
     /// Surface title changed
     #[serde(rename = "title")]
     Title { id: u64, app: String, title: String },
-    /// Focus changed to surface
     #[serde(rename = "focus")]
     Focus {
-        id: u64,
+        frame_id: u64,
+        view_id: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         x: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]

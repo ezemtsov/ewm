@@ -320,8 +320,10 @@ pub enum ModuleCommand {
         dy: i32,
     },
     /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
-    FocusSurface {
-        id: u64,
+    /// `view_id == 0' means "focus `frame_id''s chrome".
+    FocusView {
+        frame_id: u64,
+        view_id: u64,
     },
     /// Set alpha multiplier for unfocused toplevels (1.0 = disabled).
     ConfigureUnfocusedAlpha {
@@ -747,10 +749,13 @@ fn focus_output_direction_module(dx: i64, dy: i64) -> Result<()> {
     Ok(())
 }
 
-/// Sole focus channel from Lisp.
+/// Sole focus channel from Lisp.  `view_id == 0' means "focus chrome of FRAME_ID".
 #[defun]
-fn focus_surface_module(id: i64) -> Result<()> {
-    push_command(ModuleCommand::FocusSurface { id: id as u64 });
+fn focus_view_module(frame_id: i64, view_id: i64) -> Result<()> {
+    push_command(ModuleCommand::FocusView {
+        frame_id: frame_id as u64,
+        view_id: view_id as u64,
+    });
     Ok(())
 }
 
