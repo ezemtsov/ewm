@@ -36,17 +36,14 @@
     (define-key map (kbd "<AudioMicMute>")      (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
     (define-key map (kbd "<MonBrightnessUp>")   (ewm--cmd "brightnessctl" "set" "5%+"))
     (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
-    ;; Window navigation
-    (define-key map (kbd "S-<left>") #'windmove-left)
-    (define-key map (kbd "S-<right>") #'windmove-right)
-    (define-key map (kbd "S-<down>") #'windmove-down)
-    (define-key map (kbd "S-<up>") #'windmove-up)
-    ;; Frame navigation
-    (define-key map (kbd "s-<left>") #'ewm-frame-left)
-    (define-key map (kbd "s-<right>") #'ewm-frame-right)
-    ;; Cross-output focus; the compositor picks the spatial neighbor.
-    (define-key map (kbd "s-S-<left>") #'ewm-output-focus-left)
-    (define-key map (kbd "s-S-<right>") #'ewm-output-focus-right)
+    ;; Window navigation; left/right crosses outputs at the frame edge.
+    (define-key map (kbd "s-<left>") #'ewm-focus-left)
+    (define-key map (kbd "s-<right>") #'ewm-focus-right)
+    (define-key map (kbd "s-<up>") #'windmove-up)
+    (define-key map (kbd "s-<down>") #'windmove-down)
+    ;; Workspace switching on the current output's strip.
+    (define-key map (kbd "s-S-<left>") #'ewm-frame-left)
+    (define-key map (kbd "s-S-<right>") #'ewm-frame-right)
     ;; Clipboard
     (define-key map (kbd "s-c") #'kill-ring-save)
     (define-key map (kbd "s-v") #'yank)
@@ -97,6 +94,8 @@ Override individual bindings with `use-package':
 (declare-function ewm-frame-right "ewm")
 (declare-function ewm-frame-move-left "ewm")
 (declare-function ewm-frame-move-right "ewm")
+(declare-function ewm-focus-left "ewm")
+(declare-function ewm-focus-right "ewm")
 (declare-function ewm-output-focus-left "ewm")
 (declare-function ewm-output-focus-right "ewm")
 

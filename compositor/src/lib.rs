@@ -3460,6 +3460,19 @@ impl Ewm {
         self.space.output_under(pos).next()
     }
 
+    /// True when the strip on the output under `pos` is mid-animation.
+    pub fn is_strip_animating_at(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> bool {
+        let Some(output) = self.output_containing(pos) else {
+            return false;
+        };
+        self.output_strips
+            .get(&output.name())
+            .is_some_and(|s| s.animations_ongoing())
+    }
+
     /// Clamp a pointer target into the union of output geometries.
     ///
     /// If `target` already lies on an output, returns it unchanged.

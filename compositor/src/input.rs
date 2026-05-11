@@ -922,7 +922,10 @@ pub fn handle_pointer_motion<B: InputBackend>(
     let view_id = state.ewm.view_id_under((new_x, new_y).into());
     let entry_changed = std::mem::replace(&mut state.ewm.pointer_view_id, view_id) != view_id;
 
-    if state.ewm.focus_follows_mouse_mode && (focus_changed || entry_changed) {
+    if state.ewm.focus_follows_mouse_mode
+        && (focus_changed || entry_changed)
+        && !state.ewm.is_strip_animating_at((new_x, new_y).into())
+    {
         state.ewm.focus_follows_mouse(&under, (new_x, new_y).into());
     }
 
@@ -1030,7 +1033,10 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     let view_id = state.ewm.view_id_under(pos);
     let entry_changed = std::mem::replace(&mut state.ewm.pointer_view_id, view_id) != view_id;
 
-    if state.ewm.focus_follows_mouse_mode && (focus_changed || entry_changed) {
+    if state.ewm.focus_follows_mouse_mode
+        && (focus_changed || entry_changed)
+        && !state.ewm.is_strip_animating_at(pos)
+    {
         state.ewm.focus_follows_mouse(&under, pos);
     }
 

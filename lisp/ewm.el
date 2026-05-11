@@ -1183,6 +1183,18 @@ Returns the neighbor on success, nil at the strip edge."
   (interactive)
   (ewm-focus-output-direction-module 1))
 
+(defun ewm-focus-left ()
+  "Focus the visible window to the left; cross output at the frame edge."
+  (interactive)
+  (unless (ignore-errors (windmove-left))
+    (ewm-focus-output-direction-module -1)))
+
+(defun ewm-focus-right ()
+  "Focus the visible window to the right; cross output at the frame edge."
+  (interactive)
+  (unless (ignore-errors (windmove-right))
+    (ewm-focus-output-direction-module 1)))
+
 (defun ewm--enforce-frame-output-parity ()
   "Delete orphan/stale frames but keep N frames per output.
 Frames may live on a strip multiple-deep; the duplicate-frame rule
