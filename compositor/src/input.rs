@@ -167,7 +167,7 @@ pub fn handle_keyboard_event(
     // After intercept_redirect (e.g. s-f to enter fullscreen), Wayland keyboard focus stays on
     // Emacs. Without this, FilterResult::Forward sends keys to Emacs instead of the surface.
     if let Some((view_id, surface_id)) = fullscreen_view {
-        if state.ewm.focused_surface_id != surface_id {
+        if state.ewm.focused_surface_id() != surface_id {
             state.ewm.set_focus_view(view_id, "fullscreen_focus_redirect");
             state.sync_keyboard_focus();
         }
@@ -304,7 +304,7 @@ pub fn handle_keyboard_event(
                 tracing::debug!(
                     "key forward: keycode={} surface={}",
                     keycode,
-                    state.ewm.focused_surface_id
+                    state.ewm.focused_surface_id()
                 );
             }
         }
@@ -331,7 +331,7 @@ pub fn handle_keyboard_event(
                 "emulate: keycode={} target_mod={} surface={}",
                 keycode,
                 target_mod,
-                state.ewm.focused_surface_id
+                state.ewm.focused_surface_id()
             );
             notify_activity(state);
             return KeyboardAction::Emulated;
@@ -352,13 +352,13 @@ pub fn handle_keyboard_event(
                 "intercept_redirect: keycode={} keysym=0x{:x} from surface {}",
                 keycode,
                 keysym_val,
-                state.ewm.focused_surface_id
+                state.ewm.focused_surface_id()
             );
 
             if let Some(emacs_id) = state.ewm.get_emacs_surface_for_focused_output() {
                 let context = format!("keycode={} keysym=0x{:x}", keycode, keysym_val);
                 module::record_focus(emacs_id, "intercept_redirect", Some(&context));
-                state.ewm.focused_surface_id = emacs_id;
+                state.ewm.set_focus_state(emacs_id, 0);
                 if let Some(window) = state.ewm.id_windows.get(&emacs_id) {
                     if let Some(surface) = window.wl_surface() {
                         let emacs_surface: WlSurface = surface.into_owned();
@@ -461,7 +461,7 @@ pub fn release_all_keys(state: &mut State) {
 /// Restore focus to a specific surface
 pub fn restore_focus(state: &mut State, surface_id: u64) {
     if state.ewm.id_windows.contains_key(&surface_id) {
-        state.ewm.focused_surface_id = surface_id;
+        state.ewm.set_focus(surface_id, false, "restore_focus", None);
         state.sync_keyboard_focus();
     }
 }

@@ -840,7 +840,8 @@ pub struct Ewm {
     pub pointer_focus: Option<(WlSurface, Point<f64, Logical>)>,
     /// Last output the pointer was on, for per-output cursor redraw.
     pointer_output: Option<Output>,
-    pub focused_surface_id: u64,
+    pub focused_frame_id: u64,
+    pub focused_view_id: u64,
     pub keyboard_focus: Option<WlSurface>,
     /// Output geometry or working areas changed; shared active_outputs need recomputation.
     pub active_outputs_dirty: bool,
@@ -1164,7 +1165,8 @@ impl Ewm {
             output_config: HashMap::new(),
             pointer_focus: None,
             pointer_output: None,
-            focused_surface_id: 0,
+            focused_frame_id: 0,
+            focused_view_id: 0,
             keyboard_focus: None,
             active_outputs_dirty: true,
             focus_follows_mouse_mode: false,
@@ -1486,6 +1488,22 @@ impl Ewm {
             .filter(|&id| id != 0)
     }
 
+    /// Surface id receiving keyboard input.
+    pub fn focused_surface_id(&self) -> u64 {
+        if self.focused_view_id != 0 {
+            self.lookup_view(self.focused_view_id)
+                .map(|(_, _, sid)| sid)
+                .unwrap_or(self.focused_frame_id)
+        } else {
+            self.focused_frame_id
+        }
+    }
+
+    pub(crate) fn set_focus_state(&mut self, frame_id: u64, view_id: u64) {
+        self.focused_frame_id = frame_id;
+        self.focused_view_id = view_id;
+    }
+
     /// Resolve a frame's xdg_toplevel `surface_id` to `(output_name, frame_idx)`.
     pub fn lookup_frame(&self, frame_surface_id: u64) -> Option<(String, usize)> {
         for (output, strip) in &self.output_strips {
@@ -1505,8 +1523,14 @@ impl Ewm {
         let Some((output, idx, surface_id)) = self.lookup_view(view_id) else {
             return;
         };
+        let frame_id = self
+            .output_strips
+            .get(&output)
+            .and_then(|s| s.frames.get(idx))
+            .map(|f| f.surface_id)
+            .unwrap_or(0);
         module::record_focus(surface_id, source, None);
-        self.focused_surface_id = surface_id;
+        self.set_focus_state(frame_id, view_id);
         self.activate_frame(&output, idx);
         self.queue_event(Event::Focus {
             id: surface_id,
@@ -1515,13 +1539,20 @@ impl Ewm {
         });
     }
 
-    /// Focus an Emacs frame's chrome.
+    /// Focus an Emacs frame.
     pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str) {
         let Some((output, idx)) = self.lookup_frame(frame_surface_id) else {
             return;
         };
+        let view_id = self
+            .output_strips
+            .get(&output)
+            .and_then(|s| s.frames.get(idx))
+            .and_then(|f| f.surfaces.iter().find(|s| s.focused))
+            .map(|s| s.view_id)
+            .unwrap_or(0);
         module::record_focus(frame_surface_id, source, None);
-        self.focused_surface_id = frame_surface_id;
+        self.set_focus_state(frame_surface_id, view_id);
         self.activate_frame(&output, idx);
         self.queue_event(Event::Focus {
             id: frame_surface_id,
@@ -2074,23 +2105,22 @@ impl Ewm {
             }
         }
         strip_entry.frames = frames;
-        let focused = self.focused_surface_id;
-        if let Some(new_idx) = strip_entry.frames.iter().position(|f| {
-            f.surface_id == focused || f.surfaces.iter().any(|s| s.surface_id == focused)
-        }) {
+        let frame_id = self.focused_frame_id;
+        if let Some(new_idx) = strip_entry
+            .frames
+            .iter()
+            .position(|f| f.surface_id == frame_id)
+        {
             strip_entry.set_active(new_idx);
-            // In-frame keyboard routing; bounded so it can't cross frames.
-            if let Some(frame) = strip_entry.frames.get(new_idx) {
-                let target = frame
-                    .surfaces
-                    .iter()
-                    .find(|s| s.focused)
-                    .map(|s| s.surface_id)
-                    .unwrap_or(frame.surface_id);
-                if target != focused {
-                    module::record_focus(target, "layout_focused", None);
-                    self.focused_surface_id = target;
-                }
+            let new_view = strip_entry.frames[new_idx]
+                .surfaces
+                .iter()
+                .find(|s| s.focused)
+                .map(|s| s.view_id)
+                .unwrap_or(0);
+            if new_view != self.focused_view_id {
+                self.focused_view_id = new_view;
+                module::record_focus(self.focused_surface_id(), "layout_focused", None);
             }
         } else if !strip_entry.frames.is_empty() {
             let clamped = strip_entry.active_idx().min(strip_entry.frames.len() - 1);
@@ -3196,7 +3226,7 @@ impl Ewm {
                     },
                     app_id: Some(info.app_id.clone()),
                     output,
-                    is_focused: self.focused_surface_id == id,
+                    is_focused: self.focused_surface_id() == id,
                     is_fullscreen,
                 })
             })
@@ -3256,14 +3286,14 @@ impl Ewm {
 
     /// Check if focus is on an Emacs surface (for key interception decisions)
     pub fn is_focus_on_emacs(&self) -> bool {
-        self.is_emacs_frame(self.focused_surface_id)
+        self.focused_view_id == 0 && self.is_emacs_frame(self.focused_frame_id)
     }
 
-    /// Focus a surface with source tracking.  View-blind: picks the first
-    /// frame containing `id`.  Pointer-driven paths use `focus_under' instead.
+    /// Focus a surface; view-aware paths should use `set_focus_view'.
     pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str, context: Option<&str>) {
         module::record_focus(id, source, context);
-        self.focused_surface_id = id;
+        let (frame_id, view_id) = self.resolve_focus_target(id);
+        self.set_focus_state(frame_id, view_id);
         if let Some((output, idx)) = self.frame_position(id) {
             self.activate_frame(&output, idx);
         }
@@ -3276,8 +3306,25 @@ impl Ewm {
         }
     }
 
-    /// Handle focus-follows-mouse: focus the surface under the pointer and
-    /// notify Emacs with frame-local coordinates for `window-at-x-y`.
+    fn resolve_focus_target(&self, id: u64) -> (u64, u64) {
+        if self.is_emacs_frame(id) {
+            return (id, 0);
+        }
+        if let Some(fid) = self.frame_for_surface(id) {
+            let view_id = self
+                .output_strips
+                .values()
+                .flat_map(|s| s.frames.iter())
+                .find(|f| f.surface_id == fid)
+                .and_then(|f| f.surfaces.iter().find(|s| s.surface_id == id))
+                .map(|s| s.view_id)
+                .unwrap_or(0);
+            (fid, view_id)
+        } else {
+            (id, 0)
+        }
+    }
+
     /// Focus the surface under `pos`, disambiguating views via view_id;
     /// caller queues the Focus event with whatever payload they need.
     pub fn focus_under(
@@ -3286,19 +3333,27 @@ impl Ewm {
         source: &str,
     ) -> Option<u64> {
         let view_id = self.view_id_under(pos);
-        let (id, target) = if view_id != 0 {
+        let (id, target, frame_id, view_id_final) = if view_id != 0 {
             let (output, idx, sid) = self.lookup_view(view_id)?;
-            (sid, Some((output, idx)))
+            let fid = self
+                .output_strips
+                .get(&output)
+                .and_then(|s| s.frames.get(idx))
+                .map(|f| f.surface_id)
+                .unwrap_or(0);
+            (sid, Some((output, idx)), fid, view_id)
         } else {
             let (surface, _) = self.surface_under_point(pos)?;
             let sid = self.surface_id(&surface)?;
-            (sid, self.frame_position(sid))
+            let target = self.frame_position(sid);
+            let (fid, vid) = self.resolve_focus_target(sid);
+            (sid, target, fid, vid)
         };
         if let Some((output, idx)) = target {
             self.activate_frame(&output, idx);
         }
         module::record_focus(id, source, None);
-        self.focused_surface_id = id;
+        self.set_focus_state(frame_id, view_id_final);
         Some(id)
     }
 
@@ -3388,8 +3443,8 @@ impl Ewm {
                 }
             }
             // Exclusive Bottom/Background (only when no toplevel has focus)
-            if self.focused_surface_id == 0
-                || self.id_windows.get(&self.focused_surface_id).is_none()
+            if self.focused_surface_id() == 0
+                || self.id_windows.get(&self.focused_surface_id()).is_none()
             {
                 if let Some(s) = excl_on_layer(output, Layer::Bottom) {
                     return Some(s);
@@ -3652,12 +3707,12 @@ impl Ewm {
         None
     }
 
-    /// Get the output where the focused surface is located
+    /// Get the output where the focused frame is located
     fn get_focused_output(&self) -> Option<String> {
-        if self.focused_surface_id == 0 {
+        if self.focused_frame_id == 0 {
             return None;
         }
-        self.find_surface_output(self.focused_surface_id)
+        self.find_surface_output(self.focused_frame_id)
             .map(|o| o.name())
     }
 
@@ -3785,8 +3840,8 @@ impl Ewm {
 
     /// Pick the Emacs frame to redirect intercepted keys to.
     pub fn get_emacs_surface_for_focused_output(&self) -> Option<u64> {
-        if self.is_emacs_frame(self.focused_surface_id) {
-            return Some(self.focused_surface_id);
+        if self.focused_frame_id != 0 && self.is_emacs_frame(self.focused_frame_id) {
+            return Some(self.focused_frame_id);
         }
         let output = self.get_focused_output()?;
         self.active_frame_surface_id(&output)
@@ -4416,7 +4471,7 @@ impl Ewm {
         // Auto-focus the first Emacs surface so keyboard input works without
         // a pointer event. Keyboard.enter is replayed on Initialized command;
         // PGTK drops enters sent before its surface's first roundtrip.
-        let auto_focus = is_emacs && self.focused_surface_id == 0;
+        let auto_focus = is_emacs && self.focused_surface_id() == 0;
         if auto_focus {
             self.set_focus(id, false, "initial_surface", None);
         }
@@ -4472,9 +4527,7 @@ impl Ewm {
             .map(|(&id, w)| (id, w.clone()));
 
         if let Some((id, window)) = window {
-            // Focused id may be an inner surface; check its frame too.
-            let was_focused = self.focused_surface_id == id
-                || self.frame_for_surface(self.focused_surface_id) == Some(id);
+            let was_focused = self.focused_frame_id == id;
             let output = self.find_surface_output(id).map(|o| o.name());
 
             self.window_ids.remove(&window);
@@ -4496,10 +4549,20 @@ impl Ewm {
 
             // Return refocus target if needed
             if was_focused {
+                // Output may be unknown if lisp pruned the frame before destroy fired.
                 let refocus = output
                     .as_deref()
                     .and_then(|out| self.active_frame_surface_id(out))
-                    .or(Some(1));
+                    .or_else(|| {
+                        self.pointer_output
+                            .as_ref()
+                            .and_then(|o| self.active_frame_surface_id(&o.name()))
+                    })
+                    .or_else(|| {
+                        self.output_strips
+                            .keys()
+                            .find_map(|name| self.active_frame_surface_id(name))
+                    });
                 info!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
                 return refocus;
             }
@@ -5537,8 +5600,8 @@ impl SessionLockHandler for State {
         self.ewm.wake_from_idle();
 
         // Save current focus to restore after unlock
-        if self.ewm.focused_surface_id != 0 {
-            self.ewm.pre_lock_focus = Some(self.ewm.focused_surface_id);
+        if self.ewm.focused_surface_id() != 0 {
+            self.ewm.pre_lock_focus = Some(self.ewm.focused_surface_id());
         }
 
         if self.ewm.output_state.is_empty() {
@@ -5990,7 +6053,7 @@ impl State {
             Some(wl_surface)
         } else {
             // Fall back to toplevel focus
-            let target_id = self.ewm.focused_surface_id;
+            let target_id = self.ewm.focused_surface_id();
             self.ewm
                 .id_windows
                 .get(&target_id)
@@ -6091,7 +6154,7 @@ impl State {
             self.ewm.flush_active_outputs();
         }
         let mut shared = module::shared_state().lock().unwrap();
-        shared.focused_surface_id = self.ewm.focused_surface_id;
+        shared.focused_surface_id = self.ewm.focused_surface_id();
         shared.pointer_location = self.ewm.pointer_location();
     }
 
@@ -6242,7 +6305,7 @@ impl State {
                     "emacs_surfaces": emacs_surfaces,
                     "output_strips": self.ewm.output_strips,
                     "surface_outputs": self.ewm.surface_outputs,
-                    "focused_surface_id": self.ewm.focused_surface_id,
+                    "focused_surface_id": self.ewm.focused_surface_id(),
                     "id_windows": id_window_keys,
                     "outputs": self.ewm.outputs,
                     "working_areas": self.ewm.get_working_areas_info(),
