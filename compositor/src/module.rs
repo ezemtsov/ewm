@@ -314,9 +314,10 @@ pub enum ModuleCommand {
         state: bool,
     },
     /// Focus the active frame on the output adjacent to the current one.
-    /// `direction` is -1 for left, +1 for right.
+    /// `dx`/`dy` are -1/+1 along one axis; the other axis is 0.
     FocusOutputDirection {
-        direction: i32,
+        dx: i32,
+        dy: i32,
     },
     /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
     FocusSurface {
@@ -736,11 +737,12 @@ fn close_module(id: i64) -> Result<()> {
 }
 
 /// Focus the active frame on the output adjacent to the current one.
-/// DIRECTION is -1 for left, +1 for right.
+/// DX/DY are -1/+1 along one axis; the other axis is 0.
 #[defun]
-fn focus_output_direction_module(direction: i64) -> Result<()> {
+fn focus_output_direction_module(dx: i64, dy: i64) -> Result<()> {
     push_command(ModuleCommand::FocusOutputDirection {
-        direction: direction as i32,
+        dx: dx as i32,
+        dy: dy as i32,
     });
     Ok(())
 }

@@ -36,11 +36,11 @@
     (define-key map (kbd "<AudioMicMute>")      (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
     (define-key map (kbd "<MonBrightnessUp>")   (ewm--cmd "brightnessctl" "set" "5%+"))
     (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
-    ;; Window navigation; left/right crosses outputs at the frame edge.
+    ;; Window navigation; crosses outputs at the frame edge.
     (define-key map (kbd "s-<left>") #'ewm-focus-left)
     (define-key map (kbd "s-<right>") #'ewm-focus-right)
-    (define-key map (kbd "s-<up>") #'windmove-up)
-    (define-key map (kbd "s-<down>") #'windmove-down)
+    (define-key map (kbd "s-<up>") #'ewm-focus-up)
+    (define-key map (kbd "s-<down>") #'ewm-focus-down)
     ;; Workspace switching on the current output's strip.
     (define-key map (kbd "s-S-<left>") #'ewm-frame-left)
     (define-key map (kbd "s-S-<right>") #'ewm-frame-right)
@@ -96,8 +96,12 @@ Override individual bindings with `use-package':
 (declare-function ewm-frame-move-right "ewm")
 (declare-function ewm-focus-left "ewm")
 (declare-function ewm-focus-right "ewm")
+(declare-function ewm-focus-up "ewm")
+(declare-function ewm-focus-down "ewm")
 (declare-function ewm-output-focus-left "ewm")
 (declare-function ewm-output-focus-right "ewm")
+(declare-function ewm-output-focus-up "ewm")
+(declare-function ewm-output-focus-down "ewm")
 
 (defvar ewm-surface-id)
 (defvar ewm--module-mode)

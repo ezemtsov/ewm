@@ -3724,10 +3724,43 @@ impl Ewm {
             .map(|(o, _)| o.clone())
     }
 
+    /// Output above `current` whose x-band overlaps it.  Picks the closest
+    /// by vertical center distance.
+    pub fn output_above(&self, current: &Output) -> Option<Output> {
+        let cur = self.space.output_geometry(current)?;
+        let band = Rectangle::new(
+            smithay::utils::Point::from((cur.loc.x, i32::MIN / 2)),
+            Size::from((cur.size.w, i32::MAX)),
+        );
+        let cur_cy = cur.loc.y + cur.size.h / 2;
+        self.space
+            .outputs()
+            .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
+            .filter(|(_, g)| (g.loc.y + g.size.h / 2) < cur_cy && g.overlaps(band))
+            .min_by_key(|(_, g)| cur_cy - (g.loc.y + g.size.h / 2))
+            .map(|(o, _)| o.clone())
+    }
+
+    /// Output below `current`; mirror of `output_above`.
+    pub fn output_below(&self, current: &Output) -> Option<Output> {
+        let cur = self.space.output_geometry(current)?;
+        let band = Rectangle::new(
+            smithay::utils::Point::from((cur.loc.x, i32::MIN / 2)),
+            Size::from((cur.size.w, i32::MAX)),
+        );
+        let cur_cy = cur.loc.y + cur.size.h / 2;
+        self.space
+            .outputs()
+            .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
+            .filter(|(_, g)| (g.loc.y + g.size.h / 2) > cur_cy && g.overlaps(band))
+            .min_by_key(|(_, g)| (g.loc.y + g.size.h / 2) - cur_cy)
+            .map(|(o, _)| o.clone())
+    }
+
     /// Focus the active frame on the output spatially adjacent to the
-    /// current one.  `direction` is `-1` for left, `+1` for right; other
-    /// values are a no-op.
-    pub fn focus_output_direction(&mut self, direction: i32) {
+    /// current one.  `dx` is `-1`/`+1` for left/right, `dy` is `-1`/`+1`
+    /// for up/down; mixed axes and zero vectors are a no-op.
+    pub fn focus_output_direction(&mut self, dx: i32, dy: i32) {
         let cur_name = match self.active_output() {
             Some(n) => n,
             None => return,
@@ -3736,9 +3769,11 @@ impl Ewm {
             Some(o) => o,
             None => return,
         };
-        let target = match direction {
-            d if d < 0 => self.output_left_of(&cur),
-            d if d > 0 => self.output_right_of(&cur),
+        let target = match (dx.signum(), dy.signum()) {
+            (-1, 0) => self.output_left_of(&cur),
+            (1, 0) => self.output_right_of(&cur),
+            (0, -1) => self.output_above(&cur),
+            (0, 1) => self.output_below(&cur),
             _ => None,
         };
         let Some(target) = target else { return };
@@ -6074,8 +6109,8 @@ impl State {
                     }
                 }
             }
-            ModuleCommand::FocusOutputDirection { direction } => {
-                self.ewm.focus_output_direction(direction);
+            ModuleCommand::FocusOutputDirection { dx, dy } => {
+                self.ewm.focus_output_direction(dx, dy);
             }
             ModuleCommand::FocusSurface { id } => {
                 self.ewm.set_focus(id, false, "lisp_request", None);

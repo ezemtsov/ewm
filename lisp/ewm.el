@@ -1176,24 +1176,46 @@ Returns the neighbor on success, nil at the strip edge."
 (defun ewm-output-focus-left ()
   "Focus the active frame on the output to the left of the current one."
   (interactive)
-  (ewm-focus-output-direction-module -1))
+  (ewm-focus-output-direction-module -1 0))
 
 (defun ewm-output-focus-right ()
   "Focus the active frame on the output to the right of the current one."
   (interactive)
-  (ewm-focus-output-direction-module 1))
+  (ewm-focus-output-direction-module 1 0))
+
+(defun ewm-output-focus-up ()
+  "Focus the active frame on the output above the current one."
+  (interactive)
+  (ewm-focus-output-direction-module 0 -1))
+
+(defun ewm-output-focus-down ()
+  "Focus the active frame on the output below the current one."
+  (interactive)
+  (ewm-focus-output-direction-module 0 1))
 
 (defun ewm-focus-left ()
   "Focus the visible window to the left; cross output at the frame edge."
   (interactive)
   (unless (ignore-errors (windmove-left))
-    (ewm-focus-output-direction-module -1)))
+    (ewm-focus-output-direction-module -1 0)))
 
 (defun ewm-focus-right ()
   "Focus the visible window to the right; cross output at the frame edge."
   (interactive)
   (unless (ignore-errors (windmove-right))
-    (ewm-focus-output-direction-module 1)))
+    (ewm-focus-output-direction-module 1 0)))
+
+(defun ewm-focus-up ()
+  "Focus the visible window above; cross output at the frame edge."
+  (interactive)
+  (unless (ignore-errors (windmove-up))
+    (ewm-focus-output-direction-module 0 -1)))
+
+(defun ewm-focus-down ()
+  "Focus the visible window below; cross output at the frame edge."
+  (interactive)
+  (unless (ignore-errors (windmove-down))
+    (ewm-focus-output-direction-module 0 1)))
 
 (defun ewm--enforce-frame-output-parity ()
   "Delete orphan/stale frames but keep N frames per output.
