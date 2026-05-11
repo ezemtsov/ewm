@@ -64,7 +64,6 @@ use_symbols! {
     kw_surfaces   => ":surfaces"
     kw_surface_id => ":surface-id"
     kw_view_id    => ":view-id"
-    kw_active     => ":active"
     // configure_output_module: marker for "not provided" (distinct from nil)
     kw_unset  => ":unset"
     // configure_input_module plist property names
@@ -291,13 +290,10 @@ pub enum ModuleCommand {
     SetSelection {
         text: String,
     },
-    /// Declarative per-output layout: the strip of Emacs frames, each
-    /// carrying its own surfaces.  `active_idx` is the frame containing
-    /// Emacs's selected-frame, or `None` if it sits on a different output.
+    /// Per-output frame strip.  Pure geometry; focus is shifted only via `FocusSurface'.
     OutputLayout {
         output: String,
         frames: Vec<Frame>,
-        active_idx: Option<usize>,
     },
     /// Configure input devices (unified)
     ConfigureInput {
@@ -321,6 +317,10 @@ pub enum ModuleCommand {
     /// `direction` is -1 for left, +1 for right.
     FocusOutputDirection {
         direction: i32,
+    },
+    /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
+    FocusSurface {
+        id: u64,
     },
     /// Set alpha multiplier for unfocused toplevels (1.0 = disabled).
     ConfigureUnfocusedAlpha {
@@ -657,7 +657,6 @@ fn socket() -> Result<Option<String>> {
 fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
     let frames_len: i64 = env.call(length, (frames,))?.into_rust()?;
     let mut parsed_frames = Vec::with_capacity(frames_len as usize);
-    let mut active_idx: Option<usize> = None;
 
     for i in 0..frames_len {
         let frame = env.call(aref, (frames, i))?;
@@ -713,11 +712,6 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             });
         }
 
-        let active_val = env.call(plist_get, (frame, kw_active))?;
-        if active_val.is_not_nil() && active_val != *kw_false {
-            active_idx = Some(parsed_frames.len());
-        }
-
         parsed_frames.push(Frame {
             name,
             surface_id,
@@ -730,7 +724,6 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
     push_command(ModuleCommand::OutputLayout {
         output,
         frames: parsed_frames,
-        active_idx,
     });
     Ok(())
 }
@@ -749,6 +742,13 @@ fn focus_output_direction_module(direction: i64) -> Result<()> {
     push_command(ModuleCommand::FocusOutputDirection {
         direction: direction as i32,
     });
+    Ok(())
+}
+
+/// Sole focus channel from Lisp.
+#[defun]
+fn focus_surface_module(id: i64) -> Result<()> {
+    push_command(ModuleCommand::FocusSurface { id: id as u64 });
     Ok(())
 }
 

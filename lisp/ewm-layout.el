@@ -47,12 +47,8 @@ This version correctly handles tab-lines on Emacs prior to v31."
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
 (defun ewm-layout--send-layouts ()
-  "Build and send per-output layout declarations as nested frame strips.
-Iterates `ewm--strips' so the order is the strip's own; the frame
-containing `selected-frame' carries `:active t', the single source of
-truth driving compositor strip activation."
-  (let ((sel-window (selected-window))
-        (sel-frame (selected-frame)))
+  "Send per-output frame layouts.  Pure geometry; focus goes via `ewm-focus-surface-module'."
+  (let ((sel-window (selected-window)))
     (dolist (strip ewm--strips)
       (let ((output (car strip))
             (frames-out nil))
@@ -67,7 +63,6 @@ truth driving compositor strip activation."
             (push (list :name (or (frame-parameter frame 'name) "")
                         :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
                         :width (float (frame-pixel-width frame))
-                        :active (if (eq frame sel-frame) t :false)
                         :surfaces (vconcat (nreverse surfaces)))
                   frames-out)))
         (let ((sorted (nreverse frames-out)))

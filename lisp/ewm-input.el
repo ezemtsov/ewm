@@ -36,11 +36,14 @@
     (define-key map (kbd "<AudioMicMute>")      (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
     (define-key map (kbd "<MonBrightnessUp>")   (ewm--cmd "brightnessctl" "set" "5%+"))
     (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
-    ;; Window navigation; horizontal moves fall through to the adjacent frame.
-    (define-key map (kbd "s-<left>") #'ewm-windmove-left)
-    (define-key map (kbd "s-<right>") #'ewm-windmove-right)
-    (define-key map (kbd "s-<down>") #'windmove-down)
-    (define-key map (kbd "s-<up>") #'windmove-up)
+    ;; Window navigation
+    (define-key map (kbd "S-<left>") #'windmove-left)
+    (define-key map (kbd "S-<right>") #'windmove-right)
+    (define-key map (kbd "S-<down>") #'windmove-down)
+    (define-key map (kbd "S-<up>") #'windmove-up)
+    ;; Frame navigation
+    (define-key map (kbd "s-<left>") #'ewm-frame-left)
+    (define-key map (kbd "s-<right>") #'ewm-frame-right)
     ;; Cross-output focus; the compositor picks the spatial neighbor.
     (define-key map (kbd "s-S-<left>") #'ewm-output-focus-left)
     (define-key map (kbd "s-S-<right>") #'ewm-output-focus-right)
@@ -90,8 +93,8 @@ Override individual bindings with `use-package':
 (declare-function ewm-frame-new "ewm")
 (declare-function ewm-frame-close "ewm")
 (declare-function ewm-frame-select "ewm")
-(declare-function ewm-windmove-left "ewm")
-(declare-function ewm-windmove-right "ewm")
+(declare-function ewm-frame-left "ewm")
+(declare-function ewm-frame-right "ewm")
 (declare-function ewm-frame-move-left "ewm")
 (declare-function ewm-frame-move-right "ewm")
 (declare-function ewm-output-focus-left "ewm")
@@ -173,10 +176,10 @@ Example:
 
 (defcustom ewm-intercept-prefixes
   '(?\C-x ?\C-u ?\C-h ?\M-x (?\s-f :fullscreen)
-    ("<MonBrightnessUp>" :fullscreen) ("<MonBrightnessDown>" :fullscreen)
-    ("<AudioRaiseVolume>" :fullscreen) ("<AudioLowerVolume>" :fullscreen)
-    ("<AudioMute>" :fullscreen) ("<AudioMicMute>" :fullscreen)
-    ("<Print>" :fullscreen))
+          ("<MonBrightnessUp>" :fullscreen) ("<MonBrightnessDown>" :fullscreen)
+          ("<AudioRaiseVolume>" :fullscreen) ("<AudioLowerVolume>" :fullscreen)
+          ("<AudioMute>" :fullscreen) ("<AudioMicMute>" :fullscreen)
+          ("<Print>" :fullscreen))
   "Keys that always go to Emacs, even when a surface has focus.
 Each entry is a key or (key :fullscreen).  Plain keys are intercepted
 normally; :fullscreen keys are also sent to Emacs when a fullscreen
@@ -190,7 +193,7 @@ Set with `setopt' (or `:custom' in `use-package'):
           \\='(\"C-x\" \"C-u\" \"C-h\" \"M-x\" \"M-`\"
             (\"<Print>\" :fullscreen)))"
   :type '(repeat (choice character string
-                          (list (choice character string) (const :fullscreen))))
+                         (list (choice character string) (const :fullscreen))))
   :initialize 'custom-initialize-default
   :set (lambda (sym val)
          (set-default sym val)
@@ -312,11 +315,11 @@ EMULATE is a target modifier string (e.g. \"ctrl\") for key emulation."
                      (t nil))))
     (when key-value
       (let ((spec `(:key ,key-value
-                    :ctrl ,(if (memq 'control mods) t :false)
-                    :alt ,(if (memq 'meta mods) t :false)
-                    :shift ,(if (memq 'shift mods) t :false)
-                    :super ,(if (memq 'super mods) t :false)
-                    :fullscreen ,(if fullscreen t :false))))
+                         :ctrl ,(if (memq 'control mods) t :false)
+                         :alt ,(if (memq 'meta mods) t :false)
+                         :shift ,(if (memq 'shift mods) t :false)
+                         :super ,(if (memq 'super mods) t :false)
+                         :fullscreen ,(if fullscreen t :false))))
         (when emulate
           (setq spec (append spec (list :emulate emulate))))
         spec))))
@@ -359,9 +362,9 @@ get an :emulate flag for modifier translation on non-Emacs surfaces."
      (lambda (event binding)
        (when (and binding (not (eq binding 'undefined)) (not (eq binding 'ignore)))
          (when-let* ((spec (ewm--event-to-intercept-spec
-                           event
-                           (gethash event fs-events)
-                           (gethash event emulate-map))))
+                            event
+                            (gethash event fs-events)
+                            (gethash event emulate-map))))
            (push spec specs))))
      ewm-mode-map)
     (ewm-intercept-keys-module (vconcat (nreverse specs)))))

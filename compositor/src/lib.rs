@@ -1964,7 +1964,6 @@ impl Ewm {
         &mut self,
         output_name: &str,
         mut frames: Vec<strip::Frame>,
-        active_idx: Option<usize>,
     ) {
         // 1. Find the output
         let output = match self.space.outputs().find(|o| o.name() == output_name) {
@@ -2074,37 +2073,28 @@ impl Ewm {
                 new_f.move_anim = old_f.move_anim.clone();
             }
         }
-        let prev_active = strip_entry.active_idx();
-        let prev_offset = strip_entry.view_offset.current();
         strip_entry.frames = frames;
-        let target = active_idx.unwrap_or(prev_active);
-        strip_entry.set_active(target);
-        if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-            tracing::debug!(
-                "apply_output_layout: {} active {} -> {} (lisp={:?}, frames={}) offset {:.1} -> {:.1}",
-                output_name,
-                prev_active,
-                strip_entry.active_idx(),
-                active_idx,
-                strip_entry.frames.len(),
-                prev_offset,
-                strip_entry.view_offset.current(),
-            );
-        }
-
-        if let Some(frame) = active_idx.and_then(|i| strip_entry.frames.get(i)) {
-            let target_id = frame
-                .surfaces
-                .iter()
-                .find(|e| e.focused)
-                .map(|e| e.surface_id)
-                .unwrap_or(frame.surface_id);
-            if self.focused_surface_id != target_id {
-                // Strip already activated above; bypass `set_focus' so its
-                // view-blind re-activation can't undo us.
-                module::record_focus(target_id, "layout_active", None);
-                self.focused_surface_id = target_id;
+        let focused = self.focused_surface_id;
+        if let Some(new_idx) = strip_entry.frames.iter().position(|f| {
+            f.surface_id == focused || f.surfaces.iter().any(|s| s.surface_id == focused)
+        }) {
+            strip_entry.set_active(new_idx);
+            // In-frame keyboard routing; bounded so it can't cross frames.
+            if let Some(frame) = strip_entry.frames.get(new_idx) {
+                let target = frame
+                    .surfaces
+                    .iter()
+                    .find(|s| s.focused)
+                    .map(|s| s.surface_id)
+                    .unwrap_or(frame.surface_id);
+                if target != focused {
+                    module::record_focus(target, "layout_focused", None);
+                    self.focused_surface_id = target;
+                }
             }
+        } else if !strip_entry.frames.is_empty() {
+            let clamped = strip_entry.active_idx().min(strip_entry.frames.len() - 1);
+            strip_entry.set_active(clamped);
         }
 
         for (id, prev) in migrations {
@@ -4434,7 +4424,9 @@ impl Ewm {
             .map(|(&id, w)| (id, w.clone()));
 
         if let Some((id, window)) = window {
-            let was_focused = self.focused_surface_id == id;
+            // Focused id may be an inner surface; check its frame too.
+            let was_focused = self.focused_surface_id == id
+                || self.frame_for_surface(self.focused_surface_id) == Some(id);
             let output = self.find_surface_output(id).map(|o| o.name());
 
             self.window_ids.remove(&window);
@@ -6072,6 +6064,9 @@ impl State {
             ModuleCommand::FocusOutputDirection { direction } => {
                 self.ewm.focus_output_direction(direction);
             }
+            ModuleCommand::FocusSurface { id } => {
+                self.ewm.set_focus(id, false, "lisp_request", None);
+            }
             ModuleCommand::WarpPointer { x, y } => {
                 self.warp_pointer(x, y);
             }
@@ -6249,12 +6244,8 @@ impl State {
                 );
                 debug!("Selection set from Emacs");
             }
-            ModuleCommand::OutputLayout {
-                output,
-                frames,
-                active_idx,
-            } => {
-                self.ewm.apply_output_layout(&output, frames, active_idx);
+            ModuleCommand::OutputLayout { output, frames } => {
+                self.ewm.apply_output_layout(&output, frames);
                 // Re-evaluate tracked layout entry UID (entries got fresh UIDs)
                 let (px, py) = self.ewm.pointer_location();
                 self.ewm.pointer_view_id =

@@ -182,14 +182,8 @@ impl Fixture {
                     }
                 }
             }
-            ModuleCommand::OutputLayout {
-                output,
-                frames,
-                active_idx,
-            } => {
-                self.state
-                    .ewm
-                    .apply_output_layout(&output, frames, active_idx);
+            ModuleCommand::OutputLayout { output, frames } => {
+                self.state.ewm.apply_output_layout(&output, frames);
             }
             // Other commands can be added as needed for testing
             _ => {}

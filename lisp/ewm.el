@@ -489,7 +489,7 @@ Updates buffer-local variables and renames the buffer."
 creation happens in `outputs_complete' so scale config is applied first."
   (let ((name (alist-get 'name event)))
     (setf (alist-get name ewm--output-info nil nil #'string=) event)
-    (dolist (f (frame-list))
+    (dolist (f (apply #'append (mapcar #'cdr ewm--strips)))
       (when (and (equal (frame-parameter f 'ewm-home-output) name)
                  (not (equal (frame-parameter f 'ewm-output) name)))
         (ewm--strip-remove f)
@@ -1133,54 +1133,15 @@ Returns the target frame on success, nil at the strip edge."
         (select-frame-set-input-focus target)
         target))))
 
-(defun ewm--focus-edge-window (direction)
-  "Select the leftmost (`left') or rightmost (`right') window of the frame.
-Picks by window x-edge in a single pass so only one `select-window'
-call happens -- a no-op when the saved selected window already is the
-outmost one."
-  (select-window
-   (car (seq-sort-by (lambda (w) (car (window-edges w)))
-                     (if (eq direction 'left) #'< #'>)
-                     (window-list nil 'no-minibuf)))))
-
-(defun ewm-windmove-left ()
-  "Move to the Emacs window to the left, or slide to the previous frame.
-When `windmove-left' would error and a previous frame exists on the
-output's strip, slide to it and focus its leftmost window so that
-pressing `s-<left>' again continues straight into the frame before it.
-
-This \"outmost\" landing optimizes cross-frame traversal over
-window-by-window inspection.  Use `s-<right>' to step back."
-  (interactive)
-  (condition-case err
-      (windmove-left)
-    (user-error
-     (if (ewm--frame-shift-on-output -1)
-         (ewm--focus-edge-window 'left)
-       (signal (car err) (cdr err))))))
-
-(defun ewm-windmove-right ()
-  "Move to the Emacs window to the right, or slide to the next frame.
-When `windmove-right' would error and a next frame exists on the
-output's strip, slide to it and focus its rightmost window so that
-pressing `s-<right>' again continues straight into the frame after it."
-  (interactive)
-  (condition-case err
-      (windmove-right)
-    (user-error
-     (if (ewm--frame-shift-on-output 1)
-         (ewm--focus-edge-window 'right)
-       (signal (car err) (cdr err))))))
-
-(defun ewm-frame-next ()
-  "Switch to the next frame on the current output.  Linear strip, no wrap."
-  (interactive)
-  (ewm--frame-shift-on-output 1))
-
-(defun ewm-frame-previous ()
-  "Switch to the previous frame on the current output.  Linear strip, no wrap."
+(defun ewm-frame-left ()
+  "Slide to the previous frame on the current output's strip."
   (interactive)
   (ewm--frame-shift-on-output -1))
+
+(defun ewm-frame-right ()
+  "Slide to the next frame on the current output's strip."
+  (interactive)
+  (ewm--frame-shift-on-output 1))
 
 (defun ewm-frame-select ()
   "Select the Nth frame (1-based) on the current output.
@@ -1415,6 +1376,8 @@ now that a graphical FRAME exists."
   "Enable EWM integration."
   (ewm--disable-csd)
   (ewm--enable-layout-sync)
+  (advice-add 'select-frame-set-input-focus :override
+              #'ewm--select-frame-set-input-focus)
   (ewm-input--enable)
   (if after-init-time
       (ewm--send-intercept-keys)
@@ -1439,6 +1402,8 @@ now that a graphical FRAME exists."
 (defun ewm--mode-disable ()
   "Disable EWM integration."
   (ewm--disable-layout-sync)
+  (advice-remove 'select-frame-set-input-focus
+                 #'ewm--select-frame-set-input-focus)
   (ewm-input--disable)
   (ewm-text-input-auto-mode-disable)
   (ewm--disable-process-advice)
