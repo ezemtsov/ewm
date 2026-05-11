@@ -19,16 +19,27 @@
 (defvar ewm--surfaces)
 (defvar ewm-surface-id)
 
+(defun ewm-layout--fresh-view-id ()
+  "Generate a non-zero random view id."
+  (1+ (random most-positive-fixnum)))
+
 (defun ewm-layout--ensure-view-id (window surface-id)
   "Return a stable view id for WINDOW showing SURFACE-ID."
   (let ((stored (window-parameter window 'ewm-view-id))
         (cached (window-parameter window 'ewm-view-surface)))
     (if (and stored (eql cached surface-id))
         stored
-      (let ((id (random most-positive-fixnum)))
+      (let ((id (ewm-layout--fresh-view-id)))
         (set-window-parameter window 'ewm-view-id id)
         (set-window-parameter window 'ewm-view-surface surface-id)
         id))))
+
+(defun ewm-layout--ensure-frame-view-id (frame)
+  "Return a stable view id for FRAME's own surface."
+  (or (frame-parameter frame 'ewm-frame-view-id)
+      (let ((id (ewm-layout--fresh-view-id)))
+        (set-frame-parameter frame 'ewm-frame-view-id id)
+        id)))
 
 ;; Compatibility wrapper for window-inside-absolute-pixel-edges
 ;; Fixes tab-line handling for Emacs < 31 (from exwm-core.el)
@@ -47,7 +58,7 @@ This version correctly handles tab-lines on Emacs prior to v31."
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
 (defun ewm-layout--send-layouts ()
-  "Send per-output frame layouts.  Pure geometry; focus goes via `ewm-focus-surface-module'."
+  "Send per-output frame layouts; focus goes via `ewm-focus-view-module'."
   (let ((sel-window (selected-window)))
     (dolist (strip ewm--strips)
       (let ((output (car strip))
@@ -62,6 +73,7 @@ This version correctly handles tab-lines on Emacs prior to v31."
                   (push `(:id ,id :view-id ,view-id ,@view) surfaces))))
             (push (list :name (or (frame-parameter frame 'name) "")
                         :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
+                        :view-id (ewm-layout--ensure-frame-view-id frame)
                         :width (float (frame-pixel-width frame))
                         :surfaces (vconcat (nreverse surfaces)))
                   frames-out)))

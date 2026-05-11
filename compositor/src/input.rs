@@ -358,7 +358,7 @@ pub fn handle_keyboard_event(
             if let Some(emacs_id) = state.ewm.get_emacs_surface_for_focused_output() {
                 let context = format!("keycode={} keysym=0x{:x}", keycode, keysym_val);
                 module::record_focus(emacs_id, "intercept_redirect", Some(&context));
-                state.ewm.set_focus_state(emacs_id, 0);
+                state.ewm.set_focus_state(emacs_id, None);
                 if let Some(window) = state.ewm.id_windows.get(&emacs_id) {
                     if let Some(surface) = window.wl_surface() {
                         let emacs_surface: WlSurface = surface.into_owned();
@@ -1086,12 +1086,13 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
 
             if !on_layer {
                 if let Some((frame_id, view_id)) = state.ewm.focus_under(pos, "click") {
-                    state.ewm.queue_event(crate::Event::Focus {
-                        frame_id,
-                        view_id,
-                        x: None,
-                        y: None,
-                    });
+                    if let Some(view_id) = view_id.or_else(|| state.ewm.view_id_of_frame(frame_id)) {
+                        state.ewm.queue_event(crate::Event::Focus {
+                            view_id,
+                            x: None,
+                            y: None,
+                        });
+                    }
                 }
             }
         }
@@ -1281,12 +1282,13 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
 
         if !on_layer {
             if let Some((frame_id, view_id)) = state.ewm.focus_under(pos, "scroll") {
-                state.ewm.queue_event(crate::Event::Focus {
-                    frame_id,
-                    view_id,
-                    x: None,
-                    y: None,
-                });
+                if let Some(view_id) = view_id.or_else(|| state.ewm.view_id_of_frame(frame_id)) {
+                    state.ewm.queue_event(crate::Event::Focus {
+                        view_id,
+                        x: None,
+                        y: None,
+                    });
+                }
             }
         }
     }

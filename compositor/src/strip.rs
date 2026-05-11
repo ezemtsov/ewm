@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use crate::utils::get_monotonic_time;
-use crate::LayoutEntry;
+use crate::{LayoutEntry, ViewId};
 
 /// Default duration for view-offset slides between frames.
 pub const DEFAULT_ANIM_DURATION: Duration = Duration::from_millis(250);
@@ -222,13 +222,11 @@ impl ViewOffset {
 }
 
 /// One Emacs frame in the strip.
-///
-/// `surface_id` identifies the frame's own xdg_toplevel (the Emacs frame
-/// chrome); `name` is the workspace label exposed to ext-workspace-v1.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Frame {
     pub name: String,
     pub surface_id: u64,
+    pub view_id: ViewId,
     pub width: f64,
     pub surfaces: Vec<LayoutEntry>,
     /// Slide-in animation seeded by `Strip::remove_frame_at`.
@@ -448,8 +446,12 @@ mod tests {
             frames: widths
                 .into_iter()
                 .map(|w| Frame {
+                    name: String::new(),
+                    surface_id: 0,
+                    view_id: std::num::NonZeroU64::MIN,
                     width: w,
-                    ..Default::default()
+                    surfaces: Vec::new(),
+                    move_anim: None,
                 })
                 .collect(),
             gap,

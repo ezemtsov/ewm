@@ -136,6 +136,7 @@ pub struct ActiveOutput {
 #[derive(Default)]
 pub struct SharedState {
     pub focused_surface_id: u64,
+    pub focused_frame_id: u64,
     pub pointer_location: (f64, f64),
     pub active_outputs: HashMap<String, ActiveOutput>,
 }
@@ -213,6 +214,12 @@ pub fn get_in_prefix_sequence() -> bool {
 #[defun]
 fn get_focused_id() -> Result<i64> {
     Ok(shared_state().lock().unwrap().focused_surface_id as i64)
+}
+
+/// Query the focused Emacs frame's surface ID.
+#[defun]
+fn get_focused_frame_id() -> Result<i64> {
+    Ok(shared_state().lock().unwrap().focused_frame_id as i64)
 }
 
 /// Return a list of active output names (e.g., ("eDP-1" "DP-1")).
@@ -320,10 +327,8 @@ pub enum ModuleCommand {
         dy: i32,
     },
     /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
-    /// `view_id == 0' means "focus `frame_id''s chrome".
     FocusView {
-        frame_id: u64,
-        view_id: u64,
+        view_id: std::num::NonZeroU64,
     },
     /// Set alpha multiplier for unfocused toplevels (1.0 = disabled).
     ConfigureUnfocusedAlpha {
@@ -674,6 +679,18 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             .into_rust::<i64>()
             .unwrap_or(0) as u64;
 
+        let view_id = match std::num::NonZeroU64::new(
+            env.call(plist_get, (frame, kw_view_id))?
+                .into_rust::<i64>()
+                .unwrap_or(0) as u64,
+        ) {
+            Some(v) => v,
+            None => {
+                tracing::warn!("frame {} layout dropped: missing view_id", surface_id);
+                continue;
+            }
+        };
+
         let width = value_as_f64(env.call(plist_get, (frame, kw_width))?).unwrap_or(0.0);
 
         let surfaces_val = env.call(plist_get, (frame, kw_surfaces))?;
@@ -687,10 +704,17 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             let entry = env.call(aref, (surfaces_val, j))?;
 
             let id: i64 = env.call(plist_get, (entry, kw_id))?.into_rust()?;
-            let view_id: i64 = env
-                .call(plist_get, (entry, kw_view_id))?
-                .into_rust()
-                .unwrap_or(0);
+            let view_id = match std::num::NonZeroU64::new(
+                env.call(plist_get, (entry, kw_view_id))?
+                    .into_rust::<i64>()
+                    .unwrap_or(0) as u64,
+            ) {
+                Some(v) => v,
+                None => {
+                    tracing::warn!("entry {} layout dropped: missing view_id", id);
+                    continue;
+                }
+            };
             let x: i64 = env.call(plist_get, (entry, kw_x))?.into_rust()?;
             let y: i64 = env.call(plist_get, (entry, kw_y))?.into_rust()?;
             let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
@@ -703,7 +727,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
 
             surfaces.push(LayoutEntry {
-                view_id: view_id as u64,
+                view_id,
                 surface_id: id as u64,
                 x: x as i32,
                 y: y as i32,
@@ -718,6 +742,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
         parsed_frames.push(Frame {
             name,
             surface_id,
+            view_id,
             width,
             surfaces,
             move_anim: None,
@@ -749,13 +774,14 @@ fn focus_output_direction_module(dx: i64, dy: i64) -> Result<()> {
     Ok(())
 }
 
-/// Sole focus channel from Lisp.  `view_id == 0' means "focus chrome of FRAME_ID".
+/// Sole focus channel from Lisp.  VIEW-ID names a frame or an inner view.
 #[defun]
-fn focus_view_module(frame_id: i64, view_id: i64) -> Result<()> {
-    push_command(ModuleCommand::FocusView {
-        frame_id: frame_id as u64,
-        view_id: view_id as u64,
-    });
+fn focus_view_module(view_id: i64) -> Result<()> {
+    let Some(view_id) = std::num::NonZeroU64::new(view_id as u64) else {
+        tracing::warn!("focus_view_module: ignored 0 view_id");
+        return Ok(());
+    };
+    push_command(ModuleCommand::FocusView { view_id });
     Ok(())
 }
 

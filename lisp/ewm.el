@@ -51,6 +51,7 @@
 (declare-function ewm-set-unfocused-alpha "ewm-core")
 (declare-function ewm-notify-initialized-module "ewm-core")
 (declare-function ewm-focus-output-direction-module "ewm-core")
+(declare-function ewm-get-focused-frame-id "ewm-core")
 
 ;;; Logging
 
@@ -1120,10 +1121,18 @@ neighbour and the strip slides it into the deleted frame's slot."
   (interactive)
   (delete-frame))
 
+(defun ewm--current-frame ()
+  "Frame the user is visually on -- compositor-authoritative.
+Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
+  (when-let* ((id (ewm-get-focused-frame-id))
+              ((> id 0)))
+    (cl-find id (frame-list)
+             :key (lambda (f) (frame-parameter f 'ewm-surface-id)))))
+
 (defun ewm--frame-shift-on-output (delta)
   "Move strip focus by DELTA on the current output (no wrap-around).
 Returns the target frame on success, nil at the strip edge."
-  (let* ((current (selected-frame))
+  (let* ((current (or (ewm--current-frame) (selected-frame)))
          (output (frame-parameter current 'ewm-output))
          (frames (ewm--strip-frames output))
          (idx (cl-position current frames))
@@ -1149,7 +1158,8 @@ Reads the digit from `last-command-event'.  No-op if N is past the
 number of frames on this output."
   (interactive)
   (let* ((pressed (- (event-basic-type last-command-event) ?0))
-         (output (frame-parameter (selected-frame) 'ewm-output))
+         (current (or (ewm--current-frame) (selected-frame)))
+         (output (frame-parameter current 'ewm-output))
          (frames (ewm--strip-frames output))
          (target (and (>= pressed 1) (<= pressed (length frames))
                       (nth (1- pressed) frames))))
@@ -1157,9 +1167,10 @@ number of frames on this output."
       (select-frame-set-input-focus target))))
 
 (defun ewm--frame-swap-on-output (delta)
-  "Swap the selected frame with its DELTA neighbor in the strip.
+  "Swap the focused frame with its DELTA neighbor in the strip.
 Returns the neighbor on success, nil at the strip edge."
-  (when-let* ((target (ewm--strip-swap (selected-frame) delta)))
+  (when-let* ((current (or (ewm--current-frame) (selected-frame)))
+              (target (ewm--strip-swap current delta)))
     (ewm-layout--refresh)
     target))
 

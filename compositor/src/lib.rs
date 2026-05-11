@@ -437,12 +437,13 @@ struct SurfaceInfo {
 
 /// An entry in a per-output declarative layout.
 /// Coordinates are relative to the output's working area (frame-relative).
+pub type ViewId = std::num::NonZeroU64;
+
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LayoutEntry {
-    /// Compositor-assigned unique identity per view (not from Emacs).
-    /// Analogous to an Emacs window; distinguishes views of the same surface.
-    #[serde(default)]
-    pub view_id: u64,
+    /// Unique view identity assigned by lisp.  Same surface displayed in
+    /// multiple windows yields distinct view_ids.
+    pub view_id: ViewId,
     /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
     #[serde(rename = "id")]
     pub surface_id: u64,
@@ -841,7 +842,7 @@ pub struct Ewm {
     /// Last output the pointer was on, for per-output cursor redraw.
     pointer_output: Option<Output>,
     pub focused_frame_id: u64,
-    pub focused_view_id: u64,
+    pub focused_view_id: Option<ViewId>,
     pub keyboard_focus: Option<WlSurface>,
     /// Output geometry or working areas changed; shared active_outputs need recomputation.
     pub active_outputs_dirty: bool,
@@ -850,7 +851,7 @@ pub struct Ewm {
     /// Alpha multiplier for inactive layout entries; 1.0 disables.
     pub unfocused_alpha: f32,
     /// UID of the layout entry currently under the pointer (for FFM view detection).
-    pub pointer_view_id: u64,
+    pub pointer_view_id: Option<ViewId>,
 
     // Libinput device configuration
     pub input_configs: Vec<input::InputConfigEntry>,
@@ -1166,12 +1167,12 @@ impl Ewm {
             pointer_focus: None,
             pointer_output: None,
             focused_frame_id: 0,
-            focused_view_id: 0,
+            focused_view_id: None,
             keyboard_focus: None,
             active_outputs_dirty: true,
             focus_follows_mouse_mode: false,
             unfocused_alpha: 1.0,
-            pointer_view_id: 0,
+            pointer_view_id: None,
             input_configs: Vec::new(),
             emacs_pid: None,
             emacs_frame_ids: HashSet::new(),
@@ -1455,7 +1456,7 @@ impl Ewm {
     }
 
     /// Resolve `view_id` to its `(output_name, frame_idx, surface_id)`.
-    pub fn lookup_view(&self, view_id: u64) -> Option<(String, usize, u64)> {
+    pub fn lookup_view(&self, view_id: std::num::NonZeroU64) -> Option<(String, usize, u64)> {
         for (output, strip) in &self.output_strips {
             for (idx, frame) in strip.frames.iter().enumerate() {
                 if let Some(entry) = frame.surfaces.iter().find(|e| e.view_id == view_id) {
@@ -1490,8 +1491,8 @@ impl Ewm {
 
     /// Surface id receiving keyboard input.
     pub fn focused_surface_id(&self) -> u64 {
-        if self.focused_view_id != 0 {
-            self.lookup_view(self.focused_view_id)
+        if let Some(view_id) = self.focused_view_id {
+            self.lookup_view(view_id)
                 .map(|(_, _, sid)| sid)
                 .unwrap_or(self.focused_frame_id)
         } else {
@@ -1499,7 +1500,7 @@ impl Ewm {
         }
     }
 
-    pub(crate) fn set_focus_state(&mut self, frame_id: u64, view_id: u64) {
+    pub(crate) fn set_focus_state(&mut self, frame_id: u64, view_id: Option<ViewId>) {
         self.focused_frame_id = frame_id;
         self.focused_view_id = view_id;
     }
@@ -1518,8 +1519,26 @@ impl Ewm {
         None
     }
 
+    /// Frame surface_id whose `view_id` matches.
+    pub fn frame_with_view_id(&self, view_id: ViewId) -> Option<u64> {
+        self.output_strips
+            .values()
+            .flat_map(|s| s.frames.iter())
+            .find(|f| f.view_id == view_id)
+            .map(|f| f.surface_id)
+    }
+
+    /// View id assigned to the frame with this surface id.
+    pub fn view_id_of_frame(&self, frame_surface_id: u64) -> Option<ViewId> {
+        self.output_strips
+            .values()
+            .flat_map(|s| s.frames.iter())
+            .find(|f| f.surface_id == frame_surface_id)
+            .map(|f| f.view_id)
+    }
+
     /// Focus the view identified by `view_id`.
-    pub fn set_focus_view(&mut self, view_id: u64, source: &str, notify_emacs: bool) {
+    pub fn set_focus_view(&mut self, view_id: ViewId, source: &str, notify_emacs: bool) {
         let Some((output, idx, surface_id)) = self.lookup_view(view_id) else {
             return;
         };
@@ -1530,11 +1549,10 @@ impl Ewm {
             .map(|f| f.surface_id)
             .unwrap_or(0);
         module::record_focus(surface_id, source, None);
-        self.set_focus_state(frame_id, view_id);
+        self.set_focus_state(frame_id, Some(view_id));
         self.activate_frame(&output, idx);
         if notify_emacs {
             self.queue_event(Event::Focus {
-                frame_id,
                 view_id,
                 x: None,
                 y: None,
@@ -1547,16 +1565,18 @@ impl Ewm {
         let Some((output, idx)) = self.lookup_frame(frame_surface_id) else {
             return;
         };
+        let frame_view_id = self.view_id_of_frame(frame_surface_id);
         module::record_focus(frame_surface_id, source, None);
-        self.set_focus_state(frame_surface_id, 0);
+        self.set_focus_state(frame_surface_id, None);
         self.activate_frame(&output, idx);
         if notify_emacs {
-            self.queue_event(Event::Focus {
-                frame_id: frame_surface_id,
-                view_id: 0,
-                x: None,
-                y: None,
-            });
+            if let Some(view_id) = frame_view_id {
+                self.queue_event(Event::Focus {
+                    view_id,
+                    x: None,
+                    y: None,
+                });
+            }
         }
     }
 
@@ -1929,9 +1949,9 @@ impl Ewm {
             .map_or(false, |strip| strip.surfaces().any(|e| self.effective_fullscreen(e)))
     }
 
-    /// Get the unique layout entry UID under a point, or 0 if none.
-    pub fn view_id_under(&self, pos: Point<f64, Logical>) -> u64 {
-        self.layout_entry_under(pos).map(|(e, _, _)| e.view_id).unwrap_or(0)
+    /// View id of the layout entry under a point.
+    pub fn view_id_under(&self, pos: Point<f64, Logical>) -> Option<ViewId> {
+        self.layout_entry_under(pos).map(|(e, _, _)| e.view_id)
     }
 
     /// Apply a declarative per-output layout.
@@ -2064,8 +2084,7 @@ impl Ewm {
                 .surfaces
                 .iter()
                 .find(|s| s.focused)
-                .map(|s| s.view_id)
-                .unwrap_or(0);
+                .map(|s| s.view_id);
             if new_view != self.focused_view_id {
                 self.focused_view_id = new_view;
                 module::record_focus(self.focused_surface_id(), "layout_focused", None);
@@ -3234,7 +3253,7 @@ impl Ewm {
 
     /// Check if focus is on an Emacs surface (for key interception decisions)
     pub fn is_focus_on_emacs(&self) -> bool {
-        self.focused_view_id == 0 && self.is_emacs_frame(self.focused_frame_id)
+        self.focused_view_id.is_none() && self.is_emacs_frame(self.focused_frame_id)
     }
 
     /// Focus a surface; view-aware paths should use `set_focus_view'.
@@ -3246,18 +3265,19 @@ impl Ewm {
             self.activate_frame(&output, idx);
         }
         if notify_emacs {
-            self.queue_event(Event::Focus {
-                frame_id,
-                view_id,
-                x: None,
-                y: None,
-            });
+            if let Some(view_id) = view_id.or_else(|| self.view_id_of_frame(frame_id)) {
+                self.queue_event(Event::Focus {
+                    view_id,
+                    x: None,
+                    y: None,
+                });
+            }
         }
     }
 
-    fn resolve_focus_target(&self, id: u64) -> (u64, u64) {
+    fn resolve_focus_target(&self, id: u64) -> (u64, Option<ViewId>) {
         if self.is_emacs_frame(id) {
-            return (id, 0);
+            return (id, None);
         }
         if let Some(fid) = self.frame_for_surface(id) {
             let view_id = self
@@ -3266,11 +3286,10 @@ impl Ewm {
                 .flat_map(|s| s.frames.iter())
                 .find(|f| f.surface_id == fid)
                 .and_then(|f| f.surfaces.iter().find(|s| s.surface_id == id))
-                .map(|s| s.view_id)
-                .unwrap_or(0);
+                .map(|s| s.view_id);
             (fid, view_id)
         } else {
-            (id, 0)
+            (id, None)
         }
     }
 
@@ -3279,9 +3298,8 @@ impl Ewm {
         &mut self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
         source: &str,
-    ) -> Option<(u64, u64)> {
-        let view_id = self.view_id_under(pos);
-        let (record_id, target, frame_id, view_id) = if view_id != 0 {
+    ) -> Option<(u64, Option<ViewId>)> {
+        let (record_id, target, frame_id, view_id) = if let Some(view_id) = self.view_id_under(pos) {
             let (output, idx, sid) = self.lookup_view(view_id)?;
             let fid = self
                 .output_strips
@@ -3289,7 +3307,7 @@ impl Ewm {
                 .and_then(|s| s.frames.get(idx))
                 .map(|f| f.surface_id)
                 .unwrap_or(0);
-            (sid, Some((output, idx)), fid, view_id)
+            (sid, Some((output, idx)), fid, Some(view_id))
         } else {
             let (surface, _) = self.surface_under_point(pos)?;
             let sid = self.surface_id(&surface)?;
@@ -3312,12 +3330,13 @@ impl Ewm {
     ) {
         let Some((_, origin)) = under else { return };
         let Some((frame_id, view_id)) = self.focus_under(pos, "pointer_motion") else { return };
-        self.queue_event(Event::Focus {
-            frame_id,
-            view_id,
-            x: Some(pos.x - origin.x),
-            y: Some(pos.y - origin.y),
-        });
+        if let Some(view_id) = view_id.or_else(|| self.view_id_of_frame(frame_id)) {
+            self.queue_event(Event::Focus {
+                view_id,
+                x: Some(pos.x - origin.x),
+                y: Some(pos.y - origin.y),
+            });
+        }
     }
 
     /// Update on-demand layer shell keyboard focus.
@@ -4452,12 +4471,13 @@ impl Ewm {
         // time the Focus event is processed.
         if auto_focus {
             info!("Auto-focusing initial Emacs surface {}", id);
-            self.queue_event(Event::Focus {
-                frame_id: id,
-                view_id: 0,
-                x: None,
-                y: None,
-            });
+            if let Some(view_id) = self.view_id_of_frame(id) {
+                self.queue_event(Event::Focus {
+                    view_id,
+                    x: None,
+                    y: None,
+                });
+            }
         }
         info!(
             "New toplevel {} ({}) -> {:?}",
@@ -6105,6 +6125,7 @@ impl State {
         }
         let mut shared = module::shared_state().lock().unwrap();
         shared.focused_surface_id = self.ewm.focused_surface_id();
+        shared.focused_frame_id = self.ewm.focused_frame_id;
         shared.pointer_location = self.ewm.pointer_location();
     }
 
@@ -6125,10 +6146,10 @@ impl State {
             ModuleCommand::FocusOutputDirection { dx, dy } => {
                 self.ewm.focus_output_direction(dx, dy);
             }
-            ModuleCommand::FocusView { frame_id, view_id } => {
-                if view_id != 0 {
+            ModuleCommand::FocusView { view_id } => {
+                if self.ewm.lookup_view(view_id).is_some() {
                     self.ewm.set_focus_view(view_id, "lisp_request", false);
-                } else {
+                } else if let Some(frame_id) = self.ewm.frame_with_view_id(view_id) {
                     self.ewm.set_focus_frame(frame_id, "lisp_request", false);
                 }
             }
@@ -6260,6 +6281,8 @@ impl State {
                     "output_strips": self.ewm.output_strips,
                     "surface_outputs": self.ewm.surface_outputs,
                     "focused_surface_id": self.ewm.focused_surface_id(),
+                    "focused_frame_id": self.ewm.focused_frame_id,
+                    "focused_view_id": self.ewm.focused_view_id,
                     "id_windows": id_window_keys,
                     "outputs": self.ewm.outputs,
                     "working_areas": self.ewm.get_working_areas_info(),

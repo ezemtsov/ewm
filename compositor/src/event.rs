@@ -80,8 +80,7 @@ pub enum Event {
     Title { id: u64, app: String, title: String },
     #[serde(rename = "focus")]
     Focus {
-        frame_id: u64,
-        view_id: u64,
+        view_id: std::num::NonZeroU64,
         #[serde(skip_serializing_if = "Option::is_none")]
         x: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
