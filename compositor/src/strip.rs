@@ -345,6 +345,23 @@ impl Strip {
         self.frames.iter_mut().flat_map(|f| f.surfaces.iter_mut())
     }
 
+    pub fn active_frame(&self) -> Option<&Frame> {
+        self.frames.get(self.active_idx)
+    }
+
+    /// Entries on the active (on-screen at rest) frame only.
+    pub fn active_surfaces(&self) -> impl Iterator<Item = &LayoutEntry> {
+        self.active_frame().into_iter().flat_map(|f| f.surfaces.iter())
+    }
+
+    pub fn active_surfaces_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
+        let idx = self.active_idx;
+        self.frames
+            .get_mut(idx)
+            .into_iter()
+            .flat_map(|f| f.surfaces.iter_mut())
+    }
+
     /// Iterator yielding `(frame_idx, &LayoutEntry)` pairs.
     pub fn surfaces_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
         self.frames

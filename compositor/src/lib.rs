@@ -1633,22 +1633,33 @@ impl Ewm {
 
     /// Mark `new_idx` as active on `output_name`.
     pub fn activate_frame(&mut self, output_name: &str, new_idx: usize) {
-        if let Some(strip) = self.output_strips.get_mut(output_name) {
-            let prev_idx = strip.active_idx();
-            let frames_len = strip.frames.len();
-            let prev_offset = strip.view_offset.current();
-            strip.set_active(new_idx);
-            if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-                tracing::debug!(
-                    "activate_frame: {} {} -> {} (frames={}) view_offset {:.1} -> {:.1}",
-                    output_name,
-                    prev_idx,
-                    strip.active_idx(),
-                    frames_len,
-                    prev_offset,
-                    strip.view_offset.current(),
-                );
-            }
+        let Some(strip) = self.output_strips.get_mut(output_name) else {
+            return;
+        };
+        let prev_idx = strip.active_idx();
+        let frames_len = strip.frames.len();
+        let prev_offset = strip.view_offset.current();
+        strip.set_active(new_idx);
+        let active_changed = strip.active_idx() != prev_idx;
+        if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::debug!(
+                "activate_frame: {} {} -> {} (frames={}) view_offset {:.1} -> {:.1}",
+                output_name,
+                prev_idx,
+                strip.active_idx(),
+                frames_len,
+                prev_offset,
+                strip.view_offset.current(),
+            );
+        }
+
+        // Re-arbitrate primaries on any active-idx flip: a surface's
+        // largest visible entry may have moved to (or away from) this
+        // output, which changes its size + scale.
+        if active_changed {
+            self.refresh_primary_assignments();
+            self.queue_redraw_all();
+            return;
         }
         let output = self
             .space
@@ -2105,55 +2116,70 @@ impl Ewm {
             output.enter(&surface);
         }
 
-        // 7. Compute primary flags: largest area per surface across all outputs.
-        // Fullscreen entries use the output's logical size (the surface is
-        // configured at full output size), not entry.w/h from Emacs.
-        {
-            // Build output size lookup for fullscreen area computation
-            let output_sizes: HashMap<String, (u64, u64)> = self
-                .space
-                .outputs()
-                .map(|o| {
-                    let size = crate::utils::output_size(o);
-                    (o.name(), (size.w as u64, size.h as u64))
-                })
-                .collect();
+        self.refresh_primary_assignments();
+        self.update_frames_for_working_area(&output);
 
-            let entry_area = |entry: &LayoutEntry, oname: &str| -> u64 {
-                if entry.fullscreen {
-                    let (w, h) = output_sizes
-                        .get(oname)
-                        .copied()
-                        .unwrap_or((entry.w as u64, entry.h as u64));
-                    w * h
-                } else {
-                    entry.w as u64 * entry.h as u64
-                }
-            };
+        debug!(
+            "apply_output_layout: output '{}' with {} surfaces",
+            output_name,
+            new_ids.len()
+        );
+    }
 
-            let mut best_area: HashMap<u64, u64> = HashMap::new();
-            // First pass: find the largest area per surface
-            for (oname, strip) in &self.output_strips {
-                for entry in strip.surfaces() {
-                    let area = entry_area(entry, oname);
-                    best_area
-                        .entry(entry.surface_id)
-                        .and_modify(|a| *a = (*a).max(area))
-                        .or_insert(area);
-                }
+    /// Pick each surface's primary entry (largest active-frame slot) and
+    /// configure its toplevel.  Non-active frames don't bid -- they're
+    /// off-screen, so their entry's size and output scale shouldn't drive
+    /// the shared buffer.
+    fn refresh_primary_assignments(&mut self) {
+        let output_sizes: HashMap<String, (u64, u64)> = self
+            .space
+            .outputs()
+            .map(|o| {
+                let size = crate::utils::output_size(o);
+                (o.name(), (size.w as u64, size.h as u64))
+            })
+            .collect();
+
+        // Fullscreen entries claim the output's full size, not entry.w/h.
+        let entry_area = |entry: &LayoutEntry, oname: &str| -> u64 {
+            if entry.fullscreen {
+                let (w, h) = output_sizes
+                    .get(oname)
+                    .copied()
+                    .unwrap_or((entry.w as u64, entry.h as u64));
+                w * h
+            } else {
+                entry.w as u64 * entry.h as u64
             }
-            // Second pass: mark primary on the matching entry
-            let mut assigned: HashSet<u64> = HashSet::new();
-            for (oname, strip) in self.output_strips.iter_mut() {
-                for entry in strip.surfaces_mut() {
-                    let dominated = best_area.get(&entry.surface_id).copied().unwrap_or(0);
-                    entry.primary =
-                        entry_area(entry, oname) == dominated && assigned.insert(entry.surface_id);
+        };
+
+        let mut best_area: HashMap<u64, u64> = HashMap::new();
+        for (oname, strip) in &self.output_strips {
+            for entry in strip.active_surfaces() {
+                let area = entry_area(entry, oname);
+                best_area
+                    .entry(entry.surface_id)
+                    .and_modify(|a| *a = (*a).max(area))
+                    .or_insert(area);
+            }
+        }
+
+        for strip in self.output_strips.values_mut() {
+            for entry in strip.surfaces_mut() {
+                entry.primary = false;
+            }
+        }
+
+        let mut assigned: HashSet<u64> = HashSet::new();
+        for (oname, strip) in self.output_strips.iter_mut() {
+            for entry in strip.active_surfaces_mut() {
+                let dominated = best_area.get(&entry.surface_id).copied().unwrap_or(0);
+                if entry_area(entry, oname) == dominated && assigned.insert(entry.surface_id) {
+                    entry.primary = true;
                 }
             }
         }
 
-        // 7b. Rebuild window-output cache for screencast lookups.
         #[cfg(feature = "screencast")]
         {
             self.casting.mapped_cast_output.clear();
@@ -2162,68 +2188,61 @@ impl Ewm {
                 else {
                     continue;
                 };
-                for entry in strip.surfaces() {
-                    if entry.primary {
-                        self.casting
-                            .mapped_cast_output
-                            .insert(entry.surface_id, output.clone());
-                    }
+                for entry in strip.active_surfaces().filter(|e| e.primary) {
+                    self.casting
+                        .mapped_cast_output
+                        .insert(entry.surface_id, output.clone());
                 }
             }
         }
 
-        // 8. Configure primary surfaces: size + scale from this output.
-        // wp_fractional_scale_v1 is per-surface, so the primary output's scale
-        // is the canonical one; the client renders at this scale.
-        let output_scale = output.current_scale();
-        let output_transform = output.current_transform();
-        if let Some(strip) = self.output_strips.get(output_name) {
-            for entry in strip.surfaces() {
-                if entry.primary {
-                    if let Some(window) = self.id_windows.get(&entry.surface_id) {
-                        window.with_surfaces(|s, data| {
-                            crate::utils::send_scale_transform(
-                                s,
-                                data,
-                                output_scale,
-                                output_transform,
-                            );
-                        });
-                        window.toplevel().map(|t| {
-                            let changed = t.with_pending_state(|state| {
-                                let new_size = if entry.fullscreen {
-                                    let s = crate::utils::output_size(&output);
-                                    (s.w as i32, s.h as i32).into()
-                                } else {
-                                    (entry.w as i32, entry.h as i32).into()
-                                };
-                                let changed = state.size != Some(new_size);
-                                state.size = Some(new_size);
-                                if entry.fullscreen {
-                                    state.states.set(XdgToplevelState::Fullscreen);
-                                    state.states.unset(XdgToplevelState::Maximized);
-                                } else {
-                                    state.states.set(XdgToplevelState::Maximized);
-                                    state.states.unset(XdgToplevelState::Fullscreen);
-                                }
-                                changed
-                            });
-                            if changed {
-                                t.send_configure();
-                            }
-                        });
-                    }
-                }
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        for output in &outputs {
+            let Some(strip) = self.output_strips.get(&output.name()) else {
+                continue;
+            };
+            for entry in strip.active_surfaces().filter(|e| e.primary) {
+                self.configure_primary(output, entry);
             }
         }
+    }
 
-        self.update_frames_for_working_area(&output);
-
-        debug!(
-            "apply_output_layout: output '{}' with {} surfaces",
-            output_name,
-            new_ids.len()
-        );
+    fn configure_primary(&self, output: &Output, entry: &LayoutEntry) {
+        let Some(window) = self.id_windows.get(&entry.surface_id) else {
+            return;
+        };
+        window.with_surfaces(|s, data| {
+            crate::utils::send_scale_transform(
+                s,
+                data,
+                output.current_scale(),
+                output.current_transform(),
+            );
+        });
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        let new_size = if entry.fullscreen {
+            let s = crate::utils::output_size(output);
+            (s.w as i32, s.h as i32).into()
+        } else {
+            (entry.w as i32, entry.h as i32).into()
+        };
+        let changed = toplevel.with_pending_state(|state| {
+            let changed = state.size != Some(new_size);
+            state.size = Some(new_size);
+            if entry.fullscreen {
+                state.states.set(XdgToplevelState::Fullscreen);
+                state.states.unset(XdgToplevelState::Maximized);
+            } else {
+                state.states.set(XdgToplevelState::Maximized);
+                state.states.unset(XdgToplevelState::Fullscreen);
+            }
+            changed
+        });
+        if changed {
+            toplevel.send_configure();
+        }
     }
 
     /// Queue a redraw for all outputs
