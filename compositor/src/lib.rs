@@ -442,8 +442,7 @@ pub type ViewId = std::num::NonZeroU64;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LayoutEntry {
-    /// Unique view identity assigned by lisp.  Same surface displayed in
-    /// multiple windows yields distinct view_ids.
+    /// View identity assigned by lisp; one surface in N windows yields N view_ids.
     pub view_id: ViewId,
     /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
     #[serde(rename = "id")]
@@ -1270,7 +1269,7 @@ impl Ewm {
         }
     }
 
-    /// Drop the Emacs frame chrome `id` from whichever strip holds it.
+    /// Drop the Emacs frame `id` from whichever strip holds it.
     fn remove_emacs_frame_from_strip(&mut self, id: u64) {
         let Some(out) = self.emacs_frame_output(id).map(String::from) else { return };
         let Some(strip) = self.output_strips.get_mut(&out) else { return };
@@ -1599,15 +1598,14 @@ impl Ewm {
     /// `(output_name, frame_idx)` of the strip frame containing `surface_id`,
     /// either as the frame's own xdg_toplevel or in its layout entries.
     pub fn frame_position(&self, surface_id: u64) -> Option<(String, usize)> {
-        // Frame chrome match is unique.
+        // Frame surface match is unique.
         for (name, strip) in &self.output_strips {
             if let Some(idx) = strip.frames.iter().position(|f| f.surface_id == surface_id) {
                 return Some((name.clone(), idx));
             }
         }
-        // When a surface has multiple views, prefer the focused output's
-        // active frame so a remote focus request (xdg_activation,
-        // foreign_toplevel, unlock) stays put instead of jumping.
+        // For multi-view surfaces, prefer the focused output's active frame so remote
+        // focus requests (xdg_activation, foreign_toplevel, unlock) don't jump outputs.
         if let Some(out) = self.get_focused_output() {
             if let Some(strip) = self.output_strips.get(&out) {
                 let idx = strip.active_idx();
@@ -1659,9 +1657,8 @@ impl Ewm {
             );
         }
 
-        // Re-arbitrate primaries on any active-idx flip: a surface's
-        // largest visible entry may have moved to (or away from) this
-        // output, which changes its size + scale.
+        // Active-idx flip may shift a surface's largest visible entry to/from this
+        // output, changing its size and scale.
         if active_changed {
             self.refresh_primary_assignments();
             self.queue_redraw_all();
@@ -1677,7 +1674,7 @@ impl Ewm {
         }
     }
 
-    /// Global logical top-left of an Emacs frame chrome's working area,
+    /// Global logical top-left of an Emacs frame's working area,
     /// driven by the strip column (frames aren't placed in `space`).
     pub fn emacs_frame_origin(
         &self,
@@ -1940,10 +1937,7 @@ impl Ewm {
             })
     }
 
-    /// Per-entry render-side fullscreen flag: true iff the entry was requested
-    /// fullscreen *and* the client is currently committing fullscreen buffers.
-    /// Multi-view case (entry.fullscreen=false on a different output) stays false
-    /// even when the surface is committed fullscreen elsewhere.
+    /// Render-side fullscreen flag: entry requested fullscreen AND client commits fullscreen buffers.
     pub(crate) fn effective_fullscreen(&self, entry: &LayoutEntry) -> bool {
         entry.fullscreen && self.surface_committed_fullscreen(entry.surface_id)
     }
@@ -2069,10 +2063,8 @@ impl Ewm {
             .output_strips
             .entry(output_name.to_string())
             .or_default();
-        // Seed slide-in animations for frames the new layout dropped: lisp's
-        // window hooks send a layout without the deleted frame before its
-        // wl_surface destroy reaches us, so `remove_frame_at' alone wouldn't
-        // catch lisp-driven deletions.
+        // Lisp-driven deletions arrive in a layout update before the wl_surface destroy,
+        // so seed slide-in animations here rather than relying on `remove_frame_at`.
         let new_ids: HashSet<u64> = frames.iter().map(|f| f.surface_id).collect();
         for i in 0..strip_entry.frames.len() {
             if !new_ids.contains(&strip_entry.frames[i].surface_id) {
@@ -2133,9 +2125,7 @@ impl Ewm {
     }
 
     /// Pick each surface's primary entry (largest active-frame slot) and
-    /// configure its toplevel.  Non-active frames don't bid -- they're
-    /// off-screen, so their entry's size and output scale shouldn't drive
-    /// the shared buffer.
+    /// configure its toplevel.  Off-screen frames don't bid.
     fn refresh_primary_assignments(&mut self) {
         let output_sizes: HashMap<String, (u64, u64)> = self
             .space
@@ -3281,7 +3271,7 @@ impl Ewm {
         self.focused_view_id.is_none() && self.is_emacs_frame(self.focused_frame_id)
     }
 
-    /// Focus a surface; view-aware paths should use `set_focus_view'.
+    /// Focus a surface by id; view-aware callers should use `set_focus_view'.
     pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str, context: Option<&str>) {
         module::record_focus(id, source, context);
         let (frame_id, view_id) = self.resolve_focus_target(id);
@@ -3436,9 +3426,8 @@ impl Ewm {
                 }
             }
             // Exclusive Bottom/Background (only when no toplevel has focus)
-            if self.focused_surface_id() == 0
-                || self.id_windows.get(&self.focused_surface_id()).is_none()
-            {
+            let focused = self.focused_surface_id();
+            if focused == 0 || self.id_windows.get(&focused).is_none() {
                 if let Some(s) = excl_on_layer(output, Layer::Bottom) {
                     return Some(s);
                 }
@@ -3667,7 +3656,7 @@ impl Ewm {
             }
         }
 
-        // 3. Layout surfaces (entries + frame chrome)
+        // 3. Layout surfaces (entries + frame's own surface)
         if let Some(result) = self.layout_surface_under(pos) {
             return Some(result);
         }
@@ -3756,7 +3745,7 @@ impl Ewm {
             .map(|(o, _)| o.clone())
     }
 
-    /// Output to the right of `current`; mirror of `output_left_of`.
+    /// Output to the right of `current`.
     pub fn output_right_of(&self, current: &Output) -> Option<Output> {
         let cur = self.space.output_geometry(current)?;
         let band = Rectangle::new(
@@ -3789,7 +3778,7 @@ impl Ewm {
             .map(|(o, _)| o.clone())
     }
 
-    /// Output below `current`; mirror of `output_above`.
+    /// Output below `current`.
     pub fn output_below(&self, current: &Output) -> Option<Output> {
         let cur = self.space.output_geometry(current)?;
         let band = Rectangle::new(
@@ -4070,7 +4059,7 @@ impl Ewm {
             }
         }
 
-        // Notify Emacs frames assigned to this output (frames aren't in `space`).
+        // Emacs frames aren't in `space`; notify them via the strip.
         for id in self.emacs_frames_on(&output.name()).collect::<Vec<_>>() {
             if let Some(window) = self.id_windows.get(&id) {
                 window.with_surfaces(|surface, data| {
@@ -4405,7 +4394,7 @@ impl Ewm {
         let frame_output = module::take_pending_frame_output();
         let target_output = frame_output.clone().or_else(|| self.active_output());
 
-        info!(
+        debug!(
             "new_toplevel id={} is_emacs={} pending_output={:?} target_output={:?} pending_queue_after_take={:?}",
             id, is_emacs, frame_output, target_output, module::peek_pending_frame_outputs()
         );
@@ -4533,7 +4522,7 @@ impl Ewm {
             self.remove_emacs_frame_from_strip(id);
             self.emacs_frame_ids.remove(&id);
             self.queue_event(Event::Close { id });
-            info!(
+            debug!(
                 "Toplevel {} destroyed was_focused={} was_emacs={} output={:?}",
                 id, was_focused, was_emacs, output
             );
@@ -4558,7 +4547,7 @@ impl Ewm {
                             .keys()
                             .find_map(|name| self.active_frame_surface_id(name))
                     });
-                info!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
+                debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
                 return refocus;
             }
         }
@@ -5426,6 +5415,13 @@ impl XdgActivationHandler for State {
     }
 }
 delegate_xdg_activation!(State);
+
+impl XdgForeignHandler for State {
+    fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
+        &mut self.ewm.xdg_foreign_state
+    }
+}
+delegate_xdg_foreign!(State);
 
 // Foreign toplevel management protocol (exposes windows to external tools)
 impl ForeignToplevelHandler for State {

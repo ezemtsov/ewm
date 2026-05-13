@@ -1,11 +1,7 @@
 //! Per-output horizontal strip of Emacs frames + view-offset state machine.
 //!
-//! Data model adapted from niri's `src/layout/scrolling.rs`.
-//!
-//! Frame positions are not stored; they are derived from per-frame widths via
-//! `column_x`. The viewport's left edge is `column_x(active_idx) +
-//! view_offset.current()` -- focusing a frame moves the strip under the
-//! viewport, not the other way around.
+//! Frame positions derive from per-frame widths via `column_x`; the viewport's
+//! left edge is `column_x(active_idx) + view_offset.current()`.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -19,8 +15,7 @@ pub const DEFAULT_ANIM_DURATION: Duration = Duration::from_millis(250);
 /// Fade-in duration for a surface's first buffer-bearing commit.
 pub const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
 
-/// Touchpad swipe distance that maps to one full working-area-width of strip
-/// movement.  Independent of physical touchpad size.
+/// Touchpad swipe distance mapping to one working-area-width of strip movement.
 pub const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.0;
 
 /// Velocity history window for swipe end-position projection.
@@ -29,8 +24,7 @@ const SWIPE_HISTORY_LIMIT: Duration = Duration::from_millis(150);
 /// Touchpad scroll deceleration (matches GNOME Shell).
 const SWIPE_DECELERATION: f64 = 0.997;
 
-/// Rolling history of (delta, timestamp) samples for a swipe gesture; gives
-/// `velocity` and `projected_end_pos` for momentum on release.
+/// Rolling (delta, timestamp) history backing `velocity` and `projected_end_pos`.
 #[derive(Debug, Clone, Default)]
 pub struct SwipeTracker {
     history: VecDeque<(f64, Duration)>,
@@ -82,8 +76,7 @@ impl SwipeTracker {
     }
 }
 
-/// Ease-out-cubic interpolation between two scalar view offsets
-/// (`y = 1 - (1 - t)^3` -- fast start, gentle settle).
+/// Ease-out-cubic interpolation between two scalar view offsets.
 #[derive(Debug, Clone)]
 pub struct ViewAnimation {
     from: f64,
@@ -97,9 +90,7 @@ impl ViewAnimation {
         Self::new_at(get_monotonic_time(), from, to, duration)
     }
 
-    /// Animation whose ramp does not begin until `delay` has elapsed.
-    /// During the delay `value()` is clamped to `from` (start time hasn't
-    /// arrived yet, so `saturating_sub` returns 0).
+    /// Animation whose ramp begins after `delay`; `value()` stays at `from` until then.
     pub fn delayed(delay: Duration, from: f64, to: f64, duration: Duration) -> Self {
         Self::new_at(get_monotonic_time() + delay, from, to, duration)
     }
@@ -117,9 +108,7 @@ impl ViewAnimation {
         self.to
     }
 
-    /// Shift both endpoints by `delta`.  The interpolated value at any time
-    /// also shifts by `delta`, so the running animation continues smoothly
-    /// in the new coordinate system instead of jumping.
+    /// Shift both endpoints by `delta` so the running animation re-anchors without jumping.
     pub fn offset(&mut self, delta: f64) {
         self.from += delta;
         self.to += delta;
@@ -145,9 +134,7 @@ impl ViewAnimation {
     }
 }
 
-/// In-progress touchpad swipe.  `current` is the live view offset; `anchor`
-/// is its value at gesture-begin so we add `tracker.pos()` (delta sum) to
-/// it instead of carrying drift.
+/// In-progress touchpad swipe; `current = anchor + tracker.pos()` to avoid drift.
 #[derive(Debug, Clone)]
 pub struct ViewGesture {
     pub current: f64,
@@ -155,8 +142,7 @@ pub struct ViewGesture {
     pub tracker: SwipeTracker,
 }
 
-/// View-offset state machine for one output's strip: `Static` at rest,
-/// `Animation` mid-slide, `Gesture` while a touchpad swipe is in flight.
+/// View-offset state machine: `Static` at rest, `Animation` mid-slide, `Gesture` during swipe.
 #[derive(Debug, Clone)]
 pub enum ViewOffset {
     Static(f64),
@@ -206,9 +192,7 @@ impl ViewOffset {
         }
     }
 
-    /// Apply a constant `delta` to the current state, preserving any running
-    /// animation or gesture by re-anchoring rather than clobbering.  Used
-    /// when the coordinate system shifts (e.g. active column changes).
+    /// Apply `delta` by re-anchoring any in-flight animation or gesture (no clobbering).
     pub fn offset(&mut self, delta: f64) {
         match self {
             ViewOffset::Static(x) => *x += delta,
@@ -229,7 +213,6 @@ pub struct Frame {
     pub view_id: ViewId,
     pub width: f64,
     pub surfaces: Vec<LayoutEntry>,
-    /// Slide-in animation seeded by `Strip::remove_frame_at`.
     #[serde(skip)]
     pub move_anim: Option<ViewAnimation>,
 }
@@ -240,13 +223,7 @@ impl Frame {
     }
 }
 
-/// Per-output strip of frames laid out left-to-right.
-///
-/// Frame positions are derived from prefix-sum of widths via `column_x`.
-/// The viewport's left edge is `column_x(active_idx) + view_offset.current()`
-/// -- focusing a frame moves the strip under the viewport.
-///
-/// `active_idx` is private; `set_active` is the single mutator.
+/// Per-output strip of frames laid out left-to-right; `set_active` is the sole mutator of `active_idx`.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Strip {
     pub frames: Vec<Frame>,
@@ -370,8 +347,7 @@ impl Strip {
             .flat_map(|(i, f)| f.surfaces.iter().map(move |s| (i, s)))
     }
 
-    /// Seed move_anim on neighbours of `frames[idx]` so they slide in to
-    /// fill the gap.  Caller is responsible for actually removing the frame.
+    /// Seed `move_anim` on neighbours of `frames[idx]` so they slide in to fill the gap.
     pub fn seed_remove_animation(&mut self, idx: usize) {
         if idx >= self.frames.len() {
             return;
@@ -387,9 +363,7 @@ impl Strip {
         }
     }
 
-    /// Begin a touchpad-driven view-offset gesture.  Subsequent
-    /// `gesture_update`s push deltas into the tracker; `gesture_end` snaps
-    /// to the nearest column.
+    /// Begin a touchpad-driven view-offset gesture.
     pub fn gesture_begin(&mut self) {
         if self.frames.is_empty() {
             return;
@@ -413,9 +387,7 @@ impl Strip {
         g.current = g.anchor + g.tracker.pos() * norm;
     }
 
-    /// End the gesture: project the velocity to a settled position and snap
-    /// to the nearest column via `set_active`, which animates from the
-    /// gesture's final offset to centred-on-active.
+    /// End the gesture: project velocity to a settled position and snap to the nearest column.
     pub fn gesture_end(&mut self, working_w: f64) {
         let ViewOffset::Gesture(g) = &self.view_offset else {
             return;
@@ -433,8 +405,7 @@ impl Strip {
         self.set_active(snap);
     }
 
-    /// Drop frame `idx`; surviving neighbours slide in from the removed
-    /// column's offset so the gap closes visibly.
+    /// Drop frame `idx`; surviving neighbours slide in to close the gap.
     pub fn remove_frame_at(&mut self, idx: usize) {
         if idx >= self.frames.len() {
             return;

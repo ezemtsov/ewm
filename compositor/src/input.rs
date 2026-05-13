@@ -1120,13 +1120,10 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
 /// In-flight 3-finger swipe gesture state for strip scrolling.
 #[derive(Default)]
 pub struct GestureState {
-    /// 16px deadzone accumulator before committing to a horizontal axis.
     pub cumulative: Option<(f64, f64)>,
-    /// Output the gesture is driving (set on horizontal commit).
     pub active_output: Option<String>,
 }
 
-/// Pixel² threshold before committing the gesture to an axis (matches niri).
 const GESTURE_DEADZONE_SQ: f64 = 16.0 * 16.0;
 
 fn working_area_width(state: &State, name: &str) -> f64 {
@@ -1137,8 +1134,7 @@ fn working_area_width(state: &State, name: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Three-finger swipe begin: start the deadzone accumulator and intercept
-/// the gesture from any client.  Other finger counts pass through.
+/// Three-finger swipe begin: arm the deadzone; other finger counts pass through.
 pub fn handle_gesture_swipe_begin<B: InputBackend>(
     state: &mut State,
     event: B::GestureSwipeBeginEvent,
@@ -1160,8 +1156,7 @@ pub fn handle_gesture_swipe_begin<B: InputBackend>(
     );
 }
 
-/// Three-finger swipe update: accumulate until the deadzone is crossed,
-/// then drive the active output's strip via `gesture_begin`/`gesture_update`.
+/// Three-finger swipe update: accumulate to deadzone, then drive the active output's strip.
 pub fn handle_gesture_swipe_update<B: InputBackend>(
     state: &mut State,
     event: B::GestureSwipeUpdateEvent,
@@ -1172,10 +1167,8 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
     use smithay::backend::input::{Event, GestureSwipeUpdateEvent};
     let mut dx = event.delta_x();
     let mut dy = event.delta_y();
-    // Prefer libinput's unaccelerated deltas so velocity tracking matches the
-    // physical swipe.  Invert when natural-scroll is on, since smithay's
-    // delta has natural-scroll already applied; we want raw direction so the
-    // strip follows the fingers in both modes.
+    // Use libinput's unaccelerated deltas; invert when natural-scroll is on
+    // so the strip follows fingers regardless of scroll mode.
     if let Some(le) = (&event as &dyn std::any::Any)
         .downcast_ref::<libinput::event::gesture::GestureSwipeUpdateEvent>()
     {
@@ -1230,8 +1223,7 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
     );
 }
 
-/// Three-finger swipe end: snap to the nearest column.  No-op if the
-/// gesture never crossed the deadzone or wasn't 3-finger.
+/// Three-finger swipe end: snap to the nearest column (no-op if deadzone wasn't crossed).
 pub fn handle_gesture_swipe_end<B: InputBackend>(
     state: &mut State,
     event: B::GestureSwipeEndEvent,

@@ -42,8 +42,7 @@ pub fn set_style(css: &str) -> Result<()> {
         let g_object_unref: unsafe extern "C" fn(*mut c_void) =
             std::mem::transmute(sym(lib, c"g_object_unref")?);
 
-        // No-op once PGTK has initialized GTK; required when no frame has
-        // been created yet so `gdk_screen_get_default' can return non-null.
+        // Required before the first frame so `gdk_screen_get_default' is non-null.
         ensure!(
             init_check(std::ptr::null_mut(), std::ptr::null_mut()) != 0,
             "gtk_init_check failed"

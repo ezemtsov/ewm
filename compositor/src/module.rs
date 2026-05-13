@@ -297,7 +297,7 @@ pub enum ModuleCommand {
     SetSelection {
         text: String,
     },
-    /// Per-output frame strip.  Pure geometry; focus is shifted only via `FocusSurface'.
+    /// Per-output frame strip.  Pure geometry; focus is shifted only via `FocusView'.
     OutputLayout {
         output: String,
         frames: Vec<Frame>,

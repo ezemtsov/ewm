@@ -486,8 +486,7 @@ Updates buffer-local variables and renames the buffer."
           (run-hooks 'ewm-update-title-hook))))))
 
 (defun ewm--handle-output-detected (event)
-  "Pull back frames whose `ewm-home-output' matches; new-output frame
-creation happens in `outputs_complete' so scale config is applied first."
+  "Pull back frames whose `ewm-home-output' matches the detected output."
   (let ((name (alist-get 'name event)))
     (setf (alist-get name ewm--output-info nil nil #'string=) event)
     (dolist (f (apply #'append (mapcar #'cdr ewm--strips)))
@@ -1017,8 +1016,7 @@ Excludes TTY frames and (in the future) floating frames."
   (car (ewm--strip-frames output-name)))
 
 (defun ewm--frame-in-flight-p (frame)
-  "Return non-nil when FRAME has been bound to an output but the compositor
-hasn't paired it with a surface id yet."
+  "Return non-nil when FRAME has an output assignment but no surface id yet."
   (and (frame-parameter frame 'ewm-output)
        (null (frame-parameter frame 'ewm-surface-id))))
 
@@ -1059,9 +1057,7 @@ hasn't paired it with a surface id yet."
     (nth target-idx frames)))
 
 (defun ewm--create-frame-for-output (output-name &optional after-frame extra-params)
-  "Create a frame on OUTPUT-NAME, inserted into the strip after AFTER-FRAME.
-Falls back to appending when AFTER-FRAME is nil.  EXTRA-PARAMS are merged
-into the new frame's parameter alist."
+  "Create a frame on OUTPUT-NAME inserted after AFTER-FRAME (or appended)."
   (ewm-prepare-frame output-name)
   (let* ((seq (cl-incf ewm--frame-seq))
          (frame (make-frame `((visibility . t) (window-system . pgtk)
@@ -1108,10 +1104,6 @@ Frames for disconnected outputs are always allowed to be deleted."
   (let* ((current (selected-frame))
          (output (frame-parameter current 'ewm-output)))
     (unless output (user-error "Current frame has no ewm-output"))
-    (ewm--log "frame-new: output=%s after=%s strip=%S"
-              output current
-              (mapcar (lambda (f) (frame-parameter f 'ewm-surface-id))
-                      (ewm--strip-frames output)))
     (ewm--create-frame-for-output output current
                                   '((ewm-focus-on-create . t)))))
 
@@ -1299,9 +1291,8 @@ The compositor runs as a thread within the Emacs process."
         (if after-init-time
             (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)
           (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module))
-        ;; Re-apply now that graphical frames exist: face-attribute returns
-        ;; the real theme bg, so subsequent s-t frames get themed instead
-        ;; of the black fallback used during outputs_complete.
+        ;; Re-apply now that graphical frames exist and face-attribute can
+        ;; return the real theme background instead of the black fallback.
         (ewm--apply-gtk-bg-css))
     (ewm--destroy-event-channel)
     (error "Failed to start compositor")))
@@ -1325,10 +1316,7 @@ The compositor runs as a thread within the Emacs process."
 (declare-function ewm-gtk-set-style "ewm-core")
 
 (defun ewm--apply-gtk-bg-css (&rest _)
-  "Push the default face background to the GTK widget for new frames.
-Falls back to black before any graphical frame exists -- `face-attribute'
-on the daemon's TTY frame returns the sentinel \"unspecified-bg\" which
-isn't a valid CSS color (bug#53232)."
+  "Push the default face background to GTK; falls back to black pre-graphical (bug#53232)."
   (let* ((live (face-attribute 'default :background))
          (bg (if (and (stringp live) (not (string-prefix-p "unspecified" live)))
                  live
