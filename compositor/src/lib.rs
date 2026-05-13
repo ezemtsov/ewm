@@ -101,7 +101,7 @@ use smithay::{
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_activation,
-    delegate_xdg_shell,
+    delegate_xdg_foreign, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
         utils::{
@@ -181,6 +181,7 @@ use smithay::{
         xdg_activation::{
             XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
         },
+        xdg_foreign::{XdgForeignHandler, XdgForeignState},
     },
 };
 use std::cell::RefCell;
@@ -921,6 +922,8 @@ pub struct Ewm {
     // XDG activation state (allows apps to request focus)
     pub activation_state: XdgActivationState,
 
+    pub xdg_foreign_state: XdgForeignState,
+
     // Foreign toplevel state (exposes windows to external tools)
     pub foreign_toplevel_state: ForeignToplevelManagerState,
 
@@ -1089,6 +1092,8 @@ impl Ewm {
         // Initialize xdg-activation for focus requests
         let activation_state = XdgActivationState::new::<State>(&display_handle);
 
+        let xdg_foreign_state = XdgForeignState::new::<State>(&display_handle);
+
         // Initialize foreign toplevel management (exposes windows to external tools)
         let foreign_toplevel_state =
             ForeignToplevelManagerState::new::<State, _>(&display_handle, |_| true);
@@ -1196,6 +1201,7 @@ impl Ewm {
             layer_shell_on_demand_focus: None,
             working_areas: HashMap::new(),
             activation_state,
+            xdg_foreign_state,
             foreign_toplevel_state,
             workspace_state,
             output_management_state,
