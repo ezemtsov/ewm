@@ -25,6 +25,20 @@
 (defvar ewm--is-ffm-focus-event)
 (defvar ewm--mff-last-window)
 
+(defvar ewm--focused-window nil
+  "User-intended focused window; refreshed in `post-command-hook'.
+Decoupled from `selected-window' so process-filter churn (telega) can't
+leak into the layout's `:focused' flag.")
+
+(defun ewm--user-focused-window ()
+  "Return `ewm--focused-window' when live, else `selected-window'."
+  (let ((win ewm--focused-window))
+    (if (window-live-p win) win (selected-window))))
+
+(defun ewm--capture-focused-window ()
+  "Snapshot `selected-window' into `ewm--focused-window'."
+  (setq ewm--focused-window (selected-window)))
+
 (defun ewm--select-frame-set-input-focus (frame &optional norecord)
   "Override skipping `x-focus-frame' so xdg_activation can't echo back."
   (select-frame frame norecord)
@@ -62,6 +76,7 @@
        ((when-let ((win (ewm--find-window-by-view-id view-id)))
           (select-frame (window-frame win))
           (select-window win)
+          (setq ewm--focused-window win)
           (setq ewm--mff-last-window win)
           t))
        ((when-let ((frame (ewm--find-frame-by-view-id view-id)))
@@ -70,6 +85,7 @@
                       (window (window-at-x-y x y frame))
                       ((not (minibufferp (window-buffer window)))))
             (select-window window)
+            (setq ewm--focused-window window)
             (setq ewm--mff-last-window window))
           t))))))
 

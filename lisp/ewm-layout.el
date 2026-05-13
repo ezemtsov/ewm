@@ -57,9 +57,11 @@ This version correctly handles tab-lines on Emacs prior to v31."
     #'window-inside-absolute-pixel-edges)
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
+(declare-function ewm--user-focused-window "ewm-focus")
+
 (defun ewm-layout--send-layouts ()
   "Send per-output frame layouts; focus goes via `ewm-focus-view-module'."
-  (let ((sel-window (selected-window)))
+  (let ((sel-window (ewm--user-focused-window)))
     (dolist (strip ewm--strips)
       (let ((output (car strip))
             (frames-out nil))
