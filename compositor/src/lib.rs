@@ -1248,10 +1248,9 @@ impl Ewm {
         }
     }
 
-    /// Restore the focus invariants after a layout swap or surface destruction.
-    /// Clears stale `selected_view_id` / `focused_view_id`, aligns
-    /// `focused_frame_id` with the frame that actually owns `focused_view_id`,
-    /// and zeroes `focused_frame_id` when its frame no longer exists.
+    /// Restore the focus invariants after a layout swap or surface destruction:
+    /// drop stale `selected_view_id` / `focused_view_id`, and zero
+    /// `focused_frame_id` when its frame no longer exists.
     fn prune_dangling_focus(&mut self) {
         for strip in self.output_strips.values_mut() {
             for frame in &mut strip.frames {
@@ -1263,14 +1262,14 @@ impl Ewm {
             }
         }
         if let Some(v) = self.focused_view_id {
-            match self.lookup_view(v) {
-                None => self.focused_view_id = None,
-                Some((output, idx, _)) => {
-                    let frame_id = self.frame_surface_id_at(&output, idx).unwrap_or(0);
-                    if frame_id != self.focused_frame_id {
-                        self.focused_frame_id = frame_id;
-                    }
-                }
+            let in_focused_frame = self
+                .output_strips
+                .values()
+                .flat_map(|s| s.frames.iter())
+                .find(|f| f.surface_id == self.focused_frame_id)
+                .is_some_and(|f| f.surfaces.iter().any(|e| e.view_id == v));
+            if !in_focused_frame {
+                self.focused_view_id = None;
             }
         }
         if self.focused_frame_id != 0 && self.lookup_frame(self.focused_frame_id).is_none() {
@@ -1539,7 +1538,11 @@ impl Ewm {
     /// bypasses `set_focus_frame`'s view derivation.  Restored on the next layout
     /// refresh after `ewm-input--clear-prefix`.
     pub fn enter_prefix_redirect(&mut self, emacs_id: u64) {
+        let Some((output, idx)) = self.lookup_frame(emacs_id) else {
+            return;
+        };
         self.set_focus_state(emacs_id, None);
+        self.activate_frame(&output, idx);
     }
 
     /// Resolve a frame's xdg_toplevel `surface_id` to `(output_name, frame_idx)`.
@@ -2080,16 +2083,21 @@ impl Ewm {
         for (id, prev) in &migrations {
             if let Some(prev_name) = prev {
                 if let Some(prev_strip) = self.output_strips.get_mut(prev_name) {
-                    prev_strip.frames.retain(|f| f.surface_id != *id);
+                    // `remove_frame_at` adjusts `active_idx` and seeds the
+                    // slide-in animation on surviving neighbours; plain
+                    // `retain` would leave `active_idx` stale.
+                    if let Some(idx) = prev_strip.frames.iter().position(|f| f.surface_id == *id) {
+                        prev_strip.remove_frame_at(idx);
+                    }
                 }
             }
         }
 
-        // 6. MERGE the layout into the strip.  Existing frames are updated in place;
-        //    new frames are appended.  Frames in the strip but absent from the layout
-        //    are KEPT -- they go away only via `handle_toplevel_destroyed`.  This makes
-        //    compositor-eager-inserted frames (from `new_toplevel`) survive layout
-        //    refreshes that race ahead of Emacs's `ewm--assign-surface-to-frame`.
+        // 6. MERGE the layout into the strip.  Existing frames are updated in place; new frames are
+        //    appended.  Frames in the strip but absent from the layout are KEPT -- they go away
+        //    only via `handle_toplevel_destroyed`.  This makes compositor-eager-inserted frames
+        //    (from `new_toplevel`) survive layout refreshes that race ahead of Emacs's
+        //    `ewm--assign-surface-to-frame`.
         let strip_entry = self
             .output_strips
             .entry(output_name.to_string())
@@ -2152,6 +2160,20 @@ impl Ewm {
         self.refresh_primary_assignments();
         self.update_frames_for_working_area(&output);
         self.prune_dangling_focus();
+        // Defensive: if no frame is focused and at least one exists, focus the
+        // first one.  Normally `new_toplevel`'s auto-focus handles this; this
+        // covers the race where `apply_output_layout` runs first.
+        if self.focused_frame_id == 0 {
+            if let Some(id) = self
+                .output_strips
+                .values()
+                .flat_map(|s| s.frames.iter())
+                .next()
+                .map(|f| f.surface_id)
+            {
+                self.set_focus_frame(id, "auto_focus_on_layout", false);
+            }
+        }
 
         debug!(
             "apply_output_layout: output '{}' with {} surfaces",
@@ -6365,9 +6387,7 @@ impl State {
                     .ewm
                     .output_strips
                     .iter()
-                    .flat_map(|(out, s)| {
-                        s.frames.iter().map(move |f| (f.surface_id, out.clone()))
-                    })
+                    .flat_map(|(out, s)| s.frames.iter().map(move |f| (f.surface_id, out.clone())))
                     .collect();
                 let state = serde_json::json!({
                     "surfaces": self.ewm.surface_info,

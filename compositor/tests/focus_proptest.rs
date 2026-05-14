@@ -23,7 +23,10 @@ enum Op {
     /// Mimics `new_toplevel`'s eager-insert path for Emacs frames: at boot only
     /// Emacs frames exist and they enter the strip before any layout arrives.
     /// `output` indexes into `OUTPUTS`.
-    CreateEmacsFrame { output: usize, surface_id: u64 },
+    CreateEmacsFrame {
+        output: usize,
+        surface_id: u64,
+    },
     /// Apply a layout to `OUTPUTS[output]`.  If a frame in `frames` is currently
     /// on a different output, the compositor migrates it.
     ApplyLayout {
@@ -56,8 +59,10 @@ const ENTRY_VID_RANGE: std::ops::RangeInclusive<u64> = 1..=8;
 const FRAME_SID_RANGE: std::ops::RangeInclusive<u64> = 100..=102;
 
 fn entry_strategy() -> impl Strategy<Value = EntrySpec> {
-    (ENTRY_SID_RANGE, ENTRY_VID_RANGE.prop_map(nz))
-        .prop_map(|(sid, vid)| EntrySpec { surface_id: sid, view_id: vid })
+    (ENTRY_SID_RANGE, ENTRY_VID_RANGE.prop_map(nz)).prop_map(|(sid, vid)| EntrySpec {
+        surface_id: sid,
+        view_id: vid,
+    })
 }
 
 /// Generates layouts satisfying the Emacs side's invariants:
@@ -165,7 +170,8 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     .set_focus_frame(surface_id, "initial_surface", false);
                 // Catches the boot regression: auto-focus must land on `surface_id`.
                 assert_eq!(
-                    fix.ewm().focused_frame_id, surface_id,
+                    fix.ewm().focused_frame_id,
+                    surface_id,
                     "auto-focus for new Emacs frame {} did not set focused_frame_id",
                     surface_id,
                 );
@@ -216,19 +222,47 @@ fn assert_invariants(fix: &Fixture) {
         );
     }
 
-    // Invariant 5 (multi-output): a frame's surface_id appears in at most one
-    // strip.  The compositor's cross-output migration logic in
-    // `apply_output_layout` is supposed to enforce this; this catches regressions.
+    // Invariant 3: a frame's surface_id appears in at most one strip.  Cross-output
+    // migration in `apply_output_layout` is supposed to enforce this.
     let mut seen: HashSet<u64> = HashSet::new();
     for strip in ewm.output_strips.values() {
         for f in &strip.frames {
             assert!(
                 seen.insert(f.surface_id),
-                "invariant 5: frame {} appears in multiple strips",
+                "invariant 3: frame {} appears in multiple strips",
                 f.surface_id,
             );
         }
     }
+
+    // Invariant 4: the focused frame is the active frame of its own strip.
+    if ewm.focused_frame_id != 0 {
+        for strip in ewm.output_strips.values() {
+            let active_id = strip.frames.get(strip.active_idx()).map(|f| f.surface_id);
+            if active_id == Some(ewm.focused_frame_id) {
+                continue;
+            }
+            assert!(
+                !strip
+                    .frames
+                    .iter()
+                    .any(|f| f.surface_id == ewm.focused_frame_id),
+                "invariant 4: focused frame {} present in a strip but not its active frame",
+                ewm.focused_frame_id,
+            );
+        }
+    }
+
+    // Invariant 5: at least one frame exists ⟺ focused_frame_id is non-zero.
+    // EWM always has exactly one focused frame whenever any frame is mapped.
+    let any_frame = ewm.output_strips.values().any(|s| !s.frames.is_empty());
+    assert_eq!(
+        any_frame,
+        ewm.focused_frame_id != 0,
+        "invariant 5: any_frame={} but focused_frame_id={}",
+        any_frame,
+        ewm.focused_frame_id,
+    );
 }
 
 proptest! {
