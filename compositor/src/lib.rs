@@ -1492,9 +1492,16 @@ impl Ewm {
         }
     }
 
-    pub(crate) fn set_focus_state(&mut self, frame_id: u64, view_id: Option<ViewId>) {
+    fn set_focus_state(&mut self, frame_id: u64, view_id: Option<ViewId>) {
         self.focused_frame_id = frame_id;
         self.focused_view_id = view_id;
+    }
+
+    /// Park focus on an Emacs frame's chrome during an intercepted prefix key;
+    /// bypasses `set_focus_frame`'s view derivation.  Restored on the next layout
+    /// refresh after `ewm-input--clear-prefix`.
+    pub fn enter_prefix_redirect(&mut self, emacs_id: u64) {
+        self.set_focus_state(emacs_id, None);
     }
 
     /// Resolve a frame's xdg_toplevel `surface_id` to `(output_name, frame_idx)`.
@@ -2080,7 +2087,7 @@ impl Ewm {
             strip_entry.set_active(new_idx);
             let new_view = strip_entry.frames[new_idx].selected_view_id;
             if new_view != self.focused_view_id {
-                self.focused_view_id = new_view;
+                self.set_focus_state(self.focused_frame_id, new_view);
                 module::record_focus(self.focused_surface_id(), "layout_selected", None);
             }
         } else if !strip_entry.frames.is_empty() {
@@ -3279,22 +3286,15 @@ impl Ewm {
         self.focused_view_id.is_none() && self.is_emacs_frame(self.focused_frame_id)
     }
 
-    /// Focus a surface by id; view-aware callers should use `set_focus_view'.
-    pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str, context: Option<&str>) {
-        module::record_focus(id, source, context);
+    /// Focus a surface by id; resolves to either a view or an Emacs frame and
+    /// delegates to the canonical mutator (`set_focus_view` / `set_focus_frame`).
+    /// Callers with a known kind should call those directly.
+    pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str) {
         let (frame_id, view_id) = self.resolve_focus_target(id);
-        self.set_focus_state(frame_id, view_id);
-        if let Some((output, idx)) = self.frame_position(id) {
-            self.activate_frame(&output, idx);
-        }
-        if notify_emacs {
-            if let Some(view_id) = view_id.or_else(|| self.view_id_of_frame(frame_id)) {
-                self.queue_event(Event::Focus {
-                    view_id,
-                    x: None,
-                    y: None,
-                });
-            }
+        if let Some(view_id) = view_id {
+            self.set_focus_view(view_id, source, notify_emacs);
+        } else if frame_id != 0 {
+            self.set_focus_frame(frame_id, source, notify_emacs);
         }
     }
 
@@ -3317,33 +3317,31 @@ impl Ewm {
     }
 
     /// Focus the entity under `pos`; returns `(frame_id, view_id)`.
+    /// Hit-test `pos` and focus the resulting view or frame.  Callers retain
+    /// control over emitting the `Focus` event (for ffm coordinates), so this
+    /// passes `notify_emacs=false` to the canonical mutators.
     pub fn focus_under(
         &mut self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
         source: &str,
     ) -> Option<(u64, Option<ViewId>)> {
-        let (record_id, target, frame_id, view_id) = if let Some(view_id) = self.view_id_under(pos)
-        {
-            let (output, idx, sid) = self.lookup_view(view_id)?;
-            let fid = self
-                .output_strips
-                .get(&output)
-                .and_then(|s| s.frames.get(idx))
-                .map(|f| f.surface_id)
-                .unwrap_or(0);
-            (sid, Some((output, idx)), fid, Some(view_id))
+        let (frame_id, view_id) = if let Some(view_id) = self.view_id_under(pos) {
+            self.lookup_view(view_id)?;
+            self.set_focus_view(view_id, source, false);
+            (self.focused_frame_id, Some(view_id))
         } else {
             let (surface, _) = self.surface_under_point(pos)?;
             let sid = self.surface_id(&surface)?;
-            let target = self.frame_position(sid);
             let (fid, vid) = self.resolve_focus_target(sid);
-            (sid, target, fid, vid)
+            if let Some(view_id) = vid {
+                self.set_focus_view(view_id, source, false);
+            } else if fid != 0 {
+                self.set_focus_frame(fid, source, false);
+            } else {
+                return None;
+            }
+            (fid, vid)
         };
-        if let Some((output, idx)) = target {
-            self.activate_frame(&output, idx);
-        }
-        module::record_focus(record_id, source, None);
-        self.set_focus_state(frame_id, view_id);
         Some((frame_id, view_id))
     }
 
@@ -4470,7 +4468,7 @@ impl Ewm {
         // PGTK drops enters sent before its surface's first roundtrip.
         let auto_focus = is_emacs && self.focused_surface_id() == 0;
         if auto_focus {
-            self.set_focus(id, false, "initial_surface", None);
+            self.set_focus_frame(id, "initial_surface", false);
         }
 
         // Resolve which Emacs frame should host this surface.  Emacs
@@ -5136,9 +5134,8 @@ impl XdgShellHandler for State {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(refocus_id) = self.ewm.handle_toplevel_destroyed(surface) {
-            // Refocus to the returned surface (keyboard sync deferred)
             self.ewm
-                .set_focus(refocus_id, true, "toplevel_destroyed", None);
+                .set_focus_frame(refocus_id, "toplevel_destroyed", true);
             self.sync_keyboard_focus();
         }
     }
@@ -5413,7 +5410,7 @@ impl XdgActivationHandler for State {
                 if self.ewm.is_emacs_frame(id) {
                     debug!("xdg_activation: ignored for Emacs frame {}", id);
                 } else {
-                    self.ewm.set_focus(id, true, "xdg_activation", None);
+                    self.ewm.set_focus(id, true, "xdg_activation");
                     info!("xdg_activation: granted for surface {}", id);
                 }
             } else {
@@ -5459,7 +5456,7 @@ impl ForeignToplevelHandler for State {
             .find(|(w, _)| w.wl_surface().map(|s| *s == wl_surface).unwrap_or(false))
             .map(|(_, id)| id)
         {
-            self.ewm.set_focus(id, true, "foreign_toplevel", None);
+            self.ewm.set_focus(id, true, "foreign_toplevel");
             info!("Foreign toplevel: activated surface {}", id);
         }
     }
@@ -5648,7 +5645,7 @@ impl SessionLockHandler for State {
         if let Some(id) = self.ewm.pre_lock_focus.take() {
             if self.ewm.id_windows.contains_key(&id) {
                 info!("Restoring focus to surface {} after unlock", id);
-                self.ewm.set_focus(id, false, "unlock", None);
+                self.ewm.set_focus(id, false, "unlock");
             }
         }
         self.sync_keyboard_focus();

@@ -361,7 +361,7 @@ pub fn handle_keyboard_event(
             if let Some(emacs_id) = state.ewm.get_emacs_surface_for_focused_output() {
                 let context = format!("keycode={} keysym=0x{:x}", keycode, keysym_val);
                 module::record_focus(emacs_id, "intercept_redirect", Some(&context));
-                state.ewm.set_focus_state(emacs_id, None);
+                state.ewm.enter_prefix_redirect(emacs_id);
                 if let Some(window) = state.ewm.id_windows.get(&emacs_id) {
                     if let Some(surface) = window.wl_surface() {
                         let emacs_surface: WlSurface = surface.into_owned();
@@ -459,16 +459,6 @@ pub fn release_all_keys(state: &mut State) {
     // Clear focus (focus_changed handles text_input)
     keyboard.set_focus(state, None, serial);
     state.ewm.keyboard_focus = None;
-}
-
-/// Restore focus to a specific surface
-pub fn restore_focus(state: &mut State, surface_id: u64) {
-    if state.ewm.id_windows.contains_key(&surface_id) {
-        state
-            .ewm
-            .set_focus(surface_id, false, "restore_focus", None);
-        state.sync_keyboard_focus();
-    }
 }
 
 // Pointer event handling
