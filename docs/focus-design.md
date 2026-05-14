@@ -1,564 +1,347 @@
-# EWM Focus Design
+# Focus, in EWM
 
-## Overview
+This document is about how keyboard focus works in EWM, and why it is shaped
+the way it is.  It is meant to be read by someone wandering into the focus
+code for the first time, not as a reference for the symbols.
 
-EWM has a unique focus model that bridges Wayland compositor focus with Emacs frame/window focus. The compositor manages keyboard focus for surfaces while coordinating with Emacs to ensure a consistent user experience.
+## What EWM is, and what makes focus hard
 
-## Key Concepts
+EWM is a Wayland compositor that runs as a thread inside Emacs.  It tries
+to make Wayland applications -- terminals, browsers, anything that speaks
+the Wayland protocol -- feel native inside Emacs's window layout, so that
+managing them happens through the same commands and conventions you already
+use for buffers.
 
-### Surface Types
+This is the source of the design tension that drives almost everything in
+the focus code: **two parties both want to own focus.**
 
-1. **Emacs surfaces** (`emacs_surfaces`): Frames belonging to the Emacs process. Identified by matching PID.
-2. **External surfaces**: Windows from other applications (Firefox, terminals, etc.)
+Emacs has `selected-window` and `selected-frame`.  Commands dispatch through
+them.  Display logic, the minibuffer, every interactive function in lisp
+assumes these are authoritative.  This is not something we can take away.
 
-### Focus States
+Wayland has `keyboard.set_focus(surface)`.  Whichever surface holds it
+receives every keystroke, end of story.  This is not something we can fake
+around.
 
-- **Compositor focus** (`focused_surface_id`): Which surface has keyboard focus at the Wayland level
-- **Emacs focus**: Which frame/window is selected in Emacs
-- **Pointer location**: Current mouse position (tracked separately from focus)
+These two notions of focus are *the same notion* from the user's
+perspective -- "what am I typing into?" -- but they live in different
+worlds, on different threads, with different concepts of what a "window"
+even is.  The job of the focus subsystem is to keep them agreeing without
+either side losing its own coherence.
 
-## Focus Behaviors
+## The mapping problem
 
-### Input-to-Focus
+Emacs thinks in **frames, windows, and buffers**.  A frame is an OS-level
+window.  Windows are panes inside a frame.  Each window displays a buffer.
 
-Any input action (click OR scroll) focuses the surface under the pointer:
-1. Compositor calls `set_focus(id, true, "click"/"scroll", None)`
-2. Always sends `Focus { id }` event to Emacs (no deduplication by ID)
-3. Emacs finds the correct window for that surface and selects it
+Wayland thinks in **surfaces**.  A surface is whatever a client draws into.
+An Emacs frame is a surface (the frame's chrome).  An external application
+is also a surface.
 
-Sending Focus on every click/scroll (even when `id == focused_surface_id`) is
-essential for multi-window surfaces: the same surface may be visible in multiple
-Emacs windows, so Emacs needs the event to select the window under the pointer.
+To make external applications feel like Emacs windows, EWM puts each
+external surface inside an Emacs window.  Lisp wraps the surface in a
+buffer; Emacs displays that buffer in a window; the compositor positions
+the surface to match the window's screen rect.
 
-This unified model means:
-- Scrolling a surface focuses it (keyboard focus follows)
-- Clicking a surface focuses it
-- Mere hover without input does NOT change focus
+This means an external application looks, to Emacs, like a buffer.  And it
+means a single surface can be displayed in multiple Emacs windows
+simultaneously -- the same way the same buffer can be shown in two windows.
+We call each such display of a surface a **view**.
 
-### Intercepted Keys (Super-key bindings)
+So: an Emacs frame is one surface (its chrome).  An external application
+is one surface that might appear as zero, one, or many views inside Emacs
+frames.
 
-When a Super-key binding is pressed while focus is on an external surface:
-1. Compositor intercepts the key (doesn't forward to surface)
-2. Finds the Emacs frame on the **same output as the focused surface** (via `focused_output_for_surface()`)
-3. Switches keyboard focus to that Emacs frame
-4. Forwards the key to Emacs
+## The layout authority and the focus authority
 
-Because scroll updates focus, the focused surface is always where the user last interacted, ensuring intercepted keys route to the correct Emacs frame.
+Given the mapping, who decides where everything goes?
 
-### Prefix Key Sequences
+Lisp decides layout.  Emacs is, after all, a window manager: `split-window`,
+`display-buffer-alist`, `tab-bar-mode`, every layout-shaping mechanism
+already exists there and is configured to a fault by every user.  Trying
+to take that away would mean reimplementing window management twice.  So
+lisp ships a description of the layout to the compositor: per output, an
+ordered list of Emacs frames; per frame, the views inside it with their
+geometry.
 
-When a prefix key (C-x, C-h, M-x) is intercepted from an external app, focus
-must stay on Emacs until the key sequence completes. Without this, popups like
-which-key would appear but the user couldn't interact with them.
+The compositor decides keyboard focus.  This is forced: Wayland's keyboard
+state lives in the compositor, and intercepted keys (like `C-x`) need to
+be re-routed *atomically with the key forwarding* -- there's no time to
+defer it.  So the compositor holds two ids: which Emacs frame is focused,
+and which view inside that frame is the keyboard target.
 
-#### The Problem
-
-EXWM solves this with X11 keyboard grabbing - during a prefix sequence, ALL keys
-go to Emacs regardless of focus. Wayland doesn't have an equivalent mechanism.
-
-Without special handling:
-1. User presses C-x in Firefox
-2. Compositor intercepts, redirects to Emacs
-3. which-key popup appears (triggers `window-configuration-change-hook`)
-4. Hook calls `ewm-layout--refresh`, which syncs focus back to Firefox
-5. User's next keypress goes to Firefox instead of completing the sequence
-
-#### Solution: Compositor-side Prefix Tracking
-
-During initialization, Emacs tells the compositor which intercepted keys are
-prefix keys (bound to keymaps). The compositor uses this to track state:
+These authorities are not symmetric.  Layout is data that flows mostly
+one way (lisp -> compositor).  Focus is interactive and flows both ways:
+lisp can request a focus change ("focus this view"), but the compositor
+makes the call and tells lisp what happened.
 
 ```
-Initialization:
-  Emacs scans keymaps -> sends intercept specs with :is-prefix flag
-
-Runtime:
-  Prefix key intercepted -> compositor sets IN_PREFIX_SEQUENCE=true
-  post-command-hook fires -> ewm-input--clear-prefix clears flag -> syncs focus
+ ┌──────────────────────────┐  module commands  ┌──────────────────────────┐
+ │           Emacs          │ ─────────────────► │        Compositor        │
+ │     (lisp; Emacs main    │   OutputLayout     │      (Rust; thread       │
+ │         thread)          │   FocusView        │      inside Emacs)       │
+ │                          │   FocusOutputDir   │                          │
+ │   layout authority       │                    │    focus authority       │
+ │   frame / window tree    │                    │    Wayland keyboard      │
+ │   buffer ↔ view ↔        │      pipe          │    stored focus pair     │
+ │   surface mapping        │ ◄───────────────── │    + overlay state       │
+ │                          │   Focus, New,      │                          │
+ │                          │   Close, Title, …  │                          │
+ └──────────────────────────┘                    └──────────────────────────┘
 ```
 
-Key insight: Compositor only SETS the flag true on prefix keys, never clears it.
-`ewm-input--clear-prefix` (called synchronously from `post-command-hook`) clears
-the flag and calls `ewm--sync-focus` to restore focus to the pre-intercept surface.
+## The strip
 
-#### Implementation
+The layout has a particular shape.  Each output hosts a **strip**: a
+left-to-right sequence of Emacs frames.  Only one frame is "on-screen" at
+a time per output, and a keybind slides between them.  Frames in the
+strip are workspaces, more or less.
 
-**Rust side:**
-- `InterceptedKey.is_prefix` - marks prefix keys
-- `IN_PREFIX_SEQUENCE: AtomicBool` - the tracking flag
-- `ewm-in-prefix-sequence-p` - Emacs queries the flag
-- `ewm-clear-prefix-sequence` - Emacs clears the flag
+Inside a frame, Emacs's own window splits position the views.  The
+compositor renders each view at the screen rect of the Emacs window
+that displays it.
 
-**Elisp side:**
-- `ewm--event-to-intercept-spec` adds `:is-prefix` based on `(keymapp (key-binding ...))`
-- `ewm--focus-target` computes the surface ID that should have focus, returning
-  `nil` to suppress sync during prefix sequences, prefix args, or transient maps.
-- `ewm--minibuffer-active-p` guards event handlers that must not steal focus from
-  the minibuffer (Focus, New surface, ActivateWorkspace).
-
-Focus suppression in `ewm--focus-target`:
-
-```elisp
-(cond
- ((or prefix-arg
-      (ewm-in-prefix-sequence-p)
-      (and overriding-terminal-local-map
-           (keymapp overriding-terminal-local-map)))
-  nil)  ; suppress: don't change focus
- ((ewm--minibuffer-active-p)
-  (frame-parameter (selected-frame) 'ewm-surface-id))
- (t
-  (or (buffer-local-value 'ewm-surface-id ...)
-      (frame-parameter (selected-frame) 'ewm-surface-id))))
-```
-
-#### Critical Design Decisions
-
-1. **Don't clear flag on non-prefix intercepts**: If user presses C-x then s-left
-   (an intercepted non-prefix key), the flag must stay true. Only
-   `post-command-hook` (after the full command completes) clears it.
-
-2. **Synchronous focus sync**: `ewm-input--clear-prefix` runs directly from
-   `post-command-hook`, with no timer or debouncing. This works because
-   `post-command-hook` only fires after complete commands, not mid-sequence.
-   Layout sync is decoupled via `window-selection-change-functions`.
-
-3. **Only clear when active**: `ewm-input--clear-prefix` only acts when
-   `ewm-in-prefix-sequence-p` is true. It clears the flag and calls
-   `ewm--sync-focus` to restore focus. When no prefix sequence is active,
-   it's a no-op; other hooks handle normal focus changes.
-
-### Frame-Switch Suppression
-
-PGTK's `pgtk_focus_frame` updates GDK state when `select-frame` is called
-(in `ewm--handle-focus`), generating `handle-switch-frame` events that target
-the wrong frame in multi-output setups. This overrides compositor click-to-focus.
-
-Fix: suppress `handle-switch-frame` via `:around` advice when EWM is active.
-Same pattern as EXWM suppressing `handle-focus-in`/`handle-focus-out`
-(exwm-workspace.el).
-
-### Mouse-Follows-Focus
-
-When `ewm-mouse-follows-focus` is enabled, the pointer warps to the center of a
-window when it gains focus via keyboard (e.g., `C-x o`, windmove). This ensures
-the pointer is always in the active window for subsequent mouse interactions.
-
-The implementation includes a pointer-in-window check inspired by
-[exwm-mff](https://codeberg.org/emacs-weirdware/exwm-mff): if the pointer is
-already inside the target window, no warp occurs. This prevents unnecessary
-pointer jumps when keyboard-switching to a window the mouse happens to be over.
-
-Key functions:
-- `ewm-input--pointer-in-window-p`: Checks if pointer is within window bounds
-- `ewm-input--warp-pointer-to-window`: Warps pointer to window center (if needed)
-- `ewm-get-pointer-location`: Queries compositor for current pointer position
-
-### Why Input-to-Focus?
-
-Previous design had keyboard focus only change on click. This caused issues:
-- User scrolls Firefox on external monitor
-- User presses M-x
-- M-x would route to primary monitor (last clicked) instead of external
-
-With input-to-focus:
-- Scroll Firefox -> Firefox has focus, external monitor is "active"
-- Press M-x -> routes to Emacs frame on external monitor
-
-## Module Events
-
-Events are serialized to JSON and delivered to Emacs via pipe fd:
-
-| Event | When Sent | Purpose |
-|-------|-----------|---------|
-| `ready` | Compositor fully initialized | Signal Emacs to begin setup |
-| `new` | Surface created | Register new surface with Emacs |
-| `close` | Surface destroyed | Clean up surface buffer |
-| `title` | Surface title changes | Update buffer name |
-| `focus` | External surface clicked/scrolled (always sent) | Tell Emacs to select the window under pointer |
-| `output_detected` | Output connected | Create Emacs frame for output |
-| `output_disconnected` | Output disconnected | Clean up frame |
-| `outputs_complete` | All outputs reported | Trigger initial layout |
-| `text-input-activated` | Text field focused in surface | Enable input method bridge |
-| `text-input-deactivated` | Text field unfocused | Disable input method bridge |
-| `key` | Intercepted key with UTF-8 | Forward key event to Emacs |
-| `state` | Debug state requested | Populate `*ewm-state*` buffer |
-| `working_area` | Layer-shell exclusive zone changes | Adjust frame geometry |
-
-### Event Flow Diagram
-
-The following diagram shows how compositor events flow through Emacs handlers,
-including minibuffer guards that prevent focus-stealing during transient states.
-
-![Refocus event flow](diagrams/refocus.png)
-
-Source: [refocus.mmd](diagrams/refocus.mmd)
-
-## Functions
-
-### Compositor (Rust)
-
-- `set_focus(id, notify_emacs, source, context)`: Single entry point for all focus changes. Sets logical focus, marks keyboard dirty, optionally sends Focus event to Emacs. Debug source/context tracked in focus history.
-- `sync_keyboard_focus()`: Resolve `focused_surface_id` -> `WlSurface`, call `keyboard.set_focus()` if dirty
-- `get_emacs_surface_for_focused_output()`: Find Emacs frame on same output as focused surface
-
-### Emacs (ewm.el / ewm-input.el / ewm-layout.el)
-
-- `ewm-focus(id)`: Request compositor to focus a surface (ModuleCommand::Focus)
-- `ewm--handle-focus(event)`: Handle Focus event from compositor. Guarded by `ewm--minibuffer-active-p`. Finds the correct window using `ewm-input--pointer-in-window-p` when multiple windows show the same buffer. Falls back to `pop-to-buffer-same-window` when no window displays the buffer.
-- `ewm--sync-focus`: Computes focus target via `ewm--focus-target`, deduplicates against current compositor focus, sends `ewm-focus` only when changed. Called from window/buffer change hooks and `ewm-input--clear-prefix`.
-- `ewm-input--clear-prefix`: `post-command-hook` handler. Only acts during prefix sequences: clears flag, calls `ewm--sync-focus` to restore focus. No-op otherwise.
-- `ewm-input--suppress-switch-frame`: `:around` advice on `handle-switch-frame`. Suppresses it when `ewm--module-mode` is active. EWM owns frame selection.
-- `ewm--focus-target`: Returns target surface ID, or nil to suppress sync during prefix sequences, prefix args, or transient keymaps. During minibuffer, returns the frame's surface ID.
-- `ewm--minibuffer-active-p`: Guard used by event handlers (Focus, New surface, ActivateWorkspace) to prevent focus-stealing from minibuffer.
-- `ewm--on-window-selection-change`: `window-selection-change-functions` handler, sends layouts and syncs focus whenever selected window changes.
-
-Note: Focus sync and layout sync are coupled in `ewm--on-window-selection-change`
-(calls both `ewm-layout--send-layouts` and `ewm--sync-focus`) but can also fire
-independently: `ewm-input--clear-prefix` syncs focus without sending layouts,
-and `ewm--window-config-change` sends layouts without syncing focus.
-
-## Multi-Monitor Behavior
-
-Each output typically has one Emacs frame. When the pointer moves between outputs:
-- Scroll/hover work on surfaces under the pointer
-- Intercepted keys route to the Emacs frame on that output
-- Click focus updates `focused_surface_id`
-
-## Design Rationale
-
-The input-to-focus model was chosen over alternatives:
-
-1. **Click-only focus + pointer-based key routing**: More complex, requires tracking both focus and pointer location for routing decisions.
-
-2. **Full focus-follows-mouse (hover = focus)**: Too aggressive, causes focus changes during casual mouse movement.
-
-3. **Input-to-focus (current)**: Simple unified model where any interaction (click or scroll) activates that location. Matches user intent: "I'm interacting here, so this is active."
-
-## Multi-Window Surface Focus
-
-A single surface (e.g., Firefox) can be displayed in multiple Emacs windows
-simultaneously (e.g., visible on two monitors). This creates a challenge:
-`focused_surface_id` is the same regardless of which window the user clicks.
-
-### Compositor Side
-
-Click and scroll handlers call `set_focus(id, true, "click"/"scroll", None)` on
-every interaction, even when `id == focused_surface_id`. This ensures Emacs
-always receives a Focus event and can select the correct window.
-
-### Emacs Side
-
-`ewm--handle-focus` resolves the Focus event to the correct Emacs window:
-
-1. Get all windows showing the surface's buffer via `get-buffer-window-list`
-2. Use `ewm-input--pointer-in-window-p` to find the window under the pointer
-3. Fall back to `get-buffer-window` if no pointer match (e.g., programmatic focus)
-
-### Focused and Primary Flags
-
-Each layout entry has two independent flags:
-
-**`focused`** (Emacs -> compositor): Marks the entry for `selected-window`. Set by
-Emacs in `ewm-layout--send-layouts`. Used for **output association**: focus
-routing, intercept redirect, popup placement. The compositor uses
-`focused_output_for_surface()` to find the output where the user is interacting.
-
-**`primary`** (compositor-computed): Marks the entry with the largest pixel area
-for a given surface across all outputs. Computed in `apply_output_layout` step 7
-by scanning all `output_layouts`. Used for **configure and rendering**: only
-primary entries send `send_configure()` with their size + scale; primary entries
-render at native size (with crop for client min-size overflow); non-primary
-entries use uniform fill+crop preserving aspect ratio.
-
-These flags are independent because the selected window is not necessarily the
-largest. For example, Firefox may be focused in a small sidebar on eDP-1 but
-have its primary (largest) view on DP-2. Focus routing must go to eDP-1 (where
-the user is working), while configure must use DP-2's dimensions (the largest
-area for rendering).
-
-Layout updates (including focused flags) are triggered by
-`window-selection-change-functions`, which fires whenever `selected-window`
-changes, regardless of whether the change came from keyboard navigation,
-click-to-focus, or programmatic selection.
-
-## Layout Synchronization
-
-### Per-Output Declarative Layout
-
-Emacs sends one `OutputLayout` command per output, a complete declaration of
-what's visible on that output with frame-relative coordinates. The compositor
-materializes it via `apply_output_layout`, which is the single entry point for
-positioning, output association, and scale notification.
+So layout has three nested layers:
 
 ```
-Emacs                          │  Compositor
-                               │
-ewm-layout--refresh            │
-  └─ compute layout per output │
-  └─ ewm-output-layout ───────►│  apply_output_layout(output, entries)
-                               │    ├─ diff old vs new surface sets
-                               │    ├─ output.enter/leave as needed
-                               │    ├─ send scale/transform
-                               │    ├─ compute primary flags (largest area)
-                               │    ├─ configure primary surfaces
-                               │    └─ queue_redraw(&output)
+output -> strip (ordered Emacs frames) -> frame (views in window splits)
 ```
 
-Each `OutputLayout` replaces the previous layout for that output. The compositor
-diffs surface ID sets to send `wl_surface.enter`/`leave` incrementally.
+The compositor doesn't manage any of this -- it receives it as a
+description.  But it does have to be able to *reason about* it: "which
+frame is the user looking at?", "which view should keys go to?", "what
+moved between layout updates?".
 
-### Deduplication
+## Identity: ids and view ids
 
-Click/scroll `Focus` events are **not** deduplicated; they always notify Emacs,
-because the same surface ID may appear in multiple Emacs windows and Emacs needs
-the event to select the correct one.
+To talk about these objects in the lisp <-> compositor protocol, we need
+ids.
 
-`ModuleCommand::Focus` (from Emacs) still deduplicates by ID in the fixture/test
-path to avoid redundant focus changes.
+**Surface ids** identify wl_surfaces.  The compositor allocates them
+monotonically at surface creation; lisp learns them through compositor
+events.
 
-`TextInputIntercept` deduplicates:
+**View ids** identify *occurrences of a surface in the layout*.  A surface
+shown in two Emacs windows has two distinct view ids -- they're per-view,
+not per-surface.  This is what lets Emacs send keys to "the Firefox window
+on my external monitor" rather than just "Firefox".
 
-| Command | Cache Key | Skip Condition |
-|---------|-----------|----------------|
-| `TextInputIntercept` | global | `state == cached_state` |
+For most views (entries inside frames), view ids are random and lisp
+generates them.  Lisp has to: it owns the Emacs window concept, and only
+lisp knows how many windows show a surface.
 
-## Keyboard Focus Synchronization
+For one special case -- a frame's own chrome view -- the view id is
+**derived deterministically from the surface id**: bit 32 of the u64 is
+set, and the low bits hold the surface id.  Entry view ids live in
+`[1, 2^32 - 1]` with bit 32 unset; frame chrome view ids live above with
+bit 32 set.  Disjoint ranges, no collisions, both sides compute the same
+id from the same surface id without ever needing to coordinate.  This
+sounds like a small detail; it removes a whole class of races (see the
+async section below).
 
-### The Two Levels of Focus
+## The focus state, as the compositor sees it
 
-EWM tracks focus at two levels that must stay in sync:
+The compositor's stored focus is a pair: a focused frame's surface id, and
+optionally a focused view id inside that frame.  At resolve time, two
+override modes sit on top of this pair:
 
-1. **Logical focus** (`focused_surface_id`): The compositor's idea of which surface
-   should have input. Updated by clicks, scrolls, xdg_activation, Emacs commands.
-2. **Wayland keyboard focus** (`keyboard.set_focus()`): The actual Wayland protocol
-   state that determines which surface receives key events.
+- **Lock**: when a session lock surface is present, keyboard focus is
+  forced to it.  The underlying pair is preserved for restore on unlock.
+- **Layer shell**: panels that request exclusive or on-demand keyboard
+  interactivity steal focus while present.  Again, the underlying pair is
+  preserved.
 
-A bug where these diverge is invisible: the surface appears focused (renders with
-focus decorations, Emacs shows its buffer) but keyboard input goes elsewhere.
-
-### Comparison with Niri
-
-[Niri](https://github.com/YaLTeR/niri) uses a fully deferred focus model:
-
-```
-Any focus trigger              refresh() (main loop)
-  activate_window() ──────►  update_keyboard_focus()
-  layout state changes           │
-  queue_redraw_all()             ├─ compute focus from layout state
-                                 ├─ compare with current
-                                 └─ keyboard.set_focus() ← ONLY CALL SITE
-```
-
-- `keyboard.set_focus()` is called in exactly **1 function** (`update_keyboard_focus`)
-- That function is called from exactly **1 place** (`refresh()` in the main loop)
-- All focus triggers (clicks, activation, keybinds) just update layout state
-- Keyboard focus syncs on the next refresh cycle
-
-This is robust: impossible to forget a `keyboard.set_focus()` call, and focus
-naturally settles after all state changes complete (e.g., surface replacement).
-
-### Why EWM Cannot Fully Defer
-
-EWM's `intercept_redirect` path requires **atomic focus + key forwarding**:
-
-1. User presses `C-x` while Firefox has focus
-2. Compositor intercepts the key (not forwarded to Firefox)
-3. Must set Wayland keyboard focus to Emacs **immediately**
-4. Must re-send the key to Emacs **in the same handler**
-
-If step 3 were deferred to a refresh cycle, the key in step 4 would be sent to
-whatever surface currently has Wayland keyboard focus (still Firefox), not Emacs.
-
-Niri doesn't have this constraint because its intercepted keybinds execute
-compositor-internal actions. EWM forwards intercepted keys to a client (Emacs),
-which requires the focus change to happen first.
-
-A second constraint is **layout ownership**. Niri's `update_keyboard_focus()`
-recomputes focus from scratch each cycle because the compositor owns the full
-layout state. In EWM, layout lives in Emacs, so the compositor only knows
-`focused_surface_id`. It cannot derive "who should have focus" from layout state;
-it must track focus incrementally.
-
-### Desired Architecture: Hybrid Model
+Collapsed to discrete states, this gives:
 
 ```
-                            ┌──────────────────────────────┐
-                            │    focused_surface_id        │
-                            │    (single source of truth)  │
-                            └──────────┬───────────────────┘
-                                       │
-              ┌────────────────────────┼─────────────────────────┐
-              │ DEFERRED PATH          │  IMMEDIATE PATH         │
-              │                        │                         │
-              │  xdg_activation        │  intercept_redirect     │
-              │  ModuleCommand::Focus  │   (must set focus +     │
-              │  toplevel_destroyed    │    re-send key in same  │
-              │                        │    handler)             │
-              │                        │                         │
-              │                        │  click / scroll         │
-              │                        │   (always notify Emacs  │
-              │                        │    for multi-window)    │
-              │                        │                         │
-              │  Set focused_surface_id│  Set focused_surface_id │
-              │  Set keyboard_focus    │  Set keyboard_focus     │
-              │  Set dirty flag ───┐   │  keyboard.set_focus()   │
-              │                    │   │  Clear dirty flag       │
-              │                    ▼   │                         │
-              │         ┌──────────────┴──┐                      │
-              │         │sync_kbd_focus() │                      │
-              │         │                 │                      │
-              │         │ if dirty:       │                      │
-              │         │   resolve id    │                      │
-              │         │   -> WlSurface  │                      │
-              │         │   kbd.set_focus │                      │
-              │         │   dirty = false │                      │
-              │         └─────────────────┘                      │
-              │            Called from:                           │
-              │            - handle_keyboard_event (top)         │
-              │            - after ModuleCommand batch           │
-              │            - main loop tick                      │
-              └──────────────────────────────────────────────────┘
+                ┌──────────┐
+                │   None   │   no Emacs frame mapped yet
+                └────┬─────┘
+                     │ first Emacs frame mapped
+                     ▼
+                ┌──────────┐  ◄──── prefix redirect parks focus here
+                │  Frame   │        for the duration of C-x, M-x, …
+                │          │        (focused frame's chrome surface)
+                └────┬─────┘
+                     │ focused frame's selected window
+                     │ shows an external surface
+                     ▼
+                ┌──────────┐
+                │   View   │   that surface is the keyboard target
+                └──────────┘
+
+       ─── overlays sit on top of any of the above at resolve time ───
+
+                ┌────────────┐
+                │ LayerShell │   exclusive/on-demand panel surface
+                └────────────┘   present; restores on dismissal
+
+                ┌────────────┐
+                │   Locked   │   session lock surface present;
+                └────────────┘   restores prior state on unlock
 ```
 
-**Deferred path**: Most focus changes set `focused_surface_id` + dirty flag.
-The `sync_keyboard_focus()` function resolves the ID to a `WlSurface` and calls
-`keyboard.set_focus()`. This catches missed syncs and handles surface replacement
-(e.g., Firefox surface 2 -> 3) naturally.
+Transitions between them are driven by clicks, gestures, lisp-initiated
+focus commands, layout refreshes that change the active frame's selected
+view, prefix-key interception (which parks on Frame temporarily), and
+unlock/relock.
 
-**Immediate path**: Only `intercept_redirect` calls `keyboard.set_focus()`
-directly, because it must forward the key in the same handler. It also clears the
-dirty flag to prevent a redundant sync.
+The state machine itself is small.  What makes the focus subsystem look
+complicated is not the states but the synchronization across the
+lisp/compositor boundary -- the next section is about why.
 
-### Benefits
+## Why two threads make this hard
 
-1. **Eliminates "forgot to sync" bugs**: New focus-changing code paths only need
-   to set `focused_surface_id` and mark dirty. The sync function handles the rest.
-2. **Handles surface replacement**: If a surface is replaced between focus change
-   and sync, the sync resolves the current `focused_surface_id` (which Emacs has
-   already updated) to the correct `WlSurface`.
-3. **Auditable**: Only 2 call sites for `keyboard.set_focus()` (sync function +
-   intercept_redirect), down from 13.
+The compositor runs on a thread inside Emacs but does not share the lisp
+heap.  Communication is through two channels:
 
-### Why Emacs Must Own Layout
+- **Module commands**: lisp -> compositor, a queue of typed messages
+  (apply this layout; focus this view; configure this output).
+- **Pipe events**: compositor -> lisp, JSON over a pipe (focus changed;
+  surface created; output disconnected).
 
-Niri can recompute focus from layout state because the compositor owns the full
-layout: workspace assignments, column ordering, window stacking. Could EWM move
-layout ownership to the compositor for the same robustness?
+Both channels are asynchronous and ordering between them is not
+guaranteed.  Lisp can send a message, the compositor can send an event
+right after, and they can be processed in either order on the other side.
 
-No. Emacs IS the layout engine:
+This is the source of essentially every "focus is in a weird state"
+bug in this codebase.  Most of the architecture is shaped by making the
+async fine.
 
-1. **Window tree**: Emacs's window tree (splits, sizing, ordering) is the layout.
-   Reimplementing `split-window`, `balance-windows`, `display-buffer-alist` in
-   the compositor would duplicate Emacs's window manager without gaining anything.
+Three concrete examples:
 
-2. **Buffer ↔ surface mapping**: Emacs decides which buffer shows in which window
-   via `display-buffer-alist`, `pop-to-buffer`, dedicated windows, etc. This
-   mapping is deeply integrated with user configuration.
+1. When Emacs creates a new frame, the Wayland surface is born *before*
+   lisp has finished registering the frame in its own data structures.
+   The compositor sees a new surface, and a layout-refresh from lisp may
+   arrive in either order.  An early refresh won't include the new
+   frame yet (lisp hasn't told itself about it).  If apply-layout were
+   "replace the strip with what lisp says", the new frame would be wiped
+   the moment it tried to exist.
 
-3. **Tabs**: `tab-bar-mode` multiplexes window configurations. The compositor
-   cannot know which surfaces belong to which tab without Emacs telling it.
+2. When the user clicks on a surface, the compositor needs to make
+   keyboard focus follow the click and tell lisp about it.  Lisp will
+   then update `selected-window` accordingly.  But until lisp has
+   processed the event, lisp's `selected-window` and the compositor's
+   focus disagree -- by design, briefly.
 
-4. **User customization**: Users customize layout via Elisp (hooks, advices,
-   `display-buffer-alist` rules). Moving layout to the compositor would require
-   a new configuration language for something Elisp already handles well.
+3. When the user toggles a fullscreen surface via an intercepted key, the
+   keystroke reaches Emacs through a prefix-redirect (focus is parked on
+   Emacs for the duration of the key sequence).  Emacs runs the toggle;
+   lisp re-ships the layout; the compositor sees fullscreen now applies;
+   the user wants keys to go back to the surface immediately, not to
+   Emacs.
 
-The current model (Emacs owns layout, compositor owns rendering and input)
-matches the natural boundary. The hybrid keyboard focus sync (deferred + dirty
-flag) provides robustness without requiring the compositor to understand layout.
+The architecture's job is to make each of these self-healing rather than
+brittle.
 
-## Session Lock (ext-session-lock-v1)
+## How the architecture handles the async
 
-### Design Principle: Lock as a Mode
+A few small decisions buy a lot of robustness:
 
-Session lock is a **global mode** that overrides normal compositor behavior. It is
-NOT a special surface type. It's a state that changes how every subsystem operates.
-Every subsystem must check lock state at its entry point and branch early, rather
-than sprinkling lock checks throughout normal logic.
+**The compositor eagerly inserts new Emacs frames into the strip.**  When
+the Wayland surface is born, the compositor doesn't wait for lisp's first
+layout-refresh -- it constructs a placeholder frame in the target output's
+strip immediately, using the deterministic view id derivation described
+above.  This means "is this an Emacs frame?" is answerable from strip
+membership alone, without a separate registry.  No dual state, no
+synchronization rule between two data structures.
 
-Reference: [niri](https://github.com/YaLTeR/niri) treats lock as a priority branch
-in `update_keyboard_focus()`, `commit()`, rendering, and input, the same pattern
-EWM follows.
+**Layouts merge into strips, they don't replace them.**  When lisp ships a
+layout, the compositor updates fields of existing frames and adds any new
+frames.  Frames in the strip that aren't in the layout are kept.  They go
+away only when their wl_surface is destroyed -- a separate, authoritative
+signal.  This lets eager-inserted placeholders survive a layout refresh
+that races ahead of lisp's own bookkeeping, and it lets lisp's layout be
+"advisory" without each transient miss costing the user a frame.
 
-### State Machine
+**Per-frame selected-view-id replaces a per-entry focused flag.**  An
+older design carried a "focused" flag on each layout entry, recomputed
+from `selected-window` every layout refresh.  Process-filter activity in
+lisp would jostle `selected-window` between commands, the flag would
+flicker, and the compositor would track the flicker.  Now lisp ships only
+"for each frame, which view (if any) is its selected window".  The
+compositor derives its focused view from the focused frame's selected
+view.  One signal, one direction, no flicker.
 
-```
-LockState::Unlocked ──lock()──► LockState::Locking(SessionLocker)
-                                       │
-                          all outputs render locked frame
-                                       │
-                                       ▼
-                                LockState::Locked(ExtSessionLockV1)
-                                       │
-                                   unlock()
-                                       │
-                                       ▼
-                                LockState::Unlocked
-```
+**Lisp-initiated focus uses a dedicated command, not xdg_activation.**
+PGTK (the Emacs Wayland backend) wants to route focus requests through
+xdg_activation.  If we let that through, every Emacs-side focus change
+would round-trip through xdg_activation, which the compositor would
+honour and echo back as a focus event, which lisp would handle by
+issuing another focus change -- echo loop.  EWM overrides Emacs's
+focus-frame primitive to bypass `x-focus-frame` and use a direct module
+command instead.
 
-`is_locked()` returns true for both `Locking` and `Locked`.
+**Destruction is authoritative; layout is advisory.**  A frame in the
+strip but not in the latest layout is preserved.  A frame whose
+wl_surface is destroyed is removed everywhere, immediately.  This neatly
+separates "lisp may not have caught up" from "the thing is actually
+gone".
 
-### Subsystems Affected
+## Why focus needs to be acquired atomically sometimes
 
-Lock touches **6 subsystems**. When adding lock-related features, audit all of them:
+Two operations need keyboard focus moved *atomically* with the event that
+triggers them, rather than deferred to a later tick:
 
-| Subsystem | Entry point | Lock behavior |
-|-----------|-------------|---------------|
-| **Focus resolution** | `sync_keyboard_focus()` | Priority branch: resolve to `lock_surface_focus()` |
-| **Keyboard input** | `handle_keyboard_event()` | Block all keys except VT switch; forward to lock surface |
-| **Pointer input** | `handle_pointer_motion/button/scroll` | Route to lock surface; skip click/scroll-to-focus |
-| **Rendering** | `collect_render_elements()` | Early return: render only lock surface + background |
-| **Surface commits** | `CompositorHandler::commit()` | Queue redraw for lock surface commits (not in `space.elements()`) |
-| **Frame completion** | DRM `queue_frame` | Track `LockRenderState` per-output; confirm lock when all rendered |
+- **Intercepted keys.**  When a prefix key like `C-x` is pressed while an
+  external app has focus, the compositor must (a) route the key to Emacs
+  and (b) keep Emacs focused for the rest of the sequence.  Both have to
+  happen synchronously in the same key handler, because the next key is
+  already coming.  Wayland has no keyboard-grab equivalent of X11's
+  `XGrabKeyboard`, so the compositor tracks a prefix-sequence flag
+  itself.  When the lisp command completes, `post-command-hook` clears
+  the flag and lisp ships a layout refresh that restores the prior view
+  focus.
 
-### Focus During Lock
+- **Fullscreen surfaces.**  After an intercepted key toggles a surface
+  fullscreen, keyboard focus has to land back on the now-fullscreen
+  surface immediately, not on the Emacs frame the key was redirected to.
+  A small redirect in the input handler ensures this: if the focused
+  frame has a fullscreen view and the keyboard isn't on it, snap it
+  back.
 
-Lock surface focus follows the **deferred path** via `sync_keyboard_focus()`:
+Everything else -- clicks, gestures, layout-driven focus changes -- can
+use the slower, deferred path: set the stored focus pair, sync the
+Wayland keyboard state on the next tick.  Only the two cases above need
+the fast path.
 
-```
-new_surface() stores lock surface
-  -> sets keyboard_focus_dirty = true
-  -> sync_keyboard_focus() runs on next tick
-  -> is_locked() = true -> resolve to lock_surface_focus()
-  -> keyboard.set_focus(lock_surface)
-```
+## Multi-monitor and multi-view
 
-The input handler (`input.rs`) also sets focus directly on each key event as a
-**redundant immediate path**: this handles the race where keys arrive before the
-first sync tick. Both paths set the same target (lock surface), so they don't
-conflict.
+Each output has its own strip.  Cross-output navigation (directional
+keybinds, clicks on the other monitor) updates the focused frame to the
+destination output's active frame, and the focused view follows from
+that frame's selected view.  The compositor doesn't need a special
+"current monitor" concept -- it falls out of "which frame is focused".
 
-### Unlock Focus Restoration
+Multi-view -- one surface in multiple Emacs windows -- works because
+focus events carry view ids, not surface ids.  When the user clicks the
+left-monitor copy of Firefox, the compositor sends a focus event with
+that copy's view id; lisp selects the Emacs window with that view id.
+The right-monitor copy isn't affected.  The same surface is "focused" in
+the Wayland sense (`keyboard.set_focus(firefox_surface)`), but the
+question "which Emacs window is the user editing?" is resolved
+independently by view id.
 
-On unlock:
-1. `keyboard_focus` is cleared to `None` (invalidates stale tracking)
-2. `pre_lock_focus` is restored via `set_focus()`
-3. `sync_keyboard_focus()` resolves the restored ID to a `WlSurface`
+## Why we ended up here
 
-Step 1 is critical: during lock, the input handler's direct `keyboard.set_focus()`
-calls don't update the tracked `keyboard_focus` field. Without clearing it, the
-sync function would see `keyboard_focus == restored_focus` (stale value from
-pre-lock) and skip the actual `keyboard.set_focus()` call, leaving Smithay's
-internal keyboard state pointing at the destroyed lock surface.
+Earlier iterations of EWM had a single Emacs frame per output and a flat
+list of surfaces.  As the design grew to support multiple workspaces per
+output (strips with multiple frames), the focus subsystem grew with it
+-- mostly by accretion, occasionally by retraction.  The two most recent
+waves of changes:
 
-### Per-Output State
+The **layout-as-strip** transition moved frames from a flat list into
+per-output ordered columns.  This is what made workspaces work, but it
+also created more places where focus state could be "between layouts".
 
-Each output tracks independently:
-- `lock_surface: Option<LockSurface>`: the lock surface for this output
-- `lock_render_state: LockRenderState`: whether a locked frame has been rendered
+The **single-signal cleanup** removed redundancies that had accumulated:
+a per-entry focused flag that duplicated per-frame "selected window", a
+separate `emacs_frame_ids` set that duplicated strip membership,
+multiple focus mutator paths that bypassed each other.  Each of these
+had a reason at the time it was added.  Each became wrong as the
+surrounding code grew up around it.
 
-Lock is confirmed (`Locking` -> `Locked`) only when ALL outputs have
-`lock_render_state == Locked`. This prevents briefly showing unlocked content
-on a slow output.
-
-### Commit Handler: Surface Type Dispatch
-
-`CompositorHandler::commit()` dispatches by surface type in this order:
-1. **Layer surfaces**: `handle_layer_surface_commit()` (early return)
-2. **Popups**: `popups.commit()` + initial configure
-3. **Windows**: `space.elements()` lookup -> `on_commit()` + redraw
-4. **Lock surfaces**: `is_locked()` + output scan -> redraw
-
-If adding a new surface type, it must be added to this dispatch chain.
-Lock surfaces need special handling because they aren't tracked in
-`space.elements()`; they're stored per-output in `OutputState`.
+The current architecture is what's left after those cleanups.  The
+remaining complexity is, as best we can tell, intrinsic to the problem:
+two threads, two authorities, two world-views that have to keep
+agreeing.
