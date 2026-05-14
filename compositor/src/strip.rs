@@ -4,10 +4,33 @@
 //! left edge is `column_x(active_idx) + view_offset.current()`.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::utils::get_monotonic_time;
 use crate::{LayoutEntry, ViewId};
+
+/// Shared "snap to target" toggle threaded into every `ViewAnimation` and
+/// `Strip`.  Cloning is an `Arc` bump.  When the flag is set, animations
+/// report `is_done = true` and `value = target`, so the next `advance` tick
+/// drops them.  Modelled on niri's `Clock::should_complete_instantly`; the
+/// inner primitive is `AtomicBool` (rather than niri's `Cell`) so that
+/// `Frame`/`ViewAnimation` stay `Send` for the cross-thread command queue.
+#[derive(Debug, Default, Clone)]
+pub struct AnimationsClock {
+    inner: Arc<AtomicBool>,
+}
+
+impl AnimationsClock {
+    pub fn complete_instantly(&self) -> bool {
+        self.inner.load(Ordering::Relaxed)
+    }
+
+    pub fn set_complete_instantly(&self, value: bool) {
+        self.inner.store(value, Ordering::Relaxed);
+    }
+}
 
 /// Default duration for view-offset slides between frames.
 pub const DEFAULT_ANIM_DURATION: Duration = Duration::from_millis(250);
@@ -83,24 +106,38 @@ pub struct ViewAnimation {
     to: f64,
     start: Duration,
     duration: Duration,
+    clock: AnimationsClock,
 }
 
 impl ViewAnimation {
-    pub fn new(from: f64, to: f64, duration: Duration) -> Self {
-        Self::new_at(get_monotonic_time(), from, to, duration)
+    pub fn new(clock: AnimationsClock, from: f64, to: f64, duration: Duration) -> Self {
+        Self::new_at(clock, get_monotonic_time(), from, to, duration)
     }
 
     /// Animation whose ramp begins after `delay`; `value()` stays at `from` until then.
-    pub fn delayed(delay: Duration, from: f64, to: f64, duration: Duration) -> Self {
-        Self::new_at(get_monotonic_time() + delay, from, to, duration)
+    pub fn delayed(
+        clock: AnimationsClock,
+        delay: Duration,
+        from: f64,
+        to: f64,
+        duration: Duration,
+    ) -> Self {
+        Self::new_at(clock, get_monotonic_time() + delay, from, to, duration)
     }
 
-    fn new_at(start: Duration, from: f64, to: f64, duration: Duration) -> Self {
+    fn new_at(
+        clock: AnimationsClock,
+        start: Duration,
+        from: f64,
+        to: f64,
+        duration: Duration,
+    ) -> Self {
         Self {
             from,
             to,
             start,
             duration,
+            clock,
         }
     }
 
@@ -115,10 +152,16 @@ impl ViewAnimation {
     }
 
     pub fn value(&self) -> f64 {
+        if self.clock.complete_instantly() {
+            return self.to;
+        }
         self.value_at(get_monotonic_time())
     }
 
     pub fn is_done(&self) -> bool {
+        if self.clock.complete_instantly() {
+            return true;
+        }
         self.is_done_at(get_monotonic_time())
     }
 
@@ -252,16 +295,28 @@ impl Frame {
 
 /// Per-output strip of frames laid out left-to-right; `set_active` is the sole mutator of
 /// `active_idx`.
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct Strip {
     pub frames: Vec<Frame>,
     pub gap: f64,
     active_idx: usize,
     #[serde(skip)]
     pub view_offset: ViewOffset,
+    #[serde(skip)]
+    pub clock: AnimationsClock,
 }
 
 impl Strip {
+    pub fn new(clock: AnimationsClock) -> Self {
+        Self {
+            frames: Vec::new(),
+            gap: 0.0,
+            active_idx: 0,
+            view_offset: ViewOffset::default(),
+            clock,
+        }
+    }
+
     pub fn active_idx(&self) -> usize {
         self.active_idx
     }
@@ -284,7 +339,12 @@ impl Strip {
         self.view_offset = if cur.abs() < f64::EPSILON {
             ViewOffset::Static(0.0)
         } else {
-            ViewOffset::Animation(ViewAnimation::new(cur, 0.0, DEFAULT_ANIM_DURATION))
+            ViewOffset::Animation(ViewAnimation::new(
+                self.clock.clone(),
+                cur,
+                0.0,
+                DEFAULT_ANIM_DURATION,
+            ))
         };
     }
 
@@ -321,7 +381,12 @@ impl Strip {
         if (from - target).abs() < f64::EPSILON {
             self.view_offset = ViewOffset::Static(target);
         } else {
-            self.view_offset = ViewOffset::Animation(ViewAnimation::new(from, target, duration));
+            self.view_offset = ViewOffset::Animation(ViewAnimation::new(
+                self.clock.clone(),
+                from,
+                target,
+                duration,
+            ));
         }
     }
 
@@ -381,6 +446,7 @@ impl Strip {
         if idx >= self.frames.len() {
             return;
         }
+        let clock = self.clock.clone();
         let offset = self.frames[idx].width + self.gap;
         let (slide, from) = if self.active_idx <= idx {
             (&mut self.frames[idx + 1..], offset)
@@ -388,7 +454,12 @@ impl Strip {
             (&mut self.frames[..idx], -offset)
         };
         for f in slide {
-            f.move_anim = Some(ViewAnimation::new(from, 0.0, DEFAULT_ANIM_DURATION));
+            f.move_anim = Some(ViewAnimation::new(
+                clock.clone(),
+                from,
+                0.0,
+                DEFAULT_ANIM_DURATION,
+            ));
         }
     }
 
@@ -475,6 +546,7 @@ mod tests {
             gap,
             active_idx,
             view_offset: ViewOffset::default(),
+            clock: AnimationsClock::default(),
         }
     }
 
@@ -536,7 +608,7 @@ mod tests {
         // Both `from` and `to` shift by delta, so value_at(now) shifts by
         // exactly delta (no jump).
         let now = Duration::from_secs(0);
-        let mut a = ViewAnimation::new_at(now, -100.0, 0.0, Duration::from_millis(100));
+        let mut a = ViewAnimation::new_at(AnimationsClock::default(), now,-100.0, 0.0, Duration::from_millis(100));
         let mid_before = a.value_at(now + Duration::from_millis(50));
         a.offset(40.0);
         let mid_after = a.value_at(now + Duration::from_millis(50));
@@ -564,7 +636,7 @@ mod tests {
     #[test]
     fn view_animation_endpoints() {
         let now = Duration::from_secs(10);
-        let a = ViewAnimation::new_at(now, 0.0, 100.0, Duration::from_millis(100));
+        let a = ViewAnimation::new_at(AnimationsClock::default(), now,0.0, 100.0, Duration::from_millis(100));
         assert_eq!(a.value_at(now), 0.0);
         assert_eq!(a.value_at(now + Duration::from_millis(100)), 100.0);
         assert!(!a.is_done_at(now));
@@ -574,7 +646,7 @@ mod tests {
     #[test]
     fn view_animation_eases_out_cubic_at_midpoint() {
         let now = Duration::from_secs(0);
-        let a = ViewAnimation::new_at(now, 0.0, 100.0, Duration::from_millis(100));
+        let a = ViewAnimation::new_at(AnimationsClock::default(), now,0.0, 100.0, Duration::from_millis(100));
         // y = 1 - (1 - 0.5)^3 = 0.875 -> 87.5
         let mid = a.value_at(now + Duration::from_millis(50));
         assert!((mid - 87.5).abs() < 1e-9);
@@ -583,6 +655,7 @@ mod tests {
     #[test]
     fn view_offset_target_matches_animation_target() {
         let a = ViewAnimation::new_at(
+            AnimationsClock::default(),
             Duration::from_secs(0),
             10.0,
             70.0,

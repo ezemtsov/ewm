@@ -157,11 +157,12 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 .values()
                 .any(|s| s.frames.iter().any(|f| f.surface_id == surface_id));
             if !already_present {
+                let clock = fix.ewm().animations_clock.clone();
                 let strip = fix
                     .ewm()
                     .output_strips
                     .entry(output_name.to_string())
-                    .or_default();
+                    .or_insert_with(|| ewm_core::strip::Strip::new(clock));
                 strip.frames.push(Frame::new(surface_id));
             }
             let do_auto_focus = fix.ewm().focused_surface_id() == 0;

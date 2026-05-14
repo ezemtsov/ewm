@@ -49,6 +49,7 @@
 (declare-function ewm-list-xdg-apps "ewm-core")
 (declare-function ewm-set-focus-follows-mouse "ewm-core")
 (declare-function ewm-set-unfocused-alpha "ewm-core")
+(declare-function ewm-set-animations-enabled "ewm-core")
 (declare-function ewm-notify-initialized-module "ewm-core")
 (declare-function ewm-focus-output-direction-module "ewm-core")
 (declare-function ewm-get-focused-frame-id "ewm-core")
@@ -132,12 +133,16 @@ When non-nil, warps the pointer to the center of the focused window."
   :group 'ewm)
 
 (defcustom ewm-animations-enabled t
-  "Whether cross-frame slide animations play during navigation.
-Set to nil to disable all strip-transition animations.  Bind
-dynamically via `let' to suppress animations for a single operation
-without changing the global preference."
+  "Whether cross-frame slide and surface open-fade animations play.
+Set to nil to snap in-flight animations to target and skip easing on
+new ones.  Toggling is live -- the compositor flips the shared
+`AnimationsClock' and the next frame settles."
   :type 'boolean
-  :group 'ewm)
+  :group 'ewm
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (fboundp 'ewm-set-animations-enabled)
+           (ewm-set-animations-enabled val))))
 
 (defvar ewm--mff-last-window nil
   "Last window for mouse-follows-focus, to avoid redundant warps.")
@@ -1424,6 +1429,7 @@ now that a graphical FRAME exists."
   (ewm--send-idle-config)
   (ewm--send-cursor-hide-config)
   (ewm-set-unfocused-alpha (float ewm-unfocused-alpha))
+  (ewm-set-animations-enabled ewm-animations-enabled)
   (when (and (not ewm-focus-follows-mouse) mouse-autoselect-window)
     (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode-enable)

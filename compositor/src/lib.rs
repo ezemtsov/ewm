@@ -800,6 +800,9 @@ pub struct Ewm {
     /// Per-output strip state from Emacs: surfaces nest inside frames inside the strip.
     /// This is the single source of truth for what's visible on each output.
     pub output_strips: HashMap<String, strip::Strip>,
+    /// Shared "complete instantly" toggle threaded into every `ViewAnimation`
+    /// constructed under this `Ewm`.  Flipped by `ConfigureAnimations`.
+    pub animations_clock: strip::AnimationsClock,
     /// Reverse index: surface_id -> set of output names it appears on
     pub surface_outputs: HashMap<u64, HashSet<String>>,
     /// Per-surface open-fade, seeded on the first buffer-bearing commit.
@@ -1142,6 +1145,7 @@ impl Ewm {
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
             output_strips: HashMap::new(),
+            animations_clock: strip::AnimationsClock::default(),
             surface_outputs: HashMap::new(),
             surface_open_anims: HashMap::new(),
             unmapped_surfaces: HashSet::new(),
@@ -2098,10 +2102,11 @@ impl Ewm {
         //    only via `handle_toplevel_destroyed`.  This makes compositor-eager-inserted frames
         //    (from `new_toplevel`) survive layout refreshes that race ahead of Emacs's
         //    `ewm--assign-surface-to-frame`.
+        let clock = self.animations_clock.clone();
         let strip_entry = self
             .output_strips
             .entry(output_name.to_string())
-            .or_default();
+            .or_insert_with(|| strip::Strip::new(clock));
         let order: HashMap<u64, usize> = frames
             .iter()
             .enumerate()
@@ -4485,10 +4490,11 @@ impl Ewm {
             // first layout-refresh arrives.  Layout-refresh later updates fields
             // (name, width, surfaces, selected_view_id) via MERGE semantics.
             if let Some(output_name) = target_output.as_deref() {
+                let clock = self.animations_clock.clone();
                 let strip = self
                     .output_strips
                     .entry(output_name.to_string())
-                    .or_default();
+                    .or_insert_with(|| strip::Strip::new(clock));
                 strip.frames.push(crate::strip::Frame::new(id));
             }
         }
@@ -4962,6 +4968,7 @@ impl CompositorHandler for State {
                 self.ewm.surface_open_anims.insert(
                     id,
                     strip::ViewAnimation::delayed(
+                        self.ewm.animations_clock.clone(),
                         std::time::Duration::from_millis(16),
                         0.0,
                         1.0,
@@ -6559,6 +6566,11 @@ impl State {
             }
             ModuleCommand::ConfigureUnfocusedAlpha { alpha } => {
                 self.ewm.unfocused_alpha = alpha.clamp(0.0, 1.0);
+            }
+            ModuleCommand::ConfigureAnimations { enabled } => {
+                self.ewm
+                    .animations_clock
+                    .set_complete_instantly(!enabled);
             }
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;

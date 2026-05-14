@@ -330,6 +330,10 @@ pub enum ModuleCommand {
     ConfigureUnfocusedAlpha {
         alpha: f32,
     },
+    /// Flip the `AnimationsClock` shared by every `ViewAnimation`.
+    ConfigureAnimations {
+        enabled: bool,
+    },
     /// Set manual idle inhibition (from Emacs)
     SetIdleInhibited {
         inhibited: bool,
@@ -1104,6 +1108,17 @@ fn set_focus_follows_mouse(state: Value<'_>) -> Result<()> {
 fn set_unfocused_alpha(alpha: f64) -> Result<()> {
     let alpha = alpha.clamp(0.0, 1.0) as f32;
     push_command(ModuleCommand::ConfigureUnfocusedAlpha { alpha });
+    Ok(())
+}
+
+/// Toggle cross-frame slide / open-fade animations (module mode).
+/// When ENABLED is nil, in-flight animations snap to target and new ones
+/// skip the easing.
+#[defun]
+fn set_animations_enabled(enabled: Value<'_>) -> Result<()> {
+    push_command(ModuleCommand::ConfigureAnimations {
+        enabled: enabled.is_not_nil(),
+    });
     Ok(())
 }
 
