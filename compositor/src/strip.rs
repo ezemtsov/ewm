@@ -205,6 +205,18 @@ impl ViewOffset {
     }
 }
 
+/// Frame chrome view ids occupy the high half of the u64 space (bit 32 set),
+/// derived deterministically from `surface_id` so the compositor and lisp can
+/// construct the same id at `new_toplevel` / layout-build without coordination.
+/// Entry view ids stay in `[1, 2^32 - 1]` with bit 32 unset.
+pub const FRAME_VIEW_ID_MARKER: u64 = 1u64 << 32;
+
+/// Derive a frame chrome's view id from its surface id.
+pub fn frame_view_id_for(surface_id: u64) -> ViewId {
+    std::num::NonZeroU64::new(FRAME_VIEW_ID_MARKER | surface_id)
+        .expect("frame view id is non-zero by construction")
+}
+
 /// One Emacs frame in the strip.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Frame {
@@ -220,6 +232,19 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Construct a default Frame for a newly mapped Emacs frame chrome.
+    pub fn new(surface_id: u64) -> Self {
+        Self {
+            name: String::new(),
+            surface_id,
+            view_id: frame_view_id_for(surface_id),
+            width: 0.0,
+            surfaces: Vec::new(),
+            selected_view_id: None,
+            move_anim: None,
+        }
+    }
+
     pub fn move_offset(&self) -> f64 {
         self.move_anim.as_ref().map_or(0.0, ViewAnimation::value)
     }

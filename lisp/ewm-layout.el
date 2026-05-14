@@ -19,9 +19,17 @@
 (defvar ewm--surfaces)
 (defvar ewm-surface-id)
 
+(defconst ewm-layout--frame-view-id-marker (ash 1 32)
+  "Bit 32 marker for frame chrome view ids.
+Entry view ids are random in [1, 2^32-1] with bit 32 unset; frame chrome
+view ids are `(logior MARKER SURFACE-ID)' with bit 32 set.  Disjoint ranges
+let compositor and lisp derive the same id from surface_id without coordination.")
+
 (defun ewm-layout--fresh-view-id ()
-  "Generate a non-zero random view id."
-  (1+ (random most-positive-fixnum)))
+  "Generate a non-zero random view id with bit 32 unset.
+The bit-32 range is reserved for frame chrome (see
+`ewm-layout--frame-view-id-marker')."
+  (1+ (random (1- (ash 1 32)))))
 
 (defun ewm-layout--ensure-view-id (window surface-id)
   "Return a stable view id for WINDOW showing SURFACE-ID."
@@ -35,11 +43,11 @@
         id))))
 
 (defun ewm-layout--ensure-frame-view-id (frame)
-  "Return a stable view id for FRAME's own surface."
-  (or (frame-parameter frame 'ewm-frame-view-id)
-      (let ((id (ewm-layout--fresh-view-id)))
-        (set-frame-parameter frame 'ewm-frame-view-id id)
-        id)))
+  "Return FRAME's chrome view id derived from its `ewm-surface-id'.
+Computed deterministically so the compositor can construct the same id at
+`new_toplevel' without coordination."
+  (when-let ((sid (frame-parameter frame 'ewm-surface-id)))
+    (logior ewm-layout--frame-view-id-marker sid)))
 
 ;; Compatibility wrapper for window-inside-absolute-pixel-edges
 ;; Fixes tab-line handling for Emacs < 31 (from exwm-core.el)

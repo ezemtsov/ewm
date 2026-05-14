@@ -837,10 +837,9 @@ pub struct Ewm {
     // Libinput device configuration
     pub input_configs: Vec<input::InputConfigEntry>,
 
-    // Emacs client tracking - used to identify which surfaces belong to Emacs
-    // vs external applications (for key interception)
+    // PID for matching Emacs-owned wl_surfaces in `new_toplevel` (vs external
+    // applications); is-this-an-emacs-frame queries derive from strip membership.
     pub emacs_pid: Option<u32>,
-    pub emacs_frame_ids: HashSet<u64>,
 
     /// In-flight 3-finger swipe gesture for strip scrolling.
     pub gesture: input::GestureState,
@@ -1160,7 +1159,6 @@ impl Ewm {
             pointer_view_id: None,
             input_configs: Vec::new(),
             emacs_pid: None,
-            emacs_frame_ids: HashSet::new(),
             gesture: input::GestureState::default(),
             pending_screenshot: None,
             output_state: HashMap::new(),
@@ -1395,7 +1393,6 @@ impl Ewm {
             self.remove_surface_from_layouts(id);
             self.remove_emacs_frame_from_strip(id);
             self.surface_info.remove(&id);
-            self.emacs_frame_ids.remove(&id);
             self.queue_event(Event::Close { id });
 
             // Stop any screen casts targeting this window
@@ -1499,7 +1496,9 @@ impl Ewm {
     }
 
     pub fn is_emacs_frame(&self, id: u64) -> bool {
-        self.emacs_frame_ids.contains(&id)
+        self.output_strips
+            .values()
+            .any(|s| s.frames.iter().any(|f| f.surface_id == id))
     }
 
     pub fn emacs_frame_output(&self, id: u64) -> Option<&str> {
@@ -2005,7 +2004,7 @@ impl Ewm {
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
     /// and scale notification.
-    pub fn apply_output_layout(&mut self, output_name: &str, mut frames: Vec<strip::Frame>) {
+    pub fn apply_output_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
         // 1. Find the output
         let output = match self.space.outputs().find(|o| o.name() == output_name) {
             Some(o) => o.clone(),
@@ -2086,32 +2085,38 @@ impl Ewm {
             }
         }
 
-        // 6. Store the layout; `set_active` drives strip activation off the layout's `:active` flag
-        //    (the single source of truth for which frame is focused).  `view_offset` is re-anchored
-        //    if a frame width or active index changed.
+        // 6. MERGE the layout into the strip.  Existing frames are updated in place;
+        //    new frames are appended.  Frames in the strip but absent from the layout
+        //    are KEPT -- they go away only via `handle_toplevel_destroyed`.  This makes
+        //    compositor-eager-inserted frames (from `new_toplevel`) survive layout
+        //    refreshes that race ahead of Emacs's `ewm--assign-surface-to-frame`.
         let strip_entry = self
             .output_strips
             .entry(output_name.to_string())
             .or_default();
-        // Lisp-driven deletions arrive in a layout update before the wl_surface destroy,
-        // so seed slide-in animations here rather than relying on `remove_frame_at`.
-        let new_ids: HashSet<u64> = frames.iter().map(|f| f.surface_id).collect();
-        for i in 0..strip_entry.frames.len() {
-            if !new_ids.contains(&strip_entry.frames[i].surface_id) {
-                strip_entry.seed_remove_animation(i);
-            }
-        }
-        // Preserve in-flight slide animations across the layout swap.
-        for new_f in &mut frames {
-            if let Some(old_f) = strip_entry
+        let order: HashMap<u64, usize> = frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.surface_id, i))
+            .collect();
+        for new_f in frames {
+            if let Some(existing) = strip_entry
                 .frames
-                .iter()
+                .iter_mut()
                 .find(|f| f.surface_id == new_f.surface_id)
             {
-                new_f.move_anim = old_f.move_anim.clone();
+                let preserved_anim = existing.move_anim.clone();
+                *existing = new_f;
+                existing.move_anim = preserved_anim;
+            } else {
+                strip_entry.frames.push(new_f);
             }
         }
-        strip_entry.frames = frames;
+        // Sort by layout order; frames not in the layout (eager-inserted, awaiting
+        // Emacs's first confirmation) sink to the end with usize::MAX.
+        strip_entry
+            .frames
+            .sort_by_key(|f| order.get(&f.surface_id).copied().unwrap_or(usize::MAX));
         let frame_id = self.focused_frame_id;
         if let Some(new_idx) = strip_entry
             .frames
@@ -3873,8 +3878,13 @@ impl Ewm {
             return Some(self.focused_frame_id);
         }
         let output = self.get_focused_output()?;
-        self.active_frame_surface_id(&output)
-            .or_else(|| self.emacs_frame_ids.iter().next().copied())
+        self.active_frame_surface_id(&output).or_else(|| {
+            self.output_strips
+                .values()
+                .flat_map(|s| s.frames.iter())
+                .next()
+                .map(|f| f.surface_id)
+        })
     }
 
     /// Recalculate total output size from current space geometry
@@ -4448,7 +4458,17 @@ impl Ewm {
         );
 
         if is_emacs {
-            self.emacs_frame_ids.insert(id);
+            // Eager-insert into the target strip so `is_emacs_frame(id)`,
+            // `set_focus_frame(id)`, etc. work immediately -- before Emacs's
+            // first layout-refresh arrives.  Layout-refresh later updates fields
+            // (name, width, surfaces, selected_view_id) via MERGE semantics.
+            if let Some(output_name) = target_output.as_deref() {
+                let strip = self
+                    .output_strips
+                    .entry(output_name.to_string())
+                    .or_default();
+                strip.frames.push(crate::strip::Frame::new(id));
+            }
         }
 
         // Associate window with target output for scale detection.
@@ -4565,10 +4585,9 @@ impl Ewm {
             self.window_ids.remove(&window);
             self.id_windows.remove(&id);
             self.surface_info.remove(&id);
-            let was_emacs = self.emacs_frame_ids.contains(&id);
+            let was_emacs = self.is_emacs_frame(id);
             self.remove_surface_from_layouts(id);
             self.remove_emacs_frame_from_strip(id);
-            self.emacs_frame_ids.remove(&id);
             self.prune_dangling_focus();
             self.queue_event(Event::Close { id });
             debug!(
@@ -6342,11 +6361,13 @@ impl State {
             ModuleCommand::GetDebugState => {
                 let id_window_keys: Vec<u64> = self.ewm.id_windows.keys().copied().collect();
                 let layer_surfaces_info = self.ewm.get_layer_surfaces_info();
-                let emacs_surfaces: HashMap<u64, &str> = self
+                let emacs_surfaces: HashMap<u64, String> = self
                     .ewm
-                    .emacs_frame_ids
+                    .output_strips
                     .iter()
-                    .filter_map(|&id| self.ewm.emacs_frame_output(id).map(|o| (id, o)))
+                    .flat_map(|(out, s)| {
+                        s.frames.iter().map(move |f| (f.surface_id, out.clone()))
+                    })
                     .collect();
                 let state = serde_json::json!({
                     "surfaces": self.ewm.surface_info,

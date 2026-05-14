@@ -20,6 +20,9 @@ fn nz(n: u64) -> ViewId {
 
 #[derive(Debug, Clone)]
 enum Op {
+    /// Mimics `new_toplevel`'s eager-insert path for Emacs frames: at boot only
+    /// Emacs frames exist and they enter the strip before any layout arrives.
+    CreateEmacsFrame(u64),
     ApplyLayout { frames: Vec<FrameSpec> },
     FocusView(ViewId),
     FocusFrame(u64),
@@ -95,6 +98,7 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
+        FRAME_SID_RANGE.prop_map(Op::CreateEmacsFrame),
         layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
         ENTRY_VID_RANGE.prop_map(|v| Op::FocusView(nz(v))),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
@@ -129,6 +133,32 @@ fn to_frame(spec: &FrameSpec) -> Frame {
 
 fn apply_op(fix: &mut Fixture, op: Op) {
     match op {
+        Op::CreateEmacsFrame(id) => {
+            // Mirrors `new_toplevel`'s eager-insert + auto-focus.
+            let already_present = fix
+                .ewm_ref()
+                .output_strips
+                .get(OUTPUT)
+                .is_some_and(|s| s.frames.iter().any(|f| f.surface_id == id));
+            if !already_present {
+                let strip = fix
+                    .ewm()
+                    .output_strips
+                    .entry(OUTPUT.to_string())
+                    .or_default();
+                strip.frames.push(Frame::new(id));
+            }
+            let do_auto_focus = fix.ewm().focused_surface_id() == 0;
+            if do_auto_focus {
+                fix.ewm().set_focus_frame(id, "initial_surface", false);
+                // Catches the boot regression: auto-focus must land on `id`.
+                assert_eq!(
+                    fix.ewm().focused_frame_id, id,
+                    "auto-focus for new Emacs frame {} did not set focused_frame_id",
+                    id,
+                );
+            }
+        }
         Op::ApplyLayout { frames } => {
             let real: Vec<Frame> = frames.iter().map(to_frame).collect();
             fix.ewm().apply_output_layout(OUTPUT, real);
@@ -173,6 +203,7 @@ fn assert_invariants(fix: &Fixture) {
             v, ewm.focused_frame_id,
         );
     }
+
 }
 
 proptest! {
