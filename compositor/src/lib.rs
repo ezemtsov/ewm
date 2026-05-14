@@ -1250,6 +1250,25 @@ impl Ewm {
         }
     }
 
+    /// Clear stale `selected_view_id` / `focused_view_id` after a destruction.
+    /// Restores the invariant that both must reference live entries.
+    fn prune_dangling_focus(&mut self) {
+        for strip in self.output_strips.values_mut() {
+            for frame in &mut strip.frames {
+                if let Some(sel) = frame.selected_view_id {
+                    if !frame.surfaces.iter().any(|e| e.view_id == sel) {
+                        frame.selected_view_id = None;
+                    }
+                }
+            }
+        }
+        if let Some(v) = self.focused_view_id {
+            if self.lookup_view(v).is_none() {
+                self.focused_view_id = None;
+            }
+        }
+    }
+
     /// Drop the Emacs frame `id` from whichever strip holds it.
     fn remove_emacs_frame_from_strip(&mut self, id: u64) {
         let Some(out) = self.emacs_frame_output(id).map(String::from) else {
@@ -4534,6 +4553,7 @@ impl Ewm {
             self.remove_surface_from_layouts(id);
             self.remove_emacs_frame_from_strip(id);
             self.emacs_frame_ids.remove(&id);
+            self.prune_dangling_focus();
             self.queue_event(Event::Close { id });
             debug!(
                 "Toplevel {} destroyed was_focused={} was_emacs={} output={:?}",
