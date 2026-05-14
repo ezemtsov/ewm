@@ -7,7 +7,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::{SocketAddr, UnixListener};
 
 use anyhow::{anyhow, ensure, Context as _};
-use smithay::reexports::rustix::fs::{mkdir, unlink, OFlags};
+use smithay::reexports::rustix::fs::{access, mkdir, unlink, Access, OFlags};
 use smithay::reexports::rustix::io::Errno;
 use smithay::reexports::rustix::process::getpid;
 use smithay::reexports::rustix::{self};
@@ -57,7 +57,7 @@ fn ensure_x11_unix_perms() -> anyhow::Result<()> {
         "wrong ownership for X11 directory"
     );
     ensure!(
-        (x11_tmp.st_mode & 0o022) == 0o022,
+        access(X11_TMP_UNIX_DIR, Access::WRITE_OK).is_ok(),
         "X11 directory is not writable"
     );
     ensure!(
