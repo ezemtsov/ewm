@@ -297,6 +297,7 @@ pub fn collect_render_elements_for_output(
     // 4. Render declared surfaces from output_strips (authoritative, no intersection test)
     let working_area = ewm.get_working_area(output);
     if let Some(strip) = ewm.output_strips.get(&output.name()) {
+        let active_idx = strip.active_idx();
         for (frame_idx, entry) in strip.surfaces_with_frame() {
             // Frame's screen-space x relative to working area origin.
             // Active frame at rest yields 0 (no shift); mid-animation or
@@ -305,9 +306,13 @@ pub fn collect_render_elements_for_output(
             let frame_offset: Point<i32, Physical> =
                 Point::from(((frame_dx_logical * scale.x) as i32, 0));
             let effective_fs = ewm.effective_fullscreen(entry);
-            // When fullscreen is active, non-fullscreen entries are behind the
-            // fullscreen backdrop, so skip them to avoid rendering on top.
-            if above_top_layer && !effective_fs {
+            let in_active_frame = frame_idx == active_idx;
+            // Fullscreen on an inactive frame is off-screen.
+            if effective_fs && !in_active_frame {
+                continue;
+            }
+            // Active-frame fullscreen covers the rest.
+            if above_top_layer && !effective_fs && in_active_frame {
                 continue;
             }
             if let Some(window) = ewm.id_windows.get(&entry.surface_id) {

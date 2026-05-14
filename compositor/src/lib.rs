@@ -1949,15 +1949,12 @@ impl Ewm {
             .any(|strip| strip.surfaces().any(|e| e.surface_id == id && self.effective_fullscreen(e)))
     }
 
-    /// Whether layout surfaces render (and receive input) above the Top layer on this output.
-    ///
-    /// True when a fullscreen surface is active. Used to reorder both the render
-    /// element list and the input hit-testing chain so that the fullscreen surface
-    /// occludes Top/Bottom/Background layers for input as well as visually.
+    /// True iff the active frame has a fullscreen entry covering the Top layer.
     pub fn render_above_top_layer(&self, output: &Output) -> bool {
         self.output_strips
             .get(&output.name())
-            .map_or(false, |strip| strip.surfaces().any(|e| self.effective_fullscreen(e)))
+            .and_then(|s| s.active_frame())
+            .map_or(false, |f| f.surfaces.iter().any(|e| self.effective_fullscreen(e)))
     }
 
     /// View id of the layout entry under a point.
