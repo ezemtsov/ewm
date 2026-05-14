@@ -7,54 +7,43 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Per-output rendering**: Elements are collected per-output, not globally.
-//!    Each output only receives elements that intersect with its geometry. This is
-//!    critical for efficient rendering, accurate damage tracking, and screen sharing.
+//! 1. **Per-output rendering**: Elements are collected per-output, not globally. Each output only
+//!    receives elements that intersect with its geometry. This is critical for efficient rendering,
+//!    accurate damage tracking, and screen sharing.
 //!
-//! 2. **Rendering order**: Elements are collected front-to-back:
-//!    Cursor -> Overlay -> Top -> Popups -> Windows -> Bottom -> Background
-//!    This order matches typical desktop compositor layering.
+//! 2. **Rendering order**: Elements are collected front-to-back, matching typical desktop
+//!    compositor layering: Cursor -> Overlay -> Top -> Popups -> Windows -> Bottom -> Background.
 //!
-//! 3. **Layout-based rendering**: Surfaces with entries in `output_strips` are
-//!    rendered at their declared positions. Surfaces without layout entries use
-//!    space positions (for Emacs frames).
+//! 3. **Layout-based rendering**: Surfaces with entries in `output_strips` are rendered at their
+//!    declared positions. Surfaces without layout entries use space positions (for Emacs frames).
 
 use std::ptr;
 
-use crate::tracy_span;
-
 use anyhow::{ensure, Context};
-use smithay::{
-    backend::{
-        allocator::{dmabuf::Dmabuf, Buffer, Fourcc},
-        renderer::{
-            element::{
-                memory::MemoryRenderBufferRenderElement,
-                render_elements,
-                solid::SolidColorRenderElement,
-                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-                utils::{CropRenderElement, RescaleRenderElement},
-                Kind, RenderElement,
-            },
-            gles::{GlesRenderer, GlesTarget, GlesTexture},
-            sync::SyncPoint,
-            Bind, Color32F, ExportMem, Frame, Offscreen, Renderer,
-        },
-    },
-    desktop::{layer_map_for_output, LayerMap, PopupManager},
-    output::Output,
-    reexports::{
-        calloop::LoopHandle,
-        wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm::Format},
-    },
-    utils::{Physical, Point, Rectangle, Scale, Size, Transform},
-    wayland::shell::wlr_layer::Layer,
-    wayland::shm,
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::{Buffer, Fourcc};
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::surface::{
+    render_elements_from_surface_tree, WaylandSurfaceRenderElement,
 };
+use smithay::backend::renderer::element::utils::{CropRenderElement, RescaleRenderElement};
+use smithay::backend::renderer::element::{render_elements, Kind, RenderElement};
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTarget, GlesTexture};
+use smithay::backend::renderer::sync::SyncPoint;
+use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
+use smithay::desktop::{layer_map_for_output, LayerMap, PopupManager};
+use smithay::output::Output;
+use smithay::reexports::calloop::LoopHandle;
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::protocol::wl_shm::Format;
+use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::wayland::shell::wlr_layer::Layer;
+use smithay::wayland::shm;
 use tracing::warn;
 
 use crate::protocols::screencopy::ScreencopyBuffer;
-use crate::{cursor, CursorImageStatus, Ewm, State};
+use crate::{cursor, tracy_span, CursorImageStatus, Ewm, State};
 
 /// Identifies the target of a render pass.
 ///
@@ -151,11 +140,11 @@ fn push_constrained(
 /// - `output_pos`: The output's position in global logical space
 /// - `output_size`: The output's size in logical coordinates
 /// - `include_cursor`: Whether to include the cursor element
-/// - `include_layers`: Whether to include layer surfaces and the DnD icon.
-///   Set to `false` for workspace-transition snapshots so the captured
-///   texture doesn't re-draw panels on top of the live layer surfaces.
-/// - `target`: The render target (Output vs Screencast); currently unused
-///   but threaded through for future per-window privacy filtering.
+/// - `include_layers`: Whether to include layer surfaces and the DnD icon. Set to `false` for
+///   workspace-transition snapshots so the captured texture doesn't re-draw panels on top of the
+///   live layer surfaces.
+/// - `target`: The render target (Output vs Screencast); currently unused but threaded through for
+///   future per-window privacy filtering.
 #[allow(clippy::too_many_arguments)]
 pub fn collect_render_elements_for_output(
     ewm: &Ewm,
@@ -344,9 +333,9 @@ pub fn collect_render_elements_for_output(
                             window.geometry().size,
                             output_logical_size,
                         );
-                        let loc_physical: Point<i32, Physical> =
-                            Point::from((offset_x, offset_y)).to_physical_precise_round(scale)
-                                + frame_offset;
+                        let loc_physical: Point<i32, Physical> = Point::from((offset_x, offset_y))
+                            .to_physical_precise_round(scale)
+                            + frame_offset;
                         let view_elements =
                             window.render_elements(renderer, loc_physical, scale, entry_alpha);
                         push_constrained(
@@ -462,7 +451,12 @@ pub fn collect_render_elements_for_output(
         let frame_dx_logical = ewm
             .output_strips
             .get(&output.name())
-            .and_then(|s| s.frames.iter().position(|f| f.surface_id == id).map(|i| s.screen_x_of_frame(i)))
+            .and_then(|s| {
+                s.frames
+                    .iter()
+                    .position(|f| f.surface_id == id)
+                    .map(|i| s.screen_x_of_frame(i))
+            })
             .unwrap_or(0.0);
         let frame_offset_emacs: Point<i32, Physical> =
             Point::from(((frame_dx_logical * scale.x) as i32, 0));
@@ -471,13 +465,12 @@ pub fn collect_render_elements_for_output(
             .get(&id)
             .map(|a| a.value() as f32)
             .unwrap_or(1.0);
-        let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
-            .render_elements(
-                renderer,
-                working_area_loc_physical + frame_offset_emacs,
-                scale,
-                frame_alpha,
-            );
+        let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window.render_elements(
+            renderer,
+            working_area_loc_physical + frame_offset_emacs,
+            scale,
+            frame_alpha,
+        );
         elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
     }
 
@@ -662,10 +655,11 @@ pub fn process_screencopies_for_output(
     cursor_buffer: &cursor::CursorBuffer,
     event_loop: &LoopHandle<'static, State>,
 ) {
+    use std::cell::OnceCell;
+
     use smithay::backend::renderer::damage::OutputDamageTracker;
     use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
     use smithay::output::OutputModeSource;
-    use std::cell::OnceCell;
     use tracing::trace;
 
     let output_scale = Scale::from(output.current_scale().fractional_scale());
@@ -828,8 +822,8 @@ pub fn render_screencopy_immediate(
         cursor_buffer,
         output_geo.loc,
         output_geo.size,
-        true,  // include_cursor
-        true,  // include_layers
+        true, // include_cursor
+        true, // include_layers
         &output,
         RenderTarget::Output,
     );
@@ -923,8 +917,11 @@ pub fn capture_output_to_texture(
     // buffer_scale and texture_size in lock-step, so the snapshot samples
     // pixel-for-pixel correctly without oversampling.
     let output_scale = Scale::from(output.current_scale().fractional_scale());
-    let texture_size: Size<i32, Physical> =
-        output_geo.size.to_f64().to_physical(output_scale).to_i32_round();
+    let texture_size: Size<i32, Physical> = output_geo
+        .size
+        .to_f64()
+        .to_physical(output_scale)
+        .to_i32_round();
 
     let (content, _cursor) = collect_render_elements_for_output(
         ewm,

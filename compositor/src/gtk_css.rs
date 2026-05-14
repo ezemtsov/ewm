@@ -25,7 +25,10 @@ pub fn set_style(css: &str) -> Result<()> {
     let css = std::ffi::CString::new(css).context("CSS contains NUL byte")?;
 
     unsafe {
-        let lib = libc::dlopen(c"libgtk-3.so.0".as_ptr(), libc::RTLD_LAZY | libc::RTLD_NOLOAD);
+        let lib = libc::dlopen(
+            c"libgtk-3.so.0".as_ptr(),
+            libc::RTLD_LAZY | libc::RTLD_NOLOAD,
+        );
         ensure!(!lib.is_null(), "libgtk-3.so.0 is not loaded");
 
         let init_check: unsafe extern "C" fn(*mut c_int, *mut *mut *mut c_char) -> c_int =
@@ -33,7 +36,10 @@ pub fn set_style(css: &str) -> Result<()> {
         let provider_new: unsafe extern "C" fn() -> *mut c_void =
             std::mem::transmute(sym(lib, c"gtk_css_provider_new")?);
         let load_from_data: unsafe extern "C" fn(
-            *mut c_void, *const c_char, isize, *mut *mut c_void,
+            *mut c_void,
+            *const c_char,
+            isize,
+            *mut *mut c_void,
         ) -> c_int = std::mem::transmute(sym(lib, c"gtk_css_provider_load_from_data")?);
         let screen_get_default: unsafe extern "C" fn() -> *mut c_void =
             std::mem::transmute(sym(lib, c"gdk_screen_get_default")?);

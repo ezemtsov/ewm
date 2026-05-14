@@ -5,24 +5,22 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **No hardware access**: The headless backend never touches real GPUs or displays.
-//!    The `render()` method is a no-op that increments a counter and returns `Submitted`.
-//!    A GLES renderer can be initialized for tests that need texture operations.
+//! 1. **No hardware access**: The headless backend never touches real GPUs or displays. The
+//!    `render()` method is a no-op that increments a counter and returns `Submitted`. A GLES
+//!    renderer can be initialized for tests that need texture operations.
 //!
-//! 2. **Deterministic output**: Virtual outputs have fixed sizes and refresh rates,
-//!    enabling reproducible snapshot tests.
+//! 2. **Deterministic output**: Virtual outputs have fixed sizes and refresh rates, enabling
+//!    reproducible snapshot tests.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use smithay::{
-    backend::{
-        egl::{native::EGLSurfacelessDisplay, EGLContext, EGLDisplay},
-        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
-    },
-    output::{Mode, Output, PhysicalProperties, Subpixel},
-    utils::{Physical, Size, Transform},
-};
+use smithay::backend::egl::native::EGLSurfacelessDisplay;
+use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::utils::{Physical, Size, Transform};
 use tracing::{debug, info};
 
 use crate::{Ewm, OutputState, RedrawState, State};

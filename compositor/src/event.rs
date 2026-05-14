@@ -4,8 +4,9 @@
 //! via the dynamic module interface. The `Serialize` derive is used
 //! for debug state serialization.
 
-use serde::Serialize;
 use std::collections::HashMap;
+
+use serde::Serialize;
 
 /// Output mode information
 #[derive(Serialize, Clone, Debug)]

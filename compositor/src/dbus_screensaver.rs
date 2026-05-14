@@ -142,7 +142,9 @@ impl ScreenSaver {
                 }
             }
         };
-        let task = async_conn.executor().spawn(future, "monitor disappearing clients");
+        let task = async_conn
+            .executor()
+            .spawn(future, "monitor disappearing clients");
         monitor_task.set(task).unwrap();
 
         info!("org.freedesktop.ScreenSaver D-Bus interface started");

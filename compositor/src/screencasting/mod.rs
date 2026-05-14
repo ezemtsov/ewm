@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Context as _;
+pub use pw_utils::{Cast, CastSessionId, CastSizeChange, CastStreamId, PipeWire, PwToCompositor};
 use smithay::backend::allocator::gbm::GbmDevice;
 use smithay::backend::drm::DrmDeviceFd;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
@@ -19,12 +20,9 @@ use smithay::utils::{Physical, Point, Scale, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, info, warn};
 
-pub use pw_utils::{Cast, CastSessionId, CastSizeChange, CastStreamId, PipeWire, PwToCompositor};
-
-use crate::cursor;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
 use crate::render::EwmRenderElement;
-use crate::{Ewm, State};
+use crate::{cursor, Ewm, State};
 
 pub struct Screencasting {
     pub casts: Vec<Cast>,
@@ -106,8 +104,13 @@ impl State {
                 // Stop active casts before dropping pw so streams can
                 // disconnect against a live core. Going through stop_cast
                 // makes D-Bus emit Closed to consumers (xdp-gnome, ...).
-                let session_ids: Vec<CastSessionId> =
-                    self.ewm.casting.casts.iter().map(|c| c.session_id).collect();
+                let session_ids: Vec<CastSessionId> = self
+                    .ewm
+                    .casting
+                    .casts
+                    .iter()
+                    .map(|c| c.session_id)
+                    .collect();
                 for id in session_ids {
                     self.ewm.stop_cast(id);
                 }
@@ -129,9 +132,12 @@ impl State {
                     return;
                 };
                 let output = match &cast.target {
-                    CastTarget::Output { name } => {
-                        self.ewm.space.outputs().find(|o| &o.name() == name).cloned()
-                    }
+                    CastTarget::Output { name } => self
+                        .ewm
+                        .space
+                        .outputs()
+                        .find(|o| &o.name() == name)
+                        .cloned(),
                     CastTarget::Window { id } => {
                         self.ewm.casting.mapped_cast_output.get(id).cloned()
                     }
@@ -303,7 +309,9 @@ impl Ewm {
 
         // Use bbox_with_popups for accurate size including popups, scaled
         // to physical pixels via the output's fractional scale.
-        let bbox = window.bbox_with_popups().to_physical_precise_up(output_scale);
+        let bbox = window
+            .bbox_with_popups()
+            .to_physical_precise_up(output_scale);
         let window_size = bbox.size;
 
         let refresh = output
@@ -384,10 +392,14 @@ impl Ewm {
                             && py < (entry_y + entry.h as i32) as f64
                         {
                             let bbox_logical = bbox.loc.to_f64().to_logical(output_scale);
-                            let cursor_x =
-                                px - entry_x as f64 - bbox_logical.x - cursor::CURSOR_HOTSPOT.0 as f64;
-                            let cursor_y =
-                                py - entry_y as f64 - bbox_logical.y - cursor::CURSOR_HOTSPOT.1 as f64;
+                            let cursor_x = px
+                                - entry_x as f64
+                                - bbox_logical.x
+                                - cursor::CURSOR_HOTSPOT.0 as f64;
+                            let cursor_y = py
+                                - entry_y as f64
+                                - bbox_logical.y
+                                - cursor::CURSOR_HOTSPOT.1 as f64;
                             let cursor_pos: Point<i32, Physical> =
                                 Point::from((cursor_x, cursor_y))
                                     .to_physical_precise_round(output_scale);
@@ -395,8 +407,8 @@ impl Ewm {
                             // cursor_location for SPA_META_Cursor (without hotspot offset)
                             let loc_x = px - entry_x as f64 - bbox_logical.x;
                             let loc_y = py - entry_y as f64 - bbox_logical.y;
-                            cursor_location = Point::from((loc_x, loc_y))
-                                .to_physical_precise_round(output_scale);
+                            cursor_location =
+                                Point::from((loc_x, loc_y)).to_physical_precise_round(output_scale);
 
                             if let Ok(cursor_element) =
                                 cursor_buffer.render_element(renderer, cursor_pos)

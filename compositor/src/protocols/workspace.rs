@@ -299,8 +299,7 @@ pub fn refresh<'a, D>(
                 }
                 if ws.coordinates != new_coords {
                     ws.coordinates = new_coords;
-                    let bytes: Vec<u8> =
-                        new_coords.iter().flat_map(|x| x.to_ne_bytes()).collect();
+                    let bytes: Vec<u8> = new_coords.iter().flat_map(|x| x.to_ne_bytes()).collect();
                     for inst in &ws.instances {
                         inst.coordinates(bytes.clone());
                     }

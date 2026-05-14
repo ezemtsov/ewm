@@ -7,13 +7,12 @@
 
 use std::collections::HashMap;
 
+use smithay::reexports::calloop;
 use tracing::warn;
 use zbus::fdo::{self, RequestNameFlags};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{SerializeDict, Type, Value};
-
-use smithay::reexports::calloop;
 
 use super::Start;
 

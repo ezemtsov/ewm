@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
+use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::wayland_server::Display;
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};

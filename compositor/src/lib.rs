@@ -4,34 +4,30 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Focus ownership**: Only one surface has keyboard focus at a time.
-//!    Focus changes only via explicit commands from Emacs or validated input
-//!    events (click-to-focus, XDG activation). The `focused_surface_id` field
-//!    is the single source of truth for focus state.
+//! 1. **Focus ownership**: Only one surface has keyboard focus at a time. Focus changes only via
+//!    explicit commands from Emacs or validated input events (click-to-focus, XDG activation). The
+//!    `focused_surface_id` field is the single source of truth for focus state.
 //!
-//! 2. **Surface lifecycle**: Surfaces are assigned monotonically increasing IDs
-//!    starting from 1. ID 0 is reserved for "no surface". IDs are never reused
-//!    within a session. When a surface is destroyed, it's removed from all maps
-//!    and its ID becomes invalid.
+//! 2. **Surface lifecycle**: Surfaces are assigned monotonically increasing IDs starting from 1. ID
+//!    0 is reserved for "no surface". IDs are never reused within a session. When a surface is
+//!    destroyed, it's removed from all maps and its ID becomes invalid.
 //!
-//! 3. **Redraw state machine**: Each output has independent redraw state:
-//!    `Idle` -> `Queued` -> `WaitingForVBlank` -> `Idle` (real VBlank path)
-//!    `Idle` -> `Queued` -> `WaitingForEstimatedVBlank` -> `Idle` (no-damage path)
-//!    The estimated-VBlank variants use a timer when no damage occurs.
-//!    `WaitingForVBlank { redraw_needed }` and `WaitingForEstimatedVBlankAndQueued`
-//!    handle redraws requested while waiting. State is owned by
-//!    `Ewm::output_state`, not the backend.
+//! 3. **Redraw state machine**: Each output has independent redraw state. Two transition paths:
+//!    - Real VBlank: `Idle` -> `Queued` -> `WaitingForVBlank` -> `Idle`
+//!    - No damage: `Idle` -> `Queued` -> `WaitingForEstimatedVBlank` -> `Idle`
 //!
-//! 4. **Emacs ownership**: The compositor runs as a thread within Emacs.
-//!    Emacs controls window layout and focus policy. The compositor handles
-//!    protocol compliance and rendering. This split means:
+//!    `WaitingForVBlank { redraw_needed }` and `WaitingForEstimatedVBlankAndQueued` handle redraws
+//!    requested while waiting. State is owned by `Ewm::output_state`, not the backend.
+//!
+//! 4. **Emacs ownership**: The compositor runs as a thread within Emacs. Emacs controls window
+//!    layout and focus policy. The compositor handles protocol compliance and rendering. This split
+//!    means:
 //!    - Compositor never initiates focus changes without Emacs consent
 //!    - Layout changes come from Emacs via the command queue
 //!    - Events flow back to Emacs via the event queue
 //!
-//! 5. **Thread safety**: Communication between Emacs and compositor uses
-//!    mutex-protected queues and atomic flags. The module interface (module.rs)
-//!    provides the synchronization boundary.
+//! 5. **Thread safety**: Communication between Emacs and compositor uses mutex-protected queues and
+//!    atomic flags. The module interface (module.rs) provides the synchronization boundary.
 
 pub mod backend;
 pub mod cursor;
@@ -44,10 +40,10 @@ pub mod gtk_css;
 pub mod im_relay;
 pub mod input;
 mod module;
-#[cfg(feature = "screencast")]
-pub mod screencasting;
 pub mod protocols;
 pub mod render;
+#[cfg(feature = "screencast")]
+pub mod screencasting;
 pub mod strip;
 pub mod texture;
 pub mod tracy;
@@ -81,20 +77,94 @@ pub fn is_laptop_panel(connector_name: &str) -> bool {
     matches!(connector_name.get(..4), Some("eDP-" | "LVDS" | "DSI-"))
 }
 
-pub use event::{Event, OutputInfo, OutputMode};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::mem;
+use std::os::unix::io::OwnedFd;
+use std::sync::Arc;
+use std::time::Duration;
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
-
-use crate::protocols::foreign_toplevel::{
-    ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
-};
-use crate::protocols::output_management::{OutputManagementHandler, OutputManagementState};
-use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
-use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
+pub use event::{Event, OutputInfo, OutputMode};
 use serde::{Deserialize, Serialize};
+use smithay::backend::renderer::element::solid::SolidColorBuffer;
+use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
+use smithay::backend::renderer::element::RenderElementStates;
+use smithay::desktop::utils::{
+    send_dmabuf_feedback_surface_tree, send_frames_surface_tree,
+    surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
+    take_presentation_feedback_surface_tree, update_surface_primary_scanout_output,
+    OutputPresentationFeedback,
+};
+use smithay::desktop::{
+    find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
+    LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window, WindowSurfaceType,
+};
+use smithay::input::dnd::{self, DnDGrab, DndGrabHandler, DndTarget};
+use smithay::input::keyboard::xkb::keysyms;
+use smithay::input::keyboard::{KeyboardHandle, ModifiersState};
+use smithay::input::pointer::{CursorImageStatus, PointerHandle};
+use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::output::{Output, PhysicalProperties, Subpixel};
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::timer::Timer;
+use smithay::reexports::calloop::{
+    Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken,
+};
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
+use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource};
+use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER};
+use smithay::wayland::buffer::BufferHandler;
+use smithay::wayland::compositor::{
+    get_parent, is_sync_subsurface, with_surface_tree_downward, CompositorClientState,
+    CompositorHandler, CompositorState, SurfaceData, TraversalAction,
+};
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
+use smithay::wayland::fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState};
+use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
+use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
+use smithay::wayland::input_method::{
+    InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface,
+};
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::pointer_constraints::{
+    with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState,
+};
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
+use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::selection::data_device::{
+    request_data_device_client_selection, set_data_device_focus, set_data_device_selection,
+    DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
+};
+use smithay::wayland::selection::primary_selection::{
+    set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
+};
+use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataControlState};
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+};
+use smithay::wayland::shell::wlr_layer::{Layer, WlrLayerShellHandler, WlrLayerShellState};
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::wayland::shell::xdg::{
+    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    XdgToplevelSurfaceData,
+};
+use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::text_input::TextInputManagerState;
+use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
+use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use smithay::{
-    backend::renderer::element::utils::select_dmabuf_feedback,
-    backend::renderer::element::{solid::SolidColorBuffer, RenderElementStates},
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
     delegate_input_method_manager, delegate_layer_shell, delegate_output,
@@ -102,95 +172,15 @@ use smithay::{
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_activation,
     delegate_xdg_foreign, delegate_xdg_shell,
-    desktop::{
-        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
-        utils::{
-            send_dmabuf_feedback_surface_tree, send_frames_surface_tree,
-            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
-            take_presentation_feedback_surface_tree, update_surface_primary_scanout_output,
-            OutputPresentationFeedback,
-        },
-        LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window,
-        WindowSurfaceType,
-    },
-    input::{
-        dnd::{self, DnDGrab, DndGrabHandler, DndTarget},
-        keyboard::{xkb::keysyms, KeyboardHandle, ModifiersState},
-        pointer::{CursorImageStatus, PointerHandle},
-        Seat, SeatHandler, SeatState,
-    },
-    output::{Output, PhysicalProperties, Subpixel},
-    reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
-    reexports::{
-        calloop::{
-            generic::Generic, timer::Timer, Interest, LoopHandle, LoopSignal, Mode as CalloopMode,
-            PostAction, RegistrationToken,
-        },
-        wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState,
-        wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
-        wayland_server::{
-            backend::{ClientData, ClientId, DisconnectReason},
-            protocol::{wl_output::WlOutput, wl_surface::WlSurface},
-            Display, DisplayHandle, Resource,
-        },
-    },
-    utils::{IsAlive, Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER},
-    wayland::{
-        buffer::BufferHandler,
-        compositor::{
-            get_parent, is_sync_subsurface, with_surface_tree_downward, CompositorClientState,
-            CompositorHandler, CompositorState, SurfaceData, TraversalAction,
-        },
-        dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
-        fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState},
-        idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState},
-        idle_notify::{IdleNotifierHandler, IdleNotifierState},
-        input_method::{
-            InputMethodHandler, InputMethodManagerState, PopupSurface as IMPopupSurface,
-        },
-        output::OutputManagerState,
-        pointer_constraints::{
-            with_pointer_constraint, PointerConstraintsHandler, PointerConstraintsState,
-        },
-        relative_pointer::RelativePointerManagerState,
-        seat::WaylandFocus,
-        selection::{
-            data_device::{
-                request_data_device_client_selection, set_data_device_focus,
-                set_data_device_selection, DataDeviceHandler, DataDeviceState,
-                WaylandDndGrabHandler,
-            },
-            primary_selection::{
-                set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
-            },
-            wlr_data_control::{DataControlHandler, DataControlState},
-            SelectionHandler, SelectionSource, SelectionTarget,
-        },
-        session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
-        shell::wlr_layer::{Layer, WlrLayerShellHandler, WlrLayerShellState},
-        shell::xdg::{
-            decoration::{XdgDecorationHandler, XdgDecorationState},
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData,
-        },
-        shm::{ShmHandler, ShmState},
-        socket::ListeningSocketSource,
-        text_input::TextInputManagerState,
-        viewporter::ViewporterState,
-        virtual_keyboard::VirtualKeyboardManagerState,
-        xdg_activation::{
-            XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
-        },
-        xdg_foreign::{XdgForeignHandler, XdgForeignState},
-    },
 };
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::mem;
-use std::os::unix::io::OwnedFd;
-use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, error, info, warn};
+
+use crate::protocols::foreign_toplevel::{
+    ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
+};
+use crate::protocols::output_management::{OutputManagementHandler, OutputManagementState};
+use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
+use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
 
 /// Redraw state machine for proper VBlank synchronization.
 ///
@@ -259,7 +249,6 @@ pub enum LockState {
     /// Session is fully locked (stores the lock object to detect dead clients)
     Locked(ExtSessionLockV1),
 }
-
 
 /// Per-output lock render state for tracking lock confirmation.
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
@@ -1266,9 +1255,15 @@ impl Ewm {
 
     /// Drop the Emacs frame `id` from whichever strip holds it.
     fn remove_emacs_frame_from_strip(&mut self, id: u64) {
-        let Some(out) = self.emacs_frame_output(id).map(String::from) else { return };
-        let Some(strip) = self.output_strips.get_mut(&out) else { return };
-        let Some(idx) = strip.frames.iter().position(|f| f.surface_id == id) else { return };
+        let Some(out) = self.emacs_frame_output(id).map(String::from) else {
+            return;
+        };
+        let Some(strip) = self.output_strips.get_mut(&out) else {
+            return;
+        };
+        let Some(idx) = strip.frames.iter().position(|f| f.surface_id == id) else {
+            return;
+        };
         strip.remove_frame_at(idx);
     }
 
@@ -1683,7 +1678,12 @@ impl Ewm {
         let frame_dx = self
             .output_strips
             .get(output_name)
-            .and_then(|s| s.frames.iter().position(|f| f.surface_id == surface_id).map(|i| s.screen_x_of_frame(i)))
+            .and_then(|s| {
+                s.frames
+                    .iter()
+                    .position(|f| f.surface_id == surface_id)
+                    .map(|i| s.screen_x_of_frame(i))
+            })
             .unwrap_or(0.0) as i32;
         Some(Point::from((
             output_geo.loc.x + working_area.loc.x + frame_dx,
@@ -1827,34 +1827,32 @@ impl Ewm {
                     .output_at(pos)
                     .and_then(|o| self.space.output_geometry(o));
 
-                let (pointer_scale, center_offset_x, center_offset_y) =
-                    if effective_fs {
-                        let out_size = output_geo.map(|g| g.size).unwrap_or_default();
-                        if entry.primary {
-                            let (cx, cy) =
-                                fullscreen_center_offset(window_geo.size, out_size);
-                            (1.0, cx as f64, cy as f64)
-                        } else {
-                            let uniform = f64::max(
-                                out_size.w as f64 / window_geo.size.w as f64,
-                                out_size.h as f64 / window_geo.size.h as f64,
-                            );
-                            (1.0 / uniform, 0.0, 0.0)
-                        }
-                    } else if entry.primary {
-                        (1.0, 0.0, 0.0)
-                    } else if entry.w > 0 && entry.h > 0 {
-                        (
-                            f64::min(
-                                window_geo.size.w as f64 / entry.w as f64,
-                                window_geo.size.h as f64 / entry.h as f64,
-                            ),
-                            0.0,
-                            0.0,
-                        )
+                let (pointer_scale, center_offset_x, center_offset_y) = if effective_fs {
+                    let out_size = output_geo.map(|g| g.size).unwrap_or_default();
+                    if entry.primary {
+                        let (cx, cy) = fullscreen_center_offset(window_geo.size, out_size);
+                        (1.0, cx as f64, cy as f64)
                     } else {
-                        (1.0, 0.0, 0.0)
-                    };
+                        let uniform = f64::max(
+                            out_size.w as f64 / window_geo.size.w as f64,
+                            out_size.h as f64 / window_geo.size.h as f64,
+                        );
+                        (1.0 / uniform, 0.0, 0.0)
+                    }
+                } else if entry.primary {
+                    (1.0, 0.0, 0.0)
+                } else if entry.w > 0 && entry.h > 0 {
+                    (
+                        f64::min(
+                            window_geo.size.w as f64 / entry.w as f64,
+                            window_geo.size.h as f64 / entry.h as f64,
+                        ),
+                        0.0,
+                        0.0,
+                    )
+                } else {
+                    (1.0, 0.0, 0.0)
+                };
 
                 let pos_in_window = Point::from((
                     (pos.x - entry_x as f64 - center_offset_x) * pointer_scale,
@@ -1898,10 +1896,8 @@ impl Ewm {
             let Some(window) = self.id_windows.get(&frame.surface_id) else {
                 continue;
             };
-            let window_origin: Point<f64, Logical> =
-                Point::from((frame_x as f64, frame_y as f64));
-            let pos_in_window =
-                Point::from((pos.x - window_origin.x, pos.y - window_origin.y));
+            let window_origin: Point<f64, Logical> = Point::from((frame_x as f64, frame_y as f64));
+            let pos_in_window = Point::from((pos.x - window_origin.x, pos.y - window_origin.y));
             if let Some((surface, surface_offset)) =
                 window.surface_under(pos_in_window, WindowSurfaceType::ALL)
             {
@@ -1932,16 +1928,19 @@ impl Ewm {
             })
     }
 
-    /// Render-side fullscreen flag: entry requested fullscreen AND client commits fullscreen buffers.
+    /// Render-side fullscreen flag: entry requested fullscreen AND client commits fullscreen
+    /// buffers.
     pub(crate) fn effective_fullscreen(&self, entry: &LayoutEntry) -> bool {
         entry.fullscreen && self.surface_committed_fullscreen(entry.surface_id)
     }
 
     /// Check if a surface is currently displaying as fullscreen on any output.
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
-        self.output_strips
-            .values()
-            .any(|strip| strip.surfaces().any(|e| e.surface_id == id && self.effective_fullscreen(e)))
+        self.output_strips.values().any(|strip| {
+            strip
+                .surfaces()
+                .any(|e| e.surface_id == id && self.effective_fullscreen(e))
+        })
     }
 
     /// True iff the active frame has a fullscreen entry covering the Top layer.
@@ -1962,11 +1961,7 @@ impl Ewm {
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
     /// and scale notification.
-    pub fn apply_output_layout(
-        &mut self,
-        output_name: &str,
-        mut frames: Vec<strip::Frame>,
-    ) {
+    pub fn apply_output_layout(&mut self, output_name: &str, mut frames: Vec<strip::Frame>) {
         // 1. Find the output
         let output = match self.space.outputs().find(|o| o.name() == output_name) {
             Some(o) => o.clone(),
@@ -2047,10 +2042,9 @@ impl Ewm {
             }
         }
 
-        // 6. Store the layout; `set_active` drives strip activation off the
-        //    layout's `:active` flag (the single source of truth for which
-        //    frame is focused).  `view_offset` is re-anchored if a frame
-        //    width or active index changed.
+        // 6. Store the layout; `set_active` drives strip activation off the layout's `:active` flag
+        //    (the single source of truth for which frame is focused).  `view_offset` is re-anchored
+        //    if a frame width or active index changed.
         let strip_entry = self
             .output_strips
             .entry(output_name.to_string())
@@ -2096,8 +2090,12 @@ impl Ewm {
         }
 
         for (id, prev) in migrations {
-            let Some(window) = self.id_windows.get(&id).cloned() else { continue };
-            let Some(surface) = window.wl_surface() else { continue };
+            let Some(window) = self.id_windows.get(&id).cloned() else {
+                continue;
+            };
+            let Some(surface) = window.wl_surface() else {
+                continue;
+            };
             if let Some(prev_name) = prev {
                 if let Some(prev_out) = self.space.outputs().find(|o| o.name() == prev_name) {
                     prev_out.leave(&surface);
@@ -2560,11 +2558,10 @@ impl Ewm {
     /// Combines three sources of idle inhibition:
     /// 1. **FDO ScreenSaver D-Bus**: Firefox, Chrome, and other apps use
     ///    `org.freedesktop.ScreenSaver.Inhibit()` to prevent screensaver.
-    /// 2. **Wayland idle-inhibit protocol**: Video players create
-    ///    `zwp_idle_inhibitor_v1` on their surface.
-    /// 3. **Fullscreen heuristic**: A fullscreen surface that is currently
-    ///    focused is treated as an idle inhibitor (covers video players
-    ///    and games that don't implement the protocol).
+    /// 2. **Wayland idle-inhibit protocol**: Video players create `zwp_idle_inhibitor_v1` on their
+    ///    surface.
+    /// 3. **Fullscreen heuristic**: A fullscreen surface that is currently focused is treated as an
+    ///    idle inhibitor (covers video players and games that don't implement the protocol).
     ///
     /// For Wayland protocol inhibitors, only visible surfaces count
     /// (checked via `surface_primary_scanout_output`).  This prevents a
@@ -2579,7 +2576,9 @@ impl Ewm {
         self.idle_inhibiting_surfaces.retain(|s| s.is_alive());
 
         let is_inhibited = self.manual_idle_inhibited
-            || self.is_fdo_idle_inhibited.load(std::sync::atomic::Ordering::SeqCst)
+            || self
+                .is_fdo_idle_inhibited
+                .load(std::sync::atomic::Ordering::SeqCst)
             || self.idle_inhibiting_surfaces.iter().any(|surface| {
                 with_states(surface, |states| {
                     surface_primary_scanout_output(surface, states).is_some()
@@ -2972,7 +2971,11 @@ impl Ewm {
                 &mut feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
-                    surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
+                    surface_presentation_feedback_flags_from_states(
+                        surface,
+                        None,
+                        render_element_states,
+                    )
                 },
             );
         }
@@ -2984,7 +2987,11 @@ impl Ewm {
                 &mut feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
-                    surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
+                    surface_presentation_feedback_flags_from_states(
+                        surface,
+                        None,
+                        render_element_states,
+                    )
                 },
             );
         }
@@ -3015,7 +3022,11 @@ impl Ewm {
                 &mut feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
-                    surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
+                    surface_presentation_feedback_flags_from_states(
+                        surface,
+                        None,
+                        render_element_states,
+                    )
                 },
             );
         }
@@ -3236,9 +3247,11 @@ impl Ewm {
         }
         // Emacs frames: derived from `output_strips` (frames aren't in `space`).
         let output_name = self.emacs_frame_output(surface_id)?;
-        self.space.outputs().find(|o| o.name() == output_name).cloned()
+        self.space
+            .outputs()
+            .find(|o| o.name() == output_name)
+            .cloned()
     }
-
 
     /// Set the Emacs process PID for client identification
     pub fn set_emacs_pid(&mut self, pid: u32) {
@@ -3306,7 +3319,8 @@ impl Ewm {
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
         source: &str,
     ) -> Option<(u64, Option<ViewId>)> {
-        let (record_id, target, frame_id, view_id) = if let Some(view_id) = self.view_id_under(pos) {
+        let (record_id, target, frame_id, view_id) = if let Some(view_id) = self.view_id_under(pos)
+        {
             let (output, idx, sid) = self.lookup_view(view_id)?;
             let fid = self
                 .output_strips
@@ -3332,11 +3346,16 @@ impl Ewm {
 
     pub fn focus_follows_mouse(
         &mut self,
-        under: &Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
+        under: &Option<(
+            WlSurface,
+            smithay::utils::Point<f64, smithay::utils::Logical>,
+        )>,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
         let Some((_, origin)) = under else { return };
-        let Some((frame_id, view_id)) = self.focus_under(pos, "pointer_motion") else { return };
+        let Some((frame_id, view_id)) = self.focus_under(pos, "pointer_motion") else {
+            return;
+        };
         if let Some(view_id) = view_id.or_else(|| self.view_id_of_frame(frame_id)) {
             self.queue_event(Event::Focus {
                 view_id,
@@ -4083,14 +4102,15 @@ impl Ewm {
         map.non_exclusive_zone()
     }
 
-
     /// Update Emacs frames to fit within the working area of an output.
     /// Called when layer surface exclusive zones change.
     pub fn update_frames_for_working_area(&mut self, output: &Output) {
         let working_area = self.get_working_area(output);
 
         for id in self.emacs_frames_on(&output.name()).collect::<Vec<_>>() {
-            let Some(window) = self.id_windows.get(&id) else { continue };
+            let Some(window) = self.id_windows.get(&id) else {
+                continue;
+            };
             if let Some(toplevel) = window.toplevel() {
                 let new_size = Some(working_area.size);
                 let changed = toplevel.with_pending_state(|state| {
@@ -4980,8 +5000,9 @@ impl SelectionHandler for State {
     ) {
         let buf = user_data.clone();
         std::thread::spawn(move || {
-            use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
             use std::io::Write;
+
+            use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
             if let Err(err) = fcntl_setfl(&fd, OFlags::empty()) {
                 warn!("error clearing flags on selection fd: {err:?}");
             }
@@ -5500,7 +5521,10 @@ impl WorkspaceHandler for State {
     }
 
     fn activate_workspace(&mut self, output: String, frame_index: usize) {
-        module::push_event(Event::ActivateWorkspace { output, frame_index });
+        module::push_event(Event::ActivateWorkspace {
+            output,
+            frame_index,
+        });
     }
 }
 delegate_workspace!(State);
@@ -6349,8 +6373,7 @@ impl State {
                 self.ewm.apply_output_layout(&output, frames);
                 // Re-evaluate tracked layout entry UID (entries got fresh UIDs)
                 let (px, py) = self.ewm.pointer_location();
-                self.ewm.pointer_view_id =
-                    self.ewm.view_id_under((px, py).into());
+                self.ewm.pointer_view_id = self.ewm.view_id_under((px, py).into());
                 // Re-evaluate pointer focus after layout change
                 let under = self
                     .ewm
@@ -6367,7 +6390,6 @@ impl State {
                     },
                 );
                 pointer.frame(self);
-
             }
             ModuleCommand::ConfigureInput { configs } => {
                 info!("Input config updated: {} entries", configs.len());
@@ -6452,10 +6474,8 @@ impl State {
                 timeout_secs,
                 hide_when_typing,
             } => {
-                self.ewm.configure_cursor_hide(
-                    timeout_secs.map(Duration::from_secs),
-                    hide_when_typing,
-                );
+                self.ewm
+                    .configure_cursor_hide(timeout_secs.map(Duration::from_secs), hide_when_typing);
             }
             ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
                 self.ewm.focus_follows_mouse_mode = setting;

@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use smithay::reexports::wayland_server::DisplayHandle;
 use tracing::info;
-use zbus::{blocking::Connection, fdo, interface, zvariant};
+use zbus::blocking::Connection;
+use zbus::{fdo, interface, zvariant};
 
 use super::Start;
 use crate::ClientState;

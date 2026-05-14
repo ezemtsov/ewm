@@ -5,31 +5,27 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Key interception**: Super-prefixed bindings are intercepted and redirected to
-//!    Emacs. The intercepted key list comes from Emacs via `ewm-intercept-keys-module`.
-//!    Keys are matched using raw Latin keysyms to work regardless of XKB layout.
+//! 1. **Key interception**: Super-prefixed bindings are intercepted and redirected to Emacs. The
+//!    intercepted key list comes from Emacs via `ewm-intercept-keys-module`. Keys are matched using
+//!    raw Latin keysyms to work regardless of XKB layout.
 //!
-//! 2. **Focus synchronization**: Before processing any key, we check for pending focus
-//!    commands from Emacs. This ensures focus changes are applied before the key event,
-//!    avoiding race conditions.
+//! 2. **Focus synchronization**: Before processing any key, we check for pending focus commands
+//!    from Emacs. This ensures focus changes are applied before the key event, avoiding race
+//!    conditions.
 //!
-//! 3. **Text input intercept**: When `text_input_intercept` is true, all printable keys
-//!    are redirected to Emacs (for input method support in non-Emacs surfaces).
+//! 3. **Text input intercept**: When `text_input_intercept` is true, all printable keys are
+//!    redirected to Emacs (for input method support in non-Emacs surfaces).
 //!
-//! 4. **VT switching**: Ctrl+Alt+F1-F12 are special keys handled by XKB as
-//!    XF86Switch_VT_N keysyms. We detect these and signal the backend to switch VTs.
+//! 4. **VT switching**: Ctrl+Alt+F1-F12 are special keys handled by XKB as XF86Switch_VT_N keysyms.
+//!    We detect these and signal the backend to switch VTs.
 
-use crate::tracy_span;
+use smithay::backend::input::KeyState;
+use smithay::input::keyboard::{keysyms, xkb, FilterResult, ModifiersState};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::SERIAL_COUNTER;
+use smithay::wayland::seat::WaylandFocus;
 
-use smithay::{
-    backend::input::KeyState,
-    input::keyboard::{keysyms, xkb, FilterResult, ModifiersState},
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::SERIAL_COUNTER,
-    wayland::seat::WaylandFocus,
-};
-
-use crate::{module, State};
+use crate::{module, tracy_span, State};
 
 /// Build target modifier state: replace logo (Super) with the target modifier.
 fn emulate_modifiers(current: &ModifiersState, target_mod: &str) -> ModifiersState {
@@ -175,7 +171,9 @@ pub fn handle_keyboard_event(
     // Emacs. Without this, FilterResult::Forward sends keys to Emacs instead of the surface.
     if let Some((view_id, surface_id)) = fullscreen_view {
         if state.ewm.focused_surface_id() != surface_id {
-            state.ewm.set_focus_view(view_id, "fullscreen_focus_redirect", true);
+            state
+                .ewm
+                .set_focus_view(view_id, "fullscreen_focus_redirect", true);
             state.sync_keyboard_focus();
         }
     }
@@ -468,29 +466,25 @@ pub fn release_all_keys(state: &mut State) {
 /// Restore focus to a specific surface
 pub fn restore_focus(state: &mut State, surface_id: u64) {
     if state.ewm.id_windows.contains_key(&surface_id) {
-        state.ewm.set_focus(surface_id, false, "restore_focus", None);
+        state
+            .ewm
+            .set_focus(surface_id, false, "restore_focus", None);
         state.sync_keyboard_focus();
     }
 }
 
 // Pointer event handling
 
-use smithay::{
-    backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend,
-        PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
-    },
-    input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
-    utils::Point,
-    wayland::{
-        compositor::RegionAttributes,
-        pointer_constraints::{with_pointer_constraint, PointerConstraint},
-    },
+use smithay::backend::input::{
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, PointerAxisEvent,
+    PointerButtonEvent, PointerMotionEvent,
 };
-
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 // Libinput device configuration
-
 use smithay::reexports::input as libinput;
+use smithay::utils::Point;
+use smithay::wayland::compositor::RegionAttributes;
+use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
 #[derive(Clone, Copy, Debug)]
 pub enum AccelProfile {
@@ -1090,7 +1084,8 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
 
             if !on_layer {
                 if let Some((frame_id, view_id)) = state.ewm.focus_under(pos, "click") {
-                    if let Some(view_id) = view_id.or_else(|| state.ewm.view_id_of_frame(frame_id)) {
+                    if let Some(view_id) = view_id.or_else(|| state.ewm.view_id_of_frame(frame_id))
+                    {
                         state.ewm.queue_event(crate::Event::Focus {
                             view_id,
                             x: None,

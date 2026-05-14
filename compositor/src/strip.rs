@@ -223,7 +223,8 @@ impl Frame {
     }
 }
 
-/// Per-output strip of frames laid out left-to-right; `set_active` is the sole mutator of `active_idx`.
+/// Per-output strip of frames laid out left-to-right; `set_active` is the sole mutator of
+/// `active_idx`.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Strip {
     pub frames: Vec<Frame>,
@@ -308,8 +309,7 @@ impl Strip {
     }
 
     pub fn animations_ongoing(&self) -> bool {
-        self.view_offset.is_animation_ongoing()
-            || self.frames.iter().any(|f| f.move_anim.is_some())
+        self.view_offset.is_animation_ongoing() || self.frames.iter().any(|f| f.move_anim.is_some())
     }
 
     /// Flat iterator over all surfaces across all frames, in declared order.
@@ -328,7 +328,9 @@ impl Strip {
 
     /// Entries on the active (on-screen at rest) frame only.
     pub fn active_surfaces(&self) -> impl Iterator<Item = &LayoutEntry> {
-        self.active_frame().into_iter().flat_map(|f| f.surfaces.iter())
+        self.active_frame()
+            .into_iter()
+            .flat_map(|f| f.surfaces.iter())
     }
 
     pub fn active_surfaces_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {

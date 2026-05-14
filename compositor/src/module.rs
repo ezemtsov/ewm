@@ -2,27 +2,25 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Thread safety**: The compositor runs in a separate thread from Emacs.
-//!    Communication uses queues, pipes, and shared state:
+//! 1. **Thread safety**: The compositor runs in a separate thread from Emacs. Communication uses
+//!    queues, pipes, and shared state:
 //!    - `COMMAND_QUEUE`: Emacs -> Compositor commands (layouts, focus, etc.)
 //!    - `EVENT_WRITER`: Compositor -> Emacs events via pipe fd (open_channel)
 //!    - `SHARED_STATE`: Compositor -> Emacs snapshot (focus, pointer, outputs)
 //!    - `ACTIVATION_TOKEN_POOL`: Compositor -> Emacs pre-generated XDG activation tokens
 //!    - `IN_PREFIX_SEQUENCE`: Bidirectional atomic (hot input path)
 //!
-//! 2. **No blocking**: Module functions called from Emacs must never block.
-//!    They push to queues and return immediately. The compositor processes
-//!    queues on its event loop. Exception: `create_activation_token` may
-//!    busy-wait up to 100ms if the token pool is empty.
+//! 2. **No blocking**: Module functions called from Emacs must never block. They push to queues and
+//!    return immediately. The compositor processes queues on its event loop. Exception:
+//!    `create_activation_token` may busy-wait up to 100ms if the token pool is empty.
 //!
-//! 3. **Synchronous state for races**: Some state must be synchronous to avoid
-//!    race conditions:
+//! 3. **Synchronous state for races**: Some state must be synchronous to avoid race conditions:
 //!    - `PENDING_FRAME_OUTPUTS`: Must be read atomically with surface creation
 //!    - `INTERCEPTED_KEYS`: Must be available before first key event
 //!
-//! 4. **Focus debugging**: `FOCUS_HISTORY` records the last 20 focus changes
-//!    with source tracking. Essential for diagnosing focus races where the
-//!    compositor and Emacs disagree about which surface has focus.
+//! 4. **Focus debugging**: `FOCUS_HISTORY` records the last 20 focus changes with source tracking.
+//!    Essential for diagnosing focus races where the compositor and Emacs disagree about which
+//!    surface has focus.
 //!
 //! # Why This Design
 //!
@@ -103,18 +101,16 @@ define_errors! {
     ewm_input_unknown_key  "Unknown input config key"            (ewm_input_error)
 }
 
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 
+use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::event::Event;
-use smithay::input::keyboard::{keysyms, xkb};
-
 use crate::strip::Frame;
 use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
 
@@ -542,6 +538,7 @@ fn compositor_state() -> &'static Mutex<CompositorState> {
 /// View logs with: journalctl --user -t ewm -f
 fn init_logging() {
     use std::sync::Once;
+
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
 
@@ -819,7 +816,8 @@ fn prepare_frame_module(output: String) -> Result<()> {
 
 /// Configure output (module mode).
 /// ENABLED should be t, nil, or omitted.
-/// SCALE is a float (e.g. 1.5). TRANSFORM is an integer (0=Normal, 1=90, 2=180, 3=270, 4=Flipped, 5=Flipped90, 6=Flipped180, 7=Flipped270).
+/// SCALE is a float (e.g. 1.5). TRANSFORM is an integer (0=Normal, 1=90, 2=180, 3=270, 4=Flipped,
+/// 5=Flipped90, 6=Flipped180, 7=Flipped270).
 #[defun]
 #[allow(clippy::too_many_arguments)]
 fn configure_output_module(

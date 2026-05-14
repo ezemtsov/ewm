@@ -49,8 +49,7 @@ use smithay::utils::{Physical, Point, Scale, Size, Transform};
 use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
-use crate::dbus::screen_cast;
-use crate::dbus::CastTarget;
+use crate::dbus::{screen_cast, CastTarget};
 use crate::State;
 
 /// PipeWire connection state. Outer code drops and recreates this on
@@ -307,12 +306,8 @@ impl PipeWire {
         let to_compositor = self.to_compositor.clone();
         let size = Size::from((size.w as u32, size.h as u32));
 
-        let stream = StreamRc::new(
-            self.core.clone(),
-            "ewm-screen-cast",
-            PropertiesBox::new(),
-        )
-        .context("error creating PipeWire stream")?;
+        let stream = StreamRc::new(self.core.clone(), "ewm-screen-cast", PropertiesBox::new())
+            .context("error creating PipeWire stream")?;
 
         let inner = Rc::new(RefCell::new(CastInner {
             is_active: false,
@@ -371,7 +366,9 @@ impl PipeWire {
                                             warn!("Error sending PipeWireStreamAdded: {err:?}");
                                             stop_cast();
                                         } else {
-                                            info!("PipeWireStreamAdded signal emitted successfully");
+                                            info!(
+                                                "PipeWireStreamAdded signal emitted successfully"
+                                            );
                                         }
                                     });
                                 }
@@ -699,7 +696,8 @@ impl PipeWire {
                             debug_assert!(prev.is_none());
                         }
 
-                        // During size re-negotiation, force a redraw once we got a newly sized buffer.
+                        // During size re-negotiation, force a redraw once we got a newly sized
+                        // buffer.
                         if inner.dmabufs.len() == 1 && stream.state() == StreamState::Streaming {
                             let redraw_target = add_buf_target.clone();
                             let _ = add_buf_event_loop.insert_source(
@@ -780,7 +778,6 @@ impl PipeWire {
 }
 
 impl Cast {
-
     /// Whether the stream has reached `Streaming`. Once an unrecoverable
     /// error occurs, the cast sends itself a `StopCast` and is removed
     /// from `Screencasting.casts`, so callers don't need a separate
@@ -793,10 +790,7 @@ impl Cast {
     /// is at `new_size` and ready to render, or `Pending` while waiting
     /// for PipeWire to confirm the resize. Use `set_refresh` separately
     /// to update the refresh rate.
-    pub fn ensure_size(
-        &self,
-        new_size: Size<i32, Physical>,
-    ) -> anyhow::Result<CastSizeChange> {
+    pub fn ensure_size(&self, new_size: Size<i32, Physical>) -> anyhow::Result<CastSizeChange> {
         let mut inner = self.inner.borrow_mut();
         let new_size = Size::from((new_size.w as u32, new_size.h as u32));
 

@@ -6,20 +6,20 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Deferred DRM initialization**: DRM master can only be acquired when the
-//!    session is active. Session activation happens asynchronously via libseat,
-//!    so we defer all DRM operations until we receive an ActivateSession event.
+//! 1. **Deferred DRM initialization**: DRM master can only be acquired when the session is active.
+//!    Session activation happens asynchronously via libseat, so we defer all DRM operations until
+//!    we receive an ActivateSession event.
 //!
 //! 2. **Field ordering for Drop**: The order of fields in DrmBackendState and
 //!    DrmDeviceState is critical. Surfaces must be dropped before drm/gbm to
 //!    avoid use-after-free. See https://github.com/Smithay/smithay/issues/1102
 //!
-//! 3. **Session notifier cleanup**: The session notifier must be removed from the
-//!    event loop BEFORE the session is dropped. This is essential for embedded
-//!    mode where process exit doesn't clean up resources automatically.
+//! 3. **Session notifier cleanup**: The session notifier must be removed from the event loop BEFORE
+//!    the session is dropped. This is essential for embedded mode where process exit doesn't clean
+//!    up resources automatically.
 //!
-//! 4. **Per-output rendering**: Each output has independent redraw state and
-//!    VBlank synchronization. Outputs never share frame timing.
+//! 4. **Per-output rendering**: Each output has independent redraw state and VBlank
+//!    synchronization. Outputs never share frame timing.
 
 use std::collections::HashMap;
 use std::iter::zip;
@@ -578,7 +578,8 @@ impl Drop for DrmBackendState {
             handle.remove(token);
         }
         info!("DrmBackendState dropping - session will be released");
-        // After this, fields drop in declaration order: gpu_manager -> devices -> libinput -> session
+        // After this, fields drop in declaration order: gpu_manager -> devices -> libinput ->
+        // session
     }
 }
 
@@ -2268,10 +2269,10 @@ impl DrmBackendState {
                             let _ = handle.insert_source(
                                 Timer::from_duration(Duration::from_secs(10)),
                                 move |_, _, state| {
-                                    state.ewm.dmabuf_state.destroy_global::<State>(
-                                        &state.ewm.display_handle,
-                                        global,
-                                    );
+                                    state
+                                        .ewm
+                                        .dmabuf_state
+                                        .destroy_global::<State>(&state.ewm.display_handle, global);
                                     TimeoutAction::Drop
                                 },
                             );
@@ -2623,10 +2624,11 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     // in `Ewm::new`. PipeWire itself is created lazily on first cast.
     #[cfg(feature = "screencast")]
     {
+        use smithay::reexports::calloop::channel::Event as ChannelEvent;
+
         use crate::dbus::{
             CompositorToIntrospect, DBusServers, IntrospectToCompositor, WindowProperties,
         };
-        use smithay::reexports::calloop::channel::Event as ChannelEvent;
 
         let outputs = state.ewm.dbus_outputs.clone();
         let (dbus_servers, sc_receiver, introspect_receiver, introspect_reply_tx) =

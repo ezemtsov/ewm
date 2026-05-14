@@ -7,8 +7,9 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use crate::utils::get_monotonic_time;
 use tracing::error;
+
+use crate::utils::get_monotonic_time;
 
 #[derive(Debug)]
 pub struct FrameClock {

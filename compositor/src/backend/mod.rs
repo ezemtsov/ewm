@@ -2,32 +2,32 @@
 //!
 //! This module provides backend implementations for EWM:
 //!
-//! - **DRM backend** (`drm`): For running EWM standalone on TTY with real hardware.
-//!   Requires DRM master access and works with physical displays.
+//! - **DRM backend** (`drm`): For running EWM standalone on TTY with real hardware. Requires DRM
+//!   master access and works with physical displays.
 //!
-//! - **Headless backend** (`headless`): For testing without hardware access.
-//!   Uses software rendering and virtual outputs for CI/integration testing.
+//! - **Headless backend** (`headless`): For testing without hardware access. Uses software
+//!   rendering and virtual outputs for CI/integration testing.
 //!
 //! # Design Invariants
 //!
-//! 1. **Backend isolation**: Each backend owns its renderer and output management.
-//!    The compositor core (Ewm) is backend-agnostic and works through the `Backend`
-//!    enum's method dispatch.
+//! 1. **Backend isolation**: Each backend owns its renderer and output management. The compositor
+//!    core (Ewm) is backend-agnostic and works through the `Backend` enum's method dispatch.
 //!
-//! 2. **Output state separation**: Redraw state is stored in `Ewm::output_state`,
-//!    not in the backend. This allows backend-agnostic redraw scheduling.
+//! 2. **Output state separation**: Redraw state is stored in `Ewm::output_state`, not in the
+//!    backend. This allows backend-agnostic redraw scheduling.
 
 pub mod drm;
 pub mod headless;
 
+use std::time::Duration;
+
 pub use drm::DrmBackendState;
 pub use headless::HeadlessBackend;
-
-use crate::Ewm;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Transform;
-use std::time::Duration;
+
+use crate::Ewm;
 
 /// Result of a backend render operation.
 ///
