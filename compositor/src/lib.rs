@@ -1268,27 +1268,25 @@ impl Ewm {
             match self.lookup_view(v) {
                 None => self.focused_view_id = None,
                 Some((output, idx, _)) => {
-                    let frame_id = self
-                        .output_strips
-                        .get(&output)
-                        .and_then(|s| s.frames.get(idx))
-                        .map(|f| f.surface_id)
-                        .unwrap_or(0);
+                    let frame_id = self.frame_surface_id_at(&output, idx).unwrap_or(0);
                     if frame_id != self.focused_frame_id {
                         self.focused_frame_id = frame_id;
                     }
                 }
             }
         }
-        if self.focused_frame_id != 0
-            && !self
-                .output_strips
-                .values()
-                .any(|s| s.frames.iter().any(|f| f.surface_id == self.focused_frame_id))
-        {
+        if self.focused_frame_id != 0 && self.lookup_frame(self.focused_frame_id).is_none() {
             self.focused_frame_id = 0;
             self.focused_view_id = None;
         }
+    }
+
+    /// Surface id of the frame at (output, idx), if it exists.
+    fn frame_surface_id_at(&self, output: &str, idx: usize) -> Option<u64> {
+        self.output_strips
+            .get(output)
+            .and_then(|s| s.frames.get(idx))
+            .map(|f| f.surface_id)
     }
 
     /// Drop the Emacs frame `id` from whichever strip holds it.
@@ -1582,12 +1580,7 @@ impl Ewm {
         let Some((output, idx, surface_id)) = self.lookup_view(view_id) else {
             return;
         };
-        let frame_id = self
-            .output_strips
-            .get(&output)
-            .and_then(|s| s.frames.get(idx))
-            .map(|f| f.surface_id)
-            .unwrap_or(0);
+        let frame_id = self.frame_surface_id_at(&output, idx).unwrap_or(0);
         module::record_focus(surface_id, source, None);
         self.set_focus_state(frame_id, Some(view_id));
         self.activate_frame(&output, idx);

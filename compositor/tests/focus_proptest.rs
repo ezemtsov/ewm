@@ -51,9 +51,10 @@ fn entry_strategy() -> impl Strategy<Value = EntrySpec> {
         .prop_map(|(sid, vid)| EntrySpec { surface_id: sid, view_id: vid })
 }
 
-// Generates a valid layout: unique frame surface_ids/view_ids (assigned by index),
-// unique entry view_ids across all frames (round-robin distribution after dedup),
-// selected_view_id always pointing to one of the frame's own entries or None.
+/// Generates layouts satisfying the Emacs side's invariants:
+/// - frame surface_ids and view_ids unique within the layout (assigned by index);
+/// - entry view_ids unique across all frames (dedup + round-robin distribution);
+/// - `selected_view_id` either `None` or one of the frame's own entries.
 fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
     (
         1usize..=MAX_FRAMES,
