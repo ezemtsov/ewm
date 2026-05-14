@@ -20,8 +20,6 @@
 
 ;;; Code:
 
-(require 'cl-lib)
-
 (defmacro ewm--cmd (&rest args)
   "Create an interactive command that runs ARGS as a subprocess."
   `(lambda () (interactive) (start-process ,(car args) nil ,@args)))
@@ -98,12 +96,7 @@ Override individual bindings with `use-package':
 (declare-function ewm-focus-right "ewm")
 (declare-function ewm-focus-up "ewm")
 (declare-function ewm-focus-down "ewm")
-(declare-function ewm-output-focus-left "ewm")
-(declare-function ewm-output-focus-right "ewm")
-(declare-function ewm-output-focus-up "ewm")
-(declare-function ewm-output-focus-down "ewm")
 
-(defvar ewm-surface-id)
 (defvar ewm--module-mode)
 (defvar ewm-mouse-follows-focus)
 (defvar ewm--mff-last-window)

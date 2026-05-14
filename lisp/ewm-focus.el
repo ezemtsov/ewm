@@ -14,13 +14,10 @@
 
 (require 'cl-lib)
 
-(declare-function ewm-input--pointer-in-window-p "ewm-input")
 (declare-function ewm-focus-view-module "ewm-core" (view-id))
 (declare-function ewm-layout--ensure-frame-view-id "ewm-layout" (frame))
 
 (defvar ewm--module-mode)
-(defvar ewm--surfaces)
-(defvar ewm-surface-id)
 (defvar ewm-focus-follows-mouse)
 (defvar ewm--is-ffm-focus-event)
 (defvar ewm--mff-last-window)

@@ -13,11 +13,8 @@
 (require 'cl-lib)
 
 (declare-function ewm-output-layout "ewm")
-(declare-function ewm--compositor-active-p "ewm")
 
 (defvar ewm--module-mode)
-(defvar ewm--surfaces)
-(defvar ewm-surface-id)
 
 (defconst ewm-layout--frame-view-id-marker (ash 1 32)
   "Bit 32 marker for frame chrome view ids.
