@@ -1102,7 +1102,7 @@ Frames for disconnected outputs are always allowed to be deleted."
 (defun ewm-frame-new ()
   "Open a new Emacs frame after the active one on the same output."
   (interactive)
-  (let* ((current (selected-frame))
+  (let* ((current (or (ewm--current-frame) (selected-frame)))
          (output (frame-parameter current 'ewm-output)))
     (unless output (user-error "Current frame has no ewm-output"))
     (ewm--create-frame-for-output output current
