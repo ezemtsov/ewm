@@ -147,23 +147,21 @@ pub fn handle_keyboard_event(
         return KeyboardAction::Forward;
     }
 
-    // Check if a fullscreen surface is logically focused (Emacs selected-window).
-    // Uses the layout's `focused` flag, NOT keyboard focus. After intercept_redirect
-    // keyboard focus is temporarily on Emacs even though the surface is fullscreen.
-    // Scoped to the focused frame so off-screen fullscreens don't yank focus.
+    // Look up the focused view's entry on the focused frame; if it's fullscreen,
+    // we'll redirect keyboard back to it after intercept_redirect parks focus on Emacs.
     let focused_frame_id = state.ewm.focused_frame_id;
-    let fullscreen_view = state
-        .ewm
-        .output_strips
-        .values()
-        .flat_map(|s| s.frames.iter())
-        .find(|f| f.surface_id == focused_frame_id)
-        .and_then(|f| {
-            f.surfaces
-                .iter()
-                .find(|e| e.focused && state.ewm.effective_fullscreen(e))
-        })
-        .map(|e| (e.view_id, e.surface_id));
+    let focused_view_id = state.ewm.focused_view_id;
+    let fullscreen_view = focused_view_id.and_then(|vid| {
+        state
+            .ewm
+            .output_strips
+            .values()
+            .flat_map(|s| s.frames.iter())
+            .find(|f| f.surface_id == focused_frame_id)
+            .and_then(|f| f.surfaces.iter().find(|e| e.view_id == vid))
+            .filter(|e| state.ewm.effective_fullscreen(e))
+            .map(|e| (e.view_id, e.surface_id))
+    });
     let fullscreen_surface_id = fullscreen_view.map(|(_, sid)| sid);
 
     // When a fullscreen surface exists, ensure keyboard focus is on it before processing keys.

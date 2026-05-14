@@ -107,8 +107,6 @@ Override individual bindings with `use-package':
 (defvar ewm--module-mode)
 (defvar ewm-mouse-follows-focus)
 (defvar ewm--mff-last-window)
-(defvar ewm--focused-window)
-(declare-function ewm--capture-focused-window "ewm-focus")
 
 (defgroup ewm-input nil
   "EWM input handling."
@@ -273,7 +271,7 @@ warps from packages that temporarily switch windows internally
 ;; When a prefix key (C-x, s-SPC, etc.) is intercepted from an external
 ;; surface, the compositor redirects focus to Emacs and sets the prefix flag.
 ;; After the command sequence completes, refresh the layout so the active
-;; frame's `:focused' surface entry restores compositor keyboard focus.
+;; frame's `:selected-view-id' restores compositor keyboard focus.
 
 (defun ewm-input--clear-prefix ()
   "Complete prefix sequence: clear flag and refresh layout."
@@ -294,18 +292,14 @@ warps from packages that temporarily switch windows internally
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
-  (setq ewm--focused-window (selected-window))
   (add-hook 'post-command-hook #'ewm-input--clear-prefix)
-  (add-hook 'post-command-hook #'ewm--capture-focused-window)
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (define-key special-event-map [switch-frame] #'ignore))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
-  (setq ewm--focused-window nil)
   (remove-hook 'post-command-hook #'ewm-input--clear-prefix)
-  (remove-hook 'post-command-hook #'ewm--capture-focused-window)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (define-key special-event-map [switch-frame] nil))
 

@@ -437,9 +437,6 @@ pub struct LayoutEntry {
     pub y: i32,
     pub w: u32,
     pub h: u32,
-    /// Selected/active view, sent by Emacs (selected-window).
-    /// Determines output association for focus routing, popups, etc.
-    pub focused: bool,
     /// Largest view per surface, computed by compositor from entry dimensions.
     /// Drives send_configure() size + scale and native-size rendering.
     pub primary: bool,
@@ -1555,14 +1552,19 @@ impl Ewm {
         }
     }
 
-    /// Focus an Emacs frame.
+    /// Focus an Emacs frame, routing keyboard to its selected surface if one exists.
     pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str, notify_emacs: bool) {
         let Some((output, idx)) = self.lookup_frame(frame_surface_id) else {
             return;
         };
         let frame_view_id = self.view_id_of_frame(frame_surface_id);
+        let selected_view_id = self
+            .output_strips
+            .get(&output)
+            .and_then(|s| s.frames.get(idx))
+            .and_then(|f| f.selected_view_id);
         module::record_focus(frame_surface_id, source, None);
-        self.set_focus_state(frame_surface_id, None);
+        self.set_focus_state(frame_surface_id, selected_view_id);
         self.activate_frame(&output, idx);
         if notify_emacs {
             if let Some(view_id) = frame_view_id {
@@ -1697,10 +1699,11 @@ impl Ewm {
     /// `Strip::screen_x_of_frame` so callers can apply the per-frame slide
     /// offset when computing global positions.
     fn focused_output_for_surface(&self, id: u64) -> Option<(&str, usize, &LayoutEntry)> {
+        let focused = self.focused_view_id?;
         for (output_name, strip) in &self.output_strips {
             if let Some((idx, entry)) = strip
                 .surfaces_with_frame()
-                .find(|(_, e)| e.surface_id == id && e.focused)
+                .find(|(_, e)| e.surface_id == id && e.view_id == focused)
             {
                 return Some((output_name.as_str(), idx, entry));
             }
@@ -2075,14 +2078,10 @@ impl Ewm {
             .position(|f| f.surface_id == frame_id)
         {
             strip_entry.set_active(new_idx);
-            let new_view = strip_entry.frames[new_idx]
-                .surfaces
-                .iter()
-                .find(|s| s.focused)
-                .map(|s| s.view_id);
+            let new_view = strip_entry.frames[new_idx].selected_view_id;
             if new_view != self.focused_view_id {
                 self.focused_view_id = new_view;
-                module::record_focus(self.focused_surface_id(), "layout_focused", None);
+                module::record_focus(self.focused_surface_id(), "layout_selected", None);
             }
         } else if !strip_entry.frames.is_empty() {
             let clamped = strip_entry.active_idx().min(strip_entry.frames.len() - 1);
@@ -2616,9 +2615,13 @@ impl Ewm {
     /// Check if a focused fullscreen surface should inhibit idle.
     /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
     fn fullscreen_surface_inhibits_idle(&self) -> bool {
+        let Some(focused) = self.focused_view_id else {
+            return false;
+        };
         self.output_strips
             .values()
-            .any(|s| s.surfaces().any(|e| e.fullscreen && e.focused))
+            .flat_map(|s| s.surfaces())
+            .any(|e| e.view_id == focused && e.fullscreen)
     }
 
     /// Kill idle child process (e.g., on lid close).

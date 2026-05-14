@@ -57,41 +57,45 @@ This version correctly handles tab-lines on Emacs prior to v31."
     #'window-inside-absolute-pixel-edges)
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
-(declare-function ewm--user-focused-window "ewm-focus")
-
 (defun ewm-layout--send-layouts ()
-  "Send per-output frame layouts; focus goes via `ewm-focus-view-module'."
-  (let ((sel-window (ewm--user-focused-window)))
-    (dolist (strip ewm--strips)
-      (let ((output (car strip))
-            (frames-out nil))
-        (dolist (frame (cdr strip))
-          (let ((surfaces nil))
-            (dolist (window (window-list frame 'no-minibuf))
-              (when-let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
-                (let* ((focused-p (eq window sel-window))
-                       (view-id (ewm-layout--ensure-view-id window id))
-                       (view (ewm-layout--make-output-view window focused-p)))
-                  (push `(:id ,id :view-id ,view-id ,@view) surfaces))))
+  "Send per-output frame layouts.  Compositor derives focus from each frame's
+`:selected-view-id'; no per-entry focused flag."
+  (dolist (strip ewm--strips)
+    (let ((output (car strip))
+          (frames-out nil))
+      (dolist (frame (cdr strip))
+        (let ((surfaces nil))
+          (dolist (window (window-list frame 'no-minibuf))
+            (when-let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
+              (let* ((view-id (ewm-layout--ensure-view-id window id))
+                     (view (ewm-layout--make-output-view window)))
+                (push `(:id ,id :view-id ,view-id ,@view) surfaces))))
+          (let* ((sel-win (frame-selected-window frame))
+                 (sel-surface-id (and sel-win
+                                      (buffer-local-value 'ewm-surface-id
+                                                          (window-buffer sel-win))))
+                 (selected-view-id (and sel-surface-id
+                                        (window-parameter sel-win 'ewm-view-id))))
             (push (list :name (or (frame-parameter frame 'name) "")
                         :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
                         :view-id (ewm-layout--ensure-frame-view-id frame)
+                        :selected-view-id selected-view-id
                         :width (float (frame-pixel-width frame))
                         :surfaces (vconcat (nreverse surfaces)))
-                  frames-out)))
-        (let ((sorted (nreverse frames-out)))
-          (ewm-output-layout output (vconcat sorted)))))))
+                  frames-out))))
+      (let ((sorted (nreverse frames-out)))
+        (ewm-output-layout output (vconcat sorted))))))
 
 (defun ewm-layout--refresh ()
   "Send current window layouts to the compositor."
   (when ewm--module-mode
     (ewm-layout--send-layouts)))
 
-(defun ewm-layout--make-output-view (window focused-p)
+(defun ewm-layout--make-output-view (window)
   "Create a view plist for WINDOW with frame-relative coordinates.
-Returns (:x X :y Y :w W :h H :focused FOCUSED-P :fullscreen FS).
-Coordinates are relative to the output's working area. The compositor
-converts to global positions using output geometry + working area offset."
+Returns (:x X :y Y :w W :h H :fullscreen FS).  Coordinates are relative
+to the output's working area; compositor adds output geometry + working
+area offset."
   (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
          (x (pop edges))
          (y (pop edges))
@@ -99,7 +103,6 @@ converts to global positions using output geometry + working area offset."
          (height (- (pop edges) y))
          (fullscreen (window-parameter window 'ewm-fullscreen)))
     `(:x ,x :y ,y :w ,width :h ,height
-         :focused ,(if focused-p t :false)
          :fullscreen ,(if fullscreen t :false))))
 
 (defun ewm--window-config-change ()

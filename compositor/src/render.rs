@@ -307,7 +307,8 @@ pub fn collect_render_elements_for_output(
             }
             if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
                 // Fullscreen forced opaque so the backdrop doesn't bleed through.
-                let mut entry_alpha = if effective_fs || entry.focused {
+                let is_focused = ewm.focused_view_id == Some(entry.view_id);
+                let mut entry_alpha = if effective_fs || is_focused {
                     1.0
                 } else {
                     ewm.unfocused_alpha

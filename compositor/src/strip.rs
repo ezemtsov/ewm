@@ -213,6 +213,8 @@ pub struct Frame {
     pub view_id: ViewId,
     pub width: f64,
     pub surfaces: Vec<LayoutEntry>,
+    /// Selected surface's view id (keyboard focus target when frame is focused).
+    pub selected_view_id: Option<ViewId>,
     #[serde(skip)]
     pub move_anim: Option<ViewAnimation>,
 }
@@ -441,6 +443,7 @@ mod tests {
                     view_id: std::num::NonZeroU64::MIN,
                     width: w,
                     surfaces: Vec::new(),
+                    selected_view_id: None,
                     move_anim: None,
                 })
                 .collect(),

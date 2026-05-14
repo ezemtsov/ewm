@@ -49,7 +49,6 @@ use_symbols! {
     kw_y           => ":y"
     kw_w           => ":w"
     kw_h           => ":h"
-    kw_focused     => ":focused"
     kw_fullscreen  => ":fullscreen"
     kw_key         => ":key"
     kw_ctrl        => ":ctrl"
@@ -62,6 +61,7 @@ use_symbols! {
     kw_surfaces   => ":surfaces"
     kw_surface_id => ":surface-id"
     kw_view_id    => ":view-id"
+    kw_selected_view_id => ":selected-view-id"
     // configure_output_module: marker for "not provided" (distinct from nil)
     kw_unset  => ":unset"
     // configure_input_module plist property names
@@ -655,8 +655,9 @@ fn socket() -> Result<Option<String>> {
 ///
 /// OUTPUT is the output name. FRAMES is a vector of plists describing the
 /// strip of Emacs frames left-to-right. Each frame plist has:
-///   :name NAME :surface-id ID :width FLOAT :strip-index N :surfaces [SURFACE ...]
-/// where each SURFACE is a plist `:id :x :y :w :h :focused :fullscreen`.
+///   :name NAME :surface-id ID :view-id N :selected-view-id N|nil
+///   :width FLOAT :surfaces [SURFACE ...]
+/// where each SURFACE is a plist `:id :view-id :x :y :w :h :fullscreen`.
 /// Surface coordinates are relative to the owning frame's working area.
 #[defun]
 fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
@@ -690,6 +691,12 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
 
         let width = value_as_f64(env.call(plist_get, (frame, kw_width))?).unwrap_or(0.0);
 
+        let selected_view_id = std::num::NonZeroU64::new(
+            env.call(plist_get, (frame, kw_selected_view_id))?
+                .into_rust::<i64>()
+                .unwrap_or(0) as u64,
+        );
+
         let surfaces_val = env.call(plist_get, (frame, kw_surfaces))?;
         let surfaces_len: i64 = if surfaces_val.is_not_nil() {
             env.call(length, (surfaces_val,))?.into_rust()?
@@ -717,9 +724,6 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
             let h: i64 = env.call(plist_get, (entry, kw_h))?.into_rust()?;
 
-            let focused_val = env.call(plist_get, (entry, kw_focused))?;
-            let focused = focused_val.is_not_nil() && focused_val != *kw_false;
-
             let fullscreen_val = env.call(plist_get, (entry, kw_fullscreen))?;
             let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
 
@@ -730,7 +734,6 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
                 y: y as i32,
                 w: w as u32,
                 h: h as u32,
-                focused,
                 primary: false,
                 fullscreen,
             });
@@ -742,6 +745,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             view_id,
             width,
             surfaces,
+            selected_view_id,
             move_anim: None,
         });
     }
