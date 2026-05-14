@@ -1250,8 +1250,10 @@ impl Ewm {
         }
     }
 
-    /// Clear stale `selected_view_id` / `focused_view_id` after a destruction.
-    /// Restores the invariant that both must reference live entries.
+    /// Restore the focus invariants after a layout swap or surface destruction.
+    /// Clears stale `selected_view_id` / `focused_view_id`, aligns
+    /// `focused_frame_id` with the frame that actually owns `focused_view_id`,
+    /// and zeroes `focused_frame_id` when its frame no longer exists.
     fn prune_dangling_focus(&mut self) {
         for strip in self.output_strips.values_mut() {
             for frame in &mut strip.frames {
@@ -1263,9 +1265,29 @@ impl Ewm {
             }
         }
         if let Some(v) = self.focused_view_id {
-            if self.lookup_view(v).is_none() {
-                self.focused_view_id = None;
+            match self.lookup_view(v) {
+                None => self.focused_view_id = None,
+                Some((output, idx, _)) => {
+                    let frame_id = self
+                        .output_strips
+                        .get(&output)
+                        .and_then(|s| s.frames.get(idx))
+                        .map(|f| f.surface_id)
+                        .unwrap_or(0);
+                    if frame_id != self.focused_frame_id {
+                        self.focused_frame_id = frame_id;
+                    }
+                }
             }
+        }
+        if self.focused_frame_id != 0
+            && !self
+                .output_strips
+                .values()
+                .any(|s| s.frames.iter().any(|f| f.surface_id == self.focused_frame_id))
+        {
+            self.focused_frame_id = 0;
+            self.focused_view_id = None;
         }
     }
 
@@ -2131,6 +2153,7 @@ impl Ewm {
 
         self.refresh_primary_assignments();
         self.update_frames_for_working_area(&output);
+        self.prune_dangling_focus();
 
         debug!(
             "apply_output_layout: output '{}' with {} surfaces",
