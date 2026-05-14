@@ -11,7 +11,7 @@ use ewm_core::testing::Fixture;
 use ewm_core::{LayoutEntry, ViewId};
 use proptest::prelude::*;
 
-const OUTPUT: &str = "HEAD-A";
+const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
 const MAX_FRAMES: usize = 3;
 
 fn nz(n: u64) -> ViewId {
@@ -22,8 +22,14 @@ fn nz(n: u64) -> ViewId {
 enum Op {
     /// Mimics `new_toplevel`'s eager-insert path for Emacs frames: at boot only
     /// Emacs frames exist and they enter the strip before any layout arrives.
-    CreateEmacsFrame(u64),
-    ApplyLayout { frames: Vec<FrameSpec> },
+    /// `output` indexes into `OUTPUTS`.
+    CreateEmacsFrame { output: usize, surface_id: u64 },
+    /// Apply a layout to `OUTPUTS[output]`.  If a frame in `frames` is currently
+    /// on a different output, the compositor migrates it.
+    ApplyLayout {
+        output: usize,
+        frames: Vec<FrameSpec>,
+    },
     FocusView(ViewId),
     FocusFrame(u64),
     EnterPrefixRedirect(u64),
@@ -98,8 +104,10 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
-        FRAME_SID_RANGE.prop_map(Op::CreateEmacsFrame),
-        layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
+        (0..OUTPUTS.len(), FRAME_SID_RANGE)
+            .prop_map(|(output, surface_id)| Op::CreateEmacsFrame { output, surface_id }),
+        (0..OUTPUTS.len(), layout_strategy())
+            .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
         ENTRY_VID_RANGE.prop_map(|v| Op::FocusView(nz(v))),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
         FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
@@ -133,35 +141,39 @@ fn to_frame(spec: &FrameSpec) -> Frame {
 
 fn apply_op(fix: &mut Fixture, op: Op) {
     match op {
-        Op::CreateEmacsFrame(id) => {
-            // Mirrors `new_toplevel`'s eager-insert + auto-focus.
+        Op::CreateEmacsFrame { output, surface_id } => {
+            // Mirrors `new_toplevel`'s eager-insert + auto-focus.  If the frame
+            // already exists on any output, skip the insert (real `new_toplevel`
+            // wouldn't be called twice for the same id either).
+            let output_name = OUTPUTS[output];
             let already_present = fix
                 .ewm_ref()
                 .output_strips
-                .get(OUTPUT)
-                .is_some_and(|s| s.frames.iter().any(|f| f.surface_id == id));
+                .values()
+                .any(|s| s.frames.iter().any(|f| f.surface_id == surface_id));
             if !already_present {
                 let strip = fix
                     .ewm()
                     .output_strips
-                    .entry(OUTPUT.to_string())
+                    .entry(output_name.to_string())
                     .or_default();
-                strip.frames.push(Frame::new(id));
+                strip.frames.push(Frame::new(surface_id));
             }
             let do_auto_focus = fix.ewm().focused_surface_id() == 0;
             if do_auto_focus {
-                fix.ewm().set_focus_frame(id, "initial_surface", false);
-                // Catches the boot regression: auto-focus must land on `id`.
+                fix.ewm()
+                    .set_focus_frame(surface_id, "initial_surface", false);
+                // Catches the boot regression: auto-focus must land on `surface_id`.
                 assert_eq!(
-                    fix.ewm().focused_frame_id, id,
+                    fix.ewm().focused_frame_id, surface_id,
                     "auto-focus for new Emacs frame {} did not set focused_frame_id",
-                    id,
+                    surface_id,
                 );
             }
         }
-        Op::ApplyLayout { frames } => {
+        Op::ApplyLayout { output, frames } => {
             let real: Vec<Frame> = frames.iter().map(to_frame).collect();
-            fix.ewm().apply_output_layout(OUTPUT, real);
+            fix.ewm().apply_output_layout(OUTPUTS[output], real);
         }
         Op::FocusView(v) => {
             fix.ewm().set_focus_view(v, "proptest", false);
@@ -204,13 +216,28 @@ fn assert_invariants(fix: &Fixture) {
         );
     }
 
+    // Invariant 5 (multi-output): a frame's surface_id appears in at most one
+    // strip.  The compositor's cross-output migration logic in
+    // `apply_output_layout` is supposed to enforce this; this catches regressions.
+    let mut seen: HashSet<u64> = HashSet::new();
+    for strip in ewm.output_strips.values() {
+        for f in &strip.frames {
+            assert!(
+                seen.insert(f.surface_id),
+                "invariant 5: frame {} appears in multiple strips",
+                f.surface_id,
+            );
+        }
+    }
 }
 
 proptest! {
     #[test]
     fn focus_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..30)) {
         let mut fix = Fixture::new().unwrap();
-        fix.add_output(OUTPUT, 1920, 1080);
+        for name in OUTPUTS {
+            fix.add_output(name, 1920, 1080);
+        }
         assert_invariants(&fix);
         for op in ops {
             apply_op(&mut fix, op);
