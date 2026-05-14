@@ -54,6 +54,7 @@ pub enum RenderResult {
 /// let mut backend = Backend::Headless(HeadlessBackend::new());
 /// ewm.redraw_queued_outputs(&mut backend);
 /// ```
+#[allow(clippy::large_enum_variant)]
 pub enum Backend {
     /// DRM backend for hardware rendering on TTY
     Drm(DrmBackendState),

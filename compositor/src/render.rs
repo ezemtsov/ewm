@@ -156,6 +156,7 @@ fn push_constrained(
 ///   texture doesn't re-draw panels on top of the live layer surfaces.
 /// - `target`: The render target (Output vs Screencast); currently unused
 ///   but threaded through for future per-window privacy filtering.
+#[allow(clippy::too_many_arguments)]
 pub fn collect_render_elements_for_output(
     ewm: &Ewm,
     renderer: &mut GlesRenderer,

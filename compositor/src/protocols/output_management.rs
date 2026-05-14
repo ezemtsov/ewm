@@ -214,28 +214,27 @@ impl OutputManagementState {
                 }
 
                 // Check position/scale/transform changes
-                if old.position != new_head.position
+                if (old.position != new_head.position
                     || old.scale != new_head.scale
-                    || old.transform != new_head.transform
+                    || old.transform != new_head.transform)
+                    && new_head.enabled
                 {
-                    if new_head.enabled {
-                        changed = true;
-                        for client in self.clients.values() {
-                            if let Some((head, _)) = client.heads.get(output_name) {
-                                if let Some((x, y)) = new_head.position {
-                                    if old.position != new_head.position {
-                                        head.position(x, y);
-                                    }
+                    changed = true;
+                    for client in self.clients.values() {
+                        if let Some((head, _)) = client.heads.get(output_name) {
+                            if let Some((x, y)) = new_head.position {
+                                if old.position != new_head.position {
+                                    head.position(x, y);
                                 }
-                                if old.scale != new_head.scale {
-                                    if let Some(scale) = new_head.scale {
-                                        head.scale(scale);
-                                    }
+                            }
+                            if old.scale != new_head.scale {
+                                if let Some(scale) = new_head.scale {
+                                    head.scale(scale);
                                 }
-                                if old.transform != new_head.transform {
-                                    if let Some(transform) = new_head.transform {
-                                        head.transform(transform.into());
-                                    }
+                            }
+                            if old.transform != new_head.transform {
+                                if let Some(transform) = new_head.transform {
+                                    head.transform(transform.into());
                                 }
                             }
                         }

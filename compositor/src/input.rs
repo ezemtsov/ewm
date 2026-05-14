@@ -1074,10 +1074,7 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
-    let button_state = match event.state() {
-        ButtonState::Pressed => ButtonState::Pressed,
-        ButtonState::Released => ButtonState::Released,
-    };
+    let button_state = event.state();
 
     // When locked, skip click-to-focus and just forward to lock surface
     if !state.ewm.is_locked() {

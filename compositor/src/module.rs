@@ -623,7 +623,7 @@ fn start() -> Result<bool> {
 fn stop() -> Result<bool> {
     let state = compositor_state().lock().unwrap();
 
-    if !state.thread.as_ref().is_some_and(|t| !t.is_finished()) {
+    if state.thread.as_ref().is_none_or(|t| t.is_finished()) {
         tracing::info!("Compositor not running");
         return Ok(false);
     }
@@ -821,6 +821,7 @@ fn prepare_frame_module(output: String) -> Result<()> {
 /// ENABLED should be t, nil, or omitted.
 /// SCALE is a float (e.g. 1.5). TRANSFORM is an integer (0=Normal, 1=90, 2=180, 3=270, 4=Flipped, 5=Flipped90, 6=Flipped180, 7=Flipped270).
 #[defun]
+#[allow(clippy::too_many_arguments)]
 fn configure_output_module(
     name: String,
     x: Option<i64>,

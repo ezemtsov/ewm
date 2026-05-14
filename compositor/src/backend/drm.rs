@@ -2270,7 +2270,7 @@ impl DrmBackendState {
                                 move |_, _, state| {
                                     state.ewm.dmabuf_state.destroy_global::<State>(
                                         &state.ewm.display_handle,
-                                        global.clone(),
+                                        global,
                                     );
                                     TimeoutAction::Drop
                                 },
@@ -2592,7 +2592,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Propagate to D-Bus/systemd so portals and apps launched via D-Bus inherit them
-    let import_names: Vec<&str> = env_vars.iter().map(|(k, _)| k.as_str()).collect();
+    let import_names: Vec<&str> = env_vars.keys().map(|k| k.as_str()).collect();
     let import_list = import_names.join(" ");
     match std::process::Command::new("/bin/sh")
         .args([
@@ -2796,11 +2796,8 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
                     kb_event.state(),
                     Event::time_msec(&kb_event),
                 );
-                match action {
-                    KeyboardAction::ChangeVt(vt) => {
-                        state.backend.change_vt(vt);
-                    }
-                    _ => {}
+                if let KeyboardAction::ChangeVt(vt) = action {
+                    state.backend.change_vt(vt);
                 }
             }
             InputEvent::PointerMotion { event } => {

@@ -249,8 +249,10 @@ impl RedrawState {
 /// Follows the ext-session-lock-v1 protocol requirements:
 /// - Lock is confirmed only after all outputs render a locked frame
 /// - Input is blocked during locking/locked states
+#[derive(Default)]
 pub enum LockState {
     /// Session is not locked
+    #[default]
     Unlocked,
     /// Lock requested, waiting for all outputs to render locked frame
     Locking(SessionLocker),
@@ -258,11 +260,6 @@ pub enum LockState {
     Locked(ExtSessionLockV1),
 }
 
-impl Default for LockState {
-    fn default() -> Self {
-        LockState::Unlocked
-    }
-}
 
 /// Per-output lock render state for tracking lock confirmation.
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
@@ -581,15 +578,14 @@ impl InterceptedKey {
     pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
         // Handle case-insensitive letter matching (A-Z vs a-z)
         let raw_match = self.keysym == raw_keysym
-            || (raw_keysym >= keysyms::KEY_A
-                && raw_keysym <= keysyms::KEY_Z
+            || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
                 && self.keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
 
         if raw_match {
             return self.ctrl == mods.ctrl
                 && self.alt == mods.alt
                 && (self.shift == mods.shift
-                    || (raw_keysym >= keysyms::KEY_A && raw_keysym <= keysyms::KEY_Z))
+                    || (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym))
                 && self.logo == mods.logo;
         }
 
@@ -747,15 +743,14 @@ impl EmulatedKey {
     /// Uses the same matching logic as `InterceptedKey::matches`.
     pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
         let raw_match = self.keysym == raw_keysym
-            || (raw_keysym >= keysyms::KEY_A
-                && raw_keysym <= keysyms::KEY_Z
+            || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
                 && self.keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
 
         if raw_match {
             return self.ctrl == mods.ctrl
                 && self.alt == mods.alt
                 && (self.shift == mods.shift
-                    || (raw_keysym >= keysyms::KEY_A && raw_keysym <= keysyms::KEY_Z))
+                    || (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym))
                 && self.logo == mods.logo;
         }
 
@@ -1930,9 +1925,9 @@ impl Ewm {
         self.id_windows
             .get(&id)
             .and_then(|w| w.toplevel())
-            .map_or(false, |t| {
+            .is_some_and(|t| {
                 t.with_committed_state(|s| {
-                    s.map_or(false, |s| s.states.contains(XdgToplevelState::Fullscreen))
+                    s.is_some_and(|s| s.states.contains(XdgToplevelState::Fullscreen))
                 })
             })
     }
@@ -1954,7 +1949,7 @@ impl Ewm {
         self.output_strips
             .get(&output.name())
             .and_then(|s| s.active_frame())
-            .map_or(false, |f| f.surfaces.iter().any(|e| self.effective_fullscreen(e)))
+            .is_some_and(|f| f.surfaces.iter().any(|e| self.effective_fullscreen(e)))
     }
 
     /// View id of the layout entry under a point.
@@ -3069,7 +3064,7 @@ impl Ewm {
                 output,
                 frame_callback_time,
                 FRAME_CALLBACK_THROTTLE,
-                &should_send,
+                should_send,
             );
         }
 
@@ -3079,7 +3074,7 @@ impl Ewm {
                 output,
                 frame_callback_time,
                 FRAME_CALLBACK_THROTTLE,
-                &should_send,
+                should_send,
             );
         }
         drop(layer_map);
@@ -3424,7 +3419,7 @@ impl Ewm {
             }
             // Exclusive Bottom/Background (only when no toplevel has focus)
             let focused = self.focused_surface_id();
-            if focused == 0 || self.id_windows.get(&focused).is_none() {
+            if focused == 0 || !self.id_windows.contains_key(&focused) {
                 if let Some(s) = excl_on_layer(output, Layer::Bottom) {
                     return Some(s);
                 }
@@ -3452,7 +3447,7 @@ impl Ewm {
         use smithay::wayland::text_input::TextInputSeat;
         let text_input = self.seat.text_input();
 
-        let is_emacs = surface_id.map_or(false, |id| self.is_emacs_frame(id));
+        let is_emacs = surface_id.is_some_and(|id| self.is_emacs_frame(id));
 
         if is_emacs || surface.is_none() {
             text_input.leave();
@@ -3631,7 +3626,7 @@ impl Ewm {
     )> {
         let output = self.output_at(pos);
         let output_geo = output.and_then(|o| self.space.output_geometry(o));
-        let above_top_layer = output.map_or(false, |o| self.render_above_top_layer(o));
+        let above_top_layer = output.is_some_and(|o| self.render_above_top_layer(o));
 
         if let (Some(output), Some(geo)) = (output, output_geo) {
             let pos_within_output = pos - geo.loc.to_f64();
@@ -4123,7 +4118,7 @@ impl Ewm {
         let changed = self
             .working_areas
             .get(&output_name)
-            .map_or(true, |prev| *prev != working_area);
+            .is_none_or(|prev| *prev != working_area);
 
         if changed {
             info!(
@@ -4430,12 +4425,12 @@ impl Ewm {
                 .find(|o| o.name() == *output_name)
                 .map(|o| self.get_working_area(o))
             {
-                window.toplevel().map(|t| {
+                if let Some(t) = window.toplevel() {
                     t.with_pending_state(|state| {
                         state.size = Some(working_area.size);
                     });
                     t.send_configure();
-                });
+                }
             }
         }
 
@@ -5385,7 +5380,7 @@ impl XdgActivationHandler for State {
                 .ewm
                 .window_ids
                 .iter()
-                .find(|(w, _)| w.wl_surface().map(|s| &*s == &surface).unwrap_or(false))
+                .find(|(w, _)| w.wl_surface().map(|s| *s == surface).unwrap_or(false))
                 .map(|(_, id)| id)
             {
                 // Lisp owns Emacs frame focus via select-frame-set-input-focus;
@@ -5437,7 +5432,7 @@ impl ForeignToplevelHandler for State {
             .ewm
             .window_ids
             .iter()
-            .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
+            .find(|(w, _)| w.wl_surface().map(|s| *s == wl_surface).unwrap_or(false))
             .map(|(_, id)| id)
         {
             self.ewm.set_focus(id, true, "foreign_toplevel", None);
@@ -5450,7 +5445,7 @@ impl ForeignToplevelHandler for State {
             .ewm
             .window_ids
             .iter()
-            .find(|(w, _)| w.wl_surface().map(|s| &*s == &wl_surface).unwrap_or(false))
+            .find(|(w, _)| w.wl_surface().map(|s| *s == wl_surface).unwrap_or(false))
         {
             if let Some(toplevel) = window.toplevel() {
                 toplevel.send_close();
@@ -6494,25 +6489,22 @@ impl State {
 
             let write_fd: OwnedFd = write_end.into();
             let mime = "text/plain;charset=utf-8".to_string();
-            match request_data_device_client_selection(&state.ewm.seat, mime, write_fd) {
-                Ok(()) => {
-                    std::thread::spawn(move || {
-                        use std::io::Read;
-                        let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
-                        let mut read_end = read_end;
-                        let mut buf = Vec::new();
-                        if let Err(e) = read_end.read_to_end(&mut buf) {
-                            warn!("error reading client selection: {e:?}");
-                            return;
+            if let Ok(()) = request_data_device_client_selection(&state.ewm.seat, mime, write_fd) {
+                std::thread::spawn(move || {
+                    use std::io::Read;
+                    let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut read_end = read_end;
+                    let mut buf = Vec::new();
+                    if let Err(e) = read_end.read_to_end(&mut buf) {
+                        warn!("error reading client selection: {e:?}");
+                        return;
+                    }
+                    if let Ok(text) = String::from_utf8(buf) {
+                        if !text.is_empty() {
+                            module::push_event(Event::SelectionChanged { text });
                         }
-                        if let Ok(text) = String::from_utf8(buf) {
-                            if !text.is_empty() {
-                                module::push_event(Event::SelectionChanged { text });
-                            }
-                        }
-                    });
-                }
-                Err(_) => {}
+                    }
+                });
             }
         });
     }

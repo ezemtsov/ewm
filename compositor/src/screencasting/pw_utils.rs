@@ -202,6 +202,7 @@ pub enum CastSizeChange {
 }
 
 /// Cast state machine: ResizePending -> ConfirmationPending -> Ready
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum CastState {
     /// Waiting for PipeWire to negotiate format at the requested size.

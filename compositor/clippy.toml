@@ -1,0 +1,5 @@
+ignore-interior-mutability = [
+    "smithay::output::Output",
+    "smithay::reexports::wayland_server::backend::ClientId",
+    "smithay::reexports::wayland_server::protocol::wl_surface::WlSurface",
+]

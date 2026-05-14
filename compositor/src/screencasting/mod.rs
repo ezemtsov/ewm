@@ -286,6 +286,7 @@ impl Ewm {
     /// Returns true if a frame was rendered. The `cast` is passed
     /// separately because `casting.casts` is detached from `self`
     /// during the render loop.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_window_for_screen_cast(
         &self,
         renderer: &mut GlesRenderer,
@@ -429,6 +430,7 @@ impl Ewm {
     /// least one cast is actually about to render — so outputs without
     /// any cast attention pay nothing. Casts that hit an unrecoverable
     /// error self-stop via `PwToCompositor::StopCast`.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_for_screen_cast(
         &mut self,
         renderer: &mut GlesRenderer,
