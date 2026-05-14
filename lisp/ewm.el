@@ -492,9 +492,7 @@ Updates buffer-local variables and renames the buffer."
     (dolist (f (apply #'append (mapcar #'cdr ewm--strips)))
       (when (and (equal (frame-parameter f 'ewm-home-output) name)
                  (not (equal (frame-parameter f 'ewm-output) name)))
-        (ewm--strip-remove f)
-        (set-frame-parameter f 'ewm-output name)
-        (ewm--strip-insert f name)))
+        (ewm--move-frame-to-output f name)))
     (ewm-layout--refresh)))
 
 (defun ewm--handle-output-config-changed (event)
@@ -532,11 +530,9 @@ Frames keep `ewm-home-output' so they return on reconnect."
           (assoc-delete-all name ewm--output-info #'string=))
     (when-let* ((fallback (caar ewm--output-info)))
       (dolist (f (ewm--strip-frames name))
-        (ewm--strip-remove f)
         (unless (frame-parameter f 'ewm-home-output)
           (set-frame-parameter f 'ewm-home-output name))
-        (set-frame-parameter f 'ewm-output fallback)
-        (ewm--strip-insert f fallback)))
+        (ewm--move-frame-to-output f fallback)))
     (ewm-layout--refresh)))
 
 (defun ewm--rename-buffer ()
@@ -1056,6 +1052,14 @@ Excludes TTY frames and (in the future) floating frames."
               ((< target-idx (length frames))))
     (cl-rotatef (nth idx frames) (nth target-idx frames))
     (nth target-idx frames)))
+
+(defun ewm--move-frame-to-output (frame output)
+  "Move FRAME to OUTPUT's strip, updating param and membership in lockstep.
+Order matters: `ewm--strip-remove' reads `ewm-output' to find the source
+strip, so the parameter must change between the remove and the insert."
+  (ewm--strip-remove frame)
+  (set-frame-parameter frame 'ewm-output output)
+  (ewm--strip-insert frame output))
 
 (defun ewm--create-frame-for-output (output-name &optional after-frame extra-params)
   "Create a frame on OUTPUT-NAME inserted after AFTER-FRAME (or appended)."
