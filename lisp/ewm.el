@@ -368,7 +368,7 @@ the surface's output).  Falls back to first match on OUTPUT."
       (setq-local ewm-surface-id id)
       (setq-local ewm-surface-app app)
       (setq-local ewm-surface-pid pid))
-    (unless (ewm--minibuffer-active-p)
+    (unless (ewm-layout--menu-active-p)
       (when-let ((target-frame (or (ewm--frame-by-surface-id frame-surface-id)
                                    (ewm--frame-for-output output))))
         (select-frame target-frame))
@@ -634,7 +634,7 @@ Push the text onto the kill ring."
 (defun ewm--handle-activate-workspace (event)
   "Handle activate_workspace EVENT from compositor.
 Select the Nth Emacs frame on the requested output (1-based index)."
-  (unless (ewm--minibuffer-active-p)
+  (unless (ewm-layout--menu-active-p)
     (let* ((output (alist-get 'output event))
            (frame-index (alist-get 'frame_index event))
            (frames (cl-remove-if-not

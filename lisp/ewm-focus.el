@@ -7,8 +7,8 @@
 
 ;; Compositor owns focus.  Lisp -> compositor via the overridden
 ;; `select-frame-set-input-focus'; compositor -> Lisp via Focus events
-;; routed to `ewm--handle-focus'.  Layouts never carry focus, so
-;; programmatic `select-frame' from process filters etc. cannot steal it.
+;; routed to `ewm--handle-focus', which itself is gated by
+;; `ewm-layout--menu-active-p' so modal reads aren't disturbed.
 
 ;;; Code:
 
@@ -16,6 +16,7 @@
 
 (declare-function ewm-focus-view-module "ewm-core" (view-id))
 (declare-function ewm-layout--ensure-frame-view-id "ewm-layout" (frame))
+(declare-function ewm-layout--menu-active-p "ewm-layout" ())
 
 (defvar ewm--module-mode)
 (defvar ewm-focus-follows-mouse)
@@ -28,12 +29,6 @@
   (when (bound-and-true-p ewm--module-mode)
     (ewm-focus-view-module (ewm-layout--ensure-frame-view-id frame)))
   frame)
-
-(defun ewm--minibuffer-active-p ()
-  "Return non-nil if minibuffer is currently active."
-  (or (active-minibuffer-window)
-      (> (minibuffer-depth) 0)
-      (minibufferp)))
 
 (defun ewm--find-window-by-view-id (view-id)
   "Window whose `ewm-view-id' parameter is VIEW-ID, if any."
@@ -55,7 +50,7 @@ recover the surface-id and look up by frame parameter `ewm-surface-id'."
 
 (defun ewm--handle-focus (event)
   "Mirror compositor focus EVENT into Emacs selection."
-  (unless (ewm--minibuffer-active-p)
+  (unless (ewm-layout--menu-active-p)
     (let* ((view-id (alist-get 'view_id event))
            (x (alist-get 'x event))
            (y (alist-get 'y event))

@@ -264,6 +264,20 @@ fn assert_invariants(fix: &Fixture) {
         any_frame,
         ewm.focused_frame_id,
     );
+
+    // Invariant 6: selected_view_id, if set, names one of the frame's own entries.
+    for strip in ewm.output_strips.values() {
+        for f in &strip.frames {
+            if let Some(sel) = f.selected_view_id {
+                assert!(
+                    f.surfaces.iter().any(|e| e.view_id == sel),
+                    "invariant 6: frame {} selected_view_id={:?} not in its own entries",
+                    f.surface_id,
+                    sel,
+                );
+            }
+        }
+    }
 }
 
 proptest! {

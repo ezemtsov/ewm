@@ -5,8 +5,9 @@
 
 ;;; Commentary:
 
-;; Layout management for EWM, adapted from EXWM's exwm-layout.el.
-;; Handles surface positioning and window synchronization.
+;; Layout management.  Also owns the modal focus contract --
+;; `:selected-view-id' is suppressed while Emacs is reading keys for
+;; itself; see `ewm-layout-menu-predicates' and `docs/focus-design.md'.
 
 ;;; Code:
 
@@ -15,6 +16,28 @@
 (declare-function ewm-output-layout "ewm")
 
 (defvar ewm--module-mode)
+
+(defgroup ewm-layout nil
+  "EWM layout and modal focus contract."
+  :group 'ewm)
+
+(defun ewm-layout--reading-key-p ()
+  "Non-nil while an overriding keymap is consuming keystrokes."
+  (or overriding-terminal-local-map
+      overriding-local-map))
+
+(defcustom ewm-layout-menu-predicates
+  '(active-minibuffer-window
+    ewm-layout--reading-key-p)
+  "Predicates that signal Emacs is reading keys for itself.
+If any returns non-nil, the next layout's `:selected-view-id' is
+suppressed for every frame."
+  :type '(repeat function)
+  :group 'ewm-layout)
+
+(defun ewm-layout--menu-active-p ()
+  "Non-nil if any `ewm-layout-menu-predicates' entry says so."
+  (run-hook-with-args-until-success 'ewm-layout-menu-predicates))
 
 (defconst ewm-layout--frame-view-id-marker (ash 1 32)
   "Bit 32 marker for frame chrome view ids.
@@ -62,34 +85,37 @@ This version correctly handles tab-lines on Emacs prior to v31."
     #'window-inside-absolute-pixel-edges)
   "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
 
+(defun ewm-layout--build-frame-plist (frame menu-active)
+  "Plist describing FRAME for `ewm-output-layout'.
+When MENU-ACTIVE is non-nil, `:selected-view-id' is nil so the
+compositor parks keyboard focus on the frame chrome."
+  (let (surfaces)
+    (dolist (window (window-list frame 'no-minibuf))
+      (when-let* ((id (buffer-local-value 'ewm-surface-id (window-buffer window)))
+                  (view-id (ewm-layout--ensure-view-id window id))
+                  (view (ewm-layout--make-output-view window)))
+        (push `(:id ,id :view-id ,view-id ,@view) surfaces)))
+    (let ((selected-view-id
+           (unless menu-active
+             (when-let* ((sel-win (frame-selected-window frame))
+                         (sel-buf (window-buffer sel-win))
+                         ((buffer-local-value 'ewm-surface-id sel-buf)))
+               (window-parameter sel-win 'ewm-view-id)))))
+      (list :name (or (frame-parameter frame 'name) "")
+            :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
+            :view-id (ewm-layout--ensure-frame-view-id frame)
+            :selected-view-id selected-view-id
+            :width (float (frame-pixel-width frame))
+            :surfaces (vconcat (nreverse surfaces))))))
+
 (defun ewm-layout--send-layouts ()
-  "Send per-output frame layouts.  Compositor derives focus from each frame's
-`:selected-view-id'; no per-entry focused flag."
-  (dolist (strip ewm--strips)
-    (let ((output (car strip))
-          (frames-out nil))
-      (dolist (frame (cdr strip))
-        (let ((surfaces nil))
-          (dolist (window (window-list frame 'no-minibuf))
-            (when-let ((id (buffer-local-value 'ewm-surface-id (window-buffer window))))
-              (let* ((view-id (ewm-layout--ensure-view-id window id))
-                     (view (ewm-layout--make-output-view window)))
-                (push `(:id ,id :view-id ,view-id ,@view) surfaces))))
-          (let* ((sel-win (frame-selected-window frame))
-                 (sel-surface-id (and sel-win
-                                      (buffer-local-value 'ewm-surface-id
-                                                          (window-buffer sel-win))))
-                 (selected-view-id (and sel-surface-id
-                                        (window-parameter sel-win 'ewm-view-id))))
-            (push (list :name (or (frame-parameter frame 'name) "")
-                        :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
-                        :view-id (ewm-layout--ensure-frame-view-id frame)
-                        :selected-view-id selected-view-id
-                        :width (float (frame-pixel-width frame))
-                        :surfaces (vconcat (nreverse surfaces)))
-                  frames-out))))
-      (let ((sorted (nreverse frames-out)))
-        (ewm-output-layout output (vconcat sorted))))))
+  "Send per-output frame layouts; suppress `:selected-view-id' while modal."
+  (let ((menu-active (ewm-layout--menu-active-p)))
+    (dolist (strip ewm--strips)
+      (let* ((output (car strip))
+             (plists (mapcar (lambda (f) (ewm-layout--build-frame-plist f menu-active))
+                             (cdr strip))))
+        (ewm-output-layout output (vconcat plists))))))
 
 (defun ewm-layout--refresh ()
   "Send current window layouts to the compositor."
@@ -130,19 +156,34 @@ filters like telega."
   "Re-send layouts when a buffer changes within a window."
   (ewm-layout--send-layouts))
 
+(defvar ewm-layout--last-menu-active nil
+  "Cached previous `ewm-layout--menu-active-p' for edge detection.")
+
+(defun ewm-layout--on-post-command ()
+  "Refresh layout on a modal-state transition."
+  ;; Coerce to t: the predicates return a window or a keymap, not t, and
+  ;; `eq' against those would never match across commands.
+  (let ((now (and (ewm-layout--menu-active-p) t)))
+    (unless (eq now ewm-layout--last-menu-active)
+      (setq ewm-layout--last-menu-active now)
+      (ewm-layout--refresh))))
+
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."
+  (setq ewm-layout--last-menu-active (and (ewm-layout--menu-active-p) t))
   (add-hook 'window-configuration-change-hook #'ewm--window-config-change)
   (add-hook 'window-size-change-functions #'ewm--on-window-size-change)
   (add-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
-  (add-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change))
+  (add-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change)
+  (add-hook 'post-command-hook #'ewm-layout--on-post-command))
 
 (defun ewm--disable-layout-sync ()
   "Disable automatic layout sync."
   (remove-hook 'window-configuration-change-hook #'ewm--window-config-change)
   (remove-hook 'window-size-change-functions #'ewm--on-window-size-change)
   (remove-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
-  (remove-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change))
+  (remove-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change)
+  (remove-hook 'post-command-hook #'ewm-layout--on-post-command))
 
 (provide 'ewm-layout)
 ;;; ewm-layout.el ends here

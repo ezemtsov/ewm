@@ -278,6 +278,35 @@ wl_surface is destroyed is removed everywhere, immediately.  This neatly
 separates "lisp may not have caught up" from "the thing is actually
 gone".
 
+## Modal input states
+
+The state machine above assumes the user wants keystrokes to go to
+whatever the focused frame's selected window holds.  While Emacs is
+reading keys for itself -- minibuffer, transient, isearch, an
+in-flight `universal-argument` -- the embedded surface is not the
+keyboard target; Emacs is.  The layout sender closes this gap by
+suppressing `:selected-view-id` for every frame whenever
+`ewm-layout--menu-active-p` says so, collapsing the compositor's focus
+to the focused frame's chrome surface.
+
+The predicate is a hook (`ewm-layout-menu-predicates`).  Its defaults
+catch the two Emacs-internal mechanisms without naming any third-party
+package:
+
+- `active-minibuffer-window` -- an active minibuffer read.
+- `ewm-layout--reading-key-p` -- a non-nil
+  `overriding-terminal-local-map` or `overriding-local-map`.
+  Transient, isearch, hydra, and `set-transient-map` install one
+  directly; `universal-argument` reaches it via `set-transient-map`.
+
+`post-command-hook` runs `ewm-layout--on-post-command`, which refreshes
+the layout only when the predicate's boolean result flips since the
+last command.
+
+The same predicate gates the receive side: `ewm--handle-focus` drops
+compositor-originated focus events while modal, so a stray pointer
+motion or click cannot yank selection out of an active read.
+
 ## Why focus needs to be acquired atomically sometimes
 
 Two operations need keyboard focus moved *atomically* with the event that
