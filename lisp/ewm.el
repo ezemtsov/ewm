@@ -77,6 +77,15 @@ FORMAT-STRING and ARGS are passed to `format'."
 (defvar ewm--compositor-ready nil
   "Non-nil when compositor has signaled it is ready.")
 
+(defconst ewm--compositor-ready-timeout 30.0
+  "Seconds to wait for the compositor to signal readiness on start.")
+
+(defconst ewm--compositor-stop-timeout 5.0
+  "Seconds to wait for the compositor to halt on stop.")
+
+(defconst ewm--compositor-poll-interval 0.1
+  "Seconds between polls of the compositor's ready/running flag.")
+
 (defun ewm--compositor-active-p ()
   "Return non-nil if compositor is active."
   ewm--module-mode)
@@ -369,8 +378,8 @@ the surface's output).  Falls back to first match on OUTPUT."
       (setq-local ewm-surface-app app)
       (setq-local ewm-surface-pid pid))
     (unless (ewm-layout--menu-active-p)
-      (when-let ((target-frame (or (ewm--frame-by-surface-id frame-surface-id)
-                                   (ewm--frame-for-output output))))
+      (when-let* ((target-frame (or (ewm--frame-by-surface-id frame-surface-id)
+                                    (ewm--frame-for-output output))))
         (select-frame target-frame))
       (pop-to-buffer-same-window buf))))
 
@@ -430,12 +439,15 @@ No-op: tiling layout has no maximized state to restore."
 
 ;;; Shell CWD tracking
 
+(defconst ewm--cwd-ancestor-walk-max 10
+  "Maximum depth when walking a shell's /proc PPid chain to find its surface.")
+
 (defun ewm--cwd-ancestors (pid)
   "Return list of ancestor PIDs for PID by walking /proc PPid chain."
   (let ((ancestors nil)
         (current pid)
         (depth 0))
-    (while (and current (< depth 10))
+    (while (and current (< depth ewm--cwd-ancestor-walk-max))
       (push current ancestors)
       (let ((status-file (format "/proc/%d/status" current)))
         (setq current
@@ -650,22 +662,18 @@ Select the Nth Emacs frame on the requested output (1-based index)."
     (set-window-parameter win 'ewm-fullscreen value)))
 
 (defun ewm--handle-fullscreen-request (event)
-  "Handle fullscreen request EVENT: set fullscreen flag and refresh layout.
-Sets on all windows showing the surface."
-  (let ((id (alist-get 'id event)))
-    (when-let* ((buf (gethash id ewm--surfaces))
-                (win (get-buffer-window buf t)))
-      (ewm--set-fullscreen-windows buf t)
-      (ewm-layout--refresh))))
+  "Set fullscreen flag on every window showing EVENT's surface and refresh."
+  (when-let* ((buf (gethash (alist-get 'id event) ewm--surfaces))
+              ((get-buffer-window buf t)))
+    (ewm--set-fullscreen-windows buf t)
+    (ewm-layout--refresh)))
 
 (defun ewm--handle-unfullscreen-request (event)
-  "Handle unfullscreen request EVENT: clear fullscreen flag and refresh layout.
-Clears on all windows showing the surface."
-  (let ((id (alist-get 'id event)))
-    (when-let* ((buf (gethash id ewm--surfaces))
-                (win (get-buffer-window buf t)))
-      (ewm--set-fullscreen-windows buf nil)
-      (ewm-layout--refresh))))
+  "Clear fullscreen flag on every window showing EVENT's surface and refresh."
+  (when-let* ((buf (gethash (alist-get 'id event) ewm--surfaces))
+              ((get-buffer-window buf t)))
+    (ewm--set-fullscreen-windows buf nil)
+    (ewm-layout--refresh)))
 
 ;;; Idle timeout
 
@@ -694,30 +702,10 @@ Uses `bound-and-true-p' for the inputs so this is safe to call from a
        (and (integerp v) v))
      (bound-and-true-p ewm-cursor-hide-when-typing))))
 
-(defun ewm-idle-inhibit (&optional arg)
-  "Manually inhibit idle timeout and idle notifications.
-With prefix ARG, turn inhibition on.  Without ARG, toggle.
-When idle is inhibited, the screen won't blank and swayidle won't
-fire regardless of inactivity.  Useful when watching a video or
-giving a presentation.
-
-See also `ewm-idle-inhibit-mode' for a minor mode version."
-  (interactive "P")
-  (let ((new-state (if arg
-                       t
-                     (not ewm-idle-inhibited))))
-    (setq ewm-idle-inhibited new-state)
-    (when (ewm--compositor-active-p)
-      (ewm-set-idle-inhibited (if new-state 1 nil)))
-    (message "Idle inhibition %s" (if new-state "enabled" "disabled"))))
-
 (define-minor-mode ewm-idle-inhibit-mode
-  "Minor mode to inhibit idle timeout and notifications.
-When enabled, the screen won't blank and swayidle won't fire
-regardless of inactivity.  Useful when watching a video or
-giving a presentation.
-
-This is the minor-mode equivalent of `ewm-idle-inhibit'."
+  "Inhibit idle timeout and notifications.
+While enabled, the screen won't blank and swayidle won't fire regardless
+of inactivity.  Useful for video playback or presentations."
   :global t
   :variable ewm-idle-inhibited
   (when (ewm--compositor-active-p)
@@ -1250,21 +1238,12 @@ manages the strip via `ewm-frame-new'/`ewm-frame-close'."
 ;;; Public API
 
 (defun ewm--disable-csd ()
-  "Disable client-side decorations and bars for all frames.
-Sets frames to undecorated mode and removes bars since EWM manages
-windows directly."
-  ;; Set current frame to undecorated
+  "Undecorate frames and drop bars that would skew the Y-offset."
   (set-frame-parameter nil 'undecorated t)
-  ;; Ensure future frames are also undecorated
   (add-to-list 'default-frame-alist '(undecorated . t))
-  ;; Disable menu-bar, tool-bar, and scroll-bar if enabled.
-  ;; These add to the Y-offset and must be accounted for.
-  (when (bound-and-true-p menu-bar-mode)
-    (menu-bar-mode -1))
-  (when (bound-and-true-p tool-bar-mode)
-    (tool-bar-mode -1))
-  (when (bound-and-true-p scroll-bar-mode)
-    (scroll-bar-mode -1)))
+  (when (bound-and-true-p menu-bar-mode) (menu-bar-mode -1))
+  (when (bound-and-true-p tool-bar-mode) (tool-bar-mode -1))
+  (when (bound-and-true-p scroll-bar-mode) (scroll-bar-mode -1)))
 
 ;;;###autoload
 (defun ewm-start-module ()
@@ -1272,13 +1251,12 @@ windows directly."
 This is the primary entry point for using EWM from `emacs --daemon' on TTY.
 The compositor runs as a thread within the Emacs process."
   (interactive)
-  ;; Check if already running
   (when (and (fboundp 'ewm-running) (ewm-running))
     (user-error "EWM compositor is already running"))
-  ;; Reset state
   (setq ewm--module-mode nil)
   (setq ewm--compositor-ready nil)
-  ;; Set up pipe channel before starting compositor so no events are lost
+  ;; Pipe channel must exist before the compositor starts, so no early
+  ;; events are dropped.
   (ewm--init-event-channel)
   (if (ewm-start)
       (progn
@@ -1286,11 +1264,13 @@ The compositor runs as a thread within the Emacs process."
         (ewm-mode 1)
         (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css)
         ;; Wait for compositor ready event (with timeout)
-        (let ((timeout 300))  ; 30 seconds max
-          (while (and (> timeout 0)
-                      (not ewm--compositor-ready))
-            (accept-process-output ewm--event-process 0.1)
-            (cl-decf timeout))
+        (let ((ticks (truncate
+                      (/ ewm--compositor-ready-timeout
+                         ewm--compositor-poll-interval))))
+          (while (and (> ticks 0) (not ewm--compositor-ready))
+            (accept-process-output ewm--event-process
+                                   ewm--compositor-poll-interval)
+            (cl-decf ticks))
           (unless ewm--compositor-ready
             (ewm--destroy-event-channel)
             (ewm-mode -1)
@@ -1313,10 +1293,12 @@ The compositor runs as a thread within the Emacs process."
   (when ewm--module-mode
     (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
       (ewm-stop)
-      (let ((timeout 50))
-        (while (and (> timeout 0) (ewm-running))
-          (sleep-for 0.1)
-          (cl-decf timeout))))
+      (let ((ticks (truncate
+                    (/ ewm--compositor-stop-timeout
+                       ewm--compositor-poll-interval))))
+        (while (and (> ticks 0) (ewm-running))
+          (sleep-for ewm--compositor-poll-interval)
+          (cl-decf ticks))))
     (ewm--destroy-event-channel)
     (setq ewm--module-mode nil)
     (setq ewm--compositor-ready nil)
