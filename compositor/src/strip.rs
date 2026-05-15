@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use smithay::utils::{Logical, Point, Rectangle, Size};
+
 use crate::utils::get_monotonic_time;
 use crate::{LayoutEntry, ViewId};
 
@@ -404,6 +406,27 @@ impl Strip {
         self.view_offset.is_animation_ongoing() || self.frames.iter().any(|f| f.move_anim.is_some())
     }
 
+    /// `(idx, &Frame, screen_rect)` for frames whose rect intersects the viewport.
+    /// Prefix-sums column offsets in a single pass (niri-style) so the cull is O(N).
+    pub fn frames_with_render_geo(
+        &self,
+        view_size: Size<f64, Logical>,
+    ) -> impl Iterator<Item = (usize, &Frame, Rectangle<f64, Logical>)> {
+        let viewport = Rectangle::from_size(view_size);
+        let view_pos = self.view_pos();
+        let gap = self.gap;
+        let mut col_x = 0.0;
+        self.frames.iter().enumerate().filter_map(move |(idx, f)| {
+            let screen_x = col_x - view_pos + f.move_offset();
+            col_x += f.width + gap;
+            let rect = Rectangle::new(
+                Point::from((screen_x, 0.0)),
+                Size::from((f.width, view_size.h)),
+            );
+            viewport.intersection(rect).map(|_| (idx, f, rect))
+        })
+    }
+
     /// Flat iterator over all surfaces across all frames, in declared order.
     pub fn surfaces(&self) -> impl Iterator<Item = &LayoutEntry> {
         self.frames.iter().flat_map(|f| f.surfaces.iter())
@@ -608,7 +631,13 @@ mod tests {
         // Both `from` and `to` shift by delta, so value_at(now) shifts by
         // exactly delta (no jump).
         let now = Duration::from_secs(0);
-        let mut a = ViewAnimation::new_at(AnimationsClock::default(), now,-100.0, 0.0, Duration::from_millis(100));
+        let mut a = ViewAnimation::new_at(
+            AnimationsClock::default(),
+            now,
+            -100.0,
+            0.0,
+            Duration::from_millis(100),
+        );
         let mid_before = a.value_at(now + Duration::from_millis(50));
         a.offset(40.0);
         let mid_after = a.value_at(now + Duration::from_millis(50));
@@ -636,7 +665,13 @@ mod tests {
     #[test]
     fn view_animation_endpoints() {
         let now = Duration::from_secs(10);
-        let a = ViewAnimation::new_at(AnimationsClock::default(), now,0.0, 100.0, Duration::from_millis(100));
+        let a = ViewAnimation::new_at(
+            AnimationsClock::default(),
+            now,
+            0.0,
+            100.0,
+            Duration::from_millis(100),
+        );
         assert_eq!(a.value_at(now), 0.0);
         assert_eq!(a.value_at(now + Duration::from_millis(100)), 100.0);
         assert!(!a.is_done_at(now));
@@ -646,7 +681,13 @@ mod tests {
     #[test]
     fn view_animation_eases_out_cubic_at_midpoint() {
         let now = Duration::from_secs(0);
-        let a = ViewAnimation::new_at(AnimationsClock::default(), now,0.0, 100.0, Duration::from_millis(100));
+        let a = ViewAnimation::new_at(
+            AnimationsClock::default(),
+            now,
+            0.0,
+            100.0,
+            Duration::from_millis(100),
+        );
         // y = 1 - (1 - 0.5)^3 = 0.875 -> 87.5
         let mid = a.value_at(now + Duration::from_millis(50));
         assert!((mid - 87.5).abs() < 1e-9);
@@ -665,5 +706,40 @@ mod tests {
         assert_eq!(vo.target(), 70.0);
         assert!(vo.is_animation_ongoing());
         assert!(!vo.is_static());
+    }
+
+    #[test]
+    fn frames_with_render_geo_culls_at_rest() {
+        let s = strip_with(vec![1000.0, 1000.0, 1000.0], 0.0, 1);
+        let view = Size::from((1000.0, 800.0));
+        let visible: Vec<usize> = s.frames_with_render_geo(view).map(|(i, _, _)| i).collect();
+        assert_eq!(visible, vec![1]);
+    }
+
+    #[test]
+    fn frames_with_render_geo_includes_neighbour_during_slide() {
+        let mut s = strip_with(vec![1000.0, 1000.0, 1000.0], 0.0, 1);
+        s.view_offset = ViewOffset::Static(500.0);
+        let view = Size::from((1000.0, 800.0));
+        let visible: Vec<usize> = s.frames_with_render_geo(view).map(|(i, _, _)| i).collect();
+        assert_eq!(visible, vec![1, 2]);
+    }
+
+    #[test]
+    fn frames_with_render_geo_skips_zero_width_frame() {
+        let s = strip_with(vec![1000.0, 0.0, 1000.0], 0.0, 1);
+        let view = Size::from((1000.0, 800.0));
+        let visible: Vec<usize> = s.frames_with_render_geo(view).map(|(i, _, _)| i).collect();
+        assert!(!visible.contains(&1));
+    }
+
+    #[test]
+    fn frames_with_render_geo_rect_carries_screen_x() {
+        let s = strip_with(vec![1000.0, 1000.0], 0.0, 0);
+        let view = Size::from((1000.0, 800.0));
+        let (idx, _, rect) = s.frames_with_render_geo(view).next().unwrap();
+        assert_eq!(idx, 0);
+        assert_eq!(rect.loc.x, 0.0);
+        assert_eq!(rect.size.w, 1000.0);
     }
 }

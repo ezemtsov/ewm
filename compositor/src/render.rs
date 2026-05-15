@@ -284,61 +284,122 @@ pub fn collect_render_elements_for_output(
     // Track position for popup insertion (after top layer / before windows)
     let popup_insert_pos = elements.len();
 
-    // 4. Render declared surfaces from output_strips (authoritative, no intersection test)
+    // 4. Render declared surfaces from output_strips. Frames outside the viewport are culled.
     let working_area = ewm.get_working_area(output);
-    if let Some(strip) = ewm.output_strips.get(&output.name()) {
+    let view_size =
+        Size::<f64, Logical>::from((working_area.size.w as f64, working_area.size.h as f64));
+    let strip = ewm.output_strips.get(&output.name());
+    if let Some(strip) = strip {
         let active_idx = strip.active_idx();
-        for (frame_idx, entry) in strip.surfaces_with_frame() {
-            // Frame's screen-space x relative to working area origin.
-            // Active frame at rest yields 0 (no shift); mid-animation or
-            // off-screen neighbors yield the strip's column offset.
-            let frame_dx_logical = strip.screen_x_of_frame(frame_idx);
+        for (frame_idx, frame, frame_rect) in strip.frames_with_render_geo(view_size) {
             let frame_offset: Point<i32, Physical> =
-                Point::from(((frame_dx_logical * scale.x) as i32, 0));
-            let effective_fs = ewm.effective_fullscreen(entry);
+                frame_rect.loc.to_physical_precise_round(scale);
             let in_active_frame = frame_idx == active_idx;
-            // Fullscreen on an inactive frame is off-screen.
-            if effective_fs && !in_active_frame {
-                continue;
-            }
-            // Active-frame fullscreen covers the rest.
-            if above_top_layer && !effective_fs && in_active_frame {
-                continue;
-            }
-            if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
-                // Fullscreen forced opaque so the backdrop doesn't bleed through.
-                let is_focused = ewm.focused_view_id == Some(entry.view_id);
-                let mut entry_alpha = if effective_fs || is_focused {
-                    1.0
-                } else {
-                    ewm.unfocused_alpha
-                };
-                if let Some(a) = ewm.surface_open_anims.get(&entry.surface_id) {
-                    entry_alpha *= a.value() as f32;
+            for entry in &frame.surfaces {
+                let effective_fs = ewm.effective_fullscreen(entry);
+                // Fullscreen on an inactive frame is off-screen.
+                if effective_fs && !in_active_frame {
+                    continue;
                 }
-                if effective_fs {
-                    // Fullscreen: surface + backdrop at output origin, bypassing working area.
-                    // Elements are front-to-back: surface first, then backdrop behind it.
-                    let output_logical_size = ewm
-                        .space
-                        .output_geometry(output)
-                        .map(|g| g.size)
-                        .unwrap_or_default();
-                    let output_physical: Size<i32, Physical> =
-                        output_logical_size.to_physical_precise_round(scale);
-                    let constrain = Rectangle::new(frame_offset, output_physical);
+                // Active-frame fullscreen covers the rest.
+                if above_top_layer && !effective_fs && in_active_frame {
+                    continue;
+                }
+                if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
+                    // Fullscreen forced opaque so the backdrop doesn't bleed through.
+                    let is_focused = ewm.focused_view_id == Some(entry.view_id);
+                    let mut entry_alpha = if effective_fs || is_focused {
+                        1.0
+                    } else {
+                        ewm.unfocused_alpha
+                    };
+                    if let Some(a) = ewm.surface_open_anims.get(&entry.surface_id) {
+                        entry_alpha *= a.value() as f32;
+                    }
+                    if effective_fs {
+                        // Fullscreen: surface + backdrop at output origin, bypassing working area.
+                        // Elements are front-to-back: surface first, then backdrop behind it.
+                        let output_logical_size = ewm
+                            .space
+                            .output_geometry(output)
+                            .map(|g| g.size)
+                            .unwrap_or_default();
+                        let output_physical: Size<i32, Physical> =
+                            output_logical_size.to_physical_precise_round(scale);
+                        let constrain = Rectangle::new(frame_offset, output_physical);
+
+                        if entry.primary {
+                            // Primary: native size, centered, crop to output bounds.
+                            let (offset_x, offset_y) = crate::fullscreen_center_offset(
+                                window.geometry().size,
+                                output_logical_size,
+                            );
+                            let loc_physical: Point<i32, Physical> =
+                                Point::from((offset_x, offset_y)).to_physical_precise_round(scale)
+                                    + frame_offset;
+                            let view_elements =
+                                window.render_elements(renderer, loc_physical, scale, entry_alpha);
+                            push_constrained(
+                                &mut elements,
+                                view_elements,
+                                loc_physical,
+                                Scale::from(1.0),
+                                scale,
+                                constrain,
+                            );
+                        } else {
+                            // Non-primary: uniform stretch to fill output, crop overflow.
+                            let loc_physical: Point<i32, Physical> = frame_offset;
+                            let view_elements =
+                                window.render_elements(renderer, loc_physical, scale, entry_alpha);
+                            let buf_size: Size<i32, Physical> =
+                                window.geometry().size.to_physical_precise_round(scale);
+                            let uniform = f64::max(
+                                output_physical.w as f64 / buf_size.w as f64,
+                                output_physical.h as f64 / buf_size.h as f64,
+                            );
+                            push_constrained(
+                                &mut elements,
+                                view_elements,
+                                loc_physical,
+                                Scale::from(uniform),
+                                scale,
+                                constrain,
+                            );
+                        }
+
+                        // Black backdrop covering full output (behind surface)
+                        if let Some(state) = ewm.output_state.get(output) {
+                            let bg = SolidColorRenderElement::from_buffer(
+                                &state.fullscreen_backdrop,
+                                frame_offset,
+                                scale,
+                                1.0,
+                                Kind::Unspecified,
+                            );
+                            elements.push(EwmRenderElement::SolidColor(bg));
+                        }
+                        continue;
+                    }
+
+                    // Frame-relative -> output-local (working_area.loc is relative to output
+                    // origin)
+                    let location =
+                        Point::from((working_area.loc.x + entry.x, working_area.loc.y + entry.y));
+                    let loc_physical: Point<i32, Physical> =
+                        location.to_physical_precise_round(scale) + frame_offset;
+                    let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                        window.render_elements(renderer, loc_physical, scale, entry_alpha);
+                    let entry_size: Size<i32, Physical> =
+                        Size::from((entry.w as i32, entry.h as i32))
+                            .to_physical_precise_round(scale);
+
+                    // Crop to entry bounds. Clients may render larger than configured
+                    // (e.g. Electron apps with a minimum window size).
+                    let constrain = Rectangle::new(loc_physical, entry_size);
 
                     if entry.primary {
-                        // Primary: native size, centered, crop to output bounds.
-                        let (offset_x, offset_y) = crate::fullscreen_center_offset(
-                            window.geometry().size,
-                            output_logical_size,
-                        );
-                        let loc_physical: Point<i32, Physical> = Point::from((offset_x, offset_y))
-                            .to_physical_precise_round(scale)
-                            + frame_offset;
-                        let view_elements =
-                            window.render_elements(renderer, loc_physical, scale, entry_alpha);
+                        // Primary view: render at native size, crop to entry.
                         push_constrained(
                             &mut elements,
                             view_elements,
@@ -348,15 +409,14 @@ pub fn collect_render_elements_for_output(
                             constrain,
                         );
                     } else {
-                        // Non-primary: uniform stretch to fill output, crop overflow.
-                        let loc_physical: Point<i32, Physical> = frame_offset;
-                        let view_elements =
-                            window.render_elements(renderer, loc_physical, scale, entry_alpha);
+                        // Non-primary view: stretch buffer to fill entry bounds, then crop.
+                        // Uses uniform scale (fill): pick the larger factor to fully cover
+                        // the entry, preserving aspect ratio. The crop trims overflow.
                         let buf_size: Size<i32, Physical> =
                             window.geometry().size.to_physical_precise_round(scale);
                         let uniform = f64::max(
-                            output_physical.w as f64 / buf_size.w as f64,
-                            output_physical.h as f64 / buf_size.h as f64,
+                            entry_size.w as f64 / buf_size.w as f64,
+                            entry_size.h as f64 / buf_size.h as f64,
                         );
                         push_constrained(
                             &mut elements,
@@ -367,63 +427,6 @@ pub fn collect_render_elements_for_output(
                             constrain,
                         );
                     }
-
-                    // Black backdrop covering full output (behind surface)
-                    if let Some(state) = ewm.output_state.get(output) {
-                        let bg = SolidColorRenderElement::from_buffer(
-                            &state.fullscreen_backdrop,
-                            frame_offset,
-                            scale,
-                            1.0,
-                            Kind::Unspecified,
-                        );
-                        elements.push(EwmRenderElement::SolidColor(bg));
-                    }
-                    continue;
-                }
-
-                // Frame-relative -> output-local (working_area.loc is relative to output origin)
-                let location =
-                    Point::from((working_area.loc.x + entry.x, working_area.loc.y + entry.y));
-                let loc_physical: Point<i32, Physical> =
-                    location.to_physical_precise_round(scale) + frame_offset;
-                let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    window.render_elements(renderer, loc_physical, scale, entry_alpha);
-                let entry_size: Size<i32, Physical> =
-                    Size::from((entry.w as i32, entry.h as i32)).to_physical_precise_round(scale);
-
-                // Crop to entry bounds. Clients may render larger than configured
-                // (e.g. Electron apps with a minimum window size).
-                let constrain = Rectangle::new(loc_physical, entry_size);
-
-                if entry.primary {
-                    // Primary view: render at native size, crop to entry.
-                    push_constrained(
-                        &mut elements,
-                        view_elements,
-                        loc_physical,
-                        Scale::from(1.0),
-                        scale,
-                        constrain,
-                    );
-                } else {
-                    // Non-primary view: stretch buffer to fill entry bounds, then crop.
-                    // Uses uniform scale (fill): pick the larger factor to fully cover
-                    // the entry, preserving aspect ratio. The crop trims overflow.
-                    let buf_size: Size<i32, Physical> =
-                        window.geometry().size.to_physical_precise_round(scale);
-                    let uniform = f64::max(
-                        entry_size.w as f64 / buf_size.w as f64,
-                        entry_size.h as f64 / buf_size.h as f64,
-                    );
-                    push_constrained(
-                        &mut elements,
-                        view_elements,
-                        loc_physical,
-                        Scale::from(uniform),
-                        scale,
-                        constrain,
-                    );
                 }
             }
         }
@@ -434,45 +437,31 @@ pub fn collect_render_elements_for_output(
         elements.append(&mut top_elems);
     }
 
-    // 5. Emacs frames declared to live on this output.
-    //
-    // Each frame's xdg_toplevel renders at `working_area + screen_x_of_frame(idx)`
-    // in x, where `idx` is the frame's column in the strip. With one frame
-    // at rest the offset is zero and the surface lands at the working-area
-    // origin (current behavior). With N frames or mid-animation, each
-    // frame's chrome slides with its column.
+    // 5. Emacs frame chrome, culled the same way as step 4.
     let working_area_loc_physical =
         Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
             .to_physical_precise_round(scale);
-    let output_name = output.name();
-    for id in ewm.emacs_frames_on(&output_name) {
-        let Some(window) = ewm.id_windows.get(&id) else {
-            continue;
-        };
-        let frame_dx_logical = ewm
-            .output_strips
-            .get(&output.name())
-            .and_then(|s| {
-                s.frames
-                    .iter()
-                    .position(|f| f.surface_id == id)
-                    .map(|i| s.screen_x_of_frame(i))
-            })
-            .unwrap_or(0.0);
-        let frame_offset_emacs: Point<i32, Physical> =
-            Point::from(((frame_dx_logical * scale.x) as i32, 0));
-        let frame_alpha = ewm
-            .surface_open_anims
-            .get(&id)
-            .map(|a| a.value() as f32)
-            .unwrap_or(1.0);
-        let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window.render_elements(
-            renderer,
-            working_area_loc_physical + frame_offset_emacs,
-            scale,
-            frame_alpha,
-        );
-        elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
+    if let Some(strip) = strip {
+        for (_, frame, frame_rect) in strip.frames_with_render_geo(view_size) {
+            let Some(window) = ewm.id_windows.get(&frame.surface_id) else {
+                continue;
+            };
+            let frame_offset_emacs: Point<i32, Physical> =
+                frame_rect.loc.to_physical_precise_round(scale);
+            let frame_alpha = ewm
+                .surface_open_anims
+                .get(&frame.surface_id)
+                .map(|a| a.value() as f32)
+                .unwrap_or(1.0);
+            let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
+                .render_elements(
+                    renderer,
+                    working_area_loc_physical + frame_offset_emacs,
+                    scale,
+                    frame_alpha,
+                );
+            elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
+        }
     }
 
     // 6. Bottom layer
