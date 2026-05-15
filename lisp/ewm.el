@@ -419,13 +419,9 @@ without lisp asking (e.g. compositor-driven destroy)."
       (ignore-errors (delete-frame frame t))))))
 
 (defun ewm--handle-minimize-surface (event)
-  "Handle minimize surface EVENT.
-Buries the surface buffer, causing it to be hidden by the layout system."
-  (let ((id (alist-get 'id event)))
-    (when-let* ((buf (gethash id ewm--surfaces)))
-      (when (buffer-live-p buf)
-        (with-current-buffer buf
-          (bury-buffer))))))
+  "Bury the surface buffer for EVENT so the layout hides it."
+  (ewm--with-surface-buffer-from-event event
+    (bury-buffer)))
 
 (defun ewm--handle-maximize-request (_event)
   "Handle maximize request EVENT.
@@ -489,18 +485,14 @@ The current buffer is the surface buffer when this runs."
   :group 'ewm)
 
 (defun ewm--handle-title-update (event)
-  "Handle title update EVENT.
-Updates buffer-local variables and renames the buffer."
-  (let ((id (alist-get 'id event))
-        (app (alist-get 'app event))
+  "Refresh app/title on the surface buffer for EVENT."
+  (let ((app (alist-get 'app event))
         (title (alist-get 'title event)))
-    (when-let* ((buf (gethash id ewm--surfaces)))
-      (when (buffer-live-p buf)
-        (with-current-buffer buf
-          (setq-local ewm-surface-app app)
-          (setq-local ewm-surface-title title)
-          (ewm--rename-buffer)
-          (run-hooks 'ewm-update-title-hook))))))
+    (ewm--with-surface-buffer-from-event event
+      (setq-local ewm-surface-app app)
+      (setq-local ewm-surface-title title)
+      (ewm--rename-buffer)
+      (run-hooks 'ewm-update-title-hook))))
 
 (defun ewm--handle-output-detected (event)
   "Pull back frames whose `ewm-home-output' matches the detected output."
@@ -1098,7 +1090,7 @@ Frames for disconnected outputs are always allowed to be deleted."
 (defun ewm-frame-new ()
   "Open a new Emacs frame after the active one on the same output."
   (interactive)
-  (let* ((current (or (ewm--current-frame) (selected-frame)))
+  (let* ((current (ewm--focused-frame))
          (output (frame-parameter current 'ewm-output)))
     (unless output (user-error "Current frame has no ewm-output"))
     (ewm--create-frame-for-output output current
@@ -1117,10 +1109,14 @@ Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
               ((> id 0)))
     (ewm--frame-by-surface-id id)))
 
+(defun ewm--focused-frame ()
+  "Frame the user is on per the compositor, falling back to `selected-frame'."
+  (or (ewm--current-frame) (selected-frame)))
+
 (defun ewm--frame-shift-on-output (delta)
   "Move strip focus by DELTA on the current output (no wrap-around).
 Returns the target frame on success, nil at the strip edge."
-  (let* ((current (or (ewm--current-frame) (selected-frame)))
+  (let* ((current (ewm--focused-frame))
          (output (frame-parameter current 'ewm-output))
          (frames (ewm--strip-frames output))
          (idx (cl-position current frames))
@@ -1146,7 +1142,7 @@ Reads the digit from `last-command-event'.  No-op if N is past the
 number of frames on this output."
   (interactive)
   (let* ((pressed (- (event-basic-type last-command-event) ?0))
-         (current (or (ewm--current-frame) (selected-frame)))
+         (current (ewm--focused-frame))
          (output (frame-parameter current 'ewm-output))
          (frames (ewm--strip-frames output))
          (target (and (>= pressed 1) (<= pressed (length frames))
@@ -1157,8 +1153,7 @@ number of frames on this output."
 (defun ewm--frame-swap-on-output (delta)
   "Swap the focused frame with its DELTA neighbor in the strip.
 Returns the neighbor on success, nil at the strip edge."
-  (when-let* ((current (or (ewm--current-frame) (selected-frame)))
-              (target (ewm--strip-swap current delta)))
+  (when-let* ((target (ewm--strip-swap (ewm--focused-frame) delta)))
     (ewm-layout--refresh)
     target))
 

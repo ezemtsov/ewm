@@ -32,6 +32,17 @@ Similar to `exwm-title'.")
   "If BUFFER is an EWM surface buffer, return its surface id, else nil."
   (and buffer (buffer-local-value 'ewm-surface-id buffer)))
 
+(defvar ewm--surfaces)
+
+(defmacro ewm--with-surface-buffer-from-event (event &rest body)
+  "Run BODY in the surface buffer for EVENT's `id', when live; else no-op.
+Absorbs the race where the surface vanishes between the compositor
+queueing the event and Emacs handling it."
+  (declare (indent 1) (debug t))
+  `(when-let* ((buf (gethash (alist-get 'id ,event) ewm--surfaces))
+               ((buffer-live-p buf)))
+     (with-current-buffer buf ,@body)))
+
 (defun ewm--kill-buffer-query-function ()
   "Run in `kill-buffer-query-functions' for surface buffers.
 Sends close request to compositor and prevents immediate buffer kill."

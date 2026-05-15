@@ -29,12 +29,15 @@
   (defun ewm-output-layout (_output _frames) nil))
 (unless (fboundp 'ewm-focus-view-module)
   (defun ewm-focus-view-module (_view-id) nil))
+(provide 'ewm-core)
 
 (add-to-list 'load-path
              (expand-file-name "../lisp"
                                (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm-layout)
 (require 'ewm-focus)
+(require 'ewm-surface)
+(require 'ewm)
 
 ;;;; Test harness
 
@@ -225,6 +228,52 @@ call to `build-frame-plist'; reorder its two passes and this fails."
         (let ((ewm-layout-menu-predicates (list (lambda () t))))
           (should-not (ewm--handle-focus event))
           (should (eq (selected-window) initially-selected)))))))
+
+;;;; Handler-boilerplate contracts
+;;
+;; The compositor can queue an event whose surface dies before we get to
+;; it.  The macro and helper below must absorb that race silently.
+
+(ert-deftest ewm-focus/focused-frame-prefers-compositor ()
+  "`ewm--focused-frame' returns the compositor's frame when present."
+  (let ((sentinel (cons 'fake 'frame)))
+    (cl-letf (((symbol-function 'ewm--current-frame) (lambda () sentinel)))
+      (should (eq sentinel (ewm--focused-frame))))))
+
+(ert-deftest ewm-focus/focused-frame-falls-back-to-selected ()
+  "When the compositor has no answer, fall back to `selected-frame'."
+  (cl-letf (((symbol-function 'ewm--current-frame) #'ignore))
+    (should (eq (selected-frame) (ewm--focused-frame)))))
+
+(ert-deftest ewm-focus/with-surface-buffer-skips-unknown-id ()
+  "Event for an unregistered surface id is a no-op."
+  (let ((ewm--surfaces (make-hash-table :test 'eql))
+        (ran nil))
+    (ewm--with-surface-buffer-from-event '((id . 42)) (setq ran t))
+    (should-not ran)))
+
+(ert-deftest ewm-focus/with-surface-buffer-skips-dead-buffer ()
+  "Event whose surface buffer has been killed is a no-op."
+  (let ((ewm--surfaces (make-hash-table :test 'eql))
+        (buf (generate-new-buffer " *ewm-test-dead*"))
+        (ran nil))
+    (puthash 42 buf ewm--surfaces)
+    (kill-buffer buf)
+    (ewm--with-surface-buffer-from-event '((id . 42)) (setq ran t))
+    (should-not ran)))
+
+(ert-deftest ewm-focus/with-surface-buffer-runs-in-live-buffer ()
+  "Body runs with the live surface buffer as `current-buffer'."
+  (let ((ewm--surfaces (make-hash-table :test 'eql))
+        (buf (generate-new-buffer " *ewm-test-live*")))
+    (unwind-protect
+        (progn
+          (puthash 42 buf ewm--surfaces)
+          (let (captured)
+            (ewm--with-surface-buffer-from-event '((id . 42))
+              (setq captured (current-buffer)))
+            (should (eq captured buf))))
+      (kill-buffer buf))))
 
 (provide 'ewm-focus-tests)
 ;;; ewm-focus-tests.el ends here
