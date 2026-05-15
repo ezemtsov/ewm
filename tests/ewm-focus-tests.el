@@ -29,6 +29,8 @@
   (defun ewm-output-layout (_output _frames) nil))
 (unless (fboundp 'ewm-focus-view-module)
   (defun ewm-focus-view-module (_view-id) nil))
+;; The dynamic module provides the `ewm-core' feature in production;
+;; stub it here so `(require 'ewm)' resolves under batch.
 (provide 'ewm-core)
 
 (add-to-list 'load-path
@@ -231,8 +233,8 @@ call to `build-frame-plist'; reorder its two passes and this fails."
 
 ;;;; Handler-boilerplate contracts
 ;;
-;; The compositor can queue an event whose surface dies before we get to
-;; it.  The macro and helper below must absorb that race silently.
+;; Compositor can queue events whose surface dies first; the macro must
+;; absorb that race silently.
 
 (ert-deftest ewm-focus/focused-frame-prefers-compositor ()
   "`ewm--focused-frame' returns the compositor's frame when present."

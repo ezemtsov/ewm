@@ -655,17 +655,17 @@ Select the Nth Emacs frame on the requested output (1-based index)."
 
 (defun ewm--handle-fullscreen-request (event)
   "Set fullscreen flag on every window showing EVENT's surface and refresh."
-  (when-let* ((buf (gethash (alist-get 'id event) ewm--surfaces))
-              ((get-buffer-window buf t)))
-    (ewm--set-fullscreen-windows buf t)
-    (ewm-layout--refresh)))
+  (ewm--with-surface-buffer-from-event event
+    (when (get-buffer-window (current-buffer) t)
+      (ewm--set-fullscreen-windows (current-buffer) t)
+      (ewm-layout--refresh))))
 
 (defun ewm--handle-unfullscreen-request (event)
   "Clear fullscreen flag on every window showing EVENT's surface and refresh."
-  (when-let* ((buf (gethash (alist-get 'id event) ewm--surfaces))
-              ((get-buffer-window buf t)))
-    (ewm--set-fullscreen-windows buf nil)
-    (ewm-layout--refresh)))
+  (ewm--with-surface-buffer-from-event event
+    (when (get-buffer-window (current-buffer) t)
+      (ewm--set-fullscreen-windows (current-buffer) nil)
+      (ewm-layout--refresh))))
 
 ;;; Idle timeout
 
