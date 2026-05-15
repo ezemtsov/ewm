@@ -17,6 +17,7 @@
 (declare-function ewm-focus-view-module "ewm-core" (view-id))
 (declare-function ewm-layout--ensure-frame-view-id "ewm-layout" (frame))
 (declare-function ewm-layout--menu-active-p "ewm-layout" ())
+(declare-function ewm--frame-by-surface-id "ewm" (surface-id))
 
 (defvar ewm--module-mode)
 (defvar ewm-focus-follows-mouse)
@@ -41,12 +42,11 @@
 (defun ewm--find-frame-by-view-id (view-id)
   "Frame whose chrome view-id matches VIEW-ID, if any.
 Chrome view-ids have `ewm-layout--frame-view-id-marker' set; strip it to
-recover the surface-id and look up by frame parameter `ewm-surface-id'."
+recover the surface-id."
   (when (and view-id
              (not (zerop (logand view-id ewm-layout--frame-view-id-marker))))
-    (let ((sid (logand view-id (1- ewm-layout--frame-view-id-marker))))
-      (cl-find sid (frame-list)
-               :key (lambda (f) (frame-parameter f 'ewm-surface-id))))))
+    (ewm--frame-by-surface-id
+     (logand view-id (1- ewm-layout--frame-view-id-marker)))))
 
 (defun ewm--handle-focus (event)
   "Mirror compositor focus EVENT into Emacs selection."

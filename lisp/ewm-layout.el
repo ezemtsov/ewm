@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ewm-surface)
 
 (declare-function ewm-output-layout "ewm")
 
@@ -91,15 +92,14 @@ When MENU-ACTIVE is non-nil, `:selected-view-id' is nil so the
 compositor parks keyboard focus on the frame chrome."
   (let (surfaces)
     (dolist (window (window-list frame 'no-minibuf))
-      (when-let* ((id (buffer-local-value 'ewm-surface-id (window-buffer window)))
+      (when-let* ((id (ewm-surface-buffer-p (window-buffer window)))
                   (view-id (ewm-layout--ensure-view-id window id))
                   (view (ewm-layout--make-output-view window)))
         (push `(:id ,id :view-id ,view-id ,@view) surfaces)))
     (let ((selected-view-id
            (unless menu-active
              (when-let* ((sel-win (frame-selected-window frame))
-                         (sel-buf (window-buffer sel-win))
-                         ((buffer-local-value 'ewm-surface-id sel-buf)))
+                         ((ewm-surface-buffer-p (window-buffer sel-win))))
                (window-parameter sel-win 'ewm-view-id)))))
       (list :name (or (frame-parameter frame 'name) "")
             :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)

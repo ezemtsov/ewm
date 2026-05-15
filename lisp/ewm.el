@@ -720,11 +720,10 @@ of inactivity.  Useful for video playback or presentations."
 
 (defun ewm--sorted-surface-buffers ()
   "Return live surface buffers sorted by surface ID."
-  (let ((bufs (cl-loop for buf being the hash-values of ewm--surfaces
-                       when (buffer-live-p buf) collect buf)))
-    (sort bufs (lambda (a b)
-                 (< (buffer-local-value 'ewm-surface-id a)
-                    (buffer-local-value 'ewm-surface-id b))))))
+  (sort (cl-loop for buf being the hash-values of ewm--surfaces
+                 when (buffer-live-p buf) collect buf)
+        (lambda (a b) (< (ewm-surface-buffer-p a)
+                         (ewm-surface-buffer-p b)))))
 
 (defun ewm--cycle-surface-buffer (delta)
   "Switch to surface buffer DELTA steps away from current."
@@ -1116,8 +1115,7 @@ neighbour and the strip slides it into the deleted frame's slot."
 Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
   (when-let* ((id (ewm-get-focused-frame-id))
               ((> id 0)))
-    (cl-find id (frame-list)
-             :key (lambda (f) (frame-parameter f 'ewm-surface-id)))))
+    (ewm--frame-by-surface-id id)))
 
 (defun ewm--frame-shift-on-output (delta)
   "Move strip focus by DELTA on the current output (no wrap-around).

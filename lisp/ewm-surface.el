@@ -28,6 +28,9 @@ Similar to `exwm-title'.")
 (defvar-local ewm-surface-pid nil
   "Client PID for this surface.")
 
+(defun ewm-surface-buffer-p (buffer)
+  "If BUFFER is an EWM surface buffer, return its surface id, else nil."
+  (and buffer (buffer-local-value 'ewm-surface-id buffer)))
 
 (defun ewm--kill-buffer-query-function ()
   "Run in `kill-buffer-query-functions' for surface buffers.
