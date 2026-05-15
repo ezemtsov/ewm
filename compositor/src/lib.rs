@@ -3198,6 +3198,18 @@ impl Ewm {
     /// prevents busy-looping since it won't re-send if a callback was already
     /// sent recently through the normal path.
     pub fn send_frame_callbacks_on_fallback_timer(&self) {
+        // Off-screen emacs frames mustn't be woken; their pgtk client would
+        // redisplay on the emacs main thread for nothing.
+        let mut hidden_emacs_ids: HashSet<u64> = HashSet::new();
+        for strip in self.output_strips.values() {
+            let active = strip.active_frame().map(|f| f.surface_id);
+            for f in &strip.frames {
+                if Some(f.surface_id) != active {
+                    hidden_emacs_ids.insert(f.surface_id);
+                }
+            }
+        }
+
         // Bogus output: the should_send closure returns None so the output
         // is never used for matching, but send_frame requires a reference.
         let output = Output::new(
@@ -3213,7 +3225,10 @@ impl Ewm {
 
         let frame_callback_time = crate::protocols::screencopy::get_monotonic_time();
 
-        for window in self.id_windows.values() {
+        for (id, window) in self.id_windows.iter() {
+            if hidden_emacs_ids.contains(id) {
+                continue;
+            }
             window.send_frame(
                 &output,
                 frame_callback_time,
@@ -6568,9 +6583,7 @@ impl State {
                 self.ewm.unfocused_alpha = alpha.clamp(0.0, 1.0);
             }
             ModuleCommand::ConfigureAnimations { enabled } => {
-                self.ewm
-                    .animations_clock
-                    .set_complete_instantly(!enabled);
+                self.ewm.animations_clock.set_complete_instantly(!enabled);
             }
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;
