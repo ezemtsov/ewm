@@ -529,6 +529,9 @@ use smithay::backend::input::{
     PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::input::touch::{
+    DownEvent as TouchDown, MotionEvent as TouchMotion, UpEvent as TouchUp,
+};
 // Libinput device configuration
 use smithay::reexports::input as libinput;
 use smithay::utils::{Logical, Point};
@@ -1452,4 +1455,89 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
 
     // Notify idle notifier of user activity
     notify_activity(state);
+}
+
+/// Handle a touch-down event: a new finger contact on the screen.
+pub fn handle_touch_down<B: InputBackend>(state: &mut State, event: B::TouchDownEvent) {
+    use smithay::backend::input::{Event, TouchEvent};
+    let output_size = state.ewm.output_size;
+    let pos = event.position_transformed(output_size);
+    let serial = SERIAL_COUNTER.next_serial();
+    let touch = state.ewm.touch.clone();
+
+    let focus = if state.ewm.is_locked() {
+        state
+            .ewm
+            .lock_surface_focus()
+            .map(|s| (s, (0.0, 0.0).into()))
+    } else {
+        state.ewm.surface_under_point(pos)
+    };
+
+    touch.down(
+        state,
+        focus,
+        &TouchDown {
+            slot: event.slot(),
+            location: pos,
+            serial,
+            time: event.time_msec(),
+        },
+    );
+    notify_activity(state);
+}
+
+/// Handle a touch-motion event: a finger moved while in contact.
+pub fn handle_touch_motion<B: InputBackend>(state: &mut State, event: B::TouchMotionEvent) {
+    use smithay::backend::input::{Event, TouchEvent};
+    let output_size = state.ewm.output_size;
+    let pos = event.position_transformed(output_size);
+    let touch = state.ewm.touch.clone();
+
+    let focus = if state.ewm.is_locked() {
+        state
+            .ewm
+            .lock_surface_focus()
+            .map(|s| (s, (0.0, 0.0).into()))
+    } else {
+        state.ewm.surface_under_point(pos)
+    };
+
+    touch.motion(
+        state,
+        focus,
+        &TouchMotion {
+            slot: event.slot(),
+            location: pos,
+            time: event.time_msec(),
+        },
+    );
+    notify_activity(state);
+}
+
+/// Handle a touch-up event: a finger lifted from the screen.
+pub fn handle_touch_up<B: InputBackend>(state: &mut State, event: B::TouchUpEvent) {
+    use smithay::backend::input::{Event, TouchEvent};
+    let serial = SERIAL_COUNTER.next_serial();
+    let touch = state.ewm.touch.clone();
+
+    touch.up(
+        state,
+        &TouchUp {
+            slot: event.slot(),
+            serial,
+            time: event.time_msec(),
+        },
+    );
+    notify_activity(state);
+}
+
+/// Handle a touch-cancel event: the touch sequence was interrupted.
+pub fn handle_touch_cancel<B: InputBackend>(state: &mut State, _event: B::TouchCancelEvent) {
+    state.ewm.touch.clone().cancel(state);
+}
+
+/// Handle a touch-frame event: end of a logical group of touch events.
+pub fn handle_touch_frame<B: InputBackend>(state: &mut State, _event: B::TouchFrameEvent) {
+    state.ewm.touch.clone().frame(state);
 }

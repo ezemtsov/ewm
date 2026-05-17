@@ -3051,6 +3051,21 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
             InputEvent::GestureSwipeEnd { event } => {
                 crate::input::handle_gesture_swipe_end::<LibinputInputBackend>(state, event);
             }
+            InputEvent::TouchDown { event } => {
+                crate::input::handle_touch_down::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::TouchMotion { event } => {
+                crate::input::handle_touch_motion::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::TouchUp { event } => {
+                crate::input::handle_touch_up::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::TouchCancel { event } => {
+                crate::input::handle_touch_cancel::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::TouchFrame { event } => {
+                crate::input::handle_touch_frame::<LibinputInputBackend>(state, event);
+            }
             InputEvent::SwitchToggle { event } => {
                 use smithay::backend::input::{
                     Switch, SwitchState, SwitchToggleEvent as SwitchEvt,

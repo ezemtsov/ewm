@@ -121,6 +121,7 @@ use smithay::input::dnd::{self, DnDGrab, DndGrabHandler, DndTarget};
 use smithay::input::keyboard::xkb::keysyms;
 use smithay::input::keyboard::{KeyboardHandle, ModifiersState};
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData, PointerHandle};
+use smithay::input::touch::TouchHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{self, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
@@ -885,6 +886,8 @@ pub struct Ewm {
     pub pointer: PointerHandle<State>,
     /// Cached keyboard handle (avoids repeated get_keyboard().unwrap() on hot paths)
     pub keyboard: KeyboardHandle<State>,
+    /// Cached touch handle for touch screen support
+    pub touch: TouchHandle<State>,
 
     // Surface tracking
     next_surface_id: u64,
@@ -1189,6 +1192,7 @@ impl Ewm {
             )
             .expect("Failed to add keyboard to seat");
         let pointer = seat.add_pointer();
+        let touch = seat.add_touch();
 
         // Initialize screencopy state before moving display_handle
         let screencopy_state = ScreencopyManagerState::new::<State, _>(&display_handle, |_| true);
@@ -1294,6 +1298,7 @@ impl Ewm {
             seat,
             pointer,
             keyboard,
+            touch,
             next_surface_id: 1,
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
