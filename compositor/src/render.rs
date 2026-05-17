@@ -577,6 +577,36 @@ pub fn collect_render_elements_for_output(
     elements.append(&mut bg_elems);
 
     let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
+
+    // Popups from layer surfaces (e.g. Waybar tooltips and menus).
+    // The layer_map RefMut from the tight scope above is already dropped here.
+    if include_layers {
+        let layer_map = layer_map_for_output(output);
+        for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
+            for surface in layer_map.layers_on(layer) {
+                if let Some(geo) = layer_map.layer_geometry(surface) {
+                    for (popup, popup_offset) in
+                        PopupManager::popups_for_surface(surface.wl_surface())
+                    {
+                        // geo is already output-local; no output_pos subtraction needed.
+                        let popup_loc = geo.loc + popup_offset - popup.geometry().loc;
+                        let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                            render_elements_from_surface_tree(
+                                renderer,
+                                popup.wl_surface(),
+                                popup_loc.to_physical_precise_round(scale),
+                                scale,
+                                1.0,
+                                Kind::Unspecified,
+                            );
+                        popup_elements
+                            .extend(render_elements.into_iter().map(EwmRenderElement::Surface));
+                    }
+                }
+            }
+        }
+    }
+
     for placement in collect_popup_placements(ewm, output_rect) {
         let render_loc = Point::from((
             placement.location.x - output_pos.x,
