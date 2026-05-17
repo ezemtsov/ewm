@@ -643,9 +643,7 @@ Select the Nth Emacs frame on the requested output (1-based index)."
   (unless (ewm-layout--menu-active-p)
     (let* ((output (alist-get 'output event))
            (frame-index (alist-get 'frame_index event))
-           (frames (cl-remove-if-not
-                    (lambda (f) (equal (frame-parameter f 'ewm-output) output))
-                    (frame-list)))
+           (frames (ewm--strip-frames output))
            (target (nth (1- frame-index) frames)))
       (when target
         (select-frame-set-input-focus target)))))
