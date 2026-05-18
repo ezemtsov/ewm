@@ -35,7 +35,7 @@ Emacs thinks in **frames, windows, and buffers**.  A frame is an OS-level
 window.  Windows are panes inside a frame.  Each window displays a buffer.
 
 Wayland thinks in **surfaces**.  A surface is whatever a client draws into.
-An Emacs frame is a surface (the frame's chrome).  An external application
+An Emacs frame is a surface (the frame's own).  An external application
 is also a surface.
 
 To make external applications feel like Emacs windows, EWM puts each
@@ -48,7 +48,7 @@ means a single surface can be displayed in multiple Emacs windows
 simultaneously -- the same way the same buffer can be shown in two windows.
 We call each such display of a surface a **view**.
 
-So: an Emacs frame is one surface (its chrome).  An external application
+So: an Emacs frame is one surface (the frame itself).  An external application
 is one surface that might appear as zero, one, or many views inside Emacs
 frames.
 
@@ -137,11 +137,11 @@ For most views (entries inside frames), view ids are random and lisp
 generates them.  Lisp has to: it owns the Emacs window concept, and only
 lisp knows how many windows show a surface.
 
-For one special case -- a frame's own chrome view -- the view id is
-**derived deterministically from the surface id**: bit 32 of the u64 is
-set, and the low bits hold the surface id.  Entry view ids live in
-`[1, 2^32 - 1]` with bit 32 unset; frame chrome view ids live above with
-bit 32 set.  Disjoint ranges, no collisions, both sides compute the same
+For one special case -- a frame's own view -- the view id is **derived
+deterministically from the surface id**: bit 32 of the u64 is set, and
+the low bits hold the surface id.  Entry view ids live in
+`[1, 2^32 - 1]` with bit 32 unset; frame view ids live above with bit
+32 set.  Disjoint ranges, no collisions, both sides compute the same
 id from the same surface id without ever needing to coordinate.  This
 sounds like a small detail; it removes a whole class of races (see the
 async section below).
@@ -168,7 +168,7 @@ Collapsed to discrete states, this gives:
                      ▼
                 ┌──────────┐  ◄──── prefix redirect parks focus here
                 │  Frame   │        for the duration of C-x, M-x, …
-                │          │        (focused frame's chrome surface)
+                │          │        (focused frame's own surface)
                 └────┬─────┘
                      │ focused frame's selected window
                      │ shows an external surface
@@ -196,6 +196,44 @@ unlock/relock.
 The state machine itself is small.  What makes the focus subsystem look
 complicated is not the states but the synchronization across the
 lisp/compositor boundary -- the next section is about why.
+
+## Invariants
+
+`compositor/tests/focus_proptest.rs` is the executable spec.  Six
+invariants always hold; two more describe what specific operations
+must leave behind.
+
+Always:
+
+1. **Some frame is focused if and only if some frame exists.**  No
+   orphaned focus when there are no frames; no missing focus when
+   there is at least one.
+2. **A focused view, if any, lives on the focused frame.**  The
+   compositor never points at a view that belongs to a different
+   frame than the focused one.
+3. **If no frame is focused, no view is focused either.**  The
+   "nothing is focused" state is consistent at both levels.
+4. **Each frame lives on exactly one output's strip.**  Cross-output
+   migration moves a frame; it does not duplicate it.
+5. **The focused frame is the active frame of its strip.**  Strip
+   navigation and focus stay in lockstep.
+6. **A frame's selected view, when set, is one of that frame's own
+   entries.**  Lisp can name a view as selected only if the view
+   belongs to the frame it's naming it on.
+
+After specific operations:
+
+7. **Prefix-redirect parks focus on the frame.**  After
+   `enter_prefix_redirect(id)` on a frame that exists in some strip,
+   the focused frame is that frame and no view is focused.
+8. **Applying a layout never removes a frame.**  The set of frame
+   surface_ids across all strips can grow or shuffle, but it never
+   strictly shrinks via layout.  Frames go away only through
+   `handle_toplevel_destroyed`.
+
+The pure `resolve_keyboard_focus_target` helper (lock > layer >
+toplevel priority) is covered by a second set of properties in the
+same file.
 
 ## Why two threads make this hard
 
@@ -294,7 +332,7 @@ in-flight `universal-argument` -- the embedded surface is not the
 keyboard target; Emacs is.  The layout sender closes this gap by
 suppressing `:selected-view-id` for every frame whenever
 `ewm-layout--menu-active-p` says so, collapsing the compositor's focus
-to the focused frame's chrome surface.
+to the focused frame's own surface.
 
 The predicate is a hook (`ewm-layout-menu-predicates`).  Its defaults
 catch the two Emacs-internal mechanisms without naming any third-party

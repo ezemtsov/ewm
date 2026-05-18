@@ -1,8 +1,7 @@
 //! Property tests for the compositor focus state machine.
 //!
-//! Codifies invariants from `docs/focus-design.md` § "Compositor Focus State Machine"
-//! and asserts they hold after every focus-mutating operation in a randomly
-//! generated sequence.
+//! Codifies invariants from `docs/focus-design.md` § "Invariants" and
+//! asserts they hold after every randomly generated focus-mutating op.
 
 use std::collections::{HashMap, HashSet};
 
