@@ -199,9 +199,9 @@ lisp/compositor boundary -- the next section is about why.
 
 ## Invariants
 
-`compositor/tests/focus_proptest.rs` is the executable spec.  Six
-invariants always hold; four more describe what specific operations
-must leave behind.
+`compositor/tests/focus_proptest.rs` is the executable spec.  Some
+invariants always hold; others describe what specific operations must
+leave behind.
 
 Always:
 
@@ -236,6 +236,9 @@ After specific operations:
 10. **A layout's frames end up on its destination strip.**  Every
     frame named in `apply_output_layout(name, frames)` lives in
     `name`'s strip after the call, even if it had to migrate.
+11. **Destruction is authoritative.**  After
+    `handle_toplevel_destroyed`, the frame's surface_id is gone from
+    every strip.
 
 The pure `resolve_keyboard_focus_target` helper (lock > layer >
 toplevel priority) is covered by a second set of properties in the

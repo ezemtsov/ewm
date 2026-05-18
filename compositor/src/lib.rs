@@ -4695,54 +4695,55 @@ impl Ewm {
     }
 
     /// Handle toplevel destroyed from XdgShellHandler.
-    /// Returns surface ID to refocus, if any.
     pub fn handle_toplevel_destroyed(&mut self, surface: ToplevelSurface) -> Option<u64> {
-        let window = self
+        let id = self
             .id_windows
             .iter()
             .find(|(_, w)| w.toplevel().map(|t| t == &surface).unwrap_or(false))
-            .map(|(&id, w)| (id, w.clone()));
+            .map(|(&id, _)| id)?;
+        self.handle_toplevel_destroyed_by_id(id)
+    }
 
-        if let Some((id, window)) = window {
-            let was_focused = self.focused_frame_id == id;
-            let output = self.find_surface_output(id).map(|o| o.name());
+    /// Drop a toplevel by surface id; same cleanup as the surface-typed entry
+    /// point, but reachable from integration tests without a real toplevel.
+    pub fn handle_toplevel_destroyed_by_id(&mut self, id: u64) -> Option<u64> {
+        let was_focused = self.focused_frame_id == id;
+        let output = self.find_surface_output(id).map(|o| o.name());
 
+        if let Some(window) = self.id_windows.remove(&id) {
             self.window_ids.remove(&window);
-            self.id_windows.remove(&id);
-            self.surface_info.remove(&id);
-            let was_emacs = self.is_emacs_frame(id);
-            self.remove_surface_from_layouts(id);
-            self.remove_emacs_frame_from_strip(id);
-            self.prune_dangling_focus();
-            self.queue_event(Event::Close { id });
-            debug!(
-                "Toplevel {} destroyed was_focused={} was_emacs={} output={:?}",
-                id, was_focused, was_emacs, output
-            );
+        }
+        self.surface_info.remove(&id);
+        let was_emacs = self.is_emacs_frame(id);
+        self.remove_surface_from_layouts(id);
+        self.remove_emacs_frame_from_strip(id);
+        self.prune_dangling_focus();
+        self.queue_event(Event::Close { id });
+        debug!(
+            "Toplevel {} destroyed was_focused={} was_emacs={} output={:?}",
+            id, was_focused, was_emacs, output
+        );
 
-            // Stop any screen casts targeting this window
-            #[cfg(feature = "screencast")]
-            self.stop_casts_for_window(id);
+        #[cfg(feature = "screencast")]
+        self.stop_casts_for_window(id);
 
-            // Return refocus target if needed
-            if was_focused {
-                // Output may be unknown if lisp pruned the frame before destroy fired.
-                let refocus = output
-                    .as_deref()
-                    .and_then(|out| self.active_frame_surface_id(out))
-                    .or_else(|| {
-                        self.pointer_output
-                            .as_ref()
-                            .and_then(|o| self.active_frame_surface_id(&o.name()))
-                    })
-                    .or_else(|| {
-                        self.output_strips
-                            .keys()
-                            .find_map(|name| self.active_frame_surface_id(name))
-                    });
-                debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
-                return refocus;
-            }
+        if was_focused {
+            // Output may be unknown if lisp pruned the frame before destroy fired.
+            let refocus = output
+                .as_deref()
+                .and_then(|out| self.active_frame_surface_id(out))
+                .or_else(|| {
+                    self.pointer_output
+                        .as_ref()
+                        .and_then(|o| self.active_frame_surface_id(&o.name()))
+                })
+                .or_else(|| {
+                    self.output_strips
+                        .keys()
+                        .find_map(|name| self.active_frame_surface_id(name))
+                });
+            debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
+            return refocus;
         }
         None
     }

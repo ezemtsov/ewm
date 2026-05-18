@@ -37,6 +37,7 @@ enum Op {
     FocusFrame(u64),
     EnterPrefixRedirect(u64),
     RemoveOutput(usize),
+    DestroyFrame(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +119,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
         FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
+        FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
     ]
 }
 
@@ -242,6 +244,21 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 "invariant 9: remove_output({}) left a strip entry behind",
                 name,
             );
+        }
+        Op::DestroyFrame(id) => {
+            let was_present = strip_frame_ids(fix).contains(&id);
+            let refocus = fix.ewm().handle_toplevel_destroyed_by_id(id);
+            if let Some(target) = refocus {
+                fix.ewm()
+                    .set_focus_frame(target, "toplevel_destroyed", false);
+            }
+            if was_present {
+                assert!(
+                    !strip_frame_ids(fix).contains(&id),
+                    "invariant 11: destroy({}) left the id in some strip",
+                    id,
+                );
+            }
         }
     }
 }
