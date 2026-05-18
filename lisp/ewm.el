@@ -330,7 +330,9 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ("maximize_request" (ewm--handle-maximize-request event))
       ("unmaximize_request" (ewm--handle-unmaximize-request event))
       ("idle_state_changed" (ewm--handle-idle-state-changed event))
-      ("environment" (ewm--handle-environment event)))))
+      ("environment" (ewm--handle-environment event))
+      ("frame_shown" (ewm--handle-frame-shown event))
+      ("frame_hidden" (ewm--handle-frame-hidden event)))))
 
 ;;; Event handlers
 
@@ -666,6 +668,30 @@ Select the Nth Emacs frame on the requested output (1-based index)."
     (when (get-buffer-window (current-buffer) t)
       (ewm--set-fullscreen-windows (current-buffer) nil)
       (ewm-layout--refresh))))
+
+;;; Strip-visibility freeze/thaw
+;;
+;; The compositor emits frame_shown/frame_hidden when an emacs frame's
+;; strip-active status changes.  We forward to GTK's update-freeze so
+;; pgtk's per-tick Cairo paint skips hidden frames.
+
+(declare-function ewm-gtk-freeze-frame-updates "ewm-core")
+(declare-function ewm-gtk-thaw-frame-updates "ewm-core")
+
+(defun ewm--frame-window-id (frame)
+  (and (frame-live-p frame) (frame-parameter frame 'window-id)))
+
+(defun ewm--handle-frame-shown (event)
+  (when-let* ((id (alist-get 'id event))
+              (frame (ewm--frame-by-surface-id id))
+              (wid (ewm--frame-window-id frame)))
+    (ignore-errors (ewm-gtk-thaw-frame-updates wid))))
+
+(defun ewm--handle-frame-hidden (event)
+  (when-let* ((id (alist-get 'id event))
+              (frame (ewm--frame-by-surface-id id))
+              (wid (ewm--frame-window-id frame)))
+    (ignore-errors (ewm-gtk-freeze-frame-updates wid))))
 
 ;;; Idle timeout
 

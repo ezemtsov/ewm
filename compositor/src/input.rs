@@ -1219,10 +1219,17 @@ pub fn handle_gesture_swipe_end<B: InputBackend>(
     state.ewm.gesture.cumulative = None;
     if let Some(out) = state.ewm.gesture.active_output.take() {
         let w = working_area_width(state, &out);
+        let prev_active_id = state
+            .ewm
+            .output_strips
+            .get(&out)
+            .and_then(|s| s.active_frame())
+            .map(|f| f.surface_id);
         let target = state.ewm.output_strips.get_mut(&out).and_then(|s| {
             s.gesture_end(w);
             s.frames.get(s.active_idx()).map(|f| f.surface_id)
         });
+        state.ewm.reconcile_active_for_output(&out, prev_active_id);
         if let Some(id) = target {
             state.ewm.set_focus_frame(id, "gesture", true);
         }

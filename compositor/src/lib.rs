@@ -1301,7 +1301,9 @@ impl Ewm {
         let Some(idx) = strip.frames.iter().position(|f| f.surface_id == id) else {
             return;
         };
+        let prev_active_id = strip.active_frame().map(|f| f.surface_id);
         strip.remove_frame_at(idx);
+        self.reconcile_active_for_output(&out, prev_active_id);
     }
 
     /// Clean up all Ewm state for a removed output.
@@ -1680,6 +1682,7 @@ impl Ewm {
             return;
         };
         let prev_idx = strip.active_idx();
+        let prev_active_id = strip.active_frame().map(|f| f.surface_id);
         let frames_len = strip.frames.len();
         let prev_offset = strip.view_offset.current();
         strip.set_active(new_idx);
@@ -1699,6 +1702,7 @@ impl Ewm {
         // Active-idx flip may shift a surface's largest visible entry to/from this
         // output, changing its size and scale.
         if active_changed {
+            self.reconcile_active_for_output(output_name, prev_active_id);
             self.refresh_primary_assignments();
             self.queue_redraw_all();
             return;
@@ -2021,6 +2025,13 @@ impl Ewm {
             }
         };
 
+        // Snapshot active frame per output for the freeze/thaw reconcile at end.
+        let active_before: HashMap<String, Option<u64>> = self
+            .output_strips
+            .iter()
+            .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
+            .collect();
+
         // 2. Diff old vs new surface IDs
         let old_ids: HashSet<u64> = self
             .output_strips
@@ -2185,6 +2196,10 @@ impl Ewm {
             output_name,
             new_ids.len()
         );
+
+        for (name, prev) in active_before {
+            self.reconcile_active_for_output(&name, prev);
+        }
     }
 
     /// Pick each surface's primary entry (largest active-frame slot) and
@@ -3539,6 +3554,32 @@ impl Ewm {
         module::push_event(event);
     }
 
+    /// Emit FrameShown/FrameHidden when an output's strip-active changes.
+    /// Caller snapshots `prev_active_id` before the mutation; the helper
+    /// compares against the post-mutation state.  No stored state.
+    pub(crate) fn reconcile_active_for_output(
+        &mut self,
+        output_name: &str,
+        prev_active_id: Option<u64>,
+    ) {
+        let Some(strip) = self.output_strips.get(output_name) else {
+            return;
+        };
+        let new_active_id = strip.active_frame().map(|f| f.surface_id);
+        if prev_active_id == new_active_id {
+            return;
+        }
+        if let Some(id) = prev_active_id {
+            // Skip if the frame was destroyed -- the lisp side already handled it.
+            if strip.frames.iter().any(|f| f.surface_id == id) {
+                self.queue_event(Event::FrameHidden { id });
+            }
+        }
+        if let Some(id) = new_active_id {
+            self.queue_event(Event::FrameShown { id });
+        }
+    }
+
     /// Update text_input focus for input method support.
     ///
     /// Emacs surfaces and None both clear text_input (leave + set_focus(None)),
@@ -4592,6 +4633,20 @@ impl Ewm {
             frame_surface_id,
             pid: client_pid,
         });
+        // Eager-inserted new emacs frames land at the strip's end and aren't
+        // the active slot; tell lisp so it can freeze them.  Emitted after
+        // Event::New so ewm-surface-id is already bound on the lisp side.
+        if is_emacs {
+            let is_active = target_output
+                .as_deref()
+                .and_then(|o| self.active_frame_surface_id(o))
+                == Some(id);
+            self.queue_event(if is_active {
+                Event::FrameShown { id }
+            } else {
+                Event::FrameHidden { id }
+            });
+        }
         // Sent after New so the lisp side has assigned ewm-surface-id by the
         // time the Focus event is processed.
         if auto_focus {

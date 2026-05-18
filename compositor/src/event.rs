@@ -170,4 +170,10 @@ pub enum Event {
     /// Environment variables for Emacs to apply
     #[serde(rename = "environment")]
     Environment { vars: HashMap<String, String> },
+    /// Emacs frame became the active one in its strip.
+    #[serde(rename = "frame_shown")]
+    FrameShown { id: u64 },
+    /// Emacs frame left the active strip slot.
+    #[serde(rename = "frame_hidden")]
+    FrameHidden { id: u64 },
 }
