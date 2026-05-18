@@ -4,8 +4,9 @@
 //! and asserts they hold after every focus-mutating operation in a randomly
 //! generated sequence.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use ewm_core::resolve_keyboard_focus_target;
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
 use ewm_core::{LayoutEntry, ViewId};
@@ -292,5 +293,81 @@ proptest! {
             apply_op(&mut fix, op);
             assert_invariants(&fix);
         }
+    }
+}
+
+// `u64` stands in for `WlSurface`; the resolver is generic over surface type.
+fn surface_map_strategy() -> impl Strategy<Value = HashMap<u64, u64>> {
+    prop::collection::hash_map(1u64..=8, 100u64..=200, 0..=8)
+}
+
+proptest! {
+    #[test]
+    fn locked_with_lock_surface_wins(
+        lock in 1u64..=999,
+        layer in prop::option::of(1u64..=999),
+        focused_id in 0u64..=20,
+        map in surface_map_strategy(),
+    ) {
+        let resolved = resolve_keyboard_focus_target(
+            true, Some(lock), layer,
+            || map.get(&focused_id).copied(),
+        );
+        prop_assert_eq!(resolved, Some(lock));
+    }
+
+    #[test]
+    fn locked_without_lock_surface_yields_none(
+        layer in prop::option::of(1u64..=999),
+        focused_id in 0u64..=20,
+        map in surface_map_strategy(),
+    ) {
+        let resolved = resolve_keyboard_focus_target::<u64, _>(
+            true, None, layer,
+            || map.get(&focused_id).copied(),
+        );
+        prop_assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn layer_focus_beats_toplevel(
+        lock in prop::option::of(1u64..=999),
+        layer in 1u64..=999,
+        focused_id in 0u64..=20,
+        map in surface_map_strategy(),
+    ) {
+        let resolved = resolve_keyboard_focus_target(
+            false, lock, Some(layer),
+            || map.get(&focused_id).copied(),
+        );
+        prop_assert_eq!(resolved, Some(layer));
+    }
+
+    #[test]
+    fn toplevel_fallback(
+        lock in prop::option::of(1u64..=999),
+        focused_id in 0u64..=20,
+        map in surface_map_strategy(),
+    ) {
+        let expected = map.get(&focused_id).copied();
+        let resolved = resolve_keyboard_focus_target::<u64, _>(
+            false, lock, None,
+            || map.get(&focused_id).copied(),
+        );
+        prop_assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolver_is_total(
+        locked in any::<bool>(),
+        lock in prop::option::of(1u64..=999),
+        layer in prop::option::of(1u64..=999),
+        focused_id in 0u64..=20,
+        map in surface_map_strategy(),
+    ) {
+        let _ = resolve_keyboard_focus_target(
+            locked, lock, layer,
+            || map.get(&focused_id).copied(),
+        );
     }
 }

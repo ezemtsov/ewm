@@ -531,6 +531,25 @@ fn unconstrain_with_padding(
     positioner.get_unconstrained_geometry(target)
 }
 
+/// Pick the keyboard focus: lock surface > layer > toplevel.
+pub fn resolve_keyboard_focus_target<S, F>(
+    locked: bool,
+    lock_surface: Option<S>,
+    layer_focus: Option<S>,
+    toplevel_focus: F,
+) -> Option<S>
+where
+    F: FnOnce() -> Option<S>,
+{
+    if locked {
+        return lock_surface;
+    }
+    if layer_focus.is_some() {
+        return layer_focus;
+    }
+    toplevel_focus()
+}
+
 /// Intercepted key: resolved keysym + required modifiers.
 /// Keysyms are resolved from Emacs key descriptions at registration time
 /// using libxkbcommon (via Smithay's re-export).
@@ -6186,41 +6205,42 @@ impl State {
     pub fn sync_keyboard_focus(&mut self) {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
-        // When locked, focus the lock surface
-        if self.ewm.is_locked() {
-            let new_focus = self.ewm.lock_surface_focus();
-            if self.ewm.keyboard_focus != new_focus {
-                self.ewm.keyboard_focus = new_focus.clone();
-                let keyboard = self.ewm.keyboard.clone();
-                keyboard.set_focus(self, new_focus, SERIAL_COUNTER.next_serial());
-            }
-            return;
-        }
-
-        // Clean up stale on-demand focus
-        if let Some(surface) = &self.ewm.layer_shell_on_demand_focus {
-            let good = surface.alive()
-                && surface.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand;
-            if !good {
-                self.ewm.layer_shell_on_demand_focus = None;
-            }
-        }
-
-        // Check layer shell surfaces for exclusive/on-demand keyboard focus.
-        // Priority: Exclusive on Overlay/Top, then OnDemand, then toplevel.
-        let layer_focus = self.ewm.resolve_layer_keyboard_focus();
-
-        let new_focus = if let Some(wl_surface) = layer_focus {
-            Some(wl_surface)
+        let locked = self.ewm.is_locked();
+        let lock_surface = if locked {
+            self.ewm.lock_surface_focus()
         } else {
-            // Fall back to toplevel focus
-            let target_id = self.ewm.focused_surface_id();
-            self.ewm
-                .id_windows
-                .get(&target_id)
-                .and_then(|w| w.wl_surface())
-                .map(|s| s.into_owned())
+            None
         };
+
+        if !locked {
+            if let Some(surface) = &self.ewm.layer_shell_on_demand_focus {
+                let good = surface.alive()
+                    && surface.cached_state().keyboard_interactivity
+                        == KeyboardInteractivity::OnDemand;
+                if !good {
+                    self.ewm.layer_shell_on_demand_focus = None;
+                }
+            }
+        }
+
+        let layer_focus = if locked {
+            None
+        } else {
+            self.ewm.resolve_layer_keyboard_focus()
+        };
+        let ewm = &self.ewm;
+        let new_focus = resolve_keyboard_focus_target(
+            locked,
+            lock_surface,
+            layer_focus,
+            || {
+                let id = ewm.focused_surface_id();
+                ewm.id_windows
+                    .get(&id)
+                    .and_then(|w| w.wl_surface())
+                    .map(|s| s.into_owned())
+            },
+        );
 
         if self.ewm.keyboard_focus != new_focus {
             self.ewm.keyboard_focus = new_focus.clone();
