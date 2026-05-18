@@ -3916,11 +3916,10 @@ impl Ewm {
         None
     }
 
-    /// Get active output for placing new non-Emacs surfaces.
-    /// Priority: cursor position > focused output > first output
+    /// Output for surface placement and keyboard nav: focused > cursor > first.
     pub fn active_output(&self) -> Option<String> {
-        self.output_under_cursor()
-            .or_else(|| self.get_focused_output())
+        self.get_focused_output()
+            .or_else(|| self.output_under_cursor())
             .or_else(|| self.space.outputs().next().map(|o| o.name()))
     }
 

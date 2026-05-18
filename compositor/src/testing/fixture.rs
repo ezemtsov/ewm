@@ -150,6 +150,11 @@ impl Fixture {
         self.state.ewm.id_windows.contains_key(&id)
     }
 
+    /// Warp the pointer to an absolute position.
+    pub fn warp_pointer(&mut self, x: f64, y: f64) {
+        self.state.warp_pointer(x, y);
+    }
+
     /// Start mirroring `queue_event` into a per-Ewm buffer.
     pub fn enable_event_capture(&mut self) {
         self.state.ewm.captured_events = Some(Vec::new());

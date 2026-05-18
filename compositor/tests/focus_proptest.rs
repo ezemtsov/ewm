@@ -9,7 +9,7 @@ use ewm_core::event::Event;
 use ewm_core::resolve_keyboard_focus_target;
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
-use ewm_core::{LayoutEntry, ViewId};
+use ewm_core::{LayoutEntry, OutputConfig, ViewId};
 use proptest::prelude::*;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
@@ -551,5 +551,195 @@ proptest! {
             locked, lock, layer,
             || map.get(&focused_id).copied(),
         );
+    }
+}
+
+/// 3x3 grid of 1920x1080 output cells; subsets exercise rows, columns,
+/// stacks, gaps, and the full grid.
+const NAV_GRID: [(i32, i32); 9] = [
+    (0, 0),
+    (1920, 0),
+    (3840, 0),
+    (0, 1080),
+    (1920, 1080),
+    (3840, 1080),
+    (0, 2160),
+    (1920, 2160),
+    (3840, 2160),
+];
+
+#[derive(Debug, Clone)]
+struct NavSetup {
+    positions: Vec<(i32, i32)>,
+    frames_per_output: Vec<usize>,
+    active_idx_per_output: Vec<usize>,
+    focused_output: usize,
+}
+
+impl NavSetup {
+    fn n(&self) -> usize {
+        self.positions.len()
+    }
+
+    fn output_name(&self, out: usize) -> String {
+        format!("V{}", out)
+    }
+
+    fn frame_id(&self, out: usize, frame: usize) -> u64 {
+        (out as u64 + 1) * 10 + frame as u64
+    }
+
+    fn active_frame(&self, out: usize) -> u64 {
+        let frame = self.active_idx_per_output[out] % self.frames_per_output[out];
+        self.frame_id(out, frame)
+    }
+
+    fn initial_focused_frame(&self) -> u64 {
+        self.active_frame(self.focused_output)
+    }
+
+    fn all_active_frames(&self) -> HashSet<u64> {
+        (0..self.n()).map(|i| self.active_frame(i)).collect()
+    }
+}
+
+fn nav_setup() -> impl Strategy<Value = NavSetup> {
+    prop::sample::subsequence(NAV_GRID.to_vec(), 2..=4)
+        .prop_flat_map(|positions| {
+            let n = positions.len();
+            (
+                Just(positions),
+                prop::collection::vec(1usize..=3, n..=n),
+                prop::collection::vec(0usize..3, n..=n),
+                0..n,
+            )
+        })
+        .prop_map(
+            |(positions, frames_per_output, active_idx_per_output, focused_output)| NavSetup {
+                positions,
+                frames_per_output,
+                active_idx_per_output,
+                focused_output,
+            },
+        )
+}
+
+struct NavResult {
+    focused: u64,
+    pointer: (f64, f64),
+}
+
+fn nav_build(setup: &NavSetup) -> Fixture {
+    let mut fix = Fixture::new().unwrap();
+    for i in 0..setup.n() {
+        fix.ewm().output_config.insert(
+            setup.output_name(i),
+            OutputConfig {
+                position: Some(setup.positions[i]),
+                ..Default::default()
+            },
+        );
+        fix.add_output(&setup.output_name(i), 1920, 1080);
+    }
+
+    let clock = fix.ewm().animations_clock.clone();
+    for i in 0..setup.n() {
+        let strip = fix
+            .ewm()
+            .output_strips
+            .entry(setup.output_name(i))
+            .or_insert_with(|| ewm_core::strip::Strip::new(clock.clone()));
+        for f in 0..setup.frames_per_output[i] {
+            strip.frames.push(Frame::new(setup.frame_id(i, f)));
+        }
+    }
+
+    // focused_output last so its frame wins keyboard focus for navigation.
+    for i in (0..setup.n()).filter(|&i| i != setup.focused_output) {
+        fix.ewm()
+            .set_focus_frame(setup.active_frame(i), "nav_setup", false);
+    }
+    fix.ewm()
+        .set_focus_frame(setup.initial_focused_frame(), "nav_setup", false);
+    fix
+}
+
+fn nav_run(setup: &NavSetup, dx: i32, dy: i32, cx: f64, cy: f64) -> NavResult {
+    let mut fix = nav_build(setup);
+    fix.warp_pointer(cx, cy);
+    fix.ewm().focus_output_direction(dx, dy);
+    NavResult {
+        focused: fix.ewm_ref().focused_frame_id,
+        pointer: fix.ewm_ref().pointer_location(),
+    }
+}
+
+fn nav_round_trip(setup: &NavSetup, dx: i32, dy: i32) -> (u64, u64) {
+    let mut fix = nav_build(setup);
+    fix.ewm().focus_output_direction(dx, dy);
+    let after_a = fix.ewm_ref().focused_frame_id;
+    fix.ewm().focus_output_direction(-dx, -dy);
+    let after_b = fix.ewm_ref().focused_frame_id;
+    (after_a, after_b)
+}
+
+proptest! {
+    /// `focus_output_direction` outcome is cursor-independent, non-axial inputs no-op, the result is some output's active frame, and the pointer never moves (cursor warping is MFF's job in lisp, not the compositor's).
+    #[test]
+    fn focus_output_direction_properties(
+        setup in nav_setup(),
+        dx in -1i32..=1,
+        dy in -1i32..=1,
+        cx1 in -5000.0f64..10000.0,
+        cy1 in -5000.0f64..10000.0,
+        cx2 in -5000.0f64..10000.0,
+        cy2 in -5000.0f64..10000.0,
+    ) {
+        let a = nav_run(&setup, dx, dy, cx1, cy1);
+        let b = nav_run(&setup, dx, dy, cx2, cy2);
+        prop_assert_eq!(
+            a.focused, b.focused,
+            "cursor-dependent: ({},{}) at ({},{}) -> {}, at ({},{}) -> {}",
+            dx, dy, cx1, cy1, a.focused, cx2, cy2, b.focused,
+        );
+
+        prop_assert_eq!(a.pointer, (cx1, cy1), "compositor moved pointer during navigation");
+        prop_assert_eq!(b.pointer, (cx2, cy2), "compositor moved pointer during navigation");
+
+        let initial = setup.initial_focused_frame();
+        if !matches!((dx, dy), (-1, 0) | (1, 0) | (0, -1) | (0, 1)) {
+            prop_assert_eq!(
+                a.focused, initial,
+                "non-axial direction ({},{}) must no-op",
+                dx, dy,
+            );
+        }
+
+        let actives = setup.all_active_frames();
+        prop_assert!(
+            actives.contains(&a.focused),
+            "outcome {} is not the active frame of any output (actives: {:?})",
+            a.focused, actives,
+        );
+    }
+}
+
+proptest! {
+    /// `focus_output_direction(dx, dy)` followed by `(-dx, -dy)` returns focus to the start when the first leg actually moved.
+    #[test]
+    fn focus_output_direction_round_trip(
+        setup in nav_setup(),
+        dir in prop_oneof![Just((-1i32, 0i32)), Just((1, 0)), Just((0, -1)), Just((0, 1))],
+    ) {
+        let (dx, dy) = dir;
+        let initial = setup.initial_focused_frame();
+        let (after_a, after_b) = nav_round_trip(&setup, dx, dy);
+        if after_a != initial {
+            prop_assert_eq!(
+                after_b, initial,
+                "round-trip ({},{}) then ({},{}) from {} went {} then {}",
+                dx, dy, -dx, -dy, initial, after_a, after_b,
+            );
+        }
     }
 }
