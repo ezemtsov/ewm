@@ -375,6 +375,44 @@ pub fn send_frame_callbacks(&self, output: &Output) {
 
 This is especially important because frame callbacks are sent from both the VBlank handler (for `redraw_needed: false`) and the render path (after every `redraw`).
 
+## Hidden Frame Paint Suppression
+
+The compositor doesn't paint Emacs frames itself -- pgtk (Emacs's GTK3
+Wayland backend) does, on the Emacs main thread, into a Cairo backing
+buffer.  After every redisplay tick, `pgtk_frame_up_to_date` calls
+`gtk_widget_queue_draw` on the frame's widget; GTK's next iteration runs
+the draw signal, which fills the whole backing via pixman.  Cost scales
+`pixels × visible-frame count`.  At 100+ frames per strip this can pin
+the Emacs main thread.
+
+EWM suppresses the paint pipeline for emacs frames that aren't the active
+slot of their strip:
+
+- `gdk_window_freeze_updates` gates `gdk_window_process_updates` --
+  queued exposes accumulate but the draw signal doesn't fire.  Thaw
+  schedules one catch-up paint.
+- The compositor emits `Event::FrameShown` / `Event::FrameHidden` on every
+  strip-active transition (`activate_frame`, `apply_output_layout`,
+  `remove_emacs_frame_from_strip`, gesture-swipe-end, and new toplevel
+  insertion).  Each call site snapshots the active id before the
+  mutation and compares after, so the compositor doesn't carry any
+  "previously shown" state.
+- Lisp handlers look up the frame by surface id, get its GtkWindow pointer
+  from the `window-id` frame parameter, and call
+  `ewm-gtk-freeze-frame-updates` / `ewm-gtk-thaw-frame-updates` -- defuns
+  defined in `gtk.rs` that resolve the GTK symbols once via `dlsym`
+  against the libgtk-3 already loaded by Emacs (the module lives in the
+  Emacs process).
+- Idempotency is per-widget via `g_object_set_data`.  Extra freeze/thaw is
+  a no-op (no module-side bookkeeping), so unbalanced calls can't trip
+  GDK's fatal `g_return_if_fail` on the freeze counter.
+
+Measured impact on one strip of 300 frames: idle CPU drops from ~99%
+sustained to ~2% mean, p99.9 main-loop responsiveness drops from ~2 s to
+~64 ms.  Memory still scales linearly because the Cairo backing is
+allocated at frame creation regardless of paint state -- freeze gates
+CPU, not memory.
+
 ## Damage Tracking
 
 The `DrmCompositor` compares element commit counters between frames via `render_frame()`:

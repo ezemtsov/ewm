@@ -112,6 +112,13 @@ description.  But it does have to be able to *reason about* it: "which
 frame is the user looking at?", "which view should keys go to?", "what
 moved between layout updates?".
 
+Strip-active transitions also gate Emacs's own paint cost: every change
+to a strip's active slot emits `FrameShown` / `FrameHidden` events that
+lisp forwards into `gdk_window_freeze_updates` on the frame's GtkWindow,
+so hidden frames don't redraw on every redisplay tick.  See
+`render-architecture.md` "Hidden Frame Paint Suppression" for the
+mechanism.
+
 ## Identity: ids and view ids
 
 To talk about these objects in the lisp <-> compositor protocol, we need
