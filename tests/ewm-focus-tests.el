@@ -354,5 +354,19 @@ pointer."
         (ewm-input--on-window-selection-change f)
         (should (= 0 warps))))))
 
+(ert-deftest ewm-focus/keyboard-cross-output-warps ()
+  "Keyboard focus event (no x/y) leaves MFF anchor stale so the hook warps."
+  (ewm-focus-tests--with-frame f
+    (let ((warps 0)
+          (ewm-focus-follows-mouse t)
+          (ewm-mouse-follows-focus t)
+          (ewm--mff-last-window nil)
+          (frame-view-id (ewm-layout--ensure-frame-view-id f)))
+      (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
+                 (lambda (_) (cl-incf warps))))
+        (ewm--handle-focus `((view_id . ,frame-view-id)))
+        (ewm-input--on-window-selection-change f)
+        (should (= 1 warps))))))
+
 (provide 'ewm-focus-tests)
 ;;; ewm-focus-tests.el ends here

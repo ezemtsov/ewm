@@ -63,13 +63,12 @@ recover the surface-id."
           t))
        ((when-let ((frame (ewm--find-frame-by-view-id view-id)))
           (select-frame frame)
-          (when-let* ((ewm--is-ffm-focus-event)
-                      (window (window-at-x-y x y frame))
-                      ((not (minibufferp (window-buffer window)))))
-            (select-window window))
-          ;; Anchor MFF unconditionally: frame-edge hovers (mode-line,
-          ;; fringe, tab-line) still flip `selected-window' via `select-frame'.
-          (setq ewm--mff-last-window (selected-window))
+          (when ewm--is-ffm-focus-event
+            (when-let* ((window (window-at-x-y x y frame))
+                        ((not (minibufferp (window-buffer window)))))
+              (select-window window))
+            ;; Anchor only on FFM; keyboard events must leave it stale so MFF warps.
+            (setq ewm--mff-last-window (selected-window)))
           t))))))
 
 (provide 'ewm-focus)
