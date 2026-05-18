@@ -37,6 +37,7 @@ enum Op {
     FocusFrame(u64),
     EnterPrefixRedirect(u64),
     RemoveOutput(usize),
+    AddOutput(usize),
     DestroyFrame(u64),
 }
 
@@ -119,6 +120,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
         FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
+        (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
     ]
 }
@@ -198,16 +200,27 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 "invariant 8: apply_output_layout dropped {:?}",
                 before.difference(&after).collect::<Vec<_>>(),
             );
-            // I10: every frame in the layout ends up on the destination strip.
+            // I10/I12: layout-named frames are present and in layout order.
             if let Some(strip) = fix.ewm_ref().output_strips.get(dest) {
-                for id in placed {
+                for id in &placed {
                     assert!(
-                        strip.frames.iter().any(|f| f.surface_id == id),
+                        strip.frames.iter().any(|f| f.surface_id == *id),
                         "invariant 10: frame {} missing from {} after layout",
                         id,
                         dest,
                     );
                 }
+                let subseq: Vec<u64> = strip
+                    .frames
+                    .iter()
+                    .map(|f| f.surface_id)
+                    .filter(|id| placed.contains(id))
+                    .collect();
+                assert_eq!(
+                    subseq, placed,
+                    "invariant 12: strip order on {} doesn't match layout order",
+                    dest,
+                );
             }
         }
         Op::FocusView(v) => {
@@ -244,6 +257,13 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 "invariant 9: remove_output({}) left a strip entry behind",
                 name,
             );
+        }
+        Op::AddOutput(output) => {
+            let name = OUTPUTS[output];
+            // Production never re-adds an already-mapped output.
+            if !fix.has_output(name) {
+                fix.add_output(name, 1920, 1080);
+            }
         }
         Op::DestroyFrame(id) => {
             let was_present = strip_frame_ids(fix).contains(&id);

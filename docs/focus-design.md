@@ -239,6 +239,10 @@ After specific operations:
 11. **Destruction is authoritative.**  After
     `handle_toplevel_destroyed`, the frame's surface_id is gone from
     every strip.
+12. **Layout order is the strip order.**  Frames named in
+    `apply_output_layout(name, frames)` appear in `name`'s strip in
+    the order they appear in `frames`; pre-existing frames absent
+    from the new layout sink to the end.
 
 The pure `resolve_keyboard_focus_target` helper (lock > layer >
 toplevel priority) is covered by a second set of properties in the
