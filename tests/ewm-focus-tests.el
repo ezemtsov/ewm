@@ -277,6 +277,56 @@ call to `build-frame-plist'; reorder its two passes and this fails."
             (should (eq captured buf))))
       (kill-buffer buf))))
 
+(ert-deftest ewm-focus/mff-off-skips-warp ()
+  "With MFF off, the selection-change hook is a no-op."
+  (let ((warps 0)
+        (ewm-mouse-follows-focus nil))
+    (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
+               (lambda (_) (cl-incf warps))))
+      (ewm-input--on-window-selection-change (selected-frame))
+      (should (= 0 warps)))))
+
+(ert-deftest ewm-focus/mff-idempotent-on-unchanged-selection ()
+  "Repeated hook fires without a real selection change must not warp.
+Process filters (telega, magit) jostle `selected-window' between
+commands; if this guard breaks, every background event warps the
+pointer."
+  (let ((warps 0)
+        (ewm-mouse-follows-focus t)
+        (ewm--mff-last-window (selected-window)))
+    (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
+               (lambda (_) (cl-incf warps))))
+      (ewm-input--on-window-selection-change (selected-frame))
+      (ewm-input--on-window-selection-change (selected-frame))
+      (should (= 0 warps)))))
+
+(ert-deftest ewm-focus/mff-skips-minibuffer ()
+  "Selecting the minibuffer never warps the pointer."
+  (ewm-focus-tests--with-frame f
+    (let ((warps 0))
+      (cl-letf (((symbol-function 'ewm-warp-pointer)
+                 (lambda (_ _) (cl-incf warps)))
+                ((symbol-function 'ewm--get-output-origin)
+                 (lambda (_) (cons 0 0)))
+                ;; Force the pointer-inside guard to fall through.
+                ((symbol-function 'ewm-input--pointer-in-window-p)
+                 (lambda (_) nil)))
+        (ewm-input--warp-pointer-to-window (minibuffer-window f))
+        (should (= 0 warps))))))
+
+(ert-deftest ewm-focus/mff-skips-when-pointer-already-inside ()
+  "If the pointer is already in the target window, no warp."
+  (ewm-focus-tests--with-frame f
+    (let ((warps 0))
+      (cl-letf (((symbol-function 'ewm-warp-pointer)
+                 (lambda (_ _) (cl-incf warps)))
+                ((symbol-function 'ewm--get-output-origin)
+                 (lambda (_) (cons 0 0)))
+                ((symbol-function 'ewm-input--pointer-in-window-p)
+                 (lambda (_) t)))
+        (ewm-input--warp-pointer-to-window (frame-selected-window f))
+        (should (= 0 warps))))))
+
 (ert-deftest ewm-focus/ffm-on-frame-edge-does-not-warp ()
   "FFM hover on a frame edge keeps `ewm--mff-last-window' in sync, suppressing MFF warp."
   (ewm-focus-tests--with-frame f
