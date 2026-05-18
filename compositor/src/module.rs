@@ -36,6 +36,7 @@
 //! per compositor tick in `update_shared_state()`. This gives consistent
 //! snapshots without scattered atomics.
 
+use anyhow::anyhow;
 use emacs::{define_errors, defun, use_functions, use_symbols, Env, IntoLisp, Result, Value};
 
 // Cached Lisp symbols used in hot-path defuns (interning on every call is wasteful).
@@ -523,7 +524,25 @@ fn version() -> Result<String> {
 /// Install a CSS string on the host Emacs's default GTK screen.
 #[defun]
 fn gtk_set_style(css: String) -> Result<()> {
-    crate::gtk_css::set_style(&css)
+    crate::gtk::set_style(&css)
+}
+
+/// Suspend GdkWindow paint updates for a frame's GtkWindow (window-id string).
+#[defun]
+fn gtk_freeze_frame_updates(window_id: String) -> Result<()> {
+    let ptr: usize = window_id
+        .parse()
+        .map_err(|_| anyhow!("invalid window-id: {window_id}"))?;
+    crate::gtk::set_updates_frozen(ptr, true)
+}
+
+/// Resume GdkWindow paint updates; flushes any queued expose.
+#[defun]
+fn gtk_thaw_frame_updates(window_id: String) -> Result<()> {
+    let ptr: usize = window_id
+        .parse()
+        .map_err(|_| anyhow!("invalid window-id: {window_id}"))?;
+    crate::gtk::set_updates_frozen(ptr, false)
 }
 
 // Compositor state
