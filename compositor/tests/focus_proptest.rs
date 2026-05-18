@@ -180,9 +180,15 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             }
         }
         Op::ApplyLayout { output, frames } => {
+            let dest = OUTPUTS[output];
             let real: Vec<Frame> = frames.iter().map(to_frame).collect();
             let before = strip_frame_ids(fix);
-            fix.ewm().apply_output_layout(OUTPUTS[output], real);
+            let placed: Vec<u64> = real
+                .iter()
+                .map(|f| f.surface_id)
+                .filter(|&id| id != 0)
+                .collect();
+            fix.ewm().apply_output_layout(dest, real);
             // I8: apply_output_layout never drops frames.
             let after = strip_frame_ids(fix);
             assert!(
@@ -190,6 +196,17 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 "invariant 8: apply_output_layout dropped {:?}",
                 before.difference(&after).collect::<Vec<_>>(),
             );
+            // I10: every frame in the layout ends up on the destination strip.
+            if let Some(strip) = fix.ewm_ref().output_strips.get(dest) {
+                for id in placed {
+                    assert!(
+                        strip.frames.iter().any(|f| f.surface_id == id),
+                        "invariant 10: frame {} missing from {} after layout",
+                        id,
+                        dest,
+                    );
+                }
+            }
         }
         Op::FocusView(v) => {
             fix.ewm().set_focus_view(v, "proptest", false);

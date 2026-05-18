@@ -200,7 +200,7 @@ lisp/compositor boundary -- the next section is about why.
 ## Invariants
 
 `compositor/tests/focus_proptest.rs` is the executable spec.  Six
-invariants always hold; two more describe what specific operations
+invariants always hold; four more describe what specific operations
 must leave behind.
 
 Always:
@@ -230,6 +230,12 @@ After specific operations:
    surface_ids across all strips can grow or shuffle, but it never
    strictly shrinks via layout.  Frames go away only through
    `handle_toplevel_destroyed`.
+9. **Removing an output evicts its strip.**  After `remove_output`,
+   there is no strip entry for that output, and focus has hopped to
+   a surviving frame if any exist.
+10. **A layout's frames end up on its destination strip.**  Every
+    frame named in `apply_output_layout(name, frames)` lives in
+    `name`'s strip after the call, even if it had to migrate.
 
 The pure `resolve_keyboard_focus_target` helper (lock > layer >
 toplevel priority) is covered by a second set of properties in the
