@@ -2617,7 +2617,9 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Send to Emacs for process-environment (so child processes inherit)
-    crate::module::push_event(crate::event::Event::Environment { vars: env_vars });
+    state
+        .ewm
+        .queue_event(crate::event::Event::Environment { vars: env_vars });
 
     // Initialize D-Bus for screen sharing. The PipeWire connection
     // and its event channel are owned by `Ewm.casting` and were set up

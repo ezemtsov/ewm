@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use ewm_core::event::Event;
 use ewm_core::resolve_keyboard_focus_target;
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
@@ -389,6 +390,90 @@ proptest! {
         for op in ops {
             apply_op(&mut fix, op);
             assert_invariants(&fix);
+        }
+    }
+}
+
+/// Strategy without `CreateEmacsFrame` -- the fixture variant bypasses
+/// reconcile and would break the event-balance invariant.
+fn reconcile_op_strategy() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        (0..OUTPUTS.len(), layout_strategy())
+            .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
+        ENTRY_VID_RANGE.prop_map(|v| Op::FocusView(nz(v))),
+        FRAME_SID_RANGE.prop_map(Op::FocusFrame),
+        FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
+        (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
+        (0..OUTPUTS.len()).prop_map(Op::AddOutput),
+        FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
+    ]
+}
+
+/// Snapshot in `apply_output_layout` misses outputs that have no strip yet.
+fn ensure_strips(fix: &mut Fixture) {
+    for name in OUTPUTS {
+        if fix.has_output(name) {
+            let clock = fix.ewm().animations_clock.clone();
+            fix.ewm()
+                .output_strips
+                .entry(name.to_string())
+                .or_insert_with(|| ewm_core::strip::Strip::new(clock));
+        }
+    }
+}
+
+proptest! {
+    /// For every frame currently in some strip, the running net of
+    /// `FrameShown - FrameHidden` events should be 1 iff it's that strip's
+    /// active frame, else 0.
+    #[test]
+    fn frame_show_hide_net_tracks_active_slot(
+        ops in prop::collection::vec(reconcile_op_strategy(), 1..30)
+    ) {
+        let mut fix = Fixture::new().unwrap();
+        fix.enable_event_capture();
+        for name in OUTPUTS {
+            fix.add_output(name, 1920, 1080);
+        }
+        ensure_strips(&mut fix);
+        let _ = fix.drain_events();
+
+        let mut net: HashMap<u64, i32> = HashMap::new();
+
+        for op in ops {
+            apply_op(&mut fix, op);
+            ensure_strips(&mut fix);
+
+            for event in fix.drain_events() {
+                match event {
+                    Event::FrameShown { id } => *net.entry(id).or_insert(0) += 1,
+                    Event::FrameHidden { id } => *net.entry(id).or_insert(0) -= 1,
+                    // Production surface ids are monotonic; the test fixture
+                    // recycles them, so drop net state when the id goes away.
+                    Event::Close { id } => {
+                        net.remove(&id);
+                    }
+                    _ => {}
+                }
+            }
+
+            for (out_name, strip) in &fix.ewm_ref().output_strips {
+                let active = strip.active_frame().map(|f| f.surface_id);
+                for frame in &strip.frames {
+                    let id = frame.surface_id;
+                    let expected: i32 = if active == Some(id) { 1 } else { 0 };
+                    let actual = net.get(&id).copied().unwrap_or(0);
+                    prop_assert_eq!(
+                        actual,
+                        expected,
+                        "frame {} on {}: net shown-hidden = {} but expected {}",
+                        id,
+                        out_name,
+                        actual,
+                        expected,
+                    );
+                }
+            }
         }
     }
 }

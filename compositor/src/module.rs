@@ -103,7 +103,6 @@ define_errors! {
 }
 
 use std::collections::{HashMap, VecDeque};
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
@@ -111,7 +110,6 @@ use std::thread::{self, JoinHandle};
 use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
 
-use crate::event::Event;
 use crate::strip::Frame;
 use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
 
@@ -484,8 +482,7 @@ pub fn get_focus_history() -> Vec<FocusEvent> {
 
 // Event Pipe (compositor -> Emacs via open_channel fd)
 
-/// Pipe writer for sending events to Emacs.
-/// Set by `init_event_channel`, written to by `push_event`.
+/// Pipe writer for sending events to Emacs.  Set by `init_event_channel`.
 static EVENT_WRITER: Mutex<Option<Box<dyn std::io::Write + Send>>> = Mutex::new(None);
 
 /// Initialize the event channel from a pipe process.
@@ -497,15 +494,14 @@ fn init_event_channel(env: &Env, pipe_process: Value<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Send an event to Emacs as newline-delimited JSON via the pipe.
-pub fn push_event(event: Event) {
+/// Write `event` as one JSON line to the Emacs pipe.
+pub(crate) fn write_event(event: &crate::event::Event) {
+    use std::io::Write;
+    let mut buf = serde_json::to_vec(event).unwrap_or_default();
+    buf.push(b'\n');
     let mut guard = EVENT_WRITER.lock().unwrap();
-    if let Some(ref mut w) = *guard {
-        let mut buf = serde_json::to_vec(&event).unwrap_or_default();
-        buf.push(b'\n');
-        if w.write_all(&buf).is_err() {
-            // Pipe broken (Emacs closed the process); drop silently
-        }
+    if let Some(w) = guard.as_mut() {
+        let _ = w.write_all(&buf);
     }
 }
 

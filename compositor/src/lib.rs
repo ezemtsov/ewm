@@ -1017,6 +1017,9 @@ pub struct Ewm {
     // Event loop handle (for idle timer registration)
     pub loop_handle: LoopHandle<'static, State>,
 
+    /// Worker-thread sender that routes events back into the main loop.
+    pub worker_event_tx: smithay::reexports::calloop::channel::Sender<Event>,
+
     // xwayland-satellite (on-demand X11 support)
     pub satellite: Option<xwayland::satellite::Satellite>,
 
@@ -1034,6 +1037,9 @@ pub struct Ewm {
 
     // Client cursor image status (Hidden/Surface/Named)
     pub cursor_image_status: CursorImageStatus,
+
+    /// When `Some`, `queue_event` mirrors each event here.
+    pub captured_events: Option<Vec<Event>>,
 }
 
 impl Ewm {
@@ -1142,6 +1148,19 @@ impl Ewm {
 
         // Initialize pointer constraints protocol (zwp-pointer-constraints-v1)
         let pointer_constraints_state = PointerConstraintsState::new::<State>(&display_handle);
+
+        let (worker_event_tx, worker_event_rx) =
+            smithay::reexports::calloop::channel::channel::<Event>();
+        loop_handle_clone
+            .insert_source(worker_event_rx, move |event, _, state| {
+                match event {
+                    smithay::reexports::calloop::channel::Event::Msg(msg) => {
+                        state.ewm.queue_event(msg);
+                    }
+                    smithay::reexports::calloop::channel::Event::Closed => (),
+                }
+            })
+            .expect("failed to register worker event source");
 
         Self {
             stop_signal: None,
@@ -1253,6 +1272,8 @@ impl Ewm {
             },
             notified_activity_this_iteration: false,
             cursor_image_status: CursorImageStatus::default_named(),
+            captured_events: None,
+            worker_event_tx,
         }
     }
 
@@ -1385,15 +1406,24 @@ impl Ewm {
         self.space.unmap_output(output);
 
         // Clean up layout state
-        if let Some(old_strip) = self.output_strips.remove(&output_name) {
-            for entry in old_strip.surfaces() {
-                if let Some(outputs) = self.surface_outputs.get_mut(&entry.surface_id) {
-                    outputs.remove(&output_name);
-                    if outputs.is_empty() {
-                        self.surface_outputs.remove(&entry.surface_id);
+        let evicted_active_id =
+            if let Some(old_strip) = self.output_strips.remove(&output_name) {
+                let was_active = old_strip.active_frame().map(|f| f.surface_id);
+                for entry in old_strip.surfaces() {
+                    if let Some(outputs) = self.surface_outputs.get_mut(&entry.surface_id) {
+                        outputs.remove(&output_name);
+                        if outputs.is_empty() {
+                            self.surface_outputs.remove(&entry.surface_id);
+                        }
                     }
                 }
-            }
+                was_active
+            } else {
+                None
+            };
+        // No reconcile runs for the evicted strip; freeze its active frame.
+        if let Some(id) = evicted_active_id {
+            self.queue_event(Event::FrameHidden { id });
         }
         self.working_areas.remove(&output_name);
 
@@ -2135,6 +2165,8 @@ impl Ewm {
             .collect();
         for (id, prev) in &migrations {
             if let Some(prev_name) = prev {
+                let was_active_in_prev =
+                    active_before.get(prev_name) == Some(&Some(*id));
                 if let Some(prev_strip) = self.output_strips.get_mut(prev_name) {
                     // `remove_frame_at` adjusts `active_idx` and seeds the
                     // slide-in animation on surviving neighbours; plain
@@ -2142,6 +2174,11 @@ impl Ewm {
                     if let Some(idx) = prev_strip.frames.iter().position(|f| f.surface_id == *id) {
                         prev_strip.remove_frame_at(idx);
                     }
+                }
+                // Source reconcile skips Hidden for a frame already gone
+                // from its strip; freeze it here.
+                if was_active_in_prev {
+                    self.queue_event(Event::FrameHidden { id: *id });
                 }
             }
         }
@@ -3576,9 +3613,12 @@ impl Ewm {
         None
     }
 
-    /// Queue an event to be sent to Emacs via the module queue
+    /// Emit an event to the lisp side.
     pub(crate) fn queue_event(&mut self, event: Event) {
-        module::push_event(event);
+        if let Some(sink) = &mut self.captured_events {
+            sink.push(event.clone());
+        }
+        module::write_event(&event);
     }
 
     /// Emit FrameShown/FrameHidden when an output's strip-active changes.
@@ -5331,7 +5371,7 @@ impl XdgShellHandler for State {
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            module::push_event(Event::Minimize { id });
+            self.ewm.queue_event(Event::Minimize { id });
         }
     }
 
@@ -5375,7 +5415,7 @@ impl XdgShellHandler for State {
                 .and_then(|o| Output::from_resource(&o))
                 .map(|o| o.name())
                 .or_else(|| self.ewm.find_surface_output(id).map(|o| o.name()));
-            module::push_event(Event::FullscreenRequest {
+            self.ewm.queue_event(Event::FullscreenRequest {
                 id,
                 output: output_name,
             });
@@ -5384,19 +5424,19 @@ impl XdgShellHandler for State {
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            module::push_event(Event::UnfullscreenRequest { id });
+            self.ewm.queue_event(Event::UnfullscreenRequest { id });
         }
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            module::push_event(Event::MaximizeRequest { id });
+            self.ewm.queue_event(Event::MaximizeRequest { id });
         }
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            module::push_event(Event::UnmaximizeRequest { id });
+            self.ewm.queue_event(Event::UnmaximizeRequest { id });
         }
     }
 
@@ -5663,7 +5703,7 @@ impl ForeignToplevelHandler for State {
                 .and_then(|o| Output::from_resource(&o))
                 .map(|o| o.name())
                 .or_else(|| self.ewm.find_surface_output(id).map(|o| o.name()));
-            module::push_event(Event::FullscreenRequest {
+            self.ewm.queue_event(Event::FullscreenRequest {
                 id,
                 output: output_name,
             });
@@ -5672,25 +5712,25 @@ impl ForeignToplevelHandler for State {
 
     fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            module::push_event(Event::UnfullscreenRequest { id });
+            self.ewm.queue_event(Event::UnfullscreenRequest { id });
         }
     }
 
     fn set_maximized(&mut self, wl_surface: WlSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            module::push_event(Event::MaximizeRequest { id });
+            self.ewm.queue_event(Event::MaximizeRequest { id });
         }
     }
 
     fn unset_maximized(&mut self, wl_surface: WlSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            module::push_event(Event::UnmaximizeRequest { id });
+            self.ewm.queue_event(Event::UnmaximizeRequest { id });
         }
     }
 
     fn minimize(&mut self, wl_surface: WlSurface) {
         if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            module::push_event(Event::Minimize { id });
+            self.ewm.queue_event(Event::Minimize { id });
         }
     }
 }
@@ -5703,7 +5743,7 @@ impl WorkspaceHandler for State {
     }
 
     fn activate_workspace(&mut self, output: String, frame_index: usize) {
-        module::push_event(Event::ActivateWorkspace {
+        self.ewm.queue_event(Event::ActivateWorkspace {
             output,
             frame_index,
         });
@@ -6696,6 +6736,7 @@ impl State {
             let write_fd: OwnedFd = write_end.into();
             let mime = "text/plain;charset=utf-8".to_string();
             if let Ok(()) = request_data_device_client_selection(&state.ewm.seat, mime, write_fd) {
+                let tx = state.ewm.worker_event_tx.clone();
                 std::thread::spawn(move || {
                     use std::io::Read;
                     let _ = read_end.set_read_timeout(Some(Duration::from_secs(5)));
@@ -6707,7 +6748,7 @@ impl State {
                     }
                     if let Ok(text) = String::from_utf8(buf) {
                         if !text.is_empty() {
-                            module::push_event(Event::SelectionChanged { text });
+                            let _ = tx.send(Event::SelectionChanged { text });
                         }
                     }
                 });

@@ -150,6 +150,21 @@ impl Fixture {
         self.state.ewm.id_windows.contains_key(&id)
     }
 
+    /// Start mirroring `queue_event` into a per-Ewm buffer.
+    pub fn enable_event_capture(&mut self) {
+        self.state.ewm.captured_events = Some(Vec::new());
+    }
+
+    /// Take and clear captured events.  Empty if capture is disabled.
+    pub fn drain_events(&mut self) -> Vec<crate::event::Event> {
+        self.state
+            .ewm
+            .captured_events
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
     /// Per-frame processing callback (simplified version of production refresh_and_flush_clients)
     fn refresh_and_flush_clients(&mut self) {
         // Process module commands
