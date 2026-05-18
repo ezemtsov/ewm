@@ -286,6 +286,17 @@ call to `build-frame-plist'; reorder its two passes and this fails."
       (ewm-input--on-window-selection-change (selected-frame))
       (should (= 0 warps)))))
 
+(ert-deftest ewm-focus/mff-warps-on-selection-change ()
+  "MFF on + selection differs from anchor: warp fires and anchor updates."
+  (let ((warps 0)
+        (ewm-mouse-follows-focus t)
+        (ewm--mff-last-window nil))
+    (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
+               (lambda (_) (cl-incf warps))))
+      (ewm-input--on-window-selection-change (selected-frame))
+      (should (= 1 warps))
+      (should (eq ewm--mff-last-window (selected-window))))))
+
 (ert-deftest ewm-focus/mff-idempotent-on-unchanged-selection ()
   "Repeated hook fires without a real selection change must not warp.
 Process filters (telega, magit) jostle `selected-window' between
