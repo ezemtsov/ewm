@@ -36,6 +36,7 @@ enum Op {
     FocusView(ViewId),
     FocusFrame(u64),
     EnterPrefixRedirect(u64),
+    RemoveOutput(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +117,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         ENTRY_VID_RANGE.prop_map(|v| Op::FocusView(nz(v))),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
         FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
+        (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
     ]
 }
 
@@ -151,6 +153,10 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             // already exists on any output, skip the insert (real `new_toplevel`
             // wouldn't be called twice for the same id either).
             let output_name = OUTPUTS[output];
+            // Mirrors production: frames only enter a strip whose output is mapped.
+            if !fix.has_output(output_name) {
+                return;
+            }
             if !strip_frame_ids(fix).contains(&surface_id) {
                 let clock = fix.ewm().animations_clock.clone();
                 let strip = fix
@@ -209,6 +215,16 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     f,
                 );
             }
+        }
+        Op::RemoveOutput(output) => {
+            let name = OUTPUTS[output];
+            fix.remove_output(name);
+            // I9: remove_output evicts the strip for that output.
+            assert!(
+                !fix.ewm_ref().output_strips.contains_key(name),
+                "invariant 9: remove_output({}) left a strip entry behind",
+                name,
+            );
         }
     }
 }

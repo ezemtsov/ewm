@@ -1301,6 +1301,21 @@ impl Ewm {
         }
     }
 
+    /// If no frame is focused but some frame exists, focus an arbitrary one.
+    fn focus_any_frame_if_unfocused(&mut self, reason: &'static str) {
+        if self.focused_frame_id == 0 {
+            if let Some(id) = self
+                .output_strips
+                .values()
+                .flat_map(|s| s.frames.iter())
+                .next()
+                .map(|f| f.surface_id)
+            {
+                self.set_focus_frame(id, reason, false);
+            }
+        }
+    }
+
     /// Surface id of the frame at (output, idx), if it exists.
     fn frame_surface_id_at(&self, output: &str, idx: usize) -> Option<u64> {
         self.output_strips
@@ -1391,6 +1406,10 @@ impl Ewm {
             let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
             dbus_outputs.retain(|o| o.name != output_name);
         }
+
+        // Prune dangling focus from the gone strip and hop to a survivor; I5.
+        self.prune_dangling_focus();
+        self.focus_any_frame_if_unfocused("output_removed");
 
         self.recalculate_output_size();
         self.send_output_disconnected(&output_name);
@@ -2195,20 +2214,9 @@ impl Ewm {
         self.refresh_primary_assignments();
         self.update_frames_for_working_area(&output);
         self.prune_dangling_focus();
-        // Defensive: if no frame is focused and at least one exists, focus the
-        // first one.  Normally `new_toplevel`'s auto-focus handles this; this
-        // covers the race where `apply_output_layout` runs first.
-        if self.focused_frame_id == 0 {
-            if let Some(id) = self
-                .output_strips
-                .values()
-                .flat_map(|s| s.frames.iter())
-                .next()
-                .map(|f| f.surface_id)
-            {
-                self.set_focus_frame(id, "auto_focus_on_layout", false);
-            }
-        }
+        // Covers the race where `apply_output_layout` runs before
+        // `new_toplevel`'s auto-focus.
+        self.focus_any_frame_if_unfocused("auto_focus_on_layout");
 
         debug!(
             "apply_output_layout: output '{}' with {} surfaces",

@@ -77,6 +77,13 @@ impl Fixture {
         }
     }
 
+    pub fn has_output(&self, name: &str) -> bool {
+        self.state
+            .backend
+            .as_headless()
+            .is_some_and(|h| h.outputs.contains_key(name))
+    }
+
     /// Get render count for a specific output
     pub fn render_count(&self, output_name: &str) -> usize {
         if let Some(headless) = self.state.backend.as_headless() {
