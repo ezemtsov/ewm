@@ -152,12 +152,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             // already exists on any output, skip the insert (real `new_toplevel`
             // wouldn't be called twice for the same id either).
             let output_name = OUTPUTS[output];
-            let already_present = fix
-                .ewm_ref()
-                .output_strips
-                .values()
-                .any(|s| s.frames.iter().any(|f| f.surface_id == surface_id));
-            if !already_present {
+            if !strip_frame_ids(fix).contains(&surface_id) {
                 let clock = fix.ewm().animations_clock.clone();
                 let strip = fix
                     .ewm()
@@ -181,7 +176,15 @@ fn apply_op(fix: &mut Fixture, op: Op) {
         }
         Op::ApplyLayout { output, frames } => {
             let real: Vec<Frame> = frames.iter().map(to_frame).collect();
+            let before = strip_frame_ids(fix);
             fix.ewm().apply_output_layout(OUTPUTS[output], real);
+            // I8: apply_output_layout never drops frames.
+            let after = strip_frame_ids(fix);
+            assert!(
+                before.is_subset(&after),
+                "invariant 8: apply_output_layout dropped {:?}",
+                before.difference(&after).collect::<Vec<_>>(),
+            );
         }
         Op::FocusView(v) => {
             fix.ewm().set_focus_view(v, "proptest", false);
@@ -190,9 +193,34 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             fix.ewm().set_focus_frame(f, "proptest", false);
         }
         Op::EnterPrefixRedirect(f) => {
+            let known = strip_frame_ids(fix).contains(&f);
             fix.ewm().enter_prefix_redirect(f);
+            if known {
+                // I7: prefix-redirect parks focus on the frame (no view).
+                assert_eq!(
+                    fix.ewm_ref().focused_frame_id,
+                    f,
+                    "invariant 7: enter_prefix_redirect({}) didn't set focused_frame_id",
+                    f,
+                );
+                assert_eq!(
+                    fix.ewm_ref().focused_view_id,
+                    None,
+                    "invariant 7: enter_prefix_redirect({}) didn't clear focused_view_id",
+                    f,
+                );
+            }
         }
     }
+}
+
+fn strip_frame_ids(fix: &Fixture) -> HashSet<u64> {
+    fix.ewm_ref()
+        .output_strips
+        .values()
+        .flat_map(|s| s.frames.iter().map(|f| f.surface_id))
+        .filter(|&id| id != 0)
+        .collect()
 }
 
 fn assert_invariants(fix: &Fixture) {
