@@ -277,5 +277,21 @@ call to `build-frame-plist'; reorder its two passes and this fails."
             (should (eq captured buf))))
       (kill-buffer buf))))
 
+(ert-deftest ewm-focus/ffm-on-frame-edge-does-not-warp ()
+  "FFM hover on a frame edge keeps `ewm--mff-last-window' in sync, suppressing MFF warp."
+  (ewm-focus-tests--with-frame f
+    (let ((warps 0)
+          (ewm-focus-follows-mouse t)
+          (ewm-mouse-follows-focus t)
+          (ewm--mff-last-window nil)
+          (frame-view-id (ewm-layout--ensure-frame-view-id f)))
+      (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
+                 (lambda (_) (cl-incf warps)))
+                ;; Frame-edge: no Emacs window at this point.
+                ((symbol-function 'window-at-x-y) (lambda (&rest _) nil)))
+        (ewm--handle-focus `((view_id . ,frame-view-id) (x . 0) (y . 0)))
+        (ewm-input--on-window-selection-change f)
+        (should (= 0 warps))))))
+
 (provide 'ewm-focus-tests)
 ;;; ewm-focus-tests.el ends here
