@@ -8,11 +8,35 @@ use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 use smithay::utils::{Logical, Rectangle, Size};
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface};
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+use wayland_client::protocol::{
+    wl_buffer, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
+
+/// Notable events the client received from the server. Tests `drain_events`
+/// after a roundtrip and asserts on the contents.
+#[derive(Debug, Clone)]
+pub enum ClientEvent {
+    PointerEnter {
+        surface: wl_surface::WlSurface,
+        x: f64,
+        y: f64,
+    },
+    PointerLeave {
+        surface: wl_surface::WlSurface,
+    },
+    PointerMotion {
+        x: f64,
+        y: f64,
+    },
+    PointerButton {
+        button: u32,
+        pressed: bool,
+    },
+}
 
 pub struct TestClient {
     pub(crate) conn: Connection,
@@ -25,6 +49,9 @@ pub struct ClientState {
     pub compositor: Option<wl_compositor::WlCompositor>,
     pub xdg_wm_base: Option<xdg_wm_base::XdgWmBase>,
     pub shm: Option<wl_shm::WlShm>,
+    pub seat: Option<wl_seat::WlSeat>,
+    pub pointer: Option<wl_pointer::WlPointer>,
+    pub events: Vec<ClientEvent>,
 }
 
 #[derive(Clone)]
@@ -54,6 +81,11 @@ impl TestClient {
 
     pub fn qh(&self) -> QueueHandle<ClientState> {
         self.eq.handle()
+    }
+
+    /// Take and clear the recorded client-side events.
+    pub fn drain_events(&mut self) -> Vec<ClientEvent> {
+        std::mem::take(&mut self.state.events)
     }
 
     fn compositor(&self) -> &wl_compositor::WlCompositor {
@@ -162,6 +194,72 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.xdg_wm_base = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_shm::WlShm::interface().name {
             state.shm = Some(registry.bind(name, version, qh, ()));
+        } else if interface == wl_seat::WlSeat::interface().name {
+            state.seat = Some(registry.bind(name, version, qh, ()));
+        }
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(caps),
+        } = event
+        {
+            if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
+                state.pointer = Some(seat.get_pointer(qh, ()));
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter {
+                surface,
+                surface_x,
+                surface_y,
+                ..
+            } => state.events.push(ClientEvent::PointerEnter {
+                surface,
+                x: surface_x,
+                y: surface_y,
+            }),
+            wl_pointer::Event::Leave { surface, .. } => {
+                state.events.push(ClientEvent::PointerLeave { surface })
+            }
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => state.events.push(ClientEvent::PointerMotion {
+                x: surface_x,
+                y: surface_y,
+            }),
+            wl_pointer::Event::Button {
+                button,
+                state: WEnum::Value(button_state),
+                ..
+            } => state.events.push(ClientEvent::PointerButton {
+                button,
+                pressed: button_state == wl_pointer::ButtonState::Pressed,
+            }),
+            _ => {}
         }
     }
 }

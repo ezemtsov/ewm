@@ -6,5 +6,5 @@
 mod client;
 mod fixture;
 
-pub use client::{ClientState as TestClientState, Popup, TestClient, Toplevel};
+pub use client::{ClientEvent, ClientState as TestClientState, Popup, TestClient, Toplevel};
 pub use fixture::Fixture;

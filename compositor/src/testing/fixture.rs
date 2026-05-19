@@ -266,6 +266,30 @@ impl Fixture {
         self.state.warp_pointer(x, y);
     }
 
+    /// Send a pointer button event at the seat's current pointer focus.
+    /// Mirrors the production `button` path: pointer.button + pointer.frame.
+    pub fn pointer_button(&mut self, button: u32, pressed: bool) {
+        use smithay::backend::input::ButtonState;
+        use smithay::input::pointer::ButtonEvent;
+        use smithay::utils::SERIAL_COUNTER;
+        let pointer = self.state.ewm.pointer.clone();
+        let state = if pressed {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Released
+        };
+        pointer.button(
+            &mut self.state,
+            &ButtonEvent {
+                button,
+                state,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: 0,
+            },
+        );
+        pointer.frame(&mut self.state);
+    }
+
     /// Start mirroring `queue_event` into a per-Ewm buffer.
     pub fn enable_event_capture(&mut self) {
         self.state.ewm.captured_events = Some(Vec::new());

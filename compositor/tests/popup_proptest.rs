@@ -8,10 +8,11 @@ use std::collections::HashSet;
 
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{Fixture, Popup, TestClient, Toplevel};
+use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel};
 use ewm_core::{LayoutEntry, ViewId};
 use proptest::prelude::*;
 use smithay::utils::{Logical, Point, Rectangle, Size};
+use wayland_client::Proxy as _;
 
 fn nz(n: u64) -> ViewId {
     std::num::NonZeroU64::new(n).unwrap()
@@ -208,6 +209,67 @@ proptest! {
                 hit_surface,
                 placement.surface.clone(),
                 "click at {:?} routed to a non-popup surface",
+                centre,
+            );
+        }
+    }
+
+    /// Warping the pointer onto each view's popup centre, then sending a
+    /// button press, must deliver pointer enter + button events on the
+    /// popup's `wl_surface` (not on the parent toplevel). Exercises the
+    /// production `warp_pointer` -> `surface_under_point` -> seat path
+    /// rather than the helper used by the hit-test proptest.
+    #[test]
+    fn popup_click_routes_to_popup_surface(n in 1usize..=4) {
+        const BTN_LEFT: u32 = 0x110;
+        let mut fix = Fixture::new().unwrap();
+        let mut client = fix.new_client().unwrap();
+        let (toplevel, sid) = open_test_toplevel(&mut fix, &mut client);
+        apply_n_view_layout(&mut fix, sid, n);
+        let popup = open_test_popup(&mut fix, &mut client, &toplevel);
+        fix.roundtrip(&mut client);
+        let _ = client.drain_events();
+
+        let placements = collect_popup_placements(fix.ewm_ref(), head_a_rect());
+        let popup_id = popup.surface.id().protocol_id();
+        let toplevel_id = toplevel.surface.id().protocol_id();
+        prop_assert_eq!(placements.len(), n);
+
+        for placement in &placements {
+            let centre = (
+                (placement.location.x + placement.size.w / 2) as f64,
+                (placement.location.y + placement.size.h / 2) as f64,
+            );
+
+            // Park the pointer off-screen first so each iteration's enter
+            // event is unambiguous (otherwise lingering focus from the
+            // previous click suppresses re-enter).
+            fix.warp_pointer(-1.0, -1.0);
+            fix.roundtrip(&mut client);
+            let _ = client.drain_events();
+
+            fix.warp_pointer(centre.0, centre.1);
+            fix.pointer_button(BTN_LEFT, true);
+            fix.pointer_button(BTN_LEFT, false);
+            fix.roundtrip(&mut client);
+
+            let events = client.drain_events();
+            let enter_id = events.iter().find_map(|e| match e {
+                ClientEvent::PointerEnter { surface, .. } => Some(surface.id().protocol_id()),
+                _ => None,
+            });
+            prop_assert_eq!(
+                enter_id,
+                Some(popup_id),
+                "warp to popup centre {:?} delivered Enter to {:?}, expected popup ({}); toplevel id = {}",
+                centre, enter_id, popup_id, toplevel_id,
+            );
+            let saw_press = events
+                .iter()
+                .any(|e| matches!(e, ClientEvent::PointerButton { button: BTN_LEFT, pressed: true }));
+            prop_assert!(
+                saw_press,
+                "no button-press event delivered to client at centre {:?}",
                 centre,
             );
         }
