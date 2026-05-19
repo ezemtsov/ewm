@@ -4,12 +4,14 @@
 //! `Display`, the other half lives here so tests drive real xdg-shell protocol
 //! and observe actual `WlSurface` / `PopupManager` state.
 
+use std::collections::HashMap;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 use smithay::utils::{Logical, Rectangle, Size};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+    wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::xdg::shell::client::{
@@ -40,6 +42,14 @@ pub enum ClientEvent {
         width: i32,
         height: i32,
     },
+    SurfaceEnter {
+        surface: wl_surface::WlSurface,
+        output: wl_output::WlOutput,
+    },
+    SurfaceLeave {
+        surface: wl_surface::WlSurface,
+        output: wl_output::WlOutput,
+    },
 }
 
 pub struct TestClient {
@@ -55,6 +65,10 @@ pub struct ClientState {
     pub shm: Option<wl_shm::WlShm>,
     pub seat: Option<wl_seat::WlSeat>,
     pub pointer: Option<wl_pointer::WlPointer>,
+    /// `wl_output` protocol id -> server-advertised name. Populated from
+    /// `wl_output::Event::Name` so tests can translate `SurfaceEnter` /
+    /// `SurfaceLeave` events into the same names used by `surface_outputs`.
+    pub output_names: HashMap<u32, String>,
     pub events: Vec<ClientEvent>,
 }
 
@@ -90,6 +104,12 @@ impl TestClient {
     /// Take and clear the recorded client-side events.
     pub fn drain_events(&mut self) -> Vec<ClientEvent> {
         std::mem::take(&mut self.state.events)
+    }
+
+    /// Server-advertised name for the `wl_output` proxy with this protocol id,
+    /// or `None` if the client hasn't received a `Name` event for it yet.
+    pub fn output_name(&self, proxy_id: u32) -> Option<&str> {
+        self.state.output_names.get(&proxy_id).map(|s| s.as_str())
     }
 
     fn compositor(&self) -> &wl_compositor::WlCompositor {
@@ -200,6 +220,23 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.shm = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_seat::WlSeat::interface().name {
             state.seat = Some(registry.bind(name, version, qh, ()));
+        } else if interface == wl_output::WlOutput::interface().name {
+            let _: wl_output::WlOutput = registry.bind(name, version, qh, ());
+        }
+    }
+}
+
+impl Dispatch<wl_output::WlOutput, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event {
+            state.output_names.insert(output.id().protocol_id(), name);
         }
     }
 }
@@ -346,8 +383,30 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for ClientState {
     }
 }
 
+impl Dispatch<wl_surface::WlSurface, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        surface: &wl_surface::WlSurface,
+        event: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_surface::Event::Enter { output } => state.events.push(ClientEvent::SurfaceEnter {
+                surface: surface.clone(),
+                output,
+            }),
+            wl_surface::Event::Leave { output } => state.events.push(ClientEvent::SurfaceLeave {
+                surface: surface.clone(),
+                output,
+            }),
+            _ => {}
+        }
+    }
+}
+
 noop_dispatch!(wl_compositor::WlCompositor);
-noop_dispatch!(wl_surface::WlSurface);
 noop_dispatch!(xdg_popup::XdgPopup);
 noop_dispatch!(xdg_positioner::XdgPositioner);
 noop_dispatch!(wl_shm::WlShm);

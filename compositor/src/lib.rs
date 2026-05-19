@@ -1402,25 +1402,16 @@ impl Ewm {
             }
         }
 
-        // Unmap from space
+        // Reconcile before `unmap_output` so the wl_output lookup hits.
+        let evicted_active_id = if let Some(old_strip) = self.output_strips.remove(&output_name) {
+            let was_active = old_strip.active_frame().map(|f| f.surface_id);
+            let pre: HashSet<u64> = old_strip.surfaces().map(|e| e.surface_id).collect();
+            self.reconcile_output_entries(&output_name, pre);
+            was_active
+        } else {
+            None
+        };
         self.space.unmap_output(output);
-
-        // Clean up layout state
-        let evicted_active_id =
-            if let Some(old_strip) = self.output_strips.remove(&output_name) {
-                let was_active = old_strip.active_frame().map(|f| f.surface_id);
-                for entry in old_strip.surfaces() {
-                    if let Some(outputs) = self.surface_outputs.get_mut(&entry.surface_id) {
-                        outputs.remove(&output_name);
-                        if outputs.is_empty() {
-                            self.surface_outputs.remove(&entry.surface_id);
-                        }
-                    }
-                }
-                was_active
-            } else {
-                None
-            };
         // No reconcile runs for the evicted strip; freeze its active frame.
         if let Some(id) = evicted_active_id {
             self.queue_event(Event::FrameHidden { id });
@@ -2123,6 +2114,62 @@ impl Ewm {
         self.layout_entry_under(pos).map(|(e, _, _)| e.view_id)
     }
 
+    /// Entry surface ids on `output_name`'s strip; empty if the strip is gone.
+    fn strip_entries(&self, output_name: &str) -> HashSet<u64> {
+        self.output_strips
+            .get(output_name)
+            .map(|s| s.surfaces().map(|e| e.surface_id).collect())
+            .unwrap_or_default()
+    }
+
+    /// Diff `pre` (snapshot before strip mutation) against the current strip;
+    /// fire `wl_surface.enter` / `leave` and sync `surface_outputs`.
+    fn reconcile_output_entries(
+        &mut self,
+        output_name: &str,
+        pre: HashSet<u64>,
+    ) -> HashSet<u64> {
+        let post = self.strip_entries(output_name);
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.name() == output_name)
+            .cloned();
+        for &id in pre.difference(&post) {
+            if let (Some(out), Some(window)) = (output.as_ref(), self.id_windows.get(&id)) {
+                if let Some(surface) = window.wl_surface() {
+                    out.leave(&surface);
+                }
+            }
+            if let Some(outputs) = self.surface_outputs.get_mut(&id) {
+                outputs.remove(output_name);
+                if outputs.is_empty() {
+                    self.surface_outputs.remove(&id);
+                }
+            }
+        }
+        for &id in post.difference(&pre) {
+            match (output.as_ref(), self.id_windows.get(&id)) {
+                (Some(out), Some(window)) => {
+                    if let Some(surface) = window.wl_surface() {
+                        out.enter(&surface);
+                    }
+                }
+                (_, None) => {
+                    warn!("reconcile_output_entries: surface {} not in id_windows", id);
+                }
+                _ => {}
+            }
+        }
+        for &id in &post {
+            self.surface_outputs
+                .entry(id)
+                .or_default()
+                .insert(output_name.to_string());
+        }
+        post
+    }
+
     /// Apply a declarative per-output layout.
     ///
     /// Replaces the previous layout for the given output. Surfaces removed from
@@ -2145,53 +2192,10 @@ impl Ewm {
             .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
             .collect();
 
-        // 2. Diff old vs new surface IDs
-        let old_ids: HashSet<u64> = self
-            .output_strips
-            .get(output_name)
-            .map(|s| s.surfaces().map(|e| e.surface_id).collect())
-            .unwrap_or_default();
-        let new_ids: HashSet<u64> = frames
-            .iter()
-            .flat_map(|f| f.surfaces.iter().map(|e| e.surface_id))
-            .collect();
-
-        // 3. Handle removed surfaces (old - new)
-        for &id in old_ids.difference(&new_ids) {
-            if let Some(window) = self.id_windows.get(&id) {
-                if let Some(surface) = window.wl_surface() {
-                    output.leave(&surface);
-                }
-            }
-            // Update reverse index
-            if let Some(outputs) = self.surface_outputs.get_mut(&id) {
-                outputs.remove(output_name);
-                if outputs.is_empty() {
-                    self.surface_outputs.remove(&id);
-                }
-            }
-        }
-
-        // 4. Handle newly added surfaces (new - old): enter only.
-        // Scale is sent in step 8 for active surfaces. The active output's
-        // scale is the canonical one (wp_fractional_scale_v1 is per-surface).
-        for &id in new_ids.difference(&old_ids) {
-            if let Some(window) = self.id_windows.get(&id) {
-                if let Some(surface) = window.wl_surface() {
-                    output.enter(&surface);
-                }
-            } else {
-                warn!("apply_output_layout: surface {} not found", id);
-            }
-        }
-
-        // 5. Update reverse index for all current entries
-        for &id in &new_ids {
-            self.surface_outputs
-                .entry(id)
-                .or_default()
-                .insert(output_name.to_string());
-        }
+        // Snapshot pre-merge entries; the diff runs after step 6 against the
+        // post-merge strip so kept frames don't leak `surface_outputs` entries.
+        let mut pre_entries: HashMap<String, HashSet<u64>> = HashMap::new();
+        pre_entries.insert(output_name.to_string(), self.strip_entries(output_name));
 
         // Capture prev outputs before the swap; emacs_frame_output reads strips.
         let migrations: Vec<(u64, Option<String>)> = frames
@@ -2208,6 +2212,13 @@ impl Ewm {
                 Some((id, prev))
             })
             .collect();
+        for (_, prev) in &migrations {
+            if let Some(prev_name) = prev {
+                pre_entries
+                    .entry(prev_name.clone())
+                    .or_insert_with(|| self.strip_entries(prev_name));
+            }
+        }
         for (id, prev) in &migrations {
             if let Some(prev_name) = prev {
                 let was_active_in_prev =
@@ -2276,6 +2287,14 @@ impl Ewm {
         } else if !strip_entry.frames.is_empty() {
             let clamped = strip_entry.active_idx().min(strip_entry.frames.len() - 1);
             strip_entry.set_active(clamped);
+        }
+
+        let mut new_ids = HashSet::new();
+        for (name, pre) in pre_entries {
+            let post = self.reconcile_output_entries(&name, pre);
+            if name == output_name {
+                new_ids = post;
+            }
         }
 
         for (id, prev) in migrations {

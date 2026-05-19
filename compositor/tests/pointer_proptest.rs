@@ -28,8 +28,10 @@
 //!       `surface == popup.wl_surface()`.
 //!
 //! PP2 - Popup placement is hit-testable. The centre of every popup
-//!       placement satisfies
-//!       `surface_under_point(centre) == Some((placement.surface, _))`.
+//!       placement hits *some* popup surface (one of our `popups` set),
+//!       never the parent toplevel. Strict "hits its own surface" doesn't
+//!       hold when popups overlap; the topmost wins per `popups_for_surface`
+//!       iteration order.
 //!
 //! P3  - Button delivery. After a `PointerButton(pressed)` op + roundtrip,
 //!       the client receives a `PointerButton` event with the same
@@ -40,6 +42,10 @@
 //!       the most recent `xdg_toplevel.configure` the client received
 //!       carries `(width, height)` equal to that entry's
 //!       `(entry.w, entry.h)`.
+//!
+//! C2  - Output-membership parity. The set of output names the client
+//!       believes the toplevel is on (running `wl_surface.enter` minus
+//!       `leave`) equals `ewm.surface_outputs[sid]`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -106,6 +112,9 @@ struct Harness {
     /// Latest `xdg_toplevel.configure` size the client has been told, accumulated
     /// across drain windows. `None` until the first configure arrives.
     last_configure: Option<(i32, i32)>,
+    /// Output names the client believes the toplevel is on, accumulated from
+    /// `wl_surface.enter` / `leave` events.
+    toplevel_on_outputs: HashSet<String>,
 }
 
 impl Harness {
@@ -124,15 +133,40 @@ impl Harness {
             sid,
             popups: Vec::new(),
             last_configure: None,
+            toplevel_on_outputs: HashSet::new(),
         };
         // Drain setup-time events so the first proptest op sees an empty
-        // event buffer; pull any initial configure into last_configure.
-        for ev in h.client.drain_events() {
-            if let ClientEvent::ToplevelConfigure { width, height } = ev {
-                h.last_configure = Some((width, height));
+        // event buffer; fold them into harness state first.
+        let setup_events = h.client.drain_events();
+        h.fold_events(&setup_events);
+        h
+    }
+
+    /// Apply enter/leave/configure events from a drain window to harness state.
+    fn fold_events(&mut self, events: &[ClientEvent]) {
+        let toplevel_id = self.toplevel.surface.id().protocol_id();
+        for ev in events {
+            match ev {
+                ClientEvent::ToplevelConfigure { width, height } => {
+                    self.last_configure = Some((*width, *height));
+                }
+                ClientEvent::SurfaceEnter { surface, output }
+                    if surface.id().protocol_id() == toplevel_id =>
+                {
+                    if let Some(name) = self.client.output_name(output.id().protocol_id()) {
+                        self.toplevel_on_outputs.insert(name.to_string());
+                    }
+                }
+                ClientEvent::SurfaceLeave { surface, output }
+                    if surface.id().protocol_id() == toplevel_id =>
+                {
+                    if let Some(name) = self.client.output_name(output.id().protocol_id()) {
+                        self.toplevel_on_outputs.remove(name);
+                    }
+                }
+                _ => {}
             }
         }
-        h
     }
 
     fn toplevel_in_some_strip(&self) -> bool {
@@ -261,6 +295,23 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+fn check_c2(h: &Harness) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    let server: HashSet<String> = ewm
+        .surface_outputs
+        .get(&h.sid)
+        .cloned()
+        .unwrap_or_default();
+    prop_assert_eq!(
+        h.toplevel_on_outputs.clone(),
+        server.clone(),
+        "C2: client output set {:?} != surface_outputs {:?}",
+        h.toplevel_on_outputs,
+        server,
+    );
+    Ok(())
+}
+
 fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let sid = h.sid;
@@ -343,6 +394,11 @@ fn check_p1(
 fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let placements = collect_popup_placements(ewm, world_rect());
+    let popup_ids: HashSet<u32> = h
+        .popups
+        .iter()
+        .map(|p| p.surface.id().protocol_id())
+        .collect();
     for p in &placements {
         let centre = Point::from((
             (p.location.x + p.size.w / 2) as f64,
@@ -350,14 +406,12 @@ fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
         ));
         let hit = ewm.surface_under_point(centre);
         let hit_id = hit.as_ref().map(|(s, _)| s.id().protocol_id());
-        let expected = p.surface.id().protocol_id();
-        prop_assert_eq!(
-            hit_id,
-            Some(expected),
-            "PP2: popup centre {:?} hit {:?}, expected popup surface {}",
+        prop_assert!(
+            hit_id.is_some_and(|id| popup_ids.contains(&id)),
+            "PP2: popup centre {:?} hit {:?}, expected a popup (one of {:?})",
             centre,
             hit_id,
-            expected,
+            popup_ids,
         );
     }
     Ok(())
@@ -435,16 +489,13 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
 
 fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError> {
     let events = h.client.drain_events();
-    for ev in &events {
-        if let ClientEvent::ToplevelConfigure { width, height } = ev {
-            h.last_configure = Some((*width, *height));
-        }
-    }
+    h.fold_events(&events);
     check_l1(h)?;
     check_l2(h)?;
     check_pp1(h)?;
     check_pp2(h)?;
     check_c1(h)?;
+    check_c2(h)?;
     match *last_op {
         Op::WarpPointer { x, y } => {
             let p = Point::from((x as f64, y as f64));
