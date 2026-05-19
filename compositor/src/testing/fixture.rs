@@ -3,14 +3,19 @@
 //! The Fixture provides a complete compositor environment for testing,
 //! including a headless backend, event loop, and Wayland display.
 
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::time::Duration;
 
-use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
 use smithay::reexports::wayland_server::Display;
+use smithay::utils::{Logical, Rectangle, Size};
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
-use crate::{Ewm, State};
+use crate::testing::TestClient;
+use crate::{ClientState, Ewm, State};
 
 /// Test fixture for integration testing
 ///
@@ -23,7 +28,6 @@ use crate::{Ewm, State};
 pub struct Fixture {
     event_loop: EventLoop<'static, State>,
     state: State,
-    _display: Display<State>,
 }
 
 impl Fixture {
@@ -45,13 +49,112 @@ impl Fixture {
 
         let state = State { backend, ewm };
 
+        // Dispatch inserted clients on each event_loop tick.
+        let display_source = Generic::new(display, Interest::READ, CalloopMode::Level);
+        event_loop
+            .handle()
+            .insert_source(display_source, |_, display, state| {
+                let display = unsafe { display.get_mut() };
+                if let Err(e) = display.dispatch_clients(state) {
+                    tracing::error!("test wayland dispatch error: {e}");
+                }
+                Ok(PostAction::Continue)
+            })
+            .expect("Failed to insert display source");
+
         info!("Test fixture initialized with headless backend");
 
-        Ok(Self {
-            event_loop,
-            state,
-            _display: display,
-        })
+        Ok(Self { event_loop, state })
+    }
+
+    /// Pair a `UnixStream` with the server `Display`, returning a `TestClient`
+    /// on the other end. Roundtrip after to bind globals.
+    pub fn new_client(&mut self) -> Result<TestClient, Box<dyn std::error::Error>> {
+        let (server_end, client_end) = UnixStream::pair()?;
+        self.state
+            .ewm
+            .display_handle
+            .insert_client(server_end, Arc::new(ClientState::default()))?;
+        TestClient::new(client_end)
+    }
+
+    /// Drive a full xdg toplevel lifecycle: request, configure/ack, set
+    /// window geometry, second commit.
+    pub fn open_toplevel(
+        &mut self,
+        client: &mut TestClient,
+        title: &str,
+        size: Size<i32, Logical>,
+    ) -> crate::testing::Toplevel {
+        let toplevel = client.create_toplevel(title);
+        self.roundtrip(client);
+        toplevel.xdg_surface.set_window_geometry(0, 0, size.w, size.h);
+        toplevel.surface.commit();
+        self.roundtrip(client);
+        toplevel
+    }
+
+    /// Drive a full xdg popup lifecycle: request, configure/ack, set window
+    /// geometry, second commit.
+    pub fn open_popup(
+        &mut self,
+        client: &mut TestClient,
+        parent: &crate::testing::Toplevel,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) -> crate::testing::Popup {
+        let popup = client.create_popup(parent, anchor, size);
+        self.roundtrip(client);
+        popup.xdg_surface.set_window_geometry(0, 0, size.w, size.h);
+        popup.surface.commit();
+        self.roundtrip(client);
+        popup
+    }
+
+    /// Pump client and server until both sides go idle for two consecutive
+    /// passes (one quiet pass can still race a delayed server flush).
+    pub fn roundtrip(&mut self, client: &mut TestClient) {
+        let mut idle_passes = 0;
+        for _ in 0..32 {
+            let _ = client.eq.flush();
+            self.event_loop
+                .dispatch(Some(Duration::from_millis(5)), &mut self.state)
+                .ok();
+            self.refresh_and_flush_clients();
+            if let Some(guard) = client.conn.prepare_read() {
+                let _ = guard.read();
+            }
+            let dispatched = client.eq.dispatch_pending(&mut client.state).unwrap_or(0);
+            if dispatched == 0 {
+                idle_passes += 1;
+                if idle_passes >= 2 {
+                    return;
+                }
+            } else {
+                idle_passes = 0;
+            }
+        }
+    }
+
+    /// Find the server-side surface_id for a client `WlSurface`. Matches by
+    /// the protocol wire id (unique within a client connection).
+    pub fn find_surface_id(
+        &self,
+        client_surface: &wayland_client::protocol::wl_surface::WlSurface,
+    ) -> Option<u64> {
+        use smithay::reexports::wayland_server::Resource as _;
+        use smithay::wayland::seat::WaylandFocus;
+        use wayland_client::Proxy as _;
+        let target = client_surface.id().protocol_id();
+        for (&id, window) in &self.state.ewm.id_windows {
+            let Some(server_surface) = window.wl_surface() else {
+                continue;
+            };
+            if server_surface.id().protocol_id() == target {
+                return Some(id);
+            }
+        }
+        None
     }
 
     /// Add a virtual output with the given name and size

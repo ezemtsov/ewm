@@ -679,6 +679,7 @@ dependencies = [
  "tracing-subscriber",
  "tracy-client",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-misc",
  "zbus",
 ]

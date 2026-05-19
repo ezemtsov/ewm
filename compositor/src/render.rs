@@ -162,7 +162,6 @@ pub fn collect_render_elements_for_output(
 
     use smithay::backend::renderer::element::AsRenderElements;
     use smithay::utils::Logical;
-    use smithay::wayland::seat::WaylandFocus;
 
     let mut elements: Vec<EwmRenderElement> = Vec::new();
     let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
@@ -470,42 +469,69 @@ pub fn collect_render_elements_for_output(
     // 7. Background layer
     elements.append(&mut bg_elems);
 
-    // Collect popups and insert them after the top layer (before windows)
     let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
-    for window in ewm.id_windows.values() {
-        if let Some(surface) = window.wl_surface() {
-            let window_loc = ewm.window_global_position(window).unwrap_or_default();
-            let window_geo = window.geometry();
-
-            for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
-                let popup_loc = window_loc + window_geo.loc + popup_offset - popup.geometry().loc;
-
-                let popup_rect: Rectangle<i32, Logical> =
-                    Rectangle::new(popup_loc, popup.geometry().size);
-                if !output_rect.overlaps(popup_rect) {
-                    continue;
-                }
-
-                let render_loc =
-                    Point::from((popup_loc.x - output_pos.x, popup_loc.y - output_pos.y));
-                let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    render_elements_from_surface_tree(
-                        renderer,
-                        popup.wl_surface(),
-                        render_loc.to_physical_precise_round(scale),
-                        scale,
-                        1.0,
-                        Kind::Unspecified,
-                    );
-                popup_elements.extend(render_elements.into_iter().map(EwmRenderElement::Surface));
-            }
-        }
+    for placement in collect_popup_placements(ewm, output_rect) {
+        let render_loc = Point::from((
+            placement.location.x - output_pos.x,
+            placement.location.y - output_pos.y,
+        ));
+        let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+            render_elements_from_surface_tree(
+                renderer,
+                &placement.surface,
+                render_loc.to_physical_precise_round(scale),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            );
+        popup_elements.extend(render_elements.into_iter().map(EwmRenderElement::Surface));
     }
 
-    // Insert popups after top layer but before windows
     elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
 
     (elements, cursor_elements)
+}
+
+/// One on-screen placement of a popup.
+#[derive(Clone)]
+pub struct PopupPlacement {
+    pub surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    pub location: Point<i32, smithay::utils::Logical>,
+    pub size: Size<i32, smithay::utils::Logical>,
+}
+
+/// Popup placements visible on an output. One entry per popup parented to a
+/// known window; today the parent contributes one position per surface, not
+/// one per view (`window_global_position` is single-anchor).
+pub fn collect_popup_placements(
+    ewm: &Ewm,
+    output_rect: Rectangle<i32, smithay::utils::Logical>,
+) -> Vec<PopupPlacement> {
+    use smithay::wayland::seat::WaylandFocus;
+    let mut placements = Vec::new();
+    for window in ewm.id_windows.values() {
+        let Some(surface) = window.wl_surface() else {
+            continue;
+        };
+        let Some(window_loc) = ewm.window_global_position(window) else {
+            continue;
+        };
+        let window_geo = window.geometry();
+        for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
+            let popup_loc = window_loc + window_geo.loc + popup_offset - popup.geometry().loc;
+            let popup_rect: Rectangle<i32, smithay::utils::Logical> =
+                Rectangle::new(popup_loc, popup.geometry().size);
+            if !output_rect.overlaps(popup_rect) {
+                continue;
+            }
+            placements.push(PopupPlacement {
+                surface: popup.wl_surface().clone(),
+                location: popup_loc,
+                size: popup.geometry().size,
+            });
+        }
+    }
+    placements
 }
 
 /// Render elements to a dmabuf buffer for screencopy
