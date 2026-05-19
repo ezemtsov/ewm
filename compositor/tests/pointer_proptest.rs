@@ -22,6 +22,17 @@
 //!       toplevel S currently in `id_windows`, `collect_popup_placements`
 //!       emits exactly `count(views_of(S))` placements per popup, with
 //!       `surface == popup.wl_surface()`.
+//!
+//! PP2 - Popup placement is hit-testable. The centre of every popup
+//!       placement satisfies
+//!       `surface_under_point(centre) == Some((placement.surface, _))`.
+//!
+//! P3  - Button delivery. After a `PointerButton(pressed)` op + roundtrip,
+//!       the client receives a `PointerButton` event with the same
+//!       `pressed` value iff `ewm.pointer_focus` is on a surface owned by
+//!       this client.
+
+use std::collections::HashSet;
 
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
@@ -33,6 +44,9 @@ use smithay::reexports::wayland_server::Resource as _;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
 use wayland_client::Proxy as _;
+
+/// `BTN_LEFT` from linux/input-event-codes.h.
+const BTN_LEFT: u32 = 0x110;
 
 const OUTPUTS: [(&str, i32, i32); 2] = [("HEAD-A", 1920, 1080), ("HEAD-B", 1920, 1080)];
 const VIEW_W: i32 = 400;
@@ -58,6 +72,7 @@ enum Op {
     RemoveOutput(usize),
     ApplyLayout { output: usize, n_views: usize },
     WarpPointer { x: i32, y: i32 },
+    PointerButton { pressed: bool },
     CreatePopup { ax: i32, ay: i32 },
 }
 
@@ -68,6 +83,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         ((0..OUTPUTS.len()), 0usize..=4)
             .prop_map(|(output, n_views)| Op::ApplyLayout { output, n_views }),
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::WarpPointer { x, y }),
+        any::<bool>().prop_map(|pressed| Op::PointerButton { pressed }),
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreatePopup { ax, ay }),
     ]
 }
@@ -104,6 +120,16 @@ impl Harness {
             .output_strips
             .values()
             .any(|s| s.surfaces().any(|e| e.surface_id == self.sid))
+    }
+
+    /// Protocol ids of surfaces this client owns (toplevel + popups).
+    fn our_surface_ids(&self) -> HashSet<u32> {
+        let mut s = HashSet::new();
+        s.insert(self.toplevel.surface.id().protocol_id());
+        for p in &self.popups {
+            s.insert(p.surface.id().protocol_id());
+        }
+        s
     }
 }
 
@@ -150,6 +176,9 @@ fn apply_op(h: &mut Harness, op: &Op) {
         }
         Op::WarpPointer { x, y } => {
             h.fix.warp_pointer(x as f64, y as f64);
+        }
+        Op::PointerButton { pressed } => {
+            h.fix.pointer_button(BTN_LEFT, pressed);
         }
         Op::CreatePopup { ax, ay } => {
             // unconstrain_popup falls back to output_size when the parent
@@ -251,6 +280,62 @@ fn check_p1(
     Ok(())
 }
 
+fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    let placements = collect_popup_placements(ewm, world_rect());
+    for p in &placements {
+        let centre = Point::from((
+            (p.location.x + p.size.w / 2) as f64,
+            (p.location.y + p.size.h / 2) as f64,
+        ));
+        let hit = ewm.surface_under_point(centre);
+        let hit_id = hit.as_ref().map(|(s, _)| s.id().protocol_id());
+        let expected = p.surface.id().protocol_id();
+        prop_assert_eq!(
+            hit_id,
+            Some(expected),
+            "PP2: popup centre {:?} hit {:?}, expected popup surface {}",
+            centre,
+            hit_id,
+            expected,
+        );
+    }
+    Ok(())
+}
+
+fn check_p3(
+    h: &Harness,
+    events: &[ClientEvent],
+    pressed: bool,
+) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    let focus_id = ewm
+        .pointer_focus
+        .as_ref()
+        .map(|(s, _)| s.id().protocol_id());
+    let ours = h.our_surface_ids();
+    let focused_on_ours = focus_id.is_some_and(|id| ours.contains(&id));
+    let saw_button = events
+        .iter()
+        .any(|e| matches!(e, ClientEvent::PointerButton { button: BTN_LEFT, pressed: p } if *p == pressed));
+    if focused_on_ours {
+        prop_assert!(
+            saw_button,
+            "P3: focused on our surface ({:?}) but client received no PointerButton(pressed={})",
+            focus_id,
+            pressed,
+        );
+    } else {
+        prop_assert!(
+            !saw_button,
+            "P3: focus is {:?} (not our surface) but client received PointerButton(pressed={})",
+            focus_id,
+            pressed,
+        );
+    }
+    Ok(())
+}
+
 fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     for (sid, window) in &ewm.id_windows {
@@ -291,11 +376,16 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
 fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError> {
     check_l2(h)?;
     check_pp1(h)?;
+    check_pp2(h)?;
     let events = h.client.drain_events();
-    if let Op::WarpPointer { x, y } = *last_op {
-        let p = Point::from((x as f64, y as f64));
-        check_l3(h, p)?;
-        check_p1(h, &events, p)?;
+    match *last_op {
+        Op::WarpPointer { x, y } => {
+            let p = Point::from((x as f64, y as f64));
+            check_l3(h, p)?;
+            check_p1(h, &events, p)?;
+        }
+        Op::PointerButton { pressed } => check_p3(h, &events, pressed)?,
+        _ => {}
     }
     Ok(())
 }
