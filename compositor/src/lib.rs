@@ -1893,6 +1893,51 @@ impl Ewm {
         self.emacs_frame_origin(id)
     }
 
+    /// On-screen origins of every layout view of `surface_id`. Popup
+    /// placement iterates this so a multi-view surface gets one anchor per
+    /// view, not the focused-or-primary single anchor that
+    /// `window_global_position` returns.
+    pub fn surface_view_origins(&self, surface_id: u64) -> Vec<Point<i32, Logical>> {
+        if !self.surface_outputs.contains_key(&surface_id) {
+            return self.emacs_frame_origin(surface_id).into_iter().collect();
+        }
+        let mut origins = Vec::new();
+        for (output_name, strip) in &self.output_strips {
+            let Some(output) = self.space.outputs().find(|o| o.name() == *output_name) else {
+                continue;
+            };
+            let Some(output_geo) = self.space.output_geometry(output) else {
+                continue;
+            };
+            let working_area = layer_map_for_output(output).non_exclusive_zone();
+            for (frame_idx, entry) in strip.surfaces_with_frame() {
+                if entry.surface_id != surface_id {
+                    continue;
+                }
+                if self.effective_fullscreen(entry) {
+                    if entry.primary {
+                        let window_size = self
+                            .id_windows
+                            .get(&surface_id)
+                            .map(|w| w.geometry().size)
+                            .unwrap_or_default();
+                        let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
+                        origins.push(Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy)));
+                    } else {
+                        origins.push(Point::from((output_geo.loc.x, output_geo.loc.y)));
+                    }
+                    continue;
+                }
+                let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+                origins.push(Point::from((
+                    output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
+                    output_geo.loc.y + working_area.loc.y + entry.y,
+                )));
+            }
+        }
+        origins
+    }
+
     /// Find the topmost layout entry containing `pos`, returning the entry
     /// and its global (x, y) origin.
     fn layout_entry_under(
