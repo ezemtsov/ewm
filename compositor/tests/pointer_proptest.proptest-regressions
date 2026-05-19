@@ -4,4 +4,3 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 01c412caa4cad59254a0aae8d3f36d62280656c4e1f82c8be6e56e22466b7d87 # shrinks to n = 2
