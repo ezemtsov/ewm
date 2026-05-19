@@ -78,8 +78,10 @@ impl Fixture {
         TestClient::new(client_end)
     }
 
-    /// Drive a full xdg toplevel lifecycle: request, configure/ack, set
-    /// window geometry, second commit.
+    /// Drive a full xdg toplevel lifecycle: request, configure/ack, attach
+    /// an SHM buffer + commit. The buffer is what makes server-side
+    /// `RendererSurfaceState::surface_view` (and the committed xdg state)
+    /// flip to populated, so hit-tests find the surface.
     pub fn open_toplevel(
         &mut self,
         client: &mut TestClient,
@@ -88,14 +90,17 @@ impl Fixture {
     ) -> crate::testing::Toplevel {
         let toplevel = client.create_toplevel(title);
         self.roundtrip(client);
+        let buffer = client.create_shm_buffer(size);
+        toplevel.surface.attach(Some(&buffer), 0, 0);
+        toplevel.surface.damage_buffer(0, 0, size.w, size.h);
         toplevel.xdg_surface.set_window_geometry(0, 0, size.w, size.h);
         toplevel.surface.commit();
         self.roundtrip(client);
         toplevel
     }
 
-    /// Drive a full xdg popup lifecycle: request, configure/ack, set window
-    /// geometry, second commit.
+    /// Drive a full xdg popup lifecycle: request, configure/ack, attach
+    /// an SHM buffer + commit.
     pub fn open_popup(
         &mut self,
         client: &mut TestClient,
@@ -105,6 +110,9 @@ impl Fixture {
     ) -> crate::testing::Popup {
         let popup = client.create_popup(parent, anchor, size);
         self.roundtrip(client);
+        let buffer = client.create_shm_buffer(size);
+        popup.surface.attach(Some(&buffer), 0, 0);
+        popup.surface.damage_buffer(0, 0, size.w, size.h);
         popup.xdg_surface.set_window_geometry(0, 0, size.w, size.h);
         popup.surface.commit();
         self.roundtrip(client);

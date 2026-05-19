@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{Fixture, TestClient, Toplevel};
+use ewm_core::testing::{Fixture, Popup, TestClient, Toplevel};
 use ewm_core::{LayoutEntry, ViewId};
 use proptest::prelude::*;
 use smithay::utils::{Logical, Point, Rectangle, Size};
@@ -17,30 +17,32 @@ fn nz(n: u64) -> ViewId {
     std::num::NonZeroU64::new(n).unwrap()
 }
 
-/// Toplevel with a popup attached, paired with the server-side surface_id.
-struct ParentedPopup {
-    surface_id: u64,
-    _toplevel: Toplevel,
+/// Window dimensions match the per-view entry dimensions so non-primary
+/// views don't trigger the `window_geo / entry` pointer scaling. With
+/// matching dimensions `pointer_scale = 1.0` even after
+/// `refresh_primary_assignments` demotes all but one entry per surface.
+const VIEW_W: i32 = 400;
+const VIEW_H: i32 = 400;
+fn view_size() -> Size<i32, Logical> {
+    Size::from((VIEW_W, VIEW_H))
 }
 
-/// Bring up `HEAD-A` (1920x1080), spawn a toplevel, attach a popup at
-/// (200, 150) with size 100x100. Returns the server-side surface_id assigned
-/// to the toplevel.
-fn spawn_toplevel_with_popup(fix: &mut Fixture, client: &mut TestClient) -> ParentedPopup {
+/// Bring up `HEAD-A` (1920x1080) and a toplevel; return the toplevel and its
+/// server-side surface_id. Callers apply a layout *before* attaching popups,
+/// otherwise `unconstrain_popup` falls back to a zero rect.
+fn open_test_toplevel(fix: &mut Fixture, client: &mut TestClient) -> (Toplevel, u64) {
     fix.add_output("HEAD-A", 1920, 1080);
     fix.roundtrip(client);
-
-    let toplevel = fix.open_toplevel(client, "ewm-test-toplevel", Size::from((800, 600)));
-    let surface_id = fix
+    let toplevel = fix.open_toplevel(client, "ewm-test-toplevel", view_size());
+    let sid = fix
         .find_surface_id(&toplevel.surface)
         .expect("server did not assign a surface_id to the test toplevel");
-    let anchor = Rectangle::new(Point::from((200, 150)), Size::from((1, 1)));
-    let _popup = fix.open_popup(client, &toplevel, anchor, Size::from((100, 100)));
+    (toplevel, sid)
+}
 
-    ParentedPopup {
-        surface_id,
-        _toplevel: toplevel,
-    }
+fn open_test_popup(fix: &mut Fixture, client: &mut TestClient, parent: &Toplevel) -> Popup {
+    let anchor = Rectangle::new(Point::from((100, 100)), Size::from((1, 1)));
+    fix.open_popup(client, parent, anchor, Size::from((100, 100)))
 }
 
 fn head_a_rect() -> Rectangle<i32, Logical> {
@@ -54,9 +56,9 @@ fn head_a_rect() -> Rectangle<i32, Logical> {
 fn multi_view_popup_renders_per_view() {
     let mut fix = Fixture::new().unwrap();
     let mut client = fix.new_client().unwrap();
-    let parented = spawn_toplevel_with_popup(&mut fix, &mut client);
-
-    apply_n_view_layout(&mut fix, parented.surface_id, 2);
+    let (toplevel, sid) = open_test_toplevel(&mut fix, &mut client);
+    apply_n_view_layout(&mut fix, sid, 2);
+    let _popup = open_test_popup(&mut fix, &mut client, &toplevel);
 
     let placements = collect_popup_placements(fix.ewm_ref(), head_a_rect());
     assert_eq!(
@@ -115,27 +117,9 @@ fn fixture_delivers_toplevel_and_popup() {
 fn single_view_popup_renders_once() {
     let mut fix = Fixture::new().unwrap();
     let mut client = fix.new_client().unwrap();
-    let parented = spawn_toplevel_with_popup(&mut fix, &mut client);
-
-    let frames = vec![Frame {
-        name: String::new(),
-        surface_id: 100,
-        view_id: nz(100),
-        width: 1920.0,
-        surfaces: vec![LayoutEntry {
-            view_id: nz(1),
-            surface_id: parented.surface_id,
-            x: 0,
-            y: 0,
-            w: 800,
-            h: 600,
-            primary: true,
-            fullscreen: false,
-        }],
-        selected_view_id: Some(nz(1)),
-        move_anim: None,
-    }];
-    fix.ewm().apply_output_layout("HEAD-A", frames);
+    let (toplevel, sid) = open_test_toplevel(&mut fix, &mut client);
+    apply_n_view_layout(&mut fix, sid, 1);
+    let _popup = open_test_popup(&mut fix, &mut client, &toplevel);
 
     let placements = collect_popup_placements(fix.ewm_ref(), head_a_rect());
     assert_eq!(
@@ -145,23 +129,23 @@ fn single_view_popup_renders_once() {
     );
 }
 
-/// Lay `surface_id` out as N views, one per frame on HEAD-A. Frames are
-/// 480px wide so a 4-view grid still fits inside the 1920px output.
+/// Lay `surface_id` out as N views, one per frame on HEAD-A. Entry size
+/// matches `VIEW` so non-primary scaling is a no-op (see `VIEW`'s comment).
 fn apply_n_view_layout(fix: &mut Fixture, surface_id: u64, n: usize) {
     let frames: Vec<Frame> = (0..n)
         .map(|i| Frame {
             name: String::new(),
             surface_id: 100 + i as u64,
             view_id: nz(100 + i as u64),
-            width: 480.0,
+            width: VIEW_W as f64,
             surfaces: vec![LayoutEntry {
                 view_id: nz(1 + i as u64),
                 surface_id,
                 x: 0,
                 y: 0,
-                w: 400,
-                h: 400,
-                primary: i == 0,
+                w: VIEW_W as u32,
+                h: VIEW_H as u32,
+                primary: true,
                 fullscreen: false,
             }],
             selected_view_id: Some(nz(1 + i as u64)),
@@ -178,15 +162,18 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
-    /// For any view count N >= 1, `collect_popup_placements` returns exactly
-    /// N placements at N distinct locations. Currently fails for N > 1.
+    /// For any view count N >= 1, `collect_popup_placements` returns N
+    /// placements at distinct locations, and clicking the centre of each
+    /// placement resolves to the popup's `WlSurface` -- not the parent
+    /// toplevel. Pins both render (placement count + positions) and input
+    /// (per-view hit-test) paths.
     #[test]
-    fn popup_placements_track_view_count(n in 1usize..=4) {
+    fn popup_placements_and_hit_test_per_view(n in 1usize..=4) {
         let mut fix = Fixture::new().unwrap();
         let mut client = fix.new_client().unwrap();
-        let parented = spawn_toplevel_with_popup(&mut fix, &mut client);
-
-        apply_n_view_layout(&mut fix, parented.surface_id, n);
+        let (toplevel, sid) = open_test_toplevel(&mut fix, &mut client);
+        apply_n_view_layout(&mut fix, sid, n);
+        let _popup = open_test_popup(&mut fix, &mut client, &toplevel);
 
         let placements = collect_popup_placements(fix.ewm_ref(), head_a_rect());
         prop_assert_eq!(
@@ -207,5 +194,22 @@ proptest! {
             unique.len(),
             placements.iter().map(|p| p.location).collect::<Vec<_>>(),
         );
+
+        for placement in &placements {
+            let centre = Point::from((
+                (placement.location.x + placement.size.w / 2) as f64,
+                (placement.location.y + placement.size.h / 2) as f64,
+            ));
+            let hit = fix.ewm_ref().layout_surface_under(centre);
+            let (hit_surface, _local) = hit.ok_or_else(|| {
+                TestCaseError::fail(format!("no surface under popup centre {:?}", centre))
+            })?;
+            prop_assert_eq!(
+                hit_surface,
+                placement.surface.clone(),
+                "click at {:?} routed to a non-popup surface",
+                centre,
+            );
+        }
     }
 }
