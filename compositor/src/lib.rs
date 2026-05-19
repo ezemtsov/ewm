@@ -73,6 +73,22 @@ pub fn vt_suffix() -> String {
 }
 
 /// Returns true for embedded laptop panel connectors (eDP, LVDS, DSI).
+/// Register the server `Display` as a calloop source so inserted clients
+/// dispatch on each event-loop tick. Shared by production and test fixtures.
+pub fn register_display_source(event_loop: &LoopHandle<State>, display: Display<State>) {
+    let source = Generic::new(display, Interest::READ, CalloopMode::Level);
+    event_loop
+        .insert_source(source, |_, display, state| {
+            // SAFETY: the source owns the Display for its lifetime.
+            let display = unsafe { display.get_mut() };
+            if let Err(e) = display.dispatch_clients(state) {
+                tracing::error!("Wayland dispatch error: {e}");
+            }
+            Ok(PostAction::Continue)
+        })
+        .expect("failed to insert Display source");
+}
+
 pub fn is_laptop_panel(connector_name: &str) -> bool {
     matches!(connector_name.get(..4), Some("eDP-" | "LVDS" | "DSI-"))
 }
@@ -1842,88 +1858,65 @@ impl Ewm {
         &self,
         window: &Window,
     ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
-        use smithay::utils::Point;
-
         let id = self.window_ids.get(window).copied()?;
-
-        // Layout surface: use focused entry for output association, fall back to primary
-        if self.surface_outputs.contains_key(&id) {
-            let (output_name, frame_idx, entry) = self
-                .focused_output_for_surface(id)
-                .or_else(|| self.primary_output_for_surface(id))?;
-            let output = self.space.outputs().find(|o| o.name() == output_name)?;
-            let output_geo = self.space.output_geometry(output)?;
-
-            if self.effective_fullscreen(entry) {
-                if entry.primary {
-                    let (ox, oy) =
-                        fullscreen_center_offset(window.geometry().size, output_geo.size);
-                    return Some(Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy)));
-                } else {
-                    // Non-primary fullscreen: stretch from output origin
-                    return Some(Point::from((output_geo.loc.x, output_geo.loc.y)));
-                }
-            }
-
-            let working_area = {
-                let map = layer_map_for_output(output);
-                map.non_exclusive_zone()
-            };
-            let frame_dx = self
-                .output_strips
-                .get(output_name)
-                .map(|s| s.screen_x_of_frame(frame_idx))
-                .unwrap_or(0.0) as i32;
-            return Some(Point::from((
-                output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                output_geo.loc.y + working_area.loc.y + entry.y,
-            )));
+        if !self.surface_outputs.contains_key(&id) {
+            return self.emacs_frame_origin(id);
         }
-
-        // Emacs frame: use the strip-driven origin.
-        self.emacs_frame_origin(id)
+        let (output_name, frame_idx, entry) = self
+            .focused_output_for_surface(id)
+            .or_else(|| self.primary_output_for_surface(id))?;
+        self.entry_origin(output_name, frame_idx, entry)
     }
 
-    /// On-screen origins of every layout view of `surface_id`. Popup
-    /// placement iterates this so a multi-view surface gets one anchor per
-    /// view, not the focused-or-primary single anchor that
-    /// `window_global_position` returns.
+    /// On-screen origin of one layout view; the per-entry formula shared by
+    /// `window_global_position` and `surface_view_origins`. Fullscreen-primary
+    /// centers on the toplevel's geometry.
+    fn entry_origin(
+        &self,
+        output_name: &str,
+        frame_idx: usize,
+        entry: &LayoutEntry,
+    ) -> Option<Point<i32, Logical>> {
+        let output = self.space.outputs().find(|o| o.name() == output_name)?;
+        let output_geo = self.space.output_geometry(output)?;
+        if self.effective_fullscreen(entry) {
+            if entry.primary {
+                let window_size = self
+                    .id_windows
+                    .get(&entry.surface_id)
+                    .map(|w| w.geometry().size)
+                    .unwrap_or_default();
+                let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
+                return Some(Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy)));
+            }
+            return Some(Point::from((output_geo.loc.x, output_geo.loc.y)));
+        }
+        let working_area = self.get_working_area(output);
+        let frame_dx = self
+            .output_strips
+            .get(output_name)
+            .map(|s| s.screen_x_of_frame(frame_idx))
+            .unwrap_or(0.0) as i32;
+        Some(Point::from((
+            output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
+            output_geo.loc.y + working_area.loc.y + entry.y,
+        )))
+    }
+
+    /// On-screen origins of every layout view of `surface_id`, one per entry.
     pub fn surface_view_origins(&self, surface_id: u64) -> Vec<Point<i32, Logical>> {
         if !self.surface_outputs.contains_key(&surface_id) {
             return self.emacs_frame_origin(surface_id).into_iter().collect();
         }
         let mut origins = Vec::new();
         for (output_name, strip) in &self.output_strips {
-            let Some(output) = self.space.outputs().find(|o| o.name() == *output_name) else {
-                continue;
-            };
-            let Some(output_geo) = self.space.output_geometry(output) else {
-                continue;
-            };
-            let working_area = layer_map_for_output(output).non_exclusive_zone();
             for (frame_idx, entry) in strip.surfaces_with_frame() {
                 if entry.surface_id != surface_id {
                     continue;
                 }
-                if self.effective_fullscreen(entry) {
-                    if entry.primary {
-                        let window_size = self
-                            .id_windows
-                            .get(&surface_id)
-                            .map(|w| w.geometry().size)
-                            .unwrap_or_default();
-                        let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
-                        origins.push(Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy)));
-                    } else {
-                        origins.push(Point::from((output_geo.loc.x, output_geo.loc.y)));
-                    }
-                    continue;
+                if let Some(p) = self.entry_origin(output_name, frame_idx, entry) {
+                    origins.push(p);
                 }
-                let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-                origins.push(Point::from((
-                    output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                    output_geo.loc.y + working_area.loc.y + entry.y,
-                )));
             }
         }
         origins
@@ -2124,11 +2117,7 @@ impl Ewm {
 
     /// Diff `pre` (snapshot before strip mutation) against the current strip;
     /// fire `wl_surface.enter` / `leave` and sync `surface_outputs`.
-    fn reconcile_output_entries(
-        &mut self,
-        output_name: &str,
-        pre: HashSet<u64>,
-    ) -> HashSet<u64> {
+    fn reconcile_output_entries(&mut self, output_name: &str, pre: HashSet<u64>) {
         let post = self.strip_entries(output_name);
         let output = self
             .space
@@ -2149,16 +2138,12 @@ impl Ewm {
             }
         }
         for &id in post.difference(&pre) {
-            match (output.as_ref(), self.id_windows.get(&id)) {
-                (Some(out), Some(window)) => {
-                    if let Some(surface) = window.wl_surface() {
-                        out.enter(&surface);
-                    }
-                }
-                (_, None) => {
-                    warn!("reconcile_output_entries: surface {} not in id_windows", id);
-                }
-                _ => {}
+            let Some(window) = self.id_windows.get(&id) else {
+                warn!("reconcile_output_entries: surface {} not in id_windows", id);
+                continue;
+            };
+            if let (Some(out), Some(surface)) = (output.as_ref(), window.wl_surface()) {
+                out.enter(&surface);
             }
         }
         for &id in &post {
@@ -2167,7 +2152,6 @@ impl Ewm {
                 .or_default()
                 .insert(output_name.to_string());
         }
-        post
     }
 
     /// Apply a declarative per-output layout.
@@ -2192,8 +2176,8 @@ impl Ewm {
             .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
             .collect();
 
-        // Snapshot pre-merge entries; the diff runs after step 6 against the
-        // post-merge strip so kept frames don't leak `surface_outputs` entries.
+        // Snapshot pre-merge entries; reconcile runs after step 6 against the
+        // post-merge strip so kept frames don't leak `surface_outputs`.
         let mut pre_entries: HashMap<String, HashSet<u64>> = HashMap::new();
         pre_entries.insert(output_name.to_string(), self.strip_entries(output_name));
 
@@ -2289,12 +2273,8 @@ impl Ewm {
             strip_entry.set_active(clamped);
         }
 
-        let mut new_ids = HashSet::new();
         for (name, pre) in pre_entries {
-            let post = self.reconcile_output_entries(&name, pre);
-            if name == output_name {
-                new_ids = post;
-            }
+            self.reconcile_output_entries(&name, pre);
         }
 
         for (id, prev) in migrations {
@@ -2322,7 +2302,7 @@ impl Ewm {
         debug!(
             "apply_output_layout: output '{}' with {} surfaces",
             output_name,
-            new_ids.len()
+            self.strip_entries(output_name).len(),
         );
 
         for (name, prev) in active_before {
@@ -4873,19 +4853,7 @@ impl Ewm {
             })
             .expect("Failed to init wayland socket source");
 
-        // Display source - owns the Display for dispatch_clients
-        // Display lifetime is tied to event loop, not State
-        let display_source = Generic::new(display, Interest::READ, CalloopMode::Level);
-        event_loop
-            .insert_source(display_source, |_, display, state| {
-                // SAFETY: we don't drop the display while the event loop is running
-                let display = unsafe { display.get_mut() };
-                if let Err(e) = display.dispatch_clients(state) {
-                    tracing::error!("Wayland dispatch error: {e}");
-                }
-                Ok(PostAction::Continue)
-            })
-            .expect("Failed to init wayland source");
+        register_display_source(event_loop, display);
 
         Ok(socket_name)
     }

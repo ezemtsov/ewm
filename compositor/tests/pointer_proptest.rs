@@ -135,8 +135,7 @@ impl Harness {
             last_configure: None,
             toplevel_on_outputs: HashSet::new(),
         };
-        // Drain setup-time events so the first proptest op sees an empty
-        // event buffer; fold them into harness state first.
+        // Drain setup events into the harness so the first op starts clean.
         let setup_events = h.client.drain_events();
         h.fold_events(&setup_events);
         h
@@ -236,8 +235,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.fix.pointer_button(BTN_LEFT, pressed);
         }
         Op::CreatePopup { ax, ay } => {
-            // unconstrain_popup falls back to output_size when the parent
-            // isn't in any strip; skip those cases so the popup is sized.
+            // Skip when the parent isn't placed; unconstrain would zero-clamp.
             if !h.toplevel_in_some_strip() {
                 return;
             }

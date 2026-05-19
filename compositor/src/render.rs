@@ -511,12 +511,18 @@ pub fn collect_popup_placements(
         let Some(surface) = window.wl_surface() else {
             continue;
         };
-        let window_geo = window.geometry();
+        // Pay popups_for_surface's `with_states` lookup, but skip the
+        // per-strip scan in `surface_view_origins` when there are no popups.
+        let popups: Vec<_> = PopupManager::popups_for_surface(&surface).collect();
+        if popups.is_empty() {
+            continue;
+        }
         let origins = ewm.surface_view_origins(surface_id);
         if origins.is_empty() {
             continue;
         }
-        for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
+        let window_geo = window.geometry();
+        for (popup, popup_offset) in popups {
             for window_loc in &origins {
                 let popup_loc =
                     *window_loc + window_geo.loc + popup_offset - popup.geometry().loc;

@@ -7,15 +7,14 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
+use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::{Logical, Rectangle, Size};
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
 use crate::testing::TestClient;
-use crate::{ClientState, Ewm, State};
+use crate::{register_display_source, ClientState, Ewm, State};
 
 /// Test fixture for integration testing
 ///
@@ -49,18 +48,7 @@ impl Fixture {
 
         let state = State { backend, ewm };
 
-        // Dispatch inserted clients on each event_loop tick.
-        let display_source = Generic::new(display, Interest::READ, CalloopMode::Level);
-        event_loop
-            .handle()
-            .insert_source(display_source, |_, display, state| {
-                let display = unsafe { display.get_mut() };
-                if let Err(e) = display.dispatch_clients(state) {
-                    tracing::error!("test wayland dispatch error: {e}");
-                }
-                Ok(PostAction::Continue)
-            })
-            .expect("Failed to insert display source");
+        register_display_source(&event_loop.handle(), display);
 
         info!("Test fixture initialized with headless backend");
 
@@ -78,10 +66,24 @@ impl Fixture {
         TestClient::new(client_end)
     }
 
-    /// Drive a full xdg toplevel lifecycle: request, configure/ack, attach
-    /// an SHM buffer + commit. The buffer is what makes server-side
-    /// `RendererSurfaceState::surface_view` (and the committed xdg state)
-    /// flip to populated, so hit-tests find the surface.
+    /// Attach an SHM buffer + commit; populates server-side surface_view and
+    /// flips the xdg-shell committed state so hit-tests find the surface.
+    fn finish_xdg(
+        &mut self,
+        client: &mut TestClient,
+        surface: &wayland_client::protocol::wl_surface::WlSurface,
+        xdg_surface: &wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
+        size: Size<i32, Logical>,
+    ) {
+        let buffer = client.create_shm_buffer(size);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, size.w, size.h);
+        xdg_surface.set_window_geometry(0, 0, size.w, size.h);
+        surface.commit();
+        self.roundtrip(client);
+    }
+
+    /// Drive a full xdg toplevel lifecycle.
     pub fn open_toplevel(
         &mut self,
         client: &mut TestClient,
@@ -90,17 +92,11 @@ impl Fixture {
     ) -> crate::testing::Toplevel {
         let toplevel = client.create_toplevel(title);
         self.roundtrip(client);
-        let buffer = client.create_shm_buffer(size);
-        toplevel.surface.attach(Some(&buffer), 0, 0);
-        toplevel.surface.damage_buffer(0, 0, size.w, size.h);
-        toplevel.xdg_surface.set_window_geometry(0, 0, size.w, size.h);
-        toplevel.surface.commit();
-        self.roundtrip(client);
+        self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
         toplevel
     }
 
-    /// Drive a full xdg popup lifecycle: request, configure/ack, attach
-    /// an SHM buffer + commit.
+    /// Drive a full xdg popup lifecycle.
     pub fn open_popup(
         &mut self,
         client: &mut TestClient,
@@ -110,12 +106,7 @@ impl Fixture {
     ) -> crate::testing::Popup {
         let popup = client.create_popup(parent, anchor, size);
         self.roundtrip(client);
-        let buffer = client.create_shm_buffer(size);
-        popup.surface.attach(Some(&buffer), 0, 0);
-        popup.surface.damage_buffer(0, 0, size.w, size.h);
-        popup.xdg_surface.set_window_geometry(0, 0, size.w, size.h);
-        popup.surface.commit();
-        self.roundtrip(client);
+        self.finish_xdg(client, &popup.surface, &popup.xdg_surface, size);
         popup
     }
 

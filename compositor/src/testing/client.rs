@@ -18,8 +18,7 @@ use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 
-/// Notable events the client received from the server. Tests `drain_events`
-/// after a roundtrip and asserts on the contents.
+/// Notable events the client received from the server.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
     PointerEnter {
@@ -65,9 +64,7 @@ pub struct ClientState {
     pub shm: Option<wl_shm::WlShm>,
     pub seat: Option<wl_seat::WlSeat>,
     pub pointer: Option<wl_pointer::WlPointer>,
-    /// `wl_output` protocol id -> server-advertised name. Populated from
-    /// `wl_output::Event::Name` so tests can translate `SurfaceEnter` /
-    /// `SurfaceLeave` events into the same names used by `surface_outputs`.
+    /// `wl_output` protocol id -> server-advertised name.
     pub output_names: HashMap<u32, String>,
     pub events: Vec<ClientEvent>,
 }
@@ -133,9 +130,7 @@ impl TestClient {
             .expect("wl_shm not bound; roundtrip the registry first")
     }
 
-    /// Build a zero-filled ARGB8888 SHM buffer of the given size. The pool is
-    /// destroyed immediately; the returned buffer keeps the memfd alive
-    /// server-side until the buffer itself is destroyed or the client exits.
+    /// Zero-filled ARGB8888 SHM buffer of the given size.
     pub fn create_shm_buffer(&self, size: Size<i32, Logical>) -> wl_buffer::WlBuffer {
         let qh = self.eq.handle();
         let stride = size.w * 4;
@@ -350,22 +345,6 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for ClientState {
     }
 }
 
-macro_rules! noop_dispatch {
-    ($proto:ty) => {
-        impl Dispatch<$proto, ()> for ClientState {
-            fn event(
-                _: &mut Self,
-                _: &$proto,
-                _: <$proto as Proxy>::Event,
-                _: &(),
-                _: &Connection,
-                _: &QueueHandle<Self>,
-            ) {
-            }
-        }
-    };
-}
-
 impl Dispatch<xdg_toplevel::XdgToplevel, ()> for ClientState {
     fn event(
         state: &mut Self,
@@ -406,9 +385,9 @@ impl Dispatch<wl_surface::WlSurface, ()> for ClientState {
     }
 }
 
-noop_dispatch!(wl_compositor::WlCompositor);
-noop_dispatch!(xdg_popup::XdgPopup);
-noop_dispatch!(xdg_positioner::XdgPositioner);
-noop_dispatch!(wl_shm::WlShm);
-noop_dispatch!(wl_shm_pool::WlShmPool);
-noop_dispatch!(wl_buffer::WlBuffer);
+wayland_client::delegate_noop!(ClientState: ignore wl_compositor::WlCompositor);
+wayland_client::delegate_noop!(ClientState: ignore xdg_popup::XdgPopup);
+wayland_client::delegate_noop!(ClientState: ignore xdg_positioner::XdgPositioner);
+wayland_client::delegate_noop!(ClientState: ignore wl_shm::WlShm);
+wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
+wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
