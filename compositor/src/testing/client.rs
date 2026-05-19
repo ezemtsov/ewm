@@ -36,6 +36,10 @@ pub enum ClientEvent {
         button: u32,
         pressed: bool,
     },
+    ToplevelConfigure {
+        width: i32,
+        height: i32,
+    },
 }
 
 pub struct TestClient {
@@ -325,9 +329,25 @@ macro_rules! noop_dispatch {
     };
 }
 
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+            state
+                .events
+                .push(ClientEvent::ToplevelConfigure { width, height });
+        }
+    }
+}
+
 noop_dispatch!(wl_compositor::WlCompositor);
 noop_dispatch!(wl_surface::WlSurface);
-noop_dispatch!(xdg_toplevel::XdgToplevel);
 noop_dispatch!(xdg_popup::XdgPopup);
 noop_dispatch!(xdg_positioner::XdgPositioner);
 noop_dispatch!(wl_shm::WlShm);

@@ -4,6 +4,10 @@
 //! in a random `Op` sequence. New invariants are appended; old numbers are
 //! never reused. Mirrors `focus_proptest`'s shape.
 //!
+//! L1  - Surface-index parity. `ewm.surface_outputs` equals the set of
+//!       `(surface_id, output_name)` pairs derived from
+//!       `output_strips[output].surfaces()`.
+//!
 //! L2  - View origin formula. `surface_view_origins(S)` lists exactly one
 //!       origin per non-fullscreen layout entry of `S`, each equal to
 //!       `output_geo.loc + working_area.loc + frame_dx + entry.{x,y}`, in
@@ -31,8 +35,13 @@
 //!       the client receives a `PointerButton` event with the same
 //!       `pressed` value iff `ewm.pointer_focus` is on a surface owned by
 //!       this client.
+//!
+//! C1  - Configure tracks primary. If the toplevel has a primary entry,
+//!       the most recent `xdg_toplevel.configure` the client received
+//!       carries `(width, height)` equal to that entry's
+//!       `(entry.w, entry.h)`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
@@ -94,6 +103,9 @@ struct Harness {
     toplevel: Toplevel,
     sid: u64,
     popups: Vec<Popup>,
+    /// Latest `xdg_toplevel.configure` size the client has been told, accumulated
+    /// across drain windows. `None` until the first configure arrives.
+    last_configure: Option<(i32, i32)>,
 }
 
 impl Harness {
@@ -105,13 +117,22 @@ impl Harness {
         let sid = fix
             .find_surface_id(&toplevel.surface)
             .expect("server did not assign a surface_id");
-        Harness {
+        let mut h = Harness {
             fix,
             client,
             toplevel,
             sid,
             popups: Vec::new(),
+            last_configure: None,
+        };
+        // Drain setup-time events so the first proptest op sees an empty
+        // event buffer; pull any initial configure into last_configure.
+        for ev in h.client.drain_events() {
+            if let ClientEvent::ToplevelConfigure { width, height } = ev {
+                h.last_configure = Some((width, height));
+            }
         }
+        h
     }
 
     fn toplevel_in_some_strip(&self) -> bool {
@@ -199,6 +220,45 @@ fn server_id(
     s: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
 ) -> Option<u32> {
     s.map(|s| s.id().protocol_id())
+}
+
+fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    let mut from_strips: HashMap<u64, HashSet<String>> = HashMap::new();
+    for (out_name, strip) in &ewm.output_strips {
+        for entry in strip.surfaces() {
+            from_strips
+                .entry(entry.surface_id)
+                .or_default()
+                .insert(out_name.clone());
+        }
+    }
+    prop_assert_eq!(
+        from_strips,
+        ewm.surface_outputs.clone(),
+        "L1: surface_outputs out of sync with output_strips",
+    );
+    Ok(())
+}
+
+fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    let primary = ewm
+        .output_strips
+        .values()
+        .flat_map(|s| s.active_surfaces())
+        .find(|e| e.surface_id == h.sid && e.primary);
+    if let Some(entry) = primary {
+        let expected = (entry.w as i32, entry.h as i32);
+        prop_assert_eq!(
+            h.last_configure,
+            Some(expected),
+            "C1: last toplevel configure was {:?}, expected {:?} from primary entry",
+            h.last_configure,
+            expected,
+        );
+    }
+    Ok(())
 }
 
 fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
@@ -374,10 +434,17 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
 }
 
 fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError> {
+    let events = h.client.drain_events();
+    for ev in &events {
+        if let ClientEvent::ToplevelConfigure { width, height } = ev {
+            h.last_configure = Some((*width, *height));
+        }
+    }
+    check_l1(h)?;
     check_l2(h)?;
     check_pp1(h)?;
     check_pp2(h)?;
-    let events = h.client.drain_events();
+    check_c1(h)?;
     match *last_op {
         Op::WarpPointer { x, y } => {
             let p = Point::from((x as f64, y as f64));
