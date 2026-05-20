@@ -49,6 +49,12 @@
 //!       believes the toplevel is on (running `wl_surface.enter` minus
 //!       `leave`) equals `ewm.surface_outputs[sid]`.
 //!
+//! N1  - No hit-test masking, no inactive-frame hits (niri-target). When
+//!       `surface_under_point` returns the toplevel, the point lies inside
+//!       at least one *active-frame* entry's niri-target rect; fullscreen
+//!       entries don't short-circuit hit-test, and entries in inactive
+//!       frames don't capture pointer.
+//!
 //! N4  - One fullscreen per strip (niri-target). After every layout, no
 //!       strip has more than one entry with `fullscreen=true`; the
 //!       compositor must normalize multi-fullscreen layouts down.
@@ -509,6 +515,68 @@ fn check_p3(
     Ok(())
 }
 
+/// Niri-target hit rect for one entry: fullscreen primary covers the full
+/// output, non-primary fullscreen pins to `output.loc` at its own size, and
+/// non-fullscreen entries use the working-area + frame_dx + entry.{x,y} rect.
+fn niri_entry_rect(
+    output_geo: Rectangle<i32, Logical>,
+    working_area: Rectangle<i32, Logical>,
+    frame_dx: i32,
+    entry: &LayoutEntry,
+) -> Rectangle<i32, Logical> {
+    if entry.fullscreen && entry.primary {
+        output_geo
+    } else if entry.fullscreen {
+        Rectangle::new(
+            output_geo.loc,
+            Size::from((entry.w as i32, entry.h as i32)),
+        )
+    } else {
+        Rectangle::new(
+            Point::from((
+                output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
+                output_geo.loc.y + working_area.loc.y + entry.y,
+            )),
+            Size::from((entry.w as i32, entry.h as i32)),
+        )
+    }
+}
+
+fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    let Some((surf, _)) = ewm.surface_under_point(p) else {
+        return Ok(());
+    };
+    let our_id = h.toplevel.surface.id().protocol_id();
+    if surf.id().protocol_id() != our_id {
+        return Ok(());
+    }
+    let p_int = Point::from((p.x as i32, p.y as i32));
+    for (out_name, strip) in &ewm.output_strips {
+        let Some(output) = ewm.space.outputs().find(|o| o.name() == *out_name) else {
+            continue;
+        };
+        let Some(output_geo) = ewm.space.output_geometry(output) else {
+            continue;
+        };
+        let working_area = ewm.get_working_area(output);
+        let active_idx = strip.active_idx();
+        for (frame_idx, entry) in strip.surfaces_with_frame() {
+            if entry.surface_id != h.sid || frame_idx != active_idx {
+                continue;
+            }
+            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+            let rect = niri_entry_rect(output_geo, working_area, frame_dx, entry);
+            if rect.contains(p_int) {
+                return Ok(());
+            }
+        }
+    }
+    Err(TestCaseError::fail(format!(
+        "N1: surface_under_point({p:?}) returned our toplevel but no active-frame entry covers p (niri-target)",
+    )))
+}
+
 fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     for (name, strip) in &ewm.output_strips {
@@ -575,6 +643,7 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
             let p = Point::from((x as f64, y as f64));
             check_l3(h, p)?;
             check_p1(h, &events, p)?;
+            check_n1(h, p)?;
         }
         Op::PointerButton { pressed } => check_p3(h, &events, pressed)?,
         _ => {}
