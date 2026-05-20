@@ -57,9 +57,10 @@
 //!       the frame's screen position. Inactive-frame fullscreens render
 //!       off-screen so they don't capture hits.
 //!
-//! N4  - One fullscreen per strip. After every layout, no strip has more
-//!       than one entry with `fullscreen=true`; the compositor must
-//!       normalize multi-fullscreen layouts down.
+//! N4  - One fullscreen per frame. After every layout, no frame within a
+//!       strip has more than one entry with `fullscreen=true`; the
+//!       compositor normalizes multi-fullscreen frames down. Different
+//!       frames in the same strip can each be fullscreen independently.
 
 use std::collections::{HashMap, HashSet};
 
@@ -604,13 +605,16 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
 fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     for (name, strip) in &ewm.output_strips {
-        let count = strip.surfaces().filter(|e| e.fullscreen).count();
-        prop_assert!(
-            count <= 1,
-            "N4: strip {} has {} fullscreen entries, expected at most 1",
-            name,
-            count,
-        );
+        for (frame_idx, frame) in strip.frames.iter().enumerate() {
+            let count = frame.surfaces.iter().filter(|e| e.fullscreen).count();
+            prop_assert!(
+                count <= 1,
+                "N4: strip {} frame {} has {} fullscreen entries, expected at most 1",
+                name,
+                frame_idx,
+                count,
+            );
+        }
     }
     Ok(())
 }
