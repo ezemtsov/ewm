@@ -655,10 +655,26 @@ Select the Nth Emacs frame on the requested output (1-based index)."
   (dolist (win (get-buffer-window-list buf nil t))
     (set-window-parameter win 'ewm-fullscreen value)))
 
+(defun ewm--clear-other-fullscreens (keep-buffer)
+  "Clear `ewm-fullscreen' on windows that share an output with KEEP-BUFFER's
+windows but show a different buffer.  Matches the one-fullscreen-per-output
+policy enforced by the compositor: a new fullscreen request unfullscreens
+whatever was previously fullscreen on the same output."
+  (let ((outputs (cl-loop for win in (get-buffer-window-list keep-buffer nil t)
+                          for o = (frame-parameter (window-frame win) 'ewm-output)
+                          when o collect o)))
+    (dolist (win (window-list-1 nil 'nomini t))
+      (unless (eq (window-buffer win) keep-buffer)
+        (let ((o (frame-parameter (window-frame win) 'ewm-output)))
+          (when (member o outputs)
+            (set-window-parameter win 'ewm-fullscreen nil)))))))
+
 (defun ewm--handle-fullscreen-request (event)
-  "Set fullscreen flag on every window showing EVENT's surface and refresh."
+  "Mark EVENT's surface fullscreen, unfullscreen any other surface on the
+same output, refresh."
   (ewm--with-surface-buffer-from-event event
     (when (get-buffer-window (current-buffer) t)
+      (ewm--clear-other-fullscreens (current-buffer))
       (ewm--set-fullscreen-windows (current-buffer) t)
       (ewm-layout--refresh))))
 
