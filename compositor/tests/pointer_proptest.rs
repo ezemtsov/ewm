@@ -9,9 +9,11 @@
 //!       `output_strips[output].surfaces()`.
 //!
 //! L2  - View origin formula. `surface_view_origins(S)` lists exactly one
-//!       origin per non-fullscreen layout entry of `S`, each equal to
-//!       `output_geo.loc + working_area.loc + frame_dx + entry.{x,y}`, in
-//!       the strip / frame iteration order.
+//!       origin per layout entry of `S`, computed per-view from each entry's
+//!       own `fullscreen` flag: effective-fullscreen primary entries land at
+//!       the output origin offset by `fullscreen_center_offset`, effective-
+//!       fullscreen non-primaries pin to `output_geo.loc`, and non-fullscreen
+//!       entries use `output_geo.loc + working_area.loc + frame_dx + entry.{x,y}`.
 //!
 //! L3  - Pointer focus matches hit-test. After every `WarpPointer(p)` op,
 //!       `ewm.pointer_focus.map(|(s, _)| s)` equals
@@ -40,8 +42,8 @@
 //!
 //! C1  - Configure tracks primary. If the toplevel has a primary entry,
 //!       the most recent `xdg_toplevel.configure` the client received
-//!       carries `(width, height)` equal to that entry's
-//!       `(entry.w, entry.h)`.
+//!       carries `(width, height)` equal to that entry's output size when
+//!       the entry is `fullscreen=true`, else `(entry.w, entry.h)`.
 //!
 //! C2  - Output-membership parity. The set of output names the client
 //!       believes the toplevel is on (running `wl_surface.enter` minus
@@ -52,7 +54,7 @@ use std::collections::{HashMap, HashSet};
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel};
-use ewm_core::{LayoutEntry, ViewId};
+use ewm_core::{fullscreen_center_offset, LayoutEntry, ViewId};
 use proptest::prelude::*;
 use smithay::desktop::PopupManager;
 use smithay::reexports::wayland_server::Resource as _;
@@ -301,17 +303,29 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let primary = ewm
         .output_strips
-        .values()
-        .flat_map(|s| s.active_surfaces())
-        .find(|e| e.surface_id == h.sid && e.primary);
-    if let Some(entry) = primary {
-        let expected = (entry.w as i32, entry.h as i32);
+        .iter()
+        .flat_map(|(name, strip)| strip.active_surfaces().map(move |e| (name.clone(), e)))
+        .find(|(_, e)| e.surface_id == h.sid && e.primary);
+    let Some((out_name, entry)) = primary else {
+        return Ok(());
+    };
+    let expected = if entry.fullscreen {
+        ewm.space
+            .outputs()
+            .find(|o| o.name() == out_name)
+            .and_then(|o| ewm.space.output_geometry(o))
+            .map(|g| (g.size.w, g.size.h))
+    } else {
+        Some((entry.w as i32, entry.h as i32))
+    };
+    if let Some(expected) = expected {
         prop_assert_eq!(
             h.last_configure,
             Some(expected),
-            "C1: last toplevel configure was {:?}, expected {:?} from primary entry",
+            "C1: last toplevel configure was {:?}, expected {:?} (entry fullscreen={})",
             h.last_configure,
             expected,
+            entry.fullscreen,
         );
     }
     Ok(())
@@ -347,14 +361,30 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
         };
         let working_area = ewm.get_working_area(output);
         for (frame_idx, entry) in strip.surfaces_with_frame() {
-            if entry.surface_id != sid || entry.fullscreen {
+            if entry.surface_id != sid {
                 continue;
             }
-            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            expected.push(Point::from((
-                output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                output_geo.loc.y + working_area.loc.y + entry.y,
-            )));
+            // niri-target: geometry follows entry.fullscreen alone, with no AND
+            // against the client's committed XDG state. V1: each view computes
+            // its origin from its own flag, independent of sibling views.
+            let origin = if entry.fullscreen && entry.primary {
+                let window_size = ewm
+                    .id_windows
+                    .get(&entry.surface_id)
+                    .map(|w| w.geometry().size)
+                    .unwrap_or_default();
+                let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
+                Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy))
+            } else if entry.fullscreen {
+                Point::from((output_geo.loc.x, output_geo.loc.y))
+            } else {
+                let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+                Point::from((
+                    output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
+                    output_geo.loc.y + working_area.loc.y + entry.y,
+                ))
+            };
+            expected.push(origin);
         }
     }
     let actual = ewm.surface_view_origins(sid);
