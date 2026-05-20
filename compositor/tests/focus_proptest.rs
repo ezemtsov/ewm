@@ -64,11 +64,13 @@ const ENTRY_VID_RANGE: std::ops::RangeInclusive<u64> = 1..=8;
 const FRAME_SID_RANGE: std::ops::RangeInclusive<u64> = 100..=102;
 
 fn entry_strategy() -> impl Strategy<Value = EntrySpec> {
-    (ENTRY_SID_RANGE, ENTRY_VID_RANGE.prop_map(nz)).prop_map(|(sid, vid)| EntrySpec {
-        surface_id: sid,
-        view_id: vid,
-        fullscreen: false,
-    })
+    (ENTRY_SID_RANGE, ENTRY_VID_RANGE.prop_map(nz), any::<bool>()).prop_map(
+        |(sid, vid, fullscreen)| EntrySpec {
+            surface_id: sid,
+            view_id: vid,
+            fullscreen,
+        },
+    )
 }
 
 /// Generates layouts satisfying the Emacs side's invariants:

@@ -106,11 +106,16 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
-        ((0..OUTPUTS.len()), 0usize..=4).prop_map(|(output, n_views)| Op::ApplyLayout {
-            output,
-            n_views,
-            fullscreen: None,
-        }),
+        ((0..OUTPUTS.len()), 0usize..=4, any::<bool>(), any::<u8>()).prop_map(
+            |(output, n_views, want_fs, idx)| {
+                let fullscreen = (want_fs && n_views > 0).then(|| (idx as usize) % n_views);
+                Op::ApplyLayout {
+                    output,
+                    n_views,
+                    fullscreen,
+                }
+            },
+        ),
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::WarpPointer { x, y }),
         any::<bool>().prop_map(|pressed| Op::PointerButton { pressed }),
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreatePopup { ax, ay }),
