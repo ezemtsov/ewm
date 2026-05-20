@@ -1904,6 +1904,20 @@ impl Ewm {
     }
 
     /// On-screen origins of every layout view of `surface_id`, one per entry.
+    /// Origin of the focused view of `surface_id`, falling back to the
+    /// primary view if no view of this surface holds keyboard focus. Used
+    /// for popup placement: popups follow the view the user is interacting
+    /// with rather than replicating across every view of the surface.
+    pub fn focused_or_primary_view_origin(
+        &self,
+        surface_id: u64,
+    ) -> Option<Point<i32, Logical>> {
+        let (out, idx, entry) = self
+            .focused_output_for_surface(surface_id)
+            .or_else(|| self.primary_output_for_surface(surface_id))?;
+        self.entry_origin(out, idx, entry)
+    }
+
     pub fn surface_view_origins(&self, surface_id: u64) -> Vec<Point<i32, Logical>> {
         if !self.surface_outputs.contains_key(&surface_id) {
             return self.emacs_frame_origin(surface_id).into_iter().collect();
@@ -1945,11 +1959,17 @@ impl Ewm {
                     continue;
                 }
                 if entry.primary {
+                    let window_size = self
+                        .id_windows
+                        .get(&entry.surface_id)
+                        .map(|w| w.geometry().size)
+                        .unwrap_or_default();
+                    let (cx, cy) = fullscreen_center_offset(window_size, output_geo.size);
                     (
-                        output_geo.loc.x,
-                        output_geo.loc.y,
-                        output_geo.size.w,
-                        output_geo.size.h,
+                        output_geo.loc.x + cx,
+                        output_geo.loc.y + cy,
+                        window_size.w,
+                        window_size.h,
                     )
                 } else {
                     (
@@ -2001,8 +2021,9 @@ impl Ewm {
                 let (pointer_scale, center_offset_x, center_offset_y) = if entry.fullscreen {
                     let out_size = output_geo.map(|g| g.size).unwrap_or_default();
                     if entry.primary {
-                        let (cx, cy) = fullscreen_center_offset(window_geo.size, out_size);
-                        (1.0, cx as f64, cy as f64)
+                        // Centering is already baked into the (entry_x, entry_y) returned
+                        // by layout_entry_under for fullscreen primary; don't double-apply.
+                        (1.0, 0.0, 0.0)
                     } else {
                         let uniform = f64::max(
                             out_size.w as f64 / window_geo.size.w as f64,

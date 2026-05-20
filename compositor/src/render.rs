@@ -499,7 +499,8 @@ pub struct PopupPlacement {
     pub size: Size<i32, smithay::utils::Logical>,
 }
 
-/// Popup placements visible on an output. One entry per (popup, parent view).
+/// Popup placements visible on an output. One placement per popup, anchored
+/// to the parent surface's focused view (fallback: primary view).
 pub fn collect_popup_placements(
     ewm: &Ewm,
     output_rect: Rectangle<i32, smithay::utils::Logical>,
@@ -510,32 +511,26 @@ pub fn collect_popup_placements(
         let Some(surface) = window.wl_surface() else {
             continue;
         };
-        // Pay popups_for_surface's `with_states` lookup, but skip the
-        // per-strip scan in `surface_view_origins` when there are no popups.
         let popups: Vec<_> = PopupManager::popups_for_surface(&surface).collect();
         if popups.is_empty() {
             continue;
         }
-        let origins = ewm.surface_view_origins(surface_id);
-        if origins.is_empty() {
+        let Some(window_loc) = ewm.focused_or_primary_view_origin(surface_id) else {
             continue;
-        }
+        };
         let window_geo = window.geometry();
         for (popup, popup_offset) in popups {
-            for window_loc in &origins {
-                let popup_loc =
-                    *window_loc + window_geo.loc + popup_offset - popup.geometry().loc;
-                let popup_rect: Rectangle<i32, smithay::utils::Logical> =
-                    Rectangle::new(popup_loc, popup.geometry().size);
-                if !output_rect.overlaps(popup_rect) {
-                    continue;
-                }
-                placements.push(PopupPlacement {
-                    surface: popup.wl_surface().clone(),
-                    location: popup_loc,
-                    size: popup.geometry().size,
-                });
+            let popup_loc = window_loc + window_geo.loc + popup_offset - popup.geometry().loc;
+            let popup_rect: Rectangle<i32, smithay::utils::Logical> =
+                Rectangle::new(popup_loc, popup.geometry().size);
+            if !output_rect.overlaps(popup_rect) {
+                continue;
             }
+            placements.push(PopupPlacement {
+                surface: popup.wl_surface().clone(),
+                location: popup_loc,
+                size: popup.geometry().size,
+            });
         }
     }
     placements

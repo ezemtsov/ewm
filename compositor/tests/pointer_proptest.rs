@@ -24,10 +24,10 @@
 //!       received names the surface returned by `surface_under_point(p)`
 //!       (or no enter was delivered, when focus didn't change).
 //!
-//! PP1 - Multi-view popup placement count. For every popup parented to a
+//! PP1 - Single popup placement per popup. For every popup parented to a
 //!       toplevel S currently in `id_windows`, `collect_popup_placements`
-//!       emits exactly `count(views_of(S))` placements per popup, with
-//!       `surface == popup.wl_surface()`.
+//!       emits exactly one placement, anchored to S's focused-or-primary
+//!       view origin.
 //!
 //! PP2 - Popup placement is hit-testable. The centre of every popup
 //!       placement hits *some* popup surface (one of our `popups` set),
@@ -518,8 +518,11 @@ fn check_p3(
 }
 
 /// Visible rect for one entry. Returns `None` for inactive-frame fullscreen
-/// entries, which render off-screen and can't be hit.
+/// entries, which render off-screen and can't be hit. Fullscreen primary
+/// centers the window inside the output, so its hit rect is the centered
+/// window rect — clicks in the letterbox fall through to other entries.
 fn visible_entry_rect(
+    ewm: &ewm_core::Ewm,
     output_geo: Rectangle<i32, Logical>,
     working_area: Rectangle<i32, Logical>,
     frame_dx: i32,
@@ -531,7 +534,16 @@ fn visible_entry_rect(
             return None;
         }
         if entry.primary {
-            Some(output_geo)
+            let window_size = ewm
+                .id_windows
+                .get(&entry.surface_id)
+                .map(|w| w.geometry().size)
+                .unwrap_or_default();
+            let (cx, cy) = fullscreen_center_offset(window_size, output_geo.size);
+            Some(Rectangle::new(
+                Point::from((output_geo.loc.x + cx, output_geo.loc.y + cy)),
+                window_size,
+            ))
         } else {
             Some(Rectangle::new(
                 output_geo.loc,
@@ -575,7 +587,7 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
             let in_active = frame_idx == active_idx;
             let Some(rect) =
-                visible_entry_rect(output_geo, working_area, frame_dx, in_active, entry)
+                visible_entry_rect(ewm, output_geo, working_area, frame_dx, in_active, entry)
             else {
                 continue;
             };
@@ -613,12 +625,7 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
         if popups.is_empty() {
             continue;
         }
-        let views = ewm
-            .output_strips
-            .values()
-            .flat_map(|s| s.surfaces())
-            .filter(|e| e.surface_id == *sid)
-            .count();
+        let has_anchor = ewm.focused_or_primary_view_origin(*sid).is_some();
         let placements = collect_popup_placements(ewm, world_rect());
         for (popup, _) in &popups {
             let popup_id = popup.wl_surface().id().protocol_id();
@@ -626,13 +633,14 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
                 .iter()
                 .filter(|p| p.surface.id().protocol_id() == popup_id)
                 .count();
+            let expected = if has_anchor { 1 } else { 0 };
             prop_assert_eq!(
                 matching,
-                views,
-                "PP1 popup {} (parent sid={}): expected {} placements, got {}",
+                expected,
+                "PP1 popup {} (parent sid={}): expected {} placement(s), got {}",
                 popup_id,
                 sid,
-                views,
+                expected,
                 matching,
             );
         }
