@@ -38,12 +38,36 @@ use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_shm::Format;
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 use smithay::wayland::shm;
 use tracing::warn;
 
 use crate::protocols::screencopy::ScreencopyBuffer;
 use crate::{cursor, tracy_span, CursorImageStatus, Ewm, State};
+
+/// Render a window's surface tree without its popups. Popups are emitted once
+/// per surface via `collect_popup_placements`; smithay's `Window::render_elements`
+/// would otherwise inline them at every view's location, duplicating across outputs.
+fn render_window_without_popups(
+    window: &smithay::desktop::Window,
+    renderer: &mut GlesRenderer,
+    location: Point<i32, Physical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+    let Some(surface) = window.wl_surface() else {
+        return Vec::new();
+    };
+    render_elements_from_surface_tree(
+        renderer,
+        &surface,
+        location,
+        scale,
+        alpha,
+        Kind::Unspecified,
+    )
+}
 
 /// Identifies the target of a render pass.
 ///
@@ -160,7 +184,6 @@ pub fn collect_render_elements_for_output(
 ) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
     tracy_span!("collect_render_elements");
 
-    use smithay::backend::renderer::element::AsRenderElements;
     use smithay::utils::Logical;
 
     let mut elements: Vec<EwmRenderElement> = Vec::new();
@@ -336,7 +359,7 @@ pub fn collect_render_elements_for_output(
                                 Point::from((offset_x, offset_y)).to_physical_precise_round(scale)
                                     + frame_offset;
                             let view_elements =
-                                window.render_elements(renderer, loc_physical, scale, entry_alpha);
+                                render_window_without_popups(window, renderer, loc_physical, scale, entry_alpha);
                             push_constrained(
                                 &mut elements,
                                 view_elements,
@@ -349,7 +372,7 @@ pub fn collect_render_elements_for_output(
                             // Non-primary: uniform stretch to fill output, crop overflow.
                             let loc_physical: Point<i32, Physical> = frame_offset;
                             let view_elements =
-                                window.render_elements(renderer, loc_physical, scale, entry_alpha);
+                                render_window_without_popups(window, renderer, loc_physical, scale, entry_alpha);
                             let buf_size: Size<i32, Physical> =
                                 window.geometry().size.to_physical_precise_round(scale);
                             let uniform = f64::max(
@@ -387,7 +410,7 @@ pub fn collect_render_elements_for_output(
                     let loc_physical: Point<i32, Physical> =
                         location.to_physical_precise_round(scale) + frame_offset;
                     let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                        window.render_elements(renderer, loc_physical, scale, entry_alpha);
+                        render_window_without_popups(window, renderer, loc_physical, scale, entry_alpha);
                     let entry_size: Size<i32, Physical> =
                         Size::from((entry.w as i32, entry.h as i32))
                             .to_physical_precise_round(scale);
@@ -451,13 +474,13 @@ pub fn collect_render_elements_for_output(
                 .get(&frame.surface_id)
                 .map(|a| a.value() as f32)
                 .unwrap_or(1.0);
-            let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
-                .render_elements(
-                    renderer,
-                    working_area_loc_physical + frame_offset_emacs,
-                    scale,
-                    frame_alpha,
-                );
+            let view_elements = render_window_without_popups(
+                window,
+                renderer,
+                working_area_loc_physical + frame_offset_emacs,
+                scale,
+                frame_alpha,
+            );
             elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
         }
     }
