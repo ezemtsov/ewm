@@ -2823,16 +2823,12 @@ impl Ewm {
         }
     }
 
-    /// Check if a focused fullscreen surface should inhibit idle.
+    /// A visible fullscreen surface on any output inhibits idle.
     /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
     fn fullscreen_surface_inhibits_idle(&self) -> bool {
-        let Some(focused) = self.focused_view_id else {
-            return false;
-        };
-        self.output_strips
-            .values()
-            .flat_map(|s| s.surfaces())
-            .any(|e| e.view_id == focused && e.fullscreen)
+        self.space
+            .outputs()
+            .any(|o| self.render_above_top_layer(o))
     }
 
     /// Kill idle child process (e.g., on lid close).
