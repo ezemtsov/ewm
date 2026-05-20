@@ -523,14 +523,15 @@ pub struct PopupPlacement {
 }
 
 /// Popup placements visible on an output. One placement per popup, anchored
-/// to the parent surface's focused view (fallback: primary view).
+/// to the parent surface's render position: focused-or-primary view for
+/// layout entries, the frame's own origin for Emacs frames.
 pub fn collect_popup_placements(
     ewm: &Ewm,
     output_rect: Rectangle<i32, smithay::utils::Logical>,
 ) -> Vec<PopupPlacement> {
     use smithay::wayland::seat::WaylandFocus;
     let mut placements = Vec::new();
-    for (&surface_id, window) in &ewm.id_windows {
+    for window in ewm.id_windows.values() {
         let Some(surface) = window.wl_surface() else {
             continue;
         };
@@ -538,7 +539,7 @@ pub fn collect_popup_placements(
         if popups.is_empty() {
             continue;
         }
-        let Some(window_loc) = ewm.focused_or_primary_view_origin(surface_id) else {
+        let Some(window_loc) = ewm.window_global_position(window) else {
             continue;
         };
         let window_geo = window.geometry();

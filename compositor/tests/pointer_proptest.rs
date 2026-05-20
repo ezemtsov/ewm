@@ -629,7 +629,7 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
         if popups.is_empty() {
             continue;
         }
-        let has_anchor = ewm.focused_or_primary_view_origin(*sid).is_some();
+        let has_anchor = ewm.window_global_position(window).is_some();
         let placements = collect_popup_placements(ewm, world_rect());
         for (popup, _) in &popups {
             let popup_id = popup.wl_surface().id().protocol_id();

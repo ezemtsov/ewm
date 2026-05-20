@@ -1904,20 +1904,6 @@ impl Ewm {
     }
 
     /// On-screen origins of every layout view of `surface_id`, one per entry.
-    /// Origin of the focused view of `surface_id`, falling back to the
-    /// primary view if no view of this surface holds keyboard focus. Used
-    /// for popup placement: popups follow the view the user is interacting
-    /// with rather than replicating across every view of the surface.
-    pub fn focused_or_primary_view_origin(
-        &self,
-        surface_id: u64,
-    ) -> Option<Point<i32, Logical>> {
-        let (out, idx, entry) = self
-            .focused_output_for_surface(surface_id)
-            .or_else(|| self.primary_output_for_surface(surface_id))?;
-        self.entry_origin(out, idx, entry)
-    }
-
     pub fn surface_view_origins(&self, surface_id: u64) -> Vec<Point<i32, Logical>> {
         if !self.surface_outputs.contains_key(&surface_id) {
             return self.emacs_frame_origin(surface_id).into_iter().collect();
