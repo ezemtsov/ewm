@@ -54,6 +54,7 @@ struct FrameSpec {
 struct EntrySpec {
     surface_id: u64,
     view_id: ViewId,
+    fullscreen: bool,
 }
 
 // Frame surface_ids / view_ids live in a disjoint range from entry ids so
@@ -66,6 +67,7 @@ fn entry_strategy() -> impl Strategy<Value = EntrySpec> {
     (ENTRY_SID_RANGE, ENTRY_VID_RANGE.prop_map(nz)).prop_map(|(sid, vid)| EntrySpec {
         surface_id: sid,
         view_id: vid,
+        fullscreen: false,
     })
 }
 
@@ -143,7 +145,7 @@ fn to_frame(spec: &FrameSpec) -> Frame {
                 w: 100,
                 h: 100,
                 primary: false,
-                fullscreen: false,
+                fullscreen: e.fullscreen,
             })
             .collect(),
         selected_view_id: spec.selected_view_id,

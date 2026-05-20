@@ -73,6 +73,7 @@ pub struct ClientState {
 pub struct Toplevel {
     pub surface: wl_surface::WlSurface,
     pub xdg_surface: xdg_surface::XdgSurface,
+    pub xdg_toplevel: xdg_toplevel::XdgToplevel,
 }
 
 #[derive(Clone)]
@@ -155,13 +156,14 @@ impl TestClient {
         let qh = self.eq.handle();
         let surface = self.compositor().create_surface(&qh, ());
         let xdg_surface = self.wm_base().get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg_surface.get_toplevel(&qh, ());
-        toplevel.set_title(title.to_string());
-        toplevel.set_app_id("ewm-test".into());
+        let xdg_toplevel = xdg_surface.get_toplevel(&qh, ());
+        xdg_toplevel.set_title(title.to_string());
+        xdg_toplevel.set_app_id("ewm-test".into());
         surface.commit();
         Toplevel {
             surface,
             xdg_surface,
+            xdg_toplevel,
         }
     }
 

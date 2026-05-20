@@ -85,21 +85,34 @@ fn world_rect() -> Rectangle<i32, Logical> {
 enum Op {
     AddOutput(usize),
     RemoveOutput(usize),
-    ApplyLayout { output: usize, n_views: usize },
+    /// `fullscreen` names which view index (in `0..n_views`) carries the
+    /// fullscreen flag; `None` means no fullscreen.
+    ApplyLayout {
+        output: usize,
+        n_views: usize,
+        fullscreen: Option<usize>,
+    },
     WarpPointer { x: i32, y: i32 },
     PointerButton { pressed: bool },
     CreatePopup { ax: i32, ay: i32 },
+    /// Drive the client side of fullscreen: calls `set_fullscreen` /
+    /// `unset_fullscreen` on the toplevel.
+    SetClientFullscreen { on: bool },
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
-        ((0..OUTPUTS.len()), 0usize..=4)
-            .prop_map(|(output, n_views)| Op::ApplyLayout { output, n_views }),
+        ((0..OUTPUTS.len()), 0usize..=4).prop_map(|(output, n_views)| Op::ApplyLayout {
+            output,
+            n_views,
+            fullscreen: None,
+        }),
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::WarpPointer { x, y }),
         any::<bool>().prop_map(|pressed| Op::PointerButton { pressed }),
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreatePopup { ax, ay }),
+        any::<bool>().prop_map(|on| Op::SetClientFullscreen { on }),
     ]
 }
 
@@ -201,7 +214,11 @@ fn apply_op(h: &mut Harness, op: &Op) {
                 h.fix.remove_output(name);
             }
         }
-        Op::ApplyLayout { output, n_views } => {
+        Op::ApplyLayout {
+            output,
+            n_views,
+            fullscreen,
+        } => {
             let name = OUTPUTS[output].0;
             if !h.fix.has_output(name) {
                 return;
@@ -220,13 +237,20 @@ fn apply_op(h: &mut Harness, op: &Op) {
                         w: VIEW_W as u32,
                         h: VIEW_H as u32,
                         primary: true,
-                        fullscreen: false,
+                        fullscreen: fullscreen == Some(i),
                     }],
                     selected_view_id: Some(nz(1 + i as u64)),
                     move_anim: None,
                 })
                 .collect();
             h.fix.ewm().apply_output_layout(name, frames);
+        }
+        Op::SetClientFullscreen { on } => {
+            if on {
+                h.toplevel.xdg_toplevel.set_fullscreen(None);
+            } else {
+                h.toplevel.xdg_toplevel.unset_fullscreen();
+            }
         }
         Op::WarpPointer { x, y } => {
             h.fix.warp_pointer(x as f64, y as f64);
@@ -529,7 +553,14 @@ proptest! {
 fn fixture_smoke() {
     let mut h = Harness::new();
     apply_op(&mut h, &Op::AddOutput(0));
-    apply_op(&mut h, &Op::ApplyLayout { output: 0, n_views: 2 });
+    apply_op(
+        &mut h,
+        &Op::ApplyLayout {
+            output: 0,
+            n_views: 2,
+            fullscreen: None,
+        },
+    );
     let popup_op = Op::CreatePopup { ax: 100, ay: 100 };
     apply_op(&mut h, &popup_op);
     h.fix.roundtrip(&mut h.client);
