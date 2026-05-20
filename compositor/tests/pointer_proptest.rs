@@ -48,6 +48,10 @@
 //! C2  - Output-membership parity. The set of output names the client
 //!       believes the toplevel is on (running `wl_surface.enter` minus
 //!       `leave`) equals `ewm.surface_outputs[sid]`.
+//!
+//! N4  - One fullscreen per strip (niri-target). After every layout, no
+//!       strip has more than one entry with `fullscreen=true`; the
+//!       compositor must normalize multi-fullscreen layouts down.
 
 use std::collections::{HashMap, HashSet};
 
@@ -87,12 +91,13 @@ fn world_rect() -> Rectangle<i32, Logical> {
 enum Op {
     AddOutput(usize),
     RemoveOutput(usize),
-    /// `fullscreen` names which view index (in `0..n_views`) carries the
-    /// fullscreen flag; `None` means no fullscreen.
+    /// Each bit `i` of `fullscreen_mask` corresponds to view `i`; the strategy
+    /// can flag any subset (including multiple) so the compositor's
+    /// one-fullscreen-per-strip rule can be exercised.
     ApplyLayout {
         output: usize,
         n_views: usize,
-        fullscreen: Option<usize>,
+        fullscreen_mask: u32,
     },
     WarpPointer { x: i32, y: i32 },
     PointerButton { pressed: bool },
@@ -106,14 +111,11 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
-        ((0..OUTPUTS.len()), 0usize..=4, any::<bool>(), any::<u8>()).prop_map(
-            |(output, n_views, want_fs, idx)| {
-                let fullscreen = (want_fs && n_views > 0).then(|| (idx as usize) % n_views);
-                Op::ApplyLayout {
-                    output,
-                    n_views,
-                    fullscreen,
-                }
+        ((0..OUTPUTS.len()), 0usize..=4, any::<u32>()).prop_map(
+            |(output, n_views, fullscreen_mask)| Op::ApplyLayout {
+                output,
+                n_views,
+                fullscreen_mask,
             },
         ),
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::WarpPointer { x, y }),
@@ -224,7 +226,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
         Op::ApplyLayout {
             output,
             n_views,
-            fullscreen,
+            fullscreen_mask,
         } => {
             let name = OUTPUTS[output].0;
             if !h.fix.has_output(name) {
@@ -244,7 +246,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
                         w: VIEW_W as u32,
                         h: VIEW_H as u32,
                         primary: true,
-                        fullscreen: fullscreen == Some(i),
+                        fullscreen: (fullscreen_mask >> i) & 1 == 1,
                     }],
                     selected_view_id: Some(nz(1 + i as u64)),
                     move_anim: None,
@@ -507,6 +509,20 @@ fn check_p3(
     Ok(())
 }
 
+fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    for (name, strip) in &ewm.output_strips {
+        let count = strip.surfaces().filter(|e| e.fullscreen).count();
+        prop_assert!(
+            count <= 1,
+            "N4: strip {} has {} fullscreen entries, expected at most 1",
+            name,
+            count,
+        );
+    }
+    Ok(())
+}
+
 fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     for (sid, window) in &ewm.id_windows {
@@ -549,6 +565,7 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
     h.fold_events(&events);
     check_l1(h)?;
     check_l2(h)?;
+    check_n4(h)?;
     check_pp1(h)?;
     check_pp2(h)?;
     check_c1(h)?;
@@ -593,7 +610,7 @@ fn fixture_smoke() {
         &Op::ApplyLayout {
             output: 0,
             n_views: 2,
-            fullscreen: None,
+            fullscreen_mask: 0,
         },
     );
     let popup_op = Op::CreatePopup { ax: 100, ay: 100 };
