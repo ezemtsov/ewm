@@ -2311,6 +2311,21 @@ impl Ewm {
     /// Pick each surface's primary entry (largest active-frame slot) and
     /// configure its toplevel.  Off-screen frames don't bid.
     fn refresh_primary_assignments(&mut self) {
+        // At most one fullscreen entry per strip: clear extras in iteration
+        // order so the area calculation below sees the normalized state.
+        for strip in self.output_strips.values_mut() {
+            let mut seen = false;
+            for entry in strip.surfaces_mut() {
+                if entry.fullscreen {
+                    if seen {
+                        entry.fullscreen = false;
+                    } else {
+                        seen = true;
+                    }
+                }
+            }
+        }
+
         let output_sizes: HashMap<String, (u64, u64)> = self
             .space
             .outputs()
