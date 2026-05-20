@@ -1935,22 +1935,43 @@ impl Ewm {
             map.non_exclusive_zone()
         };
         let strip = self.output_strips.get(&output.name())?;
+        let active_idx = strip.active_idx();
 
-        // Iterate forward (first = topmost, matching render element order)
+        // Fullscreen primary clicks miss in the letterbox; inactive fullscreens render off-screen.
         for (frame_idx, entry) in strip.surfaces_with_frame() {
-            if entry.fullscreen {
-                // Fullscreen covers entire output
-                return Some((entry, output_geo.loc.x, output_geo.loc.y));
-            }
-
-            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            let entry_x = output_geo.loc.x + working_area.loc.x + frame_dx + entry.x;
-            let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
-
+            let in_active = frame_idx == active_idx;
+            let (entry_x, entry_y, entry_w, entry_h) = if entry.fullscreen {
+                if !in_active {
+                    continue;
+                }
+                if entry.primary {
+                    (
+                        output_geo.loc.x,
+                        output_geo.loc.y,
+                        output_geo.size.w,
+                        output_geo.size.h,
+                    )
+                } else {
+                    (
+                        output_geo.loc.x,
+                        output_geo.loc.y,
+                        entry.w as i32,
+                        entry.h as i32,
+                    )
+                }
+            } else {
+                let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+                (
+                    output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
+                    output_geo.loc.y + working_area.loc.y + entry.y,
+                    entry.w as i32,
+                    entry.h as i32,
+                )
+            };
             if pos.x >= entry_x as f64
                 && pos.y >= entry_y as f64
-                && pos.x < (entry_x + entry.w as i32) as f64
-                && pos.y < (entry_y + entry.h as i32) as f64
+                && pos.x < (entry_x + entry_w) as f64
+                && pos.y < (entry_y + entry_h) as f64
             {
                 return Some((entry, entry_x, entry_y));
             }

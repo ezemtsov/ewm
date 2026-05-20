@@ -49,15 +49,17 @@
 //!       believes the toplevel is on (running `wl_surface.enter` minus
 //!       `leave`) equals `ewm.surface_outputs[sid]`.
 //!
-//! N1  - No hit-test masking, no inactive-frame hits (niri-target). When
-//!       `surface_under_point` returns the toplevel, the point lies inside
-//!       at least one *active-frame* entry's niri-target rect; fullscreen
-//!       entries don't short-circuit hit-test, and entries in inactive
-//!       frames don't capture pointer.
+//! N1  - No hit-test masking. When `surface_under_point` returns the
+//!       toplevel, the point lies inside some entry's visible rect:
+//!       active-frame fullscreen primary covers the whole output,
+//!       active-frame non-primary fullscreen pins to output.loc at its
+//!       own size, and ordinary entries use their working-area rect at
+//!       the frame's screen position. Inactive-frame fullscreens render
+//!       off-screen so they don't capture hits.
 //!
-//! N4  - One fullscreen per strip (niri-target). After every layout, no
-//!       strip has more than one entry with `fullscreen=true`; the
-//!       compositor must normalize multi-fullscreen layouts down.
+//! N4  - One fullscreen per strip. After every layout, no strip has more
+//!       than one entry with `fullscreen=true`; the compositor must
+//!       normalize multi-fullscreen layouts down.
 
 use std::collections::{HashMap, HashSet};
 
@@ -377,9 +379,9 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
             if entry.surface_id != sid {
                 continue;
             }
-            // niri-target: geometry follows entry.fullscreen alone, with no AND
-            // against the client's committed XDG state. V1: each view computes
-            // its origin from its own flag, independent of sibling views.
+            // Geometry follows entry.fullscreen alone, with no AND against
+            // the client's committed XDG state. Each view computes its origin
+            // from its own flag, independent of sibling views.
             let origin = if entry.fullscreen && entry.primary {
                 let window_size = ewm
                     .id_windows
@@ -515,30 +517,35 @@ fn check_p3(
     Ok(())
 }
 
-/// Niri-target hit rect for one entry: fullscreen primary covers the full
-/// output, non-primary fullscreen pins to `output.loc` at its own size, and
-/// non-fullscreen entries use the working-area + frame_dx + entry.{x,y} rect.
-fn niri_entry_rect(
+/// Visible rect for one entry. Returns `None` for inactive-frame fullscreen
+/// entries, which render off-screen and can't be hit.
+fn visible_entry_rect(
     output_geo: Rectangle<i32, Logical>,
     working_area: Rectangle<i32, Logical>,
     frame_dx: i32,
+    in_active: bool,
     entry: &LayoutEntry,
-) -> Rectangle<i32, Logical> {
-    if entry.fullscreen && entry.primary {
-        output_geo
-    } else if entry.fullscreen {
-        Rectangle::new(
-            output_geo.loc,
-            Size::from((entry.w as i32, entry.h as i32)),
-        )
+) -> Option<Rectangle<i32, Logical>> {
+    if entry.fullscreen {
+        if !in_active {
+            return None;
+        }
+        if entry.primary {
+            Some(output_geo)
+        } else {
+            Some(Rectangle::new(
+                output_geo.loc,
+                Size::from((entry.w as i32, entry.h as i32)),
+            ))
+        }
     } else {
-        Rectangle::new(
+        Some(Rectangle::new(
             Point::from((
                 output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
                 output_geo.loc.y + working_area.loc.y + entry.y,
             )),
             Size::from((entry.w as i32, entry.h as i32)),
-        )
+        ))
     }
 }
 
@@ -562,18 +569,23 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
         let working_area = ewm.get_working_area(output);
         let active_idx = strip.active_idx();
         for (frame_idx, entry) in strip.surfaces_with_frame() {
-            if entry.surface_id != h.sid || frame_idx != active_idx {
+            if entry.surface_id != h.sid {
                 continue;
             }
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            let rect = niri_entry_rect(output_geo, working_area, frame_dx, entry);
+            let in_active = frame_idx == active_idx;
+            let Some(rect) =
+                visible_entry_rect(output_geo, working_area, frame_dx, in_active, entry)
+            else {
+                continue;
+            };
             if rect.contains(p_int) {
                 return Ok(());
             }
         }
     }
     Err(TestCaseError::fail(format!(
-        "N1: surface_under_point({p:?}) returned our toplevel but no active-frame entry covers p (niri-target)",
+        "N1: surface_under_point({p:?}) returned our toplevel but no visible entry covers p",
     )))
 }
 
