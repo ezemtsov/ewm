@@ -318,10 +318,6 @@ pub fn collect_render_elements_for_output(
                 frame_rect.loc.to_physical_precise_round(scale);
             let in_active_frame = frame_idx == active_idx;
             for entry in &frame.surfaces {
-                // Fullscreen on an inactive frame is off-screen.
-                if entry.fullscreen && !in_active_frame {
-                    continue;
-                }
                 // Active-frame fullscreen covers the rest.
                 if above_top_layer && !entry.fullscreen && in_active_frame {
                     continue;
