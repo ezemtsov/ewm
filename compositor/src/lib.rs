@@ -1879,7 +1879,7 @@ impl Ewm {
     ) -> Option<Point<i32, Logical>> {
         let output = self.space.outputs().find(|o| o.name() == output_name)?;
         let output_geo = self.space.output_geometry(output)?;
-        if self.effective_fullscreen(entry) {
+        if entry.fullscreen {
             if entry.primary {
                 let window_size = self
                     .id_windows
@@ -1938,7 +1938,7 @@ impl Ewm {
 
         // Iterate forward (first = topmost, matching render element order)
         for (frame_idx, entry) in strip.surfaces_with_frame() {
-            if self.effective_fullscreen(entry) {
+            if entry.fullscreen {
                 // Fullscreen covers entire output
                 return Some((entry, output_geo.loc.x, output_geo.loc.y));
             }
@@ -1973,12 +1973,11 @@ impl Ewm {
         if let Some((entry, entry_x, entry_y)) = self.layout_entry_under(pos) {
             if let Some(window) = self.id_windows.get(&entry.surface_id) {
                 let window_geo = window.geometry();
-                let effective_fs = self.effective_fullscreen(entry);
                 let output_geo = self
                     .output_at(pos)
                     .and_then(|o| self.space.output_geometry(o));
 
-                let (pointer_scale, center_offset_x, center_offset_y) = if effective_fs {
+                let (pointer_scale, center_offset_x, center_offset_y) = if entry.fullscreen {
                     let out_size = output_geo.map(|g| g.size).unwrap_or_default();
                     if entry.primary {
                         let (cx, cy) = fullscreen_center_offset(window_geo.size, out_size);
@@ -2063,34 +2062,12 @@ impl Ewm {
         None
     }
 
-    /// True iff the toplevel's last-acked-and-committed state has Fullscreen set.
-    /// Differs from `LayoutEntry::fullscreen` (the requested state) during the
-    /// in-flight configure → ack → commit gap. Render and hit-test paths gate
-    /// on this so they don't flip until the client has caught up; otherwise the
-    /// position recomputes against stale geometry and the surface jumps twice.
-    pub(crate) fn surface_committed_fullscreen(&self, id: u64) -> bool {
-        self.id_windows
-            .get(&id)
-            .and_then(|w| w.toplevel())
-            .is_some_and(|t| {
-                t.with_committed_state(|s| {
-                    s.is_some_and(|s| s.states.contains(XdgToplevelState::Fullscreen))
-                })
-            })
-    }
-
-    /// Render-side fullscreen flag: entry requested fullscreen AND client commits fullscreen
-    /// buffers.
-    pub(crate) fn effective_fullscreen(&self, entry: &LayoutEntry) -> bool {
-        entry.fullscreen && self.surface_committed_fullscreen(entry.surface_id)
-    }
-
     /// Check if a surface is currently displaying as fullscreen on any output.
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
         self.output_strips.values().any(|strip| {
             strip
                 .surfaces()
-                .any(|e| e.surface_id == id && self.effective_fullscreen(e))
+                .any(|e| e.surface_id == id && e.fullscreen)
         })
     }
 
@@ -2099,7 +2076,7 @@ impl Ewm {
         self.output_strips
             .get(&output.name())
             .and_then(|s| s.active_frame())
-            .is_some_and(|f| f.surfaces.iter().any(|e| self.effective_fullscreen(e)))
+            .is_some_and(|f| f.surfaces.iter().any(|e| e.fullscreen))
     }
 
     /// View id of the layout entry under a point.
@@ -4507,7 +4484,7 @@ impl Ewm {
         let output = self.space.outputs().find(|o| o.name() == output_name)?;
         let output_geo = self.space.output_geometry(output)?;
 
-        if self.effective_fullscreen(entry) {
+        if entry.fullscreen {
             return Some(Rectangle::from_size(output_geo.size));
         }
 

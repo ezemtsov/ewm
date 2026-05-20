@@ -159,7 +159,7 @@ pub fn handle_keyboard_event(
             .flat_map(|s| s.frames.iter())
             .find(|f| f.surface_id == focused_frame_id)
             .and_then(|f| f.surfaces.iter().find(|e| e.view_id == vid))
-            .filter(|e| state.ewm.effective_fullscreen(e))
+            .filter(|e| e.fullscreen)
             .map(|e| (e.view_id, e.surface_id))
     });
     let fullscreen_surface_id = fullscreen_view.map(|(_, sid)| sid);

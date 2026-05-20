@@ -295,19 +295,18 @@ pub fn collect_render_elements_for_output(
                 frame_rect.loc.to_physical_precise_round(scale);
             let in_active_frame = frame_idx == active_idx;
             for entry in &frame.surfaces {
-                let effective_fs = ewm.effective_fullscreen(entry);
                 // Fullscreen on an inactive frame is off-screen.
-                if effective_fs && !in_active_frame {
+                if entry.fullscreen && !in_active_frame {
                     continue;
                 }
                 // Active-frame fullscreen covers the rest.
-                if above_top_layer && !effective_fs && in_active_frame {
+                if above_top_layer && !entry.fullscreen && in_active_frame {
                     continue;
                 }
                 if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
                     // Fullscreen forced opaque so the backdrop doesn't bleed through.
                     let is_focused = ewm.focused_view_id == Some(entry.view_id);
-                    let mut entry_alpha = if effective_fs || is_focused {
+                    let mut entry_alpha = if entry.fullscreen || is_focused {
                         1.0
                     } else {
                         ewm.unfocused_alpha
@@ -315,7 +314,7 @@ pub fn collect_render_elements_for_output(
                     if let Some(a) = ewm.surface_open_anims.get(&entry.surface_id) {
                         entry_alpha *= a.value() as f32;
                     }
-                    if effective_fs {
+                    if entry.fullscreen {
                         // Fullscreen: surface + backdrop at output origin, bypassing working area.
                         // Elements are front-to-back: surface first, then backdrop behind it.
                         let output_logical_size = ewm
