@@ -20,12 +20,12 @@
 //!    We detect these and signal the backend to switch VTs.
 
 use smithay::backend::input::KeyState;
-use smithay::input::keyboard::{keysyms, xkb, FilterResult, ModifiersState};
+use smithay::input::keyboard::{keysyms, xkb, FilterResult, Keysym, ModifiersState};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::seat::WaylandFocus;
 
-use crate::{module, tracy_span, State};
+use crate::{module, tracy_span, EmulatedKey, InterceptedKey, State};
 
 /// Build target modifier state: replace logo (Super) with the target modifier.
 fn emulate_modifiers(current: &ModifiersState, target_mod: &str) -> ModifiersState {
@@ -55,8 +55,8 @@ fn notify_pointer_activity(state: &mut State) {
 
 /// Unified decision from the keyboard filter.
 /// Returned by `input_intercept`. The caller decides how to forward.
-#[derive(Debug, Clone)]
-enum KeyAction {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyAction {
     /// Forward to focused client as-is
     Forward,
     /// Emulate: translate modifiers and forward to client
@@ -67,6 +67,74 @@ enum KeyAction {
     TextInput(u32, Option<String>),
     /// VT switch (Ctrl+Alt+F1-F12)
     VtSwitch(i32),
+}
+
+/// `Ctrl+Alt+F1..F12` arrives as `XF86Switch_VT_N`; decode to the 1-based VT.
+fn decode_vt_switch(modified_raw: u32) -> Option<i32> {
+    if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&modified_raw) {
+        Some((modified_raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32)
+    } else {
+        None
+    }
+}
+
+/// Pure classification of a keyboard event. Reads no compositor state; the
+/// caller resolves `focus_on_emacs` / `fullscreen_surface_id` upstream and
+/// applies any side effects (e.g. `module::set_in_prefix_sequence(true)` on
+/// `Redirect`) downstream. Releases always Forward.
+pub fn classify_key(
+    intercepted_keys: &[InterceptedKey],
+    emulated_keys: &[EmulatedKey],
+    text_input_intercept: bool,
+    focus_on_emacs: bool,
+    fullscreen_surface_id: Option<u64>,
+    is_press: bool,
+    keysym_raw: u32,
+    modified_raw: u32,
+    modified: Keysym,
+    mods: &ModifiersState,
+) -> KeyAction {
+    if !is_press {
+        return KeyAction::Forward;
+    }
+
+    if let Some(vt) = decode_vt_switch(modified_raw) {
+        return KeyAction::VtSwitch(vt);
+    }
+
+    if !focus_on_emacs {
+        if let Some(ek) = emulated_keys
+            .iter()
+            .find(|ek| ek.matches(keysym_raw, modified_raw, mods))
+        {
+            return KeyAction::Emulate(ek.target_mod.clone());
+        }
+    }
+
+    if let Some(ik) = intercepted_keys
+        .iter()
+        .find(|ik| ik.matches(keysym_raw, modified_raw, mods))
+    {
+        if fullscreen_surface_id.is_some() {
+            if ik.allow_fullscreen && !focus_on_emacs {
+                return KeyAction::Redirect(keysym_raw);
+            }
+            return KeyAction::Forward;
+        }
+        if !focus_on_emacs {
+            return KeyAction::Redirect(keysym_raw);
+        }
+        return KeyAction::Forward;
+    }
+
+    if text_input_intercept && !focus_on_emacs && !mods.ctrl && !mods.alt && !mods.logo {
+        let utf8 = xkb::keysym_to_utf8(modified);
+        if !utf8.is_empty() && !utf8.chars().all(|c| c.is_control()) {
+            return KeyAction::TextInput(keysym_raw, Some(utf8));
+        }
+    }
+
+    KeyAction::Forward
 }
 
 /// Result of processing a keyboard event
@@ -124,11 +192,7 @@ pub fn handle_keyboard_event(
                 if !is_press {
                     return FilterResult::Forward;
                 }
-                let modified = handle.modified_sym().raw();
-                if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
-                    .contains(&modified)
-                {
-                    let vt = (modified - keysyms::KEY_XF86Switch_VT_1 + 1) as i32;
+                if let Some(vt) = decode_vt_switch(handle.modified_sym().raw()) {
                     return FilterResult::Intercept(Some(vt));
                 }
                 FilterResult::Forward
@@ -224,72 +288,27 @@ pub fn handle_keyboard_event(
     // emulation (modifier translation) between the two steps.
     let (action, mods_changed) =
         keyboard.input_intercept(state, keycode.into(), key_state, |_, mods, handle| {
-            if !is_press {
-                return KeyAction::Forward;
-            }
-
-            // Get the modified keysym (with modifiers applied by XKB)
             let modified = handle.modified_sym();
-            let modified_raw = modified.raw();
-
-            // Check for VT switch keys (Ctrl+Alt+F1-F12 -> XF86Switch_VT_*)
-            if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
-                .contains(&modified_raw)
-            {
-                let vt = (modified_raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32;
-                return KeyAction::VtSwitch(vt);
-            }
-
-            // Get the raw latin keysym for this key (layout-independent)
-            let raw_latin = handle.raw_latin_sym_or_raw_current_sym();
-            let keysym = raw_latin.unwrap_or(modified);
-            let keysym_raw = keysym.raw();
-
-            // Emulation check (before interception)
-            // Emulated keys translate modifiers for non-Emacs surfaces
-            // (e.g. Super+c -> Ctrl+c for clipboard copy)
-            if !focus_on_emacs {
-                if let Some(ek) = emulated_keys
-                    .iter()
-                    .find(|ek| ek.matches(keysym_raw, modified_raw, mods))
-                {
-                    return KeyAction::Emulate(ek.target_mod.clone());
-                }
-            }
-
-            // Interception check
-            let matched_key = intercepted_keys
-                .iter()
-                .find(|ik| ik.matches(keysym_raw, modified_raw, mods));
-
-            if let Some(ik) = matched_key {
-                // Fullscreen mode: only keys marked allow_fullscreen are redirected
-                if fullscreen_surface_id.is_some() {
-                    if ik.allow_fullscreen && !focus_on_emacs {
-                        module::set_in_prefix_sequence(true);
-                        return KeyAction::Redirect(keysym_raw);
-                    }
-                    return KeyAction::Forward;
-                }
-
-                if !focus_on_emacs {
-                    module::set_in_prefix_sequence(true);
-                    return KeyAction::Redirect(keysym_raw);
-                }
-                return KeyAction::Forward;
-            }
-
-            if text_input_intercept && !focus_on_emacs && !mods.ctrl && !mods.alt && !mods.logo {
-                let utf8 = xkb::keysym_to_utf8(modified);
-                if !utf8.is_empty() && !utf8.chars().all(|c| c.is_control()) {
-                    KeyAction::TextInput(keysym_raw, Some(utf8))
-                } else {
-                    KeyAction::Forward
-                }
-            } else {
-                KeyAction::Forward
-            }
+            let keysym_raw = handle
+                .raw_latin_sym_or_raw_current_sym()
+                .unwrap_or(modified)
+                .raw();
+            classify_key(
+                &intercepted_keys,
+                &emulated_keys,
+                text_input_intercept,
+                focus_on_emacs,
+                fullscreen_surface_id,
+                is_press,
+                keysym_raw,
+                modified.raw(),
+                modified,
+                mods,
+            )
         });
+    if matches!(action, KeyAction::Redirect(_)) {
+        module::set_in_prefix_sequence(true);
+    }
 
     // Restore layout after prefix sequence temp reset
     if let Some(saved) = prefix_saved_layout {
