@@ -693,23 +693,3 @@ proptest! {
         }
     }
 }
-
-/// Smoke test: build a fixture, apply a 2-view layout, attach a popup,
-/// check invariants. Catches infra regressions before the proptest does.
-#[test]
-fn fixture_smoke() {
-    let mut h = Harness::new();
-    apply_op(&mut h, &Op::AddOutput(0));
-    apply_op(
-        &mut h,
-        &Op::ApplyLayout {
-            output: 0,
-            n_views: 2,
-            fullscreen_mask: 0,
-        },
-    );
-    let popup_op = Op::CreatePopup { ax: 100, ay: 100 };
-    apply_op(&mut h, &popup_op);
-    h.fix.roundtrip(&mut h.client);
-    assert_invariants(&mut h, &popup_op).expect("smoke invariants hold");
-}

@@ -39,6 +39,7 @@ enum Op {
     RemoveOutput(usize),
     AddOutput(usize),
     DestroyFrame(u64),
+    DestroySurface(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +127,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
         (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
+        ENTRY_SID_RANGE.prop_map(Op::DestroySurface),
     ]
 }
 
@@ -271,7 +273,36 @@ fn apply_op(fix: &mut Fixture, op: Op) {
         }
         Op::DestroyFrame(id) => {
             let was_present = strip_frame_ids(fix).contains(&id);
+            let prev_focused = fix.ewm_ref().focused_frame_id;
+            let expected_same_output_refocus = if prev_focused == id {
+                fix.ewm_ref().lookup_frame(id).and_then(|(output, idx)| {
+                    let frames = &fix.ewm_ref().output_strips.get(&output)?.frames;
+                    if idx + 1 < frames.len() {
+                        Some(frames[idx + 1].surface_id)
+                    } else if idx > 0 {
+                        Some(frames[idx - 1].surface_id)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
             let refocus = fix.ewm().handle_toplevel_destroyed_by_id(id);
+            if let Some(expected) = expected_same_output_refocus {
+                assert_eq!(
+                    refocus,
+                    Some(expected),
+                    "destroy({}) returned wrong same-output refocus target",
+                    id,
+                );
+            } else if prev_focused != id {
+                assert_eq!(
+                    refocus, None,
+                    "destroy({}) requested refocus for an inactive frame",
+                    id,
+                );
+            }
             if let Some(target) = refocus {
                 fix.ewm()
                     .set_focus_frame(target, "toplevel_destroyed", false);
@@ -282,6 +313,84 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     "invariant 11: destroy({}) left the id in some strip",
                     id,
                 );
+                if prev_focused != id {
+                    assert_eq!(
+                        fix.ewm_ref().focused_frame_id,
+                        prev_focused,
+                        "destroy({}) changed focus away from inactive frame {}",
+                        id,
+                        prev_focused,
+                    );
+                }
+            }
+        }
+        Op::DestroySurface(id) => {
+            let was_present = layout_surface_ids(fix).contains(&id);
+            let was_focused = fix.ewm_ref().focused_surface_id() == id;
+            let prev_focused_frame = fix.ewm_ref().focused_frame_id;
+            let destroyed_view_ids: HashSet<ViewId> = fix
+                .ewm_ref()
+                .output_strips
+                .values()
+                .flat_map(|strip| strip.frames.iter())
+                .flat_map(|frame| {
+                    frame
+                        .surfaces
+                        .iter()
+                        .filter(move |entry| entry.surface_id == id)
+                        .map(|entry| entry.view_id)
+                })
+                .collect();
+            let refocus = fix.ewm().handle_toplevel_destroyed_by_id(id);
+            assert_eq!(
+                refocus, None,
+                "destroying embedded surface {} must not request frame refocus",
+                id,
+            );
+            if was_present {
+                assert!(
+                    !layout_surface_ids(fix).contains(&id),
+                    "destroy({}) left the id in a layout entry",
+                    id,
+                );
+                assert!(
+                    !fix.ewm_ref().surface_outputs.contains_key(&id),
+                    "destroy({}) left stale surface_outputs entry",
+                    id,
+                );
+                assert_ne!(
+                    fix.ewm_ref().focused_surface_id(),
+                    id,
+                    "destroy({}) left keyboard focus on the dead surface",
+                    id,
+                );
+                for strip in fix.ewm_ref().output_strips.values() {
+                    for frame in &strip.frames {
+                        assert!(
+                            frame
+                                .selected_view_id
+                                .is_none_or(|view_id| !destroyed_view_ids.contains(&view_id)),
+                            "destroy({}) left stale selected_view_id {:?} on frame {}",
+                            id,
+                            frame.selected_view_id,
+                            frame.surface_id,
+                        );
+                    }
+                }
+                if was_focused {
+                    assert_eq!(
+                        fix.ewm_ref().focused_frame_id,
+                        prev_focused_frame,
+                        "destroy({}) changed host frame focus",
+                        id,
+                    );
+                    assert_eq!(
+                        fix.ewm_ref().focused_view_id,
+                        None,
+                        "destroy({}) left focused_view_id set",
+                        id,
+                    );
+                }
             }
         }
     }
@@ -296,6 +405,14 @@ fn strip_frame_ids(fix: &Fixture) -> HashSet<u64> {
         .collect()
 }
 
+fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
+    fix.ewm_ref()
+        .output_strips
+        .values()
+        .flat_map(|s| s.surfaces().map(|e| e.surface_id))
+        .collect()
+}
+
 fn install_strip(fix: &mut Fixture, output: &str, ids: &[u64]) {
     let clock = fix.ewm().animations_clock.clone();
     let strip = fix
@@ -307,38 +424,109 @@ fn install_strip(fix: &mut Fixture, output: &str, ids: &[u64]) {
     strip.set_active(0);
 }
 
-#[test]
-fn destroying_focused_middle_frame_refocuses_right_neighbor() {
-    let mut fix = Fixture::new().unwrap();
-    fix.add_output(OUTPUTS[0], 1920, 1080);
-    install_strip(&mut fix, OUTPUTS[0], &[100, 101, 102, 103]);
-    fix.ewm().set_focus_frame(101, "test", false);
+proptest! {
+    #[test]
+    fn destroying_focused_frame_refocuses_same_output_neighbor(
+        len in 2usize..=6,
+        raw_idx in 0usize..6,
+    ) {
+        let idx = raw_idx % len;
+        let ids: Vec<u64> = (0..len).map(|i| 1000 + i as u64).collect();
+        let mut fix = Fixture::new().unwrap();
+        fix.add_output(OUTPUTS[0], 1920, 1080);
+        install_strip(&mut fix, OUTPUTS[0], &ids);
+        fix.ewm().set_focus_frame(ids[idx], "proptest", false);
 
-    let refocus = fix.ewm().handle_toplevel_destroyed_by_id(101);
+        let expected = if idx + 1 < len {
+            ids[idx + 1]
+        } else {
+            ids[idx - 1]
+        };
+        let refocus = fix.ewm().handle_toplevel_destroyed_by_id(ids[idx]);
 
-    assert_eq!(refocus, Some(102));
-    if let Some(target) = refocus {
+        prop_assert_eq!(refocus, Some(expected));
         fix.ewm()
-            .set_focus_frame(target, "toplevel_destroyed", false);
+            .set_focus_frame(refocus.unwrap(), "toplevel_destroyed", false);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id, expected);
+        let strip = fix.ewm_ref().output_strips.get(OUTPUTS[0]).unwrap();
+        prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(expected));
     }
-    assert_eq!(fix.ewm_ref().focused_frame_id, 102);
-    let strip = fix.ewm_ref().output_strips.get(OUTPUTS[0]).unwrap();
-    assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(102));
-}
 
-#[test]
-fn destroying_inactive_frame_preserves_focused_frame() {
-    let mut fix = Fixture::new().unwrap();
-    fix.add_output(OUTPUTS[0], 1920, 1080);
-    install_strip(&mut fix, OUTPUTS[0], &[100, 101, 102]);
-    fix.ewm().set_focus_frame(101, "test", false);
+    #[test]
+    fn destroying_inactive_frame_preserves_focused_frame(
+        len in 2usize..=6,
+        raw_focus_idx in 0usize..6,
+        raw_destroy_idx in 0usize..6,
+    ) {
+        let focus_idx = raw_focus_idx % len;
+        let mut destroy_idx = raw_destroy_idx % len;
+        if destroy_idx == focus_idx {
+            destroy_idx = (destroy_idx + 1) % len;
+        }
+        let ids: Vec<u64> = (0..len).map(|i| 2000 + i as u64).collect();
+        let mut fix = Fixture::new().unwrap();
+        fix.add_output(OUTPUTS[0], 1920, 1080);
+        install_strip(&mut fix, OUTPUTS[0], &ids);
+        fix.ewm().set_focus_frame(ids[focus_idx], "proptest", false);
 
-    let refocus = fix.ewm().handle_toplevel_destroyed_by_id(100);
+        let refocus = fix.ewm().handle_toplevel_destroyed_by_id(ids[destroy_idx]);
 
-    assert_eq!(refocus, None);
-    assert_eq!(fix.ewm_ref().focused_frame_id, 101);
-    let strip = fix.ewm_ref().output_strips.get(OUTPUTS[0]).unwrap();
-    assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(101));
+        prop_assert_eq!(refocus, None);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id, ids[focus_idx]);
+        let strip = fix.ewm_ref().output_strips.get(OUTPUTS[0]).unwrap();
+        prop_assert_eq!(
+            strip.active_frame().map(|f| f.surface_id),
+            Some(ids[focus_idx]),
+        );
+    }
+
+    #[test]
+    fn destroying_focused_embedded_surface_parks_focus_on_host_frame(
+        surface_id in ENTRY_SID_RANGE,
+        view_id_raw in ENTRY_VID_RANGE,
+    ) {
+        let mut fix = Fixture::new().unwrap();
+        fix.add_output(OUTPUTS[0], 1920, 1080);
+
+        let view_id = nz(view_id_raw);
+        let frame = to_frame(&FrameSpec {
+            surface_id: 100,
+            frame_view_id: nz(200),
+            selected_view_id: Some(view_id),
+            entries: vec![EntrySpec {
+                surface_id,
+                view_id,
+                fullscreen: false,
+            }],
+        });
+        fix.ewm().apply_output_layout(OUTPUTS[0], vec![frame]);
+        prop_assert!(fix
+            .ewm_ref()
+            .surface_outputs
+            .get(&surface_id)
+            .is_some_and(|outputs| outputs.contains(OUTPUTS[0])));
+        fix.ewm().set_focus_view(view_id, "proptest", false);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id, 100);
+        prop_assert_eq!(fix.ewm_ref().focused_view_id, Some(view_id));
+        prop_assert_eq!(fix.ewm_ref().focused_surface_id(), surface_id);
+
+        let refocus = fix.ewm().handle_toplevel_destroyed_by_id(surface_id);
+
+        prop_assert_eq!(refocus, None);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id, 100);
+        prop_assert_eq!(fix.ewm_ref().focused_view_id, None);
+        prop_assert_eq!(fix.ewm_ref().focused_surface_id(), 100);
+        prop_assert!(!fix.ewm_ref().surface_outputs.contains_key(&surface_id));
+        let frame = fix
+            .ewm_ref()
+            .output_strips
+            .get(OUTPUTS[0])
+            .and_then(|strip| strip.frames.first())
+            .unwrap();
+        prop_assert_eq!(frame.surface_id, 100);
+        prop_assert_eq!(frame.selected_view_id, None);
+        prop_assert!(frame.surfaces.is_empty());
+    }
 }
 
 #[test]

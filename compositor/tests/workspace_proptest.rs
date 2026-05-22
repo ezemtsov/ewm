@@ -178,41 +178,6 @@ proptest! {
 }
 
 #[test]
-fn close_active_middle_lands_on_right_neighbour() {
-    let mut s = Strip::new(AnimationsClock::default());
-    for sid in [1u64, 2, 3, 4, 5] {
-        apply_op(&mut s, &Op::InsertAfterActive(sid));
-    }
-    apply_op(&mut s, &Op::Focus(2));
-    assert_eq!(s.active_frame().map(|f| f.surface_id), Some(3));
-    apply_op(&mut s, &Op::CloseAt(2));
-    assert_eq!(s.active_frame().map(|f| f.surface_id), Some(4));
-}
-
-#[test]
-fn close_active_rightmost_lands_on_left_neighbour() {
-    let mut s = Strip::new(AnimationsClock::default());
-    for sid in [1u64, 2, 3] {
-        apply_op(&mut s, &Op::InsertAfterActive(sid));
-    }
-    assert_eq!(s.active_idx(), 2);
-    apply_op(&mut s, &Op::CloseAt(2));
-    assert_eq!(s.active_frame().map(|f| f.surface_id), Some(2));
-}
-
-#[test]
-fn close_non_active_preserves_active_frame() {
-    let mut s = Strip::new(AnimationsClock::default());
-    for sid in [1u64, 2, 3, 4, 5] {
-        apply_op(&mut s, &Op::InsertAfterActive(sid));
-    }
-    apply_op(&mut s, &Op::Focus(3));
-    let active_sid = s.active_frame().unwrap().surface_id;
-    apply_op(&mut s, &Op::CloseAt(1));
-    assert_eq!(s.active_frame().map(|f| f.surface_id), Some(active_sid));
-}
-
-#[test]
 fn active_close_uses_destroyed_slot_not_current_active_idx() {
     let mut s = Strip::new(AnimationsClock::default());
     for sid in [1u64, 2, 3, 4] {
