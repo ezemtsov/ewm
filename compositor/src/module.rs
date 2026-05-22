@@ -102,7 +102,7 @@ define_errors! {
     ewm_input_unknown_key  "Unknown input config key"            (ewm_input_error)
 }
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
@@ -190,27 +190,18 @@ pub fn peek_pending_frame_outputs() -> Vec<String> {
 /// delete can relay Emacs's MRU focus before the Wayland destroy reaches us,
 /// so the destroy handler needs the close intent without waiting for the
 /// command queue.
-static PENDING_ACTIVE_FRAME_CLOSES: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
+static PENDING_ACTIVE_FRAME_CLOSES: OnceLock<Mutex<BTreeSet<u64>>> = OnceLock::new();
 
-fn pending_active_frame_closes() -> &'static Mutex<Vec<u64>> {
-    PENDING_ACTIVE_FRAME_CLOSES.get_or_init(|| Mutex::new(Vec::new()))
+fn pending_active_frame_closes() -> &'static Mutex<BTreeSet<u64>> {
+    PENDING_ACTIVE_FRAME_CLOSES.get_or_init(|| Mutex::new(BTreeSet::new()))
 }
 
 pub(crate) fn mark_pending_active_frame_close(id: u64) {
-    let mut pending = pending_active_frame_closes().lock().unwrap();
-    if !pending.contains(&id) {
-        pending.push(id);
-    }
+    pending_active_frame_closes().lock().unwrap().insert(id);
 }
 
 pub(crate) fn take_pending_active_frame_close(id: u64) -> bool {
-    let mut pending = pending_active_frame_closes().lock().unwrap();
-    if let Some(pos) = pending.iter().position(|&pending_id| pending_id == id) {
-        pending.remove(pos);
-        true
-    } else {
-        false
-    }
+    pending_active_frame_closes().lock().unwrap().remove(&id)
 }
 
 pub(crate) fn has_pending_active_frame_close(id: u64) -> bool {
@@ -218,7 +209,12 @@ pub(crate) fn has_pending_active_frame_close(id: u64) -> bool {
 }
 
 pub(crate) fn peek_pending_active_frame_closes() -> Vec<u64> {
-    pending_active_frame_closes().lock().unwrap().clone()
+    pending_active_frame_closes()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect()
 }
 
 /// Intercepted keys (synchronous to avoid race during startup)
