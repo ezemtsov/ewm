@@ -4,7 +4,7 @@
 //! the wlr-screencopy-unstable-v1 protocol, allowing clients like `grim` to
 //! capture screenshots.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +23,7 @@ use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_scre
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::{
     zwlr_screencopy_frame_v1, zwlr_screencopy_manager_v1,
 };
+use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_shm::Format;
 use smithay::reexports::wayland_server::{
@@ -39,15 +40,13 @@ const VERSION: u32 = 3;
 /// Queue of pending screencopy requests for an output
 pub struct ScreencopyQueue {
     damage_tracker: OutputDamageTracker,
+    pending_frames: HashSet<ZwlrScreencopyFrameV1>,
     screencopies: Vec<Screencopy>,
 }
 
 impl Default for ScreencopyQueue {
     fn default() -> Self {
-        Self {
-            damage_tracker: OutputDamageTracker::new((0, 0), 1.0, Transform::Normal),
-            screencopies: Vec::new(),
-        }
+        Self::new()
     }
 }
 
@@ -55,6 +54,7 @@ impl ScreencopyQueue {
     pub fn new() -> Self {
         Self {
             damage_tracker: OutputDamageTracker::new((0, 0), 1.0, Transform::Normal),
+            pending_frames: HashSet::new(),
             screencopies: Vec::new(),
         }
     }
@@ -77,8 +77,14 @@ impl ScreencopyQueue {
             .retain(|screencopy| screencopy.output() != output);
     }
 
+    fn remove_frame(&mut self, frame: &ZwlrScreencopyFrameV1) {
+        self.pending_frames.remove(frame);
+        self.screencopies
+            .retain(|screencopy| screencopy.frame != *frame);
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.screencopies.is_empty()
+        self.pending_frames.is_empty() && self.screencopies.is_empty()
     }
 }
 
@@ -113,10 +119,7 @@ impl ScreencopyManagerState {
     }
 
     pub fn bind(&mut self, manager: &ZwlrScreencopyManagerV1) {
-        // Clean up all entries if its manager is dead and its queue is empty.
-        self.queues
-            .retain(|k, v| k.is_alive() || !v.screencopies.is_empty());
-
+        self.cleanup_dead_queues();
         self.queues.insert(manager.clone(), ScreencopyQueue::new());
     }
 
@@ -144,8 +147,12 @@ impl ScreencopyManagerState {
             f(queue);
         }
         // Clean up dead managers with empty queues
+        self.cleanup_dead_queues();
+    }
+
+    fn cleanup_dead_queues(&mut self) {
         self.queues
-            .retain(|k, v| k.is_alive() || !v.screencopies.is_empty());
+            .retain(|manager, queue| manager.is_alive() || !queue.is_empty());
     }
 }
 
@@ -184,7 +191,7 @@ where
     D: 'static,
 {
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         manager: &ZwlrScreencopyManagerV1,
         request: zwlr_screencopy_manager_v1::Request,
@@ -302,6 +309,20 @@ where
 
             // Notify client that all supported buffers were enumerated.
             frame.buffer_done();
+        }
+
+        let queue = state.screencopy_state().queues.get_mut(manager).unwrap();
+        queue.pending_frames.insert(frame);
+    }
+
+    fn destroyed(state: &mut D, _client: ClientId, manager: &ZwlrScreencopyManagerV1, _data: &()) {
+        let state = state.screencopy_state();
+        let Some(queue) = state.queues.get(manager) else {
+            return;
+        };
+
+        if queue.is_empty() {
+            state.queues.remove(manager);
         }
     }
 }
@@ -435,6 +456,34 @@ where
                 submitted: false,
             },
         );
+
+        let state = state.screencopy_state();
+        let queue = state.queues.get_mut(manager).unwrap();
+        queue.pending_frames.remove(frame);
+        if queue.is_empty() && !manager.is_alive() {
+            state.queues.remove(manager);
+        }
+    }
+
+    fn destroyed(
+        state: &mut D,
+        _client: ClientId,
+        frame: &ZwlrScreencopyFrameV1,
+        data: &ScreencopyFrameState,
+    ) {
+        let ScreencopyFrameState::Pending { manager, .. } = data else {
+            return;
+        };
+
+        let state = state.screencopy_state();
+        let Some(queue) = state.queues.get_mut(manager) else {
+            return;
+        };
+
+        queue.remove_frame(frame);
+        if queue.is_empty() && !manager.is_alive() {
+            state.queues.remove(manager);
+        }
     }
 }
 
