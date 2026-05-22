@@ -4024,70 +4024,50 @@ impl Ewm {
         self.space.outputs().find(|o| o.name() == name).cloned()
     }
 
-    /// Output to the left of `current` whose y-band overlaps it.  Picks
-    /// the closest by horizontal center distance; returns `None` at the
-    /// edge of the strip-of-monitors.
-    pub fn output_left_of(&self, current: &Output) -> Option<Output> {
+    /// Output adjacent to `current` along one axis. Candidates must overlap
+    /// the perpendicular band and the closest center in the requested
+    /// direction wins.
+    fn output_in_direction(&self, current: &Output, dx: i32, dy: i32) -> Option<Output> {
         let cur = self.space.output_geometry(current)?;
-        let band = Rectangle::new(
-            smithay::utils::Point::from((i32::MIN / 2, cur.loc.y)),
-            Size::from((i32::MAX, cur.size.h)),
-        );
-        let cur_cx = cur.loc.x + cur.size.w / 2;
-        self.space
-            .outputs()
-            .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
-            .filter(|(_, g)| (g.loc.x + g.size.w / 2) < cur_cx && g.overlaps(band))
-            .min_by_key(|(_, g)| cur_cx - (g.loc.x + g.size.w / 2))
-            .map(|(o, _)| o.clone())
-    }
+        let horizontal = match (dx.signum(), dy.signum()) {
+            (-1 | 1, 0) => true,
+            (0, -1 | 1) => false,
+            _ => return None,
+        };
+        let sign = if horizontal { dx.signum() } else { dy.signum() };
+        let band = if horizontal {
+            Rectangle::new(
+                smithay::utils::Point::from((i32::MIN / 2, cur.loc.y)),
+                Size::from((i32::MAX, cur.size.h)),
+            )
+        } else {
+            Rectangle::new(
+                smithay::utils::Point::from((cur.loc.x, i32::MIN / 2)),
+                Size::from((cur.size.w, i32::MAX)),
+            )
+        };
+        let cur_center = if horizontal {
+            i64::from(cur.loc.x) + i64::from(cur.size.w) / 2
+        } else {
+            i64::from(cur.loc.y) + i64::from(cur.size.h) / 2
+        };
 
-    /// Output to the right of `current`.
-    pub fn output_right_of(&self, current: &Output) -> Option<Output> {
-        let cur = self.space.output_geometry(current)?;
-        let band = Rectangle::new(
-            smithay::utils::Point::from((i32::MIN / 2, cur.loc.y)),
-            Size::from((i32::MAX, cur.size.h)),
-        );
-        let cur_cx = cur.loc.x + cur.size.w / 2;
         self.space
             .outputs()
             .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
-            .filter(|(_, g)| (g.loc.x + g.size.w / 2) > cur_cx && g.overlaps(band))
-            .min_by_key(|(_, g)| (g.loc.x + g.size.w / 2) - cur_cx)
-            .map(|(o, _)| o.clone())
-    }
-
-    /// Output above `current` whose x-band overlaps it.  Picks the closest
-    /// by vertical center distance.
-    pub fn output_above(&self, current: &Output) -> Option<Output> {
-        let cur = self.space.output_geometry(current)?;
-        let band = Rectangle::new(
-            smithay::utils::Point::from((cur.loc.x, i32::MIN / 2)),
-            Size::from((cur.size.w, i32::MAX)),
-        );
-        let cur_cy = cur.loc.y + cur.size.h / 2;
-        self.space
-            .outputs()
-            .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
-            .filter(|(_, g)| (g.loc.y + g.size.h / 2) < cur_cy && g.overlaps(band))
-            .min_by_key(|(_, g)| cur_cy - (g.loc.y + g.size.h / 2))
-            .map(|(o, _)| o.clone())
-    }
-
-    /// Output below `current`.
-    pub fn output_below(&self, current: &Output) -> Option<Output> {
-        let cur = self.space.output_geometry(current)?;
-        let band = Rectangle::new(
-            smithay::utils::Point::from((cur.loc.x, i32::MIN / 2)),
-            Size::from((cur.size.w, i32::MAX)),
-        );
-        let cur_cy = cur.loc.y + cur.size.h / 2;
-        self.space
-            .outputs()
-            .filter_map(|o| self.space.output_geometry(o).map(|g| (o, g)))
-            .filter(|(_, g)| (g.loc.y + g.size.h / 2) > cur_cy && g.overlaps(band))
-            .min_by_key(|(_, g)| (g.loc.y + g.size.h / 2) - cur_cy)
+            .filter_map(|(output, geo)| {
+                if !geo.overlaps(band) {
+                    return None;
+                }
+                let center = if horizontal {
+                    i64::from(geo.loc.x) + i64::from(geo.size.w) / 2
+                } else {
+                    i64::from(geo.loc.y) + i64::from(geo.size.h) / 2
+                };
+                let distance = i64::from(sign) * (center - cur_center);
+                (distance > 0).then_some((output, distance))
+            })
+            .min_by_key(|(_, distance)| *distance)
             .map(|(o, _)| o.clone())
     }
 
@@ -4103,13 +4083,7 @@ impl Ewm {
             Some(o) => o,
             None => return,
         };
-        let target = match (dx.signum(), dy.signum()) {
-            (-1, 0) => self.output_left_of(&cur),
-            (1, 0) => self.output_right_of(&cur),
-            (0, -1) => self.output_above(&cur),
-            (0, 1) => self.output_below(&cur),
-            _ => None,
-        };
+        let target = self.output_in_direction(&cur, dx, dy);
         let Some(target) = target else { return };
         let Some(id) = self.active_frame_surface_id(&target.name()) else {
             return;
