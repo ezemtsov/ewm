@@ -45,8 +45,10 @@ impl FrameClock {
 
     /// Predict the next presentation time based on the last VBlank and refresh interval.
     pub fn next_presentation_time(&self) -> Duration {
-        let mut now = get_monotonic_time();
+        self.next_presentation_time_at(get_monotonic_time())
+    }
 
+    fn next_presentation_time_at(&self, mut now: Duration) -> Duration {
         let Some(refresh_interval_ns) = self.refresh_interval_ns else {
             return now;
         };
@@ -83,44 +85,85 @@ impl FrameClock {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
-    #[test]
-    fn test_frame_clock_no_interval() {
-        let clock = FrameClock::new(None);
-        // Without interval, returns approximately now
-        let t = clock.next_presentation_time();
-        assert!(!t.is_zero());
-    }
+    proptest! {
+        #[test]
+        fn missing_interval_or_presentation_returns_now(
+            now_ns in 1u64..=10_000_000_000,
+            refresh_ns in 1u64..=1_000_000_000,
+            last_ns in 1u64..=10_000_000_000,
+        ) {
+            let now = Duration::from_nanos(now_ns);
+            let mut no_interval = FrameClock::new(None);
+            no_interval.presented(Duration::from_nanos(last_ns));
+            prop_assert_eq!(no_interval.next_presentation_time_at(now), now);
 
-    #[test]
-    fn test_frame_clock_no_presentation() {
-        let clock = FrameClock::new(Some(Duration::from_micros(16_667)));
-        // Without presentation time, returns approximately now
-        let t = clock.next_presentation_time();
-        assert!(!t.is_zero());
-    }
+            let no_presentation = FrameClock::new(Some(Duration::from_nanos(refresh_ns)));
+            prop_assert_eq!(no_presentation.next_presentation_time_at(now), now);
+        }
 
-    #[test]
-    fn test_frame_clock_predicts_next() {
-        let mut clock = FrameClock::new(Some(Duration::from_millis(16)));
-        let now = get_monotonic_time();
-        // Simulate a recent presentation
-        clock.presented(now - Duration::from_millis(5));
-        let next = clock.next_presentation_time();
-        // Next should be after now
-        assert!(next >= now);
-        // And within one refresh interval from now
-        assert!(next <= now + Duration::from_millis(16));
-    }
+        #[test]
+        fn refresh_interval_roundtrips(
+            refresh_ns in 1u64..=999_999_999,
+        ) {
+            let refresh = Duration::from_nanos(refresh_ns);
+            let clock = FrameClock::new(Some(refresh));
 
-    #[test]
-    fn test_refresh_interval() {
-        let clock = FrameClock::new(Some(Duration::from_micros(16_667)));
-        let interval = clock.refresh_interval().unwrap();
-        assert_eq!(interval.as_micros(), 16_667);
+            prop_assert_eq!(clock.refresh_interval(), Some(refresh));
+            prop_assert_eq!(FrameClock::new(None).refresh_interval(), None);
+        }
 
-        let clock = FrameClock::new(None);
-        assert!(clock.refresh_interval().is_none());
+        #[test]
+        fn zero_presentation_time_is_ignored(
+            now_ns in 1u64..=10_000_000_000,
+            refresh_ns in 1u64..=1_000_000_000,
+        ) {
+            let mut clock = FrameClock::new(Some(Duration::from_nanos(refresh_ns)));
+            clock.presented(Duration::ZERO);
+
+            let now = Duration::from_nanos(now_ns);
+            prop_assert_eq!(clock.next_presentation_time_at(now), now);
+        }
+
+        #[test]
+        fn prediction_is_next_refresh_grid_after_now(
+            now_ns in 1u64..=10_000_000_000,
+            last_ns in 1u64..=10_000_000_000,
+            refresh_ns in 1u64..=1_000_000_000,
+        ) {
+            let now = Duration::from_nanos(now_ns);
+            let last = Duration::from_nanos(last_ns);
+            let refresh = Duration::from_nanos(refresh_ns);
+            let mut clock = FrameClock::new(Some(refresh));
+            clock.presented(last);
+
+            let next = clock.next_presentation_time_at(now);
+            let adjusted_now = if now <= last {
+                let one_refresh_later = now + refresh;
+                if one_refresh_later < last {
+                    last + refresh
+                } else {
+                    one_refresh_later
+                }
+            } else {
+                now
+            };
+            let next_delta = next
+                .checked_sub(last)
+                .expect("next presentation must be after last presentation");
+
+            prop_assert!(
+                next > adjusted_now,
+                "next={next:?}, adjusted_now={adjusted_now:?}, last={last:?}, refresh={refresh:?}",
+            );
+            prop_assert!(
+                next <= adjusted_now + refresh,
+                "next={next:?}, adjusted_now={adjusted_now:?}, refresh={refresh:?}",
+            );
+            prop_assert_eq!(next_delta.as_nanos() % u128::from(refresh_ns), 0);
+        }
     }
 }
