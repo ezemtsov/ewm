@@ -85,7 +85,7 @@ impl DisplayConfig {
             let connector = output.name.clone();
             let vendor = "Unknown".to_string();
             let product = "Unknown".to_string();
-            let serial = format!("{}", idx);
+            let serial = connector.clone();
 
             // Create mode from output info
             let refresh_rate = output.refresh as f64 / 1000.0;
@@ -208,5 +208,22 @@ mod tests {
         let config = DisplayConfig::new(Arc::new(Mutex::new(Vec::new())));
 
         assert!(!config.apply_monitors_config_allowed());
+    }
+
+    #[test]
+    fn monitor_serial_falls_back_to_connector_name() {
+        let outputs = Arc::new(Mutex::new(vec![OutputInfo {
+            name: "HDMI-A-1".to_owned(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            refresh: 60_000,
+        }]));
+        let config = DisplayConfig::new(outputs);
+
+        let (_, monitors, _, _) = async_io::block_on(config.get_current_state()).unwrap();
+
+        assert_eq!(monitors[0].names.3, "HDMI-A-1");
     }
 }
