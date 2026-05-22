@@ -1,0 +1,92 @@
+//! Integration tests for real xdg-shell lifecycle cleanup.
+
+use std::collections::HashSet;
+
+use ewm_core::event::Event;
+use ewm_core::strip::Frame;
+use ewm_core::testing::Fixture;
+use ewm_core::{LayoutEntry, ViewId};
+use smithay::utils::{Logical, Size};
+
+const OUTPUT: &str = "HEAD-A";
+
+fn nz(n: u64) -> ViewId {
+    std::num::NonZeroU64::new(n).unwrap()
+}
+
+fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
+    fix.ewm_ref()
+        .output_strips
+        .values()
+        .flat_map(|s| s.surfaces().map(|e| e.surface_id))
+        .collect()
+}
+
+#[test]
+fn destroying_real_toplevel_cleans_layout_focus_indexes_and_emits_close() {
+    let mut fix = Fixture::new().unwrap();
+    fix.enable_event_capture();
+    fix.add_output(OUTPUT, 1920, 1080);
+
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    let toplevel = fix.open_toplevel(
+        &mut client,
+        "ewm-lifecycle-test",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+    let sid = fix
+        .find_surface_id(&toplevel.surface)
+        .expect("server did not assign a surface id");
+
+    let frame_id = 100;
+    let view_id = nz(1);
+    fix.ewm().apply_output_layout(
+        OUTPUT,
+        vec![Frame {
+            name: String::new(),
+            surface_id: frame_id,
+            view_id: nz(200),
+            width: 1920.0,
+            surfaces: vec![LayoutEntry {
+                view_id,
+                surface_id: sid,
+                x: 0,
+                y: 0,
+                w: 400,
+                h: 300,
+                primary: false,
+                fullscreen: false,
+            }],
+            selected_view_id: Some(view_id),
+            move_anim: None,
+        }],
+    );
+    fix.ewm().set_focus_view(view_id, "test", false);
+    let _ = fix.drain_events();
+
+    assert!(fix.has_surface(sid));
+    assert!(layout_surface_ids(&fix).contains(&sid));
+    assert!(fix.ewm_ref().surface_outputs.contains_key(&sid));
+    assert_eq!(fix.ewm_ref().focused_surface_id(), sid);
+
+    toplevel.xdg_toplevel.destroy();
+    toplevel.xdg_surface.destroy();
+    toplevel.surface.destroy();
+    fix.roundtrip(&mut client);
+
+    assert!(!fix.has_surface(sid));
+    assert!(!layout_surface_ids(&fix).contains(&sid));
+    assert!(!fix.ewm_ref().surface_outputs.contains_key(&sid));
+    assert_eq!(fix.ewm_ref().focused_frame_id, frame_id);
+    assert_eq!(fix.ewm_ref().focused_view_id, None);
+    assert_eq!(fix.ewm_ref().focused_surface_id(), frame_id);
+
+    let events = fix.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Close { id } if *id == sid)),
+        "destroying toplevel {sid} did not emit Close; events: {events:?}",
+    );
+}

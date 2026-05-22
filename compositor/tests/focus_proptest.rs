@@ -60,37 +60,43 @@ struct EntrySpec {
 // Frame surface_ids / view_ids live in a disjoint range from entry ids so
 // `set_focus_view(v)` and `set_focus_frame(f)` never collide.
 const ENTRY_SID_RANGE: std::ops::RangeInclusive<u64> = 1..=8;
-const ENTRY_VID_RANGE: std::ops::RangeInclusive<u64> = 1..=8;
 const FRAME_SID_RANGE: std::ops::RangeInclusive<u64> = 100..=102;
+const MAX_ENTRIES_PER_LAYOUT: usize = 8;
 
-fn entry_strategy() -> impl Strategy<Value = EntrySpec> {
-    (ENTRY_SID_RANGE, ENTRY_VID_RANGE.prop_map(nz), any::<bool>()).prop_map(
-        |(sid, vid, fullscreen)| EntrySpec {
-            surface_id: sid,
-            view_id: vid,
-            fullscreen,
-        },
-    )
+#[derive(Debug, Clone)]
+struct EntrySeed {
+    surface_id: u64,
+    fullscreen: bool,
+}
+
+fn entry_view_id_for(frame_surface_id: u64, entry_idx: usize) -> ViewId {
+    nz(10_000 + frame_surface_id * 100 + entry_idx as u64)
+}
+
+fn entry_view_strategy() -> impl Strategy<Value = ViewId> {
+    (FRAME_SID_RANGE, 0usize..MAX_ENTRIES_PER_LAYOUT)
+        .prop_map(|(frame_id, entry_idx)| entry_view_id_for(frame_id, entry_idx))
+}
+
+fn entry_strategy() -> impl Strategy<Value = EntrySeed> {
+    (ENTRY_SID_RANGE, any::<bool>()).prop_map(|(surface_id, fullscreen)| EntrySeed {
+        surface_id,
+        fullscreen,
+    })
 }
 
 /// Generates layouts satisfying the Emacs side's invariants:
 /// - frame surface_ids and view_ids unique within the layout (assigned by index);
-/// - entry view_ids unique across all frames (dedup + round-robin distribution);
+/// - entry view_ids unique across all frames and retained old frames;
 /// - `selected_view_id` either `None` or one of the frame's own entries.
 fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
     (
         1usize..=MAX_FRAMES,
-        prop::collection::vec(entry_strategy(), 0..=8),
+        prop::collection::vec(entry_strategy(), 0..=MAX_ENTRIES_PER_LAYOUT),
         prop::collection::vec(any::<bool>(), MAX_FRAMES),
     )
         .prop_map(|(n_frames, entries, has_sel_flags)| {
-            let mut seen = HashSet::new();
-            let entries: Vec<EntrySpec> = entries
-                .into_iter()
-                .filter(|e| seen.insert(e.view_id))
-                .collect();
-
-            let mut buckets: Vec<Vec<EntrySpec>> = (0..n_frames).map(|_| Vec::new()).collect();
+            let mut buckets: Vec<Vec<EntrySeed>> = (0..n_frames).map(|_| Vec::new()).collect();
             for (i, e) in entries.into_iter().enumerate() {
                 buckets[i % n_frames].push(e);
             }
@@ -99,13 +105,23 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
                 .into_iter()
                 .enumerate()
                 .map(|(i, entries)| {
+                    let frame_surface_id = 100 + i as u64;
+                    let entries: Vec<EntrySpec> = entries
+                        .into_iter()
+                        .enumerate()
+                        .map(|(entry_idx, entry)| EntrySpec {
+                            surface_id: entry.surface_id,
+                            view_id: entry_view_id_for(frame_surface_id, entry_idx),
+                            fullscreen: entry.fullscreen,
+                        })
+                        .collect();
                     let selected_view_id = if has_sel_flags[i] {
                         entries.first().map(|e| e.view_id)
                     } else {
                         None
                     };
                     FrameSpec {
-                        surface_id: 100 + i as u64,
+                        surface_id: frame_surface_id,
                         frame_view_id: nz(200 + i as u64),
                         selected_view_id,
                         entries,
@@ -121,7 +137,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(output, surface_id)| Op::CreateEmacsFrame { output, surface_id }),
         (0..OUTPUTS.len(), layout_strategy())
             .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
-        ENTRY_VID_RANGE.prop_map(|v| Op::FocusView(nz(v))),
+        entry_view_strategy().prop_map(Op::FocusView),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
         FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
@@ -333,13 +349,9 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 .output_strips
                 .values()
                 .flat_map(|strip| strip.frames.iter())
-                .flat_map(|frame| {
-                    frame
-                        .surfaces
-                        .iter()
-                        .filter(move |entry| entry.surface_id == id)
-                        .map(|entry| entry.view_id)
-                })
+                .flat_map(|frame| frame.surfaces.iter())
+                .filter(|entry| entry.surface_id == id)
+                .map(|entry| entry.view_id)
                 .collect();
             let refocus = fix.ewm().handle_toplevel_destroyed_by_id(id);
             assert_eq!(
@@ -369,7 +381,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                         assert!(
                             frame
                                 .selected_view_id
-                                .is_none_or(|view_id| !destroyed_view_ids.contains(&view_id)),
+                                .is_none_or(|view_id| { !destroyed_view_ids.contains(&view_id) }),
                             "destroy({}) left stale selected_view_id {:?} on frame {}",
                             id,
                             frame.selected_view_id,
@@ -431,7 +443,7 @@ proptest! {
         raw_idx in 0usize..6,
     ) {
         let idx = raw_idx % len;
-        let ids: Vec<u64> = (0..len).map(|i| 1000 + i as u64).collect();
+        let ids: Vec<u64> = (0..len).map(|i| 10_000 + i as u64).collect();
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
         install_strip(&mut fix, OUTPUTS[0], &ids);
@@ -463,7 +475,7 @@ proptest! {
         if destroy_idx == focus_idx {
             destroy_idx = (destroy_idx + 1) % len;
         }
-        let ids: Vec<u64> = (0..len).map(|i| 2000 + i as u64).collect();
+        let ids: Vec<u64> = (0..len).map(|i| 20_000 + i as u64).collect();
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
         install_strip(&mut fix, OUTPUTS[0], &ids);
@@ -483,12 +495,12 @@ proptest! {
     #[test]
     fn destroying_focused_embedded_surface_parks_focus_on_host_frame(
         surface_id in ENTRY_SID_RANGE,
-        view_id_raw in ENTRY_VID_RANGE,
+        entry_idx in 0usize..MAX_ENTRIES_PER_LAYOUT,
     ) {
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
 
-        let view_id = nz(view_id_raw);
+        let view_id = entry_view_id_for(100, entry_idx);
         let frame = to_frame(&FrameSpec {
             surface_id: 100,
             frame_view_id: nz(200),
@@ -689,7 +701,7 @@ fn reconcile_op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0..OUTPUTS.len(), layout_strategy())
             .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
-        ENTRY_VID_RANGE.prop_map(|v| Op::FocusView(nz(v))),
+        entry_view_strategy().prop_map(Op::FocusView),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
         FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
