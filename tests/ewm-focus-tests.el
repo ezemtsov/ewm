@@ -29,6 +29,8 @@
   (defun ewm-output-layout (_output _frames) nil))
 (unless (fboundp 'ewm-focus-view-module)
   (defun ewm-focus-view-module (_view-id) nil))
+(unless (fboundp 'ewm-prepare-frame-close-module)
+  (defun ewm-prepare-frame-close-module (_surface-id) nil))
 ;; The dynamic module provides the `ewm-core' feature in production;
 ;; stub it here so `(require 'ewm)' resolves under batch.
 (provide 'ewm-core)
@@ -246,6 +248,56 @@ call to `build-frame-plist'; reorder its two passes and this fails."
   "When the compositor has no answer, fall back to `selected-frame'."
   (cl-letf (((symbol-function 'ewm--current-frame) #'ignore))
     (should (eq (selected-frame) (ewm--focused-frame)))))
+
+(ert-deftest ewm-focus/delete-frame-advice-passes-captured-frame ()
+  "Interactive nil FRAME must resolve once, before close handling can alter selection."
+  (let* ((frame (selected-frame))
+         (output "TEST-OUT")
+         (prepared nil)
+         (called-frame nil)
+         (called-force nil)
+         (old-output (frame-parameter frame 'ewm-output))
+         (old-surface-id (frame-parameter frame 'ewm-surface-id))
+         (ewm--strips `((,output . (,frame)))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter frame 'ewm-output output)
+          (set-frame-parameter frame 'ewm-surface-id 42)
+          (cl-letf (((symbol-function 'ewm-prepare-frame-close-module)
+                     (lambda (id) (setq prepared id))))
+            (ewm--prevent-frame-deletion
+             (lambda (arg force)
+               (setq called-frame arg)
+               (setq called-force force))
+             nil t))
+          (should (eq called-frame frame))
+          (should (eq called-force t))
+          (should (eql prepared 42)))
+      (set-frame-parameter frame 'ewm-output old-output)
+      (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
+
+(ert-deftest ewm-focus/delete-frame-advice-rejects-last-frame-on-output ()
+  "The only frame on an output is not deleted unless FORCE is non-nil."
+  (let* ((frame (selected-frame))
+         (output "TEST-OUT")
+         (prepared nil)
+         (called nil)
+         (old-output (frame-parameter frame 'ewm-output))
+         (old-surface-id (frame-parameter frame 'ewm-surface-id))
+         (ewm--strips `((,output . (,frame)))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter frame 'ewm-output output)
+          (set-frame-parameter frame 'ewm-surface-id 42)
+          (cl-letf (((symbol-function 'ewm-prepare-frame-close-module)
+                     (lambda (id) (setq prepared id))))
+            (ewm--prevent-frame-deletion
+             (lambda (&rest _) (setq called t))
+             frame nil))
+          (should-not called)
+          (should-not prepared))
+      (set-frame-parameter frame 'ewm-output old-output)
+      (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
 
 (ert-deftest ewm-focus/with-surface-buffer-skips-unknown-id ()
   "Event for an unregistered surface id is a no-op."

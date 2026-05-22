@@ -1168,13 +1168,11 @@ impl Ewm {
         let (worker_event_tx, worker_event_rx) =
             smithay::reexports::calloop::channel::channel::<Event>();
         loop_handle_clone
-            .insert_source(worker_event_rx, move |event, _, state| {
-                match event {
-                    smithay::reexports::calloop::channel::Event::Msg(msg) => {
-                        state.ewm.queue_event(msg);
-                    }
-                    smithay::reexports::calloop::channel::Event::Closed => (),
+            .insert_source(worker_event_rx, move |event, _, state| match event {
+                smithay::reexports::calloop::channel::Event::Msg(msg) => {
+                    state.ewm.queue_event(msg);
                 }
+                smithay::reexports::calloop::channel::Event::Closed => (),
             })
             .expect("failed to register worker event source");
 
@@ -1362,7 +1360,7 @@ impl Ewm {
     }
 
     /// Drop the Emacs frame `id` from whichever strip holds it.
-    fn remove_emacs_frame_from_strip(&mut self, id: u64) {
+    fn remove_emacs_frame_from_strip(&mut self, id: u64, active_close: bool) {
         let Some(out) = self.emacs_frame_output(id).map(String::from) else {
             return;
         };
@@ -1373,7 +1371,11 @@ impl Ewm {
             return;
         };
         let prev_active_id = strip.active_frame().map(|f| f.surface_id);
-        strip.remove_frame_at(idx);
+        if active_close {
+            strip.remove_active_frame_at(idx);
+        } else {
+            strip.remove_frame_at(idx);
+        }
         self.reconcile_active_for_output(&out, prev_active_id);
     }
 
@@ -1470,8 +1472,9 @@ impl Ewm {
             if let Some(window) = self.id_windows.remove(&id) {
                 self.window_ids.remove(&window);
             }
+            let _ = module::take_pending_active_frame_close(id);
             self.remove_surface_from_layouts(id);
-            self.remove_emacs_frame_from_strip(id);
+            self.remove_emacs_frame_from_strip(id, false);
             self.surface_info.remove(&id);
             self.queue_event(Event::Close { id });
 
@@ -2092,11 +2095,9 @@ impl Ewm {
 
     /// Check if a surface is currently displaying as fullscreen on any output.
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
-        self.output_strips.values().any(|strip| {
-            strip
-                .surfaces()
-                .any(|e| e.surface_id == id && e.fullscreen)
-        })
+        self.output_strips
+            .values()
+            .any(|strip| strip.surfaces().any(|e| e.surface_id == id && e.fullscreen))
     }
 
     /// True iff the active frame has a fullscreen entry covering the Top layer.
@@ -2180,6 +2181,18 @@ impl Ewm {
             .iter()
             .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
             .collect();
+        let old_frame_positions: HashMap<u64, usize> = self
+            .output_strips
+            .get(output_name)
+            .map(|strip| {
+                strip
+                    .frames
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, frame)| (frame.surface_id, idx))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Snapshot pre-merge entries; reconcile runs after step 6 against the
         // post-merge strip so kept frames don't leak `surface_outputs`.
@@ -2210,8 +2223,7 @@ impl Ewm {
         }
         for (id, prev) in &migrations {
             if let Some(prev_name) = prev {
-                let was_active_in_prev =
-                    active_before.get(prev_name) == Some(&Some(*id));
+                let was_active_in_prev = active_before.get(prev_name) == Some(&Some(*id));
                 if let Some(prev_strip) = self.output_strips.get_mut(prev_name) {
                     // `remove_frame_at` adjusts `active_idx` and seeds the
                     // slide-in animation on surviving neighbours; plain
@@ -2261,6 +2273,25 @@ impl Ewm {
         strip_entry
             .frames
             .sort_by_key(|f| order.get(&f.surface_id).copied().unwrap_or(usize::MAX));
+        // A pending active close can be omitted by Lisp layout refresh before
+        // Wayland destroy arrives. Keep that closing frame at its old slot so
+        // destroy still chooses the original right neighbour, not the end.
+        let mut closing_frames = old_frame_positions
+            .iter()
+            .filter_map(|(&id, &idx)| {
+                (!order.contains_key(&id) && module::has_pending_active_frame_close(id))
+                    .then_some((id, idx))
+            })
+            .collect::<Vec<_>>();
+        closing_frames.sort_by_key(|&(_, idx)| idx);
+        for (id, old_idx) in closing_frames {
+            if let Some(pos) = strip_entry.frames.iter().position(|f| f.surface_id == id) {
+                let frame = strip_entry.frames.remove(pos);
+                strip_entry
+                    .frames
+                    .insert(old_idx.min(strip_entry.frames.len()), frame);
+            }
+        }
         let frame_id = self.focused_frame_id;
         if let Some(new_idx) = strip_entry
             .frames
@@ -2826,9 +2857,7 @@ impl Ewm {
     /// A visible fullscreen surface on any output inhibits idle.
     /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
     fn fullscreen_surface_inhibits_idle(&self) -> bool {
-        self.space
-            .outputs()
-            .any(|o| self.render_above_top_layer(o))
+        self.space.outputs().any(|o| self.render_above_top_layer(o))
     }
 
     /// Kill idle child process (e.g., on lid close).
@@ -4801,6 +4830,8 @@ impl Ewm {
     /// point, but reachable from integration tests without a real toplevel.
     pub fn handle_toplevel_destroyed_by_id(&mut self, id: u64) -> Option<u64> {
         let was_focused = self.focused_frame_id == id;
+        let close_was_active = module::take_pending_active_frame_close(id);
+        let active_close = was_focused || close_was_active;
         let output = self.find_surface_output(id).map(|o| o.name());
 
         if let Some(window) = self.id_windows.remove(&id) {
@@ -4809,18 +4840,18 @@ impl Ewm {
         self.surface_info.remove(&id);
         let was_emacs = self.is_emacs_frame(id);
         self.remove_surface_from_layouts(id);
-        self.remove_emacs_frame_from_strip(id);
+        self.remove_emacs_frame_from_strip(id, active_close);
         self.prune_dangling_focus();
         self.queue_event(Event::Close { id });
         debug!(
-            "Toplevel {} destroyed was_focused={} was_emacs={} output={:?}",
-            id, was_focused, was_emacs, output
+            "Toplevel {} destroyed was_focused={} close_was_active={} was_emacs={} output={:?}",
+            id, was_focused, close_was_active, was_emacs, output
         );
 
         #[cfg(feature = "screencast")]
         self.stop_casts_for_window(id);
 
-        if was_focused {
+        if active_close {
             // Output may be unknown if lisp pruned the frame before destroy fired.
             let refocus = output
                 .as_deref()
@@ -6319,18 +6350,13 @@ impl State {
             self.ewm.resolve_layer_keyboard_focus()
         };
         let ewm = &self.ewm;
-        let new_focus = resolve_keyboard_focus_target(
-            locked,
-            lock_surface,
-            layer_focus,
-            || {
-                let id = ewm.focused_surface_id();
-                ewm.id_windows
-                    .get(&id)
-                    .and_then(|w| w.wl_surface())
-                    .map(|s| s.into_owned())
-            },
-        );
+        let new_focus = resolve_keyboard_focus_target(locked, lock_surface, layer_focus, || {
+            let id = ewm.focused_surface_id();
+            ewm.id_windows
+                .get(&id)
+                .and_then(|w| w.wl_surface())
+                .map(|s| s.into_owned())
+        });
 
         if self.ewm.keyboard_focus != new_focus {
             self.ewm.keyboard_focus = new_focus.clone();
@@ -6604,6 +6630,7 @@ impl State {
                         })
                     }).collect::<Vec<_>>(),
                     "pending_frame_outputs": module::peek_pending_frame_outputs(),
+                    "pending_active_frame_closes": module::peek_pending_active_frame_closes(),
                     "in_prefix_sequence": module::get_in_prefix_sequence(),
                     "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
                     "pending_commands": module::peek_commands(),

@@ -546,6 +546,22 @@ impl Strip {
         };
         self.set_active(new_active);
     }
+
+    /// Drop frame `idx` using active-close semantics, regardless of the
+    /// strip's current `active_idx`.
+    ///
+    /// Used when close intent was captured before a later focus relay changed
+    /// `active_idx`: the destroyed slot chooses the right neighbour if present,
+    /// otherwise the left neighbour.
+    pub fn remove_active_frame_at(&mut self, idx: usize) {
+        if idx >= self.frames.len() {
+            return;
+        }
+        self.active_idx = idx;
+        self.seed_remove_animation(idx);
+        self.frames.remove(idx);
+        self.set_active(idx.min(self.frames.len().saturating_sub(1)));
+    }
 }
 
 #[cfg(test)]

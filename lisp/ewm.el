@@ -43,6 +43,7 @@
 (declare-function ewm-debug-mode-module "ewm-core")
 (declare-function ewm-configure-output-module "ewm-core")
 (declare-function ewm-prepare-frame-module "ewm-core")
+(declare-function ewm-prepare-frame-close-module "ewm-core")
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-start "ewm-core")
@@ -1104,22 +1105,24 @@ strip, so the parameter must change between the remove and the insert."
   (ewm--strip-remove frame))
 
 (defun ewm--prevent-frame-deletion (orig-fun &optional frame force)
-  "Around advice for `delete-frame' to protect output frames.
-Prevents deletion of the last frame for an active output unless
-FORCE is non-nil.
-Frames for disconnected outputs are always allowed to be deleted."
+  "Around advice for `delete-frame': refuse to delete the last frame of
+an output unless FORCE.
+
+When deletion proceeds, pass the captured frame to ORIG-FUN explicitly:
+interactive `delete-frame' passes nil, and nil means \"delete the
+selected frame\", which can change during pgtk's internal close handling."
   (let* ((f (or frame (selected-frame)))
-         (output (frame-parameter f 'ewm-output)))
-    (if (and output (not force)
-             (member output (ewm-get-active-outputs))
-             (not (cl-some (lambda (other)
-                             (and (not (eq other f))
-                                  (ewm--output-managed-p other)
-                                  (string= output
-                                           (frame-parameter other 'ewm-output))))
-                           (frame-list))))
-        (message "Cannot delete the only frame on output %s" output)
-      (funcall orig-fun frame force))))
+         (output (frame-parameter f 'ewm-output))
+         (alone (and output
+                     (<= (length (ewm--strip-frames output)) 1))))
+    (cond
+     ((and alone (not force))
+      (message "Cannot delete the only frame on output %s" output))
+     (t
+      (when (eq f (selected-frame))
+        (when-let ((id (frame-parameter f 'ewm-surface-id)))
+          (ewm-prepare-frame-close-module id)))
+      (funcall orig-fun f force)))))
 
 (defun ewm-frame-new ()
   "Open a new Emacs frame after the active one on the same output."

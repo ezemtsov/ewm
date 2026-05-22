@@ -164,6 +164,43 @@ pub fn peek_pending_frame_outputs() -> Vec<String> {
     pending_frame_outputs().lock().unwrap().clone()
 }
 
+/// Frame closes initiated for the selected Emacs frame.
+///
+/// This is synchronous for the same reason as `PENDING_FRAME_OUTPUTS`: a pgtk
+/// delete can relay Emacs's MRU focus before the Wayland destroy reaches us,
+/// so the destroy handler needs the close intent without waiting for the
+/// command queue.
+static PENDING_ACTIVE_FRAME_CLOSES: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
+
+fn pending_active_frame_closes() -> &'static Mutex<Vec<u64>> {
+    PENDING_ACTIVE_FRAME_CLOSES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(crate) fn mark_pending_active_frame_close(id: u64) {
+    let mut pending = pending_active_frame_closes().lock().unwrap();
+    if !pending.contains(&id) {
+        pending.push(id);
+    }
+}
+
+pub(crate) fn take_pending_active_frame_close(id: u64) -> bool {
+    let mut pending = pending_active_frame_closes().lock().unwrap();
+    if let Some(pos) = pending.iter().position(|&pending_id| pending_id == id) {
+        pending.remove(pos);
+        true
+    } else {
+        false
+    }
+}
+
+pub(crate) fn has_pending_active_frame_close(id: u64) -> bool {
+    pending_active_frame_closes().lock().unwrap().contains(&id)
+}
+
+pub(crate) fn peek_pending_active_frame_closes() -> Vec<u64> {
+    pending_active_frame_closes().lock().unwrap().clone()
+}
+
 /// Intercepted keys (synchronous to avoid race during startup)
 static INTERCEPTED_KEYS: OnceLock<RwLock<Vec<InterceptedKey>>> = OnceLock::new();
 
@@ -834,6 +871,19 @@ fn screenshot_module(path: Option<String>) -> Result<()> {
 fn prepare_frame_module(output: String) -> Result<()> {
     pending_frame_outputs().lock().unwrap().push(output.clone());
     tracing::info!("Prepared frame for output {}", output);
+    Ok(())
+}
+
+/// Mark a selected Emacs frame as about to close.
+#[defun]
+fn prepare_frame_close_module(id: i64) -> Result<()> {
+    if id <= 0 {
+        tracing::warn!("prepare_frame_close_module: ignored invalid id {id}");
+        return Ok(());
+    }
+    let id = id as u64;
+    mark_pending_active_frame_close(id);
+    tracing::debug!("Prepared frame close for {id}");
     Ok(())
 }
 
