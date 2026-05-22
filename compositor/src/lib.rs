@@ -1755,7 +1755,7 @@ impl Ewm {
             .outputs()
             .find(|o| o.name() == location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
-        let working_area = layer_map_for_output(output).non_exclusive_zone();
+        let working_area = self.get_working_area(output);
 
         Some(
             Self::frame_rect(
@@ -1940,10 +1940,7 @@ impl Ewm {
     ) -> Option<LayoutEntryHit<'_>> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
-        let working_area = {
-            let map = layer_map_for_output(output);
-            map.non_exclusive_zone()
-        };
+        let working_area = self.get_working_area(output);
         let strip = self.output_strips.get(&output.name())?;
         let active_idx = strip.active_idx();
 
@@ -2036,10 +2033,7 @@ impl Ewm {
     fn surface_under_frame(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
-        let working_area = {
-            let map = layer_map_for_output(output);
-            map.non_exclusive_zone()
-        };
+        let working_area = self.get_working_area(output);
         let strip = self.output_strips.get(&output.name())?;
 
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
@@ -4574,10 +4568,7 @@ impl Ewm {
             return Some(Rectangle::from_size(output_geo.size));
         }
 
-        let working_area = {
-            let map = layer_map_for_output(output);
-            map.non_exclusive_zone()
-        };
+        let working_area = self.get_working_area(output);
 
         // Horizontal: constrain to entry width (popup stays within the window).
         // Vertical: full working area height relative to the entry's Y position.
