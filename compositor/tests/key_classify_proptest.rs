@@ -17,9 +17,9 @@
 //!       and of fullscreen.
 
 use ewm_core::input::{classify_key, KeyAction};
-use ewm_core::InterceptedKey;
+use ewm_core::{EmulatedKey, InterceptedKey};
 use proptest::prelude::*;
-use smithay::input::keyboard::{Keysym, ModifiersState};
+use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
 
 fn ik(keysym: u32, allow_fullscreen: bool) -> InterceptedKey {
     InterceptedKey {
@@ -29,6 +29,17 @@ fn ik(keysym: u32, allow_fullscreen: bool) -> InterceptedKey {
         shift: false,
         logo: false,
         allow_fullscreen,
+    }
+}
+
+fn ek(keysym: u32, target_mod: &str) -> EmulatedKey {
+    EmulatedKey {
+        keysym,
+        ctrl: false,
+        alt: false,
+        shift: false,
+        logo: false,
+        target_mod: target_mod.to_string(),
     }
 }
 
@@ -49,9 +60,21 @@ fn classify(
     is_press: bool,
     keysym: u32,
 ) -> KeyAction {
+    classify_with(keys, &[], text_input, focus_on_emacs, fs, is_press, keysym)
+}
+
+fn classify_with(
+    intercepted_keys: &[InterceptedKey],
+    emulated_keys: &[EmulatedKey],
+    text_input: bool,
+    focus_on_emacs: bool,
+    fs: Option<u64>,
+    is_press: bool,
+    keysym: u32,
+) -> KeyAction {
     classify_key(
-        keys,
-        &[],
+        intercepted_keys,
+        emulated_keys,
         text_input,
         focus_on_emacs,
         fs,
@@ -118,5 +141,93 @@ proptest! {
         text_input in any::<bool>(),
     ) {
         let _ = classify(&[ik(keysym, flag)], text_input, focus_on_emacs, fs, is_press, keysym);
+    }
+
+    #[test]
+    fn vt_switch_precedes_bindings_on_press(
+        vt in 1u32..=12,
+        text_input in any::<bool>(),
+        focus_on_emacs in any::<bool>(),
+        fs in proptest::option::of(Just(1u64)),
+    ) {
+        let keysym = keysyms::KEY_XF86Switch_VT_1 + vt - 1;
+        let action = classify_with(
+            &[ik(keysym, true)],
+            &[ek(keysym, "ctrl")],
+            text_input,
+            focus_on_emacs,
+            fs,
+            true,
+            keysym,
+        );
+        prop_assert_eq!(action, KeyAction::VtSwitch(vt as i32));
+    }
+
+    #[test]
+    fn emulation_precedes_intercept_when_focus_is_outside_emacs(keysym in keysym_strategy()) {
+        let action = classify_with(
+            &[ik(keysym, true)],
+            &[ek(keysym, "ctrl")],
+            false,
+            false,
+            None,
+            true,
+            keysym,
+        );
+        prop_assert_eq!(action, KeyAction::Emulate("ctrl".to_string()));
+    }
+
+    #[test]
+    fn emulation_defers_when_emacs_already_has_focus(keysym in keysym_strategy()) {
+        let action = classify_with(
+            &[],
+            &[ek(keysym, "ctrl")],
+            false,
+            true,
+            None,
+            true,
+            keysym,
+        );
+        prop_assert_eq!(action, KeyAction::Forward);
+    }
+
+    #[test]
+    fn text_input_intercepts_printable_unmodified_keys(
+        letter in 0u32..26,
+    ) {
+        let keysym = keysyms::KEY_a + letter;
+        let action = classify_with(&[], &[], true, false, None, true, keysym);
+        let expected = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
+
+        prop_assert_eq!(action, KeyAction::TextInput(keysym, Some(expected)));
+    }
+
+    #[test]
+    fn text_input_defers_to_emacs_focus_or_control_modifiers(
+        keysym in keysym_strategy(),
+        focus_on_emacs in any::<bool>(),
+        ctrl in any::<bool>(),
+        alt in any::<bool>(),
+        logo in any::<bool>(),
+    ) {
+        prop_assume!(focus_on_emacs || ctrl || alt || logo);
+        let mut mods = ModifiersState::default();
+        mods.ctrl = ctrl;
+        mods.alt = alt;
+        mods.logo = logo;
+        let action = classify_key(
+            &[],
+            &[],
+            true,
+            focus_on_emacs,
+            None,
+            true,
+            keysym,
+            keysym,
+            Keysym::from(keysym),
+            &mods,
+        );
+
+        prop_assert_eq!(action, KeyAction::Forward);
     }
 }
