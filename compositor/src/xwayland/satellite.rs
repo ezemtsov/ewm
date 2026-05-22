@@ -8,7 +8,7 @@ use std::os::fd::{AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
-use std::thread;
+use std::{io, mem, thread};
 
 use smithay::reexports::calloop::channel::{Event as ChannelEvent, Sender};
 use smithay::reexports::calloop::generic::Generic;
@@ -217,15 +217,7 @@ fn spawn(xwl: &Satellite) {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    unsafe {
-        process.pre_exec(|| {
-            // Unblock signals inherited from Emacs.
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigfillset(&mut set);
-            libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
-            Ok(())
-        })
-    };
+    unsafe { process.pre_exec(unblock_all_signals) };
 
     // Spawning and waiting takes some milliseconds, so do it in a thread.
     let res = thread::Builder::new()
@@ -292,4 +284,18 @@ fn spawn_and_wait(mut process: Command, abstract_fd: Option<OwnedFd>, unix_fd: O
 
     // This is most likely a crash, hence warn!().
     warn!("xwayland-satellite exited with: {status}");
+}
+
+fn unblock_all_signals() -> io::Result<()> {
+    let mut sigset = mem::MaybeUninit::uninit();
+    if unsafe { libc::sigemptyset(sigset.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let sigset = unsafe { sigset.assume_init() };
+
+    if unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &sigset, std::ptr::null_mut()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
