@@ -8,7 +8,7 @@
 //! mirrors, and sends only changes. Clients always get current state because
 //! `refresh()` runs after bind.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::strip::Strip;
 use smithay::output::Output;
@@ -95,19 +95,25 @@ struct WorkspaceData {
 }
 
 impl WorkspaceData {
-    fn new(output: String, id: String, name: String, index: usize, active: bool) -> Self {
+    fn new(output: String, id: String, name: String, coordinates: [u32; 2], active: bool) -> Self {
         Self {
             output,
             id,
             name,
-            coordinates: [0, index as u32],
-            state: if active {
-                ext_workspace_handle_v1::State::Active
-            } else {
-                ext_workspace_handle_v1::State::empty()
-            },
+            coordinates,
+            state: workspace_handle_state(active),
             instances: Vec::new(),
         }
+    }
+
+    fn from_desired(desired: &DesiredWorkspace) -> Self {
+        Self::new(
+            desired.output.clone(),
+            desired.id.clone(),
+            desired.name.clone(),
+            desired.coordinates,
+            desired.active,
+        )
     }
 
     /// Create a new workspace handle for a manager binding and send initial properties.
@@ -166,6 +172,21 @@ struct WorkspaceDebugWorkspace {
     name: String,
     coordinates: [u32; 2],
     active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesiredWorkspace {
+    output: String,
+    id: String,
+    name: String,
+    coordinates: [u32; 2],
+    active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesiredWorkspaceSnapshot {
+    groups: Vec<String>,
+    workspaces: HashMap<WorkspaceKey, DesiredWorkspace>,
 }
 
 impl WorkspaceManagerState {
@@ -231,8 +252,49 @@ fn frame_display_name(index: usize) -> String {
     (index + 1).to_string()
 }
 
+fn workspace_handle_state(active: bool) -> ext_workspace_handle_v1::State {
+    if active {
+        ext_workspace_handle_v1::State::Active
+    } else {
+        ext_workspace_handle_v1::State::empty()
+    }
+}
+
 fn coordinates_bytes(coordinates: [u32; 2]) -> Vec<u8> {
     coordinates.iter().flat_map(|x| x.to_ne_bytes()).collect()
+}
+
+fn desired_workspace_snapshot(
+    output_strips: &HashMap<String, Strip>,
+    live_output_names: &HashSet<String>,
+) -> DesiredWorkspaceSnapshot {
+    let mut groups = output_strips
+        .keys()
+        .filter(|name| live_output_names.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    groups.sort();
+
+    let mut workspaces = HashMap::new();
+    for output_name in &groups {
+        let Some(strip) = output_strips.get(output_name) else {
+            continue;
+        };
+        for (idx, frame) in strip.frames.iter().enumerate() {
+            workspaces.insert(
+                frame.surface_id,
+                DesiredWorkspace {
+                    output: output_name.clone(),
+                    id: frame.surface_id.to_string(),
+                    name: frame_display_name(idx),
+                    coordinates: [0, idx as u32],
+                    active: idx == strip.active_idx(),
+                },
+            );
+        }
+    }
+
+    DesiredWorkspaceSnapshot { groups, workspaces }
 }
 
 /// Refresh workspace protocol state to match `output_strips` (source of truth).
@@ -251,21 +313,14 @@ pub fn refresh<'a, D>(
 
     // Build map of live outputs by name.
     let live_outputs: HashMap<String, Output> = outputs.map(|o| (o.name(), o.clone())).collect();
-
-    // Build "seen" set of surface ids from source of truth.
-    let mut seen_workspaces: std::collections::HashSet<WorkspaceKey> =
-        std::collections::HashSet::new();
-    for strip in output_strips.values() {
-        for frame in &strip.frames {
-            seen_workspaces.insert(frame.surface_id);
-        }
-    }
+    let live_output_names = live_outputs.keys().cloned().collect::<HashSet<_>>();
+    let desired = desired_workspace_snapshot(output_strips, &live_output_names);
 
     // 1. Remove dead workspaces (frame closed).
     let dead_ws_keys: Vec<WorkspaceKey> = workspace_state
         .workspaces
         .keys()
-        .filter(|k| !seen_workspaces.contains(k))
+        .filter(|key| !desired.workspaces.contains_key(key))
         .cloned()
         .collect();
     for key in dead_ws_keys {
@@ -285,7 +340,7 @@ pub fn refresh<'a, D>(
     let dead_group_keys: Vec<String> = workspace_state
         .groups
         .keys()
-        .filter(|name| !live_outputs.contains_key(*name))
+        .filter(|name| !desired.groups.contains(name))
         .cloned()
         .collect();
     for name in dead_group_keys {
@@ -297,13 +352,12 @@ pub fn refresh<'a, D>(
         }
     }
 
-    // 3. Update/create workspaces and groups.
-    for (output_name, strip) in output_strips {
-        let Some(output) = live_outputs.get(output_name) else {
-            continue;
-        };
-        let frames = &strip.frames;
-
+    // 3. Update/create groups.
+    let mut new_groups = HashSet::new();
+    for output_name in &desired.groups {
+        let output = live_outputs
+            .get(output_name)
+            .expect("desired groups only contain live outputs");
         // Ensure group exists.
         let group_is_new = !workspace_state.groups.contains_key(output_name);
         if group_is_new {
@@ -317,82 +371,78 @@ pub fn refresh<'a, D>(
                 }
             }
             workspace_state.groups.insert(output_name.clone(), group);
+            new_groups.insert(output_name.clone());
             changed = true;
         }
+    }
 
-        for (i, frame) in frames.iter().enumerate() {
-            let key = frame.surface_id;
-            let display_name = frame_display_name(i);
-            let is_active = i == strip.active_idx();
-            let new_state = if is_active {
-                ext_workspace_handle_v1::State::Active
-            } else {
-                ext_workspace_handle_v1::State::empty()
-            };
-            let new_coords = [0u32, i as u32];
+    // 4. Update/create workspaces.
+    let mut desired_workspaces = desired.workspaces.iter().collect::<Vec<_>>();
+    desired_workspaces.sort_by(|(left_key, left), (right_key, right)| {
+        (&left.output, left.coordinates, *left_key).cmp(&(
+            &right.output,
+            right.coordinates,
+            *right_key,
+        ))
+    });
+    for (&key, desired_ws) in desired_workspaces {
+        let new_state = workspace_handle_state(desired_ws.active);
 
-            if let Some(ws) = workspace_state.workspaces.get_mut(&key) {
-                // Existing workspace: diff properties.
-                if ws.name != display_name {
-                    ws.name = display_name.clone();
-                    for inst in &ws.instances {
-                        inst.name(display_name.clone());
-                    }
-                    changed = true;
+        if let Some(ws) = workspace_state.workspaces.get_mut(&key) {
+            // Existing workspace: diff properties.
+            if ws.name != desired_ws.name {
+                ws.name = desired_ws.name.clone();
+                for inst in &ws.instances {
+                    inst.name(desired_ws.name.clone());
                 }
-                if ws.coordinates != new_coords {
-                    ws.coordinates = new_coords;
-                    let bytes = coordinates_bytes(new_coords);
-                    for inst in &ws.instances {
-                        inst.coordinates(bytes.clone());
-                    }
-                    changed = true;
-                }
-                if ws.state != new_state {
-                    ws.state = new_state;
-                    for inst in &ws.instances {
-                        inst.state(new_state);
-                    }
-                    changed = true;
-                }
-                // Cross-output move: leave old group, enter new.
-                if ws.output != *output_name {
-                    if let Some(old_group) = workspace_state.groups.get(&ws.output) {
-                        send_workspace_leave(&old_group.instances, &ws.instances);
-                    }
-                    ws.output = output_name.clone();
-                    if let Some(new_group) = workspace_state.groups.get(output_name) {
-                        send_workspace_enter(&new_group.instances, &ws.instances);
-                    }
-                    changed = true;
-                } else if group_is_new {
-                    // Output reconnected: re-enter the freshly-created group.
-                    if let Some(group) = workspace_state.groups.get(output_name) {
-                        send_workspace_enter(&group.instances, &ws.instances);
-                    }
-                    changed = true;
-                }
-            } else {
-                // New workspace.
-                let mut ws = WorkspaceData::new(
-                    output_name.clone(),
-                    frame.surface_id.to_string(),
-                    display_name,
-                    i,
-                    is_active,
-                );
-                for manager in workspace_state.instances.keys() {
-                    if let Some(client) = manager.client() {
-                        ws.add_instance::<D>(&workspace_state.display, &client, manager);
-                    }
-                }
-                // Send workspace_enter to group.
-                if let Some(group) = workspace_state.groups.get(output_name) {
-                    send_workspace_enter(&group.instances, &ws.instances);
-                }
-                workspace_state.workspaces.insert(key, ws);
                 changed = true;
             }
+            if ws.coordinates != desired_ws.coordinates {
+                ws.coordinates = desired_ws.coordinates;
+                let bytes = coordinates_bytes(desired_ws.coordinates);
+                for inst in &ws.instances {
+                    inst.coordinates(bytes.clone());
+                }
+                changed = true;
+            }
+            if ws.state != new_state {
+                ws.state = new_state;
+                for inst in &ws.instances {
+                    inst.state(new_state);
+                }
+                changed = true;
+            }
+            // Cross-output move: leave old group, enter new.
+            if ws.output != desired_ws.output {
+                if let Some(old_group) = workspace_state.groups.get(&ws.output) {
+                    send_workspace_leave(&old_group.instances, &ws.instances);
+                }
+                ws.output = desired_ws.output.clone();
+                if let Some(new_group) = workspace_state.groups.get(&desired_ws.output) {
+                    send_workspace_enter(&new_group.instances, &ws.instances);
+                }
+                changed = true;
+            } else if new_groups.contains(&desired_ws.output) {
+                // Output reconnected: re-enter the freshly-created group.
+                if let Some(group) = workspace_state.groups.get(&desired_ws.output) {
+                    send_workspace_enter(&group.instances, &ws.instances);
+                }
+                changed = true;
+            }
+        } else {
+            // New workspace.
+            let mut ws = WorkspaceData::from_desired(desired_ws);
+            for manager in workspace_state.instances.keys() {
+                if let Some(client) = manager.client() {
+                    ws.add_instance::<D>(&workspace_state.display, &client, manager);
+                }
+            }
+            // Send workspace_enter to group.
+            if let Some(group) = workspace_state.groups.get(&desired_ws.output) {
+                send_workspace_enter(&group.instances, &ws.instances);
+            }
+            workspace_state.workspaces.insert(key, ws);
+            changed = true;
         }
     }
 
@@ -672,6 +722,80 @@ where
         let ps = state.workspace_manager_state();
         for ws_data in ps.workspaces.values_mut() {
             ws_data.instances.retain(|inst| inst != resource);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::strip::{AnimationsClock, Frame};
+
+    const HEAD_A: &str = "HEAD-A";
+    const HEAD_B: &str = "HEAD-B";
+
+    fn strip_with_ids(start: u64, len: usize, raw_active_idx: usize) -> Strip {
+        let mut strip = Strip::new(AnimationsClock::default());
+        strip.frames = (0..len).map(|idx| Frame::new(start + idx as u64)).collect();
+        if len > 0 {
+            strip.set_active(raw_active_idx % len);
+        }
+        strip
+    }
+
+    proptest! {
+        #[test]
+        fn desired_snapshot_mirrors_live_strips(
+            a_len in 0usize..=5,
+            b_len in 0usize..=5,
+            a_active in 0usize..=5,
+            b_active in 0usize..=5,
+            a_live in any::<bool>(),
+            b_live in any::<bool>(),
+        ) {
+            let mut strips = HashMap::new();
+            strips.insert(HEAD_A.to_string(), strip_with_ids(100, a_len, a_active));
+            strips.insert(HEAD_B.to_string(), strip_with_ids(200, b_len, b_active));
+
+            let mut live = HashSet::new();
+            if a_live {
+                live.insert(HEAD_A.to_string());
+            }
+            if b_live {
+                live.insert(HEAD_B.to_string());
+            }
+
+            let snapshot = desired_workspace_snapshot(&strips, &live);
+            let mut expected_groups = live.into_iter().collect::<Vec<_>>();
+            expected_groups.sort();
+            prop_assert_eq!(snapshot.groups, expected_groups);
+            prop_assert_eq!(
+                snapshot.workspaces.len(),
+                if a_live { a_len } else { 0 } + if b_live { b_len } else { 0 },
+            );
+
+            for (output, start, len, raw_active, live) in [
+                (HEAD_A, 100, a_len, a_active, a_live),
+                (HEAD_B, 200, b_len, b_active, b_live),
+            ] {
+                for idx in 0..len {
+                    let key = start + idx as u64;
+                    if !live {
+                        prop_assert!(!snapshot.workspaces.contains_key(&key));
+                        continue;
+                    }
+                    let ws = snapshot.workspaces.get(&key).expect("workspace exists");
+                    prop_assert_eq!(ws.output.as_str(), output);
+                    prop_assert_eq!(ws.id.as_str(), key.to_string());
+                    prop_assert_eq!(ws.name.as_str(), (idx + 1).to_string());
+                    prop_assert_eq!(ws.coordinates, [0, idx as u32]);
+                    prop_assert_eq!(ws.active, idx == raw_active % len);
+                }
+            }
         }
     }
 }
