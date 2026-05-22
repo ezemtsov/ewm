@@ -1477,9 +1477,6 @@ impl Ewm {
     }
 
     pub fn emacs_frame_output(&self, id: u64) -> Option<&str> {
-        if !self.is_emacs_frame(id) {
-            return None;
-        }
         self.output_strips
             .iter()
             .find(|(_, s)| s.frames.iter().any(|f| f.surface_id == id))
@@ -1599,11 +1596,21 @@ impl Ewm {
     /// Surface id of the Emacs frame whose strip-frame currently hosts
     /// `surface_id`, or `None` if the surface is not under any frame.
     pub fn frame_for_surface(&self, surface_id: u64) -> Option<u64> {
+        self.frame_entry_for_surface(surface_id)
+            .map(|(frame_id, _)| frame_id)
+    }
+
+    fn frame_entry_for_surface(&self, surface_id: u64) -> Option<(u64, ViewId)> {
         self.output_strips
             .values()
             .flat_map(|s| s.frames.iter())
-            .find(|f| f.surfaces.iter().any(|e| e.surface_id == surface_id))
-            .map(|f| f.surface_id)
+            .find_map(|frame| {
+                frame
+                    .surfaces
+                    .iter()
+                    .find(|entry| entry.surface_id == surface_id)
+                    .map(|entry| (frame.surface_id, entry.view_id))
+            })
     }
 
     /// `(output_name, frame_idx)` of the strip frame containing `surface_id`,
@@ -3438,15 +3445,8 @@ impl Ewm {
         if self.is_emacs_frame(id) {
             return (id, None);
         }
-        if let Some(fid) = self.frame_for_surface(id) {
-            let view_id = self
-                .output_strips
-                .values()
-                .flat_map(|s| s.frames.iter())
-                .find(|f| f.surface_id == fid)
-                .and_then(|f| f.surfaces.iter().find(|s| s.surface_id == id))
-                .map(|s| s.view_id);
-            (fid, view_id)
+        if let Some((frame_id, view_id)) = self.frame_entry_for_surface(id) {
+            (frame_id, Some(view_id))
         } else {
             (id, None)
         }
