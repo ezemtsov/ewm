@@ -774,6 +774,10 @@ where
                     Some(Some(index)) => index,
                     _ => {
                         tracing::warn!("SetMode: failed to find requested mode");
+                        conf_head.post_error(
+                            zwlr_output_configuration_head_v1::Error::InvalidMode,
+                            "failed to find requested mode",
+                        );
                         return;
                     }
                 };
