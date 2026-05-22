@@ -1749,25 +1749,35 @@ impl Ewm {
         &self,
         surface_id: u64,
     ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
-        use smithay::utils::Point;
         let output_name = self.emacs_frame_output(surface_id)?;
         let output = self.space.outputs().find(|o| o.name() == output_name)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = layer_map_for_output(output).non_exclusive_zone();
-        let frame_dx = self
-            .output_strips
-            .get(output_name)
-            .and_then(|s| {
-                s.frames
-                    .iter()
-                    .position(|f| f.surface_id == surface_id)
-                    .map(|i| s.screen_x_of_frame(i))
-            })
-            .unwrap_or(0.0) as i32;
-        Some(Point::from((
-            output_geo.loc.x + working_area.loc.x + frame_dx,
-            output_geo.loc.y + working_area.loc.y,
-        )))
+        let strip = self.output_strips.get(output_name)?;
+        let (frame_idx, frame) = strip
+            .frames
+            .iter()
+            .enumerate()
+            .find(|(_, frame)| frame.surface_id == surface_id)?;
+
+        Some(Self::frame_rect(output_geo, working_area, strip, frame_idx, frame).loc)
+    }
+
+    fn frame_rect(
+        output_geo: Rectangle<i32, Logical>,
+        working_area: Rectangle<i32, Logical>,
+        strip: &strip::Strip,
+        frame_idx: usize,
+        frame: &strip::Frame,
+    ) -> Rectangle<i32, Logical> {
+        let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+        Rectangle::new(
+            Point::from((
+                output_geo.loc.x + working_area.loc.x + frame_dx,
+                output_geo.loc.y + working_area.loc.y,
+            )),
+            Size::from((frame.width as i32, working_area.size.h)),
+        )
     }
 
     /// Find the focused layout entry for a surface.
@@ -2027,20 +2037,15 @@ impl Ewm {
         let strip = self.output_strips.get(&output.name())?;
 
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
-            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            let frame_x = output_geo.loc.x + working_area.loc.x + frame_dx;
-            let frame_y = output_geo.loc.y + working_area.loc.y;
-            let in_frame = pos.x >= frame_x as f64
-                && pos.x < (frame_x + frame.width as i32) as f64
-                && pos.y >= frame_y as f64
-                && pos.y < (frame_y + working_area.size.h) as f64;
-            if !in_frame {
+            let rect = Self::frame_rect(output_geo, working_area, strip, frame_idx, frame);
+            if !Self::rect_contains_f64(rect, pos) {
                 continue;
             }
             let Some(window) = self.id_windows.get(&frame.surface_id) else {
                 continue;
             };
-            let window_origin: Point<f64, Logical> = Point::from((frame_x as f64, frame_y as f64));
+            let window_origin: Point<f64, Logical> =
+                Point::from((rect.loc.x as f64, rect.loc.y as f64));
             let pos_in_window = Point::from((pos.x - window_origin.x, pos.y - window_origin.y));
             if let Some((surface, surface_offset)) =
                 window.surface_under(pos_in_window, WindowSurfaceType::ALL)
@@ -6907,6 +6912,12 @@ mod tests {
         frame
     }
 
+    fn frame_with_width(surface_id: u64, width: f64) -> strip::Frame {
+        let mut frame = strip::Frame::new(surface_id);
+        frame.width = width;
+        frame
+    }
+
     fn window_position(fix: &testing::Fixture, surface_id: u64) -> Option<Point<i32, Logical>> {
         let ewm = fix.ewm_ref();
         let window = ewm.id_windows.get(&surface_id)?;
@@ -6940,6 +6951,28 @@ mod tests {
         fix.ewm().set_focus_view(view_a, "test", false);
         assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_A));
         assert_eq!(window_position(&fix, surface_id), Some(Point::from((0, 0))));
+    }
+
+    #[test]
+    fn emacs_frame_origin_uses_screen_relative_strip_position() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.ewm().apply_output_layout(
+            HEAD_A,
+            vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
+        );
+        fix.ewm().animations_clock.set_complete_instantly(true);
+
+        fix.ewm().set_focus_frame(101, "test", false);
+
+        assert_eq!(
+            fix.ewm_ref().emacs_frame_origin(101),
+            Some(Point::from((0, 0))),
+        );
+        assert_eq!(
+            fix.ewm_ref().emacs_frame_origin(100),
+            Some(Point::from((-400, 0))),
+        );
     }
 }
 
