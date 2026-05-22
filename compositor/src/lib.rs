@@ -970,6 +970,13 @@ struct FrameMigration {
 }
 
 #[derive(Debug)]
+struct OutputLayoutSnapshot {
+    output_name: String,
+    active_frame_id: Option<u64>,
+    entry_surface_ids: HashSet<u64>,
+}
+
+#[derive(Debug)]
 struct ViewLocation {
     output: String,
     frame_idx: usize,
@@ -1335,7 +1342,7 @@ impl Ewm {
         let evicted_active_id = if let Some(old_strip) = self.output_strips.remove(&output_name) {
             let was_active = old_strip.active_frame().map(|f| f.surface_id);
             let pre: HashSet<u64> = old_strip.surfaces().map(|e| e.surface_id).collect();
-            self.reconcile_output_entries(&output_name, pre);
+            self.reconcile_output_entries(&output_name, &pre);
             was_active
         } else {
             None
@@ -2053,7 +2060,7 @@ impl Ewm {
 
     /// Diff `pre` (snapshot before strip mutation) against the current strip;
     /// fire `wl_surface.enter` / `leave` and sync `surface_outputs`.
-    fn reconcile_output_entries(&mut self, output_name: &str, pre: HashSet<u64>) {
+    fn reconcile_output_entries(&mut self, output_name: &str, pre: &HashSet<u64>) {
         let post = self.strip_entries(output_name);
         let output = self
             .space
@@ -2073,7 +2080,7 @@ impl Ewm {
                 }
             }
         }
-        for &id in post.difference(&pre) {
+        for &id in post.difference(pre) {
             let Some(window) = self.id_windows.get(&id) else {
                 warn!("reconcile_output_entries: surface {} not in id_windows", id);
                 continue;
@@ -2111,40 +2118,50 @@ impl Ewm {
             .collect()
     }
 
-    fn active_frames_by_output(&self) -> HashMap<String, Option<u64>> {
-        self.output_strips
-            .iter()
-            .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
-            .collect()
+    fn output_layout_snapshot(&self, output_name: String) -> OutputLayoutSnapshot {
+        let active_frame_id = self
+            .output_strips
+            .get(&output_name)
+            .and_then(|strip| strip.active_frame().map(|frame| frame.surface_id));
+        let entry_surface_ids = self.strip_entries(&output_name);
+        OutputLayoutSnapshot {
+            output_name,
+            active_frame_id,
+            entry_surface_ids,
+        }
     }
 
-    fn entry_reconcile_snapshots(
+    fn output_layout_snapshots(
         &self,
         output_name: &str,
         migrations: &[FrameMigration],
-    ) -> HashMap<String, HashSet<u64>> {
-        let mut pre_entries = HashMap::new();
-        pre_entries.insert(output_name.to_string(), self.strip_entries(output_name));
+    ) -> Vec<OutputLayoutSnapshot> {
+        let mut output_names = vec![output_name.to_string()];
         for migration in migrations {
             if let Some(prev_name) = &migration.prev_output {
-                pre_entries
-                    .entry(prev_name.clone())
-                    .or_insert_with(|| self.strip_entries(prev_name));
+                if !output_names.iter().any(|name| name == prev_name) {
+                    output_names.push(prev_name.clone());
+                }
             }
         }
-        pre_entries
+        output_names
+            .into_iter()
+            .map(|name| self.output_layout_snapshot(name))
+            .collect()
     }
 
     fn remove_migrated_frames_from_sources(
         &mut self,
         migrations: &[FrameMigration],
-        active_before: &HashMap<String, Option<u64>>,
+        snapshots: &[OutputLayoutSnapshot],
     ) {
         for migration in migrations {
             let Some(prev_name) = migration.prev_output.as_deref() else {
                 continue;
             };
-            let was_active_in_prev = active_before.get(prev_name) == Some(&Some(migration.id));
+            let was_active_in_prev = snapshots.iter().any(|snapshot| {
+                snapshot.output_name == prev_name && snapshot.active_frame_id == Some(migration.id)
+            });
             if let Some(prev_strip) = self.output_strips.get_mut(prev_name) {
                 // `remove_frame_at` adjusts `active_idx` and seeds the
                 // slide-in animation on surviving neighbours; plain
@@ -2165,9 +2182,9 @@ impl Ewm {
         }
     }
 
-    fn reconcile_entry_snapshots(&mut self, pre_entries: HashMap<String, HashSet<u64>>) {
-        for (name, pre) in pre_entries {
-            self.reconcile_output_entries(&name, pre);
+    fn reconcile_entry_snapshots(&mut self, snapshots: &[OutputLayoutSnapshot]) {
+        for snapshot in snapshots {
+            self.reconcile_output_entries(&snapshot.output_name, &snapshot.entry_surface_ids);
         }
     }
 
@@ -2236,13 +2253,12 @@ impl Ewm {
             }
         };
 
-        // Capture prev outputs before the swap; emacs_frame_output reads strips.
-        let active_before = self.active_frames_by_output();
         let migrations = self.collect_frame_migrations(output_name, &frames);
-        // Snapshot pre-merge entries; reconcile runs after the merge against the
-        // post-merge strip so kept frames don't leak `surface_outputs`.
-        let pre_entries = self.entry_reconcile_snapshots(output_name, &migrations);
-        self.remove_migrated_frames_from_sources(&migrations, &active_before);
+        // Capture affected outputs before the swap; reconciliation runs after
+        // the merge against the post-merge strips so kept frames don't leak
+        // `surface_outputs`, and active-frame event balance has a stable base.
+        let snapshots = self.output_layout_snapshots(output_name, &migrations);
+        self.remove_migrated_frames_from_sources(&migrations, &snapshots);
 
         // Frames omitted by the layout are kept until Wayland destroy arrives.
         // This makes compositor-eager-inserted frames survive layout refreshes
@@ -2255,7 +2271,7 @@ impl Ewm {
         strip_entry.merge_layout_frames(frames, module::has_pending_active_frame_close);
         self.sync_focus_after_layout_merge(output_name);
 
-        self.reconcile_entry_snapshots(pre_entries);
+        self.reconcile_entry_snapshots(&snapshots);
         self.send_frame_migration_output_events(&output, &migrations);
 
         self.refresh_primary_assignments();
@@ -2271,8 +2287,8 @@ impl Ewm {
             self.strip_entries(output_name).len(),
         );
 
-        for (name, prev) in active_before {
-            self.reconcile_active_for_output(&name, prev);
+        for snapshot in snapshots {
+            self.reconcile_active_for_output(&snapshot.output_name, snapshot.active_frame_id);
         }
     }
 
