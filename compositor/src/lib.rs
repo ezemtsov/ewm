@@ -2116,6 +2116,35 @@ impl Ewm {
         }
     }
 
+    fn sync_focus_after_layout_merge(&mut self, output_name: &str) {
+        let frame_id = self.focused_frame_id;
+        let focused_view_id = self.focused_view_id;
+        let mut focus_view_update: Option<Option<ViewId>> = None;
+
+        let Some(strip) = self.output_strips.get_mut(output_name) else {
+            return;
+        };
+        if let Some(new_idx) = strip
+            .frames
+            .iter()
+            .position(|frame| frame.surface_id == frame_id)
+        {
+            strip.set_active(new_idx);
+            let new_view = strip.frames[new_idx].selected_view_id;
+            if new_view != focused_view_id {
+                focus_view_update = Some(new_view);
+            }
+        } else if !strip.frames.is_empty() {
+            let clamped = strip.active_idx().min(strip.frames.len() - 1);
+            strip.set_active(clamped);
+        }
+
+        if let Some(new_view) = focus_view_update {
+            self.set_focus_state(frame_id, new_view);
+            module::record_focus(self.focused_surface_id(), "layout_selected", None);
+        }
+    }
+
     /// Apply a declarative per-output layout.
     ///
     /// Replaces the previous layout for the given output. Surfaces removed from
@@ -2163,22 +2192,7 @@ impl Ewm {
             .entry(output_name.to_string())
             .or_insert_with(|| strip::Strip::new(clock));
         strip_entry.merge_layout_frames(frames, module::has_pending_active_frame_close);
-        let frame_id = self.focused_frame_id;
-        if let Some(new_idx) = strip_entry
-            .frames
-            .iter()
-            .position(|f| f.surface_id == frame_id)
-        {
-            strip_entry.set_active(new_idx);
-            let new_view = strip_entry.frames[new_idx].selected_view_id;
-            if new_view != self.focused_view_id {
-                self.set_focus_state(self.focused_frame_id, new_view);
-                module::record_focus(self.focused_surface_id(), "layout_selected", None);
-            }
-        } else if !strip_entry.frames.is_empty() {
-            let clamped = strip_entry.active_idx().min(strip_entry.frames.len() - 1);
-            strip_entry.set_active(clamped);
-        }
+        self.sync_focus_after_layout_merge(output_name);
 
         for (name, pre) in pre_entries {
             self.reconcile_output_entries(&name, pre);
