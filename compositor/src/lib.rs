@@ -1912,37 +1912,33 @@ impl Ewm {
                     .output_at(pos)
                     .and_then(|o| self.space.output_geometry(o));
 
-                let (pointer_scale, center_offset_x, center_offset_y) = if entry.fullscreen {
+                let pointer_scale = if entry.fullscreen {
                     let out_size = output_geo.map(|g| g.size).unwrap_or_default();
                     if entry.primary {
                         // Centering is already baked into the (entry_x, entry_y) returned
                         // by layout_entry_under for fullscreen primary; don't double-apply.
-                        (1.0, 0.0, 0.0)
+                        1.0
                     } else {
                         let uniform = f64::max(
                             out_size.w as f64 / window_geo.size.w as f64,
                             out_size.h as f64 / window_geo.size.h as f64,
                         );
-                        (1.0 / uniform, 0.0, 0.0)
+                        1.0 / uniform
                     }
                 } else if entry.primary {
-                    (1.0, 0.0, 0.0)
+                    1.0
                 } else if entry.w > 0 && entry.h > 0 {
-                    (
-                        f64::min(
-                            window_geo.size.w as f64 / entry.w as f64,
-                            window_geo.size.h as f64 / entry.h as f64,
-                        ),
-                        0.0,
-                        0.0,
+                    f64::min(
+                        window_geo.size.w as f64 / entry.w as f64,
+                        window_geo.size.h as f64 / entry.h as f64,
                     )
                 } else {
-                    (1.0, 0.0, 0.0)
+                    1.0
                 };
 
                 let pos_in_window = Point::from((
-                    (pos.x - entry_x as f64 - center_offset_x) * pointer_scale,
-                    (pos.y - entry_y as f64 - center_offset_y) * pointer_scale,
+                    (pos.x - entry_x as f64) * pointer_scale,
+                    (pos.y - entry_y as f64) * pointer_scale,
                 ));
                 let window_origin: Point<f64, Logical> =
                     Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
