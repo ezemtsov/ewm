@@ -3,7 +3,7 @@
 //! Frame positions derive from per-frame widths via `column_x`; the viewport's
 //! left edge is `column_x(active_idx) + view_offset.current()`.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -459,6 +459,61 @@ impl Strip {
             .flat_map(|f| f.surfaces.iter_mut())
     }
 
+    /// Merge a fresh Emacs layout into this strip.
+    ///
+    /// Existing frames are updated in place so their move animations survive.
+    /// Frames omitted by the layout are kept until their Wayland destroy arrives.
+    /// Pending active-close frames omitted by a racing layout refresh keep their
+    /// old slot, so destroy-time refocus still uses the slot the user closed.
+    pub fn merge_layout_frames(
+        &mut self,
+        frames: Vec<Frame>,
+        mut is_pending_active_close: impl FnMut(u64) -> bool,
+    ) {
+        let old_frame_positions: HashMap<u64, usize> = self
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(idx, frame)| (frame.surface_id, idx))
+            .collect();
+        let order: HashMap<u64, usize> = frames
+            .iter()
+            .enumerate()
+            .map(|(idx, frame)| (frame.surface_id, idx))
+            .collect();
+
+        for new_frame in frames {
+            if let Some(existing) = self
+                .frames
+                .iter_mut()
+                .find(|frame| frame.surface_id == new_frame.surface_id)
+            {
+                let preserved_anim = existing.move_anim.clone();
+                *existing = new_frame;
+                existing.move_anim = preserved_anim;
+            } else {
+                self.frames.push(new_frame);
+            }
+        }
+
+        self.frames
+            .sort_by_key(|frame| order.get(&frame.surface_id).copied().unwrap_or(usize::MAX));
+
+        let mut closing_frames = old_frame_positions
+            .iter()
+            .filter_map(|(&id, &idx)| {
+                (!order.contains_key(&id) && is_pending_active_close(id)).then_some((id, idx))
+            })
+            .collect::<Vec<_>>();
+        closing_frames.sort_by_key(|&(_, idx)| idx);
+        for (id, old_idx) in closing_frames {
+            if let Some(pos) = self.frames.iter().position(|frame| frame.surface_id == id) {
+                let frame = self.frames.remove(pos);
+                self.frames.insert(old_idx.min(self.frames.len()), frame);
+            }
+        }
+    }
+
     /// Iterator yielding `(frame_idx, &LayoutEntry)` pairs.
     pub fn surfaces_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
         self.frames
@@ -596,6 +651,16 @@ mod tests {
             view_offset: ViewOffset::default(),
             clock: AnimationsClock::default(),
         }
+    }
+
+    fn strip_with_ids(ids: &[u64]) -> Strip {
+        let mut strip = Strip::new(AnimationsClock::default());
+        strip.frames = ids.iter().copied().map(Frame::new).collect();
+        strip
+    }
+
+    fn frame_ids(strip: &Strip) -> Vec<u64> {
+        strip.frames.iter().map(|frame| frame.surface_id).collect()
     }
 
     proptest! {
@@ -768,6 +833,27 @@ mod tests {
                 prop_assert!(strip.view_offset.is_animation_ongoing());
                 prop_assert!(!strip.view_offset.is_static());
             }
+        }
+
+        #[test]
+        fn merge_layout_preserves_pending_active_close_slot(
+            len in 1usize..=MAX_FRAMES,
+            raw_close_idx in 0usize..MAX_FRAMES,
+        ) {
+            let close_idx = raw_close_idx % len;
+            let ids = (0..len).map(|idx| 10_000 + idx as u64).collect::<Vec<_>>();
+            let closing_id = ids[close_idx];
+            let layout = ids
+                .iter()
+                .copied()
+                .filter(|&id| id != closing_id)
+                .map(Frame::new)
+                .collect::<Vec<_>>();
+            let mut strip = strip_with_ids(&ids);
+
+            strip.merge_layout_frames(layout, |id| id == closing_id);
+
+            prop_assert_eq!(frame_ids(&strip), ids);
         }
     }
 }

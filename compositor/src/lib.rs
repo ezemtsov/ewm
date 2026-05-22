@@ -2080,18 +2080,6 @@ impl Ewm {
             .iter()
             .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
             .collect();
-        let old_frame_positions: HashMap<u64, usize> = self
-            .output_strips
-            .get(output_name)
-            .map(|strip| {
-                strip
-                    .frames
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, frame)| (frame.surface_id, idx))
-                    .collect()
-            })
-            .unwrap_or_default();
 
         // Snapshot pre-merge entries; reconcile runs after step 6 against the
         // post-merge strip so kept frames don't leak `surface_outputs`.
@@ -2139,58 +2127,15 @@ impl Ewm {
             }
         }
 
-        // 6. MERGE the layout into the strip.  Existing frames are updated in place; new frames are
-        //    appended.  Frames in the strip but absent from the layout are KEPT -- they go away
-        //    only via `handle_toplevel_destroyed`.  This makes compositor-eager-inserted frames
-        //    (from `new_toplevel`) survive layout refreshes that race ahead of Emacs's
-        //    `ewm--assign-surface-to-frame`.
+        // Frames omitted by the layout are kept until Wayland destroy arrives.
+        // This makes compositor-eager-inserted frames survive layout refreshes
+        // that race ahead of Emacs's `ewm--assign-surface-to-frame`.
         let clock = self.animations_clock.clone();
         let strip_entry = self
             .output_strips
             .entry(output_name.to_string())
             .or_insert_with(|| strip::Strip::new(clock));
-        let order: HashMap<u64, usize> = frames
-            .iter()
-            .enumerate()
-            .map(|(i, f)| (f.surface_id, i))
-            .collect();
-        for new_f in frames {
-            if let Some(existing) = strip_entry
-                .frames
-                .iter_mut()
-                .find(|f| f.surface_id == new_f.surface_id)
-            {
-                let preserved_anim = existing.move_anim.clone();
-                *existing = new_f;
-                existing.move_anim = preserved_anim;
-            } else {
-                strip_entry.frames.push(new_f);
-            }
-        }
-        // Sort by layout order; frames not in the layout (eager-inserted, awaiting
-        // Emacs's first confirmation) sink to the end with usize::MAX.
-        strip_entry
-            .frames
-            .sort_by_key(|f| order.get(&f.surface_id).copied().unwrap_or(usize::MAX));
-        // A pending active close can be omitted by Lisp layout refresh before
-        // Wayland destroy arrives. Keep that closing frame at its old slot so
-        // destroy still chooses the original right neighbour, not the end.
-        let mut closing_frames = old_frame_positions
-            .iter()
-            .filter_map(|(&id, &idx)| {
-                (!order.contains_key(&id) && module::has_pending_active_frame_close(id))
-                    .then_some((id, idx))
-            })
-            .collect::<Vec<_>>();
-        closing_frames.sort_by_key(|&(_, idx)| idx);
-        for (id, old_idx) in closing_frames {
-            if let Some(pos) = strip_entry.frames.iter().position(|f| f.surface_id == id) {
-                let frame = strip_entry.frames.remove(pos);
-                strip_entry
-                    .frames
-                    .insert(old_idx.min(strip_entry.frames.len()), frame);
-            }
-        }
+        strip_entry.merge_layout_frames(frames, module::has_pending_active_frame_close);
         let frame_id = self.focused_frame_id;
         if let Some(new_idx) = strip_entry
             .frames
