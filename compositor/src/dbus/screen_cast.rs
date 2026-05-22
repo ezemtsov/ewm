@@ -91,6 +91,18 @@ fn parse_optional_cursor_mode(mode: Option<u32>, default: CursorMode) -> fdo::Re
     })
 }
 
+fn validate_create_session_properties(
+    properties: &HashMap<&str, Value<'_>>,
+) -> fdo::Result<CursorMode> {
+    if properties.contains_key("remote-desktop-session-id") {
+        return Err(fdo::Error::Failed(
+            "there are no remote desktop sessions".to_owned(),
+        ));
+    }
+
+    parse_cursor_mode(properties, CursorMode::default())
+}
+
 /// Messages sent from D-Bus to compositor
 pub enum ScreenCastToCompositor {
     StartCast {
@@ -154,7 +166,7 @@ impl ScreenCast {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let cursor_mode = parse_cursor_mode(&properties, CursorMode::default())?;
+        let cursor_mode = validate_create_session_properties(&properties)?;
         debug!("Session {} cursor_mode={}", session_id, cursor_mode);
 
         let session = Session::new(
@@ -573,5 +585,14 @@ mod tests {
             .expect_err("wrong cursor mode type must fail");
 
         assert!(matches!(err, fdo::Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn create_session_rejects_remote_desktop_session_id() {
+        let properties = HashMap::from([("remote-desktop-session-id", Value::U32(1))]);
+        let err = validate_create_session_properties(&properties)
+            .expect_err("remote desktop sessions are unsupported");
+
+        assert!(matches!(err, fdo::Error::Failed(_)));
     }
 }
