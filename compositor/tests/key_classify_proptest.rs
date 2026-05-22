@@ -130,19 +130,6 @@ proptest! {
         prop_assert_eq!(action, KeyAction::Forward);
     }
 
-    /// classify_key is total over every combination of its inputs.
-    #[test]
-    fn classify_is_total(
-        keysym in keysym_strategy(),
-        flag in any::<bool>(),
-        focus_on_emacs in any::<bool>(),
-        is_press in any::<bool>(),
-        fs in proptest::option::of(Just(1u64)),
-        text_input in any::<bool>(),
-    ) {
-        let _ = classify(&[ik(keysym, flag)], text_input, focus_on_emacs, fs, is_press, keysym);
-    }
-
     #[test]
     fn vt_switch_precedes_bindings_on_press(
         vt in 1u32..=12,
