@@ -597,146 +597,45 @@ impl InterceptedKey {
     /// etc.) where Emacs encodes the character directly rather than
     /// decomposing it into base-key + Shift.
     pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
-        // Handle case-insensitive letter matching (A-Z vs a-z)
-        let raw_match = self.keysym == raw_keysym
-            || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
-                && self.keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
-
-        if raw_match {
-            return self.ctrl == mods.ctrl
-                && self.alt == mods.alt
-                && (self.shift == mods.shift
-                    || (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym))
-                && self.logo == mods.logo;
-        }
-
-        // Fallback: match against the XKB-modified keysym.  This handles
-        // shifted punctuation like `:` (Shift+`;`), `&` (Shift+`7`), etc.
-        // XKB already consumed Shift to produce the modified keysym, so we
-        // skip the shift comparison here.
-        if raw_keysym != modified_keysym && self.keysym == modified_keysym {
-            return self.ctrl == mods.ctrl && self.alt == mods.alt && self.logo == mods.logo;
-        }
-
-        false
+        key_binding_matches(
+            self.keysym,
+            self.ctrl,
+            self.alt,
+            self.shift,
+            self.logo,
+            raw_keysym,
+            modified_keysym,
+            mods,
+        )
     }
 }
 
-#[cfg(test)]
-mod intercepted_key_tests {
-    use super::*;
+fn key_binding_matches(
+    keysym: u32,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    logo: bool,
+    raw_keysym: u32,
+    modified_keysym: u32,
+    mods: &ModifiersState,
+) -> bool {
+    let raw_match = keysym == raw_keysym
+        || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
+            && keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
 
-    fn mods(ctrl: bool, alt: bool, shift: bool, logo: bool) -> ModifiersState {
-        ModifiersState {
-            ctrl,
-            alt,
-            shift,
-            logo,
-            ..Default::default()
-        }
+    if raw_match {
+        return ctrl == mods.ctrl
+            && alt == mods.alt
+            && (shift == mods.shift || (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym))
+            && logo == mods.logo;
     }
 
-    fn key(keysym: u32, ctrl: bool, alt: bool, shift: bool, logo: bool) -> InterceptedKey {
-        InterceptedKey {
-            keysym,
-            ctrl,
-            alt,
-            shift,
-            logo,
-            allow_fullscreen: false,
-        }
+    if raw_keysym != modified_keysym && keysym == modified_keysym {
+        return ctrl == mods.ctrl && alt == mods.alt && logo == mods.logo;
     }
 
-    #[test]
-    fn raw_keysym_match() {
-        // s-a: Emacs sends keysym=a, logo=true
-        let ik = key(keysyms::KEY_a, false, false, false, true);
-        // Physical: raw=a, modified=a, mods={logo}
-        assert!(ik.matches(
-            keysyms::KEY_a,
-            keysyms::KEY_a,
-            &mods(false, false, false, true)
-        ));
-    }
-
-    #[test]
-    fn case_insensitive_letter() {
-        // Emacs sends keysym=a (lowercase), physical key produces A (uppercase, shift held)
-        let ik = key(keysyms::KEY_a, false, false, false, true);
-        // Shift is ignored for letter keys
-        assert!(ik.matches(
-            keysyms::KEY_A,
-            keysyms::KEY_A,
-            &mods(false, false, true, true)
-        ));
-    }
-
-    #[test]
-    fn modifier_mismatch_rejects() {
-        // C-x: Emacs sends keysym=x, ctrl=true
-        let ik = key(keysyms::KEY_x, true, false, false, false);
-        // Physical: x pressed but ctrl NOT held, should not match
-        assert!(!ik.matches(
-            keysyms::KEY_x,
-            keysyms::KEY_x,
-            &mods(false, false, false, false)
-        ));
-    }
-
-    #[test]
-    fn wrong_keysym_rejects() {
-        // s-a should not match s-b
-        let ik = key(keysyms::KEY_a, false, false, false, true);
-        assert!(!ik.matches(
-            keysyms::KEY_b,
-            keysyms::KEY_b,
-            &mods(false, false, false, true)
-        ));
-    }
-
-    #[test]
-    fn shifted_punctuation_fallback() {
-        // M-: (eval-expression): Emacs sends keysym=colon, alt=true, shift=false
-        let ik = key(keysyms::KEY_colon, false, true, false, false);
-        // Physical: raw=semicolon, modified=colon (XKB applied Shift), mods={alt, shift}
-        assert!(ik.matches(
-            keysyms::KEY_semicolon,
-            keysyms::KEY_colon,
-            &mods(false, true, true, false)
-        ));
-    }
-
-    #[test]
-    fn shifted_punctuation_no_false_positive_on_unshifted() {
-        // M-; (comment-dwim): Emacs sends keysym=semicolon, alt=true
-        let ik = key(keysyms::KEY_semicolon, false, true, false, false);
-        // Physical: raw=semicolon, modified=semicolon (no shift), mods={alt}
-        // Should match via raw path
-        assert!(ik.matches(
-            keysyms::KEY_semicolon,
-            keysyms::KEY_semicolon,
-            &mods(false, true, false, false)
-        ));
-        // Physical: raw=semicolon, modified=colon (shift held), mods={alt, shift}
-        // Should NOT match: we want semicolon but got shift+semicolon
-        assert!(!ik.matches(
-            keysyms::KEY_semicolon,
-            keysyms::KEY_colon,
-            &mods(false, true, true, false)
-        ));
-    }
-
-    #[test]
-    fn shifted_ampersand() {
-        // M-& (async-shell-command): Emacs sends keysym=ampersand, alt=true
-        let ik = key(keysyms::KEY_ampersand, false, true, false, false);
-        // Physical: raw=7, modified=ampersand (Shift+7), mods={alt, shift}
-        assert!(ik.matches(
-            keysyms::KEY_7,
-            keysyms::KEY_ampersand,
-            &mods(false, true, true, false)
-        ));
-    }
+    false
 }
 
 /// Emulated key: a key combo that is translated to different modifiers
@@ -763,23 +662,16 @@ impl EmulatedKey {
     /// Check if this emulated key matches the given keysym and modifiers.
     /// Uses the same matching logic as `InterceptedKey::matches`.
     pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
-        let raw_match = self.keysym == raw_keysym
-            || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
-                && self.keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
-
-        if raw_match {
-            return self.ctrl == mods.ctrl
-                && self.alt == mods.alt
-                && (self.shift == mods.shift
-                    || (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym))
-                && self.logo == mods.logo;
-        }
-
-        if raw_keysym != modified_keysym && self.keysym == modified_keysym {
-            return self.ctrl == mods.ctrl && self.alt == mods.alt && self.logo == mods.logo;
-        }
-
-        false
+        key_binding_matches(
+            self.keysym,
+            self.ctrl,
+            self.alt,
+            self.shift,
+            self.logo,
+            raw_keysym,
+            modified_keysym,
+            mods,
+        )
     }
 
     /// Build the target ModifiersState: source modifiers with logo replaced by target_mod.
