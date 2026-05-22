@@ -19,7 +19,7 @@ use smithay::reexports::wayland_server::{
 use smithay::utils::Transform;
 use zwlr_output_configuration_head_v1::ZwlrOutputConfigurationHeadV1;
 use zwlr_output_configuration_v1::ZwlrOutputConfigurationV1;
-use zwlr_output_head_v1::ZwlrOutputHeadV1;
+use zwlr_output_head_v1::{AdaptiveSyncState, ZwlrOutputHeadV1};
 use zwlr_output_manager_v1::ZwlrOutputManagerV1;
 use zwlr_output_mode_v1::ZwlrOutputModeV1;
 
@@ -725,7 +725,7 @@ where
     fn request(
         state: &mut D,
         client: &Client,
-        _conf_head: &ZwlrOutputConfigurationHeadV1,
+        conf_head: &ZwlrOutputConfigurationHeadV1,
         request: zwlr_output_configuration_head_v1::Request,
         data: &OutputConfigurationHeadState,
         _display: &DisplayHandle,
@@ -814,30 +814,36 @@ where
                 new_config.position = Some((x, y));
             }
             zwlr_output_configuration_head_v1::Request::SetTransform { transform } => {
-                let transform = match transform {
-                    WEnum::Value(WlTransform::Normal) => Transform::Normal,
-                    WEnum::Value(WlTransform::_90) => Transform::_90,
-                    WEnum::Value(WlTransform::_180) => Transform::_180,
-                    WEnum::Value(WlTransform::_270) => Transform::_270,
-                    WEnum::Value(WlTransform::Flipped) => Transform::Flipped,
-                    WEnum::Value(WlTransform::Flipped90) => Transform::Flipped90,
-                    WEnum::Value(WlTransform::Flipped180) => Transform::Flipped180,
-                    WEnum::Value(WlTransform::Flipped270) => Transform::Flipped270,
-                    _ => {
-                        tracing::warn!("SetTransform: unknown transform value");
-                        return;
-                    }
+                let Some(transform) = requested_transform(transform) else {
+                    tracing::warn!("SetTransform: unknown requested transform");
+                    conf_head.post_error(
+                        zwlr_output_configuration_head_v1::Error::InvalidTransform,
+                        "unknown transform value",
+                    );
+                    return;
                 };
                 new_config.transform = Some(transform);
             }
             zwlr_output_configuration_head_v1::Request::SetScale { scale } => {
-                if scale <= 0. {
+                let Some(scale) = requested_scale(scale) else {
+                    conf_head.post_error(
+                        zwlr_output_configuration_head_v1::Error::InvalidScale,
+                        "scale is negative, zero, or not finite",
+                    );
                     return;
-                }
+                };
                 new_config.scale = Some(scale);
             }
-            zwlr_output_configuration_head_v1::Request::SetAdaptiveSync { .. } => {
-                // ewm doesn't support VRR, ignore
+            zwlr_output_configuration_head_v1::Request::SetAdaptiveSync { state } => {
+                if !is_known_adaptive_sync_state(state) {
+                    tracing::warn!("SetAdaptiveSync: unknown requested adaptive sync state");
+                    conf_head.post_error(
+                        zwlr_output_configuration_head_v1::Error::InvalidAdaptiveSyncState,
+                        "unknown adaptive sync value",
+                    );
+                    return;
+                }
+                // ewm doesn't support VRR; valid requests are accepted as no-ops.
             }
             _ => unreachable!(),
         }
@@ -1045,6 +1051,35 @@ fn send_new_head<D>(
     client_data
         .heads
         .insert(output_name.to_string(), (new_head, new_modes));
+}
+
+fn requested_transform(transform: WEnum<WlTransform>) -> Option<Transform> {
+    match transform {
+        WEnum::Value(WlTransform::Normal) => Some(Transform::Normal),
+        WEnum::Value(WlTransform::_90) => Some(Transform::_90),
+        WEnum::Value(WlTransform::_180) => Some(Transform::_180),
+        WEnum::Value(WlTransform::_270) => Some(Transform::_270),
+        WEnum::Value(WlTransform::Flipped) => Some(Transform::Flipped),
+        WEnum::Value(WlTransform::Flipped90) => Some(Transform::Flipped90),
+        WEnum::Value(WlTransform::Flipped180) => Some(Transform::Flipped180),
+        WEnum::Value(WlTransform::Flipped270) => Some(Transform::Flipped270),
+        WEnum::Value(_) | WEnum::Unknown(_) => None,
+    }
+}
+
+fn requested_scale(scale: f64) -> Option<f64> {
+    if scale.is_finite() && scale > 0.0 {
+        Some(scale)
+    } else {
+        None
+    }
+}
+
+fn is_known_adaptive_sync_state(state: WEnum<AdaptiveSyncState>) -> bool {
+    match state {
+        WEnum::Value(AdaptiveSyncState::Enabled | AdaptiveSyncState::Disabled) => true,
+        WEnum::Value(_) | WEnum::Unknown(_) => false,
+    }
 }
 
 /// Build an OutputConfig from the current head state (used when enabling a head).
@@ -1281,5 +1316,38 @@ mod tests {
         assert_eq!(stored.position, Some((0, 0)));
         assert_eq!(stored.scale, Some(1.0));
         assert_eq!(stored.transform, Some(Transform::Normal));
+    }
+
+    #[test]
+    fn requested_transform_rejects_unknown_protocol_values() {
+        assert_eq!(
+            requested_transform(WEnum::Value(WlTransform::_270)),
+            Some(Transform::_270),
+        );
+        assert_eq!(
+            requested_transform(WEnum::Value(WlTransform::Flipped90)),
+            Some(Transform::Flipped90),
+        );
+        assert_eq!(requested_transform(WEnum::Unknown(99)), None);
+    }
+
+    #[test]
+    fn requested_scale_rejects_non_positive_and_non_finite_values() {
+        assert_eq!(requested_scale(1.25), Some(1.25));
+        assert_eq!(requested_scale(0.0), None);
+        assert_eq!(requested_scale(-1.0), None);
+        assert_eq!(requested_scale(f64::NAN), None);
+        assert_eq!(requested_scale(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn adaptive_sync_validation_rejects_unknown_protocol_values() {
+        assert!(is_known_adaptive_sync_state(WEnum::Value(
+            AdaptiveSyncState::Disabled,
+        )));
+        assert!(is_known_adaptive_sync_state(WEnum::Value(
+            AdaptiveSyncState::Enabled,
+        )));
+        assert!(!is_known_adaptive_sync_state(WEnum::Unknown(99)));
     }
 }
