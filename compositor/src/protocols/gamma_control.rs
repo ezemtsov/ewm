@@ -14,6 +14,8 @@ use wayland_protocols_wlr::gamma_control::v1::server::{
 use zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1;
 use zwlr_gamma_control_v1::ZwlrGammaControlV1;
 
+use crate::tracy_span;
+
 const VERSION: u32 = 1;
 
 pub struct GammaControlManagerState {
@@ -166,30 +168,34 @@ where
                 let buf = bytemuck::cast_slice_mut(&mut gamma);
                 let mut file = File::from(fd);
 
-                if let Err(err) = file.read_exact(buf) {
-                    tracing::warn!("failed to read gamma data: {err:?}");
-                    resource.failed();
-                    gamma_controls.remove(&output);
-                    let _ = state.set_gamma(&output, None);
-                    return;
-                }
+                {
+                    tracy_span!("read gamma from fd");
 
-                // Verify that there's no more data.
-                match file.read(&mut [0]) {
-                    Ok(0) => (),
-                    Ok(_) => {
-                        tracing::warn!("gamma data is too large");
+                    if let Err(err) = file.read_exact(buf) {
+                        tracing::warn!("failed to read gamma data: {err:?}");
                         resource.failed();
                         gamma_controls.remove(&output);
                         let _ = state.set_gamma(&output, None);
                         return;
                     }
-                    Err(err) => {
-                        tracing::warn!("error reading gamma data: {err:?}");
-                        resource.failed();
-                        gamma_controls.remove(&output);
-                        let _ = state.set_gamma(&output, None);
-                        return;
+
+                    // Verify that there's no more data.
+                    match file.read(&mut [0]) {
+                        Ok(0) => (),
+                        Ok(_) => {
+                            tracing::warn!("gamma data is too large");
+                            resource.failed();
+                            gamma_controls.remove(&output);
+                            let _ = state.set_gamma(&output, None);
+                            return;
+                        }
+                        Err(err) => {
+                            tracing::warn!("error reading gamma data: {err:?}");
+                            resource.failed();
+                            gamma_controls.remove(&output);
+                            let _ = state.set_gamma(&output, None);
+                            return;
+                        }
                     }
                 }
 
