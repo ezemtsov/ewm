@@ -175,23 +175,45 @@ proptest! {
             assert_structural(&strip);
         }
     }
-}
 
-#[test]
-fn active_close_uses_destroyed_slot_not_current_active_idx() {
-    let mut s = Strip::new(AnimationsClock::default());
-    for sid in [1u64, 2, 3, 4] {
-        apply_op(&mut s, &Op::InsertAfterActive(sid));
+    #[test]
+    fn active_close_uses_destroyed_slot_not_current_active_idx(
+        len in 1usize..=8,
+        raw_destroy_idx in 0usize..8,
+        raw_active_idx in 0usize..8,
+    ) {
+        let destroy_idx = raw_destroy_idx % len;
+        let active_idx = raw_active_idx % len;
+        let ids = (0..len).map(|i| 10 + i as u64).collect::<Vec<_>>();
+        let mut strip = Strip::new(AnimationsClock::default());
+        strip.frames = ids.iter().copied().map(Frame::new).collect();
+        strip.set_active(active_idx);
+
+        let expected_ids = ids
+            .iter()
+            .copied()
+            .filter(|&id| id != ids[destroy_idx])
+            .collect::<Vec<_>>();
+        let expected_active = if len == 1 {
+            None
+        } else if destroy_idx + 1 < len {
+            Some(ids[destroy_idx + 1])
+        } else {
+            Some(ids[destroy_idx - 1])
+        };
+
+        strip.remove_active_frame_at(destroy_idx);
+
+        prop_assert_eq!(
+            strip.frames.iter().map(|f| f.surface_id).collect::<Vec<_>>(),
+            expected_ids,
+        );
+        prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), expected_active);
+        if destroy_idx < strip.frames.len() {
+            prop_assert!(
+                strip.frames[destroy_idx].move_anim.is_some(),
+                "right neighbor should slide into destroyed active slot",
+            );
+        }
     }
-    apply_op(&mut s, &Op::Focus(3));
-    assert_eq!(s.active_frame().map(|f| f.surface_id), Some(4));
-
-    s.remove_active_frame_at(1);
-
-    assert_eq!(
-        s.frames.iter().map(|f| f.surface_id).collect::<Vec<_>>(),
-        vec![1, 3, 4]
-    );
-    assert_eq!(s.active_frame().map(|f| f.surface_id), Some(3));
-    assert!(s.frames[1].move_anim.is_some());
 }
