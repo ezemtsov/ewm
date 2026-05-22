@@ -143,25 +143,25 @@ pub fn shared_state() -> &'static Mutex<SharedState> {
 }
 
 /// Pending frame-to-output assignments (synchronous to avoid race with surface creation)
-static PENDING_FRAME_OUTPUTS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static PENDING_FRAME_OUTPUTS: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
 
-fn pending_frame_outputs() -> &'static Mutex<Vec<String>> {
-    PENDING_FRAME_OUTPUTS.get_or_init(|| Mutex::new(Vec::new()))
+fn pending_frame_outputs() -> &'static Mutex<VecDeque<String>> {
+    PENDING_FRAME_OUTPUTS.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 /// Take the next pending frame output (called by compositor when creating surfaces).
 pub fn take_pending_frame_output() -> Option<String> {
-    let mut outputs = pending_frame_outputs().lock().unwrap();
-    if outputs.is_empty() {
-        None
-    } else {
-        Some(outputs.remove(0))
-    }
+    pending_frame_outputs().lock().unwrap().pop_front()
 }
 
 /// Get pending frame outputs for state dump.
 pub fn peek_pending_frame_outputs() -> Vec<String> {
-    pending_frame_outputs().lock().unwrap().clone()
+    pending_frame_outputs()
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect()
 }
 
 /// Frame closes initiated for the selected Emacs frame.
@@ -869,7 +869,10 @@ fn screenshot_module(path: Option<String>) -> Result<()> {
 /// Prepare next frame for output (synchronous to avoid race with surface creation).
 #[defun]
 fn prepare_frame_module(output: String) -> Result<()> {
-    pending_frame_outputs().lock().unwrap().push(output.clone());
+    pending_frame_outputs()
+        .lock()
+        .unwrap()
+        .push_back(output.clone());
     tracing::info!("Prepared frame for output {}", output);
     Ok(())
 }
