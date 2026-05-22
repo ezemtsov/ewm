@@ -950,6 +950,12 @@ pub struct Ewm {
     pub captured_events: Option<Vec<Event>>,
 }
 
+#[derive(Debug, Clone)]
+struct FrameMigration {
+    id: u64,
+    prev_output: Option<String>,
+}
+
 impl Ewm {
     pub fn new(
         display_handle: DisplayHandle,
@@ -2059,6 +2065,57 @@ impl Ewm {
         }
     }
 
+    fn collect_frame_migrations(
+        &self,
+        output_name: &str,
+        frames: &[strip::Frame],
+    ) -> Vec<FrameMigration> {
+        frames
+            .iter()
+            .filter_map(|frame| {
+                let id = frame.surface_id;
+                if id == 0 {
+                    return None;
+                }
+                let prev_output = self.emacs_frame_output(id).map(String::from);
+                if prev_output.as_deref() == Some(output_name) {
+                    return None;
+                }
+                Some(FrameMigration { id, prev_output })
+            })
+            .collect()
+    }
+
+    fn remove_migrated_frames_from_sources(
+        &mut self,
+        migrations: &[FrameMigration],
+        active_before: &HashMap<String, Option<u64>>,
+    ) {
+        for migration in migrations {
+            let Some(prev_name) = migration.prev_output.as_deref() else {
+                continue;
+            };
+            let was_active_in_prev = active_before.get(prev_name) == Some(&Some(migration.id));
+            if let Some(prev_strip) = self.output_strips.get_mut(prev_name) {
+                // `remove_frame_at` adjusts `active_idx` and seeds the
+                // slide-in animation on surviving neighbours; plain
+                // `retain` would leave `active_idx` stale.
+                if let Some(idx) = prev_strip
+                    .frames
+                    .iter()
+                    .position(|frame| frame.surface_id == migration.id)
+                {
+                    prev_strip.remove_frame_at(idx);
+                }
+            }
+            // Source reconcile skips Hidden for a frame already gone from its
+            // strip; freeze it here.
+            if was_active_in_prev {
+                self.queue_event(Event::FrameHidden { id: migration.id });
+            }
+        }
+    }
+
     /// Apply a declarative per-output layout.
     ///
     /// Replaces the previous layout for the given output. Surfaces removed from
@@ -2081,51 +2138,21 @@ impl Ewm {
             .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
             .collect();
 
-        // Snapshot pre-merge entries; reconcile runs after step 6 against the
+        // Snapshot pre-merge entries; reconcile runs after the merge against the
         // post-merge strip so kept frames don't leak `surface_outputs`.
         let mut pre_entries: HashMap<String, HashSet<u64>> = HashMap::new();
         pre_entries.insert(output_name.to_string(), self.strip_entries(output_name));
 
         // Capture prev outputs before the swap; emacs_frame_output reads strips.
-        let migrations: Vec<(u64, Option<String>)> = frames
-            .iter()
-            .filter_map(|f| {
-                let id = f.surface_id;
-                if id == 0 {
-                    return None;
-                }
-                let prev = self.emacs_frame_output(id).map(String::from);
-                if prev.as_deref() == Some(output_name) {
-                    return None;
-                }
-                Some((id, prev))
-            })
-            .collect();
-        for (_, prev) in &migrations {
-            if let Some(prev_name) = prev {
+        let migrations = self.collect_frame_migrations(output_name, &frames);
+        for migration in &migrations {
+            if let Some(prev_name) = &migration.prev_output {
                 pre_entries
                     .entry(prev_name.clone())
                     .or_insert_with(|| self.strip_entries(prev_name));
             }
         }
-        for (id, prev) in &migrations {
-            if let Some(prev_name) = prev {
-                let was_active_in_prev = active_before.get(prev_name) == Some(&Some(*id));
-                if let Some(prev_strip) = self.output_strips.get_mut(prev_name) {
-                    // `remove_frame_at` adjusts `active_idx` and seeds the
-                    // slide-in animation on surviving neighbours; plain
-                    // `retain` would leave `active_idx` stale.
-                    if let Some(idx) = prev_strip.frames.iter().position(|f| f.surface_id == *id) {
-                        prev_strip.remove_frame_at(idx);
-                    }
-                }
-                // Source reconcile skips Hidden for a frame already gone
-                // from its strip; freeze it here.
-                if was_active_in_prev {
-                    self.queue_event(Event::FrameHidden { id: *id });
-                }
-            }
-        }
+        self.remove_migrated_frames_from_sources(&migrations, &active_before);
 
         // Frames omitted by the layout are kept until Wayland destroy arrives.
         // This makes compositor-eager-inserted frames survive layout refreshes
@@ -2157,14 +2184,14 @@ impl Ewm {
             self.reconcile_output_entries(&name, pre);
         }
 
-        for (id, prev) in migrations {
-            let Some(window) = self.id_windows.get(&id).cloned() else {
+        for migration in migrations {
+            let Some(window) = self.id_windows.get(&migration.id).cloned() else {
                 continue;
             };
             let Some(surface) = window.wl_surface() else {
                 continue;
             };
-            if let Some(prev_name) = prev {
+            if let Some(prev_name) = migration.prev_output {
                 if let Some(prev_out) = self.space.outputs().find(|o| o.name() == prev_name) {
                     prev_out.leave(&surface);
                 }
