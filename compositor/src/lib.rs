@@ -3858,8 +3858,7 @@ impl Ewm {
         smithay::utils::Point<f64, smithay::utils::Logical>,
     )> {
         let map = layer_map_for_output(output);
-        let layers: Vec<_> = map.layers_on(layer).rev().cloned().collect();
-        for layer_surface in &layers {
+        for layer_surface in map.layers_on(layer).rev() {
             let geo = match map.layer_geometry(layer_surface) {
                 Some(g) => g,
                 None => continue,
@@ -3895,8 +3894,7 @@ impl Ewm {
             &[Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background]
         };
         for &layer in layers {
-            let surfaces: Vec<_> = map.layers_on(layer).rev().cloned().collect();
-            for layer_surface in &surfaces {
+            for layer_surface in map.layers_on(layer).rev() {
                 let geo = match map.layer_geometry(layer_surface) {
                     Some(g) => g,
                     None => continue,
