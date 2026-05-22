@@ -112,7 +112,7 @@ struct HeadChange {
     output_name: String,
     modes_changed: bool,
     current_mode: CurrentModeChange,
-    properties: HeadPropertyChange,
+    properties: Option<HeadPropertyChange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,21 +125,9 @@ enum CurrentModeChange {
 
 #[derive(Debug, Clone, PartialEq)]
 struct HeadPropertyChange {
-    changed: bool,
     position: Option<(i32, i32)>,
     scale: Option<f64>,
     transform: Option<Transform>,
-}
-
-impl HeadPropertyChange {
-    fn unchanged() -> Self {
-        Self {
-            changed: false,
-            position: None,
-            scale: None,
-            transform: None,
-        }
-    }
 }
 
 impl OutputManagementState {
@@ -245,16 +233,16 @@ impl OutputManagementState {
             }
         }
 
-        if change.properties.changed {
+        if let Some(properties) = &change.properties {
             for client in self.clients.values() {
                 if let Some((head, _)) = client.heads.get(&change.output_name) {
-                    if let Some((x, y)) = change.properties.position {
+                    if let Some((x, y)) = properties.position {
                         head.position(x, y);
                     }
-                    if let Some(scale) = change.properties.scale {
+                    if let Some(scale) = properties.scale {
                         head.scale(scale);
                     }
-                    if let Some(transform) = change.properties.transform {
+                    if let Some(transform) = properties.transform {
                         head.transform(transform.into());
                     }
                 }
@@ -318,7 +306,7 @@ fn output_change_plan(
         let current_mode = current_mode_change(old_head, new_head, modes_changed);
         let properties = head_property_change(old_head, new_head);
 
-        if modes_changed || current_mode != CurrentModeChange::None || properties.changed {
+        if modes_changed || current_mode != CurrentModeChange::None || properties.is_some() {
             updated.push(HeadChange {
                 output_name: output_name.clone(),
                 modes_changed,
@@ -375,17 +363,16 @@ fn current_mode_change(
 fn head_property_change(
     old_head: &OutputHeadState,
     new_head: &OutputHeadState,
-) -> HeadPropertyChange {
+) -> Option<HeadPropertyChange> {
     if !new_head.enabled
         || (old_head.position == new_head.position
             && old_head.scale == new_head.scale
             && old_head.transform == new_head.transform)
     {
-        return HeadPropertyChange::unchanged();
+        return None;
     }
 
-    HeadPropertyChange {
-        changed: true,
+    Some(HeadPropertyChange {
         position: (old_head.position != new_head.position)
             .then_some(new_head.position)
             .flatten(),
@@ -395,7 +382,7 @@ fn head_property_change(
         transform: (old_head.transform != new_head.transform)
             .then_some(new_head.transform)
             .flatten(),
-    }
+    })
 }
 
 // GlobalDispatch for ZwlrOutputManagerV1
@@ -1115,12 +1102,11 @@ mod tests {
         assert_eq!(change.current_mode, CurrentModeChange::Set(0));
         assert_eq!(
             change.properties,
-            HeadPropertyChange {
-                changed: true,
+            Some(HeadPropertyChange {
                 position: None,
                 scale: Some(1.5),
                 transform: Some(Transform::_90),
-            },
+            }),
         );
     }
 
