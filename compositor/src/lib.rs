@@ -1699,7 +1699,13 @@ impl Ewm {
     /// Surface id of the active Emacs frame on `output_name`.
     pub fn active_frame_surface_id(&self, output_name: &str) -> Option<u64> {
         let strip = self.output_strips.get(output_name)?;
-        strip.frames.get(strip.active_idx()).map(|f| f.surface_id)
+        strip.active_frame().map(|f| f.surface_id)
+    }
+
+    fn first_active_frame_surface_id(&self) -> Option<u64> {
+        self.output_strips
+            .keys()
+            .find_map(|name| self.active_frame_surface_id(name))
     }
 
     /// Mark `new_idx` as active on `output_name`.
@@ -4091,13 +4097,8 @@ impl Ewm {
             return Some(self.focused_frame_id);
         }
         let output = self.get_focused_output()?;
-        self.active_frame_surface_id(&output).or_else(|| {
-            self.output_strips
-                .values()
-                .flat_map(|s| s.frames.iter())
-                .next()
-                .map(|f| f.surface_id)
-        })
+        self.active_frame_surface_id(&output)
+            .or_else(|| self.first_active_frame_surface_id())
     }
 
     /// Recalculate total output size from current space geometry
@@ -4876,11 +4877,7 @@ impl Ewm {
                         .as_ref()
                         .and_then(|o| self.active_frame_surface_id(&o.name()))
                 })
-                .or_else(|| {
-                    self.output_strips
-                        .keys()
-                        .find_map(|name| self.active_frame_surface_id(name))
-                });
+                .or_else(|| self.first_active_frame_surface_id());
             debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
             return refocus;
         }
