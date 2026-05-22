@@ -66,7 +66,6 @@ impl GroupData {
         display: &DisplayHandle,
         client: &Client,
         manager: &ExtWorkspaceManagerV1,
-        output: &Output,
     ) where
         D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
     {
@@ -80,7 +79,7 @@ impl GroupData {
         manager.workspace_group(&handle);
         handle.capabilities(ext_workspace_group_handle_v1::GroupCapabilities::empty());
 
-        for wl_output in output.client_outputs(client) {
+        for wl_output in self.output.client_outputs(client) {
             handle.output_enter(&wl_output);
         }
 
@@ -139,12 +138,7 @@ impl WorkspaceData {
 
         handle.name(self.name.clone());
         handle.id(self.id.clone());
-        handle.coordinates(
-            self.coordinates
-                .iter()
-                .flat_map(|x| x.to_ne_bytes())
-                .collect(),
-        );
+        handle.coordinates(coordinates_bytes(self.coordinates));
         handle.state(self.state);
         handle.capabilities(ext_workspace_handle_v1::WorkspaceCapabilities::Activate);
 
@@ -231,6 +225,10 @@ fn frame_display_name(index: usize) -> String {
     (index + 1).to_string()
 }
 
+fn coordinates_bytes(coordinates: [u32; 2]) -> Vec<u8> {
+    coordinates.iter().flat_map(|x| x.to_ne_bytes()).collect()
+}
+
 /// Refresh workspace protocol state to match `output_strips` (source of truth).
 ///
 /// Runs every event-loop iteration. Diffs current mirrors against source of truth
@@ -309,7 +307,7 @@ pub fn refresh<'a, D>(
             };
             for manager in workspace_state.instances.keys() {
                 if let Some(client) = manager.client() {
-                    group.add_instance::<D>(&workspace_state.display, &client, manager, output);
+                    group.add_instance::<D>(&workspace_state.display, &client, manager);
                 }
             }
             workspace_state.groups.insert(output_name.clone(), group);
@@ -338,7 +336,7 @@ pub fn refresh<'a, D>(
                 }
                 if ws.coordinates != new_coords {
                     ws.coordinates = new_coords;
-                    let bytes: Vec<u8> = new_coords.iter().flat_map(|x| x.to_ne_bytes()).collect();
+                    let bytes = coordinates_bytes(new_coords);
                     for inst in &ws.instances {
                         inst.coordinates(bytes.clone());
                     }
@@ -502,7 +500,7 @@ where
         let group_keys: Vec<String> = ps.groups.keys().cloned().collect();
         for output_name in group_keys {
             let group_data = ps.groups.get_mut(&output_name).unwrap();
-            group_data.add_instance::<D>(&ps.display, client, &manager, &group_data.output.clone());
+            group_data.add_instance::<D>(&ps.display, client, &manager);
 
             // Send workspace_enter for workspaces on this output.
             let group_handle = group_data.instances.last().unwrap();
