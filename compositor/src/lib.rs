@@ -1805,6 +1805,12 @@ impl Ewm {
         self.layout_entry_for_surface(id, |entry| entry.primary)
     }
 
+    /// Layout entry used for positioning a multi-view surface.
+    fn preferred_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
+        self.focused_entry_for_surface(id)
+            .or_else(|| self.primary_entry_for_surface(id))
+    }
+
     /// Global position of a window: layout entries use the focused-or-primary
     /// entry's screen rect, Emacs frames use `emacs_frame_origin`.
     pub fn window_global_position(
@@ -1815,9 +1821,7 @@ impl Ewm {
         if !self.surface_outputs.contains_key(&id) {
             return self.emacs_frame_origin(id);
         }
-        let location = self
-            .focused_entry_for_surface(id)
-            .or_else(|| self.primary_entry_for_surface(id))?;
+        let location = self.preferred_entry_for_surface(id)?;
         self.entry_origin(location)
     }
 
@@ -4573,9 +4577,7 @@ impl Ewm {
     /// Fullscreen: full output. Normal: entry width × output height (horizontally
     /// constrained to the entry, vertically to the full output).
     fn popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
-        let location = self
-            .focused_entry_for_surface(id)
-            .or_else(|| self.primary_entry_for_surface(id))?;
+        let location = self.preferred_entry_for_surface(id)?;
         let entry = location.entry;
         let output = self
             .space
@@ -6905,13 +6907,22 @@ mod tests {
         frame
     }
 
+    fn window_position(fix: &testing::Fixture, surface_id: u64) -> Option<Point<i32, Logical>> {
+        let ewm = fix.ewm_ref();
+        let window = ewm.id_windows.get(&surface_id)?;
+        ewm.window_global_position(window)
+    }
+
     #[test]
-    fn surface_output_name_prefers_focused_layout_entry() {
+    fn surface_output_and_position_prefer_focused_layout_entry() {
         let mut fix = testing::Fixture::new().unwrap();
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
         fix.add_output(HEAD_A, 1600, 900);
         fix.add_output(HEAD_B, 1600, 900);
 
-        let surface_id = 42;
+        let toplevel = fix.open_toplevel(&mut client, "multi-view", Size::from((400, 400)));
+        let surface_id = fix.find_surface_id(&toplevel.surface).unwrap();
         let view_a = nz(1001);
         let view_b = nz(1002);
         fix.ewm()
@@ -6921,9 +6932,14 @@ mod tests {
 
         fix.ewm().set_focus_view(view_b, "test", false);
         assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_B));
+        assert_eq!(
+            window_position(&fix, surface_id),
+            Some(Point::from((1600, 0)))
+        );
 
         fix.ewm().set_focus_view(view_a, "test", false);
         assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_A));
+        assert_eq!(window_position(&fix, surface_id), Some(Point::from((0, 0))));
     }
 }
 
