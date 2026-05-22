@@ -2435,8 +2435,7 @@ impl Ewm {
     }
 
     fn configure_primary_entries(&self) {
-        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
-        for output in &outputs {
+        for output in self.space.outputs() {
             let Some(strip) = self.output_strips.get(&output.name()) else {
                 continue;
             };
