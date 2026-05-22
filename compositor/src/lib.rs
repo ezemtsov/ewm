@@ -984,6 +984,13 @@ struct ViewLocation {
     surface_id: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LayoutEntryLocation<'a> {
+    output_name: &'a str,
+    frame_idx: usize,
+    entry: &'a LayoutEntry,
+}
+
 impl Ewm {
     pub fn new(
         display_handle: DisplayHandle,
@@ -1761,37 +1768,39 @@ impl Ewm {
         )))
     }
 
-    /// Find the focused output layout entry for a surface.
+    /// Find the focused layout entry for a surface.
     ///
-    /// Returns (output_name, frame_idx, entry). The frame_idx feeds
-    /// `Strip::screen_x_of_frame` so callers can apply the per-frame slide
-    /// offset when computing global positions.
-    fn focused_output_for_surface(&self, id: u64) -> Option<(&str, usize, &LayoutEntry)> {
+    /// The frame index feeds `Strip::screen_x_of_frame` so callers can apply
+    /// the per-frame slide offset when computing global positions.
+    fn focused_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
         let focused = self.focused_view_id?;
-        self.output_entry_for_surface(id, |entry| entry.view_id == focused)
+        self.layout_entry_for_surface(id, |entry| entry.view_id == focused)
     }
 
-    fn output_entry_for_surface(
+    fn layout_entry_for_surface(
         &self,
         id: u64,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
-    ) -> Option<(&str, usize, &LayoutEntry)> {
+    ) -> Option<LayoutEntryLocation<'_>> {
         for (output_name, strip) in &self.output_strips {
-            if let Some((idx, entry)) = strip
+            if let Some((frame_idx, entry)) = strip
                 .surfaces_with_frame()
                 .find(|(_, entry)| entry.surface_id == id && predicate(entry))
             {
-                return Some((output_name.as_str(), idx, entry));
+                return Some(LayoutEntryLocation {
+                    output_name: output_name.as_str(),
+                    frame_idx,
+                    entry,
+                });
             }
         }
         None
     }
 
     /// Find the primary output layout entry for a surface.
-    /// Same shape as `focused_output_for_surface`; used as fallback when
-    /// no focused entry exists (e.g. popup positioning).
-    fn primary_output_for_surface(&self, id: u64) -> Option<(&str, usize, &LayoutEntry)> {
-        self.output_entry_for_surface(id, |entry| entry.primary)
+    /// Used as fallback when no focused entry exists (e.g. popup positioning).
+    fn primary_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
+        self.layout_entry_for_surface(id, |entry| entry.primary)
     }
 
     /// Global position of a window: layout entries use the focused-or-primary
@@ -1804,10 +1813,10 @@ impl Ewm {
         if !self.surface_outputs.contains_key(&id) {
             return self.emacs_frame_origin(id);
         }
-        let (output_name, frame_idx, entry) = self
-            .focused_output_for_surface(id)
-            .or_else(|| self.primary_output_for_surface(id))?;
-        self.entry_origin(output_name, frame_idx, entry)
+        let location = self
+            .focused_entry_for_surface(id)
+            .or_else(|| self.primary_entry_for_surface(id))?;
+        self.entry_origin(location)
     }
 
     /// On-screen rectangle of one layout view. Fullscreen-primary centers on
@@ -1850,19 +1859,23 @@ impl Ewm {
         )
     }
 
-    fn entry_origin(
-        &self,
-        output_name: &str,
-        frame_idx: usize,
-        entry: &LayoutEntry,
-    ) -> Option<Point<i32, Logical>> {
-        let output = self.space.outputs().find(|o| o.name() == output_name)?;
+    fn entry_origin(&self, location: LayoutEntryLocation<'_>) -> Option<Point<i32, Logical>> {
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.name() == location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
-        let strip = self.output_strips.get(output_name)?;
+        let strip = self.output_strips.get(location.output_name)?;
         Some(
-            self.layout_entry_rect(output_geo, working_area, strip, frame_idx, entry)
-                .loc,
+            self.layout_entry_rect(
+                output_geo,
+                working_area,
+                strip,
+                location.frame_idx,
+                location.entry,
+            )
+            .loc,
         )
     }
 
@@ -1877,7 +1890,12 @@ impl Ewm {
                 if entry.surface_id != surface_id {
                     continue;
                 }
-                if let Some(p) = self.entry_origin(output_name, frame_idx, entry) {
+                let location = LayoutEntryLocation {
+                    output_name,
+                    frame_idx,
+                    entry,
+                };
+                if let Some(p) = self.entry_origin(location) {
                     origins.push(p);
                 }
             }
@@ -3465,8 +3483,12 @@ impl Ewm {
     fn find_surface_output(&self, surface_id: u64) -> Option<smithay::output::Output> {
         // Layout surfaces: prefer focused output, then any
         if self.surface_outputs.contains_key(&surface_id) {
-            if let Some((name, _, _)) = self.focused_output_for_surface(surface_id) {
-                return self.space.outputs().find(|o| o.name() == name).cloned();
+            if let Some(location) = self.focused_entry_for_surface(surface_id) {
+                return self
+                    .space
+                    .outputs()
+                    .find(|o| o.name() == location.output_name)
+                    .cloned();
             }
             if let Some(output_names) = self.surface_outputs.get(&surface_id) {
                 if let Some(name) = output_names.iter().next() {
@@ -4526,8 +4548,11 @@ impl Ewm {
         // Check windows (layout surfaces + Emacs frames)
         if let Some((_window, id)) = self.find_window_by_surface(&root) {
             // Layout surface: prefer focused output
-            if let Some((name, _, _)) = self.focused_output_for_surface(id) {
-                return self.space.outputs().find(|o| o.name() == name);
+            if let Some(location) = self.focused_entry_for_surface(id) {
+                return self
+                    .space
+                    .outputs()
+                    .find(|o| o.name() == location.output_name);
             }
             // Fallback: any output from surface_outputs
             if let Some(output_names) = self.surface_outputs.get(&id) {
@@ -4556,10 +4581,14 @@ impl Ewm {
     /// Fullscreen: full output. Normal: entry width × output height (horizontally
     /// constrained to the entry, vertically to the full output).
     fn popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
-        let (output_name, _frame_idx, entry) = self
-            .focused_output_for_surface(id)
-            .or_else(|| self.primary_output_for_surface(id))?;
-        let output = self.space.outputs().find(|o| o.name() == output_name)?;
+        let location = self
+            .focused_entry_for_surface(id)
+            .or_else(|| self.primary_entry_for_surface(id))?;
+        let entry = location.entry;
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.name() == location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
 
         if entry.fullscreen {
