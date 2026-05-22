@@ -81,7 +81,7 @@ impl DisplayConfig {
         let mut monitors = Vec::new();
         let mut logical_monitors = Vec::new();
 
-        for (idx, output) in outputs.iter().enumerate() {
+        for output in outputs.iter() {
             let connector = output.name.clone();
             let vendor = "Unknown".to_string();
             let product = "Unknown".to_string();
@@ -145,7 +145,7 @@ impl DisplayConfig {
                 y: output.y,
                 scale: 1.0,
                 transform: 0, // Normal
-                is_primary: idx == 0,
+                is_primary: false,
                 monitors: vec![names],
                 properties: HashMap::new(),
             });
@@ -256,5 +256,32 @@ mod tests {
             monitors[0].properties["is-builtin"],
             OwnedValue::try_from(Value::Bool(true)).unwrap()
         );
+    }
+
+    #[test]
+    fn logical_monitors_do_not_invent_a_primary_output() {
+        let outputs = Arc::new(Mutex::new(vec![
+            OutputInfo {
+                name: "HDMI-A-1".to_owned(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                refresh: 60_000,
+            },
+            OutputInfo {
+                name: "DP-1".to_owned(),
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                refresh: 60_000,
+            },
+        ]));
+        let config = DisplayConfig::new(outputs);
+
+        let (_, _, logical_monitors, _) = async_io::block_on(config.get_current_state()).unwrap();
+
+        assert!(logical_monitors.iter().all(|monitor| !monitor.is_primary));
     }
 }
