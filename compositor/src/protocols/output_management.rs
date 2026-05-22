@@ -94,6 +94,54 @@ pub enum OutputConfigurationHeadState {
     Ok(String, ZwlrOutputConfigurationV1),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct OutputChangePlan {
+    added: Vec<String>,
+    removed: Vec<String>,
+    updated: Vec<HeadChange>,
+}
+
+impl OutputChangePlan {
+    fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.updated.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct HeadChange {
+    output_name: String,
+    modes_changed: bool,
+    current_mode: CurrentModeChange,
+    properties: HeadPropertyChange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CurrentModeChange {
+    None,
+    Set(usize),
+    Disabled,
+    Enabled(usize),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct HeadPropertyChange {
+    changed: bool,
+    position: Option<(i32, i32)>,
+    scale: Option<f64>,
+    transform: Option<Transform>,
+}
+
+impl HeadPropertyChange {
+    fn unchanged() -> Self {
+        Self {
+            changed: false,
+            position: None,
+            scale: None,
+            transform: None,
+        }
+    }
+}
+
 impl OutputManagementState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
@@ -124,138 +172,9 @@ impl OutputManagementState {
     /// Update protocol state when outputs change.
     /// Compares new state against current, sends incremental updates to clients.
     pub fn notify_changes(&mut self, new_state: HashMap<String, OutputHeadState>) {
-        let mut changed = false;
-
-        for (output_name, new_head) in new_state.iter() {
-            if let Some(old) = self.current_state.get(output_name) {
-                // Check for mode list changes
-                let modes_changed = old.modes != new_head.modes;
-                if modes_changed {
-                    changed = true;
-                    for client in self.clients.values_mut() {
-                        if let Some((head, modes)) = client.heads.get_mut(output_name) {
-                            // Update existing modes (shortest iterator wins)
-                            let common_len = modes.len().min(new_head.modes.len());
-                            for (wl_mode, mode) in
-                                modes.iter().zip(&new_head.modes).take(common_len)
-                            {
-                                wl_mode.size(mode.width, mode.height);
-                                wl_mode.refresh(mode.refresh);
-                            }
-
-                            if let Some(client_obj) = client.manager.client() {
-                                if new_head.modes.len() > common_len {
-                                    // New modes added
-                                    for mode in &new_head.modes[common_len..] {
-                                        let new_mode = client_obj
-                                            .create_resource::<ZwlrOutputModeV1, _, crate::State>(
-                                                &self.display,
-                                                head.version(),
-                                                (),
-                                            )
-                                            .unwrap();
-                                        head.mode(&new_mode);
-                                        new_mode.size(mode.width, mode.height);
-                                        new_mode.refresh(mode.refresh);
-                                        if mode.preferred {
-                                            new_mode.preferred();
-                                        }
-                                        modes.push(new_mode);
-                                    }
-                                } else if modes.len() > common_len {
-                                    // Modes removed
-                                    for mode in modes.drain(common_len..) {
-                                        mode.finished();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Check current mode changes
-                match (old.current_mode, new_head.current_mode) {
-                    (Some(old_index), Some(new_index)) => {
-                        if old.modes.len() == new_head.modes.len()
-                            && (modes_changed || old_index != new_index)
-                        {
-                            changed = true;
-                            for client in self.clients.values() {
-                                if let Some((head, modes)) = client.heads.get(output_name) {
-                                    if let Some(new_mode) = modes.get(new_index) {
-                                        head.current_mode(new_mode);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    (Some(_), None) => {
-                        changed = true;
-                        for client in self.clients.values() {
-                            if let Some((head, _)) = client.heads.get(output_name) {
-                                head.enabled(0);
-                            }
-                        }
-                    }
-                    (None, Some(new_index)) => {
-                        if old.modes.len() == new_head.modes.len() {
-                            changed = true;
-                            for client in self.clients.values() {
-                                if let Some((head, modes)) = client.heads.get(output_name) {
-                                    head.enabled(1);
-                                    if let Some(mode) = modes.get(new_index) {
-                                        head.current_mode(mode);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    (None, None) => {}
-                }
-
-                // Check position/scale/transform changes
-                if (old.position != new_head.position
-                    || old.scale != new_head.scale
-                    || old.transform != new_head.transform)
-                    && new_head.enabled
-                {
-                    changed = true;
-                    for client in self.clients.values() {
-                        if let Some((head, _)) = client.heads.get(output_name) {
-                            if let Some((x, y)) = new_head.position {
-                                if old.position != new_head.position {
-                                    head.position(x, y);
-                                }
-                            }
-                            if old.scale != new_head.scale {
-                                if let Some(scale) = new_head.scale {
-                                    head.scale(scale);
-                                }
-                            }
-                            if old.transform != new_head.transform {
-                                if let Some(transform) = new_head.transform {
-                                    head.transform(transform.into());
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // New output
-                changed = true;
-                notify_new_head(self, output_name, new_head);
-            }
-        }
-
-        // Check for removed outputs
-        for old_name in self.current_state.keys() {
-            if !new_state.contains_key(old_name) {
-                changed = true;
-                notify_removed_head(&mut self.clients, old_name);
-            }
-        }
-
-        if changed {
+        let plan = output_change_plan(&self.current_state, &new_state);
+        if !plan.is_empty() {
+            self.apply_change_plan(&plan, &new_state);
             self.current_state = new_state;
             self.serial += 1;
             for data in self.clients.values() {
@@ -265,6 +184,217 @@ impl OutputManagementState {
                 }
             }
         }
+    }
+
+    fn apply_change_plan(
+        &mut self,
+        plan: &OutputChangePlan,
+        new_state: &HashMap<String, OutputHeadState>,
+    ) {
+        for output_name in &plan.added {
+            let new_head = new_state
+                .get(output_name)
+                .expect("added head must exist in new state");
+            notify_new_head(self, output_name, new_head);
+        }
+
+        for change in &plan.updated {
+            let new_head = new_state
+                .get(&change.output_name)
+                .expect("updated head must exist in new state");
+            self.apply_head_change(change, new_head);
+        }
+
+        for output_name in &plan.removed {
+            notify_removed_head(&mut self.clients, output_name);
+        }
+    }
+
+    fn apply_head_change(&mut self, change: &HeadChange, new_head: &OutputHeadState) {
+        if change.modes_changed {
+            self.apply_mode_list_change(change, new_head);
+        }
+
+        match change.current_mode {
+            CurrentModeChange::None => {}
+            CurrentModeChange::Set(new_index) => {
+                for client in self.clients.values() {
+                    if let Some((head, modes)) = client.heads.get(&change.output_name) {
+                        if let Some(new_mode) = modes.get(new_index) {
+                            head.current_mode(new_mode);
+                        }
+                    }
+                }
+            }
+            CurrentModeChange::Disabled => {
+                for client in self.clients.values() {
+                    if let Some((head, _)) = client.heads.get(&change.output_name) {
+                        head.enabled(0);
+                    }
+                }
+            }
+            CurrentModeChange::Enabled(new_index) => {
+                for client in self.clients.values() {
+                    if let Some((head, modes)) = client.heads.get(&change.output_name) {
+                        head.enabled(1);
+                        if let Some(mode) = modes.get(new_index) {
+                            head.current_mode(mode);
+                        }
+                    }
+                }
+            }
+        }
+
+        if change.properties.changed {
+            for client in self.clients.values() {
+                if let Some((head, _)) = client.heads.get(&change.output_name) {
+                    if let Some((x, y)) = change.properties.position {
+                        head.position(x, y);
+                    }
+                    if let Some(scale) = change.properties.scale {
+                        head.scale(scale);
+                    }
+                    if let Some(transform) = change.properties.transform {
+                        head.transform(transform.into());
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_mode_list_change(&mut self, change: &HeadChange, new_head: &OutputHeadState) {
+        for client in self.clients.values_mut() {
+            if let Some((head, modes)) = client.heads.get_mut(&change.output_name) {
+                let common_len = modes.len().min(new_head.modes.len());
+                for (wl_mode, mode) in modes.iter().zip(&new_head.modes).take(common_len) {
+                    wl_mode.size(mode.width, mode.height);
+                    wl_mode.refresh(mode.refresh);
+                }
+
+                if let Some(client_obj) = client.manager.client() {
+                    if new_head.modes.len() > common_len {
+                        for mode in &new_head.modes[common_len..] {
+                            let new_mode = client_obj
+                                .create_resource::<ZwlrOutputModeV1, _, crate::State>(
+                                    &self.display,
+                                    head.version(),
+                                    (),
+                                )
+                                .unwrap();
+                            head.mode(&new_mode);
+                            new_mode.size(mode.width, mode.height);
+                            new_mode.refresh(mode.refresh);
+                            if mode.preferred {
+                                new_mode.preferred();
+                            }
+                            modes.push(new_mode);
+                        }
+                    } else if modes.len() > common_len {
+                        for mode in modes.drain(common_len..) {
+                            mode.finished();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn output_change_plan(
+    current_state: &HashMap<String, OutputHeadState>,
+    new_state: &HashMap<String, OutputHeadState>,
+) -> OutputChangePlan {
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut updated = Vec::new();
+
+    for (output_name, new_head) in new_state {
+        let Some(old_head) = current_state.get(output_name) else {
+            added.push(output_name.clone());
+            continue;
+        };
+
+        let modes_changed = old_head.modes != new_head.modes;
+        let current_mode = current_mode_change(old_head, new_head, modes_changed);
+        let properties = head_property_change(old_head, new_head);
+
+        if modes_changed || current_mode != CurrentModeChange::None || properties.changed {
+            updated.push(HeadChange {
+                output_name: output_name.clone(),
+                modes_changed,
+                current_mode,
+                properties,
+            });
+        }
+    }
+
+    for old_name in current_state.keys() {
+        if !new_state.contains_key(old_name) {
+            removed.push(old_name.clone());
+        }
+    }
+
+    added.sort();
+    removed.sort();
+    updated.sort_by(|left, right| left.output_name.cmp(&right.output_name));
+
+    OutputChangePlan {
+        added,
+        removed,
+        updated,
+    }
+}
+
+fn current_mode_change(
+    old_head: &OutputHeadState,
+    new_head: &OutputHeadState,
+    modes_changed: bool,
+) -> CurrentModeChange {
+    match (old_head.current_mode, new_head.current_mode) {
+        (Some(old_index), Some(new_index)) => {
+            if old_head.modes.len() == new_head.modes.len()
+                && (modes_changed || old_index != new_index)
+            {
+                CurrentModeChange::Set(new_index)
+            } else {
+                CurrentModeChange::None
+            }
+        }
+        (Some(_), None) => CurrentModeChange::Disabled,
+        (None, Some(new_index)) => {
+            if old_head.modes.len() == new_head.modes.len() {
+                CurrentModeChange::Enabled(new_index)
+            } else {
+                CurrentModeChange::None
+            }
+        }
+        (None, None) => CurrentModeChange::None,
+    }
+}
+
+fn head_property_change(
+    old_head: &OutputHeadState,
+    new_head: &OutputHeadState,
+) -> HeadPropertyChange {
+    if !new_head.enabled
+        || (old_head.position == new_head.position
+            && old_head.scale == new_head.scale
+            && old_head.transform == new_head.transform)
+    {
+        return HeadPropertyChange::unchanged();
+    }
+
+    HeadPropertyChange {
+        changed: true,
+        position: (old_head.position != new_head.position)
+            .then_some(new_head.position)
+            .flatten(),
+        scale: (old_head.scale != new_head.scale)
+            .then_some(new_head.scale)
+            .flatten(),
+        transform: (old_head.transform != new_head.transform)
+            .then_some(new_head.transform)
+            .flatten(),
     }
 }
 
@@ -903,5 +1033,131 @@ fn output_config_from_head(head: &OutputHeadState) -> OutputConfig {
         scale: head.scale,
         transform: head.transform,
         enabled: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mode(width: i32, height: i32, refresh: i32) -> OutputModeState {
+        OutputModeState {
+            width,
+            height,
+            refresh,
+            preferred: false,
+        }
+    }
+
+    fn head(name: &str) -> OutputHeadState {
+        OutputHeadState {
+            name: name.to_string(),
+            make: "make".to_string(),
+            model: "model".to_string(),
+            serial_number: None,
+            physical_size: Some((600, 340)),
+            enabled: true,
+            modes: vec![mode(1920, 1080, 60_000)],
+            current_mode: Some(0),
+            position: Some((0, 0)),
+            scale: Some(1.0),
+            transform: Some(Transform::Normal),
+        }
+    }
+
+    fn state(heads: impl IntoIterator<Item = OutputHeadState>) -> HashMap<String, OutputHeadState> {
+        heads
+            .into_iter()
+            .map(|head| (head.name.clone(), head))
+            .collect()
+    }
+
+    #[test]
+    fn change_plan_is_empty_for_equal_states() {
+        let current = state([head("HEAD-A")]);
+        let new = current.clone();
+
+        let plan = output_change_plan(&current, &new);
+
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn change_plan_detects_added_and_removed_outputs() {
+        let current = state([head("HEAD-A")]);
+        let new = state([head("HEAD-B")]);
+
+        let plan = output_change_plan(&current, &new);
+
+        assert_eq!(plan.added, ["HEAD-B"]);
+        assert_eq!(plan.removed, ["HEAD-A"]);
+        assert!(plan.updated.is_empty());
+        assert!(!plan.is_empty());
+    }
+
+    #[test]
+    fn change_plan_tracks_mode_current_mode_and_properties() {
+        let current_head = head("HEAD-A");
+        let mut new_head = current_head.clone();
+        new_head.modes[0] = mode(2560, 1440, 144_000);
+        new_head.scale = Some(1.5);
+        new_head.transform = Some(Transform::_90);
+
+        let plan = output_change_plan(&state([current_head]), &state([new_head]));
+
+        assert_eq!(plan.added, Vec::<String>::new());
+        assert_eq!(plan.removed, Vec::<String>::new());
+        assert_eq!(plan.updated.len(), 1);
+
+        let change = &plan.updated[0];
+        assert_eq!(change.output_name, "HEAD-A");
+        assert!(change.modes_changed);
+        assert_eq!(change.current_mode, CurrentModeChange::Set(0));
+        assert_eq!(
+            change.properties,
+            HeadPropertyChange {
+                changed: true,
+                position: None,
+                scale: Some(1.5),
+                transform: Some(Transform::_90),
+            },
+        );
+    }
+
+    #[test]
+    fn change_plan_tracks_enable_and_disable_transitions() {
+        let enabled = head("HEAD-A");
+        let mut disabled = enabled.clone();
+        disabled.enabled = false;
+        disabled.current_mode = None;
+
+        let disable_plan =
+            output_change_plan(&state([enabled.clone()]), &state([disabled.clone()]));
+        assert_eq!(
+            disable_plan.updated[0].current_mode,
+            CurrentModeChange::Disabled,
+        );
+
+        let enable_plan = output_change_plan(&state([disabled]), &state([enabled]));
+        assert_eq!(
+            enable_plan.updated[0].current_mode,
+            CurrentModeChange::Enabled(0),
+        );
+    }
+
+    #[test]
+    fn disabled_outputs_do_not_emit_property_changes() {
+        let mut old_head = head("HEAD-A");
+        old_head.enabled = false;
+        old_head.current_mode = None;
+
+        let mut new_head = old_head.clone();
+        new_head.position = Some((100, 200));
+        new_head.scale = Some(2.0);
+        new_head.transform = Some(Transform::_180);
+
+        let plan = output_change_plan(&state([old_head]), &state([new_head]));
+
+        assert!(plan.is_empty());
     }
 }
