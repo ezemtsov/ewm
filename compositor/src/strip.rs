@@ -419,6 +419,9 @@ impl Strip {
         self.frames.iter().enumerate().filter_map(move |(idx, f)| {
             let screen_x = col_x - view_pos + f.move_offset();
             col_x += f.width + gap;
+            if f.width <= 0.0 {
+                return None;
+            }
             let rect = Rectangle::new(
                 Point::from((screen_x, 0.0)),
                 Size::from((f.width, view_size.h)),
@@ -566,7 +569,13 @@ impl Strip {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    const MAX_WIDTH: u32 = 2_000;
+    const MAX_GAP: u32 = 200;
+    const MAX_FRAMES: usize = 10;
 
     fn strip_with(widths: Vec<f64>, gap: f64, active_idx: usize) -> Strip {
         Strip {
@@ -589,173 +598,176 @@ mod tests {
         }
     }
 
-    #[test]
-    fn column_x_uniform_no_gap() {
-        let s = strip_with(vec![100.0, 100.0, 100.0], 0.0, 0);
-        assert_eq!(s.column_x(0), 0.0);
-        assert_eq!(s.column_x(1), 100.0);
-        assert_eq!(s.column_x(2), 200.0);
-    }
+    proptest! {
+        #[test]
+        fn column_x_matches_prefix_sum(
+            widths in prop::collection::vec(0u32..=MAX_WIDTH, 0..MAX_FRAMES),
+            gap in 0u32..=MAX_GAP,
+            idx in 0usize..(MAX_FRAMES * 2),
+        ) {
+            let widths = widths.into_iter().map(f64::from).collect::<Vec<_>>();
+            let gap = f64::from(gap);
+            let s = strip_with(widths.clone(), gap, 0);
+            let expected = widths
+                .iter()
+                .take(idx.min(widths.len()))
+                .map(|w| *w + gap)
+                .sum::<f64>();
 
-    #[test]
-    fn column_x_with_gap_and_mixed_widths() {
-        let s = strip_with(vec![100.0, 200.0, 50.0], 10.0, 0);
-        assert_eq!(s.column_x(0), 0.0);
-        assert_eq!(s.column_x(1), 110.0);
-        assert_eq!(s.column_x(2), 320.0);
-    }
+            prop_assert_eq!(s.column_x(idx), expected);
+        }
 
-    #[test]
-    fn column_x_past_end_clamps() {
-        let s = strip_with(vec![100.0], 0.0, 0);
-        assert_eq!(s.column_x(5), 100.0);
-    }
+        #[test]
+        fn screen_positions_are_viewport_relative(
+            widths in prop::collection::vec(1u32..=MAX_WIDTH, 1..MAX_FRAMES),
+            gap in 0u32..=MAX_GAP,
+            active_idx in 0usize..MAX_FRAMES,
+            offset in -2_000i32..=2_000,
+        ) {
+            let widths = widths.into_iter().map(f64::from).collect::<Vec<_>>();
+            let active_idx = active_idx % widths.len();
+            let offset = f64::from(offset);
+            let mut s = strip_with(widths, f64::from(gap), active_idx);
+            s.view_offset = ViewOffset::Static(offset);
 
-    #[test]
-    fn view_pos_uses_active_column_plus_offset() {
-        let mut s = strip_with(vec![100.0, 100.0], 0.0, 1);
-        s.view_offset = ViewOffset::Static(15.0);
-        assert_eq!(s.view_pos(), 115.0);
-        assert_eq!(s.target_view_pos(), 115.0);
-    }
+            prop_assert_eq!(s.view_pos(), s.column_x(active_idx) + offset);
+            prop_assert_eq!(s.target_view_pos(), s.column_x(active_idx) + offset);
+            for idx in 0..s.frames.len() {
+                prop_assert_eq!(
+                    s.screen_x_of_frame(idx),
+                    s.column_x(idx) - s.view_pos()
+                );
+            }
+        }
 
-    #[test]
-    fn screen_x_of_active_frame_at_rest_is_zero() {
-        let s = strip_with(vec![100.0, 200.0, 50.0], 10.0, 1);
-        assert_eq!(s.screen_x_of_frame(s.active_idx), 0.0);
-    }
+        #[test]
+        fn render_geo_matches_viewport_intersections(
+            widths in prop::collection::vec(0u32..=MAX_WIDTH, 0..MAX_FRAMES),
+            gap in 0u32..=MAX_GAP,
+            active_idx in 0usize..MAX_FRAMES,
+            offset in -4_000i32..=4_000,
+            view_w in 1u32..=4_000,
+            view_h in 1u32..=2_000,
+        ) {
+            let widths = widths.into_iter().map(f64::from).collect::<Vec<_>>();
+            let active_idx = if widths.is_empty() { 0 } else { active_idx % widths.len() };
+            let mut s = strip_with(widths, f64::from(gap), active_idx);
+            s.view_offset = ViewOffset::Static(f64::from(offset));
+            let view = Size::from((f64::from(view_w), f64::from(view_h)));
+            let view_pos = s.view_pos();
 
-    #[test]
-    fn screen_x_of_neighbor_at_rest_is_relative_offset() {
-        // active=1 (column_x=110), so frame 0 is at -110, frame 2 is at +210
-        let s = strip_with(vec![100.0, 200.0, 50.0], 10.0, 1);
-        assert_eq!(s.screen_x_of_frame(0), -110.0);
-        assert_eq!(s.screen_x_of_frame(2), 210.0);
-    }
+            let mut column_x = 0.0;
+            let expected = s.frames.iter().enumerate().filter_map(|(idx, frame)| {
+                let screen_x = column_x - view_pos;
+                column_x += frame.width + s.gap;
+                (frame.width > 0.0
+                    && screen_x < view.w
+                    && screen_x + frame.width > 0.0)
+                    .then_some((idx, screen_x, frame.width))
+            }).collect::<Vec<_>>();
 
-    #[test]
-    fn offset_shifts_static_value() {
-        let mut vo = ViewOffset::Static(10.0);
-        vo.offset(5.0);
-        assert_eq!(vo.current(), 15.0);
-        assert_eq!(vo.target(), 15.0);
-    }
+            let rendered = s
+                .frames_with_render_geo(view)
+                .map(|(idx, _, rect)| (idx, rect.loc.x, rect.size.w, rect.size.h))
+                .collect::<Vec<_>>();
 
-    #[test]
-    fn offset_preserves_animation_value_at_each_instant() {
-        // Build an animation, sample its midpoint, then offset by delta.
-        // Both `from` and `to` shift by delta, so value_at(now) shifts by
-        // exactly delta (no jump).
-        let now = Duration::from_secs(0);
-        let mut a = ViewAnimation::new_at(
-            AnimationsClock::default(),
-            now,
-            -100.0,
-            0.0,
-            Duration::from_millis(100),
-        );
-        let mid_before = a.value_at(now + Duration::from_millis(50));
-        a.offset(40.0);
-        let mid_after = a.value_at(now + Duration::from_millis(50));
-        assert!((mid_after - (mid_before + 40.0)).abs() < 1e-9);
-        assert_eq!(a.target(), 40.0);
-    }
+            prop_assert_eq!(rendered.len(), expected.len());
+            for ((idx, x, w, h), (expected_idx, expected_x, expected_w)) in
+                rendered.into_iter().zip(expected)
+            {
+                prop_assert_eq!(idx, expected_idx);
+                prop_assert_eq!(x, expected_x);
+                prop_assert_eq!(w, expected_w);
+                prop_assert_eq!(h, view.h);
+            }
+        }
 
-    #[test]
-    fn animate_zero_distance_stays_static() {
-        let mut s = strip_with(vec![100.0], 0.0, 0);
-        s.view_offset = ViewOffset::Static(50.0);
-        s.animate_view_offset(50.0, Duration::from_millis(100));
-        assert!(s.view_offset.is_static());
-        assert_eq!(s.view_offset.current(), 50.0);
-    }
+        #[test]
+        fn view_animation_value_follows_ease_out_cubic(
+            from in -1_000i32..=1_000,
+            to in -1_000i32..=1_000,
+            duration_ms in 1u64..=10_000,
+            elapsed_ms in 0u64..=20_000,
+        ) {
+            let start = Duration::from_secs(10);
+            let duration = Duration::from_millis(duration_ms);
+            let sample = start + Duration::from_millis(elapsed_ms);
+            let from = f64::from(from);
+            let to = f64::from(to);
+            let animation = ViewAnimation::new_at(
+                AnimationsClock::default(),
+                start,
+                from,
+                to,
+                duration,
+            );
+            let t = (elapsed_ms as f64 / duration_ms as f64).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - t).powi(3);
+            let expected = from + (to - from) * eased;
 
-    #[test]
-    fn animate_nonzero_starts_animation() {
-        let mut s = strip_with(vec![100.0, 100.0], 0.0, 0);
-        s.animate_view_offset(50.0, Duration::from_millis(100));
-        assert!(s.view_offset.is_animation_ongoing());
-        assert_eq!(s.view_offset.target(), 50.0);
-    }
+            prop_assert!((animation.value_at(sample) - expected).abs() < 1e-9);
+            prop_assert_eq!(animation.is_done_at(sample), elapsed_ms >= duration_ms);
+        }
 
-    #[test]
-    fn view_animation_endpoints() {
-        let now = Duration::from_secs(10);
-        let a = ViewAnimation::new_at(
-            AnimationsClock::default(),
-            now,
-            0.0,
-            100.0,
-            Duration::from_millis(100),
-        );
-        assert_eq!(a.value_at(now), 0.0);
-        assert_eq!(a.value_at(now + Duration::from_millis(100)), 100.0);
-        assert!(!a.is_done_at(now));
-        assert!(a.is_done_at(now + Duration::from_millis(100)));
-    }
+        #[test]
+        fn view_animation_offset_translates_samples(
+            from in -1_000i32..=1_000,
+            to in -1_000i32..=1_000,
+            delta in -1_000i32..=1_000,
+            duration_ms in 1u64..=10_000,
+            elapsed_ms in 0u64..=20_000,
+        ) {
+            let start = Duration::from_secs(10);
+            let duration = Duration::from_millis(duration_ms);
+            let sample = start + Duration::from_millis(elapsed_ms);
+            let delta = f64::from(delta);
+            let mut animation = ViewAnimation::new_at(
+                AnimationsClock::default(),
+                start,
+                f64::from(from),
+                f64::from(to),
+                duration,
+            );
+            let before = animation.value_at(sample);
 
-    #[test]
-    fn view_animation_eases_out_cubic_at_midpoint() {
-        let now = Duration::from_secs(0);
-        let a = ViewAnimation::new_at(
-            AnimationsClock::default(),
-            now,
-            0.0,
-            100.0,
-            Duration::from_millis(100),
-        );
-        // y = 1 - (1 - 0.5)^3 = 0.875 -> 87.5
-        let mid = a.value_at(now + Duration::from_millis(50));
-        assert!((mid - 87.5).abs() < 1e-9);
-    }
+            animation.offset(delta);
 
-    #[test]
-    fn view_offset_target_matches_animation_target() {
-        let a = ViewAnimation::new_at(
-            AnimationsClock::default(),
-            Duration::from_secs(0),
-            10.0,
-            70.0,
-            Duration::from_millis(100),
-        );
-        let vo = ViewOffset::Animation(a);
-        assert_eq!(vo.target(), 70.0);
-        assert!(vo.is_animation_ongoing());
-        assert!(!vo.is_static());
-    }
+            prop_assert!((animation.value_at(sample) - (before + delta)).abs() < 1e-9);
+            prop_assert_eq!(animation.target(), f64::from(to) + delta);
+        }
 
-    #[test]
-    fn frames_with_render_geo_culls_at_rest() {
-        let s = strip_with(vec![1000.0, 1000.0, 1000.0], 0.0, 1);
-        let view = Size::from((1000.0, 800.0));
-        let visible: Vec<usize> = s.frames_with_render_geo(view).map(|(i, _, _)| i).collect();
-        assert_eq!(visible, vec![1]);
-    }
+        #[test]
+        fn view_offset_offset_translates_static_values(
+            value in -1_000i32..=1_000,
+            delta in -1_000i32..=1_000,
+        ) {
+            let mut offset = ViewOffset::Static(f64::from(value));
 
-    #[test]
-    fn frames_with_render_geo_includes_neighbour_during_slide() {
-        let mut s = strip_with(vec![1000.0, 1000.0, 1000.0], 0.0, 1);
-        s.view_offset = ViewOffset::Static(500.0);
-        let view = Size::from((1000.0, 800.0));
-        let visible: Vec<usize> = s.frames_with_render_geo(view).map(|(i, _, _)| i).collect();
-        assert_eq!(visible, vec![1, 2]);
-    }
+            offset.offset(f64::from(delta));
 
-    #[test]
-    fn frames_with_render_geo_skips_zero_width_frame() {
-        let s = strip_with(vec![1000.0, 0.0, 1000.0], 0.0, 1);
-        let view = Size::from((1000.0, 800.0));
-        let visible: Vec<usize> = s.frames_with_render_geo(view).map(|(i, _, _)| i).collect();
-        assert!(!visible.contains(&1));
-    }
+            prop_assert_eq!(offset.current(), f64::from(value + delta));
+            prop_assert_eq!(offset.target(), f64::from(value + delta));
+        }
 
-    #[test]
-    fn frames_with_render_geo_rect_carries_screen_x() {
-        let s = strip_with(vec![1000.0, 1000.0], 0.0, 0);
-        let view = Size::from((1000.0, 800.0));
-        let (idx, _, rect) = s.frames_with_render_geo(view).next().unwrap();
-        assert_eq!(idx, 0);
-        assert_eq!(rect.loc.x, 0.0);
-        assert_eq!(rect.size.w, 1000.0);
+        #[test]
+        fn animate_view_offset_uses_static_only_for_zero_distance(
+            current in -2_000i32..=2_000,
+            target in -2_000i32..=2_000,
+            duration_ms in 1u64..=10_000,
+        ) {
+            let mut strip = strip_with(vec![100.0], 0.0, 0);
+            strip.view_offset = ViewOffset::Static(f64::from(current));
+
+            strip.animate_view_offset(f64::from(target), Duration::from_millis(duration_ms));
+
+            prop_assert_eq!(strip.view_offset.target(), f64::from(target));
+            if current == target {
+                prop_assert!(strip.view_offset.is_static());
+                prop_assert_eq!(strip.view_offset.current(), f64::from(current));
+            } else {
+                prop_assert!(strip.view_offset.is_animation_ongoing());
+                prop_assert!(!strip.view_offset.is_static());
+            }
+        }
     }
 }
