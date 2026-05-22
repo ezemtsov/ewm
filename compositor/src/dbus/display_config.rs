@@ -173,7 +173,7 @@ impl DisplayConfig {
 
     #[zbus(property)]
     fn apply_monitors_config_allowed(&self) -> bool {
-        true
+        false
     }
 
     #[zbus(property)]
@@ -196,5 +196,17 @@ impl Start for DisplayConfig {
         conn.request_name_with_flags("org.gnome.Mutter.DisplayConfig", flags)?;
 
         Ok(conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_monitors_config_is_not_advertised_without_handler() {
+        let config = DisplayConfig::new(Arc::new(Mutex::new(Vec::new())));
+
+        assert!(!config.apply_monitors_config_allowed());
     }
 }
