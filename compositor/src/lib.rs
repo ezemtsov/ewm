@@ -1734,10 +1734,18 @@ impl Ewm {
     /// offset when computing global positions.
     fn focused_output_for_surface(&self, id: u64) -> Option<(&str, usize, &LayoutEntry)> {
         let focused = self.focused_view_id?;
+        self.output_entry_for_surface(id, |entry| entry.view_id == focused)
+    }
+
+    fn output_entry_for_surface(
+        &self,
+        id: u64,
+        mut predicate: impl FnMut(&LayoutEntry) -> bool,
+    ) -> Option<(&str, usize, &LayoutEntry)> {
         for (output_name, strip) in &self.output_strips {
             if let Some((idx, entry)) = strip
                 .surfaces_with_frame()
-                .find(|(_, e)| e.surface_id == id && e.view_id == focused)
+                .find(|(_, entry)| entry.surface_id == id && predicate(entry))
             {
                 return Some((output_name.as_str(), idx, entry));
             }
@@ -1749,15 +1757,7 @@ impl Ewm {
     /// Same shape as `focused_output_for_surface`; used as fallback when
     /// no focused entry exists (e.g. popup positioning).
     fn primary_output_for_surface(&self, id: u64) -> Option<(&str, usize, &LayoutEntry)> {
-        for (output_name, strip) in &self.output_strips {
-            if let Some((idx, entry)) = strip
-                .surfaces_with_frame()
-                .find(|(_, e)| e.surface_id == id && e.primary)
-            {
-                return Some((output_name.as_str(), idx, entry));
-            }
-        }
-        None
+        self.output_entry_for_surface(id, |entry| entry.primary)
     }
 
     /// Global position of a window: layout entries use the focused-or-primary
