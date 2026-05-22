@@ -86,6 +86,12 @@ impl DisplayConfig {
             let vendor = "Unknown".to_string();
             let product = "Unknown".to_string();
             let serial = connector.clone();
+            let is_builtin = crate::is_laptop_panel(&connector);
+            let display_name = if is_builtin {
+                "Built-in display".to_owned()
+            } else {
+                connector.clone()
+            };
 
             // Create mode from output info
             let refresh_rate = output.refresh as f64 / 1000.0;
@@ -118,12 +124,13 @@ impl DisplayConfig {
             let mut properties = HashMap::new();
             properties.insert(
                 "display-name".to_string(),
-                OwnedValue::try_from(Value::Str(connector.clone().into()))
+                OwnedValue::try_from(Value::Str(display_name.into()))
                     .expect("string conversion is infallible"),
             );
             properties.insert(
                 "is-builtin".to_string(),
-                OwnedValue::try_from(Value::Bool(false)).expect("bool conversion is infallible"),
+                OwnedValue::try_from(Value::Bool(is_builtin))
+                    .expect("bool conversion is infallible"),
             );
 
             monitors.push(Monitor {
@@ -225,5 +232,29 @@ mod tests {
         let (_, monitors, _, _) = async_io::block_on(config.get_current_state()).unwrap();
 
         assert_eq!(monitors[0].names.3, "HDMI-A-1");
+    }
+
+    #[test]
+    fn builtin_connector_is_reported_as_builtin_display() {
+        let outputs = Arc::new(Mutex::new(vec![OutputInfo {
+            name: "eDP-1".to_owned(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            refresh: 60_000,
+        }]));
+        let config = DisplayConfig::new(outputs);
+
+        let (_, monitors, _, _) = async_io::block_on(config.get_current_state()).unwrap();
+
+        assert_eq!(
+            monitors[0].properties["display-name"],
+            OwnedValue::try_from(Value::Str("Built-in display".into())).unwrap()
+        );
+        assert_eq!(
+            monitors[0].properties["is-builtin"],
+            OwnedValue::try_from(Value::Bool(true)).unwrap()
+        );
     }
 }
