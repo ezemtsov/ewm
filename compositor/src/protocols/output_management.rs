@@ -89,6 +89,13 @@ enum OutputConfigurationState {
     Finished,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishConfigError {
+    Missing,
+    AlreadyUsed,
+    AllDisabled,
+}
+
 pub enum OutputConfigurationHeadState {
     Cancelled,
     Ok(String, ZwlrOutputConfigurationV1),
@@ -385,6 +392,47 @@ fn head_property_change(
     })
 }
 
+fn take_ongoing_output_config(
+    state: Option<&mut OutputConfigurationState>,
+) -> Result<HashMap<String, OutputConfig>, FinishConfigError> {
+    let Some(state) = state else {
+        return Err(FinishConfigError::Missing);
+    };
+
+    let OutputConfigurationState::Ongoing(config) =
+        mem::replace(state, OutputConfigurationState::Finished)
+    else {
+        return Err(FinishConfigError::AlreadyUsed);
+    };
+
+    if config.values().any(|config| config.enabled) {
+        Ok(config)
+    } else {
+        Err(FinishConfigError::AllDisabled)
+    }
+}
+
+fn finish_output_configuration_request(
+    conf: &ZwlrOutputConfigurationV1,
+    state: Option<&mut OutputConfigurationState>,
+) -> Option<HashMap<String, OutputConfig>> {
+    match take_ongoing_output_config(state) {
+        Ok(config) => Some(config),
+        Err(FinishConfigError::Missing) => None,
+        Err(FinishConfigError::AlreadyUsed) => {
+            conf.post_error(
+                zwlr_output_configuration_v1::Error::AlreadyUsed,
+                "configuration had already been used",
+            );
+            None
+        }
+        Err(FinishConfigError::AllDisabled) => {
+            conf.failed();
+            None
+        }
+    }
+}
+
 // GlobalDispatch for ZwlrOutputManagerV1
 
 impl<D> GlobalDispatch<ZwlrOutputManagerV1, OutputManagementGlobalData, D> for OutputManagementState
@@ -600,25 +648,9 @@ where
                     return;
                 }
 
-                let Some(new_config) = new_config else {
+                let Some(new_config) = finish_output_configuration_request(conf, new_config) else {
                     return;
                 };
-
-                let OutputConfigurationState::Ongoing(new_config) =
-                    mem::replace(new_config, OutputConfigurationState::Finished)
-                else {
-                    conf.post_error(
-                        zwlr_output_configuration_v1::Error::AlreadyUsed,
-                        "configuration had already been used",
-                    );
-                    return;
-                };
-
-                let any_enabled = new_config.values().any(|c| c.enabled);
-                if !any_enabled {
-                    conf.failed();
-                    return;
-                }
 
                 state.apply_output_config(new_config);
                 // FIXME: assumes apply_output_config always succeeds.
@@ -630,27 +662,9 @@ where
                     return;
                 }
 
-                let Some(new_config) = new_config else {
-                    return;
-                };
-
-                let OutputConfigurationState::Ongoing(new_config) =
-                    mem::replace(new_config, OutputConfigurationState::Finished)
-                else {
-                    conf.post_error(
-                        zwlr_output_configuration_v1::Error::AlreadyUsed,
-                        "configuration had already been used",
-                    );
-                    return;
-                };
-
-                let any_enabled = new_config.values().any(|c| c.enabled);
-                if !any_enabled {
-                    conf.failed();
-                    return;
+                if finish_output_configuration_request(conf, new_config).is_some() {
+                    conf.succeeded();
                 }
-
-                conf.succeeded();
             }
             zwlr_output_configuration_v1::Request::Destroy => {
                 g_state
@@ -1059,6 +1073,24 @@ mod tests {
             .collect()
     }
 
+    fn config(enabled: bool) -> OutputConfig {
+        OutputConfig {
+            enabled,
+            ..Default::default()
+        }
+    }
+
+    fn config_state(
+        configs: impl IntoIterator<Item = (&'static str, OutputConfig)>,
+    ) -> OutputConfigurationState {
+        OutputConfigurationState::Ongoing(
+            configs
+                .into_iter()
+                .map(|(name, config)| (name.to_string(), config))
+                .collect(),
+        )
+    }
+
     #[test]
     fn change_plan_is_empty_for_equal_states() {
         let current = state([head("HEAD-A")]);
@@ -1145,5 +1177,38 @@ mod tests {
         let plan = output_change_plan(&state([old_head]), &state([new_head]));
 
         assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn taking_output_config_requires_one_enabled_head_and_finishes_state() {
+        let mut state = config_state([("HEAD-A", config(false)), ("HEAD-B", config(true))]);
+
+        let config = take_ongoing_output_config(Some(&mut state)).unwrap();
+
+        assert!(!config["HEAD-A"].enabled);
+        assert!(config["HEAD-B"].enabled);
+        assert!(matches!(state, OutputConfigurationState::Finished));
+    }
+
+    #[test]
+    fn taking_all_disabled_output_config_fails_and_finishes_state() {
+        let mut state = config_state([("HEAD-A", config(false))]);
+
+        let err = take_ongoing_output_config(Some(&mut state)).unwrap_err();
+
+        assert_eq!(err, FinishConfigError::AllDisabled);
+        assert!(matches!(state, OutputConfigurationState::Finished));
+    }
+
+    #[test]
+    fn taking_finished_or_missing_output_config_reports_protocol_errors() {
+        let mut state = OutputConfigurationState::Finished;
+
+        let already_used = take_ongoing_output_config(Some(&mut state)).unwrap_err();
+        let missing = take_ongoing_output_config(None).unwrap_err();
+
+        assert_eq!(already_used, FinishConfigError::AlreadyUsed);
+        assert_eq!(missing, FinishConfigError::Missing);
+        assert!(matches!(state, OutputConfigurationState::Finished));
     }
 }
