@@ -72,7 +72,7 @@ impl ScreencopyQueue {
         self.screencopies.remove(0)
     }
 
-    pub fn remove_output(&mut self, output: &Output) {
+    fn remove_output(&mut self, output: &Output) {
         self.screencopies
             .retain(|screencopy| screencopy.output() != output);
     }
@@ -83,7 +83,7 @@ impl ScreencopyQueue {
             .retain(|screencopy| screencopy.frame != *frame);
     }
 
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.pending_frames.is_empty() && self.screencopies.is_empty()
     }
 }
@@ -130,15 +130,19 @@ impl ScreencopyManagerState {
         self.queues.get_mut(manager)
     }
 
-    pub fn queues_mut(&mut self) -> impl Iterator<Item = &mut ScreencopyQueue> {
-        self.queues.values_mut()
-    }
-
     /// Check if any queue has a pending screencopy request for the given output.
     pub fn has_pending_for_output(&self, output: &Output) -> bool {
         self.queues
             .values()
             .any(|queue| queue.screencopies.iter().any(|sc| sc.output() == output))
+    }
+
+    pub fn remove_output(&mut self, output: &Output) {
+        for queue in self.queues.values_mut() {
+            queue.remove_output(output);
+        }
+
+        self.cleanup_dead_queues();
     }
 
     /// Iterate all queues with a closure, then clean up dead managers.

@@ -189,7 +189,7 @@ use smithay::{
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_activation,
     delegate_xdg_foreign, delegate_xdg_shell,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::protocols::foreign_toplevel::{
     ForeignToplevelHandler, ForeignToplevelManagerState, WindowInfo,
@@ -1309,6 +1309,10 @@ impl Ewm {
         self.reconcile_active_for_output(&out, prev_active_id);
     }
 
+    pub fn output_exists(&self, output: &Output) -> bool {
+        self.output_state.contains_key(output)
+    }
+
     /// Clean up all Ewm state for a removed output.
     ///
     /// Called by backends after their own teardown (e.g. DRM surface removal).
@@ -1375,6 +1379,8 @@ impl Ewm {
             let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
             dbus_outputs.retain(|o| o.name != output_name);
         }
+
+        self.screencopy_state.remove_output(output);
 
         // Prune dangling focus from the gone strip and hop to a survivor; I5.
         self.prune_dangling_focus();
@@ -5856,6 +5862,11 @@ delegate_output_management!(State);
 // Screencopy protocol
 impl ScreencopyHandler for State {
     fn frame(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy) {
+        if !self.ewm.output_exists(screencopy.output()) {
+            trace!("screencopy output no longer exists");
+            return;
+        }
+
         if screencopy.with_damage() {
             // CopyWithDamage: queue for processing during output redraw,
             // where per-queue damage tracking can skip no-change frames.
