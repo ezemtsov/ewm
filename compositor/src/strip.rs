@@ -523,13 +523,13 @@ impl Strip {
     }
 
     /// Seed `move_anim` on neighbours of `frames[idx]` so they slide in to fill the gap.
-    pub fn seed_remove_animation(&mut self, idx: usize) {
+    fn seed_remove_animation_from(&mut self, idx: usize, anchor_idx: usize) {
         if idx >= self.frames.len() {
             return;
         }
         let clock = self.clock.clone();
         let offset = self.frames[idx].width + self.gap;
-        let (slide, from) = if self.active_idx <= idx {
+        let (slide, from) = if anchor_idx <= idx {
             (&mut self.frames[idx + 1..], offset)
         } else {
             (&mut self.frames[..idx], -offset)
@@ -542,6 +542,31 @@ impl Strip {
                 DEFAULT_ANIM_DURATION,
             ));
         }
+    }
+
+    fn active_idx_after_removal(&self, idx: usize, focus: RemovalFocus) -> usize {
+        let last_after_idx = self.frames.len().saturating_sub(2);
+        match focus {
+            RemovalFocus::CurrentActive if idx < self.active_idx => self.active_idx - 1,
+            RemovalFocus::CurrentActive if idx > self.active_idx => self.active_idx,
+            RemovalFocus::CurrentActive | RemovalFocus::RemovedSlot => idx.min(last_after_idx),
+        }
+    }
+
+    fn remove_frame_at_with_focus(&mut self, idx: usize, focus: RemovalFocus) {
+        if idx >= self.frames.len() {
+            return;
+        }
+
+        let anchor_idx = match focus {
+            RemovalFocus::CurrentActive => self.active_idx,
+            RemovalFocus::RemovedSlot => idx,
+        };
+        let new_active = self.active_idx_after_removal(idx, focus);
+
+        self.seed_remove_animation_from(idx, anchor_idx);
+        self.frames.remove(idx);
+        self.set_active(new_active);
     }
 
     /// Begin a touchpad-driven view-offset gesture.
@@ -588,21 +613,7 @@ impl Strip {
 
     /// Drop frame `idx`; surviving neighbours slide in to close the gap.
     pub fn remove_frame_at(&mut self, idx: usize) {
-        if idx >= self.frames.len() {
-            return;
-        }
-        self.seed_remove_animation(idx);
-        let prev_active = self.active_idx;
-        self.frames.remove(idx);
-
-        let new_active = if idx < prev_active {
-            prev_active - 1
-        } else if idx == prev_active {
-            prev_active.min(self.frames.len().saturating_sub(1))
-        } else {
-            prev_active
-        };
-        self.set_active(new_active);
+        self.remove_frame_at_with_focus(idx, RemovalFocus::CurrentActive);
     }
 
     /// Drop frame `idx` using active-close semantics, regardless of the
@@ -612,14 +623,14 @@ impl Strip {
     /// `active_idx`: the destroyed slot chooses the right neighbour if present,
     /// otherwise the left neighbour.
     pub fn remove_active_frame_at(&mut self, idx: usize) {
-        if idx >= self.frames.len() {
-            return;
-        }
-        self.active_idx = idx;
-        self.seed_remove_animation(idx);
-        self.frames.remove(idx);
-        self.set_active(idx.min(self.frames.len().saturating_sub(1)));
+        self.remove_frame_at_with_focus(idx, RemovalFocus::RemovedSlot);
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RemovalFocus {
+    CurrentActive,
+    RemovedSlot,
 }
 
 #[cfg(test)]
