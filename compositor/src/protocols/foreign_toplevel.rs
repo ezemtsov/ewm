@@ -208,6 +208,28 @@ impl ForeignToplevelManagerState {
             }
         }
     }
+
+    pub fn output_bound(&mut self, output: &Output, wl_output: &WlOutput) {
+        let Some(client) = wl_output.client() else {
+            return;
+        };
+
+        for data in self.toplevels.values_mut() {
+            if data.output.as_ref() != Some(output) {
+                continue;
+            }
+
+            for (instance, outputs) in &mut data.instances {
+                if instance.client().as_ref() != Some(&client) {
+                    continue;
+                }
+
+                instance.output_enter(wl_output);
+                instance.done();
+                outputs.push(wl_output.clone());
+            }
+        }
+    }
 }
 
 impl ToplevelData {

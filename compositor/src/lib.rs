@@ -5400,6 +5400,9 @@ impl smithay::wayland::output::OutputHandler for State {
             &output,
             &wl_output,
         );
+        self.ewm
+            .foreign_toplevel_state
+            .output_bound(&output, &wl_output);
     }
 }
 delegate_output!(State);
