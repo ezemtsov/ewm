@@ -138,15 +138,8 @@ impl TestClient {
         let total = stride * size.h;
         let fd = create_memfd(total as usize);
         let pool = self.shm().create_pool(fd.as_fd(), total, &qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            size.w,
-            size.h,
-            stride,
-            wl_shm::Format::Argb8888,
-            &qh,
-            (),
-        );
+        let buffer =
+            pool.create_buffer(0, size.w, size.h, stride, wl_shm::Format::Argb8888, &qh, ());
         pool.destroy();
         buffer
     }

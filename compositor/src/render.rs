@@ -354,8 +354,13 @@ pub fn collect_render_elements_for_output(
                             let loc_physical: Point<i32, Physical> =
                                 Point::from((offset_x, offset_y)).to_physical_precise_round(scale)
                                     + frame_offset;
-                            let view_elements =
-                                render_window_without_popups(window, renderer, loc_physical, scale, entry_alpha);
+                            let view_elements = render_window_without_popups(
+                                window,
+                                renderer,
+                                loc_physical,
+                                scale,
+                                entry_alpha,
+                            );
                             push_constrained(
                                 &mut elements,
                                 view_elements,
@@ -367,8 +372,13 @@ pub fn collect_render_elements_for_output(
                         } else {
                             // Non-primary: uniform stretch to fill output, crop overflow.
                             let loc_physical: Point<i32, Physical> = frame_offset;
-                            let view_elements =
-                                render_window_without_popups(window, renderer, loc_physical, scale, entry_alpha);
+                            let view_elements = render_window_without_popups(
+                                window,
+                                renderer,
+                                loc_physical,
+                                scale,
+                                entry_alpha,
+                            );
                             let buf_size: Size<i32, Physical> =
                                 window.geometry().size.to_physical_precise_round(scale);
                             let uniform = f64::max(
@@ -406,7 +416,13 @@ pub fn collect_render_elements_for_output(
                     let loc_physical: Point<i32, Physical> =
                         location.to_physical_precise_round(scale) + frame_offset;
                     let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                        render_window_without_popups(window, renderer, loc_physical, scale, entry_alpha);
+                        render_window_without_popups(
+                            window,
+                            renderer,
+                            loc_physical,
+                            scale,
+                            entry_alpha,
+                        );
                     let entry_size: Size<i32, Physical> =
                         Size::from((entry.w as i32, entry.h as i32))
                             .to_physical_precise_round(scale);

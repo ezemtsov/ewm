@@ -108,12 +108,22 @@ enum Op {
         n_views: usize,
         fullscreen_mask: u32,
     },
-    WarpPointer { x: i32, y: i32 },
-    PointerButton { pressed: bool },
-    CreatePopup { ax: i32, ay: i32 },
+    WarpPointer {
+        x: i32,
+        y: i32,
+    },
+    PointerButton {
+        pressed: bool,
+    },
+    CreatePopup {
+        ax: i32,
+        ay: i32,
+    },
     /// Drive the client side of fullscreen: calls `set_fullscreen` /
     /// `unset_fullscreen` on the toplevel.
-    SetClientFullscreen { on: bool },
+    SetClientFullscreen {
+        on: bool,
+    },
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -349,11 +359,7 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
 
 fn check_c2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    let server: HashSet<String> = ewm
-        .surface_outputs
-        .get(&h.sid)
-        .cloned()
-        .unwrap_or_default();
+    let server: HashSet<String> = ewm.surface_outputs.get(&h.sid).cloned().unwrap_or_default();
     prop_assert_eq!(
         h.toplevel_on_outputs.clone(),
         server.clone(),
@@ -485,11 +491,7 @@ fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-fn check_p3(
-    h: &Harness,
-    events: &[ClientEvent],
-    pressed: bool,
-) -> Result<(), TestCaseError> {
+fn check_p3(h: &Harness, events: &[ClientEvent], pressed: bool) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let focus_id = ewm
         .pointer_focus
