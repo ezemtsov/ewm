@@ -166,6 +166,22 @@ pub struct WorkspaceGlobalData {
     filter: Box<dyn for<'c> Fn(&'c Client) -> bool + Send + Sync>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct WorkspaceDebugState {
+    groups: Vec<String>,
+    workspaces: Vec<WorkspaceDebugWorkspace>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct WorkspaceDebugWorkspace {
+    surface_id: u64,
+    output: String,
+    id: String,
+    name: String,
+    coordinates: [u32; 2],
+    active: bool,
+}
+
 impl WorkspaceManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
@@ -184,6 +200,29 @@ impl WorkspaceManagerState {
             groups: HashMap::new(),
             workspaces: HashMap::new(),
         }
+    }
+
+    pub(crate) fn debug_state(&self) -> WorkspaceDebugState {
+        let mut groups: Vec<_> = self.groups.keys().cloned().collect();
+        groups.sort();
+
+        let mut workspaces: Vec<_> = self
+            .workspaces
+            .iter()
+            .map(|(&surface_id, ws)| WorkspaceDebugWorkspace {
+                surface_id,
+                output: ws.output.clone(),
+                id: ws.id.clone(),
+                name: ws.name.clone(),
+                coordinates: ws.coordinates,
+                active: ws.state.contains(ext_workspace_handle_v1::State::Active),
+            })
+            .collect();
+        workspaces.sort_by(|a, b| {
+            (&a.output, a.coordinates, a.surface_id).cmp(&(&b.output, b.coordinates, b.surface_id))
+        });
+
+        WorkspaceDebugState { groups, workspaces }
     }
 }
 

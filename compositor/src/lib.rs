@@ -4495,6 +4495,53 @@ impl Ewm {
         result
     }
 
+    /// Build the JSON object shown by `ewm-show-state`.
+    pub fn debug_state(&self) -> serde_json::Value {
+        let mut id_window_keys: Vec<u64> = self.id_windows.keys().copied().collect();
+        id_window_keys.sort_unstable();
+        let emacs_surfaces: HashMap<u64, String> = self
+            .output_strips
+            .iter()
+            .flat_map(|(out, s)| s.frames.iter().map(move |f| (f.surface_id, out.clone())))
+            .collect();
+
+        serde_json::json!({
+            "surfaces": &self.surface_info,
+            "emacs_surfaces": emacs_surfaces,
+            "output_strips": &self.output_strips,
+            "surface_outputs": &self.surface_outputs,
+            "focused_surface_id": self.focused_surface_id(),
+            "focused_frame_id": self.focused_frame_id,
+            "focused_view_id": self.focused_view_id,
+            "id_windows": id_window_keys,
+            "outputs": &self.outputs,
+            "working_areas": self.get_working_areas_info(),
+            "layer_surfaces": self.get_layer_surfaces_info(),
+            "pointer_location": self.pointer_location(),
+            "intercepted_keys": module::get_intercepted_keys(),
+            "emulated_keys": module::get_emulated_keys(),
+            "emacs_pid": self.emacs_pid,
+            "text_input_intercept": self.text_input_intercept,
+            "text_input_active": self.text_input_active,
+            "xkb_layouts": &self.xkb_layout_names,
+            "xkb_current_layout": self.xkb_current_layout,
+            "next_surface_id": self.next_surface_id,
+            "redraw_states": self.output_state.iter().map(|(output, state)| {
+                serde_json::json!({
+                    "output": output.name(),
+                    "state": state.redraw_state.to_string(),
+                })
+            }).collect::<Vec<_>>(),
+            "workspace_protocol": self.workspace_state.debug_state(),
+            "pending_frame_outputs": module::peek_pending_frame_outputs(),
+            "pending_active_frame_closes": module::peek_pending_active_frame_closes(),
+            "in_prefix_sequence": module::get_in_prefix_sequence(),
+            "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
+            "pending_commands": module::peek_commands(),
+            "focus_history": module::get_focus_history(),
+        })
+    }
+
     /// Check if there are pending screencopy requests for any output
     pub fn has_pending_screencopies(&self) -> bool {
         // This is a workaround since we can't easily check the internal state
@@ -6594,49 +6641,8 @@ impl State {
                 });
             }
             ModuleCommand::GetDebugState => {
-                let id_window_keys: Vec<u64> = self.ewm.id_windows.keys().copied().collect();
-                let layer_surfaces_info = self.ewm.get_layer_surfaces_info();
-                let emacs_surfaces: HashMap<u64, String> = self
-                    .ewm
-                    .output_strips
-                    .iter()
-                    .flat_map(|(out, s)| s.frames.iter().map(move |f| (f.surface_id, out.clone())))
-                    .collect();
-                let state = serde_json::json!({
-                    "surfaces": self.ewm.surface_info,
-                    "emacs_surfaces": emacs_surfaces,
-                    "output_strips": self.ewm.output_strips,
-                    "surface_outputs": self.ewm.surface_outputs,
-                    "focused_surface_id": self.ewm.focused_surface_id(),
-                    "focused_frame_id": self.ewm.focused_frame_id,
-                    "focused_view_id": self.ewm.focused_view_id,
-                    "id_windows": id_window_keys,
-                    "outputs": self.ewm.outputs,
-                    "working_areas": self.ewm.get_working_areas_info(),
-                    "layer_surfaces": layer_surfaces_info,
-                    "pointer_location": self.ewm.pointer_location(),
-                    "intercepted_keys": module::get_intercepted_keys(),
-                    "emulated_keys": module::get_emulated_keys(),
-                    "emacs_pid": self.ewm.emacs_pid,
-                    "text_input_intercept": self.ewm.text_input_intercept,
-                    "text_input_active": self.ewm.text_input_active,
-                    "xkb_layouts": self.ewm.xkb_layout_names,
-                    "xkb_current_layout": self.ewm.xkb_current_layout,
-                    "next_surface_id": self.ewm.next_surface_id,
-                    "redraw_states": self.ewm.output_state.iter().map(|(output, state)| {
-                        serde_json::json!({
-                            "output": output.name(),
-                            "state": state.redraw_state.to_string(),
-                        })
-                    }).collect::<Vec<_>>(),
-                    "pending_frame_outputs": module::peek_pending_frame_outputs(),
-                    "pending_active_frame_closes": module::peek_pending_active_frame_closes(),
-                    "in_prefix_sequence": module::get_in_prefix_sequence(),
-                    "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
-                    "pending_commands": module::peek_commands(),
-                    "focus_history": module::get_focus_history(),
-                });
-                let json = serde_json::to_string_pretty(&state).unwrap_or_default();
+                let json =
+                    serde_json::to_string_pretty(&self.ewm.debug_state()).unwrap_or_default();
                 self.ewm.queue_event(Event::DebugState { json });
             }
             ModuleCommand::CreateActivationToken => {
