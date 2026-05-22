@@ -493,6 +493,58 @@ proptest! {
     }
 
     #[test]
+    fn active_close_intent_uses_destroyed_slot_after_focus_or_layout_race(
+        len in 2usize..=6,
+        raw_close_idx in 0usize..6,
+        raw_mru_idx in 0usize..6,
+        omit_closing_frame_from_layout in any::<bool>(),
+    ) {
+        let close_idx = raw_close_idx % len;
+        let mut mru_idx = raw_mru_idx % len;
+        if mru_idx == close_idx {
+            mru_idx = (mru_idx + 1) % len;
+        }
+        let ids: Vec<u64> = (0..len).map(|i| 30_000 + i as u64).collect();
+        let closing_id = ids[close_idx];
+        let expected = if close_idx + 1 < len {
+            ids[close_idx + 1]
+        } else {
+            ids[close_idx - 1]
+        };
+        let mut fix = Fixture::new().unwrap();
+        fix.add_output(OUTPUTS[0], 1920, 1080);
+        install_strip(&mut fix, OUTPUTS[0], &ids);
+        fix.ewm().set_focus_frame(closing_id, "proptest", false);
+
+        mark_active_frame_close(closing_id);
+        fix.ewm().set_focus_frame(ids[mru_idx], "pgtk_mru", false);
+        if omit_closing_frame_from_layout {
+            fix.ewm().apply_output_layout(
+                OUTPUTS[0],
+                ids.iter()
+                    .copied()
+                    .filter(|&id| id != closing_id)
+                    .map(Frame::new)
+                    .collect(),
+            );
+            prop_assert!(
+                strip_frame_ids(&fix).contains(&closing_id),
+                "pending active close must keep the closing frame until destroy",
+            );
+        }
+
+        let refocus = fix.ewm().handle_toplevel_destroyed_by_id(closing_id);
+
+        prop_assert_eq!(refocus, Some(expected));
+        fix.ewm()
+            .set_focus_frame(refocus.unwrap(), "toplevel_destroyed", false);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id, expected);
+        prop_assert!(!strip_frame_ids(&fix).contains(&closing_id));
+        let strip = fix.ewm_ref().output_strips.get(OUTPUTS[0]).unwrap();
+        prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(expected));
+    }
+
+    #[test]
     fn destroying_focused_embedded_surface_parks_focus_on_host_frame(
         surface_id in ENTRY_SID_RANGE,
         entry_idx in 0usize..MAX_ENTRIES_PER_LAYOUT,
@@ -539,59 +591,6 @@ proptest! {
         prop_assert_eq!(frame.selected_view_id, None);
         prop_assert!(frame.surfaces.is_empty());
     }
-}
-
-#[test]
-fn active_close_intent_ignores_later_mru_focus_jump() {
-    let mut fix = Fixture::new().unwrap();
-    fix.add_output(OUTPUTS[0], 1920, 1080);
-    install_strip(&mut fix, OUTPUTS[0], &[1000, 1001, 1002, 1003]);
-    fix.ewm().set_focus_frame(1001, "test", false);
-
-    mark_active_frame_close(1001);
-    fix.ewm().set_focus_frame(1003, "pgtk_mru", false);
-    let refocus = fix.ewm().handle_toplevel_destroyed_by_id(1001);
-
-    assert_eq!(refocus, Some(1002));
-    if let Some(target) = refocus {
-        fix.ewm()
-            .set_focus_frame(target, "toplevel_destroyed", false);
-    }
-    assert_eq!(fix.ewm_ref().focused_frame_id, 1002);
-    let strip = fix.ewm_ref().output_strips.get(OUTPUTS[0]).unwrap();
-    assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(1002));
-}
-
-#[test]
-fn active_close_intent_survives_layout_refresh_without_closing_frame() {
-    let mut fix = Fixture::new().unwrap();
-    fix.add_output(OUTPUTS[0], 1920, 1080);
-    install_strip(&mut fix, OUTPUTS[0], &[2000, 2001, 2002, 2003]);
-    fix.ewm().set_focus_frame(2000, "test", false);
-
-    mark_active_frame_close(2000);
-    fix.ewm().apply_output_layout(
-        OUTPUTS[0],
-        [2001, 2002, 2003].into_iter().map(Frame::new).collect(),
-    );
-    let refocus = fix.ewm().handle_toplevel_destroyed_by_id(2000);
-
-    assert_eq!(refocus, Some(2001));
-    if let Some(target) = refocus {
-        fix.ewm()
-            .set_focus_frame(target, "toplevel_destroyed", false);
-    }
-    assert_eq!(fix.ewm_ref().focused_frame_id, 2001);
-    let strip = fix.ewm_ref().output_strips.get(OUTPUTS[0]).unwrap();
-    assert_eq!(
-        strip
-            .frames
-            .iter()
-            .map(|f| f.surface_id)
-            .collect::<Vec<_>>(),
-        vec![2001, 2002, 2003]
-    );
-    assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(2001));
 }
 
 fn assert_invariants(fix: &Fixture) {
