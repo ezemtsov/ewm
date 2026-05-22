@@ -479,7 +479,7 @@ use smithay::utils::Point;
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccelProfile {
     Flat,
     Adaptive,
@@ -494,7 +494,7 @@ impl From<AccelProfile> for libinput::AccelProfile {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClickMethod {
     ButtonAreas,
     Clickfinger,
@@ -509,7 +509,7 @@ impl From<ClickMethod> for libinput::ClickMethod {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollMethod {
     NoScroll,
     TwoFinger,
@@ -528,7 +528,7 @@ impl From<ScrollMethod> for libinput::ScrollMethod {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TapButtonMap {
     LeftRightMiddle,
     LeftMiddleRight,
@@ -566,6 +566,12 @@ impl DeviceType {
         }
     }
 }
+
+pub const DEVICE_TYPE_VALUES: &str = "touchpad, mouse, trackball, trackpoint, keyboard";
+pub const ACCEL_PROFILE_VALUES: &str = "flat, adaptive";
+pub const CLICK_METHOD_VALUES: &str = "button-areas, clickfinger";
+pub const SCROLL_METHOD_VALUES: &str = "no-scroll, two-finger, edge, on-button-down";
+pub const TAP_BUTTON_MAP_VALUES: &str = "left-right-middle, left-middle-right";
 
 /// A single input configuration entry, either a type default or device-specific.
 ///
@@ -779,6 +785,70 @@ pub fn parse_tap_button_map(s: &str) -> Option<TapButtonMap> {
         "left-right-middle" => Some(TapButtonMap::LeftRightMiddle),
         "left-middle-right" => Some(TapButtonMap::LeftMiddleRight),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_config_enums_parse_known_values() {
+        assert_eq!(DeviceType::parse("touchpad"), Some(DeviceType::Touchpad));
+        assert_eq!(DeviceType::parse("mouse"), Some(DeviceType::Mouse));
+        assert_eq!(DeviceType::parse("trackball"), Some(DeviceType::Trackball));
+        assert_eq!(
+            DeviceType::parse("trackpoint"),
+            Some(DeviceType::Trackpoint)
+        );
+        assert_eq!(DeviceType::parse("keyboard"), Some(DeviceType::Keyboard));
+
+        assert_eq!(parse_accel_profile("flat"), Some(AccelProfile::Flat));
+        assert_eq!(
+            parse_accel_profile("adaptive"),
+            Some(AccelProfile::Adaptive),
+        );
+
+        assert_eq!(
+            parse_click_method("button-areas"),
+            Some(ClickMethod::ButtonAreas),
+        );
+        assert_eq!(
+            parse_click_method("clickfinger"),
+            Some(ClickMethod::Clickfinger),
+        );
+
+        assert_eq!(
+            parse_scroll_method("no-scroll"),
+            Some(ScrollMethod::NoScroll)
+        );
+        assert_eq!(
+            parse_scroll_method("two-finger"),
+            Some(ScrollMethod::TwoFinger)
+        );
+        assert_eq!(parse_scroll_method("edge"), Some(ScrollMethod::Edge));
+        assert_eq!(
+            parse_scroll_method("on-button-down"),
+            Some(ScrollMethod::OnButtonDown),
+        );
+
+        assert_eq!(
+            parse_tap_button_map("left-right-middle"),
+            Some(TapButtonMap::LeftRightMiddle),
+        );
+        assert_eq!(
+            parse_tap_button_map("left-middle-right"),
+            Some(TapButtonMap::LeftMiddleRight),
+        );
+    }
+
+    #[test]
+    fn input_config_enums_reject_unknown_values() {
+        assert_eq!(DeviceType::parse("tablet"), None);
+        assert_eq!(parse_accel_profile("linear"), None);
+        assert_eq!(parse_click_method("areas"), None);
+        assert_eq!(parse_scroll_method("wheel"), None);
+        assert_eq!(parse_tap_button_map("middle-left-right"), None);
     }
 }
 

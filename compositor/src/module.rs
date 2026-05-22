@@ -119,6 +119,26 @@ fn value_as_f64(val: Value<'_>) -> Result<f64> {
         .or_else(|_| val.into_rust::<i64>().map(|i| i as f64))
 }
 
+fn parse_optional_input_enum<T>(
+    env: &Env,
+    key_name: &str,
+    val: Value<'_>,
+    parse: impl FnOnce(&str) -> Option<T>,
+    expected: &str,
+) -> Result<Option<T>> {
+    if val.is_not_nil() {
+        let s: String = val.into_rust()?;
+        if let Some(parsed) = parse(&s) {
+            return Ok(Some(parsed));
+        }
+        env.signal(
+            ewm_input_invalid_value,
+            (format!("Invalid {key_name} \"{s}\", expected: {expected}"),),
+        )?;
+    }
+    Ok(None)
+}
+
 // Shared State (read by Emacs, written by compositor)
 
 /// Compositor state snapshot, updated once per tick in `update_shared_state()`.
@@ -1228,15 +1248,14 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                     entry.device = Some(val.into_rust()?);
                 }
             } else if key == *kw_type {
-                if val.is_not_nil() {
-                    let s: String = val.into_rust()?;
-                    match input::DeviceType::parse(&s) {
-                        Some(dt) => entry.device_type = Some(dt),
-                        None => env.signal(
-                            ewm_input_invalid_value,
-                            (format!("Invalid :type \"{s}\", expected: touchpad, mouse, trackball, trackpoint, keyboard"),),
-                        )?,
-                    }
+                if let Some(v) = parse_optional_input_enum(
+                    env,
+                    ":type",
+                    val,
+                    input::DeviceType::parse,
+                    input::DEVICE_TYPE_VALUES,
+                )? {
+                    entry.device_type = Some(v);
                 }
             } else if key == *kw_natural_scroll {
                 entry.natural_scroll = Some(val.is_not_nil());
@@ -1253,50 +1272,44 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                     entry.accel_speed = Some(value_as_f64(val)?);
                 }
             } else if key == *kw_accel_profile {
-                if val.is_not_nil() {
-                    let s: String = val.into_rust()?;
-                    match input::parse_accel_profile(&s) {
-                        Some(v) => entry.accel_profile = Some(v),
-                        None => env.signal(
-                            ewm_input_invalid_value,
-                            (format!(
-                                "Invalid :accel-profile \"{s}\", expected: flat, adaptive"
-                            ),),
-                        )?,
-                    }
+                if let Some(v) = parse_optional_input_enum(
+                    env,
+                    ":accel-profile",
+                    val,
+                    input::parse_accel_profile,
+                    input::ACCEL_PROFILE_VALUES,
+                )? {
+                    entry.accel_profile = Some(v);
                 }
             } else if key == *kw_click_method {
-                if val.is_not_nil() {
-                    let s: String = val.into_rust()?;
-                    match input::parse_click_method(&s) {
-                        Some(v) => entry.click_method = Some(v),
-                        None => env.signal(
-                            ewm_input_invalid_value,
-                            (format!("Invalid :click-method \"{s}\", expected: button-areas, clickfinger"),),
-                        )?,
-                    }
+                if let Some(v) = parse_optional_input_enum(
+                    env,
+                    ":click-method",
+                    val,
+                    input::parse_click_method,
+                    input::CLICK_METHOD_VALUES,
+                )? {
+                    entry.click_method = Some(v);
                 }
             } else if key == *kw_scroll_method {
-                if val.is_not_nil() {
-                    let s: String = val.into_rust()?;
-                    match input::parse_scroll_method(&s) {
-                        Some(v) => entry.scroll_method = Some(v),
-                        None => env.signal(
-                            ewm_input_invalid_value,
-                            (format!("Invalid :scroll-method \"{s}\", expected: no-scroll, two-finger, edge, on-button-down"),),
-                        )?,
-                    }
+                if let Some(v) = parse_optional_input_enum(
+                    env,
+                    ":scroll-method",
+                    val,
+                    input::parse_scroll_method,
+                    input::SCROLL_METHOD_VALUES,
+                )? {
+                    entry.scroll_method = Some(v);
                 }
             } else if key == *kw_tap_button_map {
-                if val.is_not_nil() {
-                    let s: String = val.into_rust()?;
-                    match input::parse_tap_button_map(&s) {
-                        Some(v) => entry.tap_button_map = Some(v),
-                        None => env.signal(
-                            ewm_input_invalid_value,
-                            (format!("Invalid :tap-button-map \"{s}\", expected: left-right-middle, left-middle-right"),),
-                        )?,
-                    }
+                if let Some(v) = parse_optional_input_enum(
+                    env,
+                    ":tap-button-map",
+                    val,
+                    input::parse_tap_button_map,
+                    input::TAP_BUTTON_MAP_VALUES,
+                )? {
+                    entry.tap_button_map = Some(v);
                 }
             } else if key == *kw_repeat_delay {
                 if val.is_not_nil() {
