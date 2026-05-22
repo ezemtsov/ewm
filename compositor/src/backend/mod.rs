@@ -334,21 +334,23 @@ pub fn transform_to_int(transform: Transform) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
-    #[test]
-    fn test_closest_representable_scale() {
-        // Exact values
-        assert_eq!(closest_representable_scale(1.0), 1.0); // 120/120
-        assert_eq!(closest_representable_scale(1.5), 1.5); // 180/120
-        assert_eq!(closest_representable_scale(2.0), 2.0); // 240/120
-        assert_eq!(closest_representable_scale(1.25), 1.25); // 150/120
+    proptest! {
+        #[test]
+        fn closest_representable_scale_rounds_to_nearest_120th(
+            scale_milli in 1i32..=5_000,
+        ) {
+            let scale = f64::from(scale_milli) / 1_000.0;
+            let rounded = closest_representable_scale(scale);
+            let units = (scale * 120.0).round();
 
-        // Non-representable values get rounded
-        let rounded = closest_representable_scale(1.77);
-        assert!((rounded - 212.0 / 120.0).abs() < 1e-10); // 212/120
-
-        let rounded = closest_representable_scale(1.3333);
-        assert!((rounded - 160.0 / 120.0).abs() < 1e-10); // 160/120
+            prop_assert!((rounded - units / 120.0).abs() < 1e-10);
+            prop_assert!((rounded * 120.0 - units).abs() < 1e-10);
+            prop_assert!((rounded - scale).abs() <= 1.0 / 240.0 + 1e-10);
+            prop_assert_eq!(closest_representable_scale(rounded), rounded);
+        }
     }
 }

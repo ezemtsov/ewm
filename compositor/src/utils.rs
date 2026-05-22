@@ -90,39 +90,36 @@ pub fn send_scale_transform(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
-    #[test]
-    fn test_to_physical_precise_round() {
-        // At scale 1.5, logical 101 -> physical 151.5 -> rounds to 152
-        let result: i32 = to_physical_precise_round(1.5, 101i32);
-        assert_eq!(result, 152);
+    proptest! {
+        #[test]
+        fn physical_rounding_matches_scaled_round(
+            scale_hundredths in 25u32..=400,
+            logical in -10_000i32..=10_000,
+        ) {
+            let scale = f64::from(scale_hundredths) / 100.0;
+            let physical: i32 = to_physical_precise_round(scale, logical);
+            let expected = (f64::from(logical) * scale).round() as i32;
 
-        // At scale 1.0, no change
-        let result: i32 = to_physical_precise_round(1.0, 100i32);
-        assert_eq!(result, 100);
+            prop_assert_eq!(physical, expected);
+        }
 
-        // At scale 2.0, doubles
-        let result: i32 = to_physical_precise_round(2.0, 50i32);
-        assert_eq!(result, 100);
+        #[test]
+        fn logical_rounding_lands_on_nearest_physical_pixel(
+            scale_hundredths in 25u32..=400,
+            logical_milli in -1_000_000i32..=1_000_000,
+        ) {
+            let scale = f64::from(scale_hundredths) / 100.0;
+            let logical = f64::from(logical_milli) / 1_000.0;
+            let rounded = round_logical_in_physical(scale, logical);
+            let physical = rounded * scale;
+            let expected_physical = (logical * scale).round();
 
-        // Fractional scale with precise rounding
-        let result: i32 = to_physical_precise_round(1.25, 10i32);
-        assert_eq!(result, 13); // 10 * 1.25 = 12.5 -> rounds to 13
-    }
-
-    #[test]
-    fn test_round_logical_in_physical() {
-        // At scale 1.5: 10.3 * 1.5 = 15.45 -> round to 15 -> 15 / 1.5 = 10.0
-        let result = round_logical_in_physical(1.5, 10.3);
-        assert!((result - 10.0).abs() < 1e-10);
-
-        // At scale 1.5: 10.5 * 1.5 = 15.75 -> round to 16 -> 16 / 1.5 = 10.666...
-        let result = round_logical_in_physical(1.5, 10.5);
-        assert!((result - 16.0 / 1.5).abs() < 1e-10);
-
-        // At scale 1.0, value stays the same (rounded to integer)
-        let result = round_logical_in_physical(1.0, 10.7);
-        assert!((result - 11.0).abs() < 1e-10);
+            prop_assert!((physical - expected_physical).abs() < 1e-9);
+            prop_assert!((physical - physical.round()).abs() < 1e-9);
+        }
     }
 }
