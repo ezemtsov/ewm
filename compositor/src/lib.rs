@@ -993,6 +993,14 @@ struct LayoutEntryLocation<'a> {
     entry: &'a LayoutEntry,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FrameLocation<'a> {
+    output_name: &'a str,
+    frame_idx: usize,
+    strip: &'a strip::Strip,
+    frame: &'a strip::Frame,
+}
+
 impl Ewm {
     pub fn new(
         display_handle: DisplayHandle,
@@ -1256,10 +1264,8 @@ impl Ewm {
         }
         if let Some(v) = self.focused_view_id {
             let in_focused_frame = self
-                .output_strips
-                .values()
-                .flat_map(|s| s.frames.iter())
-                .find(|f| f.surface_id == self.focused_frame_id)
+                .frame_location(self.focused_frame_id)
+                .map(|location| location.frame)
                 .is_some_and(|f| f.surfaces.iter().any(|e| e.view_id == v));
             if !in_focused_frame {
                 self.focused_view_id = None;
@@ -1288,13 +1294,10 @@ impl Ewm {
 
     /// Drop the Emacs frame `id` from whichever strip holds it.
     fn remove_emacs_frame_from_strip(&mut self, id: u64, active_close: bool) {
-        let Some(out) = self.emacs_frame_output(id).map(String::from) else {
+        let Some((out, idx)) = self.lookup_frame(id) else {
             return;
         };
         let Some(strip) = self.output_strips.get_mut(&out) else {
-            return;
-        };
-        let Some(idx) = strip.frames.iter().position(|f| f.surface_id == id) else {
             return;
         };
         let prev_active_id = strip.active_frame().map(|f| f.surface_id);
@@ -1510,17 +1513,31 @@ impl Ewm {
         None
     }
 
+    fn frame_location(&self, frame_surface_id: u64) -> Option<FrameLocation<'_>> {
+        for (output_name, strip) in &self.output_strips {
+            if let Some((frame_idx, frame)) = strip
+                .frames
+                .iter()
+                .enumerate()
+                .find(|(_, frame)| frame.surface_id == frame_surface_id)
+            {
+                return Some(FrameLocation {
+                    output_name,
+                    frame_idx,
+                    strip,
+                    frame,
+                });
+            }
+        }
+        None
+    }
+
     pub fn is_emacs_frame(&self, id: u64) -> bool {
-        self.output_strips
-            .values()
-            .any(|s| s.frames.iter().any(|f| f.surface_id == id))
+        self.frame_location(id).is_some()
     }
 
     pub fn emacs_frame_output(&self, id: u64) -> Option<&str> {
-        self.output_strips
-            .iter()
-            .find(|(_, s)| s.frames.iter().any(|f| f.surface_id == id))
-            .map(|(name, _)| name.as_str())
+        self.frame_location(id).map(|location| location.output_name)
     }
 
     pub fn emacs_frames_on<'a>(&'a self, output_name: &'a str) -> impl Iterator<Item = u64> + 'a {
@@ -1560,16 +1577,8 @@ impl Ewm {
 
     /// Resolve a frame's xdg_toplevel `surface_id` to `(output_name, frame_idx)`.
     pub fn lookup_frame(&self, frame_surface_id: u64) -> Option<(String, usize)> {
-        for (output, strip) in &self.output_strips {
-            if let Some(idx) = strip
-                .frames
-                .iter()
-                .position(|f| f.surface_id == frame_surface_id)
-            {
-                return Some((output.clone(), idx));
-            }
-        }
-        None
+        self.frame_location(frame_surface_id)
+            .map(|location| (location.output_name.to_string(), location.frame_idx))
     }
 
     /// Frame surface_id whose `view_id` matches.
@@ -1583,11 +1592,8 @@ impl Ewm {
 
     /// View id assigned to the frame with this surface id.
     pub fn view_id_of_frame(&self, frame_surface_id: u64) -> Option<ViewId> {
-        self.output_strips
-            .values()
-            .flat_map(|s| s.frames.iter())
-            .find(|f| f.surface_id == frame_surface_id)
-            .map(|f| f.view_id)
+        self.frame_location(frame_surface_id)
+            .map(|location| location.frame.view_id)
     }
 
     /// Focus the view identified by `view_id`.
@@ -1619,26 +1625,22 @@ impl Ewm {
 
     /// Focus an Emacs frame, routing keyboard to its selected surface if one exists.
     pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str, notify_emacs: bool) {
-        let Some((output, idx)) = self.lookup_frame(frame_surface_id) else {
+        let Some(location) = self.frame_location(frame_surface_id) else {
             return;
         };
-        let frame_view_id = self.view_id_of_frame(frame_surface_id);
-        let selected_view_id = self
-            .output_strips
-            .get(&output)
-            .and_then(|s| s.frames.get(idx))
-            .and_then(|f| f.selected_view_id);
+        let output = location.output_name.to_string();
+        let idx = location.frame_idx;
+        let frame_view_id = location.frame.view_id;
+        let selected_view_id = location.frame.selected_view_id;
         module::record_focus(frame_surface_id, source, None);
         self.set_focus_state(frame_surface_id, selected_view_id);
         self.activate_frame(&output, idx);
         if notify_emacs {
-            if let Some(view_id) = frame_view_id {
-                self.queue_event(Event::Focus {
-                    view_id,
-                    x: None,
-                    y: None,
-                });
-            }
+            self.queue_event(Event::Focus {
+                view_id: frame_view_id,
+                x: None,
+                y: None,
+            });
         }
     }
 
@@ -1666,10 +1668,8 @@ impl Ewm {
     /// either as the frame's own xdg_toplevel or in its layout entries.
     pub fn frame_position(&self, surface_id: u64) -> Option<(String, usize)> {
         // Frame surface match is unique.
-        for (name, strip) in &self.output_strips {
-            if let Some(idx) = strip.frames.iter().position(|f| f.surface_id == surface_id) {
-                return Some((name.clone(), idx));
-            }
+        if let Some(location) = self.lookup_frame(surface_id) {
+            return Some(location);
         }
         // For multi-view surfaces, prefer the focused output's active frame so remote
         // focus requests (xdg_activation, foreign_toplevel, unlock) don't jump outputs.
@@ -1749,18 +1749,24 @@ impl Ewm {
         &self,
         surface_id: u64,
     ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
-        let output_name = self.emacs_frame_output(surface_id)?;
-        let output = self.space.outputs().find(|o| o.name() == output_name)?;
+        let location = self.frame_location(surface_id)?;
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.name() == location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = layer_map_for_output(output).non_exclusive_zone();
-        let strip = self.output_strips.get(output_name)?;
-        let (frame_idx, frame) = strip
-            .frames
-            .iter()
-            .enumerate()
-            .find(|(_, frame)| frame.surface_id == surface_id)?;
 
-        Some(Self::frame_rect(output_geo, working_area, strip, frame_idx, frame).loc)
+        Some(
+            Self::frame_rect(
+                output_geo,
+                working_area,
+                location.strip,
+                location.frame_idx,
+                location.frame,
+            )
+            .loc,
+        )
     }
 
     fn frame_rect(
