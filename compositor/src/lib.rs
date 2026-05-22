@@ -969,6 +969,14 @@ struct FrameMigration {
     prev_output: Option<String>,
 }
 
+#[derive(Debug)]
+struct ViewLocation {
+    output: String,
+    frame_idx: usize,
+    frame_surface_id: u64,
+    surface_id: u64,
+}
+
 impl Ewm {
     pub fn new(
         display_handle: DisplayHandle,
@@ -1262,14 +1270,6 @@ impl Ewm {
         }
     }
 
-    /// Surface id of the frame at (output, idx), if it exists.
-    fn frame_surface_id_at(&self, output: &str, idx: usize) -> Option<u64> {
-        self.output_strips
-            .get(output)
-            .and_then(|s| s.frames.get(idx))
-            .map(|f| f.surface_id)
-    }
-
     /// Drop the Emacs frame `id` from whichever strip holds it.
     fn remove_emacs_frame_from_strip(&mut self, id: u64, active_close: bool) {
         let Some(out) = self.emacs_frame_output(id).map(String::from) else {
@@ -1477,12 +1477,17 @@ impl Ewm {
         })
     }
 
-    /// Resolve `view_id` to its `(output_name, frame_idx, surface_id)`.
-    pub fn lookup_view(&self, view_id: std::num::NonZeroU64) -> Option<(String, usize, u64)> {
+    /// Resolve an embedded view id to its strip location and owning frame.
+    fn lookup_view(&self, view_id: ViewId) -> Option<ViewLocation> {
         for (output, strip) in &self.output_strips {
             for (idx, frame) in strip.frames.iter().enumerate() {
                 if let Some(entry) = frame.surfaces.iter().find(|e| e.view_id == view_id) {
-                    return Some((output.clone(), idx, entry.surface_id));
+                    return Some(ViewLocation {
+                        output: output.clone(),
+                        frame_idx: idx,
+                        frame_surface_id: frame.surface_id,
+                        surface_id: entry.surface_id,
+                    });
                 }
             }
         }
@@ -1514,7 +1519,7 @@ impl Ewm {
     pub fn focused_surface_id(&self) -> u64 {
         if let Some(view_id) = self.focused_view_id {
             self.lookup_view(view_id)
-                .map(|(_, _, sid)| sid)
+                .map(|location| location.surface_id)
                 .unwrap_or(self.focused_frame_id)
         } else {
             self.focused_frame_id
@@ -1571,13 +1576,22 @@ impl Ewm {
 
     /// Focus the view identified by `view_id`.
     pub fn set_focus_view(&mut self, view_id: ViewId, source: &str, notify_emacs: bool) {
-        let Some((output, idx, surface_id)) = self.lookup_view(view_id) else {
+        let Some(location) = self.lookup_view(view_id) else {
             return;
         };
-        let frame_id = self.frame_surface_id_at(&output, idx).unwrap_or(0);
-        module::record_focus(surface_id, source, None);
-        self.set_focus_state(frame_id, Some(view_id));
-        self.activate_frame(&output, idx);
+        self.set_focus_view_at(view_id, location, source, notify_emacs);
+    }
+
+    fn set_focus_view_at(
+        &mut self,
+        view_id: ViewId,
+        location: ViewLocation,
+        source: &str,
+        notify_emacs: bool,
+    ) {
+        module::record_focus(location.surface_id, source, None);
+        self.set_focus_state(location.frame_surface_id, Some(view_id));
+        self.activate_frame(&location.output, location.frame_idx);
         if notify_emacs {
             self.queue_event(Event::Focus {
                 view_id,
@@ -3508,9 +3522,10 @@ impl Ewm {
         source: &str,
     ) -> Option<(u64, Option<ViewId>)> {
         let (frame_id, view_id) = if let Some(view_id) = self.view_id_under(pos) {
-            self.lookup_view(view_id)?;
-            self.set_focus_view(view_id, source, false);
-            (self.focused_frame_id, Some(view_id))
+            let location = self.lookup_view(view_id)?;
+            let frame_id = location.frame_surface_id;
+            self.set_focus_view_at(view_id, location, source, false);
+            (frame_id, Some(view_id))
         } else {
             let (surface, _) = self.surface_under_point(pos)?;
             let sid = self.surface_id(&surface)?;
