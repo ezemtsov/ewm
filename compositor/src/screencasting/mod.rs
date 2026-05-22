@@ -375,10 +375,7 @@ impl Ewm {
 
             if let Some(output_geo) = output_geo {
                 if let Some(strip) = self.output_strips.get(&output.name()) {
-                    let working_area = {
-                        let map = smithay::desktop::layer_map_for_output(output);
-                        map.non_exclusive_zone()
-                    };
+                    let working_area = self.get_working_area(output);
                     for entry in strip.surfaces() {
                         if entry.surface_id != window_id {
                             continue;
