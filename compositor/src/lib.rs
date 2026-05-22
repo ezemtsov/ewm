@@ -3986,8 +3986,8 @@ impl Ewm {
         if self.focused_frame_id == 0 {
             return None;
         }
-        self.find_surface_output(self.focused_frame_id)
-            .map(|o| o.name())
+        self.emacs_frame_output(self.focused_frame_id)
+            .map(str::to_string)
     }
 
     /// Get the output under the cursor position
