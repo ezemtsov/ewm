@@ -43,14 +43,6 @@ enum Action {
     },
 }
 
-impl Action {
-    fn order(&self) -> u8 {
-        match self {
-            Action::Activate { .. } => 1,
-        }
-    }
-}
-
 /// Per-workspace-group protocol mirror.
 struct GroupData {
     /// The output this group represents.
@@ -217,6 +209,20 @@ impl WorkspaceManagerState {
         });
 
         WorkspaceDebugState { groups, workspaces }
+    }
+
+    fn remove_manager(&mut self, manager: &ExtWorkspaceManagerV1) {
+        self.instances.retain(|m, _| m != manager);
+        for group_data in self.groups.values_mut() {
+            group_data
+                .instances
+                .retain(|inst| inst.data() != Some(manager));
+        }
+        for ws_data in self.workspaces.values_mut() {
+            ws_data
+                .instances
+                .retain(|inst| inst.data() != Some(manager));
+        }
     }
 }
 
@@ -541,12 +547,11 @@ where
         match request {
             ext_workspace_manager_v1::Request::Commit => {
                 let ps = state.workspace_manager_state();
-                let mut actions = ps
+                let actions = ps
                     .instances
                     .get_mut(resource)
                     .map(std::mem::take)
                     .unwrap_or_default();
-                actions.sort_by_key(|a| a.order());
                 for action in actions {
                     match action {
                         Action::Activate {
@@ -561,18 +566,7 @@ where
             ext_workspace_manager_v1::Request::Stop => {
                 resource.finished();
                 let ps = state.workspace_manager_state();
-                ps.instances.retain(|m, _| m != resource);
-                // Clean up instances belonging to this manager.
-                for group_data in ps.groups.values_mut() {
-                    group_data
-                        .instances
-                        .retain(|inst| inst.data() != Some(resource));
-                }
-                for ws_data in ps.workspaces.values_mut() {
-                    ws_data
-                        .instances
-                        .retain(|inst| inst.data() != Some(resource));
-                }
+                ps.remove_manager(resource);
             }
             _ => unreachable!(),
         }
@@ -580,17 +574,7 @@ where
 
     fn destroyed(state: &mut D, _client: ClientId, resource: &ExtWorkspaceManagerV1, _data: &()) {
         let ps = state.workspace_manager_state();
-        ps.instances.retain(|m, _| m != resource);
-        for group_data in ps.groups.values_mut() {
-            group_data
-                .instances
-                .retain(|inst| inst.data() != Some(resource));
-        }
-        for ws_data in ps.workspaces.values_mut() {
-            ws_data
-                .instances
-                .retain(|inst| inst.data() != Some(resource));
-        }
+        ps.remove_manager(resource);
     }
 }
 
