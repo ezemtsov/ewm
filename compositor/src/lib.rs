@@ -461,6 +461,12 @@ pub struct LayoutEntry {
     pub fullscreen: bool,
 }
 
+struct LayoutEntryHit<'a> {
+    entry: &'a LayoutEntry,
+    rect: Rectangle<i32, Logical>,
+    output_size: Size<i32, Logical>,
+}
+
 /// Centering offset for a fullscreen surface within an output.
 /// Returns (0, 0) when the surface is at least as large as the output.
 pub fn fullscreen_center_offset(
@@ -1776,17 +1782,16 @@ impl Ewm {
         self.entry_origin(output_name, frame_idx, entry)
     }
 
-    /// On-screen origin of one layout view; the per-entry formula shared by
-    /// `window_global_position` and `surface_view_origins`. Fullscreen-primary
-    /// centers on the toplevel's geometry.
-    fn entry_origin(
+    /// On-screen rectangle of one layout view. Fullscreen-primary centers on
+    /// the toplevel's geometry.
+    fn layout_entry_rect(
         &self,
-        output_name: &str,
+        output_geo: Rectangle<i32, Logical>,
+        working_area: Rectangle<i32, Logical>,
+        strip: &strip::Strip,
         frame_idx: usize,
         entry: &LayoutEntry,
-    ) -> Option<Point<i32, Logical>> {
-        let output = self.space.outputs().find(|o| o.name() == output_name)?;
-        let output_geo = self.space.output_geometry(output)?;
+    ) -> Rectangle<i32, Logical> {
         if entry.fullscreen {
             if entry.primary {
                 let window_size = self
@@ -1795,20 +1800,42 @@ impl Ewm {
                     .map(|w| w.geometry().size)
                     .unwrap_or_default();
                 let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
-                return Some(Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy)));
+                return Rectangle::new(
+                    Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy)),
+                    window_size,
+                );
             }
-            return Some(Point::from((output_geo.loc.x, output_geo.loc.y)));
+
+            return Rectangle::new(
+                Point::from((output_geo.loc.x, output_geo.loc.y)),
+                Size::from((entry.w as i32, entry.h as i32)),
+            );
         }
+
+        let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+        Rectangle::new(
+            Point::from((
+                output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
+                output_geo.loc.y + working_area.loc.y + entry.y,
+            )),
+            Size::from((entry.w as i32, entry.h as i32)),
+        )
+    }
+
+    fn entry_origin(
+        &self,
+        output_name: &str,
+        frame_idx: usize,
+        entry: &LayoutEntry,
+    ) -> Option<Point<i32, Logical>> {
+        let output = self.space.outputs().find(|o| o.name() == output_name)?;
+        let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
-        let frame_dx = self
-            .output_strips
-            .get(output_name)
-            .map(|s| s.screen_x_of_frame(frame_idx))
-            .unwrap_or(0.0) as i32;
-        Some(Point::from((
-            output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-            output_geo.loc.y + working_area.loc.y + entry.y,
-        )))
+        let strip = self.output_strips.get(output_name)?;
+        Some(
+            self.layout_entry_rect(output_geo, working_area, strip, frame_idx, entry)
+                .loc,
+        )
     }
 
     /// On-screen origins of every layout view of `surface_id`, one per entry.
@@ -1830,12 +1857,19 @@ impl Ewm {
         origins
     }
 
+    fn rect_contains_f64(rect: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
+        pos.x >= rect.loc.x as f64
+            && pos.y >= rect.loc.y as f64
+            && pos.x < (rect.loc.x + rect.size.w) as f64
+            && pos.y < (rect.loc.y + rect.size.h) as f64
+    }
+
     /// Find the topmost layout entry containing `pos`, returning the entry
-    /// and its global (x, y) origin.
+    /// and its global rectangle.
     fn layout_entry_under(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<(&LayoutEntry, i32, i32)> {
+    ) -> Option<LayoutEntryHit<'_>> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = {
@@ -1848,49 +1882,47 @@ impl Ewm {
         // Fullscreen primary clicks miss in the letterbox; inactive fullscreens render off-screen.
         for (frame_idx, entry) in strip.surfaces_with_frame() {
             let in_active = frame_idx == active_idx;
-            let (entry_x, entry_y, entry_w, entry_h) = if entry.fullscreen {
-                if !in_active {
-                    continue;
-                }
-                if entry.primary {
-                    let window_size = self
-                        .id_windows
-                        .get(&entry.surface_id)
-                        .map(|w| w.geometry().size)
-                        .unwrap_or_default();
-                    let (cx, cy) = fullscreen_center_offset(window_size, output_geo.size);
-                    (
-                        output_geo.loc.x + cx,
-                        output_geo.loc.y + cy,
-                        window_size.w,
-                        window_size.h,
-                    )
-                } else {
-                    (
-                        output_geo.loc.x,
-                        output_geo.loc.y,
-                        entry.w as i32,
-                        entry.h as i32,
-                    )
-                }
-            } else {
-                let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-                (
-                    output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                    output_geo.loc.y + working_area.loc.y + entry.y,
-                    entry.w as i32,
-                    entry.h as i32,
-                )
-            };
-            if pos.x >= entry_x as f64
-                && pos.y >= entry_y as f64
-                && pos.x < (entry_x + entry_w) as f64
-                && pos.y < (entry_y + entry_h) as f64
-            {
-                return Some((entry, entry_x, entry_y));
+            if entry.fullscreen && !in_active {
+                continue;
+            }
+
+            let rect = self.layout_entry_rect(output_geo, working_area, strip, frame_idx, entry);
+            if Self::rect_contains_f64(rect, pos) {
+                return Some(LayoutEntryHit {
+                    entry,
+                    rect,
+                    output_size: output_geo.size,
+                });
             }
         }
         None
+    }
+
+    fn pointer_scale_for_entry(
+        entry: &LayoutEntry,
+        window_size: Size<i32, Logical>,
+        output_size: Size<i32, Logical>,
+    ) -> f64 {
+        if entry.fullscreen {
+            if entry.primary {
+                return 1.0;
+            }
+
+            let uniform = f64::max(
+                output_size.w as f64 / window_size.w as f64,
+                output_size.h as f64 / window_size.h as f64,
+            );
+            return 1.0 / uniform;
+        }
+
+        if entry.primary || entry.w == 0 || entry.h == 0 {
+            return 1.0;
+        }
+
+        f64::min(
+            window_size.w as f64 / entry.w as f64,
+            window_size.h as f64 / entry.h as f64,
+        )
     }
 
     /// Hit-test layout surfaces under a global position; falls back to the
@@ -1905,40 +1937,16 @@ impl Ewm {
         use smithay::utils::Point;
 
         // Entry hit: delegate the rect check to the single authoritative helper.
-        if let Some((entry, entry_x, entry_y)) = self.layout_entry_under(pos) {
+        if let Some(hit) = self.layout_entry_under(pos) {
+            let entry = hit.entry;
             if let Some(window) = self.id_windows.get(&entry.surface_id) {
                 let window_geo = window.geometry();
-                let output_geo = self
-                    .output_at(pos)
-                    .and_then(|o| self.space.output_geometry(o));
-
-                let pointer_scale = if entry.fullscreen {
-                    let out_size = output_geo.map(|g| g.size).unwrap_or_default();
-                    if entry.primary {
-                        // Centering is already baked into the (entry_x, entry_y) returned
-                        // by layout_entry_under for fullscreen primary; don't double-apply.
-                        1.0
-                    } else {
-                        let uniform = f64::max(
-                            out_size.w as f64 / window_geo.size.w as f64,
-                            out_size.h as f64 / window_geo.size.h as f64,
-                        );
-                        1.0 / uniform
-                    }
-                } else if entry.primary {
-                    1.0
-                } else if entry.w > 0 && entry.h > 0 {
-                    f64::min(
-                        window_geo.size.w as f64 / entry.w as f64,
-                        window_geo.size.h as f64 / entry.h as f64,
-                    )
-                } else {
-                    1.0
-                };
+                let pointer_scale =
+                    Self::pointer_scale_for_entry(entry, window_geo.size, hit.output_size);
 
                 let pos_in_window = Point::from((
-                    (pos.x - entry_x as f64) * pointer_scale,
-                    (pos.y - entry_y as f64) * pointer_scale,
+                    (pos.x - hit.rect.loc.x as f64) * pointer_scale,
+                    (pos.y - hit.rect.loc.y as f64) * pointer_scale,
                 ));
                 let window_origin: Point<f64, Logical> =
                     Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
@@ -2011,7 +2019,7 @@ impl Ewm {
 
     /// View id of the layout entry under a point.
     pub fn view_id_under(&self, pos: Point<f64, Logical>) -> Option<ViewId> {
-        self.layout_entry_under(pos).map(|(e, _, _)| e.view_id)
+        self.layout_entry_under(pos).map(|hit| hit.entry.view_id)
     }
 
     /// Entry surface ids on `output_name`'s strip; empty if the strip is gone.
