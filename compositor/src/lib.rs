@@ -3479,25 +3479,28 @@ impl Ewm {
         self.output_management_state.notify_changes(new_state);
     }
 
-    /// Find the output for a surface (returns Output object)
-    fn find_surface_output(&self, surface_id: u64) -> Option<smithay::output::Output> {
-        // Layout surfaces: prefer focused output, then any
+    /// Output name for a surface, preferring the focused layout entry when a
+    /// surface appears on multiple outputs.
+    fn surface_output_name(&self, surface_id: u64) -> Option<&str> {
         if self.surface_outputs.contains_key(&surface_id) {
             if let Some(location) = self.focused_entry_for_surface(surface_id) {
-                return self
-                    .space
-                    .outputs()
-                    .find(|o| o.name() == location.output_name)
-                    .cloned();
+                return Some(location.output_name);
             }
-            if let Some(output_names) = self.surface_outputs.get(&surface_id) {
-                if let Some(name) = output_names.iter().next() {
-                    return self.space.outputs().find(|o| o.name() == *name).cloned();
-                }
+            if let Some(name) = self
+                .surface_outputs
+                .get(&surface_id)
+                .and_then(|output_names| output_names.iter().next())
+            {
+                return Some(name.as_str());
             }
         }
-        // Emacs frames: derived from `output_strips` (frames aren't in `space`).
-        let output_name = self.emacs_frame_output(surface_id)?;
+
+        self.emacs_frame_output(surface_id)
+    }
+
+    /// Find the output for a surface (returns Output object)
+    fn find_surface_output(&self, surface_id: u64) -> Option<smithay::output::Output> {
+        let output_name = self.surface_output_name(surface_id)?;
         self.space
             .outputs()
             .find(|o| o.name() == output_name)
@@ -4547,23 +4550,8 @@ impl Ewm {
 
         // Check windows (layout surfaces + Emacs frames)
         if let Some((_window, id)) = self.find_window_by_surface(&root) {
-            // Layout surface: prefer focused output
-            if let Some(location) = self.focused_entry_for_surface(id) {
-                return self
-                    .space
-                    .outputs()
-                    .find(|o| o.name() == location.output_name);
-            }
-            // Fallback: any output from surface_outputs
-            if let Some(output_names) = self.surface_outputs.get(&id) {
-                if let Some(name) = output_names.iter().next() {
-                    return self.space.outputs().find(|o| o.name() == *name);
-                }
-            }
-            if let Some(output_name) = self.emacs_frame_output(id) {
-                return self.space.outputs().find(|o| o.name() == output_name);
-            }
-            return None;
+            let output_name = self.surface_output_name(id)?;
+            return self.space.outputs().find(|o| o.name() == output_name);
         }
 
         // Check layer surfaces
@@ -6882,6 +6870,56 @@ impl State {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEAD_A: &str = "HEAD-A";
+    const HEAD_B: &str = "HEAD-B";
+
+    fn nz(raw: u64) -> ViewId {
+        std::num::NonZeroU64::new(raw).unwrap()
+    }
+
+    fn frame_with_entry(frame_surface_id: u64, view_id: ViewId, surface_id: u64) -> strip::Frame {
+        let mut frame = strip::Frame::new(frame_surface_id);
+        frame.width = 400.0;
+        frame.selected_view_id = Some(view_id);
+        frame.surfaces.push(LayoutEntry {
+            view_id,
+            surface_id,
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 400,
+            primary: false,
+            fullscreen: false,
+        });
+        frame
+    }
+
+    #[test]
+    fn surface_output_name_prefers_focused_layout_entry() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.add_output(HEAD_B, 1600, 900);
+
+        let surface_id = 42;
+        let view_a = nz(1001);
+        let view_b = nz(1002);
+        fix.ewm()
+            .apply_output_layout(HEAD_A, vec![frame_with_entry(100, view_a, surface_id)]);
+        fix.ewm()
+            .apply_output_layout(HEAD_B, vec![frame_with_entry(200, view_b, surface_id)]);
+
+        fix.ewm().set_focus_view(view_b, "test", false);
+        assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_B));
+
+        fix.ewm().set_focus_view(view_a, "test", false);
+        assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_A));
     }
 }
 
