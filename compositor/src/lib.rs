@@ -467,6 +467,8 @@ struct LayoutEntryHit<'a> {
     output_size: Size<i32, Logical>,
 }
 
+type SurfaceHit = (WlSurface, Point<f64, Logical>);
+
 /// Centering offset for a fullscreen surface within an output.
 /// Returns (0, 0) when the surface is at least as large as the output.
 pub fn fullscreen_center_offset(
@@ -1973,43 +1975,45 @@ impl Ewm {
 
     /// Hit-test layout surfaces under a global position; falls back to the
     /// frame's own surface when no entry hits.
-    pub fn layout_surface_under(
-        &self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<(
-        WlSurface,
-        smithay::utils::Point<f64, smithay::utils::Logical>,
-    )> {
-        use smithay::utils::Point;
-
-        // Entry hit: delegate the rect check to the single authoritative helper.
-        if let Some(hit) = self.layout_entry_under(pos) {
-            let entry = hit.entry;
-            if let Some(window) = self.id_windows.get(&entry.surface_id) {
-                let window_geo = window.geometry();
-                let pointer_scale =
-                    Self::pointer_scale_for_entry(entry, window_geo.size, hit.output_size);
-
-                let pos_in_window = Point::from((
-                    (pos.x - hit.rect.loc.x as f64) * pointer_scale,
-                    (pos.y - hit.rect.loc.y as f64) * pointer_scale,
-                ));
-                let window_origin: Point<f64, Logical> =
-                    Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
-
-                if let Some((surface, surface_offset)) =
-                    window.surface_under(pos_in_window, WindowSurfaceType::ALL)
-                {
-                    let global_loc = Point::from((
-                        window_origin.x + surface_offset.x as f64,
-                        window_origin.y + surface_offset.y as f64,
-                    ));
-                    return Some((surface, global_loc));
-                }
-            }
+    pub fn layout_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
+        if let Some(surface) = self
+            .layout_entry_under(pos)
+            .and_then(|hit| self.surface_under_layout_entry(pos, hit))
+        {
+            return Some(surface);
         }
 
-        // Frame fallback: find the frame containing pos, return its own surface.
+        self.surface_under_frame(pos)
+    }
+
+    fn surface_under_layout_entry(
+        &self,
+        pos: Point<f64, Logical>,
+        hit: LayoutEntryHit<'_>,
+    ) -> Option<SurfaceHit> {
+        let entry = hit.entry;
+        let window = self.id_windows.get(&entry.surface_id)?;
+        let window_geo = window.geometry();
+        let pointer_scale = Self::pointer_scale_for_entry(entry, window_geo.size, hit.output_size);
+
+        let pos_in_window = Point::from((
+            (pos.x - hit.rect.loc.x as f64) * pointer_scale,
+            (pos.y - hit.rect.loc.y as f64) * pointer_scale,
+        ));
+        let window_origin: Point<f64, Logical> =
+            Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
+
+        let (surface, surface_offset) =
+            window.surface_under(pos_in_window, WindowSurfaceType::ALL)?;
+        let global_loc = Point::from((
+            window_origin.x + surface_offset.x as f64,
+            window_origin.y + surface_offset.y as f64,
+        ));
+        Some((surface, global_loc))
+    }
+
+    /// Find the frame containing `pos`, returning the frame surface itself.
+    fn surface_under_frame(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = {
