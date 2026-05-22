@@ -25,6 +25,40 @@ pub enum CastTarget {
     Window { id: u64 },
 }
 
+/// Cursor mode requested through org.gnome.Mutter.ScreenCast.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CursorMode {
+    Hidden,
+    #[default]
+    Embedded,
+    Metadata,
+}
+
+impl CursorMode {
+    fn from_raw(mode: u32) -> Option<Self> {
+        match mode {
+            0 => Some(Self::Hidden),
+            1 => Some(Self::Embedded),
+            2 => Some(Self::Metadata),
+            _ => None,
+        }
+    }
+
+    pub fn includes_cursor(self) -> bool {
+        self != Self::Hidden
+    }
+}
+
+impl std::fmt::Display for CursorMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hidden => f.write_str("hidden"),
+            Self::Embedded => f.write_str("embedded"),
+            Self::Metadata => f.write_str("metadata"),
+        }
+    }
+}
+
 /// Properties for the RecordWindow D-Bus method.
 #[derive(Debug, DeserializeDict, Type)]
 #[zvariant(signature = "dict")]
@@ -35,17 +69,26 @@ struct RecordWindowProperties {
     cursor_mode: Option<u32>,
 }
 
-/// Parse the optional `cursor-mode` u32 from a method-call properties
-/// dict, falling back to the session-level cursor_mode if absent or
-/// not a u32.
-fn parse_cursor_mode(properties: &HashMap<&str, Value<'_>>, session_default: u32) -> u32 {
-    properties
-        .get("cursor-mode")
-        .and_then(|v| match v {
-            Value::U32(m) => Some(*m),
-            _ => None,
-        })
-        .unwrap_or(session_default)
+fn parse_cursor_mode(
+    properties: &HashMap<&str, Value<'_>>,
+    default: CursorMode,
+) -> fdo::Result<CursorMode> {
+    match properties.get("cursor-mode") {
+        None => Ok(default),
+        Some(Value::U32(mode)) => parse_optional_cursor_mode(Some(*mode), default),
+        Some(_) => Err(fdo::Error::InvalidArgs(
+            "cursor-mode must be a u32".to_owned(),
+        )),
+    }
+}
+
+fn parse_optional_cursor_mode(mode: Option<u32>, default: CursorMode) -> fdo::Result<CursorMode> {
+    let Some(mode) = mode else {
+        return Ok(default);
+    };
+    CursorMode::from_raw(mode).ok_or_else(|| {
+        fdo::Error::InvalidArgs(format!("invalid cursor-mode {mode}; expected 0, 1, or 2"))
+    })
 }
 
 /// Messages sent from D-Bus to compositor
@@ -54,7 +97,7 @@ pub enum ScreenCastToCompositor {
         session_id: CastSessionId,
         target: CastTarget,
         signal_ctx: SignalEmitter<'static>,
-        cursor_mode: u32,
+        cursor_mode: CursorMode,
     },
     StopCast {
         session_id: CastSessionId,
@@ -111,14 +154,7 @@ impl ScreenCast {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        // Parse cursor-mode: 0=Hidden, 1=Embedded (default), 2=Metadata
-        let cursor_mode = properties
-            .get("cursor-mode")
-            .and_then(|v| match v {
-                Value::U32(m) => Some(*m),
-                _ => None,
-            })
-            .unwrap_or(1); // Default to Embedded
+        let cursor_mode = parse_cursor_mode(&properties, CursorMode::default())?;
         debug!("Session {} cursor_mode={}", session_id, cursor_mode);
 
         let session = Session::new(
@@ -161,7 +197,7 @@ pub struct Session {
     to_compositor: Sender<ScreenCastToCompositor>,
     streams: Arc<Mutex<Vec<StreamInfo>>>,
     stopped: Arc<AtomicBool>,
-    cursor_mode: u32,
+    cursor_mode: CursorMode,
 }
 
 impl Session {
@@ -169,7 +205,7 @@ impl Session {
         id: CastSessionId,
         outputs: Arc<Mutex<Vec<OutputInfo>>>,
         to_compositor: Sender<ScreenCastToCompositor>,
-        cursor_mode: u32,
+        cursor_mode: CursorMode,
     ) -> Self {
         Self {
             id,
@@ -246,7 +282,7 @@ impl Session {
         connector: &str,
         properties: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<OwnedObjectPath> {
-        let cursor_mode = parse_cursor_mode(&properties, self.cursor_mode);
+        let cursor_mode = parse_cursor_mode(&properties, self.cursor_mode)?;
         // Find the output
         let output = {
             let outputs = self.outputs.lock().unwrap();
@@ -314,7 +350,7 @@ impl Session {
         properties: RecordWindowProperties,
     ) -> fdo::Result<OwnedObjectPath> {
         let window_id = properties.window_id;
-        let cursor_mode = properties.cursor_mode.unwrap_or(self.cursor_mode);
+        let cursor_mode = parse_optional_cursor_mode(properties.cursor_mode, self.cursor_mode)?;
         info!("RecordWindow: window_id={}", window_id);
 
         let target = CastTarget::Window { id: window_id };
@@ -386,7 +422,7 @@ pub struct Stream {
     /// taken from the per-call `cursor-mode` property in
     /// RecordMonitor/RecordWindow if present, else inherited from
     /// the session.
-    cursor_mode: u32,
+    cursor_mode: CursorMode,
 }
 
 impl Stream {
@@ -394,7 +430,7 @@ impl Stream {
         id: CastStreamId,
         output: OutputInfo,
         to_compositor: Sender<ScreenCastToCompositor>,
-        cursor_mode: u32,
+        cursor_mode: CursorMode,
     ) -> Self {
         Self {
             id,
@@ -408,7 +444,7 @@ impl Stream {
     fn new_window(
         id: CastStreamId,
         to_compositor: Sender<ScreenCastToCompositor>,
-        cursor_mode: u32,
+        cursor_mode: CursorMode,
     ) -> Self {
         Self {
             id,
@@ -488,5 +524,54 @@ impl Start for ScreenCast {
         conn.request_name_with_flags("org.gnome.Mutter.ScreenCast", flags)?;
 
         Ok(conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cursor_props(value: Value<'static>) -> HashMap<&'static str, Value<'static>> {
+        HashMap::from([("cursor-mode", value)])
+    }
+
+    #[test]
+    fn cursor_mode_defaults_when_absent() {
+        assert_eq!(
+            parse_cursor_mode(&HashMap::new(), CursorMode::Hidden).unwrap(),
+            CursorMode::Hidden
+        );
+    }
+
+    #[test]
+    fn cursor_mode_accepts_protocol_values() {
+        assert_eq!(
+            parse_cursor_mode(&cursor_props(Value::U32(0)), CursorMode::Embedded).unwrap(),
+            CursorMode::Hidden
+        );
+        assert_eq!(
+            parse_cursor_mode(&cursor_props(Value::U32(1)), CursorMode::Hidden).unwrap(),
+            CursorMode::Embedded
+        );
+        assert_eq!(
+            parse_cursor_mode(&cursor_props(Value::U32(2)), CursorMode::Hidden).unwrap(),
+            CursorMode::Metadata
+        );
+    }
+
+    #[test]
+    fn cursor_mode_rejects_out_of_range_values() {
+        let err = parse_cursor_mode(&cursor_props(Value::U32(3)), CursorMode::Embedded)
+            .expect_err("invalid cursor mode must fail");
+
+        assert!(matches!(err, fdo::Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn cursor_mode_rejects_wrong_value_type() {
+        let err = parse_cursor_mode(&cursor_props(Value::Bool(true)), CursorMode::Embedded)
+            .expect_err("wrong cursor mode type must fail");
+
+        assert!(matches!(err, fdo::Error::InvalidArgs(_)));
     }
 }

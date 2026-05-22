@@ -49,7 +49,7 @@ use smithay::utils::{Physical, Point, Scale, Size, Transform};
 use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
-use crate::dbus::{screen_cast, CastTarget};
+use crate::dbus::{screen_cast, CastTarget, CursorMode};
 use crate::State;
 
 /// PipeWire connection state. Outer code drops and recreates this on
@@ -260,8 +260,7 @@ pub struct Cast {
     pub last_frame_time: Duration,
     /// Frame sequence counter for SPA_META_Header
     sequence_counter: u64,
-    /// Cursor mode: 0=Hidden, 1=Embedded, 2=Metadata
-    pub cursor_mode: u32,
+    pub cursor_mode: CursorMode,
     /// Whether the stream uses alpha (BGRA). True for window casts.
     alpha: bool,
     /// Render formats (modifier list) for renegotiation on resize
@@ -300,8 +299,15 @@ impl PipeWire {
         alpha: bool,
         signal_ctx: SignalEmitter<'static>,
         render_formats: Vec<i64>,
-        cursor_mode: u32,
+        cursor_mode: CursorMode,
     ) -> anyhow::Result<Cast> {
+        let cursor_mode = if cursor_mode == CursorMode::Metadata {
+            debug!("cursor metadata is not implemented yet; embedding cursor instead");
+            CursorMode::Embedded
+        } else {
+            cursor_mode
+        };
+
         let event_loop = self.event_loop.clone();
         let to_compositor = self.to_compositor.clone();
         let size = Size::from((size.w as u32, size.h as u32));

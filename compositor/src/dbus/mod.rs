@@ -39,7 +39,7 @@ pub use display_config::DisplayConfig;
 pub use introspect::{
     CompositorToIntrospect, Introspect, IntrospectToCompositor, WindowProperties,
 };
-pub use screen_cast::{CastTarget, ScreenCast, ScreenCastToCompositor};
+pub use screen_cast::{CastTarget, CursorMode, ScreenCast, ScreenCastToCompositor};
 pub use service_channel::ServiceChannel;
 
 /// Trait for starting D-Bus interfaces

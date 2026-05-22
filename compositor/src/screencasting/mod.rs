@@ -369,7 +369,7 @@ impl Ewm {
         let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
         let mut cursor_location = Point::<i32, Physical>::from((0, 0));
 
-        if cast.cursor_mode != 0 {
+        if cast.cursor_mode.includes_cursor() {
             let (px, py) = self.pointer_location();
             let output_geo = self.space.output_geometry(output);
 
@@ -494,7 +494,7 @@ impl Ewm {
                 continue;
             }
 
-            let include_cursor = cast.cursor_mode != 0;
+            let include_cursor = cast.cursor_mode.includes_cursor();
             let (content, cursor) = elements.get_or_insert_with(|| {
                 crate::render::collect_render_elements_for_output(
                     self,
