@@ -85,7 +85,6 @@ impl std::fmt::Debug for ScreenCastToCompositor {
 pub struct ScreenCast {
     outputs: Arc<Mutex<Vec<OutputInfo>>>,
     to_compositor: Sender<ScreenCastToCompositor>,
-    sessions: Arc<Mutex<Vec<CastSessionId>>>,
 }
 
 impl ScreenCast {
@@ -96,7 +95,6 @@ impl ScreenCast {
         Self {
             outputs,
             to_compositor,
-            sessions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -132,7 +130,6 @@ impl ScreenCast {
 
         match server.at(&path, session).await {
             Ok(true) => {
-                self.sessions.lock().unwrap().push(session_id);
                 info!("Created ScreenCast session: {}", path);
                 Ok(path)
             }
@@ -277,13 +274,7 @@ impl Session {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let stream = Stream::new_output(
-            stream_id,
-            self.id,
-            output,
-            self.to_compositor.clone(),
-            cursor_mode,
-        );
+        let stream = Stream::new_output(stream_id, output, self.to_compositor.clone(), cursor_mode);
 
         // Register stream with D-Bus and get InterfaceRef
         let iface = match server.at(&path, stream.clone()).await {
@@ -333,13 +324,7 @@ impl Session {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let stream = Stream::new_window(
-            stream_id,
-            self.id,
-            window_id,
-            self.to_compositor.clone(),
-            cursor_mode,
-        );
+        let stream = Stream::new_window(stream_id, self.to_compositor.clone(), cursor_mode);
 
         // Register stream with D-Bus and get InterfaceRef
         let iface = match server.at(&path, stream.clone()).await {
@@ -385,19 +370,15 @@ impl Drop for Session {
 
 /// The target of a stream (for D-Bus property reporting).
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 enum StreamTarget {
     Output(OutputInfo),
-    Window { id: u64 },
+    Window,
 }
 
 /// Stream interface
 #[derive(Clone)]
 pub struct Stream {
-    #[allow(dead_code)]
     id: CastStreamId,
-    #[allow(dead_code)]
-    session_id: CastSessionId,
     target: StreamTarget,
     to_compositor: Sender<ScreenCastToCompositor>,
     was_started: Arc<AtomicBool>,
@@ -411,14 +392,12 @@ pub struct Stream {
 impl Stream {
     fn new_output(
         id: CastStreamId,
-        session_id: CastSessionId,
         output: OutputInfo,
         to_compositor: Sender<ScreenCastToCompositor>,
         cursor_mode: u32,
     ) -> Self {
         Self {
             id,
-            session_id,
             target: StreamTarget::Output(output),
             to_compositor,
             was_started: Arc::new(AtomicBool::new(false)),
@@ -428,15 +407,12 @@ impl Stream {
 
     fn new_window(
         id: CastStreamId,
-        session_id: CastSessionId,
-        window_id: u64,
         to_compositor: Sender<ScreenCastToCompositor>,
         cursor_mode: u32,
     ) -> Self {
         Self {
             id,
-            session_id,
-            target: StreamTarget::Window { id: window_id },
+            target: StreamTarget::Window,
             to_compositor,
             was_started: Arc::new(AtomicBool::new(false)),
             cursor_mode,
@@ -482,7 +458,7 @@ impl Stream {
                     Value::new((output.width, output.height)),
                 );
             }
-            StreamTarget::Window { .. } => {
+            StreamTarget::Window => {
                 // Window size is dynamic; consumers don't rely on this
                 params.insert("position".to_string(), Value::new((0i32, 0i32)));
                 params.insert("size".to_string(), Value::new((1i32, 1i32)));
