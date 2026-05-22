@@ -3652,29 +3652,29 @@ impl Ewm {
         // Helper: find exclusive focus on a layer
         let excl_on_layer = |output: &Output, layer: Layer| -> Option<WlSurface> {
             let map = layer_map_for_output(output);
-            let layers: Vec<_> = map.layers_on(layer).cloned().collect();
-            layers.into_iter().find_map(|surface| {
+            let result = map.layers_on(layer).find_map(|surface| {
                 if surface.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
                 {
                     Some(surface.wl_surface().clone())
                 } else {
                     None
                 }
-            })
+            });
+            result
         };
 
         // Helper: check if on-demand focus is on a layer
         let on_demand_on_layer = |output: &Output, layer: Layer| -> Option<WlSurface> {
             let on_demand = self.layer_shell_on_demand_focus.as_ref()?;
             let map = layer_map_for_output(output);
-            let layers: Vec<_> = map.layers_on(layer).cloned().collect();
-            layers.into_iter().find_map(|surface| {
-                if &surface == on_demand {
+            let result = map.layers_on(layer).find_map(|surface| {
+                if surface == on_demand {
                     Some(surface.wl_surface().clone())
                 } else {
                     None
                 }
-            })
+            });
+            result
         };
 
         // Check all outputs (typically just one for EWM)
@@ -4328,7 +4328,8 @@ impl Ewm {
         }
 
         // Emacs frames aren't in `space`; notify them via the strip.
-        for id in self.emacs_frames_on(&output.name()).collect::<Vec<_>>() {
+        let output_name = output.name();
+        for id in self.emacs_frames_on(&output_name) {
             if let Some(window) = self.id_windows.get(&id) {
                 window.with_surfaces(|surface, data| {
                     crate::utils::send_scale_transform(surface, data, scale, transform);
@@ -4363,8 +4364,9 @@ impl Ewm {
     /// Called when layer surface exclusive zones change.
     pub fn update_frames_for_working_area(&mut self, output: &Output) {
         let working_area = self.get_working_area(output);
+        let output_name = output.name();
 
-        for id in self.emacs_frames_on(&output.name()).collect::<Vec<_>>() {
+        for id in self.emacs_frames_on(&output_name) {
             let Some(window) = self.id_windows.get(&id) else {
                 continue;
             };
@@ -4446,8 +4448,7 @@ impl Ewm {
         for output in self.space.outputs() {
             let map = layer_map_for_output(output);
             for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
-                let layers: Vec<_> = map.layers_on(layer).cloned().collect();
-                for layer_surface in &layers {
+                for layer_surface in map.layers_on(layer) {
                     let cached = layer_surface.cached_state();
                     let geo = map.layer_geometry(layer_surface);
                     let kb_interactivity = match cached.keyboard_interactivity {
