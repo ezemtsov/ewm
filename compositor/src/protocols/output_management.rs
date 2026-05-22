@@ -96,6 +96,11 @@ enum FinishConfigError {
     AllDisabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigureHeadError {
+    AlreadyConfigured,
+}
+
 pub enum OutputConfigurationHeadState {
     Cancelled,
     Ok(String, ZwlrOutputConfigurationV1),
@@ -392,6 +397,34 @@ fn head_property_change(
     })
 }
 
+fn ongoing_output_config_mut(
+    state: Option<&mut OutputConfigurationState>,
+) -> Result<&mut HashMap<String, OutputConfig>, FinishConfigError> {
+    let Some(state) = state else {
+        return Err(FinishConfigError::Missing);
+    };
+
+    let OutputConfigurationState::Ongoing(config) = state else {
+        return Err(FinishConfigError::AlreadyUsed);
+    };
+
+    Ok(config)
+}
+
+fn insert_output_config(
+    configs: &mut HashMap<String, OutputConfig>,
+    output_name: String,
+    config: OutputConfig,
+) -> Result<(), ConfigureHeadError> {
+    match configs.entry(output_name) {
+        Entry::Occupied(_) => Err(ConfigureHeadError::AlreadyConfigured),
+        Entry::Vacant(entry) => {
+            entry.insert(config);
+            Ok(())
+        }
+    }
+}
+
 fn take_ongoing_output_config(
     state: Option<&mut OutputConfigurationState>,
 ) -> Result<HashMap<String, OutputConfig>, FinishConfigError> {
@@ -412,22 +445,29 @@ fn take_ongoing_output_config(
     }
 }
 
+fn report_output_config_error(conf: &ZwlrOutputConfigurationV1, err: FinishConfigError) {
+    match err {
+        FinishConfigError::Missing => {}
+        FinishConfigError::AlreadyUsed => {
+            conf.post_error(
+                zwlr_output_configuration_v1::Error::AlreadyUsed,
+                "configuration had already been used",
+            );
+        }
+        FinishConfigError::AllDisabled => {
+            conf.failed();
+        }
+    }
+}
+
 fn finish_output_configuration_request(
     conf: &ZwlrOutputConfigurationV1,
     state: Option<&mut OutputConfigurationState>,
 ) -> Option<HashMap<String, OutputConfig>> {
     match take_ongoing_output_config(state) {
         Ok(config) => Some(config),
-        Err(FinishConfigError::Missing) => None,
-        Err(FinishConfigError::AlreadyUsed) => {
-            conf.post_error(
-                zwlr_output_configuration_v1::Error::AlreadyUsed,
-                "configuration had already been used",
-            );
-            None
-        }
-        Err(FinishConfigError::AllDisabled) => {
-            conf.failed();
+        Err(err) => {
+            report_output_config_error(conf, err);
             None
         }
     }
@@ -565,18 +605,13 @@ where
                     return;
                 }
 
-                let Some(new_config) = new_config else {
-                    let _fail = data_init.init(id, OutputConfigurationHeadState::Cancelled);
-                    return;
-                };
-
-                let OutputConfigurationState::Ongoing(new_config) = new_config else {
-                    let _fail = data_init.init(id, OutputConfigurationHeadState::Cancelled);
-                    conf.post_error(
-                        zwlr_output_configuration_v1::Error::AlreadyUsed,
-                        "configuration had already been used",
-                    );
-                    return;
+                let new_config = match ongoing_output_config_mut(new_config) {
+                    Ok(new_config) => new_config,
+                    Err(err) => {
+                        report_output_config_error(conf, err);
+                        let _fail = data_init.init(id, OutputConfigurationHeadState::Cancelled);
+                        return;
+                    }
                 };
 
                 let Some(current_head) = g_state.current_state.get(output_name) else {
@@ -585,21 +620,20 @@ where
                     return;
                 };
 
-                match new_config.entry(output_name.clone()) {
-                    Entry::Occupied(_) => {
-                        let _fail = data_init.init(id, OutputConfigurationHeadState::Cancelled);
-                        conf.post_error(
-                            zwlr_output_configuration_v1::Error::AlreadyConfiguredHead,
-                            "head has been already configured",
-                        );
-                        return;
-                    }
-                    Entry::Vacant(entry) => {
-                        // Build an OutputConfig from the current head state
-                        let config = output_config_from_head(current_head);
-                        entry.insert(config);
-                    }
-                };
+                if insert_output_config(
+                    new_config,
+                    output_name.clone(),
+                    output_config_from_head(current_head),
+                )
+                .is_err()
+                {
+                    let _fail = data_init.init(id, OutputConfigurationHeadState::Cancelled);
+                    conf.post_error(
+                        zwlr_output_configuration_v1::Error::AlreadyConfiguredHead,
+                        "head has been already configured",
+                    );
+                    return;
+                }
 
                 data_init.init(
                     id,
@@ -615,32 +649,29 @@ where
                     return;
                 };
 
-                let Some(new_config) = new_config else {
-                    return;
+                let new_config = match ongoing_output_config_mut(new_config) {
+                    Ok(new_config) => new_config,
+                    Err(err) => {
+                        report_output_config_error(conf, err);
+                        return;
+                    }
                 };
 
-                let OutputConfigurationState::Ongoing(new_config) = new_config else {
+                if insert_output_config(
+                    new_config,
+                    output_name.clone(),
+                    OutputConfig {
+                        enabled: false,
+                        ..Default::default()
+                    },
+                )
+                .is_err()
+                {
                     conf.post_error(
-                        zwlr_output_configuration_v1::Error::AlreadyUsed,
-                        "configuration had already been used",
+                        zwlr_output_configuration_v1::Error::AlreadyConfiguredHead,
+                        "head has been already configured",
                     );
-                    return;
-                };
-
-                match new_config.entry(output_name.clone()) {
-                    Entry::Occupied(_) => {
-                        conf.post_error(
-                            zwlr_output_configuration_v1::Error::AlreadyConfiguredHead,
-                            "head has been already configured",
-                        );
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(OutputConfig {
-                            enabled: false,
-                            ..Default::default()
-                        });
-                    }
-                };
+                }
             }
             zwlr_output_configuration_v1::Request::Apply => {
                 if outdated {
@@ -1210,5 +1241,45 @@ mod tests {
         assert_eq!(already_used, FinishConfigError::AlreadyUsed);
         assert_eq!(missing, FinishConfigError::Missing);
         assert!(matches!(state, OutputConfigurationState::Finished));
+    }
+
+    #[test]
+    fn ongoing_output_config_mut_exposes_only_unfinished_configs() {
+        let mut ongoing = config_state([]);
+        let mut finished = OutputConfigurationState::Finished;
+
+        assert!(ongoing_output_config_mut(Some(&mut ongoing)).is_ok());
+        assert_eq!(
+            ongoing_output_config_mut(Some(&mut finished)).unwrap_err(),
+            FinishConfigError::AlreadyUsed,
+        );
+        assert_eq!(
+            ongoing_output_config_mut(None).unwrap_err(),
+            FinishConfigError::Missing,
+        );
+    }
+
+    #[test]
+    fn insert_output_config_rejects_duplicate_heads() {
+        let mut configs = HashMap::new();
+        let source = head("HEAD-A");
+        let enabled = output_config_from_head(&source);
+        let disabled = config(false);
+
+        assert_eq!(
+            insert_output_config(&mut configs, "HEAD-A".to_string(), enabled),
+            Ok(()),
+        );
+        assert_eq!(
+            insert_output_config(&mut configs, "HEAD-A".to_string(), disabled),
+            Err(ConfigureHeadError::AlreadyConfigured),
+        );
+
+        let stored = &configs["HEAD-A"];
+        assert!(stored.enabled);
+        assert_eq!(stored.mode, Some((1920, 1080, Some(60_000))));
+        assert_eq!(stored.position, Some((0, 0)));
+        assert_eq!(stored.scale, Some(1.0));
+        assert_eq!(stored.transform, Some(Transform::Normal));
     }
 }
