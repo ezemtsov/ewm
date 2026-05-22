@@ -681,12 +681,15 @@ impl EmulatedKey {
     }
 
     /// Build the target ModifiersState: source modifiers with logo replaced by target_mod.
-    pub fn target_modifiers(&self, current: &ModifiersState) -> ModifiersState {
+    pub(crate) fn target_modifiers_for(
+        current: &ModifiersState,
+        target_mod: &str,
+    ) -> ModifiersState {
         let mut mods = *current;
         // Remove logo (the source modifier being replaced)
         mods.logo = false;
         // Add target modifier
-        match self.target_mod.as_str() {
+        match target_mod {
             "ctrl" => mods.ctrl = true,
             "alt" => mods.alt = true,
             "shift" => mods.shift = true,
@@ -694,6 +697,10 @@ impl EmulatedKey {
             _ => {}
         }
         mods
+    }
+
+    pub fn target_modifiers(&self, current: &ModifiersState) -> ModifiersState {
+        Self::target_modifiers_for(current, &self.target_mod)
     }
 }
 

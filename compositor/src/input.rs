@@ -27,20 +27,6 @@ use smithay::wayland::seat::WaylandFocus;
 
 use crate::{module, tracy_span, EmulatedKey, InterceptedKey, State};
 
-/// Build target modifier state: replace logo (Super) with the target modifier.
-fn emulate_modifiers(current: &ModifiersState, target_mod: &str) -> ModifiersState {
-    let mut mods = *current;
-    mods.logo = false;
-    match target_mod {
-        "ctrl" => mods.ctrl = true,
-        "alt" => mods.alt = true,
-        "shift" => mods.shift = true,
-        "super" => mods.logo = true,
-        _ => {}
-    }
-    mods
-}
-
 /// Notify the idle notifier of user activity and reset native idle timer
 fn notify_activity(state: &mut State) {
     state.ewm.notify_activity();
@@ -268,7 +254,7 @@ pub fn handle_keyboard_event(
                 keyboard.input_intercept(state, keycode.into(), key_state, |_, _, _| {});
 
             let saved_mods = keyboard.modifier_state();
-            let target_mods = emulate_modifiers(&saved_mods, &target_mod);
+            let target_mods = EmulatedKey::target_modifiers_for(&saved_mods, &target_mod);
             keyboard.set_modifier_state(target_mods);
             keyboard.advertise_modifier_state(state);
             keyboard.input_forward(state, keycode.into(), key_state, serial, time, false);
@@ -343,7 +329,7 @@ pub fn handle_keyboard_event(
             // needs the new modifiers BEFORE the key to interpret it correctly.
             // So: advertise modifiers first, then forward key without modifiers.
             let saved_mods = keyboard.modifier_state();
-            let target_mods = emulate_modifiers(&saved_mods, target_mod);
+            let target_mods = EmulatedKey::target_modifiers_for(&saved_mods, target_mod);
             keyboard.set_modifier_state(target_mods);
             keyboard.advertise_modifier_state(state);
             keyboard.input_forward(state, keycode.into(), key_state, serial, time, false);

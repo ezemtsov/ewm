@@ -97,6 +97,10 @@ fn any_test_keysym() -> impl Strategy<Value = u32> {
     ])
 }
 
+fn target_mod_strategy() -> impl Strategy<Value = &'static str> {
+    prop::sample::select(vec!["ctrl", "alt", "shift", "super", "unknown"])
+}
+
 proptest! {
     #[test]
     fn raw_non_uppercase_keysym_requires_exact_modifiers(
@@ -184,5 +188,35 @@ proptest! {
             intercepted.matches(raw, modified, &mods(actual)),
             emulated.matches(raw, modified, &mods(actual)),
         );
+    }
+
+    #[test]
+    fn target_modifiers_replace_logo_with_target(
+        initial in flags(),
+        target_mod in target_mod_strategy(),
+    ) {
+        let key = EmulatedKey {
+            keysym: keysyms::KEY_a,
+            ctrl: false,
+            alt: false,
+            shift: false,
+            logo: true,
+            target_mod: target_mod.to_string(),
+        };
+        let actual = key.target_modifiers(&mods(initial));
+        let mut expected = initial;
+        expected.logo = false;
+        match target_mod {
+            "ctrl" => expected.ctrl = true,
+            "alt" => expected.alt = true,
+            "shift" => expected.shift = true,
+            "super" => expected.logo = true,
+            _ => {}
+        }
+
+        prop_assert_eq!(actual.ctrl, expected.ctrl);
+        prop_assert_eq!(actual.alt, expected.alt);
+        prop_assert_eq!(actual.shift, expected.shift);
+        prop_assert_eq!(actual.logo, expected.logo);
     }
 }
