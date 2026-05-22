@@ -803,12 +803,15 @@ where
                 height,
                 refresh,
             } => {
-                // ewm doesn't support custom modes, but we can accept it as a mode request
-                if refresh == 0 {
-                    tracing::warn!("SetCustomMode: refresh 0 requested, ignoring");
+                let Some(mode) = requested_custom_mode(width, height, refresh) else {
+                    tracing::warn!("SetCustomMode: invalid requested custom mode");
+                    conf_head.post_error(
+                        zwlr_output_configuration_head_v1::Error::InvalidCustomMode,
+                        "custom mode dimensions or refresh are invalid",
+                    );
                     return;
-                }
-                new_config.mode = Some((width, height, Some(refresh)));
+                };
+                new_config.mode = Some(mode);
             }
             zwlr_output_configuration_head_v1::Request::SetPosition { x, y } => {
                 new_config.position = Some((x, y));
@@ -1075,6 +1078,14 @@ fn requested_scale(scale: f64) -> Option<f64> {
     }
 }
 
+fn requested_custom_mode(width: i32, height: i32, refresh: i32) -> Option<(i32, i32, Option<i32>)> {
+    if width <= 0 || height <= 0 || refresh < 0 {
+        None
+    } else {
+        Some((width, height, (refresh > 0).then_some(refresh)))
+    }
+}
+
 fn is_known_adaptive_sync_state(state: WEnum<AdaptiveSyncState>) -> bool {
     match state {
         WEnum::Value(AdaptiveSyncState::Enabled | AdaptiveSyncState::Disabled) => true,
@@ -1338,6 +1349,21 @@ mod tests {
         assert_eq!(requested_scale(-1.0), None);
         assert_eq!(requested_scale(f64::NAN), None);
         assert_eq!(requested_scale(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn requested_custom_mode_accepts_unspecified_refresh_only() {
+        assert_eq!(
+            requested_custom_mode(1920, 1080, 60_000),
+            Some((1920, 1080, Some(60_000)))
+        );
+        assert_eq!(
+            requested_custom_mode(1920, 1080, 0),
+            Some((1920, 1080, None))
+        );
+        assert_eq!(requested_custom_mode(0, 1080, 60_000), None);
+        assert_eq!(requested_custom_mode(1920, 0, 60_000), None);
+        assert_eq!(requested_custom_mode(1920, 1080, -1), None);
     }
 
     #[test]
