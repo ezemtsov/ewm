@@ -950,7 +950,7 @@ pub struct Ewm {
     pub captured_events: Option<Vec<Event>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct FrameMigration {
     id: u64,
     prev_output: Option<String>,
@@ -2086,6 +2086,30 @@ impl Ewm {
             .collect()
     }
 
+    fn active_frames_by_output(&self) -> HashMap<String, Option<u64>> {
+        self.output_strips
+            .iter()
+            .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
+            .collect()
+    }
+
+    fn entry_reconcile_snapshots(
+        &self,
+        output_name: &str,
+        migrations: &[FrameMigration],
+    ) -> HashMap<String, HashSet<u64>> {
+        let mut pre_entries = HashMap::new();
+        pre_entries.insert(output_name.to_string(), self.strip_entries(output_name));
+        for migration in migrations {
+            if let Some(prev_name) = &migration.prev_output {
+                pre_entries
+                    .entry(prev_name.clone())
+                    .or_insert_with(|| self.strip_entries(prev_name));
+            }
+        }
+        pre_entries
+    }
+
     fn remove_migrated_frames_from_sources(
         &mut self,
         migrations: &[FrameMigration],
@@ -2113,6 +2137,33 @@ impl Ewm {
             if was_active_in_prev {
                 self.queue_event(Event::FrameHidden { id: migration.id });
             }
+        }
+    }
+
+    fn reconcile_entry_snapshots(&mut self, pre_entries: HashMap<String, HashSet<u64>>) {
+        for (name, pre) in pre_entries {
+            self.reconcile_output_entries(&name, pre);
+        }
+    }
+
+    fn send_frame_migration_output_events(
+        &self,
+        target_output: &Output,
+        migrations: &[FrameMigration],
+    ) {
+        for migration in migrations {
+            let Some(window) = self.id_windows.get(&migration.id) else {
+                continue;
+            };
+            let Some(surface) = window.wl_surface() else {
+                continue;
+            };
+            if let Some(prev_name) = migration.prev_output.as_deref() {
+                if let Some(prev_output) = self.space.outputs().find(|o| o.name() == prev_name) {
+                    prev_output.leave(&surface);
+                }
+            }
+            target_output.enter(&surface);
         }
     }
 
@@ -2160,27 +2211,12 @@ impl Ewm {
             }
         };
 
-        // Snapshot active frame per output for the freeze/thaw reconcile at end.
-        let active_before: HashMap<String, Option<u64>> = self
-            .output_strips
-            .iter()
-            .map(|(name, strip)| (name.clone(), strip.active_frame().map(|f| f.surface_id)))
-            .collect();
-
+        // Capture prev outputs before the swap; emacs_frame_output reads strips.
+        let active_before = self.active_frames_by_output();
+        let migrations = self.collect_frame_migrations(output_name, &frames);
         // Snapshot pre-merge entries; reconcile runs after the merge against the
         // post-merge strip so kept frames don't leak `surface_outputs`.
-        let mut pre_entries: HashMap<String, HashSet<u64>> = HashMap::new();
-        pre_entries.insert(output_name.to_string(), self.strip_entries(output_name));
-
-        // Capture prev outputs before the swap; emacs_frame_output reads strips.
-        let migrations = self.collect_frame_migrations(output_name, &frames);
-        for migration in &migrations {
-            if let Some(prev_name) = &migration.prev_output {
-                pre_entries
-                    .entry(prev_name.clone())
-                    .or_insert_with(|| self.strip_entries(prev_name));
-            }
-        }
+        let pre_entries = self.entry_reconcile_snapshots(output_name, &migrations);
         self.remove_migrated_frames_from_sources(&migrations, &active_before);
 
         // Frames omitted by the layout are kept until Wayland destroy arrives.
@@ -2194,24 +2230,8 @@ impl Ewm {
         strip_entry.merge_layout_frames(frames, module::has_pending_active_frame_close);
         self.sync_focus_after_layout_merge(output_name);
 
-        for (name, pre) in pre_entries {
-            self.reconcile_output_entries(&name, pre);
-        }
-
-        for migration in migrations {
-            let Some(window) = self.id_windows.get(&migration.id).cloned() else {
-                continue;
-            };
-            let Some(surface) = window.wl_surface() else {
-                continue;
-            };
-            if let Some(prev_name) = migration.prev_output {
-                if let Some(prev_out) = self.space.outputs().find(|o| o.name() == prev_name) {
-                    prev_out.leave(&surface);
-                }
-            }
-            output.enter(&surface);
-        }
+        self.reconcile_entry_snapshots(pre_entries);
+        self.send_frame_migration_output_events(&output, &migrations);
 
         self.refresh_primary_assignments();
         self.update_frames_for_working_area(&output);
