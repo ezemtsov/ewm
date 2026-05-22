@@ -215,19 +215,19 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 .filter(|&id| id != 0)
                 .collect();
             fix.ewm().apply_output_layout(dest, real);
-            // I8: apply_output_layout never drops frames.
+            // I9: apply_output_layout never drops frames.
             let after = strip_frame_ids(fix);
             assert!(
                 before.is_subset(&after),
-                "invariant 8: apply_output_layout dropped {:?}",
+                "invariant 9: apply_output_layout dropped {:?}",
                 before.difference(&after).collect::<Vec<_>>(),
             );
-            // I10/I12: layout-named frames are present and in layout order.
+            // I11/I13: layout-named frames are present and in layout order.
             if let Some(strip) = fix.ewm_ref().output_strips.get(dest) {
                 for id in &placed {
                     assert!(
                         strip.frames.iter().any(|f| f.surface_id == *id),
-                        "invariant 10: frame {} missing from {} after layout",
+                        "invariant 11: frame {} missing from {} after layout",
                         id,
                         dest,
                     );
@@ -240,7 +240,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     .collect();
                 assert_eq!(
                     subseq, placed,
-                    "invariant 12: strip order on {} doesn't match layout order",
+                    "invariant 13: strip order on {} doesn't match layout order",
                     dest,
                 );
             }
@@ -255,17 +255,17 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             let known = strip_frame_ids(fix).contains(&f);
             fix.ewm().enter_prefix_redirect(f);
             if known {
-                // I7: prefix-redirect parks focus on the frame (no view).
+                // I8: prefix-redirect parks focus on the frame (no view).
                 assert_eq!(
                     fix.ewm_ref().focused_frame_id,
                     f,
-                    "invariant 7: enter_prefix_redirect({}) didn't set focused_frame_id",
+                    "invariant 8: enter_prefix_redirect({}) didn't set focused_frame_id",
                     f,
                 );
                 assert_eq!(
                     fix.ewm_ref().focused_view_id,
                     None,
-                    "invariant 7: enter_prefix_redirect({}) didn't clear focused_view_id",
+                    "invariant 8: enter_prefix_redirect({}) didn't clear focused_view_id",
                     f,
                 );
             }
@@ -273,10 +273,10 @@ fn apply_op(fix: &mut Fixture, op: Op) {
         Op::RemoveOutput(output) => {
             let name = OUTPUTS[output];
             fix.remove_output(name);
-            // I9: remove_output evicts the strip for that output.
+            // I10: remove_output evicts the strip for that output.
             assert!(
                 !fix.ewm_ref().output_strips.contains_key(name),
-                "invariant 9: remove_output({}) left a strip entry behind",
+                "invariant 10: remove_output({}) left a strip entry behind",
                 name,
             );
         }
@@ -326,7 +326,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             if was_present {
                 assert!(
                     !strip_frame_ids(fix).contains(&id),
-                    "invariant 11: destroy({}) left the id in some strip",
+                    "invariant 12: destroy({}) left the id in some strip",
                     id,
                 );
                 if prev_focused != id {
@@ -674,6 +674,22 @@ fn assert_invariants(fix: &Fixture) {
                     "invariant 6: frame {} selected_view_id={:?} not in its own entries",
                     f.surface_id,
                     sel,
+                );
+            }
+        }
+    }
+
+    // Invariant 7: every live entry view_id identifies exactly one layout occurrence.
+    let mut view_ids = HashMap::new();
+    for (output_name, strip) in &ewm.output_strips {
+        for (frame_idx, frame) in strip.frames.iter().enumerate() {
+            for entry in &frame.surfaces {
+                let occurrence = (output_name.as_str(), frame_idx, entry.surface_id);
+                assert!(
+                    view_ids.insert(entry.view_id, occurrence).is_none(),
+                    "invariant 7: duplicate view_id {:?} at {:?}",
+                    entry.view_id,
+                    occurrence,
                 );
             }
         }

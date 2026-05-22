@@ -220,26 +220,29 @@ Always:
 6. **A frame's selected view, when set, is one of that frame's own
    entries.**  Lisp can name a view as selected only if the view
    belongs to the frame it's naming it on.
+7. **Every live view id identifies one layout occurrence.**  A view id
+   is not a surface id and not a reusable focus token; it names one
+   occurrence of a surface in Emacs's window tree.
 
 After specific operations:
 
-7. **Prefix-redirect parks focus on the frame.**  After
+8. **Prefix-redirect parks focus on the frame.**  After
    `enter_prefix_redirect(id)` on a frame that exists in some strip,
    the focused frame is that frame and no view is focused.
-8. **Applying a layout never removes a frame.**  The set of frame
+9. **Applying a layout never removes a frame.**  The set of frame
    surface_ids across all strips can grow or shuffle, but it never
    strictly shrinks via layout.  Frames go away only through
    `handle_toplevel_destroyed`.
-9. **Removing an output evicts its strip.**  After `remove_output`,
+10. **Removing an output evicts its strip.**  After `remove_output`,
    there is no strip entry for that output, and focus has hopped to
    a surviving frame if any exist.
-10. **A layout's frames end up on its destination strip.**  Every
+11. **A layout's frames end up on its destination strip.**  Every
     frame named in `apply_output_layout(name, frames)` lives in
     `name`'s strip after the call, even if it had to migrate.
-11. **Destruction is authoritative.**  After
+12. **Destruction is authoritative.**  After
     `handle_toplevel_destroyed`, the frame's surface_id is gone from
     every strip.
-12. **Layout order is the strip order.**  Frames named in
+13. **Layout order is the strip order.**  Frames named in
     `apply_output_layout(name, frames)` appear in `name`'s strip in
     the order they appear in `frames`; pre-existing frames absent
     from the new layout sink to the end.
