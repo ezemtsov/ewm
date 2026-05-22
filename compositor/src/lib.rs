@@ -2254,7 +2254,16 @@ impl Ewm {
     /// Pick each surface's primary entry (largest active-frame slot) and
     /// configure its toplevel.  Off-screen frames don't bid.
     fn refresh_primary_assignments(&mut self) {
-        // At most one fullscreen entry per frame: clear extras in iteration order.
+        self.normalize_fullscreen_entries();
+        let output_sizes = self.output_sizes_by_name();
+        let best_area = self.primary_entry_areas(&output_sizes);
+        self.assign_primary_entries(&output_sizes, &best_area);
+        self.refresh_mapped_cast_outputs();
+        self.configure_primary_entries();
+    }
+
+    /// At most one fullscreen entry per frame: clear extras in iteration order.
+    fn normalize_fullscreen_entries(&mut self) {
         for strip in self.output_strips.values_mut() {
             for frame in &mut strip.frames {
                 for entry in frame.surfaces.iter_mut().filter(|e| e.fullscreen).skip(1) {
@@ -2262,40 +2271,54 @@ impl Ewm {
                 }
             }
         }
+    }
 
-        let output_sizes: HashMap<String, (u64, u64)> = self
-            .space
+    fn output_sizes_by_name(&self) -> HashMap<String, (u64, u64)> {
+        self.space
             .outputs()
             .map(|o| {
                 let size = crate::utils::output_size(o);
                 (o.name(), (size.w as u64, size.h as u64))
             })
-            .collect();
+            .collect()
+    }
 
-        // Fullscreen entries claim the output's full size, not entry.w/h.
-        let entry_area = |entry: &LayoutEntry, oname: &str| -> u64 {
-            if entry.fullscreen {
-                let (w, h) = output_sizes
-                    .get(oname)
-                    .copied()
-                    .unwrap_or((entry.w as u64, entry.h as u64));
-                w * h
-            } else {
-                entry.w as u64 * entry.h as u64
-            }
-        };
+    /// Fullscreen entries claim the output's full size, not entry.w/h.
+    fn layout_entry_area(
+        output_sizes: &HashMap<String, (u64, u64)>,
+        output_name: &str,
+        entry: &LayoutEntry,
+    ) -> u64 {
+        if entry.fullscreen {
+            let (w, h) = output_sizes
+                .get(output_name)
+                .copied()
+                .unwrap_or((entry.w as u64, entry.h as u64));
+            w * h
+        } else {
+            entry.w as u64 * entry.h as u64
+        }
+    }
 
+    fn primary_entry_areas(&self, output_sizes: &HashMap<String, (u64, u64)>) -> HashMap<u64, u64> {
         let mut best_area: HashMap<u64, u64> = HashMap::new();
         for (oname, strip) in &self.output_strips {
             for entry in strip.active_surfaces() {
-                let area = entry_area(entry, oname);
+                let area = Self::layout_entry_area(output_sizes, oname, entry);
                 best_area
                     .entry(entry.surface_id)
                     .and_modify(|a| *a = (*a).max(area))
                     .or_insert(area);
             }
         }
+        best_area
+    }
 
+    fn assign_primary_entries(
+        &mut self,
+        output_sizes: &HashMap<String, (u64, u64)>,
+        best_area: &HashMap<u64, u64>,
+    ) {
         for strip in self.output_strips.values_mut() {
             for entry in strip.surfaces_mut() {
                 entry.primary = false;
@@ -2306,12 +2329,16 @@ impl Ewm {
         for (oname, strip) in self.output_strips.iter_mut() {
             for entry in strip.active_surfaces_mut() {
                 let dominated = best_area.get(&entry.surface_id).copied().unwrap_or(0);
-                if entry_area(entry, oname) == dominated && assigned.insert(entry.surface_id) {
+                if Self::layout_entry_area(output_sizes, oname, entry) == dominated
+                    && assigned.insert(entry.surface_id)
+                {
                     entry.primary = true;
                 }
             }
         }
+    }
 
+    fn refresh_mapped_cast_outputs(&mut self) {
         #[cfg(feature = "screencast")]
         {
             self.casting.mapped_cast_output.clear();
@@ -2327,7 +2354,9 @@ impl Ewm {
                 }
             }
         }
+    }
 
+    fn configure_primary_entries(&self) {
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
         for output in &outputs {
             let Some(strip) = self.output_strips.get(&output.name()) else {

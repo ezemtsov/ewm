@@ -101,11 +101,17 @@ enum Op {
     AddOutput(usize),
     RemoveOutput(usize),
     /// Each bit `i` of `fullscreen_mask` corresponds to view `i`; the strategy
-    /// can flag any subset (including multiple) so the compositor's
-    /// one-fullscreen-per-strip rule can be exercised.
+    /// can flag any subset across frames.
     ApplyLayout {
         output: usize,
         n_views: usize,
+        fullscreen_mask: u32,
+    },
+    /// Multiple entries in one frame. This exercises the compositor's
+    /// one-fullscreen-entry-per-frame normalization.
+    ApplyMultiEntryLayout {
+        output: usize,
+        n_entries: usize,
         fullscreen_mask: u32,
     },
     WarpPointer {
@@ -134,6 +140,13 @@ fn op_strategy() -> impl Strategy<Value = Op> {
             |(output, n_views, fullscreen_mask)| Op::ApplyLayout {
                 output,
                 n_views,
+                fullscreen_mask,
+            },
+        ),
+        ((0..OUTPUTS.len()), 0usize..=4, any::<u32>()).prop_map(
+            |(output, n_entries, fullscreen_mask)| Op::ApplyMultiEntryLayout {
+                output,
+                n_entries,
                 fullscreen_mask,
             },
         ),
@@ -272,6 +285,41 @@ fn apply_op(h: &mut Harness, op: &Op) {
                 })
                 .collect();
             h.fix.ewm().apply_output_layout(name, frames);
+        }
+        Op::ApplyMultiEntryLayout {
+            output,
+            n_entries,
+            fullscreen_mask,
+        } => {
+            let name = OUTPUTS[output].0;
+            if !h.fix.has_output(name) {
+                return;
+            }
+            let surfaces = (0..n_entries)
+                .map(|i| LayoutEntry {
+                    view_id: nz(10_000 + i as u64),
+                    surface_id: h.sid,
+                    x: (i as i32) * 10,
+                    y: (i as i32) * 10,
+                    w: VIEW_W as u32,
+                    h: VIEW_H as u32,
+                    primary: true,
+                    fullscreen: (fullscreen_mask >> i) & 1 == 1,
+                })
+                .collect::<Vec<_>>();
+            let selected_view_id = surfaces.first().map(|entry| entry.view_id);
+            h.fix.ewm().apply_output_layout(
+                name,
+                vec![Frame {
+                    name: String::new(),
+                    surface_id: 10_000,
+                    view_id: nz(20_000),
+                    width: VIEW_W as f64,
+                    surfaces,
+                    selected_view_id,
+                    move_anim: None,
+                }],
+            );
         }
         Op::SetClientFullscreen { on } => {
             if on {
@@ -691,5 +739,26 @@ proptest! {
             h.fix.roundtrip(&mut h.client);
             assert_invariants(&mut h, op)?;
         }
+    }
+
+    #[test]
+    fn multi_fullscreen_entries_are_normalized(
+        output in 0usize..OUTPUTS.len(),
+        n_entries in 2usize..=4,
+    ) {
+        let mut h = Harness::new();
+        let add = Op::AddOutput(output);
+        apply_op(&mut h, &add);
+        h.fix.roundtrip(&mut h.client);
+
+        let layout = Op::ApplyMultiEntryLayout {
+            output,
+            n_entries,
+            fullscreen_mask: (1 << n_entries) - 1,
+        };
+        apply_op(&mut h, &layout);
+        h.fix.roundtrip(&mut h.client);
+
+        check_n4(&h)?;
     }
 }
