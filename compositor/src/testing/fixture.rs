@@ -311,7 +311,7 @@ impl Fixture {
     fn refresh_and_flush_clients(&mut self) {
         // Process module commands
         for cmd in crate::module::drain_commands() {
-            self.handle_module_command(cmd);
+            self.state.handle_module_command(cmd);
         }
 
         // Sync keyboard focus after module commands (matches production behavior)
@@ -334,10 +334,5 @@ impl Fixture {
 
         // Flush Wayland clients
         self.state.ewm.display_handle.flush_clients().ok();
-    }
-
-    /// Handle module commands through the production dispatcher.
-    fn handle_module_command(&mut self, cmd: crate::module::ModuleCommand) {
-        self.state.handle_module_command(cmd);
     }
 }
