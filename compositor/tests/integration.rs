@@ -223,6 +223,32 @@ fn headless_output_respects_initial_disabled_config() {
 }
 
 #[test]
+fn disabling_focused_output_moves_focus_to_mapped_output() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.add_output("Virtual-2", 1280, 720);
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-1", vec![Frame::new(100)]);
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-2", vec![Frame::new(200)]);
+    fixture.ewm().set_focus_frame(100, "test", false);
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+
+    assert_eq!(fixture.ewm_ref().focused_surface_id(), 200);
+    assert_eq!(fixture.ewm_ref().emacs_frame_output(200), Some("Virtual-2"));
+}
+
+#[test]
 fn disabling_and_reenabling_output_updates_surface_membership() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);

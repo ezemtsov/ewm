@@ -1292,6 +1292,24 @@ impl Ewm {
         }
     }
 
+    fn focus_mapped_frame_if_focused_output_unmapped(&mut self, output_name: &str) {
+        let focused_output = self
+            .frame_position(self.focused_surface_id())
+            .map(|(focused_output, _)| focused_output);
+        if focused_output.as_deref() != Some(output_name) {
+            return;
+        }
+
+        let mapped_output_names: Vec<_> =
+            self.space.outputs().map(|output| output.name()).collect();
+        if let Some(id) = mapped_output_names
+            .iter()
+            .find_map(|name| self.active_frame_surface_id(name))
+        {
+            self.set_focus_frame(id, "output_disabled", false);
+        }
+    }
+
     /// Drop the Emacs frame `id` from whichever strip holds it.
     fn remove_emacs_frame_from_strip(&mut self, id: u64, active_close: bool) {
         let Some((out, idx)) = self.lookup_frame(id) else {
@@ -1330,6 +1348,7 @@ impl Ewm {
         self.reconcile_output_membership(&output_name, Some(output), &pre, &post);
 
         self.space.unmap_output(output);
+        self.focus_mapped_frame_if_focused_output_unmapped(&output_name);
         self.recalculate_output_size();
         self.active_outputs_dirty = true;
         self.output_management_state.output_heads_changed = true;
