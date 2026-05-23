@@ -783,6 +783,28 @@ impl PipeWire {
     }
 }
 
+fn frame_damage_tracker(
+    tracker: &mut Option<OutputDamageTracker>,
+    size: Size<i32, Physical>,
+    scale: Scale<f64>,
+) -> &mut OutputDamageTracker {
+    let tracker =
+        tracker.get_or_insert_with(|| OutputDamageTracker::new(size, scale, Transform::Normal));
+
+    let OutputModeSource::Static {
+        scale: tracker_scale,
+        ..
+    } = tracker.mode()
+    else {
+        unreachable!();
+    };
+    if *tracker_scale != scale {
+        *tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
+    }
+
+    tracker
+}
+
 impl Cast {
     /// Whether the stream has reached `Streaming`. Once an unrecoverable
     /// error occurs, the cast sends itself a `StopCast` and is removed
@@ -1042,36 +1064,12 @@ impl Cast {
 
         let size = Size::from((ready_size.w as i32, ready_size.h as i32));
 
-        // Content damage tracking
-        let dt = damage_tracker
-            .get_or_insert_with(|| OutputDamageTracker::new(size, scale, Transform::Normal));
-
-        let OutputModeSource::Static { scale: t_scale, .. } = dt.mode() else {
-            unreachable!();
-        };
-        if *t_scale != scale {
-            *dt = OutputDamageTracker::new(size, scale, Transform::Normal);
-        }
-
+        let dt = frame_damage_tracker(damage_tracker, size, scale);
         let (content_damage, _states) = dt.damage_output(1, content_elements).unwrap();
 
         let (has_cursor_update, cursor_damage_len, cursor_moved) =
             if self.cursor_mode.includes_cursor() {
-                // Cursor damage tracking (separate tracker)
-                let cursor_dt = cursor_damage_tracker.get_or_insert_with(|| {
-                    OutputDamageTracker::new(size, scale, Transform::Normal)
-                });
-
-                let OutputModeSource::Static {
-                    scale: ct_scale, ..
-                } = cursor_dt.mode()
-                else {
-                    unreachable!();
-                };
-                if *ct_scale != scale {
-                    *cursor_dt = OutputDamageTracker::new(size, scale, Transform::Normal);
-                }
-
+                let cursor_dt = frame_damage_tracker(cursor_damage_tracker, size, scale);
                 let (cursor_damage, _) = cursor_dt.damage_output(1, cursor_elements).unwrap();
                 let cursor_moved = *last_cursor_location != Some(cursor_location);
                 *last_cursor_location = Some(cursor_location);
