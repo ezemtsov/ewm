@@ -1438,7 +1438,7 @@ impl Ewm {
     /// Remove dead windows from the space.
     /// This replaces Space::refresh(). We manage output enter/leave explicitly
     /// rather than relying on automatic spatial overlap detection.
-    pub fn cleanup_dead_windows(&mut self) {
+    pub fn cleanup_dead_windows(&mut self) -> bool {
         // Clean dead layout surfaces from id_windows
         let dead_ids: Vec<u64> = self
             .id_windows
@@ -1446,19 +1446,11 @@ impl Ewm {
             .filter(|(_, w)| !w.alive())
             .map(|(&id, _)| id)
             .collect();
+        let removed_any = !dead_ids.is_empty();
         for id in dead_ids {
-            if let Some(window) = self.id_windows.remove(&id) {
-                self.window_ids.remove(&window);
+            if let Some(refocus_id) = self.handle_toplevel_destroyed_by_id(id) {
+                self.set_focus_frame(refocus_id, "cleanup_dead_windows", true);
             }
-            let _ = module::take_pending_active_frame_close(id);
-            self.remove_surface_from_layouts(id);
-            self.remove_emacs_frame_from_strip(id, false);
-            self.surface_info.remove(&id);
-            self.queue_event(Event::Close { id });
-
-            // Stop any screen casts targeting this window
-            #[cfg(feature = "screencast")]
-            self.stop_casts_for_window(id);
         }
 
         // Reset cursor image if the cursor surface died
@@ -1467,6 +1459,8 @@ impl Ewm {
                 self.cursor_image_status = CursorImageStatus::default_named();
             }
         }
+
+        removed_any
     }
 
     /// Build a snapshot of all output states for the output management protocol.
@@ -6521,7 +6515,9 @@ impl State {
         // Clean up dead elements from space.
         // Output enter/leave is managed explicitly in handle_new_toplevel and
         // the Layout command, not via automatic spatial overlap detection.
-        self.ewm.cleanup_dead_windows();
+        if self.ewm.cleanup_dead_windows() {
+            self.sync_keyboard_focus();
+        }
 
         // Update shared state snapshot for Emacs to read synchronously
         self.update_shared_state();

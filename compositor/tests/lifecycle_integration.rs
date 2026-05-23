@@ -90,3 +90,68 @@ fn destroying_real_toplevel_cleans_layout_focus_indexes_and_emits_close() {
         "destroying toplevel {sid} did not emit Close; events: {events:?}",
     );
 }
+
+#[test]
+fn disconnecting_focused_toplevel_cleans_layout_focus_indexes_and_emits_close() {
+    let mut fix = Fixture::new().unwrap();
+    fix.enable_event_capture();
+    fix.add_output(OUTPUT, 1920, 1080);
+
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    let toplevel = fix.open_toplevel(
+        &mut client,
+        "ewm-disconnect-test",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+    let sid = fix
+        .find_surface_id(&toplevel.surface)
+        .expect("server did not assign a surface id");
+
+    let frame_id = 100;
+    let view_id = nz(1);
+    fix.ewm().apply_output_layout(
+        OUTPUT,
+        vec![Frame {
+            name: String::new(),
+            surface_id: frame_id,
+            view_id: nz(200),
+            width: 1920.0,
+            surfaces: vec![LayoutEntry {
+                view_id,
+                surface_id: sid,
+                x: 0,
+                y: 0,
+                w: 400,
+                h: 300,
+                primary: false,
+                fullscreen: false,
+            }],
+            selected_view_id: Some(view_id),
+            move_anim: None,
+        }],
+    );
+    fix.ewm().set_focus_view(view_id, "test", false);
+    let _ = fix.drain_events();
+
+    assert_eq!(fix.ewm_ref().focused_surface_id(), sid);
+
+    drop(toplevel);
+    drop(client);
+    fix.dispatch_roundtrip(8);
+
+    assert!(!fix.has_surface(sid));
+    assert!(!layout_surface_ids(&fix).contains(&sid));
+    assert!(!fix.ewm_ref().surface_outputs.contains_key(&sid));
+    assert_eq!(fix.ewm_ref().focused_frame_id, frame_id);
+    assert_eq!(fix.ewm_ref().focused_view_id, None);
+    assert_eq!(fix.ewm_ref().focused_surface_id(), frame_id);
+
+    let events = fix.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Close { id } if *id == sid)),
+        "disconnecting toplevel {sid} did not emit Close; events: {events:?}",
+    );
+}
