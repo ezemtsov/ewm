@@ -91,11 +91,7 @@ impl DisplayConfig {
                 output.serial.clone()
             };
             let is_builtin = crate::is_laptop_panel(&connector);
-            let display_name = if is_builtin {
-                "Built-in display".to_owned()
-            } else {
-                output.model.clone()
-            };
+            let display_name = make_display_name(output, is_builtin);
 
             let modes = output
                 .modes
@@ -216,6 +212,24 @@ impl Start for DisplayConfig {
     }
 }
 
+fn make_display_name(output: &OutputInfo, is_builtin: bool) -> String {
+    if is_builtin {
+        return "Built-in display".to_owned();
+    }
+
+    let make = output.make.trim();
+    let model = output.model.trim();
+    if !make.is_empty() && !model.is_empty() && model != "Unknown" {
+        format!("{make} {model}")
+    } else if !make.is_empty() && make != "Unknown" {
+        make.to_owned()
+    } else if !model.is_empty() && model != "Unknown" {
+        model.to_owned()
+    } else {
+        output.name.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,11 +341,24 @@ mod tests {
         assert_eq!(monitors[0].modes[1].refresh_rate, 144.0);
         assert_eq!(monitors[0].modes[1].preferred_scale, 1.25);
         assert_eq!(
+            monitors[0].properties["display-name"],
+            OwnedValue::try_from(Value::Str("Dell U2720Q".into())).unwrap()
+        );
+        assert_eq!(
             monitors[0].modes[1].properties["is-current"],
             OwnedValue::try_from(Value::Bool(true)).unwrap()
         );
         assert_eq!((logical_monitors[0].x, logical_monitors[0].y), (20, 30));
         assert_eq!(logical_monitors[0].scale, 1.25);
         assert_eq!(logical_monitors[0].transform, 2);
+    }
+
+    #[test]
+    fn display_name_falls_back_to_connector_for_unknown_metadata() {
+        let mut out = output("HDMI-A-1");
+        out.make = "Unknown".to_owned();
+        out.model = "Unknown".to_owned();
+
+        assert_eq!(make_display_name(&out, false), "HDMI-A-1");
     }
 }
