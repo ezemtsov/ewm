@@ -18,6 +18,7 @@ use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::Transform;
 use tracing::{debug, info};
 
+use crate::backend::OutputInfos;
 use crate::{Ewm, OutputState, RedrawState, State};
 
 /// A virtual output for headless testing.
@@ -39,6 +40,7 @@ struct VirtualOutput {
 pub struct HeadlessBackend {
     /// Virtual outputs indexed by name
     outputs: HashMap<String, VirtualOutput>,
+    output_infos: OutputInfos,
 }
 
 impl Default for HeadlessBackend {
@@ -52,7 +54,12 @@ impl HeadlessBackend {
     pub fn new() -> Self {
         Self {
             outputs: HashMap::new(),
+            output_infos: OutputInfos::default(),
         }
+    }
+
+    pub(crate) fn output_infos(&self) -> OutputInfos {
+        self.output_infos.clone()
     }
 
     /// Add a virtual output with the given name and size
@@ -136,6 +143,7 @@ impl HeadlessBackend {
             }],
         };
 
+        self.output_infos.insert(output_info.clone());
         ewm.add_output(&output, output_info);
 
         if is_enabled {
@@ -154,6 +162,7 @@ impl HeadlessBackend {
     /// Remove a virtual output by name
     pub fn remove_output(&mut self, name: &str, ewm: &mut Ewm) {
         if let Some(virtual_output) = self.outputs.remove(name) {
+            self.output_infos.remove(name);
             ewm.remove_output(&virtual_output.output);
         }
     }
@@ -215,6 +224,13 @@ impl HeadlessBackend {
         output.change_current_state(None, transform, scale, position);
 
         super::map_output_for_config(ewm, &output, config.position);
+        self.output_infos.update_from_output(
+            &output,
+            ewm.space
+                .output_geometry(&output)
+                .map(|geo| geo.loc)
+                .unwrap_or_default(),
+        );
 
         // Update all backend-agnostic bookkeeping
         ewm.output_config_changed(&output);

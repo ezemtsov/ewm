@@ -756,7 +756,8 @@ pub struct Ewm {
 
     // Output
     pub output_size: Size<i32, Logical>,
-    pub outputs: Vec<OutputInfo>,
+    /// Mapped compositor outputs in deterministic spatial order.
+    pub sorted_outputs: Vec<Output>,
     /// Desired output configuration, keyed by output name.
     /// Looked up when outputs connect; updated by Emacs commands.
     pub output_config: HashMap<String, OutputConfig>,
@@ -911,10 +912,6 @@ pub struct Ewm {
     // window->output cache.
     #[cfg(feature = "screencast")]
     pub casting: screencasting::Screencasting,
-
-    // Shared output info for D-Bus ScreenCast (thread-safe)
-    #[cfg(feature = "screencast")]
-    pub dbus_outputs: std::sync::Arc<std::sync::Mutex<Vec<dbus::OutputInfo>>>,
 
     // D-Bus servers (must be kept alive for interfaces to work)
     #[cfg(feature = "screencast")]
@@ -1144,7 +1141,7 @@ impl Ewm {
             surface_open_anims: HashMap::new(),
             unmapped_surfaces: HashSet::new(),
             output_size: Size::from((0, 0)),
-            outputs: Vec::new(),
+            sorted_outputs: Vec::new(),
             output_config: HashMap::new(),
             pointer_focus: None,
             pointer_output: None,
@@ -1199,8 +1196,6 @@ impl Ewm {
             pointer_constraints_state,
             #[cfg(feature = "screencast")]
             casting: screencasting::Screencasting::new(&loop_handle_clone),
-            #[cfg(feature = "screencast")]
-            dbus_outputs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             #[cfg(feature = "screencast")]
             dbus_servers: None,
             #[cfg(feature = "screencast")]
@@ -1276,17 +1271,20 @@ impl Ewm {
         }
     }
 
-    /// If no frame is focused but some frame exists, focus an arbitrary one.
+    /// If no frame is focused but some frame exists, use canonical output order.
     fn focus_any_frame_if_unfocused(&mut self, reason: &'static str) {
         if self.focused_frame_id == 0 {
-            if let Some(id) = self
-                .output_strips
-                .values()
-                .flat_map(|s| s.frames.iter())
-                .next()
-                .map(|f| f.surface_id)
-            {
-                self.set_focus_frame(id, reason, false);
+            for output in &self.sorted_outputs {
+                let name = output.name();
+                if let Some(id) = self
+                    .output_strips
+                    .get(&name)
+                    .and_then(|strip| strip.frames.first())
+                    .map(|frame| frame.surface_id)
+                {
+                    self.set_focus_frame(id, reason, false);
+                    return;
+                }
             }
         }
     }
@@ -1347,6 +1345,7 @@ impl Ewm {
         self.reconcile_output_membership(&output_name, Some(output), &pre, &post);
 
         self.space.unmap_output(output);
+        self.sync_sorted_outputs();
         self.focus_mapped_frame_if_focused_output_unmapped(&output_name);
         self.recalculate_output_size();
         self.active_outputs_dirty = true;
@@ -1358,7 +1357,7 @@ impl Ewm {
     ///
     /// Called by backends after their own teardown (e.g. DRM surface removal).
     /// Handles: output state, lock check, screencasts, space, layouts,
-    /// workspaces, working areas, outputs list, D-Bus, output size, IPC.
+    /// workspaces, working areas, and output size.
     pub fn remove_output(&mut self, output: &Output) {
         let output_name = output.name();
 
@@ -1411,10 +1410,7 @@ impl Ewm {
         }
         self.working_areas.remove(&output_name);
 
-        self.outputs.retain(|o| o.name != output_name);
-
-        #[cfg(feature = "screencast")]
-        self.sync_dbus_outputs();
+        self.sync_sorted_outputs();
 
         self.screencopy_state.remove_output(output);
 
@@ -1460,11 +1456,12 @@ impl Ewm {
     /// Build a snapshot of all output states for the output management protocol.
     pub fn build_output_head_states(
         &self,
+        output_infos: &[OutputInfo],
     ) -> HashMap<String, protocols::output_management::OutputHeadState> {
         use protocols::output_management::{OutputHeadState, OutputModeState};
 
         let mut states = HashMap::new();
-        for info in &self.outputs {
+        for info in output_infos {
             let output = self.mapped_output_by_name(&info.name);
             let geo = output.and_then(|o| self.space.output_geometry(o));
 
@@ -1766,9 +1763,9 @@ impl Ewm {
     }
 
     fn first_active_frame_surface_id(&self) -> Option<u64> {
-        self.output_strips
-            .keys()
-            .find_map(|name| self.active_frame_surface_id(name))
+        self.sorted_outputs
+            .iter()
+            .find_map(|output| self.active_frame_surface_id(&output.name()))
     }
 
     /// Mark `new_idx` as active on `output_name`.
@@ -2487,13 +2484,16 @@ impl Ewm {
         }
 
         let mut assigned: HashSet<u64> = HashSet::new();
-        for (oname, strip) in self.output_strips.iter_mut() {
-            for entry in strip.active_surfaces_mut() {
-                let dominated = best_area.get(&entry.surface_id).copied().unwrap_or(0);
-                if Self::layout_entry_area(output_sizes, oname, entry) == dominated
-                    && assigned.insert(entry.surface_id)
-                {
-                    entry.primary = true;
+        for output in &self.sorted_outputs {
+            let oname = output.name();
+            if let Some(strip) = self.output_strips.get_mut(&oname) {
+                for entry in strip.active_surfaces_mut() {
+                    let dominated = best_area.get(&entry.surface_id).copied().unwrap_or(0);
+                    if Self::layout_entry_area(output_sizes, &oname, entry) == dominated
+                        && assigned.insert(entry.surface_id)
+                    {
+                        entry.primary = true;
+                    }
                 }
             }
         }
@@ -3044,7 +3044,8 @@ impl Ewm {
 
         // Refresh protocol state before rendering
         self.refresh_foreign_toplevel();
-        self.refresh_output_management();
+        let output_infos = backend.output_info_list(&self.sorted_outputs);
+        self.refresh_output_management(&output_infos);
 
         // Render via backend
         let res = backend.render(self, output, target_presentation_time);
@@ -3557,12 +3558,12 @@ impl Ewm {
     /// Refresh output management protocol if output heads changed.
     /// Called from redraw() before rendering, so updates are deferred
     /// until after any in-flight Dispatch handlers have finished.
-    pub fn refresh_output_management(&mut self) {
+    pub fn refresh_output_management(&mut self, output_infos: &[OutputInfo]) {
         if !self.output_management_state.output_heads_changed {
             return;
         }
         self.output_management_state.output_heads_changed = false;
-        let new_state = self.build_output_head_states();
+        let new_state = self.build_output_head_states(output_infos);
         self.output_management_state.notify_changes(new_state);
     }
 
@@ -3573,16 +3574,23 @@ impl Ewm {
             if let Some(location) = self.focused_entry_for_surface(surface_id) {
                 return Some(location.output_name);
             }
-            if let Some(name) = self
-                .surface_outputs
-                .get(&surface_id)
-                .and_then(|output_names| output_names.iter().next())
-            {
-                return Some(name.as_str());
+            if let Some(name) = self.canonical_surface_output_name(surface_id) {
+                return Some(name);
             }
         }
 
         self.emacs_frame_output(surface_id)
+    }
+
+    fn canonical_surface_output_name(&self, surface_id: u64) -> Option<&str> {
+        let output_names = self.surface_outputs.get(&surface_id)?;
+        self.sorted_outputs
+            .iter()
+            .find_map(|output| {
+                let name = output.name();
+                output_names.get(name.as_str()).map(String::as_str)
+            })
+            .or_else(|| output_names.iter().map(String::as_str).min())
     }
 
     /// Find the output for a surface (returns Output object)
@@ -4228,33 +4236,33 @@ impl Ewm {
         });
     }
 
-    #[cfg(feature = "screencast")]
-    fn sync_dbus_outputs(&self) {
-        *self.dbus_outputs.lock().unwrap() = self.outputs.clone();
+    fn sync_sorted_outputs(&mut self) {
+        let mut outputs = self
+            .output_state
+            .keys()
+            .filter(|output| self.space.output_geometry(output).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let space = &self.space;
+        outputs.sort_by(|a, b| {
+            let a_geo = space.output_geometry(a).unwrap();
+            let b_geo = space.output_geometry(b).unwrap();
+            (a_geo.loc.x, a_geo.loc.y, a.name()).cmp(&(b_geo.loc.x, b_geo.loc.y, b.name()))
+        });
+        self.sorted_outputs = outputs;
     }
 
     /// Register a newly connected output.
     ///
     /// Called by backends after hardware setup (DRM surface, virtual output) and
     /// after the output is mapped in the space. Handles all backend-agnostic
-    /// bookkeeping: OutputInfo registration, D-Bus output, size recalculation,
-    /// IPC event to Emacs, initial working area, and output management state.
+    /// bookkeeping: sorted outputs, size recalculation, event to Emacs,
+    /// initial working area, and output management state.
     pub fn add_output(&mut self, output: &Output, info: OutputInfo) {
         let output_name = info.name.clone();
 
-        self.outputs.push(info.clone());
-        #[cfg(feature = "screencast")]
-        {
-            self.sync_dbus_outputs();
-            info!(
-                "Added D-Bus output: {} at ({}, {}) (total: {})",
-                output_name,
-                info.x,
-                info.y,
-                self.outputs.len()
-            );
-        }
-
+        self.sync_sorted_outputs();
         self.recalculate_output_size();
 
         self.send_output_detected(info);
@@ -4276,9 +4284,9 @@ impl Ewm {
     /// Handle output configuration changes (mode, scale, transform, position).
     ///
     /// Called by backends after applying hardware state changes. Handles all
-    /// backend-agnostic bookkeeping: OutputInfo update, D-Bus update, scale
-    /// notification, lock buffer resize, screencast size, recalculation,
-    /// working areas, redraw, IPC event to Emacs, and output management state.
+    /// backend-agnostic bookkeeping: scale notification, lock buffer resize,
+    /// screencast size, recalculation, working areas, event to Emacs, and
+    /// output management state.
     pub fn output_config_changed(&mut self, output: &Output) {
         let output_name = output.name();
         let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
@@ -4288,20 +4296,7 @@ impl Ewm {
         let current_scale = output.current_scale().fractional_scale();
         let current_transform = output.current_transform();
         let current_geo = self.space.output_geometry(output).unwrap_or_default();
-
-        // Update OutputInfo in-place
-        for out_info in &mut self.outputs {
-            if out_info.name == output_name {
-                out_info.scale = current_scale;
-                out_info.transform = backend::transform_to_int(current_transform);
-                out_info.x = current_geo.loc.x;
-                out_info.y = current_geo.loc.y;
-                sync_output_info_mode(&mut out_info.modes, current_mode);
-            }
-        }
-
-        #[cfg(feature = "screencast")]
-        self.sync_dbus_outputs();
+        self.sync_sorted_outputs();
 
         // Notify existing surfaces of scale/transform change
         self.send_scale_transform_to_output_surfaces(output);
@@ -4538,7 +4533,7 @@ impl Ewm {
     }
 
     /// Build the JSON object shown by `ewm-show-state`.
-    pub fn debug_state(&self) -> serde_json::Value {
+    pub fn debug_state(&self, output_infos: &[OutputInfo]) -> serde_json::Value {
         let mut id_window_keys: Vec<u64> = self.id_windows.keys().copied().collect();
         id_window_keys.sort_unstable();
         let emacs_surfaces: HashMap<u64, String> = self
@@ -4556,7 +4551,7 @@ impl Ewm {
             "focused_frame_id": self.focused_frame_id,
             "focused_view_id": self.focused_view_id,
             "id_windows": id_window_keys,
-            "outputs": &self.outputs,
+            "outputs": output_infos,
             "working_areas": self.get_working_areas_info(),
             "layer_surfaces": self.get_layer_surfaces_info(),
             "pointer_location": self.pointer_location(),
@@ -5100,26 +5095,6 @@ impl Ewm {
         }
 
         true
-    }
-}
-
-fn sync_output_info_mode(modes: &mut Vec<OutputMode>, current_mode: smithay::output::Mode) {
-    let mut found_current = false;
-    for mode in modes.iter_mut() {
-        mode.current = mode.width == current_mode.size.w
-            && mode.height == current_mode.size.h
-            && mode.refresh == current_mode.refresh;
-        found_current |= mode.current;
-    }
-
-    if !found_current {
-        modes.push(OutputMode {
-            width: current_mode.size.w,
-            height: current_mode.size.h,
-            refresh: current_mode.refresh,
-            preferred: false,
-            current: true,
-        });
     }
 }
 
@@ -6635,8 +6610,9 @@ impl State {
                 });
             }
             ModuleCommand::GetDebugState => {
-                let json =
-                    serde_json::to_string_pretty(&self.ewm.debug_state()).unwrap_or_default();
+                let outputs = self.backend.output_info_list(&self.ewm.sorted_outputs);
+                let json = serde_json::to_string_pretty(&self.ewm.debug_state(&outputs))
+                    .unwrap_or_default();
                 self.ewm.queue_event(Event::DebugState { json });
             }
             ModuleCommand::CreateActivationToken => {
@@ -6897,48 +6873,19 @@ mod tests {
         frame
     }
 
-    #[test]
-    fn sync_output_info_mode_adds_custom_current_mode() {
-        let mut modes = vec![OutputMode {
-            width: 1920,
-            height: 1080,
-            refresh: 60_000,
-            preferred: true,
-            current: true,
-        }];
-        let current_mode = smithay::output::Mode {
-            size: (2560, 1440).into(),
-            refresh: 144_000,
-        };
-
-        sync_output_info_mode(&mut modes, current_mode);
-
-        assert_eq!(modes.len(), 2);
-        assert!(!modes[0].current);
-        assert_eq!(
-            (modes[1].width, modes[1].height, modes[1].refresh),
-            (2560, 1440, 144_000)
-        );
-        assert!(modes[1].current);
-        assert!(!modes[1].preferred);
-    }
-
-    #[cfg(feature = "screencast")]
     fn output_names(outputs: &[OutputInfo]) -> Vec<String> {
         outputs.iter().map(|output| output.name.clone()).collect()
     }
 
     #[test]
-    #[cfg(feature = "screencast")]
-    fn dbus_outputs_mirror_compositor_outputs() {
+    fn output_reports_track_backend_lifecycle() {
         let mut fix = testing::Fixture::new().unwrap();
         fix.add_output(HEAD_A, 1600, 900);
         fix.add_output(HEAD_B, 1280, 720);
 
-        let dbus_outputs = fix.ewm_ref().dbus_outputs.lock().unwrap().clone();
         assert_eq!(
-            output_names(&dbus_outputs),
-            output_names(&fix.ewm_ref().outputs)
+            output_names(&fix.output_info_list()),
+            vec![HEAD_A.to_string(), HEAD_B.to_string()]
         );
 
         fix.ewm().output_config.insert(
@@ -6951,20 +6898,16 @@ mod tests {
         );
         fix.apply_output_config(HEAD_A);
 
-        let dbus_outputs = fix.ewm_ref().dbus_outputs.lock().unwrap().clone();
-        let output = dbus_outputs
-            .iter()
-            .find(|output| output.name == HEAD_A)
-            .unwrap();
+        let outputs = fix.output_info_list();
+        let output = outputs.iter().find(|output| output.name == HEAD_A).unwrap();
         assert_eq!((output.x, output.y), (320, 40));
         assert!((output.scale - backend::closest_representable_scale(1.5)).abs() < f64::EPSILON);
 
         fix.remove_output(HEAD_B);
 
-        let dbus_outputs = fix.ewm_ref().dbus_outputs.lock().unwrap().clone();
         assert_eq!(
-            output_names(&dbus_outputs),
-            output_names(&fix.ewm_ref().outputs)
+            output_names(&fix.output_info_list()),
+            vec![HEAD_A.to_string()]
         );
     }
 
@@ -6972,6 +6915,65 @@ mod tests {
         let ewm = fix.ewm_ref();
         let window = ewm.id_windows.get(&surface_id)?;
         ewm.window_global_position(window)
+    }
+
+    fn primary_output_for_surface(fix: &testing::Fixture, surface_id: u64) -> Option<String> {
+        fix.ewm_ref()
+            .output_strips
+            .iter()
+            .find_map(|(output_name, strip)| {
+                strip
+                    .surfaces()
+                    .any(|entry| entry.surface_id == surface_id && entry.primary)
+                    .then_some(output_name.clone())
+            })
+    }
+
+    fn put_sorted_output_first(fix: &mut testing::Fixture, name: &str) {
+        fix.ewm()
+            .sorted_outputs
+            .sort_by_key(|output| (output.name() != name, output.name()));
+    }
+
+    #[test]
+    fn unfocused_frame_fallbacks_follow_output_order() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.add_output(HEAD_B, 1600, 900);
+        fix.ewm().apply_output_layout(
+            HEAD_A,
+            vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
+        );
+        fix.ewm()
+            .apply_output_layout(HEAD_B, vec![frame_with_width(200, 400.0)]);
+        fix.ewm()
+            .output_strips
+            .get_mut(HEAD_A)
+            .unwrap()
+            .set_active(1);
+
+        let arbitrary_first_output = fix
+            .ewm_ref()
+            .output_strips
+            .iter()
+            .find_map(|(output_name, strip)| strip.frames.first().map(|_| output_name.clone()))
+            .unwrap();
+        let canonical_output = [HEAD_A, HEAD_B]
+            .into_iter()
+            .find(|name| *name != arbitrary_first_output)
+            .unwrap();
+        put_sorted_output_first(&mut fix, canonical_output);
+
+        let expected_first = if canonical_output == HEAD_A { 100 } else { 200 };
+        let expected_active = if canonical_output == HEAD_A { 101 } else { 200 };
+        assert_eq!(
+            fix.ewm_ref().first_active_frame_surface_id(),
+            Some(expected_active)
+        );
+
+        fix.ewm().focused_frame_id = 0;
+        fix.ewm().focus_any_frame_if_unfocused("test");
+        assert_eq!(fix.ewm_ref().focused_frame_id, expected_first);
     }
 
     #[test]
@@ -7001,6 +7003,44 @@ mod tests {
         fix.ewm().set_focus_view(view_a, "test", false);
         assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_A));
         assert_eq!(window_position(&fix, surface_id), Some(Point::from((0, 0))));
+
+        let set_first = fix
+            .ewm_ref()
+            .surface_outputs
+            .get(&surface_id)
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
+            .clone();
+        let canonical_output = [HEAD_A, HEAD_B]
+            .into_iter()
+            .find(|name| *name != set_first)
+            .unwrap();
+        put_sorted_output_first(&mut fix, canonical_output);
+        fix.ewm().focused_view_id = None;
+
+        assert_eq!(
+            fix.ewm_ref().surface_output_name(surface_id),
+            Some(canonical_output)
+        );
+
+        let arbitrary_primary = primary_output_for_surface(&fix, surface_id).unwrap();
+        let canonical_primary = [HEAD_A, HEAD_B]
+            .into_iter()
+            .find(|name| *name != arbitrary_primary)
+            .unwrap();
+        put_sorted_output_first(&mut fix, canonical_primary);
+        fix.ewm().refresh_primary_assignments();
+
+        assert_eq!(
+            window_position(&fix, surface_id),
+            Some(if canonical_primary == HEAD_A {
+                Point::from((0, 0))
+            } else {
+                Point::from((1600, 0))
+            })
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@ use tracing::info;
 use crate::backend::{Backend, HeadlessBackend};
 use crate::strip::Frame;
 use crate::testing::TestClient;
-use crate::{register_display_source, ClientState, Ewm, State};
+use crate::{register_display_source, ClientState, Ewm, OutputInfo, State};
 
 /// Test fixture for integration testing
 ///
@@ -200,6 +200,12 @@ impl Fixture {
     /// Get immutable access to the compositor state
     pub fn ewm_ref(&self) -> &Ewm {
         &self.state.ewm
+    }
+
+    pub fn output_info_list(&self) -> Vec<OutputInfo> {
+        self.state
+            .backend
+            .output_info_list(&self.state.ewm.sorted_outputs)
     }
 
     /// Get the focused surface ID

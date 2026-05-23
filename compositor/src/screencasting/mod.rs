@@ -241,21 +241,16 @@ impl State {
                 };
 
                 let cast_info: Option<(Size<i32, Physical>, u32)> = match &target {
-                    CastTarget::Output { name } => self
-                        .ewm
-                        .dbus_outputs
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .find(|o| o.name == *name)
-                        .and_then(|info| {
-                            dbus::current_output_mode(info).map(|mode| {
+                    CastTarget::Output { name } => {
+                        self.backend.output_info(name).and_then(|info| {
+                            dbus::current_output_mode(&info).map(|mode| {
                                 (
                                     Size::from((mode.width, mode.height)),
                                     (mode.refresh / 1000) as u32,
                                 )
                             })
-                        }),
+                        })
+                    }
                     CastTarget::Window { id } => {
                         let Some(window) = self.ewm.id_windows.get(id) else {
                             warn!("StartCast: window {} not found", id);

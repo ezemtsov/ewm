@@ -86,7 +86,7 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::wayland::presentation::Refresh;
 
 use crate::{
-    backend::Backend,
+    backend::{Backend, OutputInfos},
     cursor::CursorBuffer,
     input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
@@ -558,6 +558,8 @@ pub struct DrmBackendState {
     gpu_manager: Option<GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>>,
     /// zwp_linux_dmabuf global; `Some` once the primary render node is up.
     dmabuf_global: Option<DmabufGlobal>,
+    /// Backend-owned reporting metadata for connected outputs.
+    output_infos: OutputInfos,
     // SAFETY: Fields below are dropped in declaration order.
     // devices must drop before session (surfaces -> drm -> libseat).
     // See https://github.com/Smithay/smithay/issues/1102
@@ -584,6 +586,10 @@ impl Drop for DrmBackendState {
 }
 
 impl DrmBackendState {
+    pub(crate) fn output_infos(&self) -> OutputInfos {
+        self.output_infos.clone()
+    }
+
     /// Check if the libseat session is currently active (not on another VT).
     fn session_active(&self) -> bool {
         self.session.as_ref().is_some_and(|s| s.is_active())
@@ -992,6 +998,13 @@ impl DrmBackendState {
         }
 
         super::map_output_for_config(ewm, &output, config.position);
+        self.output_infos.update_from_output(
+            &output,
+            ewm.space
+                .output_geometry(&output)
+                .map(|geo| geo.loc)
+                .unwrap_or_default(),
+        );
 
         // Update frame clock refresh interval
         if let Some(drm_mode) = new_drm_mode {
@@ -1881,6 +1894,7 @@ impl DrmBackendState {
             modes: output_modes,
         };
 
+        self.output_infos.insert(output_info.clone());
         ewm.add_output(&output, output_info);
 
         info!("Output connected: {}", connector_name);
@@ -1905,6 +1919,7 @@ impl DrmBackendState {
             dh.remove_global::<State>(surface.global_id);
         }
 
+        self.output_infos.remove(&surface.output.name());
         ewm.remove_output(&surface.output);
     }
 
@@ -1944,7 +1959,7 @@ impl DrmBackendState {
     /// When opened: re-scan connectors to reconnect laptop panel.
     pub fn on_lid_state_changed(&mut self, ewm: &mut Ewm) {
         if self.lid_closed {
-            if self.has_external_monitor(ewm) {
+            if self.has_external_monitor() {
                 // Disconnect laptop panel outputs, keep external displays.
                 let to_disconnect: Vec<(DrmNode, crtc::Handle)> = self
                     .devices
@@ -2011,15 +2026,18 @@ impl DrmBackendState {
         ewm.queue_event(crate::event::Event::OutputsComplete);
     }
 
-    fn has_external_monitor(&self, ewm: &Ewm) -> bool {
-        ewm.outputs.iter().any(|o| !crate::is_laptop_panel(&o.name))
+    fn has_external_monitor(&self) -> bool {
+        self.output_infos
+            .list()
+            .iter()
+            .any(|o| !crate::is_laptop_panel(&o.name))
     }
 
     /// If the lid is closed and no outputs remain, deactivate and suspend.
     /// Called after output disconnections (lid close, hotplug) to handle the
     /// case where the last display disappears while the lid is shut.
     fn suspend_if_clamshell_empty(&self, ewm: &mut Ewm) {
-        if self.lid_closed && ewm.outputs.is_empty() {
+        if self.lid_closed && self.output_infos.count() == 0 {
             ewm.deactivate_monitors();
             if let Some(logind) = &self.logind {
                 info!("No display remaining with lid closed, suspending");
@@ -2418,7 +2436,7 @@ fn initialize_drm(
         "Total output area: {}x{} ({} outputs)",
         state.ewm.output_size.w,
         state.ewm.output_size.h,
-        state.ewm.outputs.len()
+        state.backend.output_info_count()
     );
 
     info!("DRM initialization complete");
@@ -2430,7 +2448,7 @@ fn initialize_drm(
     state.ewm.queue_event(crate::event::Event::Ready);
     info!(
         "Sent {} output_detected events, compositor ready",
-        state.ewm.outputs.len()
+        state.backend.output_info_count()
     );
 
     // Trigger initial render via redraw_queued_outputs (all outputs start in Queued state).
@@ -2541,6 +2559,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         primary_render_node: None,
         gpu_manager: None,
         dmabuf_global: None,
+        output_infos: OutputInfos::default(),
         devices: HashMap::new(),
     };
 
@@ -2616,7 +2635,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
             CompositorToIntrospect, DBusServers, IntrospectToCompositor, WindowProperties,
         };
 
-        let outputs = state.ewm.dbus_outputs.clone();
+        let outputs = state.backend.output_infos().shared();
         let (dbus_servers, sc_receiver, introspect_receiver, introspect_reply_tx) =
             DBusServers::start(outputs, display_handle.clone());
         // Store D-Bus servers to keep connections alive

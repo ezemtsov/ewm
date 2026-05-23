@@ -20,15 +20,122 @@
 pub mod drm;
 pub mod headless;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use drm::DrmBackendState;
 pub use headless::HeadlessBackend;
-use smithay::output::Output;
+use smithay::output::{Mode, Output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Point, Transform};
+use smithay::utils::{Logical, Point, Transform};
 
-use crate::Ewm;
+use crate::{Ewm, OutputInfo, OutputMode};
+
+/// Backend-owned output metadata for reporting protocols and Emacs events.
+#[derive(Clone, Default)]
+pub(crate) struct OutputInfos {
+    infos: Arc<Mutex<Vec<OutputInfo>>>,
+}
+
+impl OutputInfos {
+    #[cfg(feature = "screencast")]
+    pub(crate) fn shared(&self) -> Arc<Mutex<Vec<OutputInfo>>> {
+        self.infos.clone()
+    }
+
+    pub(crate) fn insert(&self, info: OutputInfo) {
+        let mut infos = self.infos.lock().unwrap();
+        if let Some(existing) = infos.iter_mut().find(|existing| existing.name == info.name) {
+            *existing = info;
+        } else {
+            infos.push(info);
+        }
+    }
+
+    pub(crate) fn remove(&self, name: &str) {
+        self.infos.lock().unwrap().retain(|info| info.name != name);
+    }
+
+    pub(crate) fn update_from_output(&self, output: &Output, loc: Point<i32, Logical>) {
+        let name = output.name();
+
+        if let Some(info) = self
+            .infos
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|info| info.name == name)
+        {
+            info.scale = output.current_scale().fractional_scale();
+            info.transform = transform_to_int(output.current_transform());
+            info.x = loc.x;
+            info.y = loc.y;
+            if let Some(current_mode) = output.current_mode() {
+                sync_output_info_mode(&mut info.modes, current_mode);
+            }
+        }
+    }
+
+    pub(crate) fn list(&self) -> Vec<OutputInfo> {
+        self.infos.lock().unwrap().clone()
+    }
+
+    pub(crate) fn list_in_output_order(&self, sorted_outputs: &[Output]) -> Vec<OutputInfo> {
+        let mut by_name = self
+            .list()
+            .into_iter()
+            .map(|info| (info.name.clone(), info))
+            .collect::<HashMap<_, _>>();
+        let mut ordered = Vec::with_capacity(by_name.len());
+
+        for output in sorted_outputs {
+            let name = output.name();
+            if let Some(info) = by_name.remove(&name) {
+                ordered.push(info);
+            }
+        }
+
+        let mut remaining = by_name.into_values().collect::<Vec<_>>();
+        remaining.sort_by(|a, b| a.name.cmp(&b.name));
+        ordered.extend(remaining);
+        ordered
+    }
+
+    #[cfg(feature = "screencast")]
+    pub(crate) fn get(&self, name: &str) -> Option<OutputInfo> {
+        self.infos
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|info| info.name == name)
+            .cloned()
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.infos.lock().unwrap().len()
+    }
+}
+
+fn sync_output_info_mode(modes: &mut Vec<OutputMode>, current_mode: Mode) {
+    let mut found_current = false;
+    for mode in modes.iter_mut() {
+        mode.current = mode.width == current_mode.size.w
+            && mode.height == current_mode.size.h
+            && mode.refresh == current_mode.refresh;
+        found_current |= mode.current;
+    }
+
+    if !found_current {
+        modes.push(OutputMode {
+            width: current_mode.size.w,
+            height: current_mode.size.h,
+            refresh: current_mode.refresh,
+            preferred: false,
+            current: true,
+        });
+    }
+}
 
 /// Map a configured output. If it was disabled and has no explicit
 /// position, append it after the currently mapped output bounds.
@@ -79,6 +186,26 @@ pub enum Backend {
 }
 
 impl Backend {
+    pub(crate) fn output_infos(&self) -> OutputInfos {
+        match self {
+            Backend::Drm(drm) => drm.output_infos(),
+            Backend::Headless(headless) => headless.output_infos(),
+        }
+    }
+
+    pub(crate) fn output_info_list(&self, sorted_outputs: &[Output]) -> Vec<OutputInfo> {
+        self.output_infos().list_in_output_order(sorted_outputs)
+    }
+
+    #[cfg(feature = "screencast")]
+    pub(crate) fn output_info(&self, name: &str) -> Option<OutputInfo> {
+        self.output_infos().get(name)
+    }
+
+    pub(crate) fn output_info_count(&self) -> usize {
+        self.output_infos().count()
+    }
+
     /// Render a single output. Returns the render result.
     ///
     /// This only handles the GPU/DRM render. State transitions, frame callbacks,
