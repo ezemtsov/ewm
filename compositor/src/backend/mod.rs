@@ -125,14 +125,6 @@ impl Backend {
         }
     }
 
-    /// Check if any output has a redraw queued
-    pub fn has_queued_redraws(&self, ewm: &Ewm) -> bool {
-        match self {
-            Backend::Drm(drm) => drm.has_queued_redraws(ewm),
-            Backend::Headless(headless) => headless.has_queued_redraws(ewm),
-        }
-    }
-
     /// Perform early buffer import for a surface
     ///
     /// This is crucial for DMA-BUF/EGL buffer import on DRM backends.
@@ -179,16 +171,6 @@ impl Backend {
             Backend::Drm(_) => None,
             Backend::Headless(headless) => Some(headless),
         }
-    }
-
-    /// Check if this is a DRM backend
-    pub fn is_drm(&self) -> bool {
-        matches!(self, Backend::Drm(_))
-    }
-
-    /// Check if this is a headless backend
-    pub fn is_headless(&self) -> bool {
-        matches!(self, Backend::Headless(_))
     }
 
     /// Get the GBM device for screencasting

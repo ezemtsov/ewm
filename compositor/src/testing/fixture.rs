@@ -171,29 +171,11 @@ impl Fixture {
         }
     }
 
-    /// Get the number of outputs
-    pub fn output_count(&self) -> usize {
-        if let Some(headless) = self.state.backend.as_headless() {
-            headless.outputs.len()
-        } else {
-            0
-        }
-    }
-
     pub fn has_output(&self, name: &str) -> bool {
         self.state
             .backend
             .as_headless()
             .is_some_and(|h| h.outputs.contains_key(name))
-    }
-
-    /// Get render count for a specific output
-    pub fn render_count(&self, output_name: &str) -> usize {
-        if let Some(headless) = self.state.backend.as_headless() {
-            headless.render_count(output_name)
-        } else {
-            0
-        }
     }
 
     /// Dispatch the event loop once with a short timeout
@@ -224,21 +206,6 @@ impl Fixture {
     /// Get the focused surface ID
     pub fn focused_surface_id(&self) -> u64 {
         self.state.ewm.focused_surface_id()
-    }
-
-    /// Get the number of tracked surfaces
-    pub fn surface_count(&self) -> usize {
-        self.state.ewm.id_windows.len()
-    }
-
-    /// Check if backend has any queued redraws
-    pub fn has_queued_redraws(&self) -> bool {
-        self.state.backend.has_queued_redraws(&self.state.ewm)
-    }
-
-    /// Queue redraws for all outputs
-    pub fn queue_redraw_all(&mut self) {
-        self.state.ewm.queue_redraw_all();
     }
 
     /// Apply stored output config for the named output (headless backend)

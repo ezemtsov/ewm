@@ -643,13 +643,6 @@ impl DrmBackendState {
             .collect()
     }
 
-    /// Check if any output has a redraw queued (checks Ewm output_state)
-    pub fn has_queued_redraws(&self, ewm: &Ewm) -> bool {
-        ewm.output_state
-            .values()
-            .any(|s| matches!(s.redraw_state, RedrawState::Queued))
-    }
-
     /// Perform early buffer import for a surface.
     /// This is crucial for proper dmabuf/EGL buffer import on DRM backends.
     pub fn early_import(&mut self, surface: &WlSurface) {

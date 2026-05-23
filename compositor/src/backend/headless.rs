@@ -195,13 +195,6 @@ impl HeadlessBackend {
         }
     }
 
-    /// Check if any output has a redraw queued
-    pub fn has_queued_redraws(&self, ewm: &Ewm) -> bool {
-        ewm.output_state
-            .values()
-            .any(|s| matches!(s.redraw_state, RedrawState::Queued))
-    }
-
     /// Render a single output in headless mode.
     ///
     /// In headless mode, we don't render to a real display. We just track
@@ -271,10 +264,5 @@ impl HeadlessBackend {
     /// Get the renderer (for tests that need to verify rendering)
     pub fn renderer(&mut self) -> Option<&mut GlesRenderer> {
         self.renderer.as_mut()
-    }
-
-    /// Get render count for an output (for test assertions)
-    pub fn render_count(&self, name: &str) -> usize {
-        self.outputs.get(name).map(|o| o.render_count).unwrap_or(0)
     }
 }
