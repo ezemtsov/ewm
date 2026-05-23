@@ -159,16 +159,18 @@ impl Fixture {
 
     /// Add a virtual output with the given name and size
     pub fn add_output(&mut self, name: &str, width: i32, height: i32) {
-        if let Some(headless) = self.state.backend.as_headless_mut() {
-            headless.add_output(name, width, height, &mut self.state.ewm);
-        }
+        let Backend::Headless(headless) = &mut self.state.backend else {
+            unreachable!("test fixture always uses the headless backend");
+        };
+        headless.add_output(name, width, height, &mut self.state.ewm);
     }
 
     /// Remove a virtual output by name
     pub fn remove_output(&mut self, name: &str) {
-        if let Some(headless) = self.state.backend.as_headless_mut() {
-            headless.remove_output(name, &mut self.state.ewm);
-        }
+        let Backend::Headless(headless) = &mut self.state.backend else {
+            unreachable!("test fixture always uses the headless backend");
+        };
+        headless.remove_output(name, &mut self.state.ewm);
     }
 
     pub fn has_output(&self, name: &str) -> bool {
