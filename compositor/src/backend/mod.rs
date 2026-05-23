@@ -40,6 +40,7 @@ pub(crate) fn map_output_for_config(ewm: &mut Ewm, output: &Output, position: Op
     if let Some(position) = position {
         ewm.space.map_output(output, position);
         output.change_current_state(None, None, None, Some(position));
+        ewm.reconcile_mapped_output_entries(output);
     }
 }
 

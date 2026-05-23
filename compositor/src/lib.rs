@@ -1324,6 +1324,11 @@ impl Ewm {
     /// Unmap a connected output while keeping its head available for
     /// output-management so it can be re-enabled later.
     pub(crate) fn disable_output(&mut self, output: &Output) {
+        let output_name = output.name();
+        let pre = self.surface_outputs_for(&output_name);
+        let post = HashSet::new();
+        self.reconcile_output_membership(&output_name, Some(output), &pre, &post);
+
         self.space.unmap_output(output);
         self.recalculate_output_size();
         self.active_outputs_dirty = true;
@@ -2159,17 +2164,22 @@ impl Ewm {
             .unwrap_or_default()
     }
 
-    /// Diff `pre` (snapshot before strip mutation) against the current strip;
-    /// fire `wl_surface.enter` / `leave` and sync `surface_outputs`.
-    fn reconcile_output_entries(&mut self, output_name: &str, pre: &HashSet<u64>) {
-        let post = self.strip_entries(output_name);
-        let output = self
-            .space
-            .outputs()
-            .find(|o| o.name() == output_name)
-            .cloned();
+    fn surface_outputs_for(&self, output_name: &str) -> HashSet<u64> {
+        self.surface_outputs
+            .iter()
+            .filter_map(|(&id, outputs)| outputs.contains(output_name).then_some(id))
+            .collect()
+    }
+
+    fn reconcile_output_membership(
+        &mut self,
+        output_name: &str,
+        output: Option<&Output>,
+        pre: &HashSet<u64>,
+        post: &HashSet<u64>,
+    ) {
         for &id in pre.difference(&post) {
-            if let (Some(out), Some(window)) = (output.as_ref(), self.id_windows.get(&id)) {
+            if let (Some(out), Some(window)) = (output, self.id_windows.get(&id)) {
                 if let Some(surface) = window.wl_surface() {
                     out.leave(&surface);
                 }
@@ -2186,16 +2196,38 @@ impl Ewm {
                 warn!("reconcile_output_entries: surface {} not in id_windows", id);
                 continue;
             };
-            if let (Some(out), Some(surface)) = (output.as_ref(), window.wl_surface()) {
+            if let (Some(out), Some(surface)) = (output, window.wl_surface()) {
                 out.enter(&surface);
             }
         }
-        for &id in &post {
+        for &id in post {
             self.surface_outputs
                 .entry(id)
                 .or_default()
                 .insert(output_name.to_string());
         }
+    }
+
+    /// Diff `pre` (snapshot before strip mutation) against the current strip;
+    /// fire `wl_surface.enter` / `leave` and sync `surface_outputs`.
+    fn reconcile_output_entries(&mut self, output_name: &str, pre: &HashSet<u64>) {
+        let output = self
+            .space
+            .outputs()
+            .find(|o| o.name() == output_name)
+            .cloned();
+        let post = output
+            .as_ref()
+            .map(|_| self.strip_entries(output_name))
+            .unwrap_or_default();
+        self.reconcile_output_membership(output_name, output.as_ref(), pre, &post);
+    }
+
+    pub(crate) fn reconcile_mapped_output_entries(&mut self, output: &Output) {
+        let output_name = output.name();
+        let pre = self.surface_outputs_for(&output_name);
+        let post = self.strip_entries(&output_name);
+        self.reconcile_output_membership(&output_name, Some(output), &pre, &post);
     }
 
     fn collect_frame_migrations(

@@ -3,12 +3,72 @@
 //! These tests verify compositor behavior using the headless backend and test fixture.
 
 use ewm_core::backend::closest_representable_scale;
-use ewm_core::testing::Fixture;
+use ewm_core::strip::Frame;
+use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::utils::output_size;
-use ewm_core::OutputConfig;
+use ewm_core::{LayoutEntry, OutputConfig, ViewId};
 use proptest::prelude::*;
+use smithay::utils::{Logical, Size};
+use wayland_client::Proxy as _;
 
 const CASES: u32 = 24;
+
+fn nz(n: u64) -> ViewId {
+    std::num::NonZeroU64::new(n).unwrap()
+}
+
+fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
+    Frame {
+        name: String::new(),
+        surface_id: frame_id,
+        view_id: nz(frame_id + 1_000),
+        width: 1280.0,
+        surfaces: vec![LayoutEntry {
+            view_id,
+            surface_id,
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 300,
+            primary: false,
+            fullscreen: false,
+        }],
+        selected_view_id: Some(view_id),
+        move_anim: None,
+    }
+}
+
+fn has_surface_enter(
+    client: &TestClient,
+    events: &[ClientEvent],
+    client_surface: &wayland_client::protocol::wl_surface::WlSurface,
+    output_name: &str,
+) -> bool {
+    let surface_id = client_surface.id().protocol_id();
+    events.iter().any(|event| match event {
+        ClientEvent::SurfaceEnter { surface, output } => {
+            surface.id().protocol_id() == surface_id
+                && client.output_name(output.id().protocol_id()) == Some(output_name)
+        }
+        _ => false,
+    })
+}
+
+fn has_surface_leave(
+    client: &TestClient,
+    events: &[ClientEvent],
+    client_surface: &wayland_client::protocol::wl_surface::WlSurface,
+    output_name: &str,
+) -> bool {
+    let surface_id = client_surface.id().protocol_id();
+    events.iter().any(|event| match event {
+        ClientEvent::SurfaceLeave { surface, output } => {
+            surface.id().protocol_id() == surface_id
+                && client.output_name(output.id().protocol_id()) == Some(output_name)
+        }
+        _ => false,
+    })
+}
 
 proptest! {
     #![proptest_config(ProptestConfig {
@@ -160,4 +220,87 @@ fn headless_output_respects_initial_disabled_config() {
         .outputs()
         .any(|output| output.name() == "Virtual-1"));
     assert!(!fixture.ewm_ref().build_output_head_states()["Virtual-1"].enabled);
+}
+
+#[test]
+fn disabling_and_reenabling_output_updates_surface_membership() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+
+    let mut client = fixture.new_client().expect("Failed to create client");
+    fixture.roundtrip(&mut client);
+    let toplevel = fixture.open_toplevel(
+        &mut client,
+        "output-membership",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+    let surface_id = fixture
+        .find_surface_id(&toplevel.surface)
+        .expect("server did not assign a surface id");
+    let view_id = nz(1);
+
+    fixture.ewm().apply_output_layout(
+        "Virtual-1",
+        vec![frame_with_entry(100, view_id, surface_id)],
+    );
+    fixture.roundtrip(&mut client);
+
+    assert!(fixture
+        .ewm_ref()
+        .surface_outputs
+        .get(&surface_id)
+        .is_some_and(|outputs| outputs.contains("Virtual-1")));
+    let events = client.drain_events();
+    assert!(has_surface_enter(
+        &client,
+        &events,
+        &toplevel.surface,
+        "Virtual-1",
+    ));
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+    fixture.roundtrip(&mut client);
+
+    assert!(!fixture
+        .ewm_ref()
+        .surface_outputs
+        .get(&surface_id)
+        .is_some_and(|outputs| outputs.contains("Virtual-1")));
+    let events = client.drain_events();
+    assert!(has_surface_leave(
+        &client,
+        &events,
+        &toplevel.surface,
+        "Virtual-1",
+    ));
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+    fixture.roundtrip(&mut client);
+
+    assert!(fixture
+        .ewm_ref()
+        .surface_outputs
+        .get(&surface_id)
+        .is_some_and(|outputs| outputs.contains("Virtual-1")));
+    let events = client.drain_events();
+    assert!(has_surface_enter(
+        &client,
+        &events,
+        &toplevel.surface,
+        "Virtual-1",
+    ));
 }
