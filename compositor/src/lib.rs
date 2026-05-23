@@ -5773,14 +5773,7 @@ impl XdgActivationHandler for State {
         );
 
         if token_data.timestamp.elapsed() < TOKEN_TIMEOUT {
-            // Find the surface ID for this WlSurface
-            if let Some(&id) = self
-                .ewm
-                .window_ids
-                .iter()
-                .find(|(w, _)| w.wl_surface().map(|s| *s == surface).unwrap_or(false))
-                .map(|(_, id)| id)
-            {
+            if let Some(id) = self.ewm.surface_id(&surface) {
                 // Lisp owns Emacs frame focus via select-frame-set-input-focus;
                 // honoring GTK's echo activation here would loop with our own
                 // ewm-focus calls.
@@ -5833,12 +5826,10 @@ impl ForeignToplevelHandler for State {
     }
 
     fn close(&mut self, wl_surface: WlSurface) {
-        if let Some((window, _)) = self
-            .ewm
-            .window_ids
-            .iter()
-            .find(|(w, _)| w.wl_surface().map(|s| *s == wl_surface).unwrap_or(false))
-        {
+        if let Some(id) = self.ewm.surface_id(&wl_surface) {
+            let Some(window) = self.ewm.id_windows.get(&id) else {
+                return;
+            };
             if let Some(toplevel) = window.toplevel() {
                 toplevel.send_close();
                 info!("Foreign toplevel: sent close request");
