@@ -1327,7 +1327,7 @@ impl Ewm {
         self.reconcile_active_for_output(&out, prev_active_id);
     }
 
-    pub fn output_exists(&self, output: &Output) -> bool {
+    pub(crate) fn output_exists(&self, output: &Output) -> bool {
         self.output_state.contains_key(output)
     }
 
@@ -1471,7 +1471,7 @@ impl Ewm {
 
         let mut states = HashMap::new();
         for info in &self.outputs {
-            let output = self.output_by_name(&info.name);
+            let output = self.mapped_output_by_name(&info.name);
             let geo = output.and_then(|o| self.space.output_geometry(o));
 
             let enabled = self
@@ -2208,7 +2208,7 @@ impl Ewm {
     /// Diff `pre` (snapshot before strip mutation) against the current strip;
     /// fire `wl_surface.enter` / `leave` and sync `surface_outputs`.
     fn reconcile_output_entries(&mut self, output_name: &str, pre: &HashSet<u64>) {
-        let output = self.find_output(output_name);
+        let output = self.find_mapped_output(output_name);
         let post = output
             .as_ref()
             .map(|_| self.strip_entries(output_name))
@@ -2327,7 +2327,7 @@ impl Ewm {
                 continue;
             };
             if let Some(prev_name) = migration.prev_output.as_deref() {
-                if let Some(prev_output) = self.output_by_name(prev_name) {
+                if let Some(prev_output) = self.mapped_output_by_name(prev_name) {
                     prev_output.leave(&surface);
                 }
             }
@@ -2371,7 +2371,7 @@ impl Ewm {
     /// and scale notification.
     pub fn apply_output_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
         // 1. Find the output
-        let output = match self.find_output(output_name) {
+        let output = match self.find_mapped_output(output_name) {
             Some(o) => o,
             None => {
                 warn!("apply_output_layout: output '{}' not found", output_name);
@@ -2510,7 +2510,7 @@ impl Ewm {
         {
             self.casting.mapped_cast_output.clear();
             for (oname, strip) in &self.output_strips {
-                let Some(output) = self.find_output(oname) else {
+                let Some(output) = self.find_mapped_output(oname) else {
                     continue;
                 };
                 for entry in strip.active_surfaces().filter(|e| e.primary) {
@@ -3607,7 +3607,7 @@ impl Ewm {
     /// Find the output for a surface (returns Output object)
     fn find_surface_output(&self, surface_id: u64) -> Option<smithay::output::Output> {
         let output_name = self.surface_output_name(surface_id)?;
-        self.find_output(output_name)
+        self.find_mapped_output(output_name)
     }
 
     /// Set the Emacs process PID for client identification
@@ -4112,13 +4112,13 @@ impl Ewm {
     }
 
     /// Find a mapped output by name in this `Space`.
-    fn output_by_name(&self, name: &str) -> Option<&Output> {
+    fn mapped_output_by_name(&self, name: &str) -> Option<&Output> {
         self.space.outputs().find(|o| o.name() == name)
     }
 
     /// Find a mapped output by name in this `Space`.
-    pub fn find_output(&self, name: &str) -> Option<Output> {
-        self.output_by_name(name).cloned()
+    pub(crate) fn find_mapped_output(&self, name: &str) -> Option<Output> {
+        self.mapped_output_by_name(name).cloned()
     }
 
     /// Output adjacent to `current` along one axis. Candidates must overlap
@@ -4176,7 +4176,7 @@ impl Ewm {
             Some(n) => n,
             None => return,
         };
-        let cur = match self.find_output(&cur_name) {
+        let cur = match self.find_mapped_output(&cur_name) {
             Some(o) => o,
             None => return,
         };
@@ -4624,7 +4624,7 @@ impl Ewm {
         // Check windows (layout surfaces + Emacs frames)
         if let Some(id) = self.surface_id(&root) {
             let output_name = self.surface_output_name(id)?;
-            return self.output_by_name(output_name);
+            return self.mapped_output_by_name(output_name);
         }
 
         // Check layer surfaces
@@ -4644,7 +4644,7 @@ impl Ewm {
     fn popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
         let location = self.preferred_entry_for_surface(id)?;
         let entry = location.entry;
-        let output = self.output_by_name(location.output_name)?;
+        let output = self.mapped_output_by_name(location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
 
         if entry.fullscreen {
@@ -4805,7 +4805,7 @@ impl Ewm {
         // so it knows the correct scale to render at.
         let scale_output = target_output
             .as_ref()
-            .and_then(|name| self.output_by_name(name))
+            .and_then(|name| self.mapped_output_by_name(name))
             .or_else(|| self.space.outputs().next())
             .cloned();
         if let Some(output) = scale_output {
@@ -4824,7 +4824,7 @@ impl Ewm {
         // Resize Emacs frames to fill their working area
         if let Some(ref output_name) = frame_output {
             if let Some(working_area) = self
-                .output_by_name(output_name)
+                .mapped_output_by_name(output_name)
                 .map(|o| self.get_working_area(o))
             {
                 if let Some(t) = window.toplevel() {
@@ -5665,7 +5665,7 @@ impl WlrLayerShellHandler for State {
             Output::from_resource(wl_output)
         } else {
             let name = self.ewm.active_output();
-            name.and_then(|n| self.ewm.find_output(&n))
+            name.and_then(|n| self.ewm.find_mapped_output(&n))
         };
 
         let Some(output) = output else {

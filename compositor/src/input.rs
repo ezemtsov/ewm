@@ -1148,7 +1148,7 @@ const GESTURE_DEADZONE_SQ: f64 = 16.0 * 16.0;
 fn working_area_width(state: &State, name: &str) -> f64 {
     state
         .ewm
-        .find_output(name)
+        .find_mapped_output(name)
         .map(|o| state.ewm.get_working_area(&o).size.w as f64)
         .unwrap_or(0.0)
 }
@@ -1226,7 +1226,7 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
         if let Some(strip) = state.ewm.output_strips.get_mut(&out) {
             strip.gesture_update(dx, timestamp, w);
         }
-        if let Some(o) = state.ewm.find_output(&out) {
+        if let Some(o) = state.ewm.find_mapped_output(&out) {
             state.ewm.queue_redraw(&o);
         }
         return;
@@ -1265,7 +1265,7 @@ pub fn handle_gesture_swipe_end<B: InputBackend>(
         if let Some(id) = target {
             state.ewm.set_focus_frame(id, "gesture", true);
         }
-        if let Some(o) = state.ewm.find_output(&out) {
+        if let Some(o) = state.ewm.find_mapped_output(&out) {
             state.ewm.queue_redraw(&o);
         }
         return;
