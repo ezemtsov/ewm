@@ -58,7 +58,8 @@ impl GroupData {
         display: &DisplayHandle,
         client: &Client,
         manager: &ExtWorkspaceManagerV1,
-    ) where
+    ) -> Option<ExtWorkspaceGroupHandleV1>
+    where
         D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
     {
         let Ok(handle) = client.create_resource::<ExtWorkspaceGroupHandleV1, _, D>(
@@ -66,7 +67,7 @@ impl GroupData {
             manager.version(),
             manager.clone(),
         ) else {
-            return;
+            return None;
         };
         manager.workspace_group(&handle);
         handle.capabilities(ext_workspace_group_handle_v1::GroupCapabilities::empty());
@@ -75,7 +76,8 @@ impl GroupData {
             handle.output_enter(&wl_output);
         }
 
-        self.instances.push(handle);
+        self.instances.push(handle.clone());
+        Some(handle)
     }
 }
 
@@ -154,7 +156,8 @@ impl WorkspaceData {
         display: &DisplayHandle,
         client: &Client,
         manager: &ExtWorkspaceManagerV1,
-    ) where
+    ) -> Option<ExtWorkspaceHandleV1>
+    where
         D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
     {
         let Ok(handle) = client.create_resource::<ExtWorkspaceHandleV1, _, D>(
@@ -162,7 +165,7 @@ impl WorkspaceData {
             manager.version(),
             manager.clone(),
         ) else {
-            return;
+            return None;
         };
         manager.workspace(&handle);
 
@@ -172,7 +175,8 @@ impl WorkspaceData {
         handle.state(self.state);
         handle.capabilities(ext_workspace_handle_v1::WorkspaceCapabilities::Activate);
 
-        self.instances.push(handle);
+        self.instances.push(handle.clone());
+        Some(handle)
     }
 }
 
@@ -397,7 +401,7 @@ where
 
     for manager in workspace_state.instances.keys() {
         if let Some(client) = manager.client() {
-            group.add_instance::<D>(&workspace_state.display, &client, manager);
+            let _ = group.add_instance::<D>(&workspace_state.display, &client, manager);
         }
     }
 
@@ -486,7 +490,7 @@ fn insert_workspace<D>(
     let mut workspace = WorkspaceData::from_desired(desired);
     for manager in workspace_state.instances.keys() {
         if let Some(client) = manager.client() {
-            workspace.add_instance::<D>(&workspace_state.display, &client, manager);
+            let _ = workspace.add_instance::<D>(&workspace_state.display, &client, manager);
         }
     }
 
@@ -664,31 +668,28 @@ where
         // Create workspace instances for the new client, grouped by their
         // current output so the freshly-created group can issue
         // workspace_enter for each.
-        let mut new_ws_by_output: HashMap<String, Vec<WorkspaceKey>> = HashMap::new();
-        let ws_keys: Vec<WorkspaceKey> = ps.workspaces.keys().cloned().collect();
-        for key in ws_keys {
-            let ws_data = ps.workspaces.get_mut(&key).unwrap();
-            ws_data.add_instance::<D>(&ps.display, client, &manager);
+        let mut new_ws_by_output: HashMap<String, Vec<ExtWorkspaceHandleV1>> = HashMap::new();
+        for ws_data in ps.workspaces.values_mut() {
+            let output_name = ws_data.output.clone();
+            let Some(ws_handle) = ws_data.add_instance::<D>(&ps.display, client, &manager) else {
+                continue;
+            };
             new_ws_by_output
-                .entry(ws_data.output.clone())
+                .entry(output_name)
                 .or_default()
-                .push(key);
+                .push(ws_handle);
         }
 
         // Create group instances for all tracked outputs, with workspace_enter.
-        let group_keys: Vec<String> = ps.groups.keys().cloned().collect();
-        for output_name in group_keys {
-            let group_data = ps.groups.get_mut(&output_name).unwrap();
-            group_data.add_instance::<D>(&ps.display, client, &manager);
+        for (output_name, group_data) in &mut ps.groups {
+            let Some(group_handle) = group_data.add_instance::<D>(&ps.display, client, &manager)
+            else {
+                continue;
+            };
 
             // Send workspace_enter for workspaces on this output.
-            let group_handle = group_data.instances.last().unwrap();
-            for &key in new_ws_by_output.get(&output_name).into_iter().flatten() {
-                if let Some(ws) = ps.workspaces.get(&key) {
-                    if let Some(ws_inst) = ws.instances.last() {
-                        group_handle.workspace_enter(ws_inst);
-                    }
-                }
+            for ws_handle in new_ws_by_output.get(output_name).into_iter().flatten() {
+                group_handle.workspace_enter(ws_handle);
             }
         }
 
