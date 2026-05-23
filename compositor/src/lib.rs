@@ -467,7 +467,7 @@ struct LayoutEntryHit<'a> {
     output_size: Size<i32, Logical>,
 }
 
-type SurfaceHit = (WlSurface, Point<f64, Logical>);
+pub(crate) type SurfaceHit = (WlSurface, Point<f64, Logical>);
 
 /// Centering offset for a fullscreen surface within an output.
 /// Returns (0, 0) when the surface is at least as large as the output.
@@ -4018,10 +4018,7 @@ impl Ewm {
     pub fn surface_under_point(
         &self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<(
-        WlSurface,
-        smithay::utils::Point<f64, smithay::utils::Logical>,
-    )> {
+    ) -> Option<SurfaceHit> {
         let output = self.output_at(pos);
         let output_geo = output.and_then(|o| self.space.output_geometry(o));
         let above_top_layer = output.is_some_and(|o| self.render_above_top_layer(o));
@@ -4077,6 +4074,41 @@ impl Ewm {
         }
 
         None
+    }
+
+    pub(crate) fn pointer_target_at(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
+        if self.is_locked() {
+            self.lock_surface_focus()
+                .map(|surface| (surface, (0.0, 0.0).into()))
+        } else {
+            self.surface_under_point(pos)
+        }
+    }
+
+    fn pointer_focus_surface(focus: &Option<SurfaceHit>) -> Option<&WlSurface> {
+        focus.as_ref().map(|(surface, _)| surface)
+    }
+
+    pub(crate) fn update_pointer_focus_for_motion(
+        &mut self,
+        pos: Point<f64, Logical>,
+    ) -> (Option<SurfaceHit>, bool) {
+        let under = self.pointer_target_at(pos);
+        let focus_changed =
+            Self::pointer_focus_surface(&self.pointer_focus) != Self::pointer_focus_surface(&under);
+        self.pointer_focus = under.clone();
+
+        let view_id = self.view_id_under(pos);
+        let entry_changed = mem::replace(&mut self.pointer_view_id, view_id) != view_id;
+
+        if self.focus_follows_mouse_mode
+            && (focus_changed || entry_changed)
+            && !self.is_strip_animating_at(pos)
+        {
+            self.focus_follows_mouse(&under, pos);
+        }
+
+        (under, focus_changed)
     }
 
     /// Get the output where the focused frame is located
@@ -6285,13 +6317,7 @@ impl State {
         let (x, y) = self.ewm.pointer_location();
         let pos: Point<f64, Logical> = (x, y).into();
 
-        let under = if self.ewm.is_locked() {
-            self.ewm
-                .lock_surface_focus()
-                .map(|s| (s, (0.0, 0.0).into()))
-        } else {
-            self.ewm.surface_under_point(pos)
-        };
+        let under = self.ewm.pointer_target_at(pos);
 
         if self.ewm.pointer_focus == under {
             return;

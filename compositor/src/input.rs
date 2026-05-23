@@ -25,7 +25,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::seat::WaylandFocus;
 
-use crate::{module, tracy_span, EmulatedKey, InterceptedKey, State};
+use crate::{module, tracy_span, EmulatedKey, InterceptedKey, State, SurfaceHit};
 
 /// Notify the idle notifier of user activity and reset native idle timer
 fn notify_activity(state: &mut State) {
@@ -885,12 +885,10 @@ fn active_constraint(
     })
 }
 
-type PointerFocus = (WlSurface, Point<f64, Logical>);
-
 fn active_constraint_for_focus(
     state: &State,
     pointer: &smithay::input::pointer::PointerHandle<State>,
-) -> Option<(PointerFocus, ActiveConstraint)> {
+) -> Option<(SurfaceHit, ActiveConstraint)> {
     let (surface, surface_loc) = state.ewm.pointer_focus.as_ref()?;
     let (cx, cy) = state.ewm.pointer_location();
     let pos_within_surface = Point::from((cx, cy)) - *surface_loc;
@@ -901,7 +899,7 @@ fn active_constraint_for_focus(
 
 fn confined_motion_prevented(
     state: &State,
-    focus_surface: &PointerFocus,
+    focus_surface: &SurfaceHit,
     region: Option<&RegionAttributes>,
     pos: Point<f64, Logical>,
 ) -> bool {
@@ -918,42 +916,6 @@ fn confined_motion_prevented(
     }
 
     false
-}
-
-fn pointer_target_under(state: &State, pos: Point<f64, Logical>) -> Option<PointerFocus> {
-    if state.ewm.is_locked() {
-        state
-            .ewm
-            .lock_surface_focus()
-            .map(|surface| (surface, (0.0, 0.0).into()))
-    } else {
-        state.ewm.surface_under_point(pos)
-    }
-}
-
-fn pointer_surface(focus: &Option<PointerFocus>) -> Option<&WlSurface> {
-    focus.as_ref().map(|(surface, _)| surface)
-}
-
-fn update_pointer_focus_for_motion(
-    state: &mut State,
-    pos: Point<f64, Logical>,
-) -> (Option<PointerFocus>, bool) {
-    let under = pointer_target_under(state, pos);
-    let focus_changed = pointer_surface(&state.ewm.pointer_focus) != pointer_surface(&under);
-    state.ewm.pointer_focus = under.clone();
-
-    let view_id = state.ewm.view_id_under(pos);
-    let entry_changed = std::mem::replace(&mut state.ewm.pointer_view_id, view_id) != view_id;
-
-    if state.ewm.focus_follows_mouse_mode
-        && (focus_changed || entry_changed)
-        && !state.ewm.is_strip_animating_at(pos)
-    {
-        state.ewm.focus_follows_mouse(&under, pos);
-    }
-
-    (under, focus_changed)
 }
 
 /// Handle relative pointer motion (mice, trackpoints)
@@ -1020,7 +982,9 @@ pub fn handle_pointer_motion<B: InputBackend>(
         }
     }
 
-    let (under, focus_changed) = update_pointer_focus_for_motion(state, (new_x, new_y).into());
+    let (under, focus_changed) = state
+        .ewm
+        .update_pointer_focus_for_motion((new_x, new_y).into());
 
     pointer.motion(
         state,
@@ -1090,7 +1054,7 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
         }
     }
 
-    let (under, focus_changed) = update_pointer_focus_for_motion(state, pos);
+    let (under, focus_changed) = state.ewm.update_pointer_focus_for_motion(pos);
 
     pointer.motion(
         state,
