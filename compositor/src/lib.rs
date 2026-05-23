@@ -235,6 +235,14 @@ impl std::fmt::Display for RedrawState {
 }
 
 impl RedrawState {
+    /// Whether this output should be rendered by the immediate redraw loop.
+    fn is_render_queued(&self) -> bool {
+        matches!(
+            self,
+            RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+        )
+    }
+
     /// Transition to request a redraw
     pub fn queue_redraw(self) -> Self {
         match self {
@@ -2983,12 +2991,7 @@ impl Ewm {
         while let Some(output) = self
             .output_state
             .iter()
-            .find(|(_, state)| {
-                matches!(
-                    state.redraw_state,
-                    RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-                )
-            })
+            .find(|(_, state)| state.redraw_state.is_render_queued())
             .map(|(output, _)| output.clone())
         {
             self.redraw(backend, &output);
@@ -3000,12 +3003,7 @@ impl Ewm {
         if !self.monitors_active {
             return None;
         }
-        let needs_redraw = |s: &OutputState| {
-            matches!(
-                s.redraw_state,
-                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-            )
-        };
+        let needs_redraw = |s: &OutputState| s.redraw_state.is_render_queued();
         if let Some(name) = prefer {
             let found = self
                 .output_state
@@ -3051,10 +3049,7 @@ impl Ewm {
             let Some(state) = self.output_state.get(output) else {
                 return;
             };
-            debug_assert!(matches!(
-                state.redraw_state,
-                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-            ));
+            debug_assert!(state.redraw_state.is_render_queued());
             state.frame_clock.next_presentation_time()
         };
 
