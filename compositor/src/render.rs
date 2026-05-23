@@ -69,18 +69,6 @@ fn render_window_without_popups(
     )
 }
 
-/// Identifies the target of a render pass.
-///
-/// Currently used as scaffolding for future per-window privacy filtering
-/// (`block_out_from`), where surfaces could opt out of being captured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderTarget {
-    /// Rendering for display on a physical or virtual output.
-    Output,
-    /// Rendering for a screen cast (PipeWire stream).
-    Screencast,
-}
-
 // Combined render element type for ewm.
 // Generated via Smithay's `render_elements!` macro, which auto-derives
 // `Element`, `RenderElement<GlesRenderer>`, and `From` impls for each variant.
@@ -167,8 +155,6 @@ fn push_constrained(
 /// - `include_layers`: Whether to include layer surfaces and the DnD icon. Set to `false` for
 ///   workspace-transition snapshots so the captured texture doesn't re-draw panels on top of the
 ///   live layer surfaces.
-/// - `target`: The render target (Output vs Screencast); currently unused but threaded through for
-///   future per-window privacy filtering.
 #[allow(clippy::too_many_arguments)]
 pub fn collect_render_elements_for_output(
     ewm: &Ewm,
@@ -180,7 +166,6 @@ pub fn collect_render_elements_for_output(
     include_cursor: bool,
     include_layers: bool,
     output: &Output,
-    _target: RenderTarget,
 ) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
     tracy_span!("collect_render_elements");
 
@@ -749,7 +734,6 @@ pub fn process_screencopies_for_output(
                 true, // include_cursor
                 true, // include_layers
                 output,
-                RenderTarget::Output,
             );
             // Screencopy doesn't need separate cursor tracking; merge them
             content.splice(0..0, cursor);
@@ -879,7 +863,6 @@ pub fn render_screencopy_immediate(
         true, // include_cursor
         true, // include_layers
         &output,
-        RenderTarget::Output,
     );
     // Screencopy doesn't need separate cursor tracking; merge them
     content.splice(0..0, cursor);
@@ -987,7 +970,6 @@ pub fn capture_output_to_texture(
         false, // include_cursor
         false, // include_layers
         output,
-        RenderTarget::Output,
     );
 
     let (texture, _sync) = render_to_texture(

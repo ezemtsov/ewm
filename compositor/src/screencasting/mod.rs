@@ -512,7 +512,6 @@ impl Ewm {
                     include_cursor,
                     true,
                     output,
-                    crate::render::RenderTarget::Screencast,
                 )
             });
 
