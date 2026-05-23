@@ -1490,7 +1490,7 @@ impl Ewm {
     }
 
     /// Find a window by its root WlSurface, returning the window and its ID.
-    pub fn find_window_by_surface(&self, surface: &WlSurface) -> Option<(Window, u64)> {
+    fn find_window_by_surface(&self, surface: &WlSurface) -> Option<(Window, u64)> {
         self.id_windows.iter().find_map(|(&id, window)| {
             window.wl_surface().and_then(|ws| {
                 if *ws == *surface {
@@ -4578,7 +4578,7 @@ impl Ewm {
         let root = find_popup_root_surface(popup).ok()?;
 
         // Check windows (layout surfaces + Emacs frames)
-        if let Some((_window, id)) = self.find_window_by_surface(&root) {
+        if let Some(id) = self.surface_id_for_wl_surface(&root) {
             let output_name = self.surface_output_name(id)?;
             return self.space.outputs().find(|o| o.name() == output_name);
         }
@@ -4635,7 +4635,7 @@ impl Ewm {
         };
 
         // Window popup path
-        if let Some((_window, id)) = self.find_window_by_surface(&root) {
+        if let Some(id) = self.surface_id_for_wl_surface(&root) {
             let raw_target = self
                 .popup_target_rect(id)
                 .unwrap_or_else(|| Rectangle::from_size(self.output_size));
@@ -4723,8 +4723,7 @@ impl Ewm {
         // below to place dialogs in the same Emacs frame as their owner.
         let parent_id = surface
             .parent()
-            .and_then(|wl| self.find_window_by_surface(&wl))
-            .map(|(_, id)| id);
+            .and_then(|wl| self.surface_id_for_wl_surface(&wl));
 
         surface.with_pending_state(|state| {
             state.size = Some(self.output_size);
@@ -4962,7 +4961,7 @@ impl Ewm {
     }
 
     fn check_surface_info_changes(&mut self, surface: &WlSurface) {
-        let Some((_window, id)) = self.find_window_by_surface(surface) else {
+        let Some(id) = self.surface_id_for_wl_surface(surface) else {
             return;
         };
 
