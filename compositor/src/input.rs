@@ -475,7 +475,7 @@ use smithay::backend::input::{
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 // Libinput device configuration
 use smithay::reexports::input as libinput;
-use smithay::utils::Point;
+use smithay::utils::{Logical, Point};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
@@ -865,7 +865,7 @@ enum ActiveConstraint {
 fn active_constraint(
     surface: &WlSurface,
     pointer: &smithay::input::pointer::PointerHandle<State>,
-    pos_within_surface: Point<f64, smithay::utils::Logical>,
+    pos_within_surface: Point<f64, Logical>,
 ) -> Option<ActiveConstraint> {
     with_pointer_constraint(surface, pointer, |constraint| {
         let constraint = constraint?;
@@ -883,6 +883,77 @@ fn active_constraint(
             PointerConstraint::Confined(c) => Some(ActiveConstraint::Confined(c.region().cloned())),
         }
     })
+}
+
+type PointerFocus = (WlSurface, Point<f64, Logical>);
+
+fn active_constraint_for_focus(
+    state: &State,
+    pointer: &smithay::input::pointer::PointerHandle<State>,
+) -> Option<(PointerFocus, ActiveConstraint)> {
+    let (surface, surface_loc) = state.ewm.pointer_focus.as_ref()?;
+    let (cx, cy) = state.ewm.pointer_location();
+    let pos_within_surface = Point::from((cx, cy)) - *surface_loc;
+    let constraint = active_constraint(surface, pointer, pos_within_surface)?;
+
+    Some(((surface.clone(), *surface_loc), constraint))
+}
+
+fn confined_motion_prevented(
+    state: &State,
+    focus_surface: &PointerFocus,
+    region: Option<&RegionAttributes>,
+    pos: Point<f64, Logical>,
+) -> bool {
+    let under = state.ewm.surface_under_point(pos);
+    if Some(&focus_surface.0) != under.as_ref().map(|(s, _)| s) {
+        return true;
+    }
+
+    if let Some(region) = region {
+        let local = pos - focus_surface.1;
+        if !region.contains(local.to_i32_round()) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn pointer_target_under(state: &State, pos: Point<f64, Logical>) -> Option<PointerFocus> {
+    if state.ewm.is_locked() {
+        state
+            .ewm
+            .lock_surface_focus()
+            .map(|surface| (surface, (0.0, 0.0).into()))
+    } else {
+        state.ewm.surface_under_point(pos)
+    }
+}
+
+fn pointer_surface(focus: &Option<PointerFocus>) -> Option<&WlSurface> {
+    focus.as_ref().map(|(surface, _)| surface)
+}
+
+fn update_pointer_focus_for_motion(
+    state: &mut State,
+    pos: Point<f64, Logical>,
+) -> (Option<PointerFocus>, bool) {
+    let under = pointer_target_under(state, pos);
+    let focus_changed = pointer_surface(&state.ewm.pointer_focus) != pointer_surface(&under);
+    state.ewm.pointer_focus = under.clone();
+
+    let view_id = state.ewm.view_id_under(pos);
+    let entry_changed = std::mem::replace(&mut state.ewm.pointer_view_id, view_id) != view_id;
+
+    if state.ewm.focus_follows_mouse_mode
+        && (focus_changed || entry_changed)
+        && !state.ewm.is_strip_animating_at(pos)
+    {
+        state.ewm.focus_follows_mouse(&under, pos);
+    }
+
+    (under, focus_changed)
 }
 
 /// Handle relative pointer motion (mice, trackpoints)
@@ -908,11 +979,9 @@ pub fn handle_pointer_motion<B: InputBackend>(
 
     // Check active pointer constraints (locked or confined).
     let mut pointer_confined = None;
-    if let Some((ref surface, surface_loc)) = state.ewm.pointer_focus {
-        let pos_within_surface = Point::from((current_x, current_y)) - surface_loc;
-
-        match active_constraint(surface, &pointer, pos_within_surface) {
-            Some(ActiveConstraint::Locked) => {
+    if let Some((focus_surface, constraint)) = active_constraint_for_focus(state, &pointer) {
+        match constraint {
+            ActiveConstraint::Locked => {
                 // Pointer locked: send only relative motion, no position change.
                 pointer.relative_motion(
                     state,
@@ -926,33 +995,16 @@ pub fn handle_pointer_motion<B: InputBackend>(
                 pointer.frame(state);
                 return true;
             }
-            Some(ActiveConstraint::Confined(region)) => {
-                pointer_confined = Some((state.ewm.pointer_focus.clone().unwrap(), region));
+            ActiveConstraint::Confined(region) => {
+                pointer_confined = Some((focus_surface, region));
             }
-            None => {}
         }
     }
 
     // Handle confined pointer: prevent leaving the surface/region.
     if let Some((focus_surface, region)) = &pointer_confined {
         let new_pos: Point<f64, _> = (new_x, new_y).into();
-        let under = state.ewm.surface_under_point(new_pos);
-        let mut prevent = false;
-
-        // Prevent leaving the focused surface.
-        if Some(&focus_surface.0) != under.as_ref().map(|(s, _)| s) {
-            prevent = true;
-        }
-
-        // Prevent leaving the confine region, if any.
-        if let Some(region) = region {
-            let local = new_pos - focus_surface.1;
-            if !region.contains(local.to_i32_round()) {
-                prevent = true;
-            }
-        }
-
-        if prevent {
+        if confined_motion_prevented(state, focus_surface, region.as_ref(), new_pos) {
             pointer.relative_motion(
                 state,
                 Some(focus_surface.clone()),
@@ -968,30 +1020,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
         }
     }
 
-    // When locked, route pointer to lock surface instead of normal surfaces
-    let under = if state.ewm.is_locked() {
-        state
-            .ewm
-            .lock_surface_focus()
-            .map(|s| (s, (0.0, 0.0).into()))
-    } else {
-        state.ewm.surface_under_point((new_x, new_y).into())
-    };
-
-    // Activate pending constraints only on focus change (not every motion).
-    let focus_changed =
-        state.ewm.pointer_focus.as_ref().map(|(s, _)| s) != under.as_ref().map(|(s, _)| s);
-    state.ewm.pointer_focus = under.clone();
-
-    let view_id = state.ewm.view_id_under((new_x, new_y).into());
-    let entry_changed = std::mem::replace(&mut state.ewm.pointer_view_id, view_id) != view_id;
-
-    if state.ewm.focus_follows_mouse_mode
-        && (focus_changed || entry_changed)
-        && !state.ewm.is_strip_animating_at((new_x, new_y).into())
-    {
-        state.ewm.focus_follows_mouse(&under, (new_x, new_y).into());
-    }
+    let (under, focus_changed) = update_pointer_focus_for_motion(state, (new_x, new_y).into());
 
     pointer.motion(
         state,
@@ -1040,69 +1069,28 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
 
     // Check active pointer constraints (locked or confined).
     let mut pointer_confined = None;
-    if let Some((ref surface, surface_loc)) = state.ewm.pointer_focus {
-        let (cx, cy) = state.ewm.pointer_location();
-        let pos_within_surface = Point::from((cx, cy)) - surface_loc;
-
-        match active_constraint(surface, &pointer, pos_within_surface) {
-            Some(ActiveConstraint::Locked) => {
+    if let Some((focus_surface, constraint)) = active_constraint_for_focus(state, &pointer) {
+        match constraint {
+            ActiveConstraint::Locked => {
                 pointer.frame(state);
                 return true;
             }
-            Some(ActiveConstraint::Confined(region)) => {
-                pointer_confined = Some((state.ewm.pointer_focus.clone().unwrap(), region));
+            ActiveConstraint::Confined(region) => {
+                pointer_confined = Some((focus_surface, region));
             }
-            None => {}
         }
     }
 
     // Handle confined pointer: prevent leaving the surface/region.
     if let Some((focus_surface, region)) = &pointer_confined {
-        let under = state.ewm.surface_under_point(pos);
-        let mut prevent = false;
-
-        if Some(&focus_surface.0) != under.as_ref().map(|(s, _)| s) {
-            prevent = true;
-        }
-
-        if let Some(region) = region {
-            let local = pos - focus_surface.1;
-            if !region.contains(local.to_i32_round()) {
-                prevent = true;
-            }
-        }
-
-        if prevent {
+        if confined_motion_prevented(state, focus_surface, region.as_ref(), pos) {
             pointer.frame(state);
             notify_pointer_activity(state);
             return true;
         }
     }
 
-    // When locked, route pointer to lock surface instead of normal surfaces
-    let under = if state.ewm.is_locked() {
-        state
-            .ewm
-            .lock_surface_focus()
-            .map(|s| (s, (0.0, 0.0).into()))
-    } else {
-        state.ewm.surface_under_point(pos)
-    };
-
-    // Activate pending constraints only on focus change (not every motion).
-    let focus_changed =
-        state.ewm.pointer_focus.as_ref().map(|(s, _)| s) != under.as_ref().map(|(s, _)| s);
-    state.ewm.pointer_focus = under.clone();
-
-    let view_id = state.ewm.view_id_under(pos);
-    let entry_changed = std::mem::replace(&mut state.ewm.pointer_view_id, view_id) != view_id;
-
-    if state.ewm.focus_follows_mouse_mode
-        && (focus_changed || entry_changed)
-        && !state.ewm.is_strip_animating_at(pos)
-    {
-        state.ewm.focus_follows_mouse(&under, pos);
-    }
+    let (under, focus_changed) = update_pointer_focus_for_motion(state, pos);
 
     pointer.motion(
         state,
