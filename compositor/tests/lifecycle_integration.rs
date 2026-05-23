@@ -22,6 +22,27 @@ fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
         .collect()
 }
 
+fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
+    Frame {
+        name: String::new(),
+        surface_id: frame_id,
+        view_id: nz(200),
+        width: 1920.0,
+        surfaces: vec![LayoutEntry {
+            view_id,
+            surface_id,
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 300,
+            primary: false,
+            fullscreen: false,
+        }],
+        selected_view_id: Some(view_id),
+        move_anim: None,
+    }
+}
+
 #[test]
 fn destroying_real_toplevel_cleans_layout_focus_indexes_and_emits_close() {
     let mut fix = Fixture::new().unwrap();
@@ -41,27 +62,8 @@ fn destroying_real_toplevel_cleans_layout_focus_indexes_and_emits_close() {
 
     let frame_id = 100;
     let view_id = nz(1);
-    fix.ewm().apply_output_layout(
-        OUTPUT,
-        vec![Frame {
-            name: String::new(),
-            surface_id: frame_id,
-            view_id: nz(200),
-            width: 1920.0,
-            surfaces: vec![LayoutEntry {
-                view_id,
-                surface_id: sid,
-                x: 0,
-                y: 0,
-                w: 400,
-                h: 300,
-                primary: false,
-                fullscreen: false,
-            }],
-            selected_view_id: Some(view_id),
-            move_anim: None,
-        }],
-    );
+    fix.ewm()
+        .apply_output_layout(OUTPUT, vec![frame_with_entry(frame_id, view_id, sid)]);
     fix.ewm().set_focus_view(view_id, "test", false);
     let _ = fix.drain_events();
 
@@ -110,27 +112,8 @@ fn disconnecting_focused_toplevel_cleans_layout_focus_indexes_and_emits_close() 
 
     let frame_id = 100;
     let view_id = nz(1);
-    fix.ewm().apply_output_layout(
-        OUTPUT,
-        vec![Frame {
-            name: String::new(),
-            surface_id: frame_id,
-            view_id: nz(200),
-            width: 1920.0,
-            surfaces: vec![LayoutEntry {
-                view_id,
-                surface_id: sid,
-                x: 0,
-                y: 0,
-                w: 400,
-                h: 300,
-                primary: false,
-                fullscreen: false,
-            }],
-            selected_view_id: Some(view_id),
-            move_anim: None,
-        }],
-    );
+    fix.ewm()
+        .apply_output_layout(OUTPUT, vec![frame_with_entry(frame_id, view_id, sid)]);
     fix.ewm().set_focus_view(view_id, "test", false);
     let _ = fix.drain_events();
 
