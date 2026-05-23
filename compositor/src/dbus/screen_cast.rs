@@ -28,8 +28,8 @@ pub enum CastTarget {
 /// Cursor mode requested through org.gnome.Mutter.ScreenCast.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum CursorMode {
-    Hidden,
     #[default]
+    Hidden,
     Embedded,
     Metadata,
 }
@@ -91,16 +91,14 @@ fn parse_optional_cursor_mode(mode: Option<u32>, default: CursorMode) -> fdo::Re
     })
 }
 
-fn validate_create_session_properties(
-    properties: &HashMap<&str, Value<'_>>,
-) -> fdo::Result<CursorMode> {
+fn validate_create_session_properties(properties: &HashMap<&str, Value<'_>>) -> fdo::Result<()> {
     if properties.contains_key("remote-desktop-session-id") {
         return Err(fdo::Error::Failed(
             "there are no remote desktop sessions".to_owned(),
         ));
     }
 
-    parse_cursor_mode(properties, CursorMode::default())
+    Ok(())
 }
 
 /// Messages sent from D-Bus to compositor
@@ -166,15 +164,10 @@ impl ScreenCast {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let cursor_mode = validate_create_session_properties(&properties)?;
-        debug!("Session {} cursor_mode={}", session_id, cursor_mode);
+        validate_create_session_properties(&properties)?;
+        debug!("Session {} created", session_id);
 
-        let session = Session::new(
-            session_id,
-            self.outputs.clone(),
-            self.to_compositor.clone(),
-            cursor_mode,
-        );
+        let session = Session::new(session_id, self.outputs.clone(), self.to_compositor.clone());
 
         match server.at(&path, session).await {
             Ok(true) => {
@@ -209,7 +202,6 @@ pub struct Session {
     to_compositor: Sender<ScreenCastToCompositor>,
     streams: Arc<Mutex<Vec<StreamInfo>>>,
     stopped: Arc<AtomicBool>,
-    cursor_mode: CursorMode,
 }
 
 impl Session {
@@ -217,7 +209,6 @@ impl Session {
         id: CastSessionId,
         outputs: Arc<Mutex<Vec<OutputInfo>>>,
         to_compositor: Sender<ScreenCastToCompositor>,
-        cursor_mode: CursorMode,
     ) -> Self {
         Self {
             id,
@@ -225,7 +216,6 @@ impl Session {
             to_compositor,
             streams: Arc::new(Mutex::new(Vec::new())),
             stopped: Arc::new(AtomicBool::new(false)),
-            cursor_mode,
         }
     }
 }
@@ -294,7 +284,7 @@ impl Session {
         connector: &str,
         properties: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<OwnedObjectPath> {
-        let cursor_mode = parse_cursor_mode(&properties, self.cursor_mode)?;
+        let cursor_mode = parse_cursor_mode(&properties, CursorMode::default())?;
         // Find the output
         let output = {
             let outputs = self.outputs.lock().unwrap();
@@ -362,7 +352,8 @@ impl Session {
         properties: RecordWindowProperties,
     ) -> fdo::Result<OwnedObjectPath> {
         let window_id = properties.window_id;
-        let cursor_mode = parse_optional_cursor_mode(properties.cursor_mode, self.cursor_mode)?;
+        let cursor_mode =
+            parse_optional_cursor_mode(properties.cursor_mode, CursorMode::default())?;
         info!("RecordWindow: window_id={}", window_id);
 
         let target = CastTarget::Window { id: window_id };
@@ -550,7 +541,15 @@ mod tests {
     #[test]
     fn cursor_mode_defaults_when_absent() {
         assert_eq!(
-            parse_cursor_mode(&HashMap::new(), CursorMode::Hidden).unwrap(),
+            parse_cursor_mode(&HashMap::new(), CursorMode::Embedded).unwrap(),
+            CursorMode::Embedded
+        );
+    }
+
+    #[test]
+    fn default_cursor_mode_is_hidden() {
+        assert_eq!(
+            parse_cursor_mode(&HashMap::new(), CursorMode::default()).unwrap(),
             CursorMode::Hidden
         );
     }
@@ -594,5 +593,12 @@ mod tests {
             .expect_err("remote desktop sessions are unsupported");
 
         assert!(matches!(err, fdo::Error::Failed(_)));
+    }
+
+    #[test]
+    fn create_session_ignores_stream_cursor_mode() {
+        let properties = cursor_props(Value::U32(3));
+
+        validate_create_session_properties(&properties).unwrap();
     }
 }
