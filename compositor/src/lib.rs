@@ -1502,14 +1502,6 @@ impl Ewm {
         })
     }
 
-    fn surface_id_for_wl_surface(&self, surface: &WlSurface) -> Option<u64> {
-        self.id_windows.iter().find_map(|(&id, window)| {
-            window
-                .wl_surface()
-                .and_then(|ws| (*ws == *surface).then_some(id))
-        })
-    }
-
     fn requested_output_name(&self, id: u64, output: Option<WlOutput>) -> Option<String> {
         output
             .and_then(|output| Output::from_resource(&output))
@@ -1518,7 +1510,7 @@ impl Ewm {
     }
 
     fn queue_surface_request(&mut self, surface: &WlSurface, event: impl FnOnce(u64) -> Event) {
-        if let Some(id) = self.surface_id_for_wl_surface(surface) {
+        if let Some(id) = self.surface_id(surface) {
             self.queue_event(event(id));
         }
     }
@@ -1532,7 +1524,7 @@ impl Ewm {
         surface: &WlSurface,
         output: Option<WlOutput>,
     ) {
-        if let Some(id) = self.surface_id_for_wl_surface(surface) {
+        if let Some(id) = self.surface_id(surface) {
             let output = self.requested_output_name(id, output);
             self.queue_event(Event::FullscreenRequest { id, output });
         }
@@ -3819,10 +3811,11 @@ impl Ewm {
 
     /// Get surface ID from a WlSurface
     pub fn surface_id(&self, surface: &WlSurface) -> Option<u64> {
-        self.window_ids
-            .iter()
-            .find(|(w, _)| w.wl_surface().map(|s| &*s == surface).unwrap_or(false))
-            .map(|(_, &id)| id)
+        self.id_windows.iter().find_map(|(&id, window)| {
+            window
+                .wl_surface()
+                .and_then(|ws| (*ws == *surface).then_some(id))
+        })
     }
 
     /// Find the Output at a global logical position.
@@ -4570,7 +4563,7 @@ impl Ewm {
         let root = find_popup_root_surface(popup).ok()?;
 
         // Check windows (layout surfaces + Emacs frames)
-        if let Some(id) = self.surface_id_for_wl_surface(&root) {
+        if let Some(id) = self.surface_id(&root) {
             let output_name = self.surface_output_name(id)?;
             return self.space.outputs().find(|o| o.name() == output_name);
         }
@@ -4627,7 +4620,7 @@ impl Ewm {
         };
 
         // Window popup path
-        if let Some(id) = self.surface_id_for_wl_surface(&root) {
+        if let Some(id) = self.surface_id(&root) {
             let raw_target = self
                 .popup_target_rect(id)
                 .unwrap_or_else(|| Rectangle::from_size(self.output_size));
@@ -4713,9 +4706,7 @@ impl Ewm {
 
         // Extract parent's surface id before consuming `surface` -- used
         // below to place dialogs in the same Emacs frame as their owner.
-        let parent_id = surface
-            .parent()
-            .and_then(|wl| self.surface_id_for_wl_surface(&wl));
+        let parent_id = surface.parent().and_then(|wl| self.surface_id(&wl));
 
         surface.with_pending_state(|state| {
             state.size = Some(self.output_size);
@@ -4953,7 +4944,7 @@ impl Ewm {
     }
 
     fn check_surface_info_changes(&mut self, surface: &WlSurface) {
-        let Some(id) = self.surface_id_for_wl_surface(surface) else {
+        let Some(id) = self.surface_id(surface) else {
             return;
         };
 
@@ -5793,12 +5784,12 @@ impl ForeignToplevelHandler for State {
 
     fn is_read_only_surface(&self, wl_surface: &WlSurface) -> bool {
         self.ewm
-            .surface_id_for_wl_surface(wl_surface)
+            .surface_id(wl_surface)
             .is_some_and(|id| self.ewm.is_emacs_frame(id))
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {
-        if let Some(id) = self.ewm.surface_id_for_wl_surface(&wl_surface) {
+        if let Some(id) = self.ewm.surface_id(&wl_surface) {
             self.ewm.set_focus(id, true, "foreign_toplevel");
             info!("Foreign toplevel: activated surface {}", id);
         }
