@@ -4375,10 +4375,12 @@ impl Ewm {
         // Recalculate total output size, working areas, and queue redraw
         self.recalculate_output_size();
         self.active_outputs_dirty = true;
-        self.check_working_area_change(output);
-        // Always reposition Emacs frames: the output position may have changed
-        // even when the working area (relative to the output) didn't.
-        self.update_frames_for_working_area(output);
+        let working_area_changed = self.check_working_area_change(output);
+        if !working_area_changed {
+            // Always refresh Emacs frames: the output position may have changed
+            // even when the working area (relative to the output) didn't.
+            self.update_frames_for_working_area(output);
+        }
         self.queue_redraw_all();
 
         // Notify Emacs of the applied config
@@ -4476,7 +4478,9 @@ impl Ewm {
     }
 
     /// Check and update working area for an output, sending event if changed.
-    pub fn check_working_area_change(&mut self, output: &Output) {
+    ///
+    /// Returns true when the working area changed and Emacs frames were resized.
+    pub fn check_working_area_change(&mut self, output: &Output) -> bool {
         // Re-arrange layer map so it picks up any scale/mode/transform change
         layer_map_for_output(output).arrange();
         let working_area = self.get_working_area(output);
@@ -4513,6 +4517,8 @@ impl Ewm {
                 height: working_area.size.h,
             });
         }
+
+        changed
     }
 
     /// Get working areas as serializable structs for state dump.
