@@ -139,3 +139,25 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     assert!(head.enabled);
     assert!(head.current_mode.is_some());
 }
+
+#[test]
+fn headless_output_respects_initial_disabled_config() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.dispatch();
+
+    assert!(!fixture
+        .ewm_ref()
+        .space
+        .outputs()
+        .any(|output| output.name() == "Virtual-1"));
+    assert!(!fixture.ewm_ref().build_output_head_states()["Virtual-1"].enabled);
+}

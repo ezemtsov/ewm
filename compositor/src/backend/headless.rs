@@ -125,7 +125,11 @@ impl HeadlessBackend {
             .as_ref()
             .and_then(|c| c.position)
             .unwrap_or((ewm.output_size.w, 0));
-        ewm.space.map_output(&output, (x_offset, y_offset));
+        let is_enabled = config.as_ref().map(|c| c.enabled).unwrap_or(true);
+        if is_enabled {
+            ewm.space.map_output(&output, (x_offset, y_offset));
+            output.change_current_state(None, None, None, Some((x_offset, y_offset).into()));
+        }
 
         // Initialize output state in Ewm
         ewm.output_state.insert(
@@ -171,10 +175,17 @@ impl HeadlessBackend {
 
         ewm.add_output(&output, output_info);
 
-        info!(
-            "Added virtual output: {} ({}x{}) at ({}, {})",
-            name, width, height, x_offset, y_offset
-        );
+        if is_enabled {
+            info!(
+                "Added virtual output: {} ({}x{}) at ({}, {})",
+                name, width, height, x_offset, y_offset
+            );
+        } else {
+            info!(
+                "Added virtual output: {} ({}x{}) disabled",
+                name, width, height
+            );
+        }
     }
 
     /// Remove a virtual output by name
