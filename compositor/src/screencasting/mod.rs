@@ -252,15 +252,14 @@ impl Ewm {
     pub fn stop_cast(&mut self, session_id: CastSessionId) {
         debug!(%session_id, "stop_cast");
 
-        let Some(idx) = self
-            .casting
-            .casts
-            .iter()
-            .position(|c| c.session_id == session_id)
-        else {
-            return;
-        };
-        let _ = self.casting.casts.swap_remove(idx);
+        let mut idx = 0;
+        while idx < self.casting.casts.len() {
+            if self.casting.casts[idx].session_id == session_id {
+                let _ = self.casting.casts.swap_remove(idx);
+            } else {
+                idx += 1;
+            }
+        }
 
         if let Some(ref dbus) = self.dbus_servers {
             if let Some(ref conn) = dbus.conn_screen_cast {
