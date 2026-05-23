@@ -1502,6 +1502,54 @@ impl Ewm {
         })
     }
 
+    fn surface_id_for_wl_surface(&self, surface: &WlSurface) -> Option<u64> {
+        self.id_windows.iter().find_map(|(&id, window)| {
+            window
+                .wl_surface()
+                .and_then(|ws| (*ws == *surface).then_some(id))
+        })
+    }
+
+    fn requested_output_name(&self, id: u64, output: Option<WlOutput>) -> Option<String> {
+        output
+            .and_then(|output| Output::from_resource(&output))
+            .map(|output| output.name())
+            .or_else(|| self.find_surface_output(id).map(|output| output.name()))
+    }
+
+    fn queue_surface_request(&mut self, surface: &WlSurface, event: impl FnOnce(u64) -> Event) {
+        if let Some(id) = self.surface_id_for_wl_surface(surface) {
+            self.queue_event(event(id));
+        }
+    }
+
+    fn queue_minimize_request_for_surface(&mut self, surface: &WlSurface) {
+        self.queue_surface_request(surface, |id| Event::Minimize { id });
+    }
+
+    fn queue_fullscreen_request_for_surface(
+        &mut self,
+        surface: &WlSurface,
+        output: Option<WlOutput>,
+    ) {
+        if let Some(id) = self.surface_id_for_wl_surface(surface) {
+            let output = self.requested_output_name(id, output);
+            self.queue_event(Event::FullscreenRequest { id, output });
+        }
+    }
+
+    fn queue_unfullscreen_request_for_surface(&mut self, surface: &WlSurface) {
+        self.queue_surface_request(surface, |id| Event::UnfullscreenRequest { id });
+    }
+
+    fn queue_maximize_request_for_surface(&mut self, surface: &WlSurface) {
+        self.queue_surface_request(surface, |id| Event::MaximizeRequest { id });
+    }
+
+    fn queue_unmaximize_request_for_surface(&mut self, surface: &WlSurface) {
+        self.queue_surface_request(surface, |id| Event::UnmaximizeRequest { id });
+    }
+
     /// Resolve an embedded view id to its strip location and owning frame.
     fn lookup_view(&self, view_id: ViewId) -> Option<ViewLocation> {
         for (output, strip) in &self.output_strips {
@@ -5470,9 +5518,8 @@ impl XdgShellHandler for State {
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            self.ewm.queue_event(Event::Minimize { id });
-        }
+        self.ewm
+            .queue_minimize_request_for_surface(surface.wl_surface());
     }
 
     fn grab(
@@ -5510,34 +5557,23 @@ impl XdgShellHandler for State {
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            let output_name = output
-                .and_then(|o| Output::from_resource(&o))
-                .map(|o| o.name())
-                .or_else(|| self.ewm.find_surface_output(id).map(|o| o.name()));
-            self.ewm.queue_event(Event::FullscreenRequest {
-                id,
-                output: output_name,
-            });
-        }
+        self.ewm
+            .queue_fullscreen_request_for_surface(surface.wl_surface(), output);
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            self.ewm.queue_event(Event::UnfullscreenRequest { id });
-        }
+        self.ewm
+            .queue_unfullscreen_request_for_surface(surface.wl_surface());
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            self.ewm.queue_event(Event::MaximizeRequest { id });
-        }
+        self.ewm
+            .queue_maximize_request_for_surface(surface.wl_surface());
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(surface.wl_surface()) {
-            self.ewm.queue_event(Event::UnmaximizeRequest { id });
-        }
+        self.ewm
+            .queue_unmaximize_request_for_surface(surface.wl_surface());
     }
 
     fn popup_destroyed(&mut self, _surface: PopupSurface) {
@@ -5766,18 +5802,12 @@ impl ForeignToplevelHandler for State {
 
     fn is_read_only_surface(&self, wl_surface: &WlSurface) -> bool {
         self.ewm
-            .find_window_by_surface(wl_surface)
-            .is_some_and(|(_, id)| self.ewm.is_emacs_frame(id))
+            .surface_id_for_wl_surface(wl_surface)
+            .is_some_and(|id| self.ewm.is_emacs_frame(id))
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {
-        if let Some(&id) = self
-            .ewm
-            .window_ids
-            .iter()
-            .find(|(w, _)| w.wl_surface().map(|s| *s == wl_surface).unwrap_or(false))
-            .map(|(_, id)| id)
-        {
+        if let Some(id) = self.ewm.surface_id_for_wl_surface(&wl_surface) {
             self.ewm.set_focus(id, true, "foreign_toplevel");
             info!("Foreign toplevel: activated surface {}", id);
         }
@@ -5798,40 +5828,24 @@ impl ForeignToplevelHandler for State {
     }
 
     fn set_fullscreen(&mut self, wl_surface: WlSurface, wl_output: Option<WlOutput>) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            let output_name = wl_output
-                .and_then(|o| Output::from_resource(&o))
-                .map(|o| o.name())
-                .or_else(|| self.ewm.find_surface_output(id).map(|o| o.name()));
-            self.ewm.queue_event(Event::FullscreenRequest {
-                id,
-                output: output_name,
-            });
-        }
+        self.ewm
+            .queue_fullscreen_request_for_surface(&wl_surface, wl_output);
     }
 
     fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            self.ewm.queue_event(Event::UnfullscreenRequest { id });
-        }
+        self.ewm.queue_unfullscreen_request_for_surface(&wl_surface);
     }
 
     fn set_maximized(&mut self, wl_surface: WlSurface) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            self.ewm.queue_event(Event::MaximizeRequest { id });
-        }
+        self.ewm.queue_maximize_request_for_surface(&wl_surface);
     }
 
     fn unset_maximized(&mut self, wl_surface: WlSurface) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            self.ewm.queue_event(Event::UnmaximizeRequest { id });
-        }
+        self.ewm.queue_unmaximize_request_for_surface(&wl_surface);
     }
 
     fn minimize(&mut self, wl_surface: WlSurface) {
-        if let Some((_, id)) = self.ewm.find_window_by_surface(&wl_surface) {
-            self.ewm.queue_event(Event::Minimize { id });
-        }
+        self.ewm.queue_minimize_request_for_surface(&wl_surface);
     }
 }
 delegate_foreign_toplevel!(State);
@@ -6966,6 +6980,50 @@ mod tests {
         fix.ewm().set_focus_view(view_a, "test", false);
         assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_A));
         assert_eq!(window_position(&fix, surface_id), Some(Point::from((0, 0))));
+    }
+
+    #[test]
+    fn surface_request_helpers_queue_expected_events() {
+        use smithay::wayland::seat::WaylandFocus as _;
+
+        let mut fix = testing::Fixture::new().unwrap();
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
+        fix.add_output(HEAD_A, 1600, 900);
+
+        let toplevel = fix.open_toplevel(&mut client, "requests", Size::from((400, 400)));
+        let surface_id = fix.find_surface_id(&toplevel.surface).unwrap();
+        fix.ewm()
+            .apply_output_layout(HEAD_A, vec![frame_with_entry(100, nz(3001), surface_id)]);
+
+        let server_surface = fix
+            .ewm_ref()
+            .id_windows
+            .get(&surface_id)
+            .and_then(|window| window.wl_surface())
+            .unwrap()
+            .into_owned();
+
+        fix.enable_event_capture();
+        fix.ewm()
+            .queue_minimize_request_for_surface(&server_surface);
+        fix.ewm()
+            .queue_fullscreen_request_for_surface(&server_surface, None);
+        fix.ewm()
+            .queue_unfullscreen_request_for_surface(&server_surface);
+        fix.ewm()
+            .queue_maximize_request_for_surface(&server_surface);
+        fix.ewm()
+            .queue_unmaximize_request_for_surface(&server_surface);
+
+        let events = fix.drain_events();
+        assert_eq!(events.len(), 5);
+        assert!(matches!(&events[0], Event::Minimize { id } if *id == surface_id));
+        assert!(matches!(&events[1], Event::FullscreenRequest { id, output }
+                if *id == surface_id && output.as_deref() == Some(HEAD_A)));
+        assert!(matches!(&events[2], Event::UnfullscreenRequest { id } if *id == surface_id));
+        assert!(matches!(&events[3], Event::MaximizeRequest { id } if *id == surface_id));
+        assert!(matches!(&events[4], Event::UnmaximizeRequest { id } if *id == surface_id));
     }
 
     #[test]
