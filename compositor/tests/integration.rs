@@ -8,7 +8,7 @@ use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::utils::output_size;
 use ewm_core::{LayoutEntry, OutputConfig, ViewId};
 use proptest::prelude::*;
-use smithay::utils::{Logical, Size};
+use smithay::utils::{Logical, Point, Size};
 use wayland_client::Proxy as _;
 
 const CASES: u32 = 24;
@@ -18,6 +18,10 @@ fn nz(n: u64) -> ViewId {
 }
 
 fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
+    frame_with_entry_at(frame_id, view_id, surface_id, 0, 0)
+}
+
+fn frame_with_entry_at(frame_id: u64, view_id: ViewId, surface_id: u64, x: i32, y: i32) -> Frame {
     Frame {
         name: String::new(),
         surface_id: frame_id,
@@ -26,8 +30,8 @@ fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
         surfaces: vec![LayoutEntry {
             view_id,
             surface_id,
-            x: 0,
-            y: 0,
+            x,
+            y,
             w: 400,
             h: 300,
             primary: false,
@@ -36,6 +40,13 @@ fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
         selected_view_id: Some(view_id),
         move_anim: None,
     }
+}
+
+fn pointer_focus_surface_id(fixture: &Fixture) -> Option<u64> {
+    let ewm = fixture.ewm_ref();
+    ewm.pointer_focus
+        .as_ref()
+        .and_then(|(surface, _)| ewm.surface_id(surface))
 }
 
 fn has_surface_enter(
@@ -142,6 +153,41 @@ proptest! {
             .unwrap();
         prop_assert_eq!(working_area.size, output_size(&output).to_i32_round());
     }
+}
+
+#[test]
+fn output_layout_command_refreshes_pointer_focus() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+
+    let mut client = fixture.new_client().expect("Failed to create client");
+    fixture.roundtrip(&mut client);
+    let toplevel = fixture.open_toplevel(
+        &mut client,
+        "pointer-layout-refresh",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+    let surface_id = fixture
+        .find_surface_id(&toplevel.surface)
+        .expect("server did not assign a surface id");
+    let view_id = nz(1);
+
+    fixture.apply_output_layout_command(
+        "Virtual-1",
+        vec![frame_with_entry_at(100, view_id, surface_id, 0, 0)],
+    );
+    fixture.warp_pointer(10.0, 10.0);
+    assert_eq!(pointer_focus_surface_id(&fixture), Some(surface_id));
+
+    fixture.apply_output_layout_command(
+        "Virtual-1",
+        vec![frame_with_entry_at(100, view_id, surface_id, 600, 0)],
+    );
+    assert!(fixture
+        .ewm_ref()
+        .surface_under_point(Point::from((10.0, 10.0)))
+        .is_none());
+    assert_eq!(pointer_focus_surface_id(&fixture), None);
 }
 
 #[test]

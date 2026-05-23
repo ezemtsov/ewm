@@ -13,6 +13,7 @@ use smithay::utils::{Logical, Rectangle, Size};
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
+use crate::strip::Frame;
 use crate::testing::TestClient;
 use crate::{register_display_source, ClientState, Ewm, State};
 
@@ -257,6 +258,16 @@ impl Fixture {
         self.state.warp_pointer(x, y);
     }
 
+    /// Apply a layout through the same command path used by Emacs.
+    pub fn apply_output_layout_command(&mut self, output: &str, frames: Vec<Frame>) {
+        self.state
+            .handle_module_command(crate::module::ModuleCommand::OutputLayout {
+                output: output.to_string(),
+                frames,
+            });
+        self.state.sync_keyboard_focus();
+    }
+
     /// Send a pointer button event at the seat's current pointer focus.
     /// Mirrors the production `button` path: pointer.button + pointer.frame.
     pub fn pointer_button(&mut self, button: u32, pressed: bool) {
@@ -325,22 +336,8 @@ impl Fixture {
         self.state.ewm.display_handle.flush_clients().ok();
     }
 
-    /// Handle module commands (simplified for testing)
+    /// Handle module commands through the production dispatcher.
     fn handle_module_command(&mut self, cmd: crate::module::ModuleCommand) {
-        use crate::module::ModuleCommand;
-        match cmd {
-            ModuleCommand::Close { id } => {
-                if let Some(window) = self.state.ewm.id_windows.get(&id) {
-                    if let Some(toplevel) = window.toplevel() {
-                        toplevel.send_close();
-                    }
-                }
-            }
-            ModuleCommand::OutputLayout { output, frames } => {
-                self.state.ewm.apply_output_layout(&output, frames);
-            }
-            // Other commands can be added as needed for testing
-            _ => {}
-        }
+        self.state.handle_module_command(cmd);
     }
 }

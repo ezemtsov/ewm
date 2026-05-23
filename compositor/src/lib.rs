@@ -6313,7 +6313,6 @@ impl State {
     /// a motion event so Smithay's internal pointer focus is up to date.
     /// Called before constraint activation to ensure focus is synced.
     fn refresh_pointer_focus(&mut self) {
-        let pointer = self.ewm.pointer.clone();
         let (x, y) = self.ewm.pointer_location();
         let pos: Point<f64, Logical> = (x, y).into();
 
@@ -6324,7 +6323,21 @@ impl State {
         }
 
         self.ewm.pointer_focus = under.clone();
+        self.send_pointer_motion(pos, under);
+    }
 
+    fn refresh_pointer_after_layout(&mut self) {
+        let (x, y) = self.ewm.pointer_location();
+        let pos: Point<f64, Logical> = (x, y).into();
+
+        self.ewm.pointer_view_id = self.ewm.view_id_under(pos);
+        let under = self.ewm.pointer_target_at(pos);
+        self.ewm.pointer_focus = under.clone();
+        self.send_pointer_motion(pos, under);
+    }
+
+    fn send_pointer_motion(&mut self, pos: Point<f64, Logical>, under: Option<SurfaceHit>) {
+        let pointer = self.ewm.pointer.clone();
         pointer.motion(
             self,
             under,
@@ -6551,7 +6564,7 @@ impl State {
     }
 
     /// Handle a module command (from Emacs via dynamic module).
-    fn handle_module_command(&mut self, cmd: module::ModuleCommand) {
+    pub(crate) fn handle_module_command(&mut self, cmd: module::ModuleCommand) {
         tracy_span!("handle_module_command");
 
         use module::ModuleCommand;
@@ -6715,25 +6728,7 @@ impl State {
             }
             ModuleCommand::OutputLayout { output, frames } => {
                 self.ewm.apply_output_layout(&output, frames);
-                // Re-evaluate tracked layout entry UID (entries got fresh UIDs)
-                let (px, py) = self.ewm.pointer_location();
-                self.ewm.pointer_view_id = self.ewm.view_id_under((px, py).into());
-                // Re-evaluate pointer focus after layout change
-                let under = self
-                    .ewm
-                    .surface_under_point(smithay::utils::Point::from((px, py)));
-                let pointer = self.ewm.pointer.clone();
-                let serial = SERIAL_COUNTER.next_serial();
-                pointer.motion(
-                    self,
-                    under,
-                    &smithay::input::pointer::MotionEvent {
-                        location: (px, py).into(),
-                        serial,
-                        time: 0,
-                    },
-                );
-                pointer.frame(self);
+                self.refresh_pointer_after_layout();
             }
             ModuleCommand::ConfigureInput { configs } => {
                 info!("Input config updated: {} entries", configs.len());
