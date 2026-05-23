@@ -5,13 +5,14 @@
 //! - **DRM backend** (`drm`): For running EWM standalone on TTY with real hardware. Requires DRM
 //!   master access and works with physical displays.
 //!
-//! - **Headless backend** (`headless`): For testing without hardware access. Uses software
-//!   rendering and virtual outputs for CI/integration testing.
+//! - **Headless backend** (`headless`): For testing without hardware access. Provides virtual
+//!   outputs for CI/integration testing.
 //!
 //! # Design Invariants
 //!
-//! 1. **Backend isolation**: Each backend owns its renderer and output management. The compositor
-//!    core (Ewm) is backend-agnostic and works through the `Backend` enum's method dispatch.
+//! 1. **Backend isolation**: Each backend owns output management and any renderer it needs. The
+//!    compositor core (Ewm) is backend-agnostic and works through the `Backend` enum's method
+//!    dispatch.
 //!
 //! 2. **Output state separation**: Redraw state is stored in `Ewm::output_state`, not in the
 //!    backend. This allows backend-agnostic redraw scheduling.

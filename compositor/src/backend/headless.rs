@@ -6,8 +6,7 @@
 //! # Design Invariants
 //!
 //! 1. **No hardware access**: The headless backend never touches real GPUs or displays. The
-//!    `render()` method is a no-op that increments a counter and returns `Submitted`. A GLES
-//!    renderer can be initialized for tests that need texture operations.
+//!    `render()` method is a no-op that marks the output idle and returns `Submitted`.
 //!
 //! 2. **Deterministic output**: Virtual outputs have fixed sizes and refresh rates, enabling
 //!    reproducible snapshot tests.
@@ -15,12 +14,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use smithay::backend::egl::native::EGLSurfacelessDisplay;
-use smithay::backend::egl::{EGLContext, EGLDisplay};
-use smithay::backend::renderer::damage::OutputDamageTracker;
-use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::utils::{Physical, Size, Transform};
+use smithay::utils::Transform;
 use tracing::{debug, info};
 
 use crate::{Ewm, OutputState, RedrawState, State};
@@ -28,10 +23,6 @@ use crate::{Ewm, OutputState, RedrawState, State};
 /// A virtual output for headless testing
 pub struct VirtualOutput {
     pub output: Output,
-    pub size: Size<i32, Physical>,
-    pub damage_tracker: OutputDamageTracker,
-    /// Count of frames rendered to this output (for assertions)
-    pub render_count: usize,
 }
 
 /// Headless backend state for testing without real hardware
@@ -44,13 +35,10 @@ pub struct VirtualOutput {
 /// - Real GPU hardware
 /// - Display outputs
 ///
-/// The headless backend provides virtual outputs that track damage and render counts,
-/// enabling verification of rendering behavior in tests.
+/// The headless backend provides virtual outputs for exercising compositor logic in tests.
 pub struct HeadlessBackend {
     /// Virtual outputs indexed by name
     pub outputs: HashMap<String, VirtualOutput>,
-    /// Software renderer for headless rendering
-    renderer: Option<GlesRenderer>,
 }
 
 impl Default for HeadlessBackend {
@@ -64,26 +52,7 @@ impl HeadlessBackend {
     pub fn new() -> Self {
         Self {
             outputs: HashMap::new(),
-            renderer: None,
         }
-    }
-
-    /// Initialize the headless renderer
-    ///
-    /// Uses EGL surfaceless context for software rendering.
-    /// Returns error if EGL initialization fails.
-    pub fn init_renderer(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Create surfaceless EGL display for headless rendering
-        // This works without any GPU by using software rendering (llvmpipe/softpipe)
-        // SAFETY: EGLSurfacelessDisplay doesn't require any native display handle
-        let egl_display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay)? };
-        let egl_context = EGLContext::new(&egl_display)?;
-
-        let renderer = unsafe { GlesRenderer::new(egl_context)? };
-        self.renderer = Some(renderer);
-
-        info!("Headless renderer initialized");
-        Ok(())
     }
 
     /// Add a virtual output with the given name and size
@@ -137,16 +106,10 @@ impl HeadlessBackend {
             OutputState::new(name, Some(Duration::from_micros(16_667)), (width, height)), // ~60Hz
         );
 
-        let size = Size::from((width, height));
-        let damage_tracker = OutputDamageTracker::from_output(&output);
-
         self.outputs.insert(
             name.to_string(),
             VirtualOutput {
                 output: output.clone(),
-                size,
-                damage_tracker,
-                render_count: 0,
             },
         );
 
@@ -197,28 +160,24 @@ impl HeadlessBackend {
 
     /// Render a single output in headless mode.
     ///
-    /// In headless mode, we don't render to a real display. We just track
-    /// render counts for test assertions. Returns Submitted unconditionally.
+    /// In headless mode, we don't render to a real display. Returns Submitted
+    /// for known virtual outputs so the compositor's redraw state machine runs.
     pub fn render(
         &mut self,
         ewm: &mut Ewm,
         output: &smithay::output::Output,
     ) -> super::RenderResult {
         let name = output.name();
-        let Some(virtual_output) = self.outputs.get_mut(&name) else {
+        if !self.outputs.contains_key(&name) {
             return super::RenderResult::Skipped;
-        };
+        }
 
         // Headless has no VBlank or timers, so transition directly to Idle
         if let Some(output_state) = ewm.output_state.get_mut(output) {
             output_state.redraw_state = RedrawState::Idle;
         }
 
-        virtual_output.render_count += 1;
-        debug!(
-            "Headless render #{} for output {}",
-            virtual_output.render_count, name
-        );
+        debug!("Headless render for output {}", name);
 
         super::RenderResult::Submitted
     }
@@ -259,10 +218,5 @@ impl HeadlessBackend {
 
         // Update all backend-agnostic bookkeeping
         ewm.output_config_changed(&output);
-    }
-
-    /// Get the renderer (for tests that need to verify rendering)
-    pub fn renderer(&mut self) -> Option<&mut GlesRenderer> {
-        self.renderer.as_mut()
     }
 }
