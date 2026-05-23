@@ -4565,14 +4565,6 @@ impl Ewm {
         })
     }
 
-    /// Check if there are pending screencopy requests for any output
-    pub fn has_pending_screencopies(&self) -> bool {
-        // This is a workaround since we can't easily check the internal state
-        // without mutable access. We'll always return false here and let
-        // the render loop handle it with the mutable state.
-        false
-    }
-
     /// Find the output for a popup's root surface (window or layer surface).
     pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
         let root = find_popup_root_surface(popup).ok()?;
