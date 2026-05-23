@@ -3914,16 +3914,13 @@ impl Ewm {
         Point::from((cx, cy))
     }
 
-    /// Check layer surfaces on a specific layer for a surface under the point.
-    /// `pos_within_output` is the point relative to the output origin.
-    /// Returns the WlSurface and its location in global coordinates.
-    fn layer_surface_under(
+    fn layer_hit_under(
         &self,
         output: &Output,
         layer: Layer,
         pos_within_output: Point<f64, Logical>,
         output_pos: Point<i32, Logical>,
-    ) -> Option<SurfaceHit> {
+    ) -> Option<(DesktopLayerSurface, SurfaceHit)> {
         let map = layer_map_for_output(output);
         for layer_surface in map.layers_on(layer).rev() {
             let geo = match map.layer_geometry(layer_surface) {
@@ -3935,10 +3932,24 @@ impl Ewm {
                 layer_surface.surface_under(pos_within_output - layer_pos, WindowSurfaceType::ALL)
             {
                 let global_pos = (pos_in_layer + geo.loc).to_f64() + output_pos.to_f64();
-                return Some((surface, global_pos));
+                return Some((layer_surface.clone(), (surface, global_pos)));
             }
         }
         None
+    }
+
+    /// Check layer surfaces on a specific layer for a surface under the point.
+    /// `pos_within_output` is the point relative to the output origin.
+    /// Returns the WlSurface and its location in global coordinates.
+    fn layer_surface_under(
+        &self,
+        output: &Output,
+        layer: Layer,
+        pos_within_output: Point<f64, Logical>,
+        output_pos: Point<i32, Logical>,
+    ) -> Option<SurfaceHit> {
+        self.layer_hit_under(output, layer, pos_within_output, output_pos)
+            .map(|(_, hit)| hit)
     }
 
     /// Find the layer surface (desktop type) under a point.
@@ -3949,7 +3960,6 @@ impl Ewm {
         let pos_within_output = pos - output_geo.loc.to_f64();
         let above_top_layer = self.render_above_top_layer(output);
 
-        let map = layer_map_for_output(output);
         // When fullscreen, only Overlay receives input above the fullscreen surface.
         // Top/Bottom/Background are visually behind it and must not intercept clicks.
         let layers: &[Layer] = if above_top_layer {
@@ -3958,18 +3968,10 @@ impl Ewm {
             &[Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background]
         };
         for &layer in layers {
-            for layer_surface in map.layers_on(layer).rev() {
-                let geo = match map.layer_geometry(layer_surface) {
-                    Some(g) => g,
-                    None => continue,
-                };
-                let layer_pos = geo.loc.to_f64();
-                if layer_surface
-                    .surface_under(pos_within_output - layer_pos, WindowSurfaceType::ALL)
-                    .is_some()
-                {
-                    return Some(layer_surface.clone());
-                }
+            if let Some((layer_surface, _)) =
+                self.layer_hit_under(output, layer, pos_within_output, output_geo.loc)
+            {
+                return Some(layer_surface);
             }
         }
         None
