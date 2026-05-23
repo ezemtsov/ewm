@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+use smithay::utils::{Physical, Size};
 use tracing::info;
 use zbus::blocking::Connection;
 use zbus::zvariant::{OwnedValue, Type, Value};
@@ -118,7 +119,8 @@ impl DisplayConfig {
                         height: mode.height,
                         refresh_rate,
                         preferred_scale: output.scale,
-                        supported_scales: vec![1.0, 1.25, 1.5, 2.0],
+                        supported_scales: supported_scales(Size::from((mode.width, mode.height)))
+                            .collect(),
                         properties,
                     }
                 })
@@ -228,6 +230,23 @@ fn make_display_name(output: &OutputInfo, is_builtin: bool) -> String {
     } else {
         output.name.clone()
     }
+}
+
+fn supported_scales(resolution: Size<i32, Physical>) -> impl Iterator<Item = f64> {
+    const MIN_SCALE: i32 = 1;
+    const MAX_SCALE: i32 = 4;
+    const STEPS: i32 = 4;
+
+    (MIN_SCALE * STEPS..=MAX_SCALE * STEPS)
+        .map(|x| f64::from(x) / f64::from(STEPS))
+        .filter(move |scale| is_valid_scale_for_resolution(resolution, *scale))
+}
+
+fn is_valid_scale_for_resolution(resolution: Size<i32, Physical>, scale: f64) -> bool {
+    const MIN_LOGICAL_AREA: i32 = 800 * 480;
+
+    let logical = resolution.to_f64().to_logical(scale).to_i32_round::<i32>();
+    logical.w * logical.h >= MIN_LOGICAL_AREA
 }
 
 #[cfg(test)]
@@ -360,5 +379,12 @@ mod tests {
         out.model = "Unknown".to_owned();
 
         assert_eq!(make_display_name(&out, false), "HDMI-A-1");
+    }
+
+    #[test]
+    fn supported_scales_follow_resolution_limits() {
+        let scales: Vec<_> = supported_scales(Size::from((1920, 1080))).collect();
+
+        assert_eq!(scales, vec![1.0, 1.25, 1.5, 1.75, 2.0, 2.25]);
     }
 }
