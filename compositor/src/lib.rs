@@ -3695,14 +3695,7 @@ impl Ewm {
         Some((frame_id, view_id))
     }
 
-    pub fn focus_follows_mouse(
-        &mut self,
-        under: &Option<(
-            WlSurface,
-            smithay::utils::Point<f64, smithay::utils::Logical>,
-        )>,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) {
+    pub fn focus_follows_mouse(&mut self, under: &Option<SurfaceHit>, pos: Point<f64, Logical>) {
         let Some((_, origin)) = under else { return };
         let Some((frame_id, view_id)) = self.focus_under(pos, "pointer_motion") else {
             return;
@@ -6293,19 +6286,10 @@ impl State {
     /// Does NOT activate pointer constraints (programmatic warps from Emacs
     /// during layout changes should not trap the pointer).
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
-        let pointer = self.ewm.pointer.clone();
-        let under = self.ewm.surface_under_point(Point::from((x, y)));
+        let pos = Point::from((x, y));
+        let under = self.ewm.surface_under_point(pos);
         self.ewm.pointer_focus = under.clone();
-        pointer.motion(
-            self,
-            under,
-            &smithay::input::pointer::MotionEvent {
-                location: (x, y).into(),
-                serial: SERIAL_COUNTER.next_serial(),
-                time: 0,
-            },
-        );
-        pointer.frame(self);
+        self.send_pointer_motion(pos, under);
         self.ewm.queue_redraw_for_pointer();
     }
 
