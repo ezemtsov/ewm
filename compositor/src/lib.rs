@@ -403,18 +403,9 @@ impl OutputState {
 
 impl Default for OutputState {
     fn default() -> Self {
-        Self {
-            redraw_state: RedrawState::Idle,
-            frame_clock: frame_clock::FrameClock::new(Some(Duration::from_micros(16_667))),
-            unfinished_animations_remain: false,
-            vblank_tracker: VBlankFrameTracker::new("default"),
-            lock_surface: None,
-            lock_render_state: LockRenderState::Unlocked,
-            // Default 1920x1080 lock background (will be resized per output)
-            lock_color_buffer: SolidColorBuffer::new((1920, 1080), [0.1, 0.1, 0.1, 1.0]),
-            frame_callback_sequence: 0,
-            fullscreen_backdrop: SolidColorBuffer::new((1920, 1080), [0.0, 0.0, 0.0, 1.0]),
-        }
+        let mut state = Self::new("default", Some(Duration::from_micros(16_667)), (1920, 1080));
+        state.redraw_state = RedrawState::Idle;
+        state
     }
 }
 
