@@ -764,7 +764,7 @@ pub struct Ewm {
 
     // Input
     /// Surface under the pointer + its global origin, for constraint checks.
-    pub pointer_focus: Option<(WlSurface, Point<f64, Logical>)>,
+    pub pointer_focus: Option<SurfaceHit>,
     /// Last output the pointer was on, for per-output cursor redraw.
     pointer_output: Option<Output>,
     pub focused_frame_id: u64,
@@ -2009,10 +2009,7 @@ impl Ewm {
 
     /// Find the topmost layout entry containing `pos`, returning the entry
     /// and its global rectangle.
-    fn layout_entry_under(
-        &self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<LayoutEntryHit<'_>> {
+    fn layout_entry_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryHit<'_>> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
@@ -3665,7 +3662,7 @@ impl Ewm {
     /// passes `notify_emacs=false` to the canonical mutators.
     pub fn focus_under(
         &mut self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+        pos: Point<f64, Logical>,
         source: &str,
     ) -> Option<(u64, Option<ViewId>)> {
         let (frame_id, view_id) = if let Some(view_id) = self.view_id_under(pos) {
@@ -3854,10 +3851,7 @@ impl Ewm {
     }
 
     /// Find the Output at a global logical position.
-    fn output_at(
-        &self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<&Output> {
+    fn output_at(&self, pos: Point<f64, Logical>) -> Option<&Output> {
         self.space
             .output_under(pos)
             .next()
@@ -3869,18 +3863,12 @@ impl Ewm {
     /// Unlike [`Self::output_at`], returns `None` when `pos` lies in dead
     /// space between or outside outputs instead of falling back to an
     /// arbitrary output.
-    fn output_containing(
-        &self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<&Output> {
+    fn output_containing(&self, pos: Point<f64, Logical>) -> Option<&Output> {
         self.space.output_under(pos).next()
     }
 
     /// True when the strip on the output under `pos` is mid-animation.
-    pub fn is_strip_animating_at(
-        &self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> bool {
+    pub fn is_strip_animating_at(&self, pos: Point<f64, Logical>) -> bool {
         let Some(output) = self.output_containing(pos) else {
             return false;
         };
@@ -3899,9 +3887,9 @@ impl Ewm {
     /// on any output.
     pub(crate) fn clamp_pointer_to_outputs(
         &self,
-        target: smithay::utils::Point<f64, smithay::utils::Logical>,
-        previous: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> smithay::utils::Point<f64, smithay::utils::Logical> {
+        target: Point<f64, Logical>,
+        previous: Point<f64, Logical>,
+    ) -> Point<f64, Logical> {
         if self.output_containing(target).is_some() {
             return target;
         }
@@ -3923,7 +3911,7 @@ impl Ewm {
         };
         let cx = geom.loc.x as f64 + geom.size.w as f64 / 2.0;
         let cy = geom.loc.y as f64 + geom.size.h as f64 / 2.0;
-        smithay::utils::Point::from((cx, cy))
+        Point::from((cx, cy))
     }
 
     /// Check layer surfaces on a specific layer for a surface under the point.
@@ -3933,12 +3921,9 @@ impl Ewm {
         &self,
         output: &Output,
         layer: Layer,
-        pos_within_output: smithay::utils::Point<f64, smithay::utils::Logical>,
-        output_pos: smithay::utils::Point<i32, smithay::utils::Logical>,
-    ) -> Option<(
-        WlSurface,
-        smithay::utils::Point<f64, smithay::utils::Logical>,
-    )> {
+        pos_within_output: Point<f64, Logical>,
+        output_pos: Point<i32, Logical>,
+    ) -> Option<SurfaceHit> {
         let map = layer_map_for_output(output);
         for layer_surface in map.layers_on(layer).rev() {
             let geo = match map.layer_geometry(layer_surface) {
@@ -3958,10 +3943,7 @@ impl Ewm {
 
     /// Find the layer surface (desktop type) under a point.
     /// Used for click-to-focus on layer surfaces with OnDemand keyboard interactivity.
-    pub fn layer_under_point(
-        &self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<DesktopLayerSurface> {
+    pub fn layer_under_point(&self, pos: Point<f64, Logical>) -> Option<DesktopLayerSurface> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let pos_within_output = pos - output_geo.loc.to_f64();
@@ -4002,10 +3984,7 @@ impl Ewm {
     ///   Overlay -> [popups] -> [layout surfaces] -> [Emacs frames] -> Top -> Bottom -> Background
     ///
     /// This ensures the input hit-testing order matches the visual render order.
-    pub fn surface_under_point(
-        &self,
-        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<SurfaceHit> {
+    pub fn surface_under_point(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let output = self.output_at(pos);
         let output_geo = output.and_then(|o| self.space.output_geometry(o));
         let above_top_layer = output.is_some_and(|o| self.render_above_top_layer(o));
