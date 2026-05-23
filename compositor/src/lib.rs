@@ -1512,19 +1512,6 @@ impl Ewm {
         states
     }
 
-    /// Find a window by its root WlSurface, returning the window and its ID.
-    fn find_window_by_surface(&self, surface: &WlSurface) -> Option<(Window, u64)> {
-        self.id_windows.iter().find_map(|(&id, window)| {
-            window.wl_surface().and_then(|ws| {
-                if *ws == *surface {
-                    Some((window.clone(), id))
-                } else {
-                    None
-                }
-            })
-        })
-    }
-
     fn requested_output_name(&self, id: u64, output: Option<WlOutput>) -> Option<String> {
         output
             .and_then(|output| Output::from_resource(&output))
@@ -5266,10 +5253,10 @@ impl CompositorHandler for State {
         }
 
         // 3. Find the window that owns this root surface
-        let window_and_id = self.ewm.find_window_by_surface(&root_surface);
-
-        if let Some((window, id)) = window_and_id {
-            window.on_commit();
+        if let Some(id) = self.ewm.surface_id(&root_surface) {
+            if let Some(window) = self.ewm.id_windows.get(&id) {
+                window.on_commit();
+            }
 
             // unmapped->mapped transition: seed the open-fade once. The
             // 16ms delay holds alpha at 0 for one vblank so the empty/white
