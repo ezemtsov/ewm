@@ -1125,6 +1125,30 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     true // needs redraw
 }
 
+fn focus_pointer_target(state: &mut State, source: &str) {
+    let (px, py) = state.ewm.pointer_location();
+    let pos = (px, py).into();
+
+    let layer_under = state.ewm.layer_under_point(pos);
+    let on_layer = layer_under.is_some();
+    state.ewm.focus_layer_surface_if_on_demand(layer_under);
+
+    if on_layer {
+        return;
+    }
+
+    let Some((frame_id, view_id)) = state.ewm.focus_under(pos, source) else {
+        return;
+    };
+    if let Some(view_id) = view_id.or_else(|| state.ewm.view_id_of_frame(frame_id)) {
+        state.ewm.queue_event(crate::Event::Focus {
+            view_id,
+            x: None,
+            y: None,
+        });
+    }
+}
+
 /// Handle pointer button press/release with click-to-focus
 pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::PointerButtonEvent) {
     tracy_span!("handle_pointer_button");
@@ -1137,26 +1161,7 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
     if !state.ewm.is_locked() {
         // Click-to-focus: on button press, focus the surface under pointer
         if button_state == ButtonState::Pressed {
-            let (px, py) = state.ewm.pointer_location();
-            let pos = (px, py).into();
-
-            // Check if a layer surface is under the pointer
-            let layer_under = state.ewm.layer_under_point(pos);
-            let on_layer = layer_under.is_some();
-            state.ewm.focus_layer_surface_if_on_demand(layer_under);
-
-            if !on_layer {
-                if let Some((frame_id, view_id)) = state.ewm.focus_under(pos, "click") {
-                    if let Some(view_id) = view_id.or_else(|| state.ewm.view_id_of_frame(frame_id))
-                    {
-                        state.ewm.queue_event(crate::Event::Focus {
-                            view_id,
-                            x: None,
-                            y: None,
-                        });
-                    }
-                }
-            }
+            focus_pointer_target(state, "click");
         }
     }
 
@@ -1333,25 +1338,7 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
     // When locked, skip scroll-to-focus
     if !state.ewm.is_locked() {
         // Scroll-to-focus: focus the surface under pointer on scroll
-        let (px, py) = state.ewm.pointer_location();
-        let pos = (px, py).into();
-
-        // Check if a layer surface is under the pointer
-        let layer_under = state.ewm.layer_under_point(pos);
-        let on_layer = layer_under.is_some();
-        state.ewm.focus_layer_surface_if_on_demand(layer_under);
-
-        if !on_layer {
-            if let Some((frame_id, view_id)) = state.ewm.focus_under(pos, "scroll") {
-                if let Some(view_id) = view_id.or_else(|| state.ewm.view_id_of_frame(frame_id)) {
-                    state.ewm.queue_event(crate::Event::Focus {
-                        view_id,
-                        x: None,
-                        y: None,
-                    });
-                }
-            }
-        }
+        focus_pointer_target(state, "scroll");
     }
 
     // Sync keyboard focus before forwarding the scroll event.
