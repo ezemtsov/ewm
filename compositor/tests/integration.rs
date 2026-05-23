@@ -83,3 +83,59 @@ proptest! {
         prop_assert_eq!(working_area.size, output_size(&output).to_i32_round());
     }
 }
+
+#[test]
+fn disabling_and_reenabling_headless_output_updates_protocol_state() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.dispatch();
+
+    fixture.ewm().output_management_state.output_heads_changed = false;
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+
+    assert!(
+        fixture
+            .ewm_ref()
+            .output_management_state
+            .output_heads_changed
+    );
+    assert!(!fixture
+        .ewm_ref()
+        .space
+        .outputs()
+        .any(|output| output.name() == "Virtual-1"));
+    assert!(!fixture.ewm_ref().build_output_head_states()["Virtual-1"].enabled);
+
+    fixture.ewm().output_management_state.output_heads_changed = false;
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+
+    assert!(
+        fixture
+            .ewm_ref()
+            .output_management_state
+            .output_heads_changed
+    );
+    assert!(fixture
+        .ewm_ref()
+        .space
+        .outputs()
+        .any(|output| output.name() == "Virtual-1"));
+    let heads = fixture.ewm_ref().build_output_head_states();
+    let head = &heads["Virtual-1"];
+    assert!(head.enabled);
+    assert!(head.current_mode.is_some());
+}

@@ -924,11 +924,7 @@ impl DrmBackendState {
             None => return,
         };
 
-        let output = ewm
-            .space
-            .outputs()
-            .find(|o| o.name() == output_name)
-            .cloned();
+        let output = ewm.connected_output(output_name);
         let Some(output) = output else {
             warn!("apply_output_config: output not found: {}", output_name);
             return;
@@ -936,9 +932,8 @@ impl DrmBackendState {
 
         // Handle disabled output
         if !config.enabled {
-            ewm.space.unmap_output(&output);
             info!("Disabled output {}", output_name);
-            ewm.queue_redraw_all();
+            ewm.disable_output(&output);
             return;
         }
 
@@ -1003,10 +998,7 @@ impl DrmBackendState {
             output.set_preferred(mode);
         }
 
-        // Map output at configured position
-        if let Some((x, y)) = config.position {
-            ewm.space.map_output(&output, (x, y));
-        }
+        super::map_output_for_config(ewm, &output, config.position);
 
         // Update frame clock refresh interval
         if let Some(drm_mode) = new_drm_mode {

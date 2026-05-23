@@ -1313,6 +1313,24 @@ impl Ewm {
         self.output_state.contains_key(output)
     }
 
+    /// Find a connected output by name, whether or not it is currently mapped.
+    pub(crate) fn connected_output(&self, name: &str) -> Option<Output> {
+        self.output_state
+            .keys()
+            .find(|output| output.name() == name)
+            .cloned()
+    }
+
+    /// Unmap a connected output while keeping its head available for
+    /// output-management so it can be re-enabled later.
+    pub(crate) fn disable_output(&mut self, output: &Output) {
+        self.space.unmap_output(output);
+        self.recalculate_output_size();
+        self.active_outputs_dirty = true;
+        self.output_management_state.output_heads_changed = true;
+        self.queue_redraw_all();
+    }
+
     /// Clean up all Ewm state for a removed output.
     ///
     /// Called by backends after their own teardown (e.g. DRM surface removal).

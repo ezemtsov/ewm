@@ -25,9 +25,23 @@ pub use drm::DrmBackendState;
 pub use headless::HeadlessBackend;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::Transform;
+use smithay::utils::{Point, Transform};
 
 use crate::Ewm;
+
+/// Map a configured output. If it was disabled and has no explicit
+/// position, append it after the currently mapped output bounds.
+pub(crate) fn map_output_for_config(ewm: &mut Ewm, output: &Output, position: Option<(i32, i32)>) {
+    let was_mapped = ewm.space.output_geometry(output).is_some();
+    let position = position
+        .map(Point::from)
+        .or_else(|| (!was_mapped).then(|| Point::from((ewm.output_size.w, 0))));
+
+    if let Some(position) = position {
+        ewm.space.map_output(output, position);
+        output.change_current_state(None, None, None, Some(position));
+    }
+}
 
 /// Result of a backend render operation.
 ///
