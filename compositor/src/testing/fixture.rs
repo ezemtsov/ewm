@@ -307,32 +307,8 @@ impl Fixture {
             .unwrap_or_default()
     }
 
-    /// Per-frame processing callback (simplified version of production refresh_and_flush_clients)
+    /// Per-frame processing callback.
     fn refresh_and_flush_clients(&mut self) {
-        // Process module commands
-        for cmd in crate::module::drain_commands() {
-            self.state.handle_module_command(cmd);
-        }
-
-        // Sync keyboard focus after module commands (matches production behavior)
-        self.state.sync_keyboard_focus();
-
-        // Refresh workspace protocol state (pull model)
-        crate::protocols::workspace::refresh::<crate::State>(
-            &mut self.state.ewm.workspace_state,
-            &self.state.ewm.output_strips,
-            self.state.ewm.space.outputs(),
-        );
-
-        // Process queued redraws
-        self.state
-            .ewm
-            .redraw_queued_outputs(&mut self.state.backend);
-
-        // Clean up dead elements (output enter/leave managed explicitly)
-        self.state.ewm.cleanup_dead_windows();
-
-        // Flush Wayland clients
-        self.state.ewm.display_handle.flush_clients().ok();
+        self.state.refresh_and_flush_clients();
     }
 }
