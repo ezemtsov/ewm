@@ -1535,7 +1535,7 @@ impl Ewm {
         output
             .and_then(|output| Output::from_resource(&output))
             .map(|output| output.name())
-            .or_else(|| self.find_surface_output(id).map(|output| output.name()))
+            .or_else(|| self.surface_output_name(id).map(str::to_owned))
     }
 
     fn queue_surface_request(&mut self, surface: &WlSurface, event: impl FnOnce(u64) -> Event) {
@@ -3621,10 +3621,7 @@ impl Ewm {
     /// Find the output for a surface (returns Output object)
     fn find_surface_output(&self, surface_id: u64) -> Option<smithay::output::Output> {
         let output_name = self.surface_output_name(surface_id)?;
-        self.space
-            .outputs()
-            .find(|o| o.name() == output_name)
-            .cloned()
+        self.find_output(output_name)
     }
 
     /// Set the Emacs process PID for client identification
@@ -4927,7 +4924,7 @@ impl Ewm {
         let was_focused = self.focused_frame_id == id;
         let close_was_active = module::take_pending_active_frame_close(id);
         let active_close = was_focused || close_was_active;
-        let output = self.find_surface_output(id).map(|o| o.name());
+        let output = self.surface_output_name(id).map(str::to_owned);
 
         if let Some(window) = self.id_windows.remove(&id) {
             self.window_ids.remove(&window);
