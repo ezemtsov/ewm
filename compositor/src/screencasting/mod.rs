@@ -16,13 +16,81 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::Output;
 use smithay::reexports::calloop::channel::{self, Sender};
 use smithay::reexports::calloop::LoopHandle;
-use smithay::utils::{Physical, Point, Scale, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, info, warn};
 
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
 use crate::render::EwmRenderElement;
 use crate::{cursor, Ewm, State};
+
+fn output_cast_cursor_location(
+    pointer_location: (f64, f64),
+    output_pos: Point<i32, Logical>,
+    output_size: Size<i32, Logical>,
+    output_scale: Scale<f64>,
+    include_cursor: bool,
+) -> Point<i32, Physical> {
+    if !include_cursor {
+        return Point::default();
+    }
+
+    let (px, py) = pointer_location;
+    let pointer_pos = Point::from((px as i32, py as i32));
+    if !Rectangle::new(output_pos, output_size).contains(pointer_pos) {
+        return Point::default();
+    }
+
+    let output_local = Point::from((px - output_pos.x as f64, py - output_pos.y as f64));
+    output_local.to_physical_precise_round(output_scale)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_cast_cursor_location_is_default_when_cursor_hidden() {
+        assert_eq!(
+            output_cast_cursor_location(
+                (110.0, 70.0),
+                Point::from((100, 50)),
+                Size::from((200, 100)),
+                Scale::from(2.0),
+                false,
+            ),
+            Point::default()
+        );
+    }
+
+    #[test]
+    fn output_cast_cursor_location_is_default_outside_output() {
+        assert_eq!(
+            output_cast_cursor_location(
+                (99.0, 70.0),
+                Point::from((100, 50)),
+                Size::from((200, 100)),
+                Scale::from(2.0),
+                true,
+            ),
+            Point::default()
+        );
+    }
+
+    #[test]
+    fn output_cast_cursor_location_is_output_relative_and_scaled() {
+        assert_eq!(
+            output_cast_cursor_location(
+                (110.0, 70.0),
+                Point::from((100, 50)),
+                Size::from((200, 100)),
+                Scale::from(2.0),
+                true,
+            ),
+            Point::from((20, 40))
+        );
+    }
+}
 
 pub struct Screencasting {
     pub casts: Vec<Cast>,
@@ -461,7 +529,9 @@ impl Ewm {
 
         let valid_outputs: HashSet<String> = self.space.outputs().map(|o| o.name()).collect();
         let mut casts = std::mem::take(&mut self.casting.casts);
-        let mut elements: Option<(Vec<EwmRenderElement>, Vec<EwmRenderElement>)> = None;
+        let mut elements_with_cursor: Option<(Vec<EwmRenderElement>, Vec<EwmRenderElement>)> = None;
+        let mut elements_without_cursor: Option<(Vec<EwmRenderElement>, Vec<EwmRenderElement>)> =
+            None;
 
         for cast in casts.iter_mut() {
             if !cast.is_active() {
@@ -501,6 +571,11 @@ impl Ewm {
             }
 
             let include_cursor = cast.cursor_mode.includes_cursor();
+            let elements = if include_cursor {
+                &mut elements_with_cursor
+            } else {
+                &mut elements_without_cursor
+            };
             let (content, cursor) = elements.get_or_insert_with(|| {
                 crate::render::collect_render_elements_for_output(
                     self,
@@ -515,10 +590,13 @@ impl Ewm {
                 )
             });
 
-            let cursor_location = {
-                let (px, py) = self.pointer_location();
-                Point::<i32, Physical>::from((px as i32, py as i32))
-            };
+            let cursor_location = output_cast_cursor_location(
+                self.pointer_location(),
+                output_pos,
+                output_size,
+                output_scale,
+                include_cursor,
+            );
 
             if cast.dequeue_buffer_and_render(
                 renderer,

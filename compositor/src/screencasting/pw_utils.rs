@@ -1055,27 +1055,36 @@ impl Cast {
 
         let (content_damage, _states) = dt.damage_output(1, content_elements).unwrap();
 
-        // Cursor damage tracking (separate tracker)
-        let cursor_dt = cursor_damage_tracker
-            .get_or_insert_with(|| OutputDamageTracker::new(size, scale, Transform::Normal));
+        let (has_cursor_update, cursor_damage_len, cursor_moved) =
+            if self.cursor_mode.includes_cursor() {
+                // Cursor damage tracking (separate tracker)
+                let cursor_dt = cursor_damage_tracker.get_or_insert_with(|| {
+                    OutputDamageTracker::new(size, scale, Transform::Normal)
+                });
 
-        let OutputModeSource::Static {
-            scale: ct_scale, ..
-        } = cursor_dt.mode()
-        else {
-            unreachable!();
-        };
-        if *ct_scale != scale {
-            *cursor_dt = OutputDamageTracker::new(size, scale, Transform::Normal);
-        }
+                let OutputModeSource::Static {
+                    scale: ct_scale, ..
+                } = cursor_dt.mode()
+                else {
+                    unreachable!();
+                };
+                if *ct_scale != scale {
+                    *cursor_dt = OutputDamageTracker::new(size, scale, Transform::Normal);
+                }
 
-        let (cursor_damage, _) = cursor_dt.damage_output(1, cursor_elements).unwrap();
+                let (cursor_damage, _) = cursor_dt.damage_output(1, cursor_elements).unwrap();
+                let cursor_moved = *last_cursor_location != Some(cursor_location);
+                *last_cursor_location = Some(cursor_location);
 
-        // Detect cursor position change
-        let cursor_moved = *last_cursor_location != Some(cursor_location);
-        *last_cursor_location = Some(cursor_location);
-
-        let has_cursor_update = cursor_damage.is_some() || cursor_moved;
+                (
+                    cursor_damage.is_some() || cursor_moved,
+                    cursor_damage.as_ref().map(|d| d.len()),
+                    cursor_moved,
+                )
+            } else {
+                *last_cursor_location = None;
+                (false, None, false)
+            };
 
         if content_damage.is_none() && !has_cursor_update {
             trace!("no damage, skipping PipeWire frame");
@@ -1085,7 +1094,7 @@ impl Cast {
             content_count = content_elements.len(),
             cursor_count = cursor_elements.len(),
             content_damage = ?content_damage.as_ref().map(|d| d.len()),
-            cursor_damage = ?cursor_damage.as_ref().map(|d| d.len()),
+            cursor_damage = ?cursor_damage_len,
             cursor_moved,
             "PipeWire frame has damage"
         );
