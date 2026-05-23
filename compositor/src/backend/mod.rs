@@ -158,14 +158,6 @@ impl Backend {
         }
     }
 
-    /// Get the headless backend if this is a headless backend
-    pub fn as_headless(&self) -> Option<&HeadlessBackend> {
-        match self {
-            Backend::Drm(_) => None,
-            Backend::Headless(headless) => Some(headless),
-        }
-    }
-
     /// Get mutable access to the headless backend
     pub fn as_headless_mut(&mut self) -> Option<&mut HeadlessBackend> {
         match self {

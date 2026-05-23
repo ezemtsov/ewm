@@ -20,9 +20,9 @@ use tracing::{debug, info};
 
 use crate::{Ewm, OutputState, RedrawState, State};
 
-/// A virtual output for headless testing
-pub struct VirtualOutput {
-    pub output: Output,
+/// A virtual output for headless testing.
+struct VirtualOutput {
+    output: Output,
 }
 
 /// Headless backend state for testing without real hardware
@@ -38,7 +38,7 @@ pub struct VirtualOutput {
 /// The headless backend provides virtual outputs for exercising compositor logic in tests.
 pub struct HeadlessBackend {
     /// Virtual outputs indexed by name
-    pub outputs: HashMap<String, VirtualOutput>,
+    outputs: HashMap<String, VirtualOutput>,
 }
 
 impl Default for HeadlessBackend {

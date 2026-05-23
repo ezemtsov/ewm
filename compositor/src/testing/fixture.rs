@@ -172,10 +172,7 @@ impl Fixture {
     }
 
     pub fn has_output(&self, name: &str) -> bool {
-        self.state
-            .backend
-            .as_headless()
-            .is_some_and(|h| h.outputs.contains_key(name))
+        self.state.ewm.connected_output(name).is_some()
     }
 
     /// Dispatch the event loop once with a short timeout
