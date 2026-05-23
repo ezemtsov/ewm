@@ -605,7 +605,7 @@ impl Strip {
             .min_by(|&a, &b| {
                 let da = (self.column_x(a) - target_view).abs();
                 let db = (self.column_x(b) - target_view).abs();
-                da.partial_cmp(&db).unwrap()
+                da.total_cmp(&db)
             })
             .unwrap_or(self.active_idx);
         self.set_active(snap);
@@ -866,5 +866,16 @@ mod tests {
 
             prop_assert_eq!(frame_ids(&strip), ids);
         }
+    }
+
+    #[test]
+    fn gesture_end_tolerates_nan_frame_width() {
+        let mut strip = strip_with(vec![100.0, f64::NAN, 100.0], 0.0, 0);
+
+        strip.gesture_begin();
+        strip.gesture_update(10.0, Duration::from_millis(1), 1_000.0);
+        strip.gesture_end(1_000.0);
+
+        assert!(strip.active_idx() < strip.frames.len());
     }
 }
