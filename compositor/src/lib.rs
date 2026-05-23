@@ -1411,15 +1411,10 @@ impl Ewm {
         }
         self.working_areas.remove(&output_name);
 
-        // Remove from outputs list
         self.outputs.retain(|o| o.name != output_name);
 
-        // Remove from D-Bus outputs
         #[cfg(feature = "screencast")]
-        {
-            let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
-            dbus_outputs.retain(|o| o.name != output_name);
-        }
+        self.sync_dbus_outputs();
 
         self.screencopy_state.remove_output(output);
 
@@ -4233,6 +4228,11 @@ impl Ewm {
         });
     }
 
+    #[cfg(feature = "screencast")]
+    fn sync_dbus_outputs(&self) {
+        *self.dbus_outputs.lock().unwrap() = self.outputs.clone();
+    }
+
     /// Register a newly connected output.
     ///
     /// Called by backends after hardware setup (DRM surface, virtual output) and
@@ -4242,21 +4242,18 @@ impl Ewm {
     pub fn add_output(&mut self, output: &Output, info: OutputInfo) {
         let output_name = info.name.clone();
 
-        // Register D-Bus output for screen casting
+        self.outputs.push(info.clone());
         #[cfg(feature = "screencast")]
         {
-            let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
-            dbus_outputs.push(info.clone());
+            self.sync_dbus_outputs();
             info!(
                 "Added D-Bus output: {} at ({}, {}) (total: {})",
                 output_name,
                 info.x,
                 info.y,
-                dbus_outputs.len()
+                self.outputs.len()
             );
         }
-
-        self.outputs.push(info.clone());
 
         self.recalculate_output_size();
 
@@ -4303,24 +4300,8 @@ impl Ewm {
             }
         }
 
-        // Update D-Bus outputs
         #[cfg(feature = "screencast")]
-        {
-            if let Some(updated_info) = self
-                .outputs
-                .iter()
-                .find(|info| info.name == output_name)
-                .cloned()
-            {
-                let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
-                if let Some(dbus_out) = dbus_outputs
-                    .iter_mut()
-                    .find(|info| info.name == output_name)
-                {
-                    *dbus_out = updated_info;
-                }
-            }
-        }
+        self.sync_dbus_outputs();
 
         // Notify existing surfaces of scale/transform change
         self.send_scale_transform_to_output_surfaces(output);
@@ -6940,6 +6921,51 @@ mod tests {
         );
         assert!(modes[1].current);
         assert!(!modes[1].preferred);
+    }
+
+    #[cfg(feature = "screencast")]
+    fn output_names(outputs: &[OutputInfo]) -> Vec<String> {
+        outputs.iter().map(|output| output.name.clone()).collect()
+    }
+
+    #[test]
+    #[cfg(feature = "screencast")]
+    fn dbus_outputs_mirror_compositor_outputs() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.add_output(HEAD_B, 1280, 720);
+
+        let dbus_outputs = fix.ewm_ref().dbus_outputs.lock().unwrap().clone();
+        assert_eq!(
+            output_names(&dbus_outputs),
+            output_names(&fix.ewm_ref().outputs)
+        );
+
+        fix.ewm().output_config.insert(
+            HEAD_A.to_string(),
+            OutputConfig {
+                position: Some((320, 40)),
+                scale: Some(1.5),
+                ..Default::default()
+            },
+        );
+        fix.apply_output_config(HEAD_A);
+
+        let dbus_outputs = fix.ewm_ref().dbus_outputs.lock().unwrap().clone();
+        let output = dbus_outputs
+            .iter()
+            .find(|output| output.name == HEAD_A)
+            .unwrap();
+        assert_eq!((output.x, output.y), (320, 40));
+        assert!((output.scale - backend::closest_representable_scale(1.5)).abs() < f64::EPSILON);
+
+        fix.remove_output(HEAD_B);
+
+        let dbus_outputs = fix.ewm_ref().dbus_outputs.lock().unwrap().clone();
+        assert_eq!(
+            output_names(&dbus_outputs),
+            output_names(&fix.ewm_ref().outputs)
+        );
     }
 
     fn window_position(fix: &testing::Fixture, surface_id: u64) -> Option<Point<i32, Logical>> {
