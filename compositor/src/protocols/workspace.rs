@@ -298,11 +298,11 @@ fn coordinates_bytes(coordinates: [u32; 2]) -> Vec<u8> {
 
 fn desired_workspace_snapshot(
     output_strips: &HashMap<String, Strip>,
-    live_output_names: &HashSet<String>,
+    live_output_names: &HashSet<&str>,
 ) -> DesiredWorkspaceSnapshot {
     let mut groups = output_strips
         .keys()
-        .filter(|name| live_output_names.contains(*name))
+        .filter(|name| live_output_names.contains(name.as_str()))
         .cloned()
         .collect::<Vec<_>>();
     groups.sort();
@@ -329,10 +329,8 @@ fn desired_workspace_snapshot(
     DesiredWorkspaceSnapshot { groups, workspaces }
 }
 
-fn outputs_by_name<'a>(outputs: impl Iterator<Item = &'a Output>) -> HashMap<String, Output> {
-    outputs
-        .map(|output| (output.name(), output.clone()))
-        .collect()
+fn outputs_by_name<'a>(outputs: impl Iterator<Item = &'a Output>) -> HashMap<String, &'a Output> {
+    outputs.map(|output| (output.name(), output)).collect()
 }
 
 fn remove_stale_workspaces(
@@ -408,7 +406,7 @@ where
 
 fn sync_groups<D>(
     workspace_state: &mut WorkspaceManagerState,
-    live_outputs: &HashMap<String, Output>,
+    live_outputs: &HashMap<String, &Output>,
     desired: &DesiredWorkspaceSnapshot,
 ) -> HashSet<String>
 where
@@ -421,10 +419,10 @@ where
             continue;
         }
 
-        let output = live_outputs
+        let &output = live_outputs
             .get(output_name)
             .expect("desired groups only contain live outputs");
-        let group = group_for_output::<D>(workspace_state, output.clone());
+        let group = group_for_output::<D>(workspace_state, Output::clone(output));
 
         workspace_state.groups.insert(output_name.clone(), group);
         new_groups.insert(output_name.clone());
@@ -560,7 +558,10 @@ pub fn refresh<'a, D>(
     D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
 {
     let live_outputs = outputs_by_name(outputs);
-    let live_output_names = live_outputs.keys().cloned().collect::<HashSet<_>>();
+    let live_output_names = live_outputs
+        .keys()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
     let desired = desired_workspace_snapshot(output_strips, &live_output_names);
 
     let mut changed = remove_stale_workspaces(workspace_state, &desired);
@@ -885,14 +886,17 @@ mod tests {
 
             let mut live = HashSet::new();
             if a_live {
-                live.insert(HEAD_A.to_string());
+                live.insert(HEAD_A);
             }
             if b_live {
-                live.insert(HEAD_B.to_string());
+                live.insert(HEAD_B);
             }
 
             let snapshot = desired_workspace_snapshot(&strips, &live);
-            let mut expected_groups = live.into_iter().collect::<Vec<_>>();
+            let mut expected_groups = live
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>();
             expected_groups.sort();
             prop_assert_eq!(snapshot.groups, expected_groups);
             prop_assert_eq!(
