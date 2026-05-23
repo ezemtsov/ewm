@@ -4165,19 +4165,8 @@ impl Ewm {
         // Register D-Bus output for screen casting
         #[cfg(feature = "screencast")]
         {
-            let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
-                size: (0, 0).into(),
-                refresh: 0,
-            });
             let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
-            dbus_outputs.push(crate::dbus::OutputInfo {
-                name: output_name.clone(),
-                x: info.x,
-                y: info.y,
-                width: current_mode.size.w,
-                height: current_mode.size.h,
-                refresh: (current_mode.refresh / 1000) as u32,
-            });
+            dbus_outputs.push(info.clone());
             info!(
                 "Added D-Bus output: {} at ({}, {}) (total: {})",
                 output_name,
@@ -4230,25 +4219,25 @@ impl Ewm {
                 out_info.transform = backend::transform_to_int(current_transform);
                 out_info.x = current_geo.loc.x;
                 out_info.y = current_geo.loc.y;
-                for mode_info in &mut out_info.modes {
-                    mode_info.current = mode_info.width == current_mode.size.w
-                        && mode_info.height == current_mode.size.h
-                        && mode_info.refresh == current_mode.refresh;
-                }
+                sync_output_info_mode(&mut out_info.modes, current_mode);
             }
         }
 
         // Update D-Bus outputs
         #[cfg(feature = "screencast")]
         {
-            let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
-            for dbus_out in dbus_outputs.iter_mut() {
-                if dbus_out.name == output_name {
-                    dbus_out.width = current_mode.size.w;
-                    dbus_out.height = current_mode.size.h;
-                    dbus_out.refresh = (current_mode.refresh / 1000) as u32;
-                    dbus_out.x = current_geo.loc.x;
-                    dbus_out.y = current_geo.loc.y;
+            if let Some(updated_info) = self
+                .outputs
+                .iter()
+                .find(|info| info.name == output_name)
+                .cloned()
+            {
+                let mut dbus_outputs = self.dbus_outputs.lock().unwrap();
+                if let Some(dbus_out) = dbus_outputs
+                    .iter_mut()
+                    .find(|info| info.name == output_name)
+                {
+                    *dbus_out = updated_info;
                 }
             }
         }
@@ -5060,6 +5049,26 @@ impl Ewm {
         }
 
         true
+    }
+}
+
+fn sync_output_info_mode(modes: &mut Vec<OutputMode>, current_mode: smithay::output::Mode) {
+    let mut found_current = false;
+    for mode in modes.iter_mut() {
+        mode.current = mode.width == current_mode.size.w
+            && mode.height == current_mode.size.h
+            && mode.refresh == current_mode.refresh;
+        found_current |= mode.current;
+    }
+
+    if !found_current {
+        modes.push(OutputMode {
+            width: current_mode.size.w,
+            height: current_mode.size.h,
+            refresh: current_mode.refresh,
+            preferred: false,
+            current: true,
+        });
     }
 }
 
@@ -6896,6 +6905,32 @@ mod tests {
         let mut frame = strip::Frame::new(surface_id);
         frame.width = width;
         frame
+    }
+
+    #[test]
+    fn sync_output_info_mode_adds_custom_current_mode() {
+        let mut modes = vec![OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh: 60_000,
+            preferred: true,
+            current: true,
+        }];
+        let current_mode = smithay::output::Mode {
+            size: (2560, 1440).into(),
+            refresh: 144_000,
+        };
+
+        sync_output_info_mode(&mut modes, current_mode);
+
+        assert_eq!(modes.len(), 2);
+        assert!(!modes[0].current);
+        assert_eq!(
+            (modes[1].width, modes[1].height, modes[1].refresh),
+            (2560, 1440, 144_000)
+        );
+        assert!(modes[1].current);
+        assert!(!modes[1].preferred);
     }
 
     fn window_position(fix: &testing::Fixture, surface_id: u64) -> Option<Point<i32, Logical>> {

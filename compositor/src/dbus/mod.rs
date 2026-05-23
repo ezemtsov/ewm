@@ -24,15 +24,15 @@ use tracing::{info, warn};
 use zbus::blocking::Connection;
 use zbus::object_server::Interface;
 
-/// Output information for D-Bus
-#[derive(Debug, Clone)]
-pub struct OutputInfo {
-    pub name: String,
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-    pub refresh: u32,
+/// Output information shared with D-Bus interfaces.
+pub type OutputInfo = crate::OutputInfo;
+
+pub fn current_output_mode(output: &OutputInfo) -> Option<&crate::OutputMode> {
+    output
+        .modes
+        .iter()
+        .find(|mode| mode.current)
+        .or_else(|| output.modes.first())
 }
 
 pub use display_config::DisplayConfig;
@@ -110,5 +110,68 @@ fn try_start<I: Start>(iface: I) -> Option<Connection> {
             warn!("FAILED to start D-Bus interface {}: {err:?}", name);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output_with_modes(modes: Vec<crate::OutputMode>) -> OutputInfo {
+        OutputInfo {
+            name: "HDMI-A-1".to_owned(),
+            make: "Acme".to_owned(),
+            model: "Panel".to_owned(),
+            serial: String::new(),
+            width_mm: 600,
+            height_mm: 340,
+            x: 0,
+            y: 0,
+            scale: 1.0,
+            transform: 0,
+            modes,
+        }
+    }
+
+    #[test]
+    fn current_output_mode_prefers_current_mode() {
+        let output = output_with_modes(vec![
+            crate::OutputMode {
+                width: 1280,
+                height: 720,
+                refresh: 60_000,
+                preferred: false,
+                current: false,
+            },
+            crate::OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh: 144_000,
+                preferred: true,
+                current: true,
+            },
+        ]);
+
+        let mode = current_output_mode(&output).unwrap();
+
+        assert_eq!(
+            (mode.width, mode.height, mode.refresh),
+            (1920, 1080, 144_000)
+        );
+    }
+
+    #[test]
+    fn current_output_mode_falls_back_to_first_mode() {
+        let output = output_with_modes(vec![crate::OutputMode {
+            width: 1280,
+            height: 720,
+            refresh: 60_000,
+            preferred: true,
+            current: false,
+        }]);
+
+        let mode = current_output_mode(&output).unwrap();
+
+        assert_eq!((mode.width, mode.height, mode.refresh), (1280, 720, 60_000));
     }
 }

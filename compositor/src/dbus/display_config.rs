@@ -83,40 +83,50 @@ impl DisplayConfig {
 
         for output in outputs.iter() {
             let connector = output.name.clone();
-            let vendor = "Unknown".to_string();
-            let product = "Unknown".to_string();
-            let serial = connector.clone();
+            let vendor = output.make.clone();
+            let product = output.model.clone();
+            let serial = if output.serial.is_empty() {
+                connector.clone()
+            } else {
+                output.serial.clone()
+            };
             let is_builtin = crate::is_laptop_panel(&connector);
             let display_name = if is_builtin {
                 "Built-in display".to_owned()
             } else {
-                connector.clone()
+                output.model.clone()
             };
 
-            // Create mode from output info
-            let refresh_rate = output.refresh as f64 / 1000.0;
-            let mode_id = format!("{}x{}@{:.3}", output.width, output.height, refresh_rate);
-
-            let mode = Mode {
-                id: mode_id,
-                width: output.width,
-                height: output.height,
-                refresh_rate,
-                preferred_scale: 1.0,
-                supported_scales: vec![1.0, 1.25, 1.5, 2.0],
-                properties: HashMap::from([
-                    (
-                        "is-current".to_string(),
-                        OwnedValue::try_from(Value::Bool(true))
-                            .expect("bool conversion is infallible"),
-                    ),
-                    (
+            let modes = output
+                .modes
+                .iter()
+                .map(|mode| {
+                    let refresh_rate = mode.refresh as f64 / 1000.0;
+                    let mut properties = HashMap::new();
+                    properties.insert(
                         "is-preferred".to_string(),
-                        OwnedValue::try_from(Value::Bool(true))
+                        OwnedValue::try_from(Value::Bool(mode.preferred))
                             .expect("bool conversion is infallible"),
-                    ),
-                ]),
-            };
+                    );
+                    if mode.current {
+                        properties.insert(
+                            "is-current".to_string(),
+                            OwnedValue::try_from(Value::Bool(true))
+                                .expect("bool conversion is infallible"),
+                        );
+                    }
+
+                    Mode {
+                        id: format!("{}x{}@{:.3}", mode.width, mode.height, refresh_rate),
+                        width: mode.width,
+                        height: mode.height,
+                        refresh_rate,
+                        preferred_scale: output.scale,
+                        supported_scales: vec![1.0, 1.25, 1.5, 2.0],
+                        properties,
+                    }
+                })
+                .collect();
 
             let names = (connector.clone(), vendor, product, serial);
 
@@ -135,7 +145,7 @@ impl DisplayConfig {
 
             monitors.push(Monitor {
                 names: names.clone(),
-                modes: vec![mode],
+                modes,
                 properties,
             });
 
@@ -143,8 +153,8 @@ impl DisplayConfig {
             logical_monitors.push(LogicalMonitor {
                 x: output.x,
                 y: output.y,
-                scale: 1.0,
-                transform: 0, // Normal
+                scale: output.scale,
+                transform: output.transform as u32,
                 is_primary: false,
                 monitors: vec![names],
                 properties: HashMap::new(),
@@ -210,6 +220,37 @@ impl Start for DisplayConfig {
 mod tests {
     use super::*;
 
+    fn output(name: &str) -> OutputInfo {
+        OutputInfo {
+            name: name.to_owned(),
+            make: "Acme".to_owned(),
+            model: "Panel".to_owned(),
+            serial: String::new(),
+            width_mm: 600,
+            height_mm: 340,
+            x: 0,
+            y: 0,
+            scale: 1.5,
+            transform: 0,
+            modes: vec![
+                crate::OutputMode {
+                    width: 1280,
+                    height: 720,
+                    refresh: 60_000,
+                    preferred: false,
+                    current: false,
+                },
+                crate::OutputMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh: 144_000,
+                    preferred: true,
+                    current: true,
+                },
+            ],
+        }
+    }
+
     #[test]
     fn apply_monitors_config_is_not_advertised_without_handler() {
         let config = DisplayConfig::new(Arc::new(Mutex::new(Vec::new())));
@@ -219,14 +260,7 @@ mod tests {
 
     #[test]
     fn monitor_serial_falls_back_to_connector_name() {
-        let outputs = Arc::new(Mutex::new(vec![OutputInfo {
-            name: "HDMI-A-1".to_owned(),
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-            refresh: 60_000,
-        }]));
+        let outputs = Arc::new(Mutex::new(vec![output("HDMI-A-1")]));
         let config = DisplayConfig::new(outputs);
 
         let (_, monitors, _, _) = async_io::block_on(config.get_current_state()).unwrap();
@@ -236,14 +270,7 @@ mod tests {
 
     #[test]
     fn builtin_connector_is_reported_as_builtin_display() {
-        let outputs = Arc::new(Mutex::new(vec![OutputInfo {
-            name: "eDP-1".to_owned(),
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-            refresh: 60_000,
-        }]));
+        let outputs = Arc::new(Mutex::new(vec![output("eDP-1")]));
         let config = DisplayConfig::new(outputs);
 
         let (_, monitors, _, _) = async_io::block_on(config.get_current_state()).unwrap();
@@ -260,28 +287,51 @@ mod tests {
 
     #[test]
     fn logical_monitors_do_not_invent_a_primary_output() {
-        let outputs = Arc::new(Mutex::new(vec![
-            OutputInfo {
-                name: "HDMI-A-1".to_owned(),
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-                refresh: 60_000,
-            },
-            OutputInfo {
-                name: "DP-1".to_owned(),
-                x: 1920,
-                y: 0,
-                width: 2560,
-                height: 1440,
-                refresh: 60_000,
-            },
-        ]));
+        let mut second = output("DP-1");
+        second.x = 1920;
+        let outputs = Arc::new(Mutex::new(vec![output("HDMI-A-1"), second]));
         let config = DisplayConfig::new(outputs);
 
         let (_, _, logical_monitors, _) = async_io::block_on(config.get_current_state()).unwrap();
 
         assert!(logical_monitors.iter().all(|monitor| !monitor.is_primary));
+    }
+
+    #[test]
+    fn monitor_state_uses_compositor_output_metadata() {
+        let mut out = output("HDMI-A-1");
+        out.make = "Dell".to_owned();
+        out.model = "U2720Q".to_owned();
+        out.serial = "ABC123".to_owned();
+        out.x = 20;
+        out.y = 30;
+        out.scale = 1.25;
+        out.transform = 2;
+        let config = DisplayConfig::new(Arc::new(Mutex::new(vec![out])));
+
+        let (_, monitors, logical_monitors, _) =
+            async_io::block_on(config.get_current_state()).unwrap();
+
+        assert_eq!(
+            monitors[0].names,
+            (
+                "HDMI-A-1".to_owned(),
+                "Dell".to_owned(),
+                "U2720Q".to_owned(),
+                "ABC123".to_owned()
+            )
+        );
+        assert_eq!(monitors[0].modes.len(), 2);
+        assert_eq!(monitors[0].modes[1].width, 1920);
+        assert_eq!(monitors[0].modes[1].height, 1080);
+        assert_eq!(monitors[0].modes[1].refresh_rate, 144.0);
+        assert_eq!(monitors[0].modes[1].preferred_scale, 1.25);
+        assert_eq!(
+            monitors[0].modes[1].properties["is-current"],
+            OwnedValue::try_from(Value::Bool(true)).unwrap()
+        );
+        assert_eq!((logical_monitors[0].x, logical_monitors[0].y), (20, 30));
+        assert_eq!(logical_monitors[0].scale, 1.25);
+        assert_eq!(logical_monitors[0].transform, 2);
     }
 }

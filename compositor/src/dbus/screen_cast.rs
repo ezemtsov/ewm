@@ -13,7 +13,7 @@ use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::{DeserializeDict, OwnedObjectPath, Type, Value};
 use zbus::{fdo, interface, ObjectServer};
 
-use super::{OutputInfo, Start};
+use super::{current_output_mode, OutputInfo, Start};
 use crate::screencasting::{CastSessionId, CastStreamId};
 
 /// Target for a screen cast stream.
@@ -500,11 +500,11 @@ impl Stream {
         let mut params = HashMap::new();
         match &self.target {
             StreamTarget::Output(output) => {
+                let size = current_output_mode(output)
+                    .map(|mode| (mode.width, mode.height))
+                    .unwrap_or((1, 1));
                 params.insert("position".to_string(), Value::new((0i32, 0i32)));
-                params.insert(
-                    "size".to_string(),
-                    Value::new((output.width, output.height)),
-                );
+                params.insert("size".to_string(), Value::new(size));
             }
             StreamTarget::Window => {
                 // Window size is dynamic; consumers don't rely on this

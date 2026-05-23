@@ -180,7 +180,14 @@ impl State {
                         .unwrap()
                         .iter()
                         .find(|o| o.name == *name)
-                        .map(|info| (Size::from((info.width, info.height)), info.refresh)),
+                        .and_then(|info| {
+                            dbus::current_output_mode(info).map(|mode| {
+                                (
+                                    Size::from((mode.width, mode.height)),
+                                    (mode.refresh / 1000) as u32,
+                                )
+                            })
+                        }),
                     CastTarget::Window { id } => {
                         let Some(window) = self.ewm.id_windows.get(id) else {
                             warn!("StartCast: window {} not found", id);
