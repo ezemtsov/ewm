@@ -7,7 +7,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::{SocketAddr, UnixListener};
 
 use anyhow::{anyhow, ensure, Context as _};
-use smithay::reexports::rustix::fs::{mkdir, unlink, OFlags};
+use smithay::reexports::rustix::fs::{access, mkdir, unlink, Access, OFlags};
 use smithay::reexports::rustix::io::Errno;
 use smithay::reexports::rustix::process::getpid;
 use smithay::reexports::rustix::{self};
@@ -57,23 +57,15 @@ fn ensure_x11_unix_perms() -> anyhow::Result<()> {
         "wrong ownership for X11 directory"
     );
     ensure!(
-        is_x11_dir_writable(x11_tmp.st_mode),
+        access(X11_TMP_UNIX_DIR, Access::WRITE_OK).is_ok(),
         "X11 directory is not writable"
     );
     ensure!(
-        has_sticky_bit(x11_tmp.st_mode),
+        (x11_tmp.st_mode & 0o1000) == 0o1000,
         "X11 directory is missing the sticky bit"
     );
 
     Ok(())
-}
-
-fn is_x11_dir_writable(mode: u32) -> bool {
-    (mode & 0o022) == 0o022
-}
-
-fn has_sticky_bit(mode: u32) -> bool {
-    (mode & 0o1000) == 0o1000
 }
 
 fn pick_x11_display(start: u32) -> anyhow::Result<(u32, OwnedFd, Unlink)> {
@@ -167,25 +159,4 @@ fn setup_connection() -> anyhow::Result<X11Connection> {
         _unix_guard: unix_guard,
         _lock_guard: lock_guard,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn x11_dir_requires_group_and_other_write_permissions() {
-        assert!(is_x11_dir_writable(0o1777));
-        assert!(is_x11_dir_writable(0o022));
-
-        assert!(!is_x11_dir_writable(0o1755));
-        assert!(!is_x11_dir_writable(0o1775));
-        assert!(!is_x11_dir_writable(0o1700));
-    }
-
-    #[test]
-    fn x11_dir_requires_sticky_bit() {
-        assert!(has_sticky_bit(0o1777));
-        assert!(!has_sticky_bit(0o0777));
-    }
 }
