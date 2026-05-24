@@ -3497,7 +3497,7 @@ impl Ewm {
 
         // DnD icon (not tied to a specific output)
         if let Some(icon) = self.dnd_icon.as_ref() {
-            let output = self.output_state.keys().next().unwrap_or(&output);
+            let output = self.first_output().unwrap_or(&output);
             send_frames_surface_tree(
                 &icon.surface,
                 output,
@@ -6148,25 +6148,20 @@ impl Ewm {
         }
     }
 
-    /// Get the lock surface for keyboard focus when locked
+    fn lock_surface_output(&self) -> Option<&Output> {
+        self.output_under_cursor()
+            .and_then(|name| self.mapped_output_by_name(&name))
+            .or_else(|| self.first_output())
+    }
+
+    /// Get the lock surface for keyboard focus when locked.
     pub fn lock_surface_focus(&self) -> Option<WlSurface> {
-        // Prefer lock surface on output under cursor, then any output
-        let cursor_output = self.output_under_cursor().and_then(|name| {
-            self.output_state
-                .iter()
-                .find(|(o, _)| o.name() == name)
-                .map(|(o, _)| o.clone())
-        });
-
-        let target_output = cursor_output.or_else(|| self.output_state.keys().next().cloned());
-
-        target_output.and_then(|output| {
-            self.output_state
-                .get(&output)?
-                .lock_surface
-                .as_ref()
-                .map(|s| s.wl_surface().clone())
-        })
+        let output = self.lock_surface_output()?;
+        self.output_state
+            .get(output)?
+            .lock_surface
+            .as_ref()
+            .map(|s| s.wl_surface().clone())
     }
 
     /// Check lock state after output removal.
@@ -7124,6 +7119,35 @@ mod tests {
                 .collect::<Vec<_>>();
 
             prop_assert_eq!(primary, vec![expected]);
+        }
+
+        #[test]
+        fn lock_focus_output_prefers_cursor_then_sorted_output_order(
+            order_keys in any::<[u8; 4]>(),
+            cursor_idx in 0usize..4,
+        ) {
+            let mut fix = testing::Fixture::new().unwrap();
+            add_prop_outputs(&mut fix);
+            let order = order_from_keys(&order_keys);
+            set_sorted_output_order(&mut fix, &order);
+
+            let cursor_name = PROP_HEADS[cursor_idx];
+            let cursor_output = fix.ewm_ref().find_mapped_output(cursor_name).unwrap();
+            let cursor_geo = fix.ewm_ref().space.output_geometry(&cursor_output).unwrap();
+            fix.warp_pointer(
+                cursor_geo.loc.x as f64 + cursor_geo.size.w as f64 / 2.0,
+                cursor_geo.loc.y as f64 + cursor_geo.size.h as f64 / 2.0,
+            );
+            prop_assert_eq!(
+                fix.ewm_ref().lock_surface_output().map(|output| output.name()),
+                Some(cursor_name.to_string()),
+            );
+
+            fix.warp_pointer(-10_000.0, -10_000.0);
+            prop_assert_eq!(
+                fix.ewm_ref().lock_surface_output().map(|output| output.name()),
+                Some(PROP_HEADS[order[0]].to_string()),
+            );
         }
     }
 
