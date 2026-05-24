@@ -1297,11 +1297,10 @@ impl Ewm {
             return;
         }
 
-        let mapped_output_names: Vec<_> =
-            self.space.outputs().map(|output| output.name()).collect();
-        if let Some(id) = mapped_output_names
+        if let Some(id) = self
+            .sorted_outputs
             .iter()
-            .find_map(|name| self.active_frame_surface_id(name))
+            .find_map(|output| self.active_frame_surface_id(&output.name()))
         {
             self.set_focus_frame(id, "output_disabled", false);
         }
@@ -6956,7 +6955,7 @@ mod tests {
             frame_counts in any::<[u8; 4]>(),
             active_indices in any::<[u8; 4]>(),
         ) {
-            prop_assume!(frame_counts.iter().any(|count| count % 4 != 0));
+            prop_assume!(frame_counts.iter().filter(|count| **count % 4 != 0).count() >= 2);
 
             let mut fix = testing::Fixture::new().unwrap();
             add_prop_outputs(&mut fix);
@@ -6991,6 +6990,23 @@ mod tests {
             fix.ewm().focused_frame_id = 0;
             fix.ewm().focus_any_frame_if_unfocused("test");
             prop_assert_eq!(fix.ewm_ref().focused_frame_id, first_frame_id);
+
+            let disabled_name = PROP_HEADS[first_output];
+            fix.ewm()
+                .sorted_outputs
+                .retain(|output| output.name() != disabled_name);
+            let fallback_output = order
+                .iter()
+                .copied()
+                .find(|idx| *idx != first_output && frame_counts[*idx] % 4 != 0)
+                .unwrap();
+            let fallback_active_id = 1_000
+                + fallback_output as u64 * 100
+                + u64::from(active_indices[fallback_output] % (frame_counts[fallback_output] % 4));
+
+            fix.ewm()
+                .focus_mapped_frame_if_focused_output_unmapped(disabled_name);
+            prop_assert_eq!(fix.ewm_ref().focused_frame_id, fallback_active_id);
         }
 
         #[test]
