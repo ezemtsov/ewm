@@ -4,30 +4,27 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Focus ownership**: Only one surface has keyboard focus at a time. Focus changes only via
-//!    explicit commands from Emacs or validated input events (click-to-focus, XDG activation). The
-//!    `focused_surface_id` field is the single source of truth for focus state.
+//! 1. **Surfaces and views are distinct**: A Wayland surface is a client-owned object; a view is
+//!    one compositor-owned placement of that surface. The same surface may appear as multiple
+//!    views.
 //!
-//! 2. **Surface lifecycle**: Surfaces are assigned monotonically increasing IDs starting from 1. ID
-//!    0 is reserved for "no surface". IDs are never reused within a session. When a surface is
-//!    destroyed, it's removed from all maps and its ID becomes invalid.
+//! 2. **Focus follows the frame/view model**: Logical focus is on an Emacs frame, optionally
+//!    narrowed to one view inside that frame. The keyboard surface is derived from that logical
+//!    focus.
 //!
-//! 3. **Redraw state machine**: Each output has independent redraw state. Two transition paths:
-//!    - Real VBlank: `Idle` -> `Queued` -> `WaitingForVBlank` -> `Idle`
-//!    - No damage: `Idle` -> `Queued` -> `WaitingForEstimatedVBlank` -> `Idle`
+//! 3. **Strips define the visible world**: Per-output strips are the compositor's model of which
+//!    frames and views exist on each output. Rendering, hit-testing, output membership, and
+//!    protocol mirrors derive from strips.
 //!
-//!    `WaitingForVBlank { redraw_needed }` and `WaitingForEstimatedVBlankAndQueued` handle redraws
-//!    requested while waiting. State is owned by `Ewm::output_state`, not the backend.
+//! 4. **Wayland destruction is authoritative**: Layout can move, add, or omit views and frames, but
+//!    surface destruction is the final signal that removes compositor state tied to that surface.
 //!
-//! 4. **Emacs ownership**: The compositor runs as a thread within Emacs. Emacs controls window
-//!    layout and focus policy. The compositor handles protocol compliance and rendering. This split
-//!    means:
-//!    - Compositor never initiates focus changes without Emacs consent
-//!    - Layout changes come from Emacs via the command queue
-//!    - Events flow back to Emacs via the event queue
+//! 5. **Emacs owns policy; Rust preserves invariants**: Emacs decides layout and focus intent. Rust
+//!    applies those decisions, handles Wayland protocol state, and repairs local state when async
+//!    ordering would otherwise break invariants.
 //!
-//! 5. **Thread safety**: Communication between Emacs and compositor uses mutex-protected queues and
-//!    atomic flags. The module interface (module.rs) provides the synchronization boundary.
+//! 6. **Rendering state is per-output**: Each output advances independently through its redraw
+//!    state machine.
 
 pub mod backend;
 pub mod cursor;
