@@ -3898,9 +3898,7 @@ impl Ewm {
         let Some(geom) = self.space.output_geometry(output) else {
             return target;
         };
-        let cx = geom.loc.x as f64 + geom.size.w as f64 / 2.0;
-        let cy = geom.loc.y as f64 + geom.size.h as f64 / 2.0;
-        Point::from((cx, cy))
+        crate::utils::center(geom).to_f64()
     }
 
     fn layer_hit_under(
@@ -4132,11 +4130,7 @@ impl Ewm {
                 Size::from((cur.size.w, i32::MAX)),
             )
         };
-        let cur_center = if horizontal {
-            i64::from(cur.loc.x) + i64::from(cur.size.w) / 2
-        } else {
-            i64::from(cur.loc.y) + i64::from(cur.size.h) / 2
-        };
+        let cur_center = crate::utils::center(cur);
 
         self.space
             .outputs()
@@ -4145,12 +4139,12 @@ impl Ewm {
                 if !geo.overlaps(band) {
                     return None;
                 }
-                let center = if horizontal {
-                    i64::from(geo.loc.x) + i64::from(geo.size.w) / 2
+                let center = crate::utils::center(geo);
+                let distance = if horizontal {
+                    i64::from(sign) * (i64::from(center.x) - i64::from(cur_center.x))
                 } else {
-                    i64::from(geo.loc.y) + i64::from(geo.size.h) / 2
+                    i64::from(sign) * (i64::from(center.y) - i64::from(cur_center.y))
                 };
-                let distance = i64::from(sign) * (center - cur_center);
                 (distance > 0).then_some((output, distance))
             })
             .min_by_key(|(_, distance)| *distance)
@@ -6321,9 +6315,8 @@ impl State {
         let Some(geo) = self.ewm.space.output_geometry(&output) else {
             return;
         };
-        let x = geo.loc.x as f64 + geo.size.w as f64 / 2.0;
-        let y = geo.loc.y as f64 + geo.size.h as f64 / 2.0;
-        self.warp_pointer(x, y);
+        let center = crate::utils::center(geo).to_f64();
+        self.warp_pointer(center.x, center.y);
     }
 
     /// Synchronize Wayland keyboard focus with current state.
@@ -7134,10 +7127,8 @@ mod tests {
             let cursor_name = PROP_HEADS[cursor_idx];
             let cursor_output = fix.ewm_ref().find_mapped_output(cursor_name).unwrap();
             let cursor_geo = fix.ewm_ref().space.output_geometry(&cursor_output).unwrap();
-            fix.warp_pointer(
-                cursor_geo.loc.x as f64 + cursor_geo.size.w as f64 / 2.0,
-                cursor_geo.loc.y as f64 + cursor_geo.size.h as f64 / 2.0,
-            );
+            let cursor_center = crate::utils::center(cursor_geo).to_f64();
+            fix.warp_pointer(cursor_center.x, cursor_center.y);
             prop_assert_eq!(
                 fix.ewm_ref().lock_surface_output().map(|output| output.name()),
                 Some(cursor_name.to_string()),

@@ -9,7 +9,7 @@ use std::time::Duration;
 use smithay::output::{self, Output};
 use smithay::reexports::rustix::time::{clock_gettime, ClockId};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Coordinate, Logical, Size, Transform};
+use smithay::utils::{Coordinate, Logical, Point, Rectangle, Size, Transform};
 use smithay::wayland::compositor::{get_parent, send_surface_state, with_states, SurfaceData};
 use smithay::wayland::fractional_scale::with_fractional_scale;
 
@@ -17,6 +17,10 @@ use smithay::wayland::fractional_scale::with_fractional_scale;
 pub fn get_monotonic_time() -> Duration {
     let ts = clock_gettime(ClockId::Monotonic);
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
+
+pub fn center(rect: Rectangle<i32, Logical>) -> Point<i32, Logical> {
+    rect.loc + rect.size.downscale(2).to_point()
 }
 
 /// Convert a logical coordinate to physical pixels, rounding to the nearest integer.
