@@ -1324,6 +1324,11 @@ impl Ewm {
         self.output_state.contains_key(output)
     }
 
+    /// Convert a `WlOutput` to an `Output` that EWM still tracks.
+    pub(crate) fn output_from_resource(&self, wl_output: &WlOutput) -> Option<Output> {
+        Output::from_resource(wl_output).filter(|output| self.output_exists(output))
+    }
+
     /// Find a connected output by name, whether or not it is currently mapped.
     pub(crate) fn connected_output(&self, name: &str) -> Option<Output> {
         self.output_state
@@ -1514,7 +1519,7 @@ impl Ewm {
 
     fn requested_output_name(&self, id: u64, output: Option<WlOutput>) -> Option<String> {
         output
-            .and_then(|output| Output::from_resource(&output))
+            .and_then(|output| self.output_from_resource(&output))
             .map(|output| output.name())
             .or_else(|| self.surface_output_name(id).map(str::to_owned))
     }
@@ -5598,7 +5603,7 @@ impl WlrLayerShellHandler for State {
 
         // Get the output for this layer surface
         let output = if let Some(wl_output) = &wl_output {
-            Output::from_resource(wl_output)
+            self.ewm.output_from_resource(wl_output)
         } else {
             let name = self.ewm.active_output();
             name.and_then(|n| self.ewm.find_mapped_output(&n))
@@ -5963,7 +5968,7 @@ impl SessionLockHandler for State {
     }
 
     fn new_surface(&mut self, surface: LockSurface, wl_output: WlOutput) {
-        let Some(output) = Output::from_resource(&wl_output) else {
+        let Some(output) = self.ewm.output_from_resource(&wl_output) else {
             warn!("Lock surface created for unknown output");
             return;
         };
