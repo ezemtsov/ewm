@@ -608,10 +608,13 @@ impl DrmBackendState {
     /// Get the primary GBM device for screencasting (if DRM is initialized).
     #[cfg(feature = "screencast")]
     pub fn gbm_device(&self) -> Option<GbmDevice<DrmDeviceFd>> {
-        self.primary_node
-            .and_then(|node| self.devices.get(&node))
-            .map(|d| d.gbm.clone())
-            .or_else(|| self.devices.values().next().map(|d| d.gbm.clone()))
+        let device = self
+            .devices
+            .values()
+            .find(|d| Some(d.render_node) == self.primary_render_node);
+        let device = device.or_else(|| self.primary_node.and_then(|node| self.devices.get(&node)));
+
+        Some(device?.gbm.clone())
     }
 
     fn find_output_device(&self, output: &Output) -> Option<(DrmNode, crtc::Handle)> {
