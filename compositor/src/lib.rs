@@ -6841,10 +6841,16 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     const HEAD_A: &str = "HEAD-A";
     const HEAD_B: &str = "HEAD-B";
+    const HEAD_C: &str = "HEAD-C";
+    const HEAD_D: &str = "HEAD-D";
+    const PROP_HEADS: [&str; 4] = [HEAD_A, HEAD_B, HEAD_C, HEAD_D];
+    const PROP_SURFACE_OUTPUTS: [&str; 6] = [HEAD_A, HEAD_B, HEAD_C, HEAD_D, "HEAD-X", "HEAD-Y"];
 
     fn nz(raw: u64) -> ViewId {
         std::num::NonZeroU64::new(raw).unwrap()
@@ -6911,136 +6917,191 @@ mod tests {
         );
     }
 
-    fn window_position(fix: &testing::Fixture, surface_id: u64) -> Option<Point<i32, Logical>> {
-        let ewm = fix.ewm_ref();
-        let window = ewm.id_windows.get(&surface_id)?;
-        ewm.window_global_position(window)
+    fn add_prop_outputs(fix: &mut testing::Fixture) {
+        for name in PROP_HEADS {
+            fix.add_output(name, 1600, 900);
+        }
     }
 
-    fn primary_output_for_surface(fix: &testing::Fixture, surface_id: u64) -> Option<String> {
-        fix.ewm_ref()
-            .output_strips
-            .iter()
-            .find_map(|(output_name, strip)| {
-                strip
-                    .surfaces()
-                    .any(|entry| entry.surface_id == surface_id && entry.primary)
-                    .then_some(output_name.clone())
-            })
+    fn order_from_keys(keys: &[u8; 4]) -> Vec<usize> {
+        let mut order = (0..PROP_HEADS.len()).collect::<Vec<_>>();
+        order.sort_by_key(|&idx| (keys[idx], idx));
+        order
     }
 
-    fn put_sorted_output_first(fix: &mut testing::Fixture, name: &str) {
-        fix.ewm()
-            .sorted_outputs
-            .sort_by_key(|output| (output.name() != name, output.name()));
+    fn set_sorted_output_order(fix: &mut testing::Fixture, order: &[usize]) {
+        fix.ewm().sorted_outputs.sort_by_key(|output| {
+            order
+                .iter()
+                .position(|&idx| PROP_HEADS[idx] == output.name())
+                .unwrap_or(usize::MAX)
+        });
     }
 
-    #[test]
-    fn unfocused_frame_fallbacks_follow_output_order() {
-        let mut fix = testing::Fixture::new().unwrap();
-        fix.add_output(HEAD_A, 1600, 900);
-        fix.add_output(HEAD_B, 1600, 900);
-        fix.ewm().apply_output_layout(
-            HEAD_A,
-            vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
-        );
-        fix.ewm()
-            .apply_output_layout(HEAD_B, vec![frame_with_width(200, 400.0)]);
-        fix.ewm()
-            .output_strips
-            .get_mut(HEAD_A)
-            .unwrap()
-            .set_active(1);
-
-        let arbitrary_first_output = fix
-            .ewm_ref()
-            .output_strips
-            .iter()
-            .find_map(|(output_name, strip)| strip.frames.first().map(|_| output_name.clone()))
-            .unwrap();
-        let canonical_output = [HEAD_A, HEAD_B]
-            .into_iter()
-            .find(|name| *name != arbitrary_first_output)
-            .unwrap();
-        put_sorted_output_first(&mut fix, canonical_output);
-
-        let expected_first = if canonical_output == HEAD_A { 100 } else { 200 };
-        let expected_active = if canonical_output == HEAD_A { 101 } else { 200 };
-        assert_eq!(
-            fix.ewm_ref().first_active_frame_surface_id(),
-            Some(expected_active)
-        );
-
-        fix.ewm().focused_frame_id = 0;
-        fix.ewm().focus_any_frame_if_unfocused("test");
-        assert_eq!(fix.ewm_ref().focused_frame_id, expected_first);
+    fn strip_with_frame_ids(ids: Vec<u64>, active_idx: usize) -> strip::Strip {
+        let mut strip = strip::Strip::new(strip::AnimationsClock::default());
+        strip.frames = ids.into_iter().map(strip::Frame::new).collect();
+        if !strip.frames.is_empty() {
+            strip.set_active(active_idx % strip.frames.len());
+        }
+        strip
     }
 
-    #[test]
-    fn surface_output_and_position_prefer_focused_layout_entry() {
-        let mut fix = testing::Fixture::new().unwrap();
-        let mut client = fix.new_client().unwrap();
-        fix.roundtrip(&mut client);
-        fix.add_output(HEAD_A, 1600, 900);
-        fix.add_output(HEAD_B, 1600, 900);
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
 
-        let toplevel = fix.open_toplevel(&mut client, "multi-view", Size::from((400, 400)));
-        let surface_id = fix.find_surface_id(&toplevel.surface).unwrap();
-        let view_a = nz(1001);
-        let view_b = nz(1002);
-        fix.ewm()
-            .apply_output_layout(HEAD_A, vec![frame_with_entry(100, view_a, surface_id)]);
-        fix.ewm()
-            .apply_output_layout(HEAD_B, vec![frame_with_entry(200, view_b, surface_id)]);
+        #[test]
+        fn frame_fallbacks_follow_sorted_output_order(
+            order_keys in any::<[u8; 4]>(),
+            frame_counts in any::<[u8; 4]>(),
+            active_indices in any::<[u8; 4]>(),
+        ) {
+            prop_assume!(frame_counts.iter().any(|count| count % 4 != 0));
 
-        fix.ewm().set_focus_view(view_b, "test", false);
-        assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_B));
-        assert_eq!(
-            window_position(&fix, surface_id),
-            Some(Point::from((1600, 0)))
-        );
+            let mut fix = testing::Fixture::new().unwrap();
+            add_prop_outputs(&mut fix);
+            let order = order_from_keys(&order_keys);
+            set_sorted_output_order(&mut fix, &order);
 
-        fix.ewm().set_focus_view(view_a, "test", false);
-        assert_eq!(fix.ewm_ref().surface_output_name(surface_id), Some(HEAD_A));
-        assert_eq!(window_position(&fix, surface_id), Some(Point::from((0, 0))));
+            for (idx, name) in PROP_HEADS.iter().enumerate() {
+                let count = usize::from(frame_counts[idx] % 4);
+                if count == 0 {
+                    continue;
+                }
+                let base = 1_000 + idx as u64 * 100;
+                let ids = (0..count).map(|frame_idx| base + frame_idx as u64).collect();
+                let strip = strip_with_frame_ids(ids, usize::from(active_indices[idx]));
+                fix.ewm().output_strips.insert((*name).to_string(), strip);
+            }
 
-        let set_first = fix
-            .ewm_ref()
-            .surface_outputs
-            .get(&surface_id)
-            .unwrap()
-            .iter()
-            .next()
-            .unwrap()
-            .clone();
-        let canonical_output = [HEAD_A, HEAD_B]
-            .into_iter()
-            .find(|name| *name != set_first)
-            .unwrap();
-        put_sorted_output_first(&mut fix, canonical_output);
-        fix.ewm().focused_view_id = None;
+            let first_output = order
+                .iter()
+                .copied()
+                .find(|idx| frame_counts[*idx] % 4 != 0)
+                .unwrap();
+            let first_frame_id = 1_000 + first_output as u64 * 100;
+            let first_active_id = first_frame_id
+                + u64::from(active_indices[first_output] % (frame_counts[first_output] % 4));
 
-        assert_eq!(
-            fix.ewm_ref().surface_output_name(surface_id),
-            Some(canonical_output)
-        );
+            prop_assert_eq!(
+                fix.ewm_ref().first_active_frame_surface_id(),
+                Some(first_active_id)
+            );
 
-        let arbitrary_primary = primary_output_for_surface(&fix, surface_id).unwrap();
-        let canonical_primary = [HEAD_A, HEAD_B]
-            .into_iter()
-            .find(|name| *name != arbitrary_primary)
-            .unwrap();
-        put_sorted_output_first(&mut fix, canonical_primary);
-        fix.ewm().refresh_primary_assignments();
+            fix.ewm().focused_frame_id = 0;
+            fix.ewm().focus_any_frame_if_unfocused("test");
+            prop_assert_eq!(fix.ewm_ref().focused_frame_id, first_frame_id);
+        }
 
-        assert_eq!(
-            window_position(&fix, surface_id),
-            Some(if canonical_primary == HEAD_A {
-                Point::from((0, 0))
+        #[test]
+        fn surface_output_name_prefers_focus_then_sorted_output_order(
+            order_keys in any::<[u8; 4]>(),
+            membership in 1u8..64,
+            focused_idx in 0usize..=4,
+        ) {
+            let mut fix = testing::Fixture::new().unwrap();
+            add_prop_outputs(&mut fix);
+            let order = order_from_keys(&order_keys);
+            set_sorted_output_order(&mut fix, &order);
+
+            let surface_id = 9_000;
+            let selected = PROP_SURFACE_OUTPUTS
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, name)| ((membership & (1 << idx)) != 0).then_some(*name))
+                .collect::<Vec<_>>();
+            fix.ewm().surface_outputs.insert(
+                surface_id,
+                selected.iter().map(|name| (*name).to_string()).collect(),
+            );
+
+            for (idx, name) in PROP_HEADS.iter().enumerate() {
+                if selected.contains(name) {
+                    let mut strip = strip::Strip::new(strip::AnimationsClock::default());
+                    let frame = frame_with_entry(
+                        2_000 + idx as u64,
+                        nz(3_000 + idx as u64),
+                        surface_id,
+                    );
+                    strip.frames.push(frame);
+                    fix.ewm().output_strips.insert((*name).to_string(), strip);
+                }
+            }
+
+            let focused = if focused_idx < PROP_HEADS.len() {
+                let name = PROP_HEADS[focused_idx];
+                selected.contains(&name).then_some(name)
             } else {
-                Point::from((1600, 0))
-            })
-        );
+                None
+            };
+            if focused.is_some() {
+                fix.ewm().focused_view_id = Some(nz(3_000 + focused_idx as u64));
+            }
+
+            let ordered = order
+                .iter()
+                .map(|idx| PROP_HEADS[*idx])
+                .find(|name| selected.contains(name));
+            let lexical = selected.iter().copied().min();
+            let expected = focused.or(ordered).or(lexical);
+
+            prop_assert_eq!(fix.ewm_ref().surface_output_name(surface_id), expected);
+        }
+
+        #[test]
+        fn primary_entry_ties_follow_sorted_output_order(
+            order_keys in any::<[u8; 4]>(),
+            membership in 1u8..16,
+        ) {
+            let mut fix = testing::Fixture::new().unwrap();
+            add_prop_outputs(&mut fix);
+            let order = order_from_keys(&order_keys);
+            set_sorted_output_order(&mut fix, &order);
+
+            let surface_id = 10_000;
+            for (idx, name) in PROP_HEADS.iter().enumerate() {
+                if membership & (1 << idx) == 0 {
+                    continue;
+                }
+                let mut strip = strip::Strip::new(strip::AnimationsClock::default());
+                strip.frames.push(frame_with_entry(
+                    4_000 + idx as u64,
+                    nz(5_000 + idx as u64),
+                    surface_id,
+                ));
+                fix.ewm().output_strips.insert((*name).to_string(), strip);
+            }
+
+            let output_sizes = PROP_HEADS
+                .iter()
+                .map(|name| ((*name).to_string(), (100, 100)))
+                .collect::<HashMap<_, _>>();
+            let best_area = fix.ewm_ref().primary_entry_areas(&output_sizes);
+            fix.ewm().assign_primary_entries(&output_sizes, &best_area);
+
+            let expected = order
+                .iter()
+                .map(|idx| PROP_HEADS[*idx])
+                .find(|name| {
+                    let idx = PROP_HEADS.iter().position(|candidate| candidate == name).unwrap();
+                    membership & (1 << idx) != 0
+                })
+                .unwrap();
+            let primary = PROP_HEADS
+                .iter()
+                .copied()
+                .filter(|name| {
+                    fix.ewm_ref()
+                        .output_strips
+                        .get(*name)
+                        .is_some_and(|strip| {
+                            strip.surfaces().any(|entry| entry.surface_id == surface_id && entry.primary)
+                        })
+                })
+                .collect::<Vec<_>>();
+
+            prop_assert_eq!(primary, vec![expected]);
+        }
     }
 
     #[test]
