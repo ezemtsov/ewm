@@ -2516,7 +2516,7 @@ impl Ewm {
     }
 
     fn configure_primary_entries(&self) {
-        for output in self.space.outputs() {
+        for output in &self.sorted_outputs {
             let Some(strip) = self.output_strips.get(&output.name()) else {
                 continue;
             };
@@ -3744,7 +3744,7 @@ impl Ewm {
         };
 
         // Check all outputs (typically just one for EWM)
-        for output in self.space.outputs() {
+        for output in &self.sorted_outputs {
             // Exclusive Overlay takes highest priority
             if let Some(s) = excl_on_layer(output, Layer::Overlay) {
                 return Some(s);
@@ -3843,7 +3843,11 @@ impl Ewm {
         self.space
             .output_under(pos)
             .next()
-            .or_else(|| self.space.outputs().next())
+            .or_else(|| self.first_output())
+    }
+
+    fn first_output(&self) -> Option<&Output> {
+        self.sorted_outputs.first()
     }
 
     /// Find the Output whose geometry strictly contains `pos`.
@@ -3891,7 +3895,7 @@ impl Ewm {
                 .clamp(geom.loc.y as f64, (geom.loc.y + geom.size.h - 1) as f64);
             return smithay::utils::Point::from((x, y));
         }
-        let Some(output) = self.space.outputs().next() else {
+        let Some(output) = self.first_output() else {
             return target;
         };
         let Some(geom) = self.space.output_geometry(output) else {
@@ -4082,7 +4086,7 @@ impl Ewm {
         let (px, py) = self.pointer_location();
         let cursor_point = Point::from((px as i32, py as i32));
 
-        for output in self.space.outputs() {
+        for output in &self.sorted_outputs {
             if let Some(geo) = self.space.output_geometry(output) {
                 if geo.contains(cursor_point) {
                     return Some(output.name());
@@ -4096,7 +4100,7 @@ impl Ewm {
     pub fn active_output(&self) -> Option<String> {
         self.get_focused_output()
             .or_else(|| self.output_under_cursor())
-            .or_else(|| self.space.outputs().next().map(|o| o.name()))
+            .or_else(|| self.first_output().map(|o| o.name()))
     }
 
     /// Find a mapped output by name in this `Space`.
@@ -4767,7 +4771,7 @@ impl Ewm {
         let scale_output = target_output
             .as_ref()
             .and_then(|name| self.mapped_output_by_name(name))
-            .or_else(|| self.space.outputs().next())
+            .or_else(|| self.first_output())
             .cloned();
         if let Some(output) = scale_output {
             let scale = output.current_scale();
@@ -6319,7 +6323,7 @@ impl State {
     /// Center the pointer on the first output. Called once during startup so the
     /// cursor doesn't begin at (0, 0).
     pub fn center_pointer_on_first_output(&mut self) {
-        let Some(output) = self.ewm.space.outputs().next().cloned() else {
+        let Some(output) = self.ewm.first_output().cloned() else {
             return;
         };
         let Some(geo) = self.ewm.space.output_geometry(&output) else {
@@ -6961,6 +6965,12 @@ mod tests {
             add_prop_outputs(&mut fix);
             let order = order_from_keys(&order_keys);
             set_sorted_output_order(&mut fix, &order);
+            prop_assert_eq!(
+                fix.ewm_ref()
+                    .output_at(Point::from((-10_000.0, -10_000.0)))
+                    .map(|output| output.name()),
+                Some(PROP_HEADS[order[0]].to_string())
+            );
 
             for (idx, name) in PROP_HEADS.iter().enumerate() {
                 let count = usize::from(frame_counts[idx] % 4);
