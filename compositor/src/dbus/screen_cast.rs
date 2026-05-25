@@ -200,6 +200,27 @@ impl Session {
             stopped: Arc::new(AtomicBool::new(false)),
         }
     }
+
+    async fn add_stream(
+        &self,
+        server: &ObjectServer,
+        path: &OwnedObjectPath,
+        stream: Stream,
+    ) -> fdo::Result<()> {
+        match server.at(path, stream.clone()).await {
+            Ok(true) => {
+                let iface = server.interface::<_, Stream>(path).await.map_err(|err| {
+                    fdo::Error::Failed(format!("error getting stream interface: {err:?}"))
+                })?;
+                self.streams.lock().unwrap().push((stream, iface));
+                Ok(())
+            }
+            Ok(false) => Err(fdo::Error::Failed("stream path already exists".to_owned())),
+            Err(err) => Err(fdo::Error::Failed(format!(
+                "error creating stream object: {err:?}"
+            ))),
+        }
+    }
 }
 
 #[interface(name = "org.gnome.Mutter.ScreenCast.Session")]
@@ -290,29 +311,7 @@ impl Session {
             cursor_mode,
         );
 
-        // Register stream with D-Bus and get InterfaceRef
-        let iface = match server.at(&path, stream.clone()).await {
-            Ok(true) => {
-                // Get the InterfaceRef for the stream we just registered
-                match server.interface::<_, Stream>(&path).await {
-                    Ok(iface) => iface,
-                    Err(err) => {
-                        return Err(fdo::Error::Failed(format!(
-                            "error getting stream interface: {err:?}"
-                        )));
-                    }
-                }
-            }
-            Ok(false) => return Err(fdo::Error::Failed("stream path already exists".to_owned())),
-            Err(err) => {
-                return Err(fdo::Error::Failed(format!(
-                    "error creating stream object: {err:?}"
-                )))
-            }
-        };
-
-        self.streams.lock().unwrap().push((stream, iface));
-
+        self.add_stream(server, &path, stream).await?;
         info!("Created ScreenCast stream: {}", path);
         Ok(path)
     }
@@ -340,26 +339,7 @@ impl Session {
             cursor_mode,
         );
 
-        // Register stream with D-Bus and get InterfaceRef
-        let iface = match server.at(&path, stream.clone()).await {
-            Ok(true) => match server.interface::<_, Stream>(&path).await {
-                Ok(iface) => iface,
-                Err(err) => {
-                    return Err(fdo::Error::Failed(format!(
-                        "error getting stream interface: {err:?}"
-                    )));
-                }
-            },
-            Ok(false) => return Err(fdo::Error::Failed("stream path already exists".to_owned())),
-            Err(err) => {
-                return Err(fdo::Error::Failed(format!(
-                    "error creating stream object: {err:?}"
-                )))
-            }
-        };
-
-        self.streams.lock().unwrap().push((stream, iface));
-
+        self.add_stream(server, &path, stream).await?;
         info!("Created ScreenCast window stream: {}", path);
         Ok(path)
     }
