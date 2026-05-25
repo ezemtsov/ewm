@@ -6391,7 +6391,7 @@ impl State {
         crate::protocols::workspace::refresh::<State>(
             &mut self.ewm.workspace_state,
             &self.ewm.output_strips,
-            self.ewm.space.outputs(),
+            &self.ewm.sorted_outputs,
         );
 
         // Process pending early imports

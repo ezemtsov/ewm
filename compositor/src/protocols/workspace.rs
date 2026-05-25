@@ -222,6 +222,7 @@ struct DesiredWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesiredWorkspaceSnapshot {
     groups: Vec<String>,
+    workspace_order: Vec<WorkspaceKey>,
     workspaces: HashMap<WorkspaceKey, DesiredWorkspace>,
 }
 
@@ -302,39 +303,43 @@ fn coordinates_bytes(coordinates: [u32; 2]) -> Vec<u8> {
 
 fn desired_workspace_snapshot(
     output_strips: &HashMap<String, Strip>,
-    live_output_names: &HashSet<&str>,
+    sorted_outputs: &[Output],
 ) -> DesiredWorkspaceSnapshot {
-    let mut groups = output_strips
-        .keys()
-        .filter(|name| live_output_names.contains(name.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    groups.sort();
-
+    let mut groups = Vec::new();
+    let mut workspace_order = Vec::new();
     let mut workspaces = HashMap::new();
-    for output_name in &groups {
-        let Some(strip) = output_strips.get(output_name) else {
+    for output in sorted_outputs {
+        let output_name = output.name();
+        let Some(strip) = output_strips.get(&output_name) else {
             continue;
         };
+        groups.push(output_name.clone());
+
         for (idx, frame) in strip.frames.iter().enumerate() {
-            workspaces.insert(
-                frame.surface_id,
-                DesiredWorkspace {
-                    output: output_name.clone(),
-                    id: frame.surface_id.to_string(),
-                    name: frame_display_name(idx),
-                    coordinates: [0, idx as u32],
-                    active: idx == strip.active_idx(),
-                },
-            );
+            let key = frame.surface_id;
+            if workspaces
+                .insert(
+                    key,
+                    DesiredWorkspace {
+                        output: output_name.clone(),
+                        id: key.to_string(),
+                        name: frame_display_name(idx),
+                        coordinates: [0, idx as u32],
+                        active: idx == strip.active_idx(),
+                    },
+                )
+                .is_none()
+            {
+                workspace_order.push(key);
+            }
         }
     }
 
-    DesiredWorkspaceSnapshot { groups, workspaces }
-}
-
-fn outputs_by_name<'a>(outputs: impl Iterator<Item = &'a Output>) -> HashMap<String, &'a Output> {
-    outputs.map(|output| (output.name(), output)).collect()
+    DesiredWorkspaceSnapshot {
+        groups,
+        workspace_order,
+        workspaces,
+    }
 }
 
 fn remove_stale_workspaces(
@@ -410,7 +415,7 @@ where
 
 fn sync_groups<D>(
     workspace_state: &mut WorkspaceManagerState,
-    live_outputs: &HashMap<String, &Output>,
+    sorted_outputs: &[Output],
     desired: &DesiredWorkspaceSnapshot,
 ) -> HashSet<String>
 where
@@ -423,10 +428,11 @@ where
             continue;
         }
 
-        let &output = live_outputs
-            .get(output_name)
+        let output = sorted_outputs
+            .iter()
+            .find(|output| output.name() == output_name.as_str())
             .expect("desired groups only contain live outputs");
-        let group = group_for_output::<D>(workspace_state, Output::clone(output));
+        let group = group_for_output::<D>(workspace_state, output.clone());
 
         workspace_state.groups.insert(output_name.clone(), group);
         new_groups.insert(output_name.clone());
@@ -438,19 +444,16 @@ where
 fn desired_workspaces_in_protocol_order(
     desired: &DesiredWorkspaceSnapshot,
 ) -> Vec<(WorkspaceKey, &DesiredWorkspace)> {
-    let mut workspaces = desired
-        .workspaces
+    desired
+        .workspace_order
         .iter()
-        .map(|(&key, workspace)| (key, workspace))
-        .collect::<Vec<_>>();
-    workspaces.sort_by(|(left_key, left), (right_key, right)| {
-        (&left.output, left.coordinates, *left_key).cmp(&(
-            &right.output,
-            right.coordinates,
-            *right_key,
-        ))
-    });
-    workspaces
+        .filter_map(|&key| {
+            desired
+                .workspaces
+                .get(&key)
+                .map(|workspace| (key, workspace))
+        })
+        .collect()
 }
 
 fn sync_workspace_group_membership(
@@ -553,25 +556,20 @@ fn notify_managers_done(workspace_state: &WorkspaceManagerState) {
 ///
 /// Runs every event-loop iteration. Diffs current mirrors against source of truth
 /// and sends only changed events. Creates/removes groups and workspaces as needed.
-pub fn refresh<'a, D>(
+pub fn refresh<D>(
     workspace_state: &mut WorkspaceManagerState,
     output_strips: &HashMap<String, Strip>,
-    outputs: impl Iterator<Item = &'a Output>,
+    sorted_outputs: &[Output],
 ) where
     D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
     D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
 {
-    let live_outputs = outputs_by_name(outputs);
-    let live_output_names = live_outputs
-        .keys()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    let desired = desired_workspace_snapshot(output_strips, &live_output_names);
+    let desired = desired_workspace_snapshot(output_strips, sorted_outputs);
 
     let mut changed = remove_stale_workspaces(workspace_state, &desired);
     changed |= remove_stale_groups(workspace_state, &desired);
 
-    let new_groups = sync_groups::<D>(workspace_state, &live_outputs, &desired);
+    let new_groups = sync_groups::<D>(workspace_state, sorted_outputs, &desired);
     changed |= !new_groups.is_empty();
     changed |= sync_workspaces::<D>(workspace_state, &desired, &new_groups);
 
@@ -852,9 +850,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     use proptest::prelude::*;
+    use smithay::output::{PhysicalProperties, Subpixel};
 
     use super::*;
     use crate::strip::{AnimationsClock, Frame};
@@ -871,39 +870,72 @@ mod tests {
         strip
     }
 
+    fn output(name: &str) -> Output {
+        Output::new(
+            name.to_string(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        )
+    }
+
     proptest! {
         #[test]
-        fn desired_snapshot_mirrors_live_strips(
+        fn desired_snapshot_mirrors_sorted_live_outputs(
             a_len in 0usize..=5,
             b_len in 0usize..=5,
             a_active in 0usize..=5,
             b_active in 0usize..=5,
             a_live in any::<bool>(),
             b_live in any::<bool>(),
+            a_first in any::<bool>(),
         ) {
             let mut strips = HashMap::new();
             strips.insert(HEAD_A.to_string(), strip_with_ids(100, a_len, a_active));
             strips.insert(HEAD_B.to_string(), strip_with_ids(200, b_len, b_active));
 
-            let mut live = HashSet::new();
+            let mut outputs = Vec::new();
             if a_live {
-                live.insert(HEAD_A);
+                outputs.push(output(HEAD_A));
             }
             if b_live {
-                live.insert(HEAD_B);
+                outputs.push(output(HEAD_B));
+            }
+            if !a_first {
+                outputs.reverse();
             }
 
-            let snapshot = desired_workspace_snapshot(&strips, &live);
-            let mut expected_groups = live
+            let snapshot = desired_workspace_snapshot(&strips, &outputs);
+            let expected_groups = outputs
                 .iter()
-                .map(|name| (*name).to_string())
+                .map(Output::name)
                 .collect::<Vec<_>>();
-            expected_groups.sort();
-            prop_assert_eq!(snapshot.groups, expected_groups);
+            prop_assert_eq!(&snapshot.groups, &expected_groups);
             prop_assert_eq!(
                 snapshot.workspaces.len(),
                 if a_live { a_len } else { 0 } + if b_live { b_len } else { 0 },
             );
+
+            let protocol_order = desired_workspaces_in_protocol_order(&snapshot)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>();
+            let expected_workspace_order = outputs
+                .iter()
+                .flat_map(|output| {
+                    let (start, len) = match output.name().as_str() {
+                        HEAD_A => (100, a_len),
+                        HEAD_B => (200, b_len),
+                        _ => unreachable!(),
+                    };
+                    (0..len).map(move |idx| start + idx as u64)
+                })
+                .collect::<Vec<_>>();
+            prop_assert_eq!(protocol_order, expected_workspace_order);
 
             for (output, start, len, raw_active, live) in [
                 (HEAD_A, 100, a_len, a_active, a_live),
