@@ -152,6 +152,22 @@ pub(crate) fn map_output_for_config(ewm: &mut Ewm, output: &Output, position: Op
     }
 }
 
+pub(crate) fn apply_initial_output_config(
+    output: &Output,
+    mode: Mode,
+    config: Option<&OutputConfig>,
+) {
+    let transform = config
+        .and_then(|config| config.transform)
+        .unwrap_or(Transform::Normal);
+    let scale = config
+        .and_then(|config| config.scale)
+        .map(|scale| Scale::Fractional(closest_representable_scale(scale)));
+
+    output.change_current_state(Some(mode), Some(transform), scale, None);
+    output.set_preferred(mode);
+}
+
 pub(crate) fn apply_enabled_output_config(
     ewm: &mut Ewm,
     output_infos: &OutputInfos,

@@ -75,7 +75,7 @@ use smithay::{
             backend::GlobalId, protocol::wl_surface::WlSurface, Display, DisplayHandle,
         },
     },
-    utils::{DeviceFd, Scale, Transform},
+    utils::{DeviceFd, Scale},
     wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlobal},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -86,7 +86,7 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::wayland::presentation::Refresh;
 
 use crate::{
-    backend::{apply_enabled_output_config, Backend, OutputInfos},
+    backend::{apply_enabled_output_config, apply_initial_output_config, Backend, OutputInfos},
     cursor::CursorBuffer,
     input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
@@ -1677,21 +1677,7 @@ impl DrmBackendState {
         );
 
         let smithay_mode = Mode::from(mode);
-        let initial_transform = config
-            .as_ref()
-            .and_then(|c| c.transform)
-            .unwrap_or(Transform::Normal);
-        let initial_scale = config
-            .as_ref()
-            .and_then(|c| c.scale)
-            .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
-        output.change_current_state(
-            Some(smithay_mode),
-            Some(initial_transform),
-            initial_scale,
-            None,
-        );
-        output.set_preferred(smithay_mode);
+        apply_initial_output_config(&output, smithay_mode, config.as_ref());
         let global_id = output.create_global::<State>(display_handle);
         warn!(
             "Created wl_output global for {}: {:?}",
@@ -1853,14 +1839,6 @@ impl DrmBackendState {
             })
             .collect();
 
-        let applied_scale = super::closest_representable_scale(
-            config.as_ref().and_then(|c| c.scale).unwrap_or(1.0),
-        );
-        let applied_transform = config
-            .as_ref()
-            .and_then(|c| c.transform)
-            .unwrap_or(Transform::Normal);
-
         let output_info = OutputInfo {
             name: connector_name.clone(),
             make,
@@ -1870,8 +1848,8 @@ impl DrmBackendState {
             height_mm: physical_size.1 as i32,
             x: x_offset,
             y: y_offset,
-            scale: applied_scale,
-            transform: super::transform_to_int(applied_transform),
+            scale: output.current_scale().fractional_scale(),
+            transform: super::transform_to_int(output.current_transform()),
             modes: output_modes,
         };
 

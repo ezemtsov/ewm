@@ -15,10 +15,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::utils::Transform;
 use tracing::{debug, info};
 
-use crate::backend::{apply_enabled_output_config, OutputInfos};
+use crate::backend::{apply_enabled_output_config, apply_initial_output_config, OutputInfos};
 use crate::{Ewm, OutputState, RedrawState, State};
 
 /// A virtual output for headless testing.
@@ -81,17 +80,7 @@ impl HeadlessBackend {
         };
         // Look up stored config for this output
         let config = ewm.output_config.get(name).cloned();
-        let initial_transform = config
-            .as_ref()
-            .and_then(|c| c.transform)
-            .unwrap_or(Transform::Normal);
-        let initial_scale = config
-            .as_ref()
-            .and_then(|c| c.scale)
-            .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
-
-        output.change_current_state(Some(mode), Some(initial_transform), initial_scale, None);
-        output.set_preferred(mode);
+        apply_initial_output_config(&output, mode, config.as_ref());
 
         // Create global for Wayland clients
         output.create_global::<State>(&ewm.display_handle);

@@ -2,7 +2,7 @@
 //!
 //! These tests verify compositor behavior using the headless backend and test fixture.
 
-use ewm_core::backend::closest_representable_scale;
+use ewm_core::backend::{closest_representable_scale, int_to_transform, transform_to_int};
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::utils::output_size;
@@ -86,6 +86,48 @@ proptest! {
         cases: CASES,
         ..ProptestConfig::default()
     })]
+
+    #[test]
+    fn initial_output_config_matches_output_state_and_report(
+        width in 640i32..=3840,
+        height in 480i32..=2160,
+        scale_milli in 750i32..=3_000,
+        transform_idx in 0i32..=7,
+    ) {
+        let scale = f64::from(scale_milli) / 1_000.0;
+        let transform = int_to_transform(transform_idx);
+        let mut fixture = Fixture::new().expect("Failed to create fixture");
+
+        fixture.ewm().output_config.insert(
+            "Virtual-1".to_string(),
+            OutputConfig {
+                scale: Some(scale),
+                transform: Some(transform),
+                ..Default::default()
+            },
+        );
+        fixture.add_output("Virtual-1", width, height);
+
+        let output = fixture
+            .ewm_ref()
+            .space
+            .outputs()
+            .find(|o| o.name() == "Virtual-1")
+            .unwrap()
+            .clone();
+        let expected_scale = closest_representable_scale(scale);
+
+        prop_assert!((output.current_scale().fractional_scale() - expected_scale).abs() < 1e-10);
+        prop_assert_eq!(output.current_transform(), transform);
+
+        let info = fixture
+            .output_info_list()
+            .into_iter()
+            .find(|output| output.name == "Virtual-1")
+            .unwrap();
+        prop_assert!((info.scale - expected_scale).abs() < 1e-10);
+        prop_assert_eq!(info.transform, transform_to_int(transform));
+    }
 
     #[test]
     fn output_size_tracks_headless_output_bounds(
@@ -217,7 +259,8 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
         .space
         .outputs()
         .any(|output| output.name() == "Virtual-1"));
-    assert!(!fixture.ewm_ref().build_output_head_states()["Virtual-1"].enabled);
+    let output_infos = fixture.output_info_list();
+    assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
 
     fixture.ewm().output_management_state.output_heads_changed = false;
     fixture.ewm().output_config.insert(
@@ -240,7 +283,8 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
         .space
         .outputs()
         .any(|output| output.name() == "Virtual-1"));
-    let heads = fixture.ewm_ref().build_output_head_states();
+    let output_infos = fixture.output_info_list();
+    let heads = fixture.ewm_ref().build_output_head_states(&output_infos);
     let head = &heads["Virtual-1"];
     assert!(head.enabled);
     assert!(head.current_mode.is_some());
@@ -265,7 +309,8 @@ fn headless_output_respects_initial_disabled_config() {
         .space
         .outputs()
         .any(|output| output.name() == "Virtual-1"));
-    assert!(!fixture.ewm_ref().build_output_head_states()["Virtual-1"].enabled);
+    let output_infos = fixture.output_info_list();
+    assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
 }
 
 #[test]
