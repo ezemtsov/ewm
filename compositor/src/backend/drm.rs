@@ -86,7 +86,10 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::wayland::presentation::Refresh;
 
 use crate::{
-    backend::{apply_enabled_output_config, apply_initial_output_config, Backend, OutputInfos},
+    backend::{
+        apply_enabled_output_config, apply_initial_output_config, map_initial_output, Backend,
+        OutputInfos,
+    },
     cursor::CursorBuffer,
     input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
@@ -1732,12 +1735,6 @@ impl DrmBackendState {
 
         let refresh_interval = refresh_interval(mode);
 
-        // Calculate position: use config or auto horizontal layout
-        let (x_offset, y_offset) = config
-            .as_ref()
-            .and_then(|c| c.position)
-            .unwrap_or((ewm.output_size.w, 0));
-
         let vblank_throttle =
             VBlankThrottle::new(self.loop_handle.clone().unwrap(), connector_name.clone());
 
@@ -1802,19 +1799,13 @@ impl DrmBackendState {
         }
         ewm.output_state.insert(output.clone(), output_state);
 
-        // Check if output should be enabled (skip mapping if disabled)
-        let is_enabled = config.as_ref().map(|c| c.enabled).unwrap_or(true);
+        let (position, is_enabled) = map_initial_output(ewm, &output, config.as_ref());
         if is_enabled {
-            ewm.space.map_output(&output, (x_offset, y_offset));
-            // Notify Wayland clients (including xwayland-satellite) of the
-            // output position via wl_output.geometry. space.map_output only
-            // tracks position internally.
-            output.change_current_state(None, None, None, Some((x_offset, y_offset).into()));
             info!(
                 "Mapped output {} at position ({}, {}), size {}x{}",
                 connector_name,
-                x_offset,
-                y_offset,
+                position.x,
+                position.y,
                 mode.size().0,
                 mode.size().1
             );
@@ -1822,7 +1813,6 @@ impl DrmBackendState {
             info!("Output {} connected but disabled by config", connector_name);
         }
 
-        // Build OutputInfo and register via centralized lifecycle method
         let physical_size = connector.size().unwrap_or((0, 0));
         let output_modes: Vec<OutputMode> = connector
             .modes()
@@ -1846,8 +1836,8 @@ impl DrmBackendState {
             serial: serial_number,
             width_mm: physical_size.0 as i32,
             height_mm: physical_size.1 as i32,
-            x: x_offset,
-            y: y_offset,
+            x: position.x,
+            y: position.y,
             scale: output.current_scale().fractional_scale(),
             transform: super::transform_to_int(output.current_transform()),
             modes: output_modes,

@@ -17,7 +17,9 @@ use std::time::Duration;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use tracing::{debug, info};
 
-use crate::backend::{apply_enabled_output_config, apply_initial_output_config, OutputInfos};
+use crate::backend::{
+    apply_enabled_output_config, apply_initial_output_config, map_initial_output, OutputInfos,
+};
 use crate::{Ewm, OutputState, RedrawState, State};
 
 /// A virtual output for headless testing.
@@ -85,16 +87,7 @@ impl HeadlessBackend {
         // Create global for Wayland clients
         output.create_global::<State>(&ewm.display_handle);
 
-        // Calculate position: use config or auto horizontal layout
-        let (x_offset, y_offset) = config
-            .as_ref()
-            .and_then(|c| c.position)
-            .unwrap_or((ewm.output_size.w, 0));
-        let is_enabled = config.as_ref().map(|c| c.enabled).unwrap_or(true);
-        if is_enabled {
-            ewm.space.map_output(&output, (x_offset, y_offset));
-            output.change_current_state(None, None, None, Some((x_offset, y_offset).into()));
-        }
+        let (position, is_enabled) = map_initial_output(ewm, &output, config.as_ref());
 
         // Initialize output state in Ewm
         ewm.output_state.insert(
@@ -109,9 +102,6 @@ impl HeadlessBackend {
             },
         );
 
-        // Build OutputInfo and register via centralized lifecycle method
-        let current_scale = output.current_scale().fractional_scale();
-        let current_transform = output.current_transform();
         let output_info = crate::OutputInfo {
             name: name.to_string(),
             make: "EWM".to_string(),
@@ -119,10 +109,10 @@ impl HeadlessBackend {
             serial: String::new(),
             width_mm: width,
             height_mm: height,
-            x: x_offset,
-            y: y_offset,
-            scale: current_scale,
-            transform: crate::backend::transform_to_int(current_transform),
+            x: position.x,
+            y: position.y,
+            scale: output.current_scale().fractional_scale(),
+            transform: crate::backend::transform_to_int(output.current_transform()),
             modes: vec![crate::OutputMode {
                 width,
                 height,
@@ -138,7 +128,7 @@ impl HeadlessBackend {
         if is_enabled {
             info!(
                 "Added virtual output: {} ({}x{}) at ({}, {})",
-                name, width, height, x_offset, y_offset
+                name, width, height, position.x, position.y
             );
         } else {
             info!(

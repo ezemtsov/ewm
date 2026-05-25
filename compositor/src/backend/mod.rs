@@ -168,6 +168,25 @@ pub(crate) fn apply_initial_output_config(
     output.set_preferred(mode);
 }
 
+pub(crate) fn map_initial_output(
+    ewm: &mut Ewm,
+    output: &Output,
+    config: Option<&OutputConfig>,
+) -> (Point<i32, Logical>, bool) {
+    let position = config
+        .and_then(|config| config.position)
+        .map(Point::from)
+        .unwrap_or_else(|| Point::from((ewm.output_size.w, 0)));
+    let enabled = config.map(|config| config.enabled).unwrap_or(true);
+
+    if enabled {
+        ewm.space.map_output(output, position);
+        output.change_current_state(None, None, None, Some(position));
+    }
+
+    (position, enabled)
+}
+
 pub(crate) fn apply_enabled_output_config(
     ewm: &mut Ewm,
     output_infos: &OutputInfos,
