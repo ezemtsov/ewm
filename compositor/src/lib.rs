@@ -195,6 +195,14 @@ use crate::protocols::output_management::{OutputManagementHandler, OutputManagem
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
 
+fn surface_root(surface: &WlSurface) -> WlSurface {
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+    root
+}
+
 /// Redraw state machine for proper VBlank synchronization.
 ///
 /// Redraw state is owned by the compositor, not the backend.
@@ -5009,15 +5017,9 @@ impl Ewm {
     /// Handle layer shell surface commit.
     pub fn handle_layer_surface_commit(&mut self, surface: &WlSurface) -> bool {
         use smithay::backend::renderer::utils::with_renderer_surface_state;
-        use smithay::wayland::compositor::get_parent;
         use smithay::wayland::shell::wlr_layer::LayerSurfaceData;
 
-        // Find root surface
-        let mut root_surface = surface.clone();
-        while let Some(parent) = get_parent(&root_surface) {
-            root_surface = parent;
-        }
-
+        let root_surface = surface_root(surface);
         let Some((output, layer)) = self.layer_for_root(&root_surface) else {
             return false;
         };
@@ -5134,10 +5136,7 @@ impl CompositorHandler for State {
 
         // DnD icon surface: update offset from buffer delta and redraw.
         if let Some(icon) = &self.ewm.dnd_icon {
-            let mut root = surface.clone();
-            while let Some(parent) = get_parent(&root) {
-                root = parent;
-            }
+            let root = surface_root(surface);
             if icon.surface == root {
                 if surface == &icon.surface {
                     let dnd_icon = self.ewm.dnd_icon.as_mut().unwrap();
@@ -5190,11 +5189,7 @@ impl CompositorHandler for State {
             return;
         }
 
-        // Find the root surface (toplevel) for this surface
-        let mut root_surface = surface.clone();
-        while let Some(parent) = get_parent(&root_surface) {
-            root_surface = parent;
-        }
+        let root_surface = surface_root(surface);
 
         // 3. Find the window that owns this root surface
         if let Some(id) = self.ewm.surface_id(&root_surface) {
