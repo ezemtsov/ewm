@@ -5061,6 +5061,11 @@ impl Ewm {
                     self.unmapped_layer_surfaces.insert(surface.clone());
                 }
             } else {
+                let scale = output.current_scale();
+                let transform = output.current_transform();
+                smithay::wayland::compositor::with_states(surface, |data| {
+                    crate::utils::send_scale_transform(surface, data, scale, transform);
+                });
                 layer.layer_surface().send_configure();
             }
             drop(map);
@@ -5599,13 +5604,6 @@ impl WlrLayerShellHandler for State {
         let wl_surface = surface.wl_surface().clone();
         self.ewm.unmapped_layer_surfaces.insert(wl_surface.clone());
 
-        // Send fractional scale and transform for this output
-        let scale = output.current_scale();
-        let transform = output.current_transform();
-        smithay::wayland::compositor::with_states(&wl_surface, |data| {
-            crate::utils::send_scale_transform(&wl_surface, data, scale, transform);
-        });
-
         let mut map = layer_map_for_output(&output);
         map.map_layer(&LayerSurface::new(surface, namespace.clone()))
             .unwrap();
@@ -6016,7 +6014,7 @@ impl crate::protocols::gamma_control::GammaControlHandler for State {
 delegate_gamma_control!(State);
 
 // Fractional scale protocol (wp-fractional-scale-v1)
-// Scale is sent from lifecycle-specific handlers (handle_new_toplevel, new_layer_surface,
+// Scale is sent from lifecycle-specific handlers (handle_new_toplevel, handle_layer_surface_commit,
 // configure_lock_surface, apply_output_config) that know the correct output.
 impl FractionalScaleHandler for State {}
 delegate_fractional_scale!(State);
