@@ -340,6 +340,34 @@ fn disabling_focused_output_moves_focus_to_mapped_output() {
 }
 
 #[test]
+fn focusing_view_on_disabled_output_is_ignored() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.add_output("Virtual-2", 1280, 720);
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-1", vec![frame_with_entry(100, nz(1), 1)]);
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-2", vec![Frame::new(200)]);
+    fixture.ewm().set_focus_frame(200, "test", false);
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+
+    fixture.ewm().set_focus_view(nz(1), "test", false);
+
+    assert_eq!(fixture.ewm_ref().focused_surface_id(), 200);
+    assert_eq!(fixture.ewm_ref().focused_view_id, None);
+}
+
+#[test]
 fn disabling_and_reenabling_output_updates_surface_membership() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);

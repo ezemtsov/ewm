@@ -1584,11 +1584,11 @@ impl Ewm {
 
     /// Resolve an embedded view id to its strip location and owning frame.
     fn lookup_view(&self, view_id: ViewId) -> Option<ViewLocation> {
-        for (output, strip) in &self.output_strips {
+        for (output, strip) in self.mapped_output_strips() {
             for (idx, frame) in strip.frames.iter().enumerate() {
                 if let Some(entry) = frame.surfaces.iter().find(|e| e.view_id == view_id) {
                     return Some(ViewLocation {
-                        output: output.clone(),
+                        output: output.to_string(),
                         frame_idx: idx,
                         frame_surface_id: frame.surface_id,
                         surface_id: entry.surface_id,
@@ -7350,6 +7350,7 @@ mod tests {
     #[test]
     fn focused_title_update_is_immediate() {
         let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
         let view_id = nz(3001);
         let surface_id = 42;
 
