@@ -1677,9 +1677,8 @@ impl Ewm {
 
     /// Frame surface_id whose `view_id` matches.
     pub fn frame_with_view_id(&self, view_id: ViewId) -> Option<u64> {
-        self.output_strips
-            .values()
-            .flat_map(|s| s.frames.iter())
+        self.mapped_output_strips()
+            .flat_map(|(_, strip)| strip.frames.iter())
             .find(|f| f.view_id == view_id)
             .map(|f| f.surface_id)
     }

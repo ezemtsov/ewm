@@ -365,6 +365,7 @@ fn focusing_view_on_disabled_output_is_ignored() {
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), 200);
     assert_eq!(fixture.ewm_ref().focused_view_id, None);
+    assert_eq!(fixture.ewm_ref().frame_with_view_id(nz(1_100)), None);
 }
 
 #[test]
