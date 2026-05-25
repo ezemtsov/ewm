@@ -3462,18 +3462,22 @@ impl Ewm {
     /// primary scanout output matching. The `FRAME_CALLBACK_THROTTLE` (995ms)
     /// prevents busy-looping since it won't re-send if a callback was already
     /// sent recently through the normal path.
+    fn fallback_hidden_emacs_ids(&self) -> HashSet<u64> {
+        let visible: HashSet<u64> = self
+            .mapped_output_strips()
+            .filter_map(|(_, strip)| strip.active_frame().map(|frame| frame.surface_id))
+            .collect();
+        self.output_strips
+            .values()
+            .flat_map(|strip| strip.frames.iter().map(|frame| frame.surface_id))
+            .filter(|id| !visible.contains(id))
+            .collect()
+    }
+
     pub fn send_frame_callbacks_on_fallback_timer(&self) {
         // Off-screen emacs frames mustn't be woken; their pgtk client would
         // redisplay on the emacs main thread for nothing.
-        let mut hidden_emacs_ids: HashSet<u64> = HashSet::new();
-        for strip in self.output_strips.values() {
-            let active = strip.active_frame().map(|f| f.surface_id);
-            for f in &strip.frames {
-                if Some(f.surface_id) != active {
-                    hidden_emacs_ids.insert(f.surface_id);
-                }
-            }
-        }
+        let hidden_emacs_ids = self.fallback_hidden_emacs_ids();
 
         // Bogus output: the should_send closure returns None so the output
         // is never used for matching, but send_frame requires a reference.
@@ -7376,6 +7380,33 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], Event::Title { id, app, title }
                 if *id == surface_id && app == "app" && title == "focused"));
+    }
+
+    #[test]
+    fn fallback_frame_callbacks_hide_unmapped_output_frames() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.add_output(HEAD_B, 1600, 900);
+        fix.ewm()
+            .output_strips
+            .insert(HEAD_A.to_string(), strip_with_frame_ids(vec![100, 101], 0));
+        fix.ewm()
+            .output_strips
+            .insert(HEAD_B.to_string(), strip_with_frame_ids(vec![200], 0));
+
+        fix.ewm().output_config.insert(
+            HEAD_B.to_string(),
+            OutputConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        fix.apply_output_config(HEAD_B);
+
+        let hidden = fix.ewm_ref().fallback_hidden_emacs_ids();
+        assert!(!hidden.contains(&100));
+        assert!(hidden.contains(&101));
+        assert!(hidden.contains(&200));
     }
 
     #[test]
