@@ -172,6 +172,19 @@ fn to_frame(spec: &FrameSpec) -> Frame {
     }
 }
 
+fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
+    to_frame(&FrameSpec {
+        surface_id: frame_id,
+        frame_view_id: nz(200),
+        selected_view_id: Some(view_id),
+        entries: vec![EntrySpec {
+            surface_id,
+            view_id,
+            fullscreen: false,
+        }],
+    })
+}
+
 fn apply_op(fix: &mut Fixture, op: Op) {
     match op {
         Op::CreateEmacsFrame { output, surface_id } => {
@@ -553,17 +566,8 @@ proptest! {
         fix.add_output(OUTPUTS[0], 1920, 1080);
 
         let view_id = entry_view_id_for(100, entry_idx);
-        let frame = to_frame(&FrameSpec {
-            surface_id: 100,
-            frame_view_id: nz(200),
-            selected_view_id: Some(view_id),
-            entries: vec![EntrySpec {
-                surface_id,
-                view_id,
-                fullscreen: false,
-            }],
-        });
-        fix.ewm().apply_output_layout(OUTPUTS[0], vec![frame]);
+        fix.ewm()
+            .apply_output_layout(OUTPUTS[0], vec![frame_with_entry(100, view_id, surface_id)]);
         prop_assert!(fix
             .ewm_ref()
             .surface_outputs
@@ -590,6 +594,32 @@ proptest! {
         prop_assert_eq!(frame.surface_id, 100);
         prop_assert_eq!(frame.selected_view_id, None);
         prop_assert!(frame.surfaces.is_empty());
+    }
+
+    #[test]
+    fn layout_omission_keeps_frame_chrome_only(
+        surface_id in ENTRY_SID_RANGE,
+        entry_idx in 0usize..MAX_ENTRIES_PER_LAYOUT,
+    ) {
+        let mut fix = Fixture::new().unwrap();
+        fix.add_output(OUTPUTS[0], 1920, 1080);
+
+        let view_id = entry_view_id_for(100, entry_idx);
+        fix.ewm()
+            .apply_output_layout(OUTPUTS[0], vec![frame_with_entry(100, view_id, surface_id)]);
+
+        fix.ewm()
+            .apply_output_layout(OUTPUTS[0], vec![Frame::new(101)]);
+
+        let omitted = fix
+            .ewm_ref()
+            .output_strips
+            .get(OUTPUTS[0])
+            .and_then(|strip| strip.frames.iter().find(|frame| frame.surface_id == 100))
+            .unwrap();
+        prop_assert!(omitted.surfaces.is_empty());
+        prop_assert_eq!(omitted.selected_view_id, None);
+        prop_assert!(!fix.ewm_ref().surface_outputs.contains_key(&surface_id));
     }
 }
 

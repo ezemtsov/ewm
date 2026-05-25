@@ -2400,9 +2400,8 @@ impl Ewm {
         let snapshots = self.output_layout_snapshots(output_name, &migrations);
         self.remove_migrated_frames_from_sources(&migrations, &snapshots);
 
-        // Frames omitted by the layout are kept until Wayland destroy arrives.
-        // This makes compositor-eager-inserted frames survive layout refreshes
-        // that race ahead of Emacs's `ewm--assign-surface-to-frame`.
+        // Omitted frames keep their chrome until Wayland destroy arrives, but
+        // their layout entries are cleared by `merge_layout_frames`.
         let clock = self.animations_clock.clone();
         let strip_entry = self
             .output_strips

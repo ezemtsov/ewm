@@ -462,7 +462,9 @@ impl Strip {
     /// Merge a fresh Emacs layout into this strip.
     ///
     /// Existing frames are updated in place so their move animations survive.
-    /// Frames omitted by the layout are kept until their Wayland destroy arrives.
+    /// Frames omitted by the layout are kept until their Wayland destroy arrives,
+    /// but their layout entries are cleared because views belong to the latest
+    /// layout declaration.
     /// Pending active-close frames omitted by a racing layout refresh keep their
     /// old slot, so destroy-time refocus still uses the slot the user closed.
     pub fn merge_layout_frames(
@@ -493,6 +495,13 @@ impl Strip {
                 existing.move_anim = preserved_anim;
             } else {
                 self.frames.push(new_frame);
+            }
+        }
+
+        for frame in &mut self.frames {
+            if !order.contains_key(&frame.surface_id) {
+                frame.surfaces.clear();
+                frame.selected_view_id = None;
             }
         }
 
