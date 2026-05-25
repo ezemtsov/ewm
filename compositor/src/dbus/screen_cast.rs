@@ -266,11 +266,6 @@ impl Session {
         // Find the output
         let output = {
             let outputs = self.outputs.lock().unwrap();
-            let available: Vec<_> = outputs.iter().map(|o| o.name.clone()).collect();
-            info!(
-                "RecordMonitor: looking for '{}', available: {:?}",
-                connector, available
-            );
             outputs.iter().find(|o| o.name == connector).cloned()
         };
 
