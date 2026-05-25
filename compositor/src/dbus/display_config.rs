@@ -10,7 +10,7 @@ use serde::Serialize;
 use smithay::utils::{Physical, Size};
 use tracing::info;
 use zbus::blocking::Connection;
-use zbus::zvariant::{OwnedValue, Type, Value};
+use zbus::zvariant::{self, OwnedValue, Type};
 use zbus::{fdo, interface};
 
 use super::{OutputInfo, Start};
@@ -100,17 +100,9 @@ impl DisplayConfig {
                 .map(|mode| {
                     let refresh_rate = mode.refresh as f64 / 1000.0;
                     let mut properties = HashMap::new();
-                    properties.insert(
-                        "is-preferred".to_string(),
-                        OwnedValue::try_from(Value::Bool(mode.preferred))
-                            .expect("bool conversion is infallible"),
-                    );
+                    properties.insert("is-preferred".to_string(), OwnedValue::from(mode.preferred));
                     if mode.current {
-                        properties.insert(
-                            "is-current".to_string(),
-                            OwnedValue::try_from(Value::Bool(true))
-                                .expect("bool conversion is infallible"),
-                        );
+                        properties.insert("is-current".to_string(), OwnedValue::from(true));
                     }
 
                     Mode {
@@ -132,14 +124,9 @@ impl DisplayConfig {
             let mut properties = HashMap::new();
             properties.insert(
                 "display-name".to_string(),
-                OwnedValue::try_from(Value::Str(display_name.into()))
-                    .expect("string conversion is infallible"),
+                OwnedValue::from(zvariant::Str::from(display_name)),
             );
-            properties.insert(
-                "is-builtin".to_string(),
-                OwnedValue::try_from(Value::Bool(is_builtin))
-                    .expect("bool conversion is infallible"),
-            );
+            properties.insert("is-builtin".to_string(), OwnedValue::from(is_builtin));
 
             monitors.push(Monitor {
                 names: names.clone(),
@@ -160,13 +147,10 @@ impl DisplayConfig {
         }
 
         // Sort by connector name
-        monitors.sort_by(|a, b| a.names.0.cmp(&b.names.0));
-        logical_monitors.sort_by(|a, b| a.monitors[0].0.cmp(&b.monitors[0].0));
+        monitors.sort_unstable_by(|a, b| a.names.0.cmp(&b.names.0));
+        logical_monitors.sort_unstable_by(|a, b| a.monitors[0].0.cmp(&b.monitors[0].0));
 
-        let properties = HashMap::from([(
-            "layout-mode".to_string(),
-            OwnedValue::try_from(Value::U32(1)).expect("u32 conversion is infallible"),
-        )]);
+        let properties = HashMap::from([("layout-mode".to_string(), OwnedValue::from(1u32))]);
 
         Ok((0, monitors, logical_monitors, properties))
     }
@@ -310,12 +294,9 @@ mod tests {
 
         assert_eq!(
             monitors[0].properties["display-name"],
-            OwnedValue::try_from(Value::Str("Built-in display".into())).unwrap()
+            OwnedValue::from(zvariant::Str::from("Built-in display"))
         );
-        assert_eq!(
-            monitors[0].properties["is-builtin"],
-            OwnedValue::try_from(Value::Bool(true)).unwrap()
-        );
+        assert_eq!(monitors[0].properties["is-builtin"], OwnedValue::from(true));
     }
 
     #[test]
@@ -361,11 +342,11 @@ mod tests {
         assert_eq!(monitors[0].modes[1].preferred_scale, 1.25);
         assert_eq!(
             monitors[0].properties["display-name"],
-            OwnedValue::try_from(Value::Str("Dell U2720Q".into())).unwrap()
+            OwnedValue::from(zvariant::Str::from("Dell U2720Q"))
         );
         assert_eq!(
             monitors[0].modes[1].properties["is-current"],
-            OwnedValue::try_from(Value::Bool(true)).unwrap()
+            OwnedValue::from(true)
         );
         assert_eq!((logical_monitors[0].x, logical_monitors[0].y), (20, 30));
         assert_eq!(logical_monitors[0].scale, 1.25);
