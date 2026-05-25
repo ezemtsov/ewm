@@ -842,10 +842,9 @@ pub struct Ewm {
 
     // When true, intercept all keys and send to Emacs for text input
     pub text_input_intercept: bool,
-    // Deduplicate IM relay activate/deactivate events
-    pub text_input_active: bool,
-    // Commits queued during the client's disable->enable gap
-    pub pending_im_commits: Vec<String>,
+    // Deduplicates relay activate/deactivate events and holds commits queued
+    // during the client's disable->enable gap.
+    pub im_relay_state: im_relay::ImRelayState,
 
     // Popup manager for XDG popups
     pub popups: PopupManager,
@@ -1187,8 +1186,7 @@ impl Ewm {
             input_method_state,
             virtual_keyboard_state,
             text_input_intercept: false,
-            text_input_active: false,
-            pending_im_commits: Vec::new(),
+            im_relay_state: im_relay::ImRelayState::default(),
             popups: PopupManager::default(),
             dnd_icon: None,
             layer_shell_state,
@@ -3959,8 +3957,8 @@ impl Ewm {
     ///
     /// Emacs surfaces and None both clear text_input (leave + set_focus(None)),
     /// causing the client to disable. Commits that arrive during the resulting
-    /// disable->enable gap are queued in `pending_im_commits` and drained on
-    /// the next `ImEvent::Activated`.
+    /// disable->enable gap are queued in `im_relay_state` and drained on the
+    /// next `ImEvent::Activated` for the same surface.
     pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u64>) {
         use smithay::wayland::text_input::TextInputSeat;
         let text_input = self.seat.text_input();
@@ -3974,6 +3972,31 @@ impl Ewm {
             text_input.set_focus(Some(s.clone()));
             text_input.enter();
         }
+    }
+
+    fn active_text_input_surface_id(&self) -> Option<u64> {
+        use smithay::wayland::text_input::TextInputSeat;
+        let text_input = self.seat.text_input();
+        let mut active_surface_id = None;
+        text_input.with_active_text_input(|_, surface| {
+            active_surface_id = self.surface_id(surface);
+        });
+        active_surface_id
+    }
+
+    fn commit_active_text_input(&self, text: String) -> bool {
+        use smithay::wayland::text_input::TextInputSeat;
+        let text_input = self.seat.text_input();
+        let mut text = Some(text);
+        let mut delivered = false;
+        text_input.with_active_text_input(|ti, _surface| {
+            ti.commit_string(text.take());
+            delivered = true;
+        });
+        if delivered {
+            text_input.done(false);
+        }
+        delivered
     }
 
     /// Get surface ID from a WlSurface
@@ -4707,7 +4730,7 @@ impl Ewm {
             "emulated_keys": module::get_emulated_keys(),
             "emacs_pid": self.emacs_pid,
             "text_input_intercept": self.text_input_intercept,
-            "text_input_active": self.text_input_active,
+            "text_input_active": self.im_relay_state.is_active(),
             "xkb_layouts": &self.xkb_layout_names,
             "xkb_current_layout": self.xkb_current_layout,
             "next_surface_id": self.next_surface_id,
@@ -6649,19 +6672,21 @@ impl State {
                 self.apply_output_config_for(&name);
             }
             ModuleCommand::ImCommit { text, surface_id } => {
-                use smithay::wayland::text_input::TextInputSeat;
-                let text_input = self.ewm.seat.text_input();
-                let mut delivered = false;
-                text_input.with_active_text_input(|ti, _surface| {
-                    ti.commit_string(Some(text.clone()));
-                    delivered = true;
-                });
-                if delivered {
-                    text_input.done(false);
-                } else {
-                    // Client in disable->enable gap; drain on next Activated.
-                    debug!("ImCommit: queued (surface_id={surface_id})");
-                    self.ewm.pending_im_commits.push(text);
+                let active_surface_id = self.ewm.active_text_input_surface_id();
+                match self
+                    .ewm
+                    .im_relay_state
+                    .commit(active_surface_id, surface_id, text)
+                {
+                    im_relay::CommitResult::Deliver(text) => {
+                        self.ewm.commit_active_text_input(text);
+                    }
+                    im_relay::CommitResult::Queued => {
+                        debug!("ImCommit: queued (surface_id={surface_id})");
+                    }
+                    im_relay::CommitResult::DroppedStale => {
+                        debug!("ImCommit: dropped stale commit (surface_id={surface_id})");
+                    }
                 }
             }
             ModuleCommand::TextInputIntercept { enabled } => {
@@ -6903,28 +6928,23 @@ impl State {
         for event in events {
             match event {
                 im_relay::ImEvent::Activated => {
-                    if !self.ewm.text_input_active {
-                        self.ewm.text_input_active = true;
+                    if self.ewm.im_relay_state.activate() {
                         self.ewm.queue_event(Event::TextInputActivated);
                     }
 
                     // Drain commits queued during the disable->enable gap.
-                    if !self.ewm.pending_im_commits.is_empty() {
-                        use smithay::wayland::text_input::TextInputSeat;
-                        let text_input = self.ewm.seat.text_input();
-                        let text = self.ewm.pending_im_commits.join("");
-                        let count = self.ewm.pending_im_commits.len();
-                        self.ewm.pending_im_commits.clear();
-                        debug!("ImCommit: draining {count} queued commit(s)");
-                        text_input.with_active_text_input(|ti, _surface| {
-                            ti.commit_string(Some(text.clone()));
-                        });
-                        text_input.done(false);
+                    let active_surface_id = self.ewm.active_text_input_surface_id();
+                    if let Some(text) = self
+                        .ewm
+                        .im_relay_state
+                        .drain_pending_for_active_surface(active_surface_id)
+                    {
+                        debug!("ImCommit: draining queued commit(s)");
+                        self.ewm.commit_active_text_input(text);
                     }
                 }
                 im_relay::ImEvent::Deactivated => {
-                    if self.ewm.text_input_active {
-                        self.ewm.text_input_active = false;
+                    if self.ewm.im_relay_state.deactivate() {
                         self.ewm.queue_event(Event::TextInputDeactivated);
                     }
                 }

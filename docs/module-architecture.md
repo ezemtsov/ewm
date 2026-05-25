@@ -179,7 +179,7 @@ All `*-module` functions push to command queue:
 (ewm-screenshot-module &optional path)
 (ewm-configure-output-module name &key x y width height refresh enabled)
 (ewm-intercept-keys-module keys-vector)
-(ewm-im-commit-module text)
+(ewm-im-commit-module text surface-id)
 (ewm-configure-xkb-module layouts &optional options)
 (ewm-switch-layout-module layout-name)
 (ewm-get-layouts-module)

@@ -38,17 +38,11 @@ Called when a client's text field loses focus."
   "Commit TEXT to the client text field on SURFACE-ID."
   (ewm-im-commit-module text surface-id))
 
-(defvar ewm-text-input-method nil
-  "Input method to use for text input translation.
-When nil, uses `current-input-method' or `default-input-method'.")
-
 (defun ewm-text-input--translate-char (char &optional input-method)
   "Translate CHAR through INPUT-METHOD if provided.
-If INPUT-METHOD is nil, uses `ewm-text-input-method' or `current-input-method'.
+If INPUT-METHOD is nil, uses the current buffer's `current-input-method'.
 For quail-based input methods, looks up the translation directly."
-  (let ((im (or input-method
-                ewm-text-input-method
-                current-input-method)))
+  (let ((im (or input-method current-input-method)))
     (if (and im (fboundp 'quail-lookup-key))
         (let ((current-input-method im))
           (activate-input-method im)
@@ -111,14 +105,14 @@ client text fields gain/lose focus."
   "Handle key event from compositor.
 Called when text-input-intercept is enabled and a printable key is pressed."
   (let ((utf8 (alist-get 'utf8 event)))
-    (when utf8
-      (let* ((focused-id (ewm-get-focused-id))
-             (surface-buf (gethash focused-id ewm--surfaces))
-             (im (when surface-buf
-                   (buffer-local-value 'current-input-method surface-buf)))
-             (translated (ewm-text-input--translate-char (string-to-char utf8) im)))
-        (when (and focused-id (> focused-id 0))
-          (ewm-im-commit translated focused-id))))))
+    (when-let* ((focused-id (and utf8 (ewm-get-focused-id)))
+                ((> focused-id 0))
+                (surface-buf (gethash focused-id ewm--surfaces))
+                ((buffer-live-p surface-buf)))
+      (with-current-buffer surface-buf
+        (let ((translated (ewm-text-input--translate-char (string-to-char utf8))))
+          (when (stringp translated)
+            (ewm-im-commit translated focused-id)))))))
 
 (defun ewm-text-input--auto-enable ()
   "Enable text input mode when a client text field is activated."

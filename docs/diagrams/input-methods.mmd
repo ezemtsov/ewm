@@ -26,7 +26,7 @@ sequenceDiagram
         loop for each JSON line in ewm--event-filter
             E->>E: json-parse-string -> alist
             E->>E: Input method translation<br/>(per focused surface buffer)
-            E->>CQ: ewm-im-commit-module(text)
+            E->>CQ: ewm-im-commit-module(text, surface-id)
         end
         Note right of E: Process filter processes<br/>all complete lines; each key<br/>fully handled before next
     end

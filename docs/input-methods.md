@@ -111,7 +111,9 @@ Application                    Compositor                      Emacs
 Commits are applied directly on the compositor thread via `TextInputHandle`,
 avoiding cross-thread serial races. If the client is in a disable->enable gap
 (e.g., after focus returned from the minibuffer), commits are queued and
-drained on the next Activated event.
+drained on the next Activated event for the same surface. Lisp translates
+intercepted keys inside the focused surface buffer, so buffer-local input
+methods cannot leak between surfaces.
 
 ### Module Interface
 

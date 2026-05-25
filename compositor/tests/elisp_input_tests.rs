@@ -6,3 +6,8 @@ mod common;
 fn ewm_input_ert_suite() {
     common::run_ert_suite("ewm-input-tests.el");
 }
+
+#[test]
+fn ewm_text_input_ert_suite() {
+    common::run_ert_suite("ewm-text-input-tests.el");
+}
