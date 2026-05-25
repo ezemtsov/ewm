@@ -95,7 +95,7 @@ use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
@@ -717,6 +717,17 @@ pub struct DndIcon {
     pub offset: Point<i32, Logical>,
 }
 
+const TITLE_EVENT_IDLE_FLUSH_DELAY: Duration = Duration::from_millis(500);
+const TITLE_EVENT_MAX_STALE: Duration = Duration::from_millis(1000);
+
+// Coalesces compositor -> Lisp title notifications only. `surface_info`
+// remains exact and is updated before anything reaches this queue.
+struct PendingTitleEvent {
+    app: String,
+    title: String,
+    queued_at: Instant,
+}
+
 pub struct Ewm {
     pub stop_signal: Option<LoopSignal>,
     pub space: Space<Window>,
@@ -743,6 +754,9 @@ pub struct Ewm {
     pub window_ids: HashMap<Window, u64>,
     pub id_windows: HashMap<u64, Window>,
     surface_info: HashMap<u64, SurfaceInfo>,
+    pending_title_events: HashMap<u64, PendingTitleEvent>,
+    title_flush_timer_token: Option<RegistrationToken>,
+    last_emacs_keyboard_activity: Instant,
     /// Per-output strip state from Emacs: surfaces nest inside frames inside the strip.
     /// This is the single source of truth for what's visible on each output.
     pub output_strips: HashMap<String, strip::Strip>,
@@ -1140,6 +1154,9 @@ impl Ewm {
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
             surface_info: HashMap::new(),
+            pending_title_events: HashMap::new(),
+            title_flush_timer_token: None,
+            last_emacs_keyboard_activity: Instant::now(),
             output_strips: HashMap::new(),
             animations_clock: strip::AnimationsClock::default(),
             surface_outputs: HashMap::new(),
@@ -1681,6 +1698,7 @@ impl Ewm {
         notify_emacs: bool,
     ) {
         module::record_focus(location.surface_id, source, None);
+        self.flush_pending_title_event(location.surface_id);
         self.set_focus_state(location.frame_surface_id, Some(view_id));
         self.activate_frame(&location.output, location.frame_idx);
         if notify_emacs {
@@ -1702,6 +1720,12 @@ impl Ewm {
         let frame_view_id = location.frame.view_id;
         let selected_view_id = location.frame.selected_view_id;
         module::record_focus(frame_surface_id, source, None);
+        if let Some(surface_id) = selected_view_id.and_then(|view_id| {
+            self.lookup_view(view_id)
+                .map(|location| location.surface_id)
+        }) {
+            self.flush_pending_title_event(surface_id);
+        }
         self.set_focus_state(frame_surface_id, selected_view_id);
         self.activate_frame(&output, idx);
         if notify_emacs {
@@ -3782,6 +3806,126 @@ impl Ewm {
         module::write_event(&event);
     }
 
+    pub(crate) fn record_emacs_keyboard_activity(&mut self) {
+        self.last_emacs_keyboard_activity = Instant::now();
+    }
+
+    fn queue_title_update(
+        &mut self,
+        id: u64,
+        app: String,
+        title: String,
+        first_title: bool,
+        app_changed: bool,
+    ) {
+        if self.is_emacs_frame(id) {
+            self.discard_pending_title_event(id);
+            return;
+        }
+
+        if first_title || app_changed || self.focused_surface_id() == id {
+            self.discard_pending_title_event(id);
+            self.queue_event(Event::Title { id, app, title });
+            return;
+        }
+
+        self.pending_title_events
+            .entry(id)
+            .and_modify(|pending| {
+                pending.app = app.clone();
+                pending.title = title.clone();
+            })
+            .or_insert_with(|| PendingTitleEvent {
+                app,
+                title,
+                queued_at: Instant::now(),
+            });
+        self.ensure_title_flush_timer(TITLE_EVENT_IDLE_FLUSH_DELAY);
+    }
+
+    fn ensure_title_flush_timer(&mut self, duration: Duration) {
+        if self.title_flush_timer_token.is_some() {
+            return;
+        }
+
+        match self
+            .loop_handle
+            .insert_source(Timer::from_duration(duration), |_, _, state| {
+                state.ewm.on_title_flush_timer();
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            }) {
+            Ok(token) => self.title_flush_timer_token = Some(token),
+            Err(err) => warn!("Failed to insert title flush timer: {:?}", err),
+        }
+    }
+
+    fn cancel_title_flush_timer(&mut self) {
+        if let Some(token) = self.title_flush_timer_token.take() {
+            self.loop_handle.remove(token);
+        }
+    }
+
+    fn discard_pending_title_event(&mut self, id: u64) {
+        self.pending_title_events.remove(&id);
+        if self.pending_title_events.is_empty() {
+            self.cancel_title_flush_timer();
+        }
+    }
+
+    fn flush_pending_title_event(&mut self, id: u64) {
+        if let Some(pending) = self.pending_title_events.remove(&id) {
+            self.queue_event(Event::Title {
+                id,
+                app: pending.app,
+                title: pending.title,
+            });
+        }
+        if self.pending_title_events.is_empty() {
+            self.cancel_title_flush_timer();
+        }
+    }
+
+    fn flush_pending_title_events(&mut self) {
+        self.cancel_title_flush_timer();
+
+        let mut pending = self.pending_title_events.drain().collect::<Vec<_>>();
+        pending.sort_by_key(|(id, _)| *id);
+        for (id, pending) in pending {
+            self.queue_event(Event::Title {
+                id,
+                app: pending.app,
+                title: pending.title,
+            });
+        }
+    }
+
+    fn on_title_flush_timer(&mut self) {
+        self.title_flush_timer_token = None;
+
+        let Some(oldest) = self
+            .pending_title_events
+            .values()
+            .map(|pending| pending.queued_at)
+            .min()
+        else {
+            return;
+        };
+
+        if self.is_focus_on_emacs() {
+            let idle_elapsed = self.last_emacs_keyboard_activity.elapsed();
+            let stale_elapsed = oldest.elapsed();
+            if idle_elapsed < TITLE_EVENT_IDLE_FLUSH_DELAY && stale_elapsed < TITLE_EVENT_MAX_STALE
+            {
+                let idle_remaining = TITLE_EVENT_IDLE_FLUSH_DELAY - idle_elapsed;
+                let stale_remaining = TITLE_EVENT_MAX_STALE - stale_elapsed;
+                self.ensure_title_flush_timer(idle_remaining.min(stale_remaining));
+                return;
+            }
+        }
+
+        self.flush_pending_title_events();
+    }
+
     /// Emit FrameShown/FrameHidden when an output's strip-active changes.
     /// Caller snapshots `prev_active_id` before the mutation; the helper
     /// compares against the post-mutation state.  No stored state.
@@ -4896,6 +5040,7 @@ impl Ewm {
         if let Some(window) = self.id_windows.remove(&id) {
             self.window_ids.remove(&window);
         }
+        self.flush_pending_title_event(id);
         self.surface_info.remove(&id);
         let was_emacs = self.is_emacs_frame(id);
         self.remove_surface_from_layouts(id);
@@ -4987,6 +5132,8 @@ impl Ewm {
             Some(info) => info.app_id != app_id || info.title != title,
             None => true,
         };
+        let first_title = !title.is_empty() && cached.is_none_or(|info| info.title.is_empty());
+        let app_changed = cached.is_some_and(|info| info.app_id != app_id);
 
         if changed && (!app_id.is_empty() || !title.is_empty()) {
             if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
@@ -5002,14 +5149,7 @@ impl Ewm {
                     title: title.clone(),
                 },
             );
-            // Skip Title event for Emacs surfaces; Emacs already knows its own titles
-            if !self.is_emacs_frame(id) {
-                self.queue_event(Event::Title {
-                    id,
-                    app: app_id,
-                    title,
-                });
-            }
+            self.queue_title_update(id, app_id, title, first_title, app_changed);
         }
     }
 
@@ -7170,6 +7310,71 @@ mod tests {
         assert!(matches!(&events[2], Event::UnfullscreenRequest { id } if *id == surface_id));
         assert!(matches!(&events[3], Event::MaximizeRequest { id } if *id == surface_id));
         assert!(matches!(&events[4], Event::UnmaximizeRequest { id } if *id == surface_id));
+    }
+
+    #[test]
+    fn background_title_updates_coalesce_to_latest() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.enable_event_capture();
+
+        fix.ewm()
+            .queue_title_update(42, "app".to_string(), "one".to_string(), false, false);
+        fix.ewm()
+            .queue_title_update(42, "app".to_string(), "two".to_string(), false, false);
+
+        assert!(fix.drain_events().is_empty());
+
+        fix.ewm().flush_pending_title_events();
+        let events = fix.drain_events();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Title { id, app, title }
+                if *id == 42 && app == "app" && title == "two"));
+    }
+
+    #[test]
+    fn focused_title_update_is_immediate() {
+        let mut fix = testing::Fixture::new().unwrap();
+        let view_id = nz(3001);
+        let surface_id = 42;
+
+        let mut strip = strip::Strip::new(strip::AnimationsClock::default());
+        strip
+            .frames
+            .push(frame_with_entry(100, view_id, surface_id));
+        fix.ewm().output_strips.insert(HEAD_A.to_string(), strip);
+        fix.ewm().focused_frame_id = 100;
+        fix.ewm().focused_view_id = Some(view_id);
+        fix.enable_event_capture();
+
+        fix.ewm().queue_title_update(
+            surface_id,
+            "app".to_string(),
+            "focused".to_string(),
+            false,
+            false,
+        );
+
+        let events = fix.drain_events();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Title { id, app, title }
+                if *id == surface_id && app == "app" && title == "focused"));
+    }
+
+    #[test]
+    fn close_flushes_pending_title_before_close_event() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.enable_event_capture();
+
+        fix.ewm()
+            .queue_title_update(42, "app".to_string(), "final".to_string(), false, false);
+        assert!(fix.drain_events().is_empty());
+
+        fix.ewm().handle_toplevel_destroyed_by_id(42);
+        let events = fix.drain_events();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Title { id, app, title }
+                if *id == 42 && app == "app" && title == "final"));
+        assert!(matches!(&events[1], Event::Close { id } if *id == 42));
     }
 
     #[test]

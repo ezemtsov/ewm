@@ -228,6 +228,9 @@ pub fn handle_keyboard_event(
 
     // Computed after fullscreen restore so it reflects the corrected focus state
     let focus_on_emacs = state.ewm.is_focus_on_emacs();
+    if is_press && focus_on_emacs {
+        state.ewm.record_emacs_keyboard_activity();
+    }
 
     // During a prefix sequence (C-x ...), Emacs needs Latin keysyms for
     // keybinding dispatch. Temporarily set base layout for this key event,
