@@ -408,6 +408,42 @@ fn disabling_output_reassigns_primary_entry_to_mapped_view() {
 }
 
 #[test]
+fn output_scale_change_reassigns_fullscreen_primary_entry() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1000, 1000);
+    fixture.add_output("Virtual-2", 1000, 1000);
+
+    let surface_id = 1;
+    let mut first = frame_with_entry(100, nz(1), surface_id);
+    first.surfaces[0].fullscreen = true;
+    let mut second = frame_with_entry(200, nz(2), surface_id);
+    second.surfaces[0].fullscreen = true;
+    fixture.ewm().apply_output_layout("Virtual-1", vec![first]);
+    fixture.ewm().apply_output_layout("Virtual-2", vec![second]);
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            scale: Some(2.0),
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+
+    let primary_output = fixture
+        .ewm_ref()
+        .output_strips
+        .iter()
+        .find_map(|(name, strip)| {
+            strip
+                .surfaces()
+                .any(|entry| entry.surface_id == surface_id && entry.primary)
+                .then_some(name.as_str())
+        });
+    assert_eq!(primary_output, Some("Virtual-2"));
+}
+
+#[test]
 fn disabling_and_reenabling_output_updates_surface_membership() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);

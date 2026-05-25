@@ -4486,6 +4486,7 @@ impl Ewm {
             // even when the working area (relative to the output) didn't.
             self.update_frames_for_working_area(output);
         }
+        self.refresh_primary_assignments();
         self.queue_redraw_all();
 
         // Notify Emacs of the applied config
