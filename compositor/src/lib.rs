@@ -4571,22 +4571,27 @@ impl Ewm {
         })
     }
 
-    /// Find the output for a popup's root surface (window or layer surface).
-    pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
-        let root = find_popup_root_surface(popup).ok()?;
+    fn layer_output_for_root(&self, root: &WlSurface) -> Option<&Output> {
+        self.space.outputs().find(|output| {
+            layer_map_for_output(output)
+                .layer_for_surface(root, WindowSurfaceType::TOPLEVEL)
+                .is_some()
+        })
+    }
 
-        // Check windows (layout surfaces + Emacs frames)
-        if let Some(id) = self.surface_id(&root) {
+    fn output_for_root(&self, root: &WlSurface) -> Option<&Output> {
+        if let Some(id) = self.surface_id(root) {
             let output_name = self.surface_output_name(id)?;
             return self.mapped_output_by_name(output_name);
         }
 
-        // Check layer surfaces
-        self.space.outputs().find(|o| {
-            layer_map_for_output(o)
-                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
-                .is_some()
-        })
+        self.layer_output_for_root(root)
+    }
+
+    /// Find the output for a popup's root surface (window or layer surface).
+    pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
+        let root = find_popup_root_surface(popup).ok()?;
+        self.output_for_root(&root)
     }
 
     /// Compute the available rectangle for a popup in geometry-local coordinates.
@@ -5015,18 +5020,7 @@ impl Ewm {
             root_surface = parent;
         }
 
-        // Find which output has this layer surface
-        let output = self
-            .space
-            .outputs()
-            .find(|o| {
-                let map = layer_map_for_output(o);
-                map.layer_for_surface(&root_surface, WindowSurfaceType::TOPLEVEL)
-                    .is_some()
-            })
-            .cloned();
-
-        let Some(output) = output else {
+        let Some(output) = self.layer_output_for_root(&root_surface).cloned() else {
             return false;
         };
 
