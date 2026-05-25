@@ -4191,21 +4191,27 @@ impl Ewm {
         self.output_size = Size::from((total_width, total_height));
     }
 
+    fn active_outputs_snapshot(&self) -> Vec<module::ActiveOutput> {
+        self.sorted_outputs
+            .iter()
+            .filter_map(|output| {
+                let geo = self.space.output_geometry(output)?;
+                let wa = self.working_areas.get(&output.name());
+                let x = geo.loc.x + wa.map_or(0, |r| r.loc.x);
+                let y = geo.loc.y + wa.map_or(0, |r| r.loc.y);
+                Some(module::ActiveOutput {
+                    name: output.name(),
+                    origin: (x, y),
+                })
+            })
+            .collect()
+    }
+
     /// Immediately sync active_outputs into shared state so that Emacs sees
     /// up-to-date output lists when it handles events queued after this call.
     pub fn flush_active_outputs(&mut self) {
         let mut shared = module::shared_state().lock().unwrap();
-        shared.active_outputs = self
-            .space
-            .outputs()
-            .filter_map(|o| {
-                let geo = self.space.output_geometry(o)?;
-                let wa = self.working_areas.get(&o.name());
-                let x = geo.loc.x + wa.map_or(0, |r| r.loc.x);
-                let y = geo.loc.y + wa.map_or(0, |r| r.loc.y);
-                Some((o.name(), module::ActiveOutput { origin: (x, y) }))
-            })
-            .collect();
+        shared.active_outputs = self.active_outputs_snapshot();
         self.active_outputs_dirty = false;
     }
 
@@ -6945,6 +6951,17 @@ mod tests {
                     .output_at(Point::from((-10_000.0, -10_000.0)))
                     .map(|output| output.name()),
                 Some(PROP_HEADS[order[0]].to_string())
+            );
+            prop_assert_eq!(
+                fix.ewm_ref()
+                    .active_outputs_snapshot()
+                    .into_iter()
+                    .map(|output| output.name)
+                    .collect::<Vec<_>>(),
+                order
+                    .iter()
+                    .map(|idx| PROP_HEADS[*idx].to_string())
+                    .collect::<Vec<_>>()
             );
 
             for (idx, name) in PROP_HEADS.iter().enumerate() {

@@ -102,7 +102,7 @@ define_errors! {
     ewm_input_unknown_key  "Unknown input config key"            (ewm_input_error)
 }
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
@@ -145,6 +145,7 @@ fn parse_optional_input_enum<T>(
 /// Only contains fields that Emacs reads synchronously via per-field defuns.
 #[derive(Default)]
 pub struct ActiveOutput {
+    pub name: String,
     pub origin: (i32, i32),
 }
 
@@ -153,7 +154,7 @@ pub struct SharedState {
     pub focused_surface_id: u64,
     pub focused_frame_id: u64,
     pub pointer_location: (f64, f64),
-    pub active_outputs: HashMap<String, ActiveOutput>,
+    pub active_outputs: Vec<ActiveOutput>,
 }
 
 static SHARED_STATE: OnceLock<Mutex<SharedState>> = OnceLock::new();
@@ -275,8 +276,8 @@ fn get_focused_frame_id() -> Result<i64> {
 fn get_active_outputs<'a>(env: &'a Env) -> Result<Value<'a>> {
     let state = shared_state().lock().unwrap();
     let mut result: Value<'a> = ().into_lisp(env)?;
-    for name in state.active_outputs.keys() {
-        result = env.cons(name.as_str(), result)?;
+    for output in state.active_outputs.iter().rev() {
+        result = env.cons(output.name.as_str(), result)?;
     }
     Ok(result)
 }
@@ -286,7 +287,11 @@ fn get_active_outputs<'a>(env: &'a Env) -> Result<Value<'a>> {
 #[defun]
 fn get_output_origin<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
     let state = shared_state().lock().unwrap();
-    match state.active_outputs.get(&name) {
+    match state
+        .active_outputs
+        .iter()
+        .find(|output| output.name == name)
+    {
         Some(output) => env.cons(output.origin.0 as i64, output.origin.1 as i64),
         None => ().into_lisp(env),
     }
