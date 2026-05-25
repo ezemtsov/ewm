@@ -18,7 +18,7 @@ use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::Transform;
 use tracing::{debug, info};
 
-use crate::backend::OutputInfos;
+use crate::backend::{apply_enabled_output_config, OutputInfos};
 use crate::{Ewm, OutputState, RedrawState, State};
 
 /// A virtual output for headless testing.
@@ -214,25 +214,6 @@ impl HeadlessBackend {
             return;
         }
 
-        // Build final state and apply in one call (no mode changes for headless)
-        let scale = config
-            .scale
-            .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
-        let transform = config.transform;
-        let position = config.position.map(|(x, y)| (x, y).into());
-
-        output.change_current_state(None, transform, scale, position);
-
-        super::map_output_for_config(ewm, &output, config.position);
-        self.output_infos.update_from_output(
-            &output,
-            ewm.space
-                .output_geometry(&output)
-                .map(|geo| geo.loc)
-                .unwrap_or_default(),
-        );
-
-        // Update all backend-agnostic bookkeeping
-        ewm.output_config_changed(&output);
+        apply_enabled_output_config(ewm, &self.output_infos, &output, &config, None);
     }
 }

@@ -86,7 +86,7 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::wayland::presentation::Refresh;
 
 use crate::{
-    backend::{Backend, OutputInfos},
+    backend::{apply_enabled_output_config, Backend, OutputInfos},
     cursor::CursorBuffer,
     input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
@@ -918,8 +918,8 @@ impl DrmBackendState {
     /// Apply output configuration for a live output.
     ///
     /// Resolves the final state for mode, scale, transform, and position,
-    /// then applies everything in one pass. Updates all bookkeeping:
-    /// OutputInfo, D-Bus outputs, refresh interval, working areas.
+    /// then applies everything in one pass. Updates reporting metadata,
+    /// refresh interval, working areas.
     pub fn apply_output_config(&mut self, ewm: &mut Ewm, output_name: &str) {
         let config = match ewm.output_config.get(output_name) {
             Some(c) => c.clone(),
@@ -987,27 +987,8 @@ impl DrmBackendState {
             }
         }
 
-        // Build final Smithay state and apply in one call
         let smithay_mode = new_drm_mode.map(Mode::from);
-        let scale = config
-            .scale
-            .map(|s| smithay::output::Scale::Fractional(super::closest_representable_scale(s)));
-        let transform = config.transform;
-        let position = config.position.map(|(x, y)| (x, y).into());
-
-        output.change_current_state(smithay_mode, transform, scale, position);
-        if let Some(mode) = smithay_mode {
-            output.set_preferred(mode);
-        }
-
-        super::map_output_for_config(ewm, &output, config.position);
-        self.output_infos.update_from_output(
-            &output,
-            ewm.space
-                .output_geometry(&output)
-                .map(|geo| geo.loc)
-                .unwrap_or_default(),
-        );
+        apply_enabled_output_config(ewm, &self.output_infos, &output, &config, smithay_mode);
 
         // Update frame clock refresh interval
         if let Some(drm_mode) = new_drm_mode {
@@ -1016,9 +997,6 @@ impl DrmBackendState {
                     crate::frame_clock::FrameClock::new(Some(refresh_interval(drm_mode)));
             }
         }
-
-        // Update all backend-agnostic bookkeeping
-        ewm.output_config_changed(&output);
 
         info!(
             "Applied config for {}: mode={:?}, scale={:?}, transform={:?}, pos={:?}",

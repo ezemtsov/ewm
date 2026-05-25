@@ -26,11 +26,11 @@ use std::time::Duration;
 
 pub use drm::DrmBackendState;
 pub use headless::HeadlessBackend;
-use smithay::output::{Mode, Output};
+use smithay::output::{Mode, Output, Scale};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Transform};
 
-use crate::{Ewm, OutputInfo, OutputMode};
+use crate::{Ewm, OutputConfig, OutputInfo, OutputMode};
 
 /// Backend-owned output metadata for reporting protocols and Emacs events.
 #[derive(Clone, Default)]
@@ -150,6 +150,34 @@ pub(crate) fn map_output_for_config(ewm: &mut Ewm, output: &Output, position: Op
         output.change_current_state(None, None, None, Some(position));
         ewm.reconcile_mapped_output_entries(output);
     }
+}
+
+pub(crate) fn apply_enabled_output_config(
+    ewm: &mut Ewm,
+    output_infos: &OutputInfos,
+    output: &Output,
+    config: &OutputConfig,
+    mode: Option<Mode>,
+) {
+    let scale = config
+        .scale
+        .map(|s| Scale::Fractional(closest_representable_scale(s)));
+    let position = config.position.map(Point::from);
+
+    output.change_current_state(mode, config.transform, scale, position);
+    if let Some(mode) = mode {
+        output.set_preferred(mode);
+    }
+
+    map_output_for_config(ewm, output, config.position);
+    output_infos.update_from_output(
+        output,
+        ewm.space
+            .output_geometry(output)
+            .map(|geo| geo.loc)
+            .unwrap_or_default(),
+    );
+    ewm.output_config_changed(output);
 }
 
 /// Result of a backend render operation.
