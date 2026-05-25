@@ -1800,11 +1800,7 @@ impl Ewm {
             self.queue_redraw_all();
             return;
         }
-        let output = self
-            .space
-            .outputs()
-            .find(|o| o.name() == output_name)
-            .cloned();
+        let output = self.find_mapped_output(output_name);
         if let Some(output) = output {
             self.queue_redraw(&output);
         }
@@ -1817,10 +1813,7 @@ impl Ewm {
         surface_id: u64,
     ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
         let location = self.frame_location(surface_id)?;
-        let output = self
-            .space
-            .outputs()
-            .find(|o| o.name() == location.output_name)?;
+        let output = self.mapped_output_by_name(location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
 
@@ -1949,10 +1942,7 @@ impl Ewm {
     }
 
     fn entry_origin(&self, location: LayoutEntryLocation<'_>) -> Option<Point<i32, Logical>> {
-        let output = self
-            .space
-            .outputs()
-            .find(|o| o.name() == location.output_name)?;
+        let output = self.mapped_output_by_name(location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
         let strip = self.output_strips.get(location.output_name)?;
@@ -4103,12 +4093,14 @@ impl Ewm {
             .or_else(|| self.first_output().map(|o| o.name()))
     }
 
-    /// Find a mapped output by name in this `Space`.
+    /// Find a mapped output by name.
     fn mapped_output_by_name(&self, name: &str) -> Option<&Output> {
-        self.space.outputs().find(|o| o.name() == name)
+        self.sorted_outputs
+            .iter()
+            .find(|output| output.name() == name)
     }
 
-    /// Find a mapped output by name in this `Space`.
+    /// Find a mapped output by name.
     pub(crate) fn find_mapped_output(&self, name: &str) -> Option<Output> {
         self.mapped_output_by_name(name).cloned()
     }
@@ -6283,12 +6275,7 @@ impl State {
     /// stays center after a scale change).
     fn apply_output_config_for(&mut self, output_name: &str) {
         let pos: Point<f64, Logical> = self.ewm.pointer_location().into();
-        let output = self
-            .ewm
-            .space
-            .outputs()
-            .find(|o| o.name() == output_name)
-            .cloned();
+        let output = self.ewm.find_mapped_output(output_name);
         let old_geo = output
             .as_ref()
             .and_then(|o| self.ewm.space.output_geometry(o));
@@ -6508,29 +6495,27 @@ impl State {
                 transform,
                 enabled,
             } => {
+                let current_output = self.ewm.find_mapped_output(&name);
+                let current_mode = current_output
+                    .as_ref()
+                    .and_then(|output| output.current_mode());
+                let current_pos = current_output
+                    .as_ref()
+                    .and_then(|output| self.ewm.space.output_geometry(output))
+                    .map(|geo| (geo.loc.x, geo.loc.y))
+                    .unwrap_or((0, 0));
+
                 // Update stored config (merge with existing)
                 let config = self.ewm.output_config.entry(name.clone()).or_default();
                 if width.is_some() || height.is_some() || refresh.is_some() {
                     // Fall back to current mode for unspecified parameters
-                    let current = self
-                        .ewm
-                        .space
-                        .outputs()
-                        .find(|o| o.name() == name)
-                        .and_then(|o| o.current_mode());
-                    let w = width.unwrap_or_else(|| current.map(|m| m.size.w).unwrap_or(1920));
-                    let h = height.unwrap_or_else(|| current.map(|m| m.size.h).unwrap_or(1080));
+                    let w = width
+                        .unwrap_or_else(|| current_mode.map(|mode| mode.size.w).unwrap_or(1920));
+                    let h = height
+                        .unwrap_or_else(|| current_mode.map(|mode| mode.size.h).unwrap_or(1080));
                     config.mode = Some((w, h, refresh));
                 }
                 if x.is_some() || y.is_some() {
-                    let current_pos = self
-                        .ewm
-                        .space
-                        .outputs()
-                        .find(|o| o.name() == name)
-                        .and_then(|o| self.ewm.space.output_geometry(o))
-                        .map(|g| (g.loc.x, g.loc.y))
-                        .unwrap_or((0, 0));
                     config.position =
                         Some((x.unwrap_or(current_pos.0), y.unwrap_or(current_pos.1)));
                 }
