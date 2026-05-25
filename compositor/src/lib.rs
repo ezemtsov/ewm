@@ -2148,8 +2148,8 @@ impl Ewm {
 
     /// Check if a surface is currently displaying as fullscreen on any output.
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
-        self.output_strips
-            .values()
+        self.mapped_output_strips()
+            .map(|(_, strip)| strip)
             .any(|strip| strip.surfaces().any(|e| e.surface_id == id && e.fullscreen))
     }
 

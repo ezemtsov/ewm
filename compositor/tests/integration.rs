@@ -344,9 +344,11 @@ fn focusing_view_on_disabled_output_is_ignored() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
+    let mut disabled_frame = frame_with_entry(100, nz(1), 1);
+    disabled_frame.surfaces[0].fullscreen = true;
     fixture
         .ewm()
-        .apply_output_layout("Virtual-1", vec![frame_with_entry(100, nz(1), 1)]);
+        .apply_output_layout("Virtual-1", vec![disabled_frame]);
     fixture
         .ewm()
         .apply_output_layout("Virtual-2", vec![Frame::new(200)]);
@@ -361,6 +363,7 @@ fn focusing_view_on_disabled_output_is_ignored() {
     );
     fixture.apply_output_config("Virtual-1");
 
+    assert!(!fixture.ewm_ref().is_surface_fullscreen(1));
     fixture.ewm().set_focus_view(nz(1), "test", false);
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), 200);
