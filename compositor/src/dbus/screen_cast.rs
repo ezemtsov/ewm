@@ -11,7 +11,7 @@ use smithay::reexports::calloop::channel::Sender;
 use tracing::{debug, info, warn};
 use zbus::blocking::Connection;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
-use zbus::zvariant::{DeserializeDict, OwnedObjectPath, Type, Value};
+use zbus::zvariant::{DeserializeDict, OwnedObjectPath, SerializeDict, Type, Value};
 use zbus::{fdo, interface, ObjectServer};
 
 use super::{current_output_mode, OutputInfo, Start};
@@ -71,6 +71,13 @@ struct RecordWindowProperties {
     cursor_mode: Option<CursorMode>,
     #[zvariant(rename = "is-recording")]
     _is_recording: Option<bool>,
+}
+
+#[derive(Debug, SerializeDict, Type, Value)]
+#[zvariant(signature = "dict")]
+struct StreamParameters {
+    position: (i32, i32),
+    size: (i32, i32),
 }
 
 fn validate_create_session_properties(properties: &HashMap<&str, Value<'_>>) -> fdo::Result<()> {
@@ -309,7 +316,6 @@ impl Session {
             }
         };
 
-        // Store stream for later use in start()
         self.streams.lock().unwrap().push((stream, iface));
 
         info!("Created ScreenCast stream: {}", path);
@@ -392,10 +398,6 @@ pub struct Stream {
     target: StreamTarget,
     to_compositor: Sender<ScreenCastToCompositor>,
     was_started: Arc<AtomicBool>,
-    /// Per-stream cursor-mode (0=Hidden, 1=Embedded, 2=Metadata),
-    /// taken from the per-call `cursor-mode` property in
-    /// RecordMonitor/RecordWindow if present, else inherited from
-    /// the session.
     cursor_mode: CursorMode,
 }
 
@@ -441,23 +443,17 @@ impl Stream {
 #[interface(name = "org.gnome.Mutter.ScreenCast.Stream")]
 impl Stream {
     #[zbus(property)]
-    async fn parameters(&self) -> HashMap<String, Value<'static>> {
-        let mut params = HashMap::new();
-        match &self.target {
-            StreamTarget::Output(output) => {
-                let size = current_output_mode(output)
-                    .map(|mode| (mode.width, mode.height))
-                    .unwrap_or((1, 1));
-                params.insert("position".to_string(), Value::new((0i32, 0i32)));
-                params.insert("size".to_string(), Value::new(size));
-            }
-            StreamTarget::Window { .. } => {
-                // Window size is dynamic; consumers don't rely on this
-                params.insert("position".to_string(), Value::new((0i32, 0i32)));
-                params.insert("size".to_string(), Value::new((1i32, 1i32)));
-            }
+    async fn parameters(&self) -> StreamParameters {
+        let size = match &self.target {
+            StreamTarget::Output(output) => current_output_mode(output)
+                .map(|mode| (mode.width, mode.height))
+                .unwrap_or((1, 1)),
+            StreamTarget::Window { .. } => (1, 1),
+        };
+        StreamParameters {
+            position: (0, 0),
+            size,
         }
-        params
     }
 
     #[zbus(signal)]
