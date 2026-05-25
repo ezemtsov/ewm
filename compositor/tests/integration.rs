@@ -372,6 +372,42 @@ fn focusing_view_on_disabled_output_is_ignored() {
 }
 
 #[test]
+fn disabling_output_reassigns_primary_entry_to_mapped_view() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.add_output("Virtual-2", 1280, 720);
+
+    let surface_id = 1;
+    let mut disabled_frame = frame_with_entry(100, nz(1), surface_id);
+    disabled_frame.surfaces[0].w = 1000;
+    disabled_frame.surfaces[0].h = 1000;
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-1", vec![disabled_frame]);
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-2", vec![frame_with_entry(200, nz(2), surface_id)]);
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+
+    let live_strip = fixture
+        .ewm_ref()
+        .output_strips
+        .get("Virtual-2")
+        .expect("Virtual-2 strip exists");
+    assert!(live_strip
+        .surfaces()
+        .any(|entry| entry.surface_id == surface_id && entry.primary));
+}
+
+#[test]
 fn disabling_and_reenabling_output_updates_surface_membership() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);

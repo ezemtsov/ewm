@@ -1372,6 +1372,7 @@ impl Ewm {
 
         self.space.unmap_output(output);
         self.sync_sorted_outputs();
+        self.refresh_primary_assignments();
         self.focus_mapped_frame_if_focused_output_unmapped(&output_name);
         self.recalculate_output_size();
         self.active_outputs_dirty = true;
@@ -2481,7 +2482,7 @@ impl Ewm {
 
     fn primary_entry_areas(&self, output_sizes: &HashMap<String, (u64, u64)>) -> HashMap<u64, u64> {
         let mut best_area: HashMap<u64, u64> = HashMap::new();
-        for (oname, strip) in &self.output_strips {
+        for (oname, strip) in self.mapped_output_strips() {
             for entry in strip.active_surfaces() {
                 let area = Self::layout_entry_area(output_sizes, oname, entry);
                 best_area
