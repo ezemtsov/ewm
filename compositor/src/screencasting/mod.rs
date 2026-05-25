@@ -47,48 +47,50 @@ fn output_cast_cursor_location(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
-    #[test]
-    fn output_cast_cursor_location_is_default_when_cursor_hidden() {
-        assert_eq!(
-            output_cast_cursor_location(
-                (110.0, 70.0),
-                Point::from((100, 50)),
-                Size::from((200, 100)),
-                Scale::from(2.0),
-                false,
-            ),
-            Point::default()
-        );
-    }
+    proptest! {
+        #[test]
+        fn output_cast_cursor_location_matches_visibility_and_output_geometry(
+            output_x in -2_000i32..=2_000,
+            output_y in -2_000i32..=2_000,
+            output_w in 1i32..=4_000,
+            output_h in 1i32..=4_000,
+            local_x in -1_000i32..=5_000,
+            local_y in -1_000i32..=5_000,
+            scale_milli in 250i32..=4_000,
+            include_cursor in any::<bool>(),
+        ) {
+            let output_pos = Point::from((output_x, output_y));
+            let output_size = Size::from((output_w, output_h));
+            let output_scale = Scale::from(f64::from(scale_milli) / 1_000.0);
+            let pointer_location = (
+                f64::from(output_x + local_x),
+                f64::from(output_y + local_y),
+            );
 
-    #[test]
-    fn output_cast_cursor_location_is_default_outside_output() {
-        assert_eq!(
-            output_cast_cursor_location(
-                (99.0, 70.0),
-                Point::from((100, 50)),
-                Size::from((200, 100)),
-                Scale::from(2.0),
-                true,
-            ),
-            Point::default()
-        );
-    }
+            let inside_output =
+                (0..output_w).contains(&local_x) && (0..output_h).contains(&local_y);
+            let expected = if include_cursor && inside_output {
+                Point::from((f64::from(local_x), f64::from(local_y)))
+                    .to_physical_precise_round(output_scale)
+            } else {
+                Point::default()
+            };
 
-    #[test]
-    fn output_cast_cursor_location_is_output_relative_and_scaled() {
-        assert_eq!(
-            output_cast_cursor_location(
-                (110.0, 70.0),
-                Point::from((100, 50)),
-                Size::from((200, 100)),
-                Scale::from(2.0),
-                true,
-            ),
-            Point::from((20, 40))
-        );
+            prop_assert_eq!(
+                output_cast_cursor_location(
+                    pointer_location,
+                    output_pos,
+                    output_size,
+                    output_scale,
+                    include_cursor,
+                ),
+                expected,
+            );
+        }
     }
 }
 
