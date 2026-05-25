@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::output::{self, Output};
 use smithay::reexports::rustix::time::{clock_gettime, ClockId};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -50,6 +51,10 @@ pub fn output_size(output: &Output) -> Size<f64, Logical> {
     let transform = output.current_transform();
     let mode = output.current_mode().unwrap();
     transform.transform_size(mode.size.to_f64().to_logical(scale))
+}
+
+pub fn is_mapped(surface: &WlSurface) -> bool {
+    with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
 }
 
 /// Send both integer and fractional scale + transform to a surface.

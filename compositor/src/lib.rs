@@ -5016,7 +5016,6 @@ impl Ewm {
     /// Handle commit for layer surfaces. Returns true if this was a layer surface.
     /// Handle layer shell surface commit.
     pub fn handle_layer_surface_commit(&mut self, surface: &WlSurface) -> bool {
-        use smithay::backend::renderer::utils::with_renderer_surface_state;
         use smithay::wayland::shell::wlr_layer::LayerSurfaceData;
 
         let root_surface = surface_root(surface);
@@ -5042,11 +5041,7 @@ impl Ewm {
             map.arrange();
 
             if initial_configure_sent {
-                let is_mapped =
-                    with_renderer_surface_state(surface, |state| state.buffer().is_some())
-                        .unwrap_or(false);
-
-                if is_mapped {
+                if crate::utils::is_mapped(surface) {
                     let was_unmapped = self.unmapped_layer_surfaces.remove(surface);
                     if was_unmapped {
                         debug!("Layer surface mapped");
@@ -5207,12 +5202,7 @@ impl CompositorHandler for State {
             // unmapped->mapped transition: seed the open-fade once. The
             // 16ms delay holds alpha at 0 for one vblank so the empty/white
             // initial buffer some clients ship is rendered invisibly.
-            let is_mapped = smithay::backend::renderer::utils::with_renderer_surface_state(
-                &root_surface,
-                |state| state.buffer().is_some(),
-            )
-            .unwrap_or(false);
-            if is_mapped && self.ewm.unmapped_surfaces.remove(&id) {
+            if crate::utils::is_mapped(&root_surface) && self.ewm.unmapped_surfaces.remove(&id) {
                 self.ewm.surface_open_anims.insert(
                     id,
                     strip::ViewAnimation::delayed(
