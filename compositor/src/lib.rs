@@ -1618,6 +1618,14 @@ impl Ewm {
         None
     }
 
+    fn mapped_output_strips(&self) -> impl Iterator<Item = (&str, &strip::Strip)> {
+        self.sorted_outputs.iter().filter_map(|output| {
+            self.output_strips
+                .get_key_value(&output.name())
+                .map(|(name, strip)| (name.as_str(), strip))
+        })
+    }
+
     pub fn is_emacs_frame(&self, id: u64) -> bool {
         self.frame_location(id).is_some()
     }
@@ -1778,15 +1786,14 @@ impl Ewm {
                 }
             }
         }
-        // Fall back to any frame containing the entry.
-        for (name, strip) in &self.output_strips {
-            for (i, frame) in strip.frames.iter().enumerate() {
-                if frame.surfaces.iter().any(|e| e.surface_id == surface_id) {
-                    return Some((name.clone(), i));
-                }
-            }
-        }
-        None
+        // Fall back to visible frames in canonical output order.
+        self.mapped_output_strips().find_map(|(name, strip)| {
+            strip
+                .frames
+                .iter()
+                .position(|frame| frame.surfaces.iter().any(|e| e.surface_id == surface_id))
+                .map(|i| (name.to_string(), i))
+        })
     }
 
     /// Surface id of the active Emacs frame on `output_name`.
@@ -1892,13 +1899,13 @@ impl Ewm {
         id: u64,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryLocation<'_>> {
-        for (output_name, strip) in &self.output_strips {
+        for (output_name, strip) in self.mapped_output_strips() {
             if let Some((frame_idx, entry)) = strip
                 .surfaces_with_frame()
                 .find(|(_, entry)| entry.surface_id == id && predicate(entry))
             {
                 return Some(LayoutEntryLocation {
-                    output_name: output_name.as_str(),
+                    output_name,
                     frame_idx,
                     entry,
                 });
@@ -1907,16 +1914,10 @@ impl Ewm {
         None
     }
 
-    /// Find the primary output layout entry for a surface.
-    /// Used as fallback when no focused entry exists (e.g. popup positioning).
-    fn primary_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
-        self.layout_entry_for_surface(id, |entry| entry.primary)
-    }
-
     /// Layout entry used for positioning a multi-view surface.
     fn preferred_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
         self.focused_entry_for_surface(id)
-            .or_else(|| self.primary_entry_for_surface(id))
+            .or_else(|| self.layout_entry_for_surface(id, |entry| entry.primary))
     }
 
     /// Global position of a window: layout entries use the focused-or-primary
@@ -1996,7 +1997,7 @@ impl Ewm {
             return self.emacs_frame_origin(surface_id).into_iter().collect();
         }
         let mut origins = Vec::new();
-        for (output_name, strip) in &self.output_strips {
+        for (output_name, strip) in self.mapped_output_strips() {
             for (frame_idx, entry) in strip.surfaces_with_frame() {
                 if entry.surface_id != surface_id {
                     continue;
@@ -7160,6 +7161,7 @@ mod tests {
             };
             if focused.is_some() {
                 fix.ewm().focused_view_id = Some(nz(3_000 + focused_idx as u64));
+                fix.ewm().focused_frame_id = 2_000 + focused_idx as u64;
             }
 
             let ordered = order
@@ -7170,6 +7172,16 @@ mod tests {
             let expected = focused.or(ordered).or(lexical);
 
             prop_assert_eq!(fix.ewm_ref().surface_output_name(surface_id), expected);
+            prop_assert_eq!(
+                fix.ewm_ref()
+                    .layout_entry_for_surface(surface_id, |_| true)
+                    .map(|location| location.output_name),
+                ordered,
+            );
+            prop_assert_eq!(
+                fix.ewm_ref().frame_position(surface_id),
+                focused.or(ordered).map(|name| (name.to_string(), 0)),
+            );
         }
 
         #[test]
