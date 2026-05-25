@@ -4571,25 +4571,25 @@ impl Ewm {
         })
     }
 
-    fn layer_output_for_root(&self, root: &WlSurface) -> Option<&Output> {
-        self.space.outputs().find(|output| {
-            layer_map_for_output(output)
-                .layer_for_surface(root, WindowSurfaceType::TOPLEVEL)
-                .is_some()
+    fn layer_for_root(&self, root: &WlSurface) -> Option<(Output, DesktopLayerSurface)> {
+        self.space.outputs().find_map(|output| {
+            let map = layer_map_for_output(output);
+            let layer = map.layer_for_surface(root, WindowSurfaceType::TOPLEVEL)?;
+            Some((output.clone(), layer.clone()))
         })
     }
 
-    fn output_for_root(&self, root: &WlSurface) -> Option<&Output> {
+    fn output_for_root(&self, root: &WlSurface) -> Option<Output> {
         if let Some(id) = self.surface_id(root) {
             let output_name = self.surface_output_name(id)?;
-            return self.mapped_output_by_name(output_name);
+            return self.find_mapped_output(output_name);
         }
 
-        self.layer_output_for_root(root)
+        self.layer_for_root(root).map(|(output, _)| output)
     }
 
     /// Find the output for a popup's root surface (window or layer surface).
-    pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
+    pub fn output_for_popup(&self, popup: &PopupKind) -> Option<Output> {
         let root = find_popup_root_surface(popup).ok()?;
         self.output_for_root(&root)
     }
@@ -4664,12 +4664,11 @@ impl Ewm {
         }
 
         // Layer-shell popup path
-        if let Some((output, layer_geo)) = self.space.outputs().find_map(|o| {
-            let map = layer_map_for_output(o);
-            let ls = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)?;
-            let geo = map.layer_geometry(ls)?;
-            Some((o.clone(), geo))
-        }) {
+        if let Some((output, layer)) = self.layer_for_root(&root) {
+            let map = layer_map_for_output(&output);
+            let Some(layer_geo) = map.layer_geometry(&layer) else {
+                return;
+            };
             let output_geo = self
                 .space
                 .output_geometry(&output)
@@ -5010,7 +5009,6 @@ impl Ewm {
     /// Handle layer shell surface commit.
     pub fn handle_layer_surface_commit(&mut self, surface: &WlSurface) -> bool {
         use smithay::backend::renderer::utils::with_renderer_surface_state;
-        use smithay::desktop::WindowSurfaceType;
         use smithay::wayland::compositor::get_parent;
         use smithay::wayland::shell::wlr_layer::LayerSurfaceData;
 
@@ -5020,7 +5018,7 @@ impl Ewm {
             root_surface = parent;
         }
 
-        let Some(output) = self.layer_output_for_root(&root_surface).cloned() else {
+        let Some((output, layer)) = self.layer_for_root(&root_surface) else {
             return false;
         };
 
@@ -5040,10 +5038,6 @@ impl Ewm {
 
             // Arrange the layers before sending the initial configure
             map.arrange();
-
-            let layer = map
-                .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
-                .unwrap();
 
             if initial_configure_sent {
                 let is_mapped =
@@ -5172,7 +5166,7 @@ impl CompositorHandler for State {
         if let Some(popup) = self.ewm.popups.find_popup(surface) {
             if let PopupKind::Xdg(ref xdg_popup) = popup {
                 if !xdg_popup.is_initial_configure_sent() {
-                    if let Some(output) = self.ewm.output_for_popup(&popup).cloned() {
+                    if let Some(output) = self.ewm.output_for_popup(&popup) {
                         let scale = output.current_scale();
                         let transform = output.current_transform();
                         smithay::wayland::compositor::with_states(surface, |data| {
@@ -5626,17 +5620,7 @@ impl WlrLayerShellHandler for State {
         let wl_surface = surface.wl_surface();
         self.ewm.unmapped_layer_surfaces.remove(wl_surface);
 
-        // Find and unmap the layer surface
-        let output = self.ewm.space.outputs().find_map(|o| {
-            let map = layer_map_for_output(o);
-            let layer = map
-                .layers()
-                .find(|&layer| layer.layer_surface() == &surface)
-                .cloned();
-            layer.map(|layer| (o.clone(), layer))
-        });
-
-        if let Some((output, layer)) = output {
+        if let Some((output, layer)) = self.ewm.layer_for_root(wl_surface) {
             // Clear on-demand focus if it was this layer surface
             if self.ewm.layer_shell_on_demand_focus.as_ref() == Some(&layer) {
                 self.ewm.layer_shell_on_demand_focus = None;
@@ -5661,7 +5645,10 @@ impl WlrLayerShellHandler for State {
         _parent: smithay::wayland::shell::wlr_layer::LayerSurface,
         popup: smithay::wayland::shell::xdg::PopupSurface,
     ) {
-        let _ = self.ewm.popups.track_popup(PopupKind::Xdg(popup));
+        self.ewm.unconstrain_popup(&popup);
+        if let Err(err) = self.ewm.popups.track_popup(PopupKind::Xdg(popup)) {
+            warn!("error tracking popup: {err:?}");
+        }
     }
 }
 delegate_layer_shell!(State);
