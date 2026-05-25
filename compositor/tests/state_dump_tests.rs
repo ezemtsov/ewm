@@ -88,7 +88,7 @@ fn ewm_state_reports_workspace_protocol_from_frame_strips() {
     fix.ewm().set_focus_frame(101, "test", false);
     fix.dispatch();
 
-    let state = fix.ewm_ref().debug_state();
+    let state = fix.debug_state();
     assert_workspace_protocol_matches_strips(&state);
     let focused = workspace_for_surface(&state, 101);
     assert_eq!(focused["output"], HEAD_A);
@@ -97,7 +97,7 @@ fn ewm_state_reports_workspace_protocol_from_frame_strips() {
     fix.ewm().apply_output_layout(HEAD_B, vec![frame(101)]);
     fix.dispatch();
 
-    let state = fix.ewm_ref().debug_state();
+    let state = fix.debug_state();
     assert_workspace_protocol_matches_strips(&state);
     let moved = workspace_for_surface(&state, 101);
     assert_eq!(moved["output"], HEAD_B);

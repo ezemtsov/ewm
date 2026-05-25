@@ -208,6 +208,10 @@ impl Fixture {
             .output_info_list(&self.state.ewm.sorted_outputs)
     }
 
+    pub fn debug_state(&self) -> serde_json::Value {
+        self.state.ewm.debug_state(&self.output_info_list())
+    }
+
     /// Get the focused surface ID
     pub fn focused_surface_id(&self) -> u64 {
         self.state.ewm.focused_surface_id()
