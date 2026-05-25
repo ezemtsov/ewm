@@ -4234,12 +4234,7 @@ impl Ewm {
     }
 
     fn sync_sorted_outputs(&mut self) {
-        let mut outputs = self
-            .output_state
-            .keys()
-            .filter(|output| self.space.output_geometry(output).is_some())
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut outputs = self.space.outputs().cloned().collect::<Vec<_>>();
 
         let space = &self.space;
         outputs.sort_by(|a, b| {
