@@ -710,12 +710,9 @@ impl PipeWire {
                                 Timer::from_duration(Duration::ZERO),
                                 move |_, _, state| {
                                     let output = match &redraw_target {
-                                        CastTarget::Output { name } => state
-                                            .ewm
-                                            .space
-                                            .outputs()
-                                            .find(|o| &o.name() == name)
-                                            .cloned(),
+                                        CastTarget::Output { name } => {
+                                            state.ewm.find_mapped_output(name)
+                                        }
                                         CastTarget::Window { id } => {
                                             state.ewm.casting.mapped_cast_output.get(id).cloned()
                                         }

@@ -202,12 +202,7 @@ impl State {
                     return;
                 };
                 let output = match &cast.target {
-                    CastTarget::Output { name } => self
-                        .ewm
-                        .space
-                        .outputs()
-                        .find(|o| &o.name() == name)
-                        .cloned(),
+                    CastTarget::Output { name } => self.ewm.find_mapped_output(name),
                     CastTarget::Window { id } => {
                         self.ewm.casting.mapped_cast_output.get(id).cloned()
                     }
@@ -522,9 +517,6 @@ impl Ewm {
         output_scale: Scale<f64>,
         target_frame_time: Duration,
     ) {
-        use std::collections::HashSet;
-
-        let valid_outputs: HashSet<String> = self.space.outputs().map(|o| o.name()).collect();
         let mut casts = std::mem::take(&mut self.casting.casts);
         let mut elements_with_cursor: Option<(Vec<EwmRenderElement>, Vec<EwmRenderElement>)> = None;
         let mut elements_without_cursor: Option<(Vec<EwmRenderElement>, Vec<EwmRenderElement>)> =
@@ -537,10 +529,6 @@ impl Ewm {
             let CastTarget::Output { name } = &cast.target else {
                 continue;
             };
-            if !valid_outputs.contains(name) {
-                tracing::trace!(output = %name, "skipping orphaned cast");
-                continue;
-            }
             if *name != output.name() {
                 continue;
             }

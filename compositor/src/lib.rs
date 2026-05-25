@@ -2494,8 +2494,8 @@ impl Ewm {
         #[cfg(feature = "screencast")]
         {
             self.casting.mapped_cast_output.clear();
-            for (oname, strip) in &self.output_strips {
-                let Some(output) = self.find_mapped_output(oname) else {
+            for output in &self.sorted_outputs {
+                let Some(strip) = self.output_strips.get(&output.name()) else {
                     continue;
                 };
                 for entry in strip.active_surfaces().filter(|e| e.primary) {
@@ -7102,6 +7102,19 @@ mod tests {
                 .collect::<Vec<_>>();
 
             prop_assert_eq!(primary, vec![expected]);
+
+            #[cfg(feature = "screencast")]
+            {
+                fix.ewm().refresh_mapped_cast_outputs();
+                prop_assert_eq!(
+                    fix.ewm_ref()
+                        .casting
+                        .mapped_cast_output
+                        .get(&surface_id)
+                        .map(Output::name),
+                    Some(expected.to_string()),
+                );
+            }
         }
 
         #[test]
