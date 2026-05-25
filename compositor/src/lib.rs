@@ -5125,7 +5125,14 @@ impl CompositorHandler for State {
     }
 
     fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
-        crate::utils::propagate_preferred_scale(surface, parent);
+        let root = surface_root(parent);
+        if let Some(output) = self.ewm.output_for_root(&root) {
+            let scale = output.current_scale();
+            let transform = output.current_transform();
+            smithay::wayland::compositor::with_states(surface, |data| {
+                crate::utils::send_scale_transform(surface, data, scale, transform);
+            });
+        }
     }
 
     fn commit(&mut self, surface: &WlSurface) {
