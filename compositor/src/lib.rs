@@ -1753,16 +1753,15 @@ impl Ewm {
     }
 
     fn frame_entry_for_surface(&self, surface_id: u64) -> Option<(u64, ViewId)> {
-        self.output_strips
-            .values()
-            .flat_map(|s| s.frames.iter())
-            .find_map(|frame| {
-                frame
-                    .surfaces
-                    .iter()
-                    .find(|entry| entry.surface_id == surface_id)
-                    .map(|entry| (frame.surface_id, entry.view_id))
-            })
+        let location = self
+            .focused_entry_for_surface(surface_id)
+            .or_else(|| self.layout_entry_for_surface(surface_id, |_| true))?;
+        let frame = self
+            .output_strips
+            .get(location.output_name)?
+            .frames
+            .get(location.frame_idx)?;
+        Some((frame.surface_id, location.entry.view_id))
     }
 
     /// `(output_name, frame_idx)` of the strip frame containing `surface_id`,
@@ -7181,6 +7180,12 @@ mod tests {
             prop_assert_eq!(
                 fix.ewm_ref().frame_position(surface_id),
                 focused.or(ordered).map(|name| (name.to_string(), 0)),
+            );
+            prop_assert_eq!(
+                fix.ewm_ref().frame_for_surface(surface_id),
+                focused.or(ordered).map(|name| {
+                    2_000 + PROP_HEADS.iter().position(|candidate| candidate == &name).unwrap() as u64
+                }),
             );
         }
 
