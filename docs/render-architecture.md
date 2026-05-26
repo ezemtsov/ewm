@@ -532,10 +532,12 @@ primary scanout output tracking. Single-GPU simplification: `render = scanout.cl
 `Ewm::redraw()` now sets `lock_render_state` to `Locked` or `Unlocked` on every
 non-Skipped render, matching niri's bidirectional pattern.
 
-### 3. Cursor and DnD Frame Callbacks (N/A)
+### 3. Cursor and DnD Frame Callbacks (RESOLVED)
 
-EWM uses a static fallback cursor (`MemoryRenderBuffer`), not client cursor
-surfaces. No DnD icon tracking implemented. Gap doesn't apply.
+EWM follows niri's cursor model: client cursor surfaces and named cursor-shape
+requests are rendered through `CursorManager`, with a fallback xcursor when the
+theme is missing. DnD icon surfaces are tracked separately and rendered above
+layers but below the pointer cursor.
 
 ### 4. Screencopy Damage Tracking (RESOLVED)
 

@@ -46,7 +46,8 @@
 (declare-function ewm-prepare-frame-close-module "ewm-core")
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
-(declare-function ewm-start "ewm-core")
+(declare-function ewm-configure-cursor-module "ewm-core")
+(declare-function ewm-start "ewm-core" (cursor-theme cursor-size))
 (declare-function ewm-list-xdg-apps "ewm-core")
 (declare-function ewm-set-focus-follows-mouse "ewm-core")
 (declare-function ewm-set-unfocused-alpha "ewm-core")
@@ -276,6 +277,33 @@ Examples:
          (set-default sym val)
          (when (fboundp 'ewm--send-cursor-hide-config)
            (ewm--send-cursor-hide-config)))
+  :group 'ewm)
+
+(defcustom ewm-cursor-theme nil
+  "Xcursor theme used by EWM and clients launched from it.
+When nil, EWM picks a loadable theme from the session environment."
+  :type '(choice (const :tag "Auto" nil)
+                 (string :tag "Theme"))
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (fboundp 'ewm--send-cursor-config)
+           (ewm--send-cursor-config)))
+  :group 'ewm)
+
+(defvar ewm--session-cursor-theme (getenv "XCURSOR_THEME")
+  "Initial session XCURSOR_THEME value from before EWM applied its config.")
+
+(defcustom ewm-cursor-size
+  (or (when-let* ((size (getenv "XCURSOR_SIZE"))
+                  (parsed (string-to-number size)))
+        (and (> parsed 0) parsed))
+      24)
+  "Xcursor size used by EWM and clients launched from it."
+  :type '(integer :tag "Pixels")
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (fboundp 'ewm--send-cursor-config)
+           (ewm--send-cursor-config)))
   :group 'ewm)
 
 (defcustom ewm-cursor-hide-when-typing nil
@@ -717,6 +745,32 @@ Select the Nth Emacs frame on the requested output (1-based index)."
        (ewm-configure-idle-module ewm-idle "blank"))
       (`(,(and (pred integerp) secs) . ,(and (pred stringp) cmd))
        (ewm-configure-idle-module secs cmd)))))
+
+(defun ewm--cursor-theme ()
+  "Return the configured EWM cursor theme, or nil for automatic selection."
+  (and (stringp ewm-cursor-theme)
+       (not (string-empty-p ewm-cursor-theme))
+       ewm-cursor-theme))
+
+(defun ewm--cursor-size ()
+  "Return the resolved EWM cursor size."
+  (if (and (integerp ewm-cursor-size)
+           (> ewm-cursor-size 0)
+           (<= ewm-cursor-size 255))
+      ewm-cursor-size
+    24))
+
+(defun ewm--apply-cursor-env ()
+  "Apply EWM's cursor config to Emacs child process environment."
+  (setenv "XCURSOR_THEME" (or (ewm--cursor-theme)
+                              ewm--session-cursor-theme))
+  (setenv "XCURSOR_SIZE" (number-to-string (ewm--cursor-size))))
+
+(defun ewm--send-cursor-config ()
+  "Send cursor theme and size configuration to compositor."
+  (ewm--apply-cursor-env)
+  (when (ewm--compositor-active-p)
+    (ewm-configure-cursor-module (ewm--cursor-theme) (ewm--cursor-size))))
 
 (defun ewm--send-cursor-hide-config ()
   "Send cursor auto-hide configuration to compositor.
@@ -1284,10 +1338,11 @@ The compositor runs as a thread within the Emacs process."
     (user-error "EWM compositor is already running"))
   (setq ewm--module-mode nil)
   (setq ewm--compositor-ready nil)
+  (ewm--apply-cursor-env)
   ;; Pipe channel must exist before the compositor starts, so no early
   ;; events are dropped.
   (ewm--init-event-channel)
-  (if (ewm-start)
+  (if (ewm-start (ewm--cursor-theme) (ewm--cursor-size))
       (progn
         (setq ewm--module-mode t)
         (ewm-mode 1)
@@ -1438,6 +1493,7 @@ now that a graphical FRAME exists."
     (add-hook 'after-init-hook #'ewm--send-intercept-keys))
   (ewm--send-input-config)
   (ewm--send-idle-config)
+  (ewm--send-cursor-config)
   (ewm--send-cursor-hide-config)
   (ewm-set-unfocused-alpha (float ewm-unfocused-alpha))
   (ewm-set-animations-enabled ewm-animations-enabled)

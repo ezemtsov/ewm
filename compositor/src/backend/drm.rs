@@ -90,7 +90,7 @@ use crate::{
         apply_enabled_output_config, apply_initial_output_config, map_initial_output, Backend,
         OutputInfos,
     },
-    cursor::CursorBuffer,
+    cursor::{CursorConfig, CursorTextureCache},
     input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
     vblank_throttle::VBlankThrottle,
@@ -538,8 +538,8 @@ pub struct DrmBackendState {
     init_sender: Option<Sender<DrmMessage>>,
     /// Event loop handle for scheduling timers
     loop_handle: Option<LoopHandle<'static, State>>,
-    /// Cursor buffer for rendering the mouse cursor
-    cursor_buffer: CursorBuffer,
+    /// Cursor texture cache for rendering named cursor images.
+    cursor_texture_cache: CursorTextureCache,
     /// Display handle for creating output globals on hotplug
     display_handle: Option<DisplayHandle>,
     /// Pending initialization data - Some until DRM is initialized
@@ -591,6 +591,10 @@ impl Drop for DrmBackendState {
 impl DrmBackendState {
     pub(crate) fn output_infos(&self) -> OutputInfos {
         self.output_infos.clone()
+    }
+
+    pub(crate) fn clear_cursor_texture_cache(&mut self) {
+        self.cursor_texture_cache.clear();
     }
 
     /// Check if the libseat session is currently active (not on another VT).
@@ -1060,7 +1064,7 @@ impl DrmBackendState {
             ewm,
             renderer.as_mut(),
             output_scale,
-            &self.cursor_buffer,
+            &self.cursor_texture_cache,
             output_pos,
             output_size,
             true, // include_cursor
@@ -1229,12 +1233,16 @@ impl DrmBackendState {
         output_state.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
     }
 
-    /// Run a closure with renderer, cursor buffer, and event loop handle.
+    /// Run a closure with renderer, cursor texture cache, and event loop handle.
     ///
     /// Used for immediate screencopy rendering outside the per-output render loop.
     pub fn with_renderer<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut GlesRenderer, &crate::cursor::CursorBuffer, &LoopHandle<'static, State>),
+        F: FnOnce(
+            &mut GlesRenderer,
+            &crate::cursor::CursorTextureCache,
+            &LoopHandle<'static, State>,
+        ),
     {
         let Some(ref event_loop) = self.loop_handle else {
             return;
@@ -1249,7 +1257,7 @@ impl DrmBackendState {
             warn!("Failed to get renderer for with_renderer");
             return;
         };
-        f(renderer.as_mut(), &self.cursor_buffer, &event_loop);
+        f(renderer.as_mut(), &self.cursor_texture_cache, &event_loop);
     }
 
     /// Process post-render work: screencopy and screencast for an output.
@@ -1261,7 +1269,7 @@ impl DrmBackendState {
             return;
         };
         let event_loop = event_loop.clone();
-        let cursor_buffer = &self.cursor_buffer;
+        let cursor_texture_cache = &self.cursor_texture_cache;
 
         let (Some(gpu_manager), Some(render_node)) =
             (&mut self.gpu_manager, self.primary_render_node)
@@ -1275,7 +1283,13 @@ impl DrmBackendState {
 
         // Process pending screencopy requests (skip setup cost when no requests pending)
         if ewm.screencopy_state.has_pending_for_output(output) {
-            process_screencopies_for_output(ewm, renderer, output, cursor_buffer, &event_loop);
+            process_screencopies_for_output(
+                ewm,
+                renderer,
+                output,
+                cursor_texture_cache,
+                &event_loop,
+            );
         }
 
         // Render to active screen casts
@@ -1298,7 +1312,7 @@ impl DrmBackendState {
             ewm.render_for_screen_cast(
                 renderer,
                 output,
-                cursor_buffer,
+                cursor_texture_cache,
                 output_pos,
                 output_size,
                 output_size_physical,
@@ -1308,7 +1322,7 @@ impl DrmBackendState {
             ewm.render_windows_for_screen_cast(
                 renderer,
                 output,
-                cursor_buffer,
+                cursor_texture_cache,
                 output_scale,
                 target_frame_time,
             );
@@ -2406,9 +2420,35 @@ fn initialize_drm(
     Ok(())
 }
 
+pub(crate) fn import_activation_environment(env_vars: &HashMap<String, String>) {
+    let import_names: Vec<&str> = env_vars.keys().map(|k| k.as_str()).collect();
+    let import_list = import_names.join(" ");
+    match std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!(
+                "hash systemctl 2>/dev/null && \
+                 systemctl --user import-environment {import_list}; \
+                 hash dbus-update-activation-environment 2>/dev/null && \
+                 dbus-update-activation-environment {import_list}"
+            ),
+        ])
+        .status()
+    {
+        Ok(status) if !status.success() => {
+            warn!("import-environment exited with {}", status);
+        }
+        Err(e) => {
+            warn!("Failed to import-environment: {}", e);
+        }
+        _ => {}
+    }
+}
+
 /// Run EWM with DRM/libinput backend (module mode only)
-pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting EWM with DRM backend (module mode)");
+    cursor_config.apply_env();
 
     // Initialize libseat session
     let (session, notifier) = LibSeatSession::new().map_err(|e| {
@@ -2433,7 +2473,12 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     let socket_name_str = socket_name.to_string_lossy().to_string();
     info!("Wayland socket: {:?}", socket_name);
 
-    let mut ewm = Ewm::new(display_handle.clone(), event_loop.handle(), true);
+    let mut ewm = Ewm::new(
+        display_handle.clone(),
+        event_loop.handle(),
+        true,
+        cursor_config.clone(),
+    );
 
     // Connect input method relay to ourselves
     let socket_path = std::env::var("XDG_RUNTIME_DIR")
@@ -2501,7 +2546,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         session_notifier_token: None, // Set after registering notifier
         init_sender: Some(init_sender),
         loop_handle: Some(event_loop.handle()),
-        cursor_buffer: CursorBuffer::new(),
+        cursor_texture_cache: CursorTextureCache::default(),
         display_handle: None, // Set during initialize_drm
         libinput_devices: std::collections::HashSet::new(),
         primary_node: None,
@@ -2526,6 +2571,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
         ("XDG_CURRENT_DESKTOP".into(), "ewm".into()),
         ("XDG_SESSION_TYPE".into(), "wayland".into()),
     ]);
+    env_vars.extend(cursor_config.env_vars());
     if let Some(satellite) = &state.ewm.satellite {
         let display_name = satellite.display_name().to_owned();
         info!("listening on X11 socket: {display_name}");
@@ -2545,28 +2591,7 @@ pub fn run_drm() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Propagate to D-Bus/systemd so portals and apps launched via D-Bus inherit them
-    let import_names: Vec<&str> = env_vars.keys().map(|k| k.as_str()).collect();
-    let import_list = import_names.join(" ");
-    match std::process::Command::new("/bin/sh")
-        .args([
-            "-c",
-            &format!(
-                "hash systemctl 2>/dev/null && \
-                 systemctl --user import-environment {import_list}; \
-                 hash dbus-update-activation-environment 2>/dev/null && \
-                 dbus-update-activation-environment {import_list}"
-            ),
-        ])
-        .status()
-    {
-        Ok(status) if !status.success() => {
-            warn!("import-environment exited with {}", status);
-        }
-        Err(e) => {
-            warn!("Failed to import-environment: {}", e);
-        }
-        _ => {}
-    }
+    import_activation_environment(&env_vars);
 
     // Send to Emacs for process-environment (so child processes inherit)
     state

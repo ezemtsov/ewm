@@ -21,6 +21,7 @@ serde_json = "1.0.149"
 tracing = { version = "0.1.44", features = ["max_level_trace", "release_max_level_debug"] }
 tracing-subscriber = { version = "=0.3.19", features = ["env-filter"] }
 tracing-journald = "0.3"
+xcursor = "0.3.10"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"

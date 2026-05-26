@@ -298,7 +298,7 @@ impl Backend {
         }
     }
 
-    /// Run a closure with renderer, cursor buffer, and event loop handle.
+    /// Run a closure with renderer, cursor texture cache, and event loop handle.
     ///
     /// Used for immediate screencopy rendering outside the per-output render loop.
     /// No-op for headless backend.
@@ -306,12 +306,26 @@ impl Backend {
     where
         F: FnOnce(
             &mut smithay::backend::renderer::gles::GlesRenderer,
-            &crate::cursor::CursorBuffer,
+            &crate::cursor::CursorTextureCache,
             &smithay::reexports::calloop::LoopHandle<'static, crate::State>,
         ),
     {
         match self {
             Backend::Drm(drm) => drm.with_renderer(f),
+            Backend::Headless(_) => {}
+        }
+    }
+
+    pub fn clear_cursor_texture_cache(&mut self) {
+        match self {
+            Backend::Drm(drm) => drm.clear_cursor_texture_cache(),
+            Backend::Headless(_) => {}
+        }
+    }
+
+    pub fn import_environment(&self, env_vars: &HashMap<String, String>) {
+        match self {
+            Backend::Drm(_) => drm::import_activation_environment(env_vars),
             Backend::Headless(_) => {}
         }
     }

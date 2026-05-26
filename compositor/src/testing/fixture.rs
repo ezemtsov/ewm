@@ -13,6 +13,7 @@ use smithay::utils::{Logical, Rectangle, Size};
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
+use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 use crate::testing::TestClient;
 use crate::{register_display_source, ClientState, Ewm, OutputInfo, State};
@@ -36,6 +37,12 @@ impl Fixture {
     /// Initializes the event loop, display, and headless backend.
     /// The fixture starts with no outputs - use `add_output` to create virtual displays.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_cursor_config(CursorConfig::default())
+    }
+
+    pub fn new_with_cursor_config(
+        cursor_config: CursorConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // Initialize event loop
         let event_loop: EventLoop<State> = EventLoop::try_new()?;
 
@@ -44,7 +51,7 @@ impl Fixture {
         let display_handle = display.handle();
 
         // Create compositor state with headless backend
-        let ewm = Ewm::new(display_handle, event_loop.handle(), false);
+        let ewm = Ewm::new(display_handle, event_loop.handle(), false, cursor_config);
         let backend = Backend::Headless(HeadlessBackend::new());
 
         let state = State { backend, ewm };
@@ -242,6 +249,10 @@ impl Fixture {
                 frames,
             });
         self.state.sync_keyboard_focus();
+    }
+
+    pub fn handle_module_command(&mut self, command: crate::module::ModuleCommand) {
+        self.state.handle_module_command(command);
     }
 
     /// Send a pointer button event at the seat's current pointer focus.

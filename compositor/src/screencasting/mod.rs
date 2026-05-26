@@ -20,9 +20,10 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, info, warn};
 
+use crate::cursor::CursorTextureCache;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
-use crate::render::EwmRenderElement;
-use crate::{cursor, Ewm, State};
+use crate::render::{render_cursor_elements, EwmRenderElement};
+use crate::{Ewm, State};
 
 fn output_cast_cursor_location(
     pointer_location: (f64, f64),
@@ -365,7 +366,7 @@ impl Ewm {
         cast: &mut Cast,
         window_id: u64,
         output: &Output,
-        cursor_buffer: &cursor::CursorBuffer,
+        cursor_texture_cache: &CursorTextureCache,
         output_scale: Scale<f64>,
         target_frame_time: Duration,
     ) -> bool {
@@ -455,29 +456,19 @@ impl Ewm {
                             && py < (entry_y + entry.h as i32) as f64
                         {
                             let bbox_logical = bbox.loc.to_f64().to_logical(output_scale);
-                            let cursor_x = px
-                                - entry_x as f64
-                                - bbox_logical.x
-                                - cursor::CURSOR_HOTSPOT.0 as f64;
-                            let cursor_y = py
-                                - entry_y as f64
-                                - bbox_logical.y
-                                - cursor::CURSOR_HOTSPOT.1 as f64;
-                            let cursor_pos: Point<i32, Physical> =
-                                Point::from((cursor_x, cursor_y))
-                                    .to_physical_precise_round(output_scale);
-
                             // cursor_location for SPA_META_Cursor (without hotspot offset)
                             let loc_x = px - entry_x as f64 - bbox_logical.x;
                             let loc_y = py - entry_y as f64 - bbox_logical.y;
-                            cursor_location =
-                                Point::from((loc_x, loc_y)).to_physical_precise_round(output_scale);
-
-                            if let Ok(cursor_element) =
-                                cursor_buffer.render_element(renderer, cursor_pos)
-                            {
-                                cursor_elements.push(EwmRenderElement::Cursor(cursor_element));
-                            }
+                            let pointer_pos = Point::from((loc_x, loc_y));
+                            cursor_location = pointer_pos.to_physical_precise_round(output_scale);
+                            cursor_elements.extend(render_cursor_elements(
+                                self,
+                                renderer,
+                                cursor_texture_cache,
+                                output,
+                                output_scale,
+                                pointer_pos,
+                            ));
                         }
                         break;
                     }
@@ -510,7 +501,7 @@ impl Ewm {
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
-        cursor_buffer: &cursor::CursorBuffer,
+        cursor_texture_cache: &CursorTextureCache,
         output_pos: Point<i32, smithay::utils::Logical>,
         output_size: Size<i32, smithay::utils::Logical>,
         output_size_physical: Size<i32, Physical>,
@@ -566,7 +557,7 @@ impl Ewm {
                     self,
                     renderer,
                     output_scale,
-                    cursor_buffer,
+                    cursor_texture_cache,
                     output_pos,
                     output_size,
                     include_cursor,
@@ -605,7 +596,7 @@ impl Ewm {
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
-        cursor_buffer: &cursor::CursorBuffer,
+        cursor_texture_cache: &CursorTextureCache,
         output_scale: Scale<f64>,
         target_frame_time: Duration,
     ) {
@@ -627,7 +618,7 @@ impl Ewm {
                 cast,
                 id,
                 output,
-                cursor_buffer,
+                cursor_texture_cache,
                 output_scale,
                 target_frame_time,
             );

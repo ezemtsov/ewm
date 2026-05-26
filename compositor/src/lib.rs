@@ -100,14 +100,17 @@ use std::time::{Duration, Instant};
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
 use serde::{Deserialize, Serialize};
+use smithay::backend::input::TabletToolDescriptor;
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
 use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
-use smithay::backend::renderer::element::RenderElementStates;
+use smithay::backend::renderer::element::{
+    default_primary_scanout_output_compare, RenderElementStates,
+};
 use smithay::desktop::utils::{
-    send_dmabuf_feedback_surface_tree, send_frames_surface_tree,
-    surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
-    take_presentation_feedback_surface_tree, update_surface_primary_scanout_output,
-    OutputPresentationFeedback,
+    bbox_from_surface_tree, output_update, send_dmabuf_feedback_surface_tree,
+    send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
+    surface_primary_scanout_output, take_presentation_feedback_surface_tree,
+    update_surface_primary_scanout_output, OutputPresentationFeedback,
 };
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
@@ -116,9 +119,9 @@ use smithay::desktop::{
 use smithay::input::dnd::{self, DnDGrab, DndGrabHandler, DndTarget};
 use smithay::input::keyboard::xkb::keysyms;
 use smithay::input::keyboard::{KeyboardHandle, ModifiersState};
-use smithay::input::pointer::{CursorImageStatus, PointerHandle};
+use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData, PointerHandle};
 use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::output::{Output, PhysicalProperties, Subpixel};
+use smithay::output::{self, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::Timer;
 use smithay::reexports::calloop::{
@@ -137,6 +140,7 @@ use smithay::wayland::compositor::{
     get_parent, is_sync_subsurface, with_surface_tree_downward, CompositorClientState,
     CompositorHandler, CompositorState, SurfaceData, TraversalAction,
 };
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState};
 use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
@@ -170,6 +174,7 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::text_input::TextInputManagerState;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
@@ -178,8 +183,8 @@ use smithay::wayland::xdg_activation::{
 };
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use smithay::{
-    delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
+    delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
+    delegate_dmabuf, delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
     delegate_input_method_manager, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
@@ -314,7 +319,7 @@ pub struct IdleTimeoutState {
 
 /// State for cursor auto-hide on inactivity and hide-on-typing.
 ///
-/// Kept separate from `cursor_image_status` so client cursor requests are
+/// Kept separate from `cursor_manager` so client cursor requests are
 /// preserved across hide/show transitions.
 pub struct CursorHideState {
     pub timeout: Option<Duration>,
@@ -926,6 +931,10 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub pointer_constraints_state: PointerConstraintsState,
 
+    // Cursor shape protocol (wp-cursor-shape-v1)
+    #[allow(dead_code)]
+    pub cursor_shape_manager_state: CursorShapeManagerState,
+
     // Screencasting state: PipeWire connection, active casts,
     // window->output cache.
     #[cfg(feature = "screencast")]
@@ -972,8 +981,7 @@ pub struct Ewm {
     /// resolution mice.
     pub notified_activity_this_iteration: bool,
 
-    // Client cursor image status (Hidden/Surface/Named)
-    pub cursor_image_status: CursorImageStatus,
+    pub cursor_manager: cursor::CursorManager,
 
     /// When `Some`, `queue_event` mirrors each event here.
     pub captured_events: Option<Vec<Event>>,
@@ -1020,6 +1028,7 @@ impl Ewm {
         display_handle: DisplayHandle,
         loop_handle: LoopHandle<'static, State>,
         is_drm: bool,
+        cursor_config: cursor::CursorConfig,
     ) -> Self {
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::WmCapabilities;
@@ -1122,6 +1131,9 @@ impl Ewm {
         // Initialize pointer constraints protocol (zwp-pointer-constraints-v1)
         let pointer_constraints_state = PointerConstraintsState::new::<State>(&display_handle);
 
+        // Initialize cursor shape protocol (wp-cursor-shape-v1)
+        let cursor_shape_manager_state = CursorShapeManagerState::new::<State>(&display_handle);
+
         let (worker_event_tx, worker_event_rx) =
             smithay::reexports::calloop::channel::channel::<Event>();
         loop_handle_clone
@@ -1214,6 +1226,7 @@ impl Ewm {
             presentation_state,
             relative_pointer_state,
             pointer_constraints_state,
+            cursor_shape_manager_state,
             #[cfg(feature = "screencast")]
             casting: screencasting::Screencasting::new(&loop_handle_clone),
             #[cfg(feature = "screencast")]
@@ -1242,7 +1255,7 @@ impl Ewm {
                 hide_when_typing: false,
             },
             notified_activity_this_iteration: false,
-            cursor_image_status: CursorImageStatus::default_named(),
+            cursor_manager: cursor::CursorManager::new(&cursor_config.theme, cursor_config.size),
             captured_events: None,
             worker_event_tx,
         }
@@ -1370,6 +1383,7 @@ impl Ewm {
 
         self.space.unmap_output(output);
         self.sync_sorted_outputs();
+        self.refresh_cursor_outputs();
         self.refresh_primary_assignments();
         self.focus_mapped_frame_if_focused_output_unmapped(&output_name);
         self.recalculate_output_size();
@@ -1436,6 +1450,7 @@ impl Ewm {
         self.working_areas.remove(&output_name);
 
         self.sync_sorted_outputs();
+        self.refresh_cursor_outputs();
 
         self.screencopy_state.remove_output(output);
 
@@ -1468,12 +1483,7 @@ impl Ewm {
             }
         }
 
-        // Reset cursor image if the cursor surface died
-        if let CursorImageStatus::Surface(surface) = &self.cursor_image_status {
-            if !surface.alive() {
-                self.cursor_image_status = CursorImageStatus::default_named();
-            }
-        }
+        self.cursor_manager.check_cursor_image_surface_alive();
 
         removed_any
     }
@@ -2627,6 +2637,13 @@ impl Ewm {
         }
     }
 
+    fn pointer_is_on_output(&self, output: &Output) -> bool {
+        let pos: Point<f64, Logical> = self.pointer_location().into();
+        self.space
+            .output_under(pos)
+            .any(|candidate| candidate == output)
+    }
+
     /// Current pointer location, read from Smithay's pointer handle.
     /// This is the single source of truth, updated by `pointer.motion()`,
     /// `pointer.set_location()`, and `cursor_position_hint`.
@@ -2639,6 +2656,8 @@ impl Ewm {
     /// Redraws the output the pointer is currently on, plus the previous
     /// output if the pointer crossed a boundary.
     pub fn queue_redraw_for_pointer(&mut self) {
+        self.refresh_cursor_outputs();
+
         let pos = smithay::utils::Point::from(self.pointer_location());
         let current = self.output_at(pos).cloned();
         let prev = self.pointer_output.take();
@@ -2652,6 +2671,142 @@ impl Ewm {
             self.queue_redraw(output);
         }
         self.pointer_output = current;
+    }
+
+    /// Refresh output enter/leave, scale, and transform for transient pointer surfaces.
+    ///
+    /// Cursor and DnD surfaces are not owned by a frame, layer, or lock surface, so
+    /// they need explicit output tracking based on the current pointer position.
+    pub fn refresh_cursor_outputs(&self) {
+        if self.cursor_hide.is_hidden {
+            return;
+        }
+
+        tracy_span!("Ewm::refresh_cursor_outputs");
+
+        let pointer_pos: Point<f64, Logical> = self.pointer_location().into();
+
+        match self.cursor_manager.cursor_image() {
+            CursorImageStatus::Surface(surface) => {
+                let hotspot = smithay::wayland::compositor::with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<CursorImageSurfaceData>()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .hotspot
+                });
+
+                let surface_pos = pointer_pos.to_i32_round() - hotspot;
+                let bbox = bbox_from_surface_tree(surface, surface_pos);
+
+                let dnd = self
+                    .dnd_icon
+                    .as_ref()
+                    .map(|icon| &icon.surface)
+                    .map(|surface| (surface, bbox_from_surface_tree(surface, surface_pos)));
+
+                let mut cursor_scale = 1.0;
+                let mut cursor_transform = Transform::Normal;
+                let mut dnd_scale = 1.0;
+                let mut dnd_transform = Transform::Normal;
+                for output in &self.sorted_outputs {
+                    let Some(geo) = self.space.output_geometry(output) else {
+                        continue;
+                    };
+
+                    if let Some(mut overlap) = geo.intersection(bbox) {
+                        overlap.loc -= surface_pos;
+                        cursor_scale =
+                            f64::max(cursor_scale, output.current_scale().fractional_scale());
+                        cursor_transform = output.current_transform();
+                        output_update(output, Some(overlap), surface);
+                    } else {
+                        output_update(output, None, surface);
+                    }
+
+                    if let Some((surface, bbox)) = dnd {
+                        if let Some(mut overlap) = geo.intersection(bbox) {
+                            overlap.loc -= surface_pos;
+                            dnd_scale =
+                                f64::max(dnd_scale, output.current_scale().fractional_scale());
+                            dnd_transform = output.current_transform();
+                            output_update(output, Some(overlap), surface);
+                        } else {
+                            output_update(output, None, surface);
+                        }
+                    }
+                }
+
+                smithay::wayland::compositor::with_states(surface, |data| {
+                    crate::utils::send_scale_transform(
+                        surface,
+                        data,
+                        output::Scale::Fractional(cursor_scale),
+                        cursor_transform,
+                    );
+                });
+                if let Some((surface, _)) = dnd {
+                    smithay::wayland::compositor::with_states(surface, |data| {
+                        crate::utils::send_scale_transform(
+                            surface,
+                            data,
+                            output::Scale::Fractional(dnd_scale),
+                            dnd_transform,
+                        );
+                    });
+                }
+            }
+            cursor_image => {
+                let Some(surface) = self.dnd_icon.as_ref().map(|icon| &icon.surface) else {
+                    return;
+                };
+
+                let icon = if let CursorImageStatus::Named(icon) = cursor_image {
+                    *icon
+                } else {
+                    Default::default()
+                };
+
+                let mut dnd_scale = 1.0;
+                let mut dnd_transform = Transform::Normal;
+                for output in &self.sorted_outputs {
+                    let Some(geo) = self.space.output_geometry(output) else {
+                        continue;
+                    };
+
+                    let output_scale = output.current_scale().integer_scale();
+                    let cursor = self
+                        .cursor_manager
+                        .get_cursor_with_name(icon, output_scale)
+                        .unwrap_or_else(|| self.cursor_manager.get_default_cursor(output_scale));
+                    let hotspot =
+                        cursor::XCursor::hotspot(&cursor.frames()[0]).to_logical(output_scale);
+
+                    let surface_pos = pointer_pos.to_i32_round() - hotspot;
+                    let bbox = bbox_from_surface_tree(surface, surface_pos);
+
+                    if let Some(mut overlap) = geo.intersection(bbox) {
+                        overlap.loc -= surface_pos;
+                        dnd_scale = f64::max(dnd_scale, output.current_scale().fractional_scale());
+                        dnd_transform = output.current_transform();
+                        output_update(output, Some(overlap), surface);
+                    } else {
+                        output_update(output, None, surface);
+                    }
+                }
+
+                smithay::wayland::compositor::with_states(surface, |data| {
+                    crate::utils::send_scale_transform(
+                        surface,
+                        data,
+                        output::Scale::Fractional(dnd_scale),
+                        dnd_transform,
+                    );
+                });
+            }
+        }
     }
 
     /// Deactivate all monitors (e.g., lid closed with no external display).
@@ -3116,6 +3271,16 @@ impl Ewm {
                 }
             }
         }
+        if !self.cursor_hide.is_hidden
+            && self.pointer_is_on_output(output)
+            && self
+                .cursor_manager
+                .is_current_cursor_animated(output.current_scale().integer_scale())
+        {
+            if let Some(state) = self.output_state.get_mut(output) {
+                state.unfinished_animations_remain = true;
+            }
+        }
 
         // Check lock confirmation requirements
         if res != backend::RenderResult::Skipped {
@@ -3195,7 +3360,25 @@ impl Ewm {
             }
         }
 
-        // Update DnD icon
+        if let CursorImageStatus::Surface(surface) = self.cursor_manager.cursor_image() {
+            with_surface_tree_downward(
+                surface,
+                (),
+                |_, _, _| TraversalAction::DoChildren(()),
+                |surface, states, _| {
+                    update_surface_primary_scanout_output(
+                        surface,
+                        output,
+                        states,
+                        None,
+                        render_element_states,
+                        default_primary_scanout_output_compare,
+                    );
+                },
+                |_, _, _| true,
+            );
+        }
+
         if let Some(icon) = self.dnd_icon.as_ref() {
             with_surface_tree_downward(
                 &icon.surface,
@@ -3208,7 +3391,7 @@ impl Ewm {
                         states,
                         None,
                         render_element_states,
-                        |_, _, output, _| output,
+                        default_primary_scanout_output_compare,
                     );
                 },
                 |_, _, _| true,
@@ -3274,10 +3457,25 @@ impl Ewm {
             }
         }
 
-        // DnD icon
         if let Some(icon) = self.dnd_icon.as_ref() {
             send_dmabuf_feedback_surface_tree(
                 &icon.surface,
+                output,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    select_dmabuf_feedback(
+                        surface,
+                        render_element_states,
+                        &feedback.render,
+                        &feedback.scanout,
+                    )
+                },
+            );
+        }
+
+        if let CursorImageStatus::Surface(surface) = self.cursor_manager.cursor_image() {
+            send_dmabuf_feedback_surface_tree(
+                surface,
                 output,
                 surface_primary_scanout_output,
                 |surface, _| {
@@ -3355,10 +3553,24 @@ impl Ewm {
             }
         }
 
-        // Collect from DnD icon
         if let Some(icon) = self.dnd_icon.as_ref() {
             take_presentation_feedback_surface_tree(
                 &icon.surface,
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    surface_presentation_feedback_flags_from_states(
+                        surface,
+                        None,
+                        render_element_states,
+                    )
+                },
+            );
+        }
+
+        if let CursorImageStatus::Surface(surface) = self.cursor_manager.cursor_image() {
+            take_presentation_feedback_surface_tree(
+                surface,
                 &mut feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
@@ -3442,10 +3654,19 @@ impl Ewm {
             }
         }
 
-        // DnD icon
         if let Some(icon) = self.dnd_icon.as_ref() {
             send_frames_surface_tree(
                 &icon.surface,
+                output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                &should_send,
+            );
+        }
+
+        if let CursorImageStatus::Surface(surface) = self.cursor_manager.cursor_image() {
+            send_frames_surface_tree(
+                surface,
                 output,
                 frame_callback_time,
                 FRAME_CALLBACK_THROTTLE,
@@ -3523,11 +3744,21 @@ impl Ewm {
             }
         }
 
-        // DnD icon (not tied to a specific output)
         if let Some(icon) = self.dnd_icon.as_ref() {
             let output = self.first_output().unwrap_or(&output);
             send_frames_surface_tree(
                 &icon.surface,
+                output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                |_, _| None,
+            );
+        }
+
+        if let CursorImageStatus::Surface(surface) = self.cursor_manager.cursor_image() {
+            let output = self.first_output().unwrap_or(&output);
+            send_frames_surface_tree(
+                surface,
                 output,
                 frame_callback_time,
                 FRAME_CALLBACK_THROTTLE,
@@ -4433,6 +4664,7 @@ impl Ewm {
         let output_name = info.name.clone();
 
         self.sync_sorted_outputs();
+        self.refresh_cursor_outputs();
         self.recalculate_output_size();
 
         self.send_output_detected(info);
@@ -4470,6 +4702,7 @@ impl Ewm {
 
         // Notify existing surfaces of scale/transform change
         self.send_scale_transform_to_output_surfaces(output);
+        self.refresh_cursor_outputs();
 
         // Resize lock buffer and reconfigure lock surface for new output size
         let output_size = crate::utils::output_size(output);
@@ -4566,13 +4799,6 @@ impl Ewm {
         for layer in layer_map.layers() {
             layer.with_surfaces(|surface, data| {
                 crate::utils::send_scale_transform(surface, data, scale, transform);
-            });
-        }
-
-        // Notify DnD icon
-        if let Some(icon) = self.dnd_icon.as_ref() {
-            smithay::wayland::compositor::with_states(&icon.surface, |data| {
-                crate::utils::send_scale_transform(&icon.surface, data, scale, transform);
             });
         }
     }
@@ -4712,6 +4938,18 @@ impl Ewm {
             .iter()
             .flat_map(|(out, s)| s.frames.iter().map(move |f| (f.surface_id, out.clone())))
             .collect();
+        let pointer_pos: Point<f64, Logical> = self.pointer_location().into();
+        let pointer_output = self.output_at(pointer_pos);
+        let cursor_scale = pointer_output
+            .map(|output| output.current_scale().integer_scale())
+            .unwrap_or(1);
+        let cursor_output = pointer_output.map(|output| {
+            serde_json::json!({
+                "name": output.name(),
+                "scale": output.current_scale().fractional_scale(),
+                "integer_scale": output.current_scale().integer_scale(),
+            })
+        });
 
         serde_json::json!({
             "surfaces": &self.surface_info,
@@ -4726,6 +4964,10 @@ impl Ewm {
             "working_areas": self.get_working_areas_info(),
             "layer_surfaces": self.get_layer_surfaces_info(),
             "pointer_location": self.pointer_location(),
+            "cursor": {
+                "output": cursor_output,
+                "image": self.cursor_manager.debug_state(cursor_scale),
+            },
             "intercepted_keys": module::get_intercepted_keys(),
             "emulated_keys": module::get_emulated_keys(),
             "emacs_pid": self.emacs_pid,
@@ -5303,9 +5545,37 @@ impl CompositorHandler for State {
         // Queue early import for DRM backend (processed in main loop)
         self.ewm.pending_early_imports.push(surface.clone());
 
+        // Cursor surface: apply role buffer offset to the hotspot and redraw.
+        let root = surface_root(surface);
+        if matches!(
+            self.ewm.cursor_manager.cursor_image(),
+            CursorImageStatus::Surface(cursor_surface) if cursor_surface == &root
+        ) {
+            if surface == &root {
+                smithay::wayland::compositor::with_states(surface, |states| {
+                    let cursor_image_attributes = states.data_map.get::<CursorImageSurfaceData>();
+
+                    if let Some(mut cursor_image_attributes) =
+                        cursor_image_attributes.map(|attrs| attrs.lock().unwrap())
+                    {
+                        let buffer_delta = states
+                            .cached_state
+                            .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                            .current()
+                            .buffer_delta
+                            .take();
+                        if let Some(buffer_delta) = buffer_delta {
+                            cursor_image_attributes.hotspot -= buffer_delta;
+                        }
+                    }
+                });
+            }
+            self.ewm.queue_redraw_all();
+            return;
+        }
+
         // DnD icon surface: update offset from buffer delta and redraw.
         if let Some(icon) = &self.ewm.dnd_icon {
-            let root = surface_root(surface);
             if icon.surface == root {
                 if surface == &icon.surface {
                     let dnd_icon = self.ewm.dnd_icon.as_mut().unwrap();
@@ -5455,10 +5725,19 @@ impl SeatHandler for State {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
-        self.ewm.cursor_image_status = image;
+        self.ewm.cursor_manager.set_cursor_image(image);
+        self.ewm.queue_redraw_all();
     }
 }
 delegate_seat!(State);
+delegate_cursor_shape!(State);
+
+impl TabletSeatHandler for State {
+    fn tablet_tool_image(&mut self, _tool: &TabletToolDescriptor, image: CursorImageStatus) {
+        self.ewm.cursor_manager.set_cursor_image(image);
+        self.ewm.queue_redraw_all();
+    }
+}
 
 // Data device / selection
 impl SelectionHandler for State {
@@ -6002,13 +6281,13 @@ impl ScreencopyHandler for State {
             // Copy: render immediately without waiting for the next redraw cycle.
             let manager = manager.clone();
             let State { backend, ewm } = self;
-            backend.with_renderer(|renderer, cursor_buffer, event_loop| {
+            backend.with_renderer(|renderer, cursor_texture_cache, event_loop| {
                 crate::render::render_screencopy_immediate(
                     ewm,
                     renderer,
                     &manager,
                     screencopy,
-                    cursor_buffer,
+                    cursor_texture_cache,
                     event_loop,
                 );
             });
@@ -6525,6 +6804,7 @@ impl State {
         self.sync_keyboard_focus();
 
         self.ewm.refresh_idle_inhibit();
+        self.ewm.refresh_cursor_outputs();
 
         // Refresh workspace protocol state (pull model: diff source of truth vs mirrors).
         crate::protocols::workspace::refresh::<State>(
@@ -6845,6 +7125,14 @@ impl State {
                 self.ewm
                     .configure_cursor_hide(timeout_secs.map(Duration::from_secs), hide_when_typing);
             }
+            ModuleCommand::ConfigureCursor { config } => {
+                self.ewm.cursor_manager.reload(&config.theme, config.size);
+                self.backend.clear_cursor_texture_cache();
+                let env_vars = config.env_vars();
+                self.backend.import_environment(&env_vars);
+                self.ewm.queue_event(Event::Environment { vars: env_vars });
+                self.ewm.queue_redraw_for_pointer();
+            }
             ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
                 self.ewm.focus_follows_mouse_mode = setting;
             }
@@ -7029,6 +7317,30 @@ mod tests {
             output_names(&fix.output_info_list()),
             vec![HEAD_A.to_string()]
         );
+    }
+
+    #[test]
+    fn cursor_config_change_queues_pointer_output_redraw() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.add_output(HEAD_B, 1280, 720);
+        fix.warp_pointer(10.0, 10.0);
+        for state in fix.ewm().output_state.values_mut() {
+            state.redraw_state = RedrawState::Idle;
+        }
+
+        fix.handle_module_command(crate::module::ModuleCommand::ConfigureCursor {
+            config: cursor::CursorConfig::new("ConfiguredCursorTheme", 24),
+        });
+
+        let redraws = fix
+            .ewm_ref()
+            .output_state
+            .iter()
+            .filter(|(_, state)| state.redraw_state.is_render_queued())
+            .map(|(output, _)| output.name())
+            .collect::<Vec<_>>();
+        assert_eq!(redraws, vec![HEAD_A.to_string()]);
     }
 
     fn add_prop_outputs(fix: &mut testing::Fixture) {

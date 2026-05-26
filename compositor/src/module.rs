@@ -110,6 +110,7 @@ use std::thread::{self, JoinHandle};
 use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
 
+use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
 
@@ -368,6 +369,10 @@ pub enum ModuleCommand {
     ConfigureCursorHide {
         timeout_secs: Option<u64>,
         hide_when_typing: bool,
+    },
+    /// Configure cursor theme and size.
+    ConfigureCursor {
+        config: CursorConfig,
     },
     /// Configure focus follows mouse
     ConfigureFocusFollowsMouse {
@@ -638,14 +643,28 @@ fn init_logging() {
     });
 }
 
+fn cursor_config(theme: Option<String>, size: i64) -> Result<CursorConfig> {
+    if theme.as_ref().is_some_and(|theme| theme.is_empty()) {
+        return Err(anyhow!("cursor theme must not be empty").into());
+    }
+
+    let size = u8::try_from(size)
+        .ok()
+        .filter(|size| *size > 0)
+        .ok_or_else(|| anyhow!("cursor size must be in 1..=255"))?;
+
+    Ok(CursorConfig::resolve(theme, size))
+}
+
 /// Start the compositor in a background thread.
 /// Must be called from a TTY (not inside another compositor).
 /// Returns t if started successfully, nil if already running.
 #[defun]
-fn start() -> Result<bool> {
+fn start(cursor_theme: Option<String>, cursor_size: i64) -> Result<bool> {
     use crate::backend::drm::run_drm;
 
     init_logging();
+    let cursor_config = cursor_config(cursor_theme, cursor_size)?;
 
     let mut state = compositor_state().lock().unwrap();
 
@@ -664,7 +683,8 @@ fn start() -> Result<bool> {
         tracing::info!("Compositor thread starting");
 
         // Catch panics so they don't crash Emacs
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_drm));
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_drm(cursor_config)));
 
         match result {
             Ok(Ok(())) => {
@@ -1178,6 +1198,14 @@ fn configure_cursor_hide_module(timeout: Option<i64>, hide_when_typing: Value<'_
         timeout_secs,
         hide_when_typing: hide_when_typing.is_not_nil(),
     });
+    Ok(())
+}
+
+/// Configure cursor theme and size.
+#[defun]
+fn configure_cursor_module(theme: Option<String>, size: i64) -> Result<()> {
+    let config = cursor_config(theme, size)?;
+    push_command(ModuleCommand::ConfigureCursor { config });
     Ok(())
 }
 

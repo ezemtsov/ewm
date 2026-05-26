@@ -46,8 +46,9 @@ use smithay::wayland::shell::wlr_layer::Layer;
 use smithay::wayland::shm;
 use tracing::warn;
 
+use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
-use crate::{cursor, tracy_span, CursorImageStatus, Ewm, State};
+use crate::{tracy_span, Ewm, State};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
 /// per surface via `collect_popup_placements`; smithay's `Window::render_elements`
@@ -109,6 +110,62 @@ fn render_layer(
     }
 }
 
+pub fn render_cursor_elements(
+    ewm: &Ewm,
+    renderer: &mut GlesRenderer,
+    cursor_texture_cache: &CursorTextureCache,
+    output: &Output,
+    scale: Scale<f64>,
+    pointer_pos: Point<f64, smithay::utils::Logical>,
+) -> Vec<EwmRenderElement> {
+    let cursor_scale = output.current_scale().integer_scale();
+    match ewm.cursor_manager.get_render_cursor(cursor_scale) {
+        RenderCursor::Hidden => Vec::new(),
+        RenderCursor::Surface { hotspot, surface } => {
+            let cursor_pos: Point<i32, Physical> =
+                (pointer_pos - hotspot.to_f64()).to_physical_precise_round(scale);
+            render_elements_from_surface_tree(
+                renderer,
+                &surface,
+                cursor_pos,
+                scale,
+                1.0,
+                Kind::Cursor,
+            )
+            .into_iter()
+            .map(EwmRenderElement::Surface)
+            .collect()
+        }
+        RenderCursor::Named {
+            icon,
+            scale: cursor_scale,
+            cursor,
+        } => {
+            let (idx, frame) = cursor.frame(crate::utils::get_monotonic_time().as_millis() as u32);
+            let hotspot = XCursor::hotspot(frame).to_logical(cursor_scale);
+            let cursor_pos: Point<i32, Physical> =
+                (pointer_pos - hotspot.to_f64()).to_physical_precise_round(scale);
+            let texture = cursor_texture_cache.get(icon, cursor_scale, &cursor, idx);
+
+            match MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                cursor_pos.to_f64(),
+                &texture,
+                None,
+                None,
+                None,
+                Kind::Cursor,
+            ) {
+                Ok(cursor_element) => vec![EwmRenderElement::Cursor(cursor_element)],
+                Err(err) => {
+                    warn!("error importing a cursor texture: {err:?}");
+                    Vec::new()
+                }
+            }
+        }
+    }
+}
+
 /// Push constrained (rescale + crop) render elements into the element list.
 ///
 /// Shared pipeline for all view rendering: fullscreen primary/non-primary
@@ -163,7 +220,7 @@ pub fn collect_render_elements_for_output(
     ewm: &Ewm,
     renderer: &mut GlesRenderer,
     scale: Scale<f64>,
-    cursor_buffer: &cursor::CursorBuffer,
+    cursor_texture_cache: &CursorTextureCache,
     output_pos: Point<i32, smithay::utils::Logical>,
     output_size: Size<i32, smithay::utils::Logical>,
     include_cursor: bool,
@@ -188,26 +245,18 @@ pub fn collect_render_elements_for_output(
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
 
         if output_rect.contains(pointer_pos) {
-            match &ewm.cursor_image_status {
-                CursorImageStatus::Hidden => {}
-                _ => {
-                    let cursor_logical = Point::from((
-                        pointer_x - cursor::CURSOR_HOTSPOT.0 as f64 - output_pos.x as f64,
-                        pointer_y - cursor::CURSOR_HOTSPOT.1 as f64 - output_pos.y as f64,
-                    ));
-                    let cursor_pos: Point<i32, Physical> =
-                        cursor_logical.to_physical_precise_round(scale);
-
-                    match cursor_buffer.render_element(renderer, cursor_pos) {
-                        Ok(cursor_element) => {
-                            cursor_elements.push(EwmRenderElement::Cursor(cursor_element));
-                        }
-                        Err(e) => {
-                            warn!("Failed to create cursor render element: {:?}", e);
-                        }
-                    }
-                }
-            }
+            let pointer_pos = Point::from((
+                pointer_x - output_pos.x as f64,
+                pointer_y - output_pos.y as f64,
+            ));
+            cursor_elements.extend(render_cursor_elements(
+                ewm,
+                renderer,
+                cursor_texture_cache,
+                output,
+                scale,
+                pointer_pos,
+            ));
         }
     }
 
@@ -687,7 +736,7 @@ fn collect_screencopy_elements_for_output(
     ewm: &Ewm,
     renderer: &mut GlesRenderer,
     output: &Output,
-    cursor_buffer: &cursor::CursorBuffer,
+    cursor_texture_cache: &CursorTextureCache,
     include_cursor: bool,
 ) -> Vec<EwmRenderElement> {
     let output_scale = Scale::from(output.current_scale().fractional_scale());
@@ -697,7 +746,7 @@ fn collect_screencopy_elements_for_output(
         ewm,
         renderer,
         output_scale,
-        cursor_buffer,
+        cursor_texture_cache,
         output_geo.loc,
         output_geo.size,
         include_cursor,
@@ -811,7 +860,7 @@ pub fn process_screencopies_for_output(
     ewm: &mut Ewm,
     renderer: &mut GlesRenderer,
     output: &smithay::output::Output,
-    cursor_buffer: &cursor::CursorBuffer,
+    cursor_texture_cache: &CursorTextureCache,
     event_loop: &LoopHandle<'static, State>,
 ) {
     use std::cell::OnceCell;
@@ -842,7 +891,7 @@ pub fn process_screencopies_for_output(
                     ewm,
                     renderer,
                     output,
-                    cursor_buffer,
+                    cursor_texture_cache,
                     true, // include_cursor
                 )
             })
@@ -852,7 +901,7 @@ pub fn process_screencopies_for_output(
                     ewm,
                     renderer,
                     output,
-                    cursor_buffer,
+                    cursor_texture_cache,
                     false, // include_cursor
                 )
             })
@@ -914,7 +963,7 @@ pub fn render_screencopy_immediate(
     renderer: &mut GlesRenderer,
     manager: &smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
     screencopy: crate::protocols::screencopy::Screencopy,
-    cursor_buffer: &cursor::CursorBuffer,
+    cursor_texture_cache: &CursorTextureCache,
     event_loop: &LoopHandle<'static, State>,
 ) {
     let output = screencopy.output().clone();
@@ -925,7 +974,7 @@ pub fn render_screencopy_immediate(
         ewm,
         renderer,
         &output,
-        cursor_buffer,
+        cursor_texture_cache,
         screencopy.overlay_cursor(),
     );
     let size = screencopy.buffer_size();
@@ -976,7 +1025,7 @@ pub fn render_screencopy_immediate(
 pub fn capture_output_to_texture(
     ewm: &Ewm,
     renderer: &mut GlesRenderer,
-    cursor_buffer: &cursor::CursorBuffer,
+    cursor_texture_cache: &CursorTextureCache,
     output: &Output,
 ) -> anyhow::Result<crate::texture::TextureBuffer<GlesTexture>> {
     let output_transform = output.current_transform();
@@ -1000,7 +1049,7 @@ pub fn capture_output_to_texture(
         ewm,
         renderer,
         output_scale,
-        cursor_buffer,
+        cursor_texture_cache,
         output_geo.loc,
         output_geo.size,
         false, // include_cursor

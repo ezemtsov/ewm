@@ -118,6 +118,8 @@ session, position toplevel at pointer during drag, handle drop/cancel
 
 **Purpose**: Standard cursor shapes without client-side cursors
 
+**Status**: Implemented
+
 **Enables**:
 - Consistent cursor theming
 - Reduced bandwidth

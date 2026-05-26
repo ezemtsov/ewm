@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use ewm_core::cursor::CursorConfig;
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
 use serde_json::{json, Value};
@@ -103,4 +104,15 @@ fn ewm_state_reports_workspace_protocol_from_frame_strips() {
     assert_eq!(moved["output"], HEAD_B);
     assert_eq!(moved["coordinates"], json!([0, 0]));
     assert_eq!(moved["active"], true);
+}
+
+#[test]
+fn ewm_state_reports_explicit_cursor_config() {
+    let fix =
+        Fixture::new_with_cursor_config(CursorConfig::new("ConfiguredCursorTheme", 37)).unwrap();
+    let cursor = &fix.debug_state()["cursor"]["image"];
+
+    assert_eq!(cursor["provider"], "named");
+    assert_eq!(cursor["theme"], "ConfiguredCursorTheme");
+    assert_eq!(cursor["configured_size"], 37);
 }
