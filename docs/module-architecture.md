@@ -227,7 +227,6 @@ correctness. All state is synchronous via the module.
 - `lisp/ewm-layout.el` - Per-output layout declaration and refresh
 - `lisp/ewm-surface.el` - Surface ↔ buffer mapping
 - `lisp/ewm-text-input.el` - Input method bridge
-- `lisp/ewm-transient.el` - Transient menus
 
 ## References
 

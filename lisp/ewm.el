@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
-;; Package-Requires: ((emacs "28.1") (transient "0.4"))
+;; Package-Requires: ((emacs "28.1"))
 
 ;;; Commentary:
 
@@ -301,7 +301,6 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
 (require 'ewm-layout)
 (require 'ewm-input)
 (require 'ewm-text-input)
-(require 'ewm-transient)
 
 ;;; Protocol
 
