@@ -39,6 +39,7 @@ pub mod input;
 mod module;
 pub mod protocols;
 pub mod render;
+mod reply;
 #[cfg(feature = "screencast")]
 pub mod screencasting;
 pub mod strip;
@@ -7008,18 +7009,21 @@ impl State {
                     current: self.ewm.xkb_current_layout,
                 });
             }
-            ModuleCommand::GetDebugState => {
+            ModuleCommand::GetDebugState(reply) => {
                 let outputs = self.backend.output_info_list(&self.ewm.sorted_outputs);
                 let json = serde_json::to_string_pretty(&self.ewm.debug_state(&outputs))
                     .unwrap_or_default();
-                self.ewm.queue_event(Event::DebugState { json });
+                let _ = reply.send(json);
             }
-            ModuleCommand::CreateActivationToken => {
-                // Create an activation token for Emacs to pass to spawned processes
-                let (token, _) = self.ewm.activation_state.create_external_token(None);
+            ModuleCommand::CreateActivationToken(reply) => {
+                let (token_ref, _) = self.ewm.activation_state.create_external_token(None);
+                let token = token_ref.clone();
                 let token_str = token.as_str().to_string();
                 debug!("Created activation token for Emacs: {}", token_str);
-                module::push_activation_token(token_str);
+                if reply.send(token_str).is_err() {
+                    // Emacs gave up before we replied; the token would otherwise leak.
+                    self.ewm.activation_state.remove_token(&token);
+                }
             }
             ModuleCommand::SetSelection { text } => {
                 let data: Arc<[u8]> = Arc::from(text.into_bytes().into_boxed_slice());

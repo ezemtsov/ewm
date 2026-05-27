@@ -349,7 +349,6 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ("text-input-activated" (ewm--handle-text-input-activated))
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
       ("key" (ewm--handle-key event))
-      ("debug_state" (ewm--handle-debug-state event))
       ("working_area" (ewm--handle-working-area event))
       ("selection-changed" (ewm--handle-selection-changed event))
       ("activate_workspace" (ewm--handle-activate-workspace event))
@@ -618,18 +617,6 @@ Sets Emacs's `process-environment' so child processes inherit these vars."
 Signals that the compositor is fully initialized."
   (setq ewm--compositor-ready t))
 
-(defun ewm--handle-debug-state (event)
-  "Handle debug_state event from compositor.
-Displays the compositor state in a buffer for debugging."
-  (let ((json (alist-get 'json event)))
-    (with-current-buffer (get-buffer-create "*ewm-state*")
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert json)
-        (goto-char (point-min)))
-      (when (fboundp 'js-json-mode) (js-json-mode))
-      (display-buffer (current-buffer)))))
-
 (defun ewm--handle-working-area (event)
   "Handle working area change EVENT.
 Called when layer-shell surfaces (panels) claim exclusive zones,
@@ -884,10 +871,20 @@ Surface coordinates are relative to the owning frame's working area."
   (ewm-screenshot-module (or path "/tmp/ewm-screenshot.png")))
 
 (defun ewm-show-state ()
-  "Request compositor state dump.
-State will be displayed in *ewm-state* buffer when received."
+  "Display the compositor state dump in *ewm-state*."
   (interactive)
-  (ewm-get-debug-state-module))
+  (let ((buf (get-buffer-create "*ewm-state*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t)) (erase-buffer)))
+    (let ((json (ewm-get-debug-state-module)))
+      (unless json
+        (user-error "Timed out waiting for compositor state dump"))
+      (with-current-buffer buf
+        (let ((inhibit-read-only t))
+          (insert json)
+          (goto-char (point-min)))
+        (when (fboundp 'js-json-mode) (js-json-mode))
+        (display-buffer buf)))))
 
 (defun ewm-list-outputs ()
   "Display connected outputs with properties and ewm-output-config suggestions.

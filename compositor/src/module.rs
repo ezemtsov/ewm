@@ -7,12 +7,12 @@
 //!    - `COMMAND_QUEUE`: Emacs -> Compositor commands (layouts, focus, etc.)
 //!    - `EVENT_WRITER`: Compositor -> Emacs events via pipe fd (open_channel)
 //!    - `SHARED_STATE`: Compositor -> Emacs snapshot (focus, pointer, outputs)
-//!    - `ACTIVATION_TOKEN_POOL`: Compositor -> Emacs pre-generated XDG activation tokens
 //!    - `IN_PREFIX_SEQUENCE`: Bidirectional atomic (hot input path)
 //!
 //! 2. **No blocking**: Module functions called from Emacs must never block. They push to queues and
 //!    return immediately. The compositor processes queues on its event loop. Exception:
-//!    `create_activation_token` may busy-wait up to 100ms if the token pool is empty.
+//!    request/reply defuns (`create_activation_token`, `get_debug_state_module`) block on a
+//!    one-shot channel until the compositor processes the command on its next tick.
 //!
 //! 3. **Synchronous state for races**: Some state must be synchronous to avoid race conditions:
 //!    - `PENDING_FRAME_OUTPUTS`: Must be read atomically with surface creation
@@ -106,13 +106,17 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::cursor::CursorConfig;
+use crate::reply::{reply_channel, ReplyError};
 use crate::strip::Frame;
 use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
+
+pub use crate::reply::Reply;
 
 /// Extract a number from a Lisp value as f64, accepting both int and float.
 fn value_as_f64(val: Value<'_>) -> Result<f64> {
@@ -309,7 +313,7 @@ fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
 // Module Commands (Emacs -> Compositor)
 
 /// Commands sent from Emacs to the compositor via the module interface.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ModuleCommand {
     Close {
         id: u64,
@@ -343,10 +347,11 @@ pub enum ModuleCommand {
         layout: String,
     },
     GetLayouts,
-    /// Request verbose state dump for debugging (ewm-show-state)
-    GetDebugState,
-    /// Request activation token creation (compositor will push to ACTIVATION_TOKEN_POOL)
-    CreateActivationToken,
+    /// Request verbose state dump for debugging (ewm-show-state).
+    /// Compositor sends the JSON string back via the reply channel.
+    GetDebugState(Reply<String>),
+    /// Request activation token creation. Compositor sends the token string back via the reply channel.
+    CreateActivationToken(Reply<String>),
     /// Set clipboard selection from Emacs
     SetSelection {
         text: String,
@@ -446,49 +451,40 @@ pub static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
 /// Event loop signal for waking the compositor from Emacs thread
 pub static LOOP_SIGNAL: OnceLock<LoopSignal> = OnceLock::new();
 
-// Activation Token Pool (for XDG activation)
-
-/// Pool of pre-generated activation tokens.
-/// Compositor pushes tokens here, Emacs pops them for spawning processes.
-static ACTIVATION_TOKEN_POOL: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
-
-fn activation_token_pool() -> &'static Mutex<VecDeque<String>> {
-    ACTIVATION_TOKEN_POOL.get_or_init(|| Mutex::new(VecDeque::new()))
-}
-
-/// Push an activation token to the pool (called by compositor)
-pub fn push_activation_token(token: String) {
-    activation_token_pool().lock().unwrap().push_back(token);
-}
-
-/// Get an activation token for spawning a process.
-/// Returns a token string that can be set as XDG_ACTIVATION_TOKEN env var.
-/// If the pool is empty, requests one from the compositor and waits briefly.
+/// Request an XDG activation token from the compositor.
+/// Returns the token string for use as `XDG_ACTIVATION_TOKEN`, or nil on timeout.
 #[defun]
 fn create_activation_token() -> Result<Option<String>> {
-    // Try to get from pool first
-    {
-        let mut pool = activation_token_pool().lock().unwrap();
-        if let Some(token) = pool.pop_front() {
-            return Ok(Some(token));
+    Ok(request_reply(
+        ModuleCommand::CreateActivationToken,
+        Duration::from_millis(200),
+        "activation token",
+    ))
+}
+
+/// Push a request-reply command with a one-shot reply slot and block on the
+/// reply.  Fast-fails with `None` if the compositor isn't running so callers
+/// don't burn the full timeout when there's no one to answer.
+fn request_reply<F>(make_cmd: F, timeout: Duration, label: &str) -> Option<String>
+where
+    F: FnOnce(Reply<String>) -> ModuleCommand,
+{
+    if !is_running() {
+        return None;
+    }
+    let (reply, receiver) = reply_channel();
+    push_command(make_cmd(reply));
+    match receiver.recv_timeout(timeout) {
+        Ok(value) => Some(value),
+        Err(ReplyError::Timeout) => {
+            tracing::warn!("Timeout waiting for {}", label);
+            None
+        }
+        Err(ReplyError::Disconnected) => {
+            tracing::warn!("Compositor dropped reply for {} without sending", label);
+            None
         }
     }
-
-    // Pool empty - request token from compositor
-    push_command(ModuleCommand::CreateActivationToken);
-
-    // Wait briefly for compositor to create token (up to 100ms)
-    for _ in 0..10 {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let mut pool = activation_token_pool().lock().unwrap();
-        if let Some(token) = pool.pop_front() {
-            return Ok(Some(token));
-        }
-    }
-
-    // Timeout - compositor might be busy
-    tracing::warn!("Timeout waiting for activation token");
-    Ok(None)
 }
 
 // Focus History (for debugging focus issues)
@@ -736,8 +732,16 @@ fn stop() -> Result<bool> {
 /// Check if compositor is running.
 #[defun]
 fn running() -> Result<bool> {
-    let state = compositor_state().lock().unwrap();
-    Ok(state.thread.as_ref().is_some_and(|t| !t.is_finished()))
+    Ok(is_running())
+}
+
+fn is_running() -> bool {
+    compositor_state()
+        .lock()
+        .unwrap()
+        .thread
+        .as_ref()
+        .is_some_and(|t| !t.is_finished())
 }
 
 /// Get the Wayland display socket name (if compositor is running).
@@ -1162,10 +1166,14 @@ fn get_layouts_module() -> Result<()> {
 }
 
 /// Request verbose compositor state dump for debugging (module mode).
+/// Blocks until the compositor replies; returns the JSON string, or nil on timeout.
 #[defun]
-fn get_debug_state_module() -> Result<()> {
-    push_command(ModuleCommand::GetDebugState);
-    Ok(())
+fn get_debug_state_module() -> Result<Option<String>> {
+    Ok(request_reply(
+        ModuleCommand::GetDebugState,
+        Duration::from_millis(200),
+        "compositor state dump",
+    ))
 }
 
 /// Set clipboard selection from Emacs (module mode).
