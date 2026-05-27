@@ -411,7 +411,11 @@ the surface's output).  Falls back to first match on OUTPUT."
       (when-let* ((target-frame (or (ewm--frame-by-surface-id frame-surface-id)
                                     (ewm--frame-for-output output))))
         (select-frame target-frame))
-      (pop-to-buffer-same-window buf))))
+      (pop-to-buffer-same-window buf)
+      ;; Process filters can display surfaces while Emacs is waiting on a
+      ;; subprocess (for example EPA waiting for pinentry).  Window hooks may
+      ;; not publish the layout until that wait is over, so send it now.
+      (ewm-layout--refresh))))
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.

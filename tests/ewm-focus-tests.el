@@ -218,6 +218,37 @@ call to `build-frame-plist'; reorder its two passes and this fails."
         (should (eql 7 (plist-get (aref surfaces 0) :id)))
         (should (eql sel (plist-get (aref surfaces 0) :view-id)))))))
 
+(ert-deftest ewm-focus/new-surface-publishes-layout-immediately ()
+  "New external surfaces must not wait for deferred window hooks to render."
+  (ewm-focus-tests--with-frame f
+    (let ((captures nil)
+          (created nil)
+          (ewm--surfaces (make-hash-table :test 'eql))
+          (ewm--module-mode t)
+          (ewm--strips `((,ewm-focus-tests--output . (,f)))))
+      (unwind-protect
+          (cl-letf (((symbol-function 'ewm-output-layout)
+                     (lambda (output frames)
+                       (push (cons output frames) captures))))
+            (ewm--create-surface-buffer 80 "pinentry" ewm-focus-tests--output nil 1234)
+            (setq created (gethash 80 ewm--surfaces))
+            (should created)
+            (should captures)
+            (let* ((frames (cdr (car captures)))
+                   (frame-plist (aref frames 0))
+                   (surfaces (plist-get frame-plist :surfaces))
+                   (entry (aref surfaces 0)))
+              (should (equal (car (car captures)) ewm-focus-tests--output))
+              (should (= 1 (length surfaces)))
+              (should (eql 80 (plist-get entry :id)))
+              (should (eql (plist-get entry :view-id)
+                           (plist-get frame-plist :selected-view-id)))))
+        (when (buffer-live-p created)
+          (with-current-buffer created
+            (remove-hook 'kill-buffer-query-functions
+                         #'ewm--kill-buffer-query-function t))
+          (kill-buffer created))))))
+
 (ert-deftest ewm-focus/handle-focus-skips-while-modal ()
   "Incoming focus events must not change selection during modal input."
   (ewm-focus-tests--with-frame f
