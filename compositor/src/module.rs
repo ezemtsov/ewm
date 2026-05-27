@@ -112,11 +112,11 @@ use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::cursor::CursorConfig;
-use crate::reply::{reply_channel, ReplyError};
 use crate::strip::Frame;
+use crate::utils::reply::{reply_channel, ReplyError};
 use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
 
-pub use crate::reply::Reply;
+pub use crate::utils::reply::Reply;
 
 /// Extract a number from a Lisp value as f64, accepting both int and float.
 fn value_as_f64(val: Value<'_>) -> Result<f64> {

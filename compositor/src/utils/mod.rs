@@ -4,6 +4,8 @@
 //! The fractional-scale protocol has N/120 precision, so coordinates must be carefully
 //! rounded to avoid subpixel drift.
 
+pub mod reply;
+
 use std::time::Duration;
 
 use smithay::backend::renderer::utils::with_renderer_surface_state;
