@@ -17,8 +17,9 @@
 //! 4. **Command dispatch focus**: Command-dispatch keys do not move Wayland keyboard focus. Lisp
 //!    opens tokened keyboard capture for minibuffers, transients, and read-key states.
 //!
-//! 5. **Text input intercept**: When `text_input_intercept` is true, all printable keys are
-//!    redirected to Emacs (for input method support in non-Emacs surfaces).
+//! 5. **Text input intercept**: When requested by Lisp and an active text-input surface matches
+//!    keyboard focus, printable keys are redirected to Emacs for input-method translation.
+//!    Stale/global intercept state must not blackhole unrelated clients.
 //!
 //! 6. **VT switching**: Ctrl+Alt+F1-F12 arrive as XF86Switch_VT_N keysyms.
 
@@ -339,7 +340,10 @@ pub fn handle_keyboard_event(
 
     let intercepted_keys = crate::module::get_intercepted_keys();
     let emulated_keys = crate::module::get_emulated_keys();
-    let text_input_intercept = state.ewm.text_input_intercept;
+    let focused_surface_id = state.ewm.focused_surface_id();
+    let text_input_intercept = state.ewm.text_input_intercept
+        && state.ewm.im_text_input.is_active()
+        && state.ewm.active_text_input_surface_id() == Some(focused_surface_id);
 
     // Use input_intercept + explicit input_forward so we can handle
     // emulation (modifier translation) between the two steps.
