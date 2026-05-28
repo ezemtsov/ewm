@@ -148,15 +148,19 @@ async section below).
 
 ## The focus state, as the compositor sees it
 
-The compositor's stored focus is a pair: a focused frame's surface id, and
-optionally a focused view id inside that frame.  At resolve time, two
-override modes sit on top of this pair:
+The compositor's stored window focus is a pair: a focused frame's
+surface id, and optionally a focused view id inside that frame.  At
+keyboard-focus resolve time, override modes sit on top of this pair:
 
 - **Lock**: when a session lock surface is present, keyboard focus is
   forced to it.  The underlying pair is preserved for restore on unlock.
 - **Layer shell**: panels that request exclusive or on-demand keyboard
   interactivity steal focus while present.  Again, the underlying pair is
   preserved.
+- **Emacs keyboard capture**: incomplete key sequences, minibuffers,
+  transient maps, and read-key/read-event commands hold tokened leases that
+  route Wayland keyboard focus to Emacs without changing the stored
+  window-focus pair.  Stale token cleanup cannot clear another live capture.
 
 Collapsed to discrete states, this gives:
 
@@ -166,8 +170,8 @@ Collapsed to discrete states, this gives:
                 └────┬─────┘
                      │ first Emacs frame mapped
                      ▼
-                ┌──────────┐  ◄──── prefix redirect parks focus here
-                │  Frame   │        for the duration of C-x, M-x, …
+                ┌──────────┐
+                │  Frame   │
                 │          │        (focused frame's own surface)
                 └────┬─────┘
                      │ focused frame's selected window
@@ -180,6 +184,10 @@ Collapsed to discrete states, this gives:
        ─── overlays sit on top of any of the above at resolve time ───
 
                 ┌────────────┐
+                │   Emacs    │   keyboard capture;
+                └────────────┘   window focus underneath is unchanged
+
+                ┌────────────┐
                 │ LayerShell │   exclusive/on-demand panel surface
                 └────────────┘   present; restores on dismissal
 
@@ -190,8 +198,8 @@ Collapsed to discrete states, this gives:
 
 Transitions between them are driven by clicks, gestures, lisp-initiated
 focus commands, layout refreshes that change the active frame's selected
-view, prefix-key interception (which parks on Frame temporarily), and
-unlock/relock.
+view, fullscreen correction, and unlock/relock.  Keyboard capture is an
+overlay on top of those states, not a transition of the stored pair.
 
 The state machine itself is small.  What makes the focus subsystem look
 complicated is not the states but the synchronization across the
@@ -226,9 +234,11 @@ Always:
 
 After specific operations:
 
-8. **Prefix-redirect parks focus on the frame.**  After
-   `enter_prefix_redirect(id)` on a frame that exists in some strip,
-   the focused frame is that frame and no view is focused.
+8. **Keyboard capture itself does not change window focus.**  When Lisp
+   asks the compositor to capture keyboard focus for a key sequence,
+   minibuffer, transient, or read-key state, the Wayland keyboard target
+   may move to Emacs but the capture command preserves the stored
+   focused frame/view pair.
 9. **Applying a layout never removes a frame.**  The set of frame
    surface_ids across all strips can grow or shuffle, but it never
    strictly shrinks via layout.  Frames go away only through
@@ -285,12 +295,11 @@ Three concrete examples:
    processed the event, lisp's `selected-window` and the compositor's
    focus disagree -- by design, briefly.
 
-3. When the user toggles a fullscreen surface via an intercepted key, the
-   keystroke reaches Emacs through a prefix-redirect (focus is parked on
-   Emacs for the duration of the key sequence).  Emacs runs the toggle;
-   lisp re-ships the layout; the compositor sees fullscreen now applies;
-   the user wants keys to go back to the surface immediately, not to
-   Emacs.
+3. When the user toggles a fullscreen surface via an intercepted command,
+   the keystroke reaches Emacs over the event pipe without moving Wayland
+   focus.  Emacs runs the toggle; lisp re-ships the layout; the compositor
+   sees fullscreen now applies; the user wants keys to continue going to
+   the surface immediately, not to Emacs.
 
 The architecture's job is to make each of these self-healing rather than
 brittle.
@@ -373,15 +382,15 @@ motion or click cannot yank selection out of an active read.
 Two operations need keyboard focus moved *atomically* with the event that
 triggers them, rather than deferred to a later tick:
 
-- **Intercepted keys.**  When a prefix key like `C-x` is pressed while an
-  external app has focus, the compositor must (a) route the key to Emacs
-  and (b) keep Emacs focused for the rest of the sequence.  Both have to
-  happen synchronously in the same key handler, because the next key is
-  already coming.  Wayland has no keyboard-grab equivalent of X11's
-  `XGrabKeyboard`, so the compositor tracks a prefix-sequence flag
-  itself.  When the lisp command completes, `post-command-hook` clears
-  the flag and lisp ships a layout refresh that restores the prior view
-  focus.
+- **Keyboard-capturing input.**  When a real keymap prefix like `C-x` is
+  pressed while an external app has window focus, the compositor must
+  route Wayland keyboard focus to Emacs and keep it there for the rest of
+  the sequence without changing the stored focused frame/view pair.  This
+  has to happen synchronously in the same key handler, because the next
+  key is already coming.  Ordinary command bindings are delivered to Lisp
+  without moving Wayland focus; if they open a minibuffer, transient, or
+  read-key state, Lisp asks the compositor to capture keyboard focus at
+  that point.
 
 - **Fullscreen surfaces.**  After an intercepted key toggles a surface
   fullscreen, keyboard focus has to land back on the now-fullscreen

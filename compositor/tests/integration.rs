@@ -210,7 +210,7 @@ fn output_layout_command_refreshes_pointer_focus() {
         Size::<i32, Logical>::from((400, 300)),
     );
     let surface_id = fixture
-        .find_surface_id(&toplevel.surface)
+        .find_surface_id(&client, &toplevel.surface)
         .expect("server did not assign a surface id");
     let view_id = nz(1);
 
@@ -456,7 +456,7 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
         Size::<i32, Logical>::from((400, 300)),
     );
     let surface_id = fixture
-        .find_surface_id(&toplevel.surface)
+        .find_surface_id(&client, &toplevel.surface)
         .expect("server did not assign a surface id");
     let view_id = nz(1);
 

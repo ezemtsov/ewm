@@ -35,7 +35,6 @@ enum Op {
     },
     FocusView(ViewId),
     FocusFrame(u64),
-    EnterPrefixRedirect(u64),
     RemoveOutput(usize),
     AddOutput(usize),
     DestroyFrame(u64),
@@ -139,7 +138,6 @@ fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
         entry_view_strategy().prop_map(Op::FocusView),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
-        FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
         (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
@@ -263,25 +261,6 @@ fn apply_op(fix: &mut Fixture, op: Op) {
         }
         Op::FocusFrame(f) => {
             fix.ewm().set_focus_frame(f, "proptest", false);
-        }
-        Op::EnterPrefixRedirect(f) => {
-            let known = strip_frame_ids(fix).contains(&f);
-            fix.ewm().enter_prefix_redirect(f);
-            if known {
-                // I8: prefix-redirect parks focus on the frame (no view).
-                assert_eq!(
-                    fix.ewm_ref().focused_frame_id,
-                    f,
-                    "invariant 8: enter_prefix_redirect({}) didn't set focused_frame_id",
-                    f,
-                );
-                assert_eq!(
-                    fix.ewm_ref().focused_view_id,
-                    None,
-                    "invariant 8: enter_prefix_redirect({}) didn't clear focused_view_id",
-                    f,
-                );
-            }
         }
         Op::RemoveOutput(output) => {
             let name = OUTPUTS[output];
@@ -748,7 +727,6 @@ fn reconcile_op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
         entry_view_strategy().prop_map(Op::FocusView),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
-        FRAME_SID_RANGE.prop_map(Op::EnterPrefixRedirect),
         (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
         (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         FRAME_SID_RANGE.prop_map(Op::DestroyFrame),

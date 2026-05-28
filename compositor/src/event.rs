@@ -118,6 +118,9 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         utf8: Option<String>,
     },
+    /// Intercepted Emacs command key. Lisp replays this through its keymaps.
+    #[serde(rename = "intercepted-command")]
+    InterceptedCommand { key: String },
     /// Working area changed (due to layer-shell exclusive zones)
     #[serde(rename = "working_area")]
     WorkingArea {

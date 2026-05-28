@@ -5,29 +5,35 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Key interception**: Super-prefixed bindings are intercepted and redirected to Emacs. The
-//!    intercepted key list comes from Emacs via `ewm-intercept-keys-module`. Keys are matched using
-//!    raw Latin keysyms to work regardless of XKB layout.
+//! 1. **Key interception**: Emacs provides intercepted keys via `ewm-intercept-keys-module`.
+//!    Matching uses raw Latin keysyms; delivery uses temporary keyboard focus or command events.
 //!
-//! 2. **Focus synchronization**: Before processing any key, we check for pending focus commands
-//!    from Emacs. This ensures focus changes are applied before the key event, avoiding race
-//!    conditions.
+//! 2. **Focus synchronization**: Keyboard focus is derived from logical focus and capture state
+//!    before forwarding.
 //!
-//! 3. **Text input intercept**: When `text_input_intercept` is true, all printable keys are
+//! 3. **Intercept ownership**: Once EWM consumes an intercepted physical press, backend repeats and
+//!    the matching release are consumed by EWM too. They must not leak to the client surface.
+//!
+//! 4. **Command dispatch focus**: Command-dispatch keys do not move Wayland keyboard focus. Lisp
+//!    opens tokened keyboard capture for minibuffers, transients, and read-key states.
+//!
+//! 5. **Text input intercept**: When `text_input_intercept` is true, all printable keys are
 //!    redirected to Emacs (for input method support in non-Emacs surfaces).
 //!
-//! 4. **VT switching**: Ctrl+Alt+F1-F12 are special keys handled by XKB as XF86Switch_VT_N keysyms.
-//!    We detect these and signal the backend to switch VTs.
+//! 6. **VT switching**: Ctrl+Alt+F1-F12 arrive as XF86Switch_VT_N keysyms.
 
 use smithay::backend::input::KeyState;
-use smithay::input::keyboard::{keysyms, xkb, FilterResult, Keysym, ModifiersState};
+use smithay::input::keyboard::{
+    keysyms, xkb, FilterResult, KeyboardHandle, Keysym, ModifiersState,
+};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
-use smithay::wayland::seat::WaylandFocus;
 
-use crate::{module, tracy_span, EmulatedKey, InterceptedKey, State, SurfaceHit};
+use crate::im::repeat::HeldKeyOwner;
+use crate::{
+    module, tracy_span, EmulatedKey, InterceptDispatch, InterceptedKey, State, SurfaceHit,
+};
 
-/// Notify the idle notifier of user activity and reset native idle timer
 fn notify_activity(state: &mut State) {
     state.ewm.notify_activity();
     state.ewm.reset_idle_timer();
@@ -39,6 +45,15 @@ fn notify_pointer_activity(state: &mut State) {
     state.ewm.reset_cursor_hide_timer();
 }
 
+fn key_repeats(state: &mut State, keycode: u32) -> bool {
+    let keyboard = state.ewm.keyboard.clone();
+    keyboard.with_xkb_state(state, |context| {
+        let xkb = context.xkb().lock().unwrap();
+        // The borrowed keymap is used only inside Smithay's XKB callback.
+        unsafe { xkb.keymap().key_repeats(keycode.into()) }
+    })
+}
+
 /// Unified decision from the keyboard filter.
 /// Returned by `input_intercept`. The caller decides how to forward.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,8 +62,10 @@ pub enum KeyAction {
     Forward,
     /// Emulate: translate modifiers and forward to client
     Emulate(String),
-    /// Redirect to Emacs (intercepted key)
-    Redirect(u32),
+    /// Redirect to Emacs through Wayland keyboard focus.
+    KeyboardRedirect(u32),
+    /// Execute an Emacs command binding without moving Wayland keyboard focus.
+    Command { key: String, repeat: bool },
     /// Text input intercept: printable key for Emacs IM processing
     TextInput(u32, Option<String>),
     /// VT switch (Ctrl+Alt+F1-F12)
@@ -64,16 +81,25 @@ fn decode_vt_switch(modified_raw: u32) -> Option<i32> {
     }
 }
 
+fn intercepted_key_action(ik: &InterceptedKey, keysym_raw: u32) -> KeyAction {
+    match ik.dispatch {
+        InterceptDispatch::Keyboard => KeyAction::KeyboardRedirect(keysym_raw),
+        InterceptDispatch::Command => KeyAction::Command {
+            key: ik.key.clone(),
+            repeat: ik.repeat,
+        },
+    }
+}
+
 /// Pure classification of a keyboard event. Reads no compositor state; the
-/// caller resolves `focus_on_emacs` / `fullscreen_surface_id` upstream and
-/// applies any side effects (e.g. `module::set_in_prefix_sequence(true)` on
-/// `Redirect`) downstream. Releases always Forward.
+/// caller resolves `focus_on_emacs` / `fullscreen_active` upstream and
+/// applies side effects downstream. Releases always Forward.
 pub fn classify_key(
     intercepted_keys: &[InterceptedKey],
     emulated_keys: &[EmulatedKey],
     text_input_intercept: bool,
     focus_on_emacs: bool,
-    fullscreen_surface_id: Option<u64>,
+    fullscreen_active: bool,
     is_press: bool,
     keysym_raw: u32,
     modified_raw: u32,
@@ -101,14 +127,8 @@ pub fn classify_key(
         .iter()
         .find(|ik| ik.matches(keysym_raw, modified_raw, mods))
     {
-        if fullscreen_surface_id.is_some() {
-            if ik.allow_fullscreen && !focus_on_emacs {
-                return KeyAction::Redirect(keysym_raw);
-            }
-            return KeyAction::Forward;
-        }
-        if !focus_on_emacs {
-            return KeyAction::Redirect(keysym_raw);
+        if !focus_on_emacs && (!fullscreen_active || ik.allow_fullscreen) {
+            return intercepted_key_action(ik, keysym_raw);
         }
         return KeyAction::Forward;
     }
@@ -128,8 +148,10 @@ pub fn classify_key(
 pub enum KeyboardAction {
     /// Normal key forwarding - nothing special happened
     Forward,
-    /// Prefix key intercepted - redirect focus to Emacs
+    /// Prefix/key-sequence input intercepted - redirect keyboard focus to Emacs
     RedirectToEmacs,
+    /// Command binding intercepted and queued to Emacs over IPC
+    CommandIntercepted,
     /// Key intercepted for text input (sent to Emacs via IPC)
     TextInputIntercepted,
     /// VT switch requested (Ctrl+Alt+F1-F12)
@@ -138,14 +160,70 @@ pub enum KeyboardAction {
     Emulated,
 }
 
-/// Process a keyboard key event
-///
-/// This handles:
-/// - Kill combo detection (Ctrl+Alt+Backspace)
-/// - Prefix key interception (redirect to Emacs)
-/// - Normal key forwarding to focused surface
-///
-/// Returns the action to take based on the key event.
+fn handle_held_intercept(
+    state: &mut State,
+    keyboard: &KeyboardHandle<State>,
+    keycode: u32,
+    key_state: KeyState,
+    serial: smithay::utils::Serial,
+    time: u32,
+) -> Option<KeyboardAction> {
+    let owner = state.ewm.held_key_owner(keycode)?;
+    let release = key_state == KeyState::Released;
+
+    if release
+        || matches!(
+            owner,
+            HeldKeyOwner::KeyboardRedirect | HeldKeyOwner::Emulated { .. }
+        )
+    {
+        let (_, mods_changed) =
+            keyboard.input_intercept(state, keycode.into(), key_state, |_, _, _| {});
+        match &owner {
+            HeldKeyOwner::KeyboardRedirect => {
+                state.send_intercept_key_to_emacs(keycode, key_state, time, mods_changed);
+            }
+            HeldKeyOwner::Emulated { target_mod } => {
+                forward_emulated_key(
+                    state, keyboard, keycode, key_state, serial, time, target_mod,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    if release {
+        state.ewm.end_key_hold(keycode);
+        state.sync_keyboard_focus();
+    }
+
+    notify_activity(state);
+    Some(match owner {
+        HeldKeyOwner::KeyboardRedirect => KeyboardAction::RedirectToEmacs,
+        HeldKeyOwner::Command => KeyboardAction::CommandIntercepted,
+        HeldKeyOwner::TextInput => KeyboardAction::TextInputIntercepted,
+        HeldKeyOwner::Emulated { .. } => KeyboardAction::Emulated,
+    })
+}
+
+fn forward_emulated_key(
+    state: &mut State,
+    keyboard: &KeyboardHandle<State>,
+    keycode: u32,
+    key_state: KeyState,
+    serial: smithay::utils::Serial,
+    time: u32,
+    target_mod: &str,
+) {
+    let saved_mods = keyboard.modifier_state();
+    let target_mods = EmulatedKey::target_modifiers_for(&saved_mods, target_mod);
+    keyboard.set_modifier_state(target_mods);
+    keyboard.advertise_modifier_state(state);
+    keyboard.input_forward(state, keycode.into(), key_state, serial, time, false);
+    keyboard.set_modifier_state(saved_mods);
+}
+
+/// Process a keyboard key event and return the compositor action taken.
 pub fn handle_keyboard_event(
     state: &mut State,
     keycode: u32,
@@ -160,6 +238,14 @@ pub fn handle_keyboard_event(
 
     if is_press {
         state.ewm.hide_cursor_for_typing();
+    }
+
+    if !is_press {
+        if let Some(action) =
+            handle_held_intercept(state, &keyboard, keycode, key_state, serial, time)
+        {
+            return action;
+        }
     }
 
     // Handle locked state: only allow VT switch, forward everything else to lock surface
@@ -198,7 +284,7 @@ pub fn handle_keyboard_event(
     }
 
     // Look up the focused view's entry on the focused frame; if it's fullscreen,
-    // we'll redirect keyboard back to it after intercept_redirect parks focus on Emacs.
+    // make sure normal forwarded keys still go to that surface.
     let focused_frame_id = state.ewm.focused_frame_id;
     let focused_view_id = state.ewm.focused_view_id;
     let fullscreen_view = focused_view_id.and_then(|vid| {
@@ -212,63 +298,45 @@ pub fn handle_keyboard_event(
             .filter(|e| e.fullscreen)
             .map(|e| (e.view_id, e.surface_id))
     });
-    let fullscreen_surface_id = fullscreen_view.map(|(_, sid)| sid);
+    let fullscreen_active = fullscreen_view.is_some();
 
-    // When a fullscreen surface exists, ensure keyboard focus is on it before processing keys.
-    // After intercept_redirect (e.g. s-f to enter fullscreen), Wayland keyboard focus stays on
-    // Emacs. Without this, FilterResult::Forward sends keys to Emacs instead of the surface.
+    // Undo temporary redirects before forwarding into fullscreen surfaces.
     if let Some((view_id, surface_id)) = fullscreen_view {
         if state.ewm.focused_surface_id() != surface_id {
             state
                 .ewm
                 .set_focus_view(view_id, "fullscreen_focus_redirect", true);
-            state.sync_keyboard_focus();
         }
     }
 
-    // Computed after fullscreen restore so it reflects the corrected focus state
-    let focus_on_emacs = state.ewm.is_focus_on_emacs();
+    state.sync_keyboard_focus();
+
+    let focus_on_emacs = state.ewm.is_keyboard_focus_on_emacs();
     if is_press && focus_on_emacs {
         state.ewm.record_emacs_keyboard_activity();
     }
-
-    // During a prefix sequence (C-x ...), Emacs needs Latin keysyms for
-    // keybinding dispatch. Temporarily set base layout for this key event,
-    // then restore immediately after. No persistent state needed.
-    let prefix_saved_layout = if module::get_in_prefix_sequence()
-        && focus_on_emacs
-        && state.ewm.xkb_current_layout != 0
-    {
-        let saved = state.ewm.xkb_current_layout;
-        keyboard.with_xkb_state(state, |mut context| {
-            context.set_layout(smithay::input::keyboard::Layout(0));
-        });
-        Some(saved)
-    } else {
-        None
-    };
-
-    // Key emulation release
-    // If this is a release of a key we previously emulated, translate its
-    // modifiers too so the client sees a consistent press/release pair.
-    if !is_press {
-        if let Some(target_mod) = state.ewm.emulated_keycodes.remove(&keycode) {
-            let (_, _mods_changed) =
-                keyboard.input_intercept(state, keycode.into(), key_state, |_, _, _| {});
-
-            let saved_mods = keyboard.modifier_state();
-            let target_mods = EmulatedKey::target_modifiers_for(&saved_mods, &target_mod);
-            keyboard.set_modifier_state(target_mods);
-            keyboard.advertise_modifier_state(state);
-            keyboard.input_forward(state, keycode.into(), key_state, serial, time, false);
-            keyboard.set_modifier_state(saved_mods);
-
-            notify_activity(state);
-            return KeyboardAction::Emulated;
+    if is_press {
+        if let Some(action) =
+            handle_held_intercept(state, &keyboard, keycode, key_state, serial, time)
+        {
+            return action;
         }
     }
 
-    // Clone values needed in the filter closure
+    // During keyboard capture, Emacs needs Latin keysyms for keybinding
+    // dispatch. Temporarily set base layout for this key event, then restore
+    // immediately after. No persistent state needed.
+    let prefix_saved_layout =
+        if module::get_keyboard_capture() && focus_on_emacs && state.ewm.xkb_current_layout != 0 {
+            let saved = state.ewm.xkb_current_layout;
+            keyboard.with_xkb_state(state, |mut context| {
+                context.set_layout(smithay::input::keyboard::Layout(0));
+            });
+            Some(saved)
+        } else {
+            None
+        };
+
     let intercepted_keys = crate::module::get_intercepted_keys();
     let emulated_keys = crate::module::get_emulated_keys();
     let text_input_intercept = state.ewm.text_input_intercept;
@@ -287,7 +355,7 @@ pub fn handle_keyboard_event(
                 &emulated_keys,
                 text_input_intercept,
                 focus_on_emacs,
-                fullscreen_surface_id,
+                fullscreen_active,
                 is_press,
                 keysym_raw,
                 modified.raw(),
@@ -295,18 +363,12 @@ pub fn handle_keyboard_event(
                 mods,
             )
         });
-    if matches!(action, KeyAction::Redirect(_)) {
-        module::set_in_prefix_sequence(true);
-    }
-
-    // Restore layout after prefix sequence temp reset
     if let Some(saved) = prefix_saved_layout {
         keyboard.with_xkb_state(state, |mut context| {
             context.set_layout(smithay::input::keyboard::Layout(saved as u32));
         });
     }
 
-    // Handle the filter decision
     match action {
         KeyAction::Forward => {
             state.sync_keyboard_focus();
@@ -321,22 +383,15 @@ pub fn handle_keyboard_event(
         }
 
         KeyAction::Emulate(ref target_mod) => {
-            // Track this keycode so its release is also emulated
-            state
-                .ewm
-                .emulated_keycodes
-                .insert(keycode, target_mod.clone());
-
-            // Swap modifiers (e.g. Super -> Ctrl) and forward to the surface.
-            // Smithay sends key BEFORE modifiers in input_forward, but the client
-            // needs the new modifiers BEFORE the key to interpret it correctly.
-            // So: advertise modifiers first, then forward key without modifiers.
-            let saved_mods = keyboard.modifier_state();
-            let target_mods = EmulatedKey::target_modifiers_for(&saved_mods, target_mod);
-            keyboard.set_modifier_state(target_mods);
-            keyboard.advertise_modifier_state(state);
-            keyboard.input_forward(state, keycode.into(), key_state, serial, time, false);
-            keyboard.set_modifier_state(saved_mods);
+            state.ewm.begin_key_hold(
+                keycode,
+                HeldKeyOwner::Emulated {
+                    target_mod: target_mod.clone(),
+                },
+            );
+            forward_emulated_key(
+                state, &keyboard, keycode, key_state, serial, time, target_mod,
+            );
 
             tracing::debug!(
                 "emulate: keycode={} target_mod={} surface={}",
@@ -349,16 +404,23 @@ pub fn handle_keyboard_event(
         }
 
         KeyAction::TextInput(keysym, ref utf8) => {
+            state.ewm.begin_key_hold(keycode, HeldKeyOwner::TextInput);
+            if key_repeats(state, keycode) {
+                state
+                    .ewm
+                    .start_text_input_repeat(keycode, keysym, utf8.clone());
+            }
             state.ewm.queue_event(crate::Event::Key {
                 keysym,
                 utf8: utf8.clone(),
             });
+            notify_activity(state);
             return KeyboardAction::TextInputIntercepted;
         }
 
         KeyAction::VtSwitch(vt) => return KeyboardAction::ChangeVt(vt),
 
-        KeyAction::Redirect(keysym_val) => {
+        KeyAction::KeyboardRedirect(keysym_val) => {
             tracing::info!(
                 "intercept_redirect: keycode={} keysym=0x{:x} from surface {}",
                 keycode,
@@ -366,53 +428,40 @@ pub fn handle_keyboard_event(
                 state.ewm.focused_surface_id()
             );
 
-            if let Some(emacs_id) = state.ewm.get_emacs_surface_for_focused_output() {
-                let context = format!("keycode={} keysym=0x{:x}", keycode, keysym_val);
-                module::record_focus(emacs_id, "intercept_redirect", Some(&context));
-                state.ewm.enter_prefix_redirect(emacs_id);
-                if let Some(window) = state.ewm.id_windows.get(&emacs_id) {
-                    if let Some(surface) = window.wl_surface() {
-                        let emacs_surface: WlSurface = surface.into_owned();
-                        state.ewm.keyboard_focus = Some(emacs_surface.clone());
-                        keyboard.set_focus(state, Some(emacs_surface.clone()), serial);
+            if state.ewm.emacs_surface_for_focused_output().is_some() {
+                state.ewm.cancel_command_repeat();
+                module::begin_keyboard_redirect_capture();
+                state
+                    .ewm
+                    .begin_key_hold(keycode, HeldKeyOwner::KeyboardRedirect);
 
-                        // NOTE: We intentionally do NOT send a Focus event here.
-                        // The prefix key redirect is temporary for the key sequence,
-                        // and sending Focus would cause ewm-layout--refresh to
-                        // redirect focus back to the external surface before the
-                        // sequence completes (race condition with C-x left/right etc).
+                // Keep EWM's logical focus on the surface. Only Wayland
+                // keyboard delivery is redirected for this intercepted
+                // physical key.
 
-                        // Temporarily switch to base layout so the re-sent key
-                        // produces Latin keysyms for Emacs keybindings.
-                        let saved_layout = state.ewm.xkb_current_layout;
-                        if saved_layout != 0 && !state.ewm.xkb_layout_names.is_empty() {
-                            keyboard.with_xkb_state(state, |mut context| {
-                                context.set_layout(smithay::input::keyboard::Layout(0));
-                            });
-                        }
-
-                        // Re-send the key to Emacs (sees layout 0)
-                        keyboard.input::<(), _>(
-                            state,
-                            keycode.into(),
-                            key_state,
-                            serial,
-                            time,
-                            |_, _, _| FilterResult::Forward,
-                        );
-
-                        // Restore layout: external surface keeps its layout
-                        if saved_layout != 0 {
-                            keyboard.with_xkb_state(state, |mut context| {
-                                context.set_layout(smithay::input::keyboard::Layout(
-                                    saved_layout as u32,
-                                ));
-                            });
-                        }
-                    }
-                }
+                state.send_intercept_key_to_emacs(keycode, key_state, time, mods_changed);
             }
+            notify_activity(state);
             return KeyboardAction::RedirectToEmacs;
+        }
+
+        KeyAction::Command { ref key, repeat } => {
+            tracing::info!(
+                "intercept_command: keycode={} key={} from surface {}",
+                keycode,
+                key,
+                state.ewm.focused_surface_id()
+            );
+
+            state.ewm.begin_key_hold(keycode, HeldKeyOwner::Command);
+            if repeat {
+                state.ewm.start_command_repeat(keycode, key.clone());
+            }
+            state
+                .ewm
+                .queue_event(crate::Event::InterceptedCommand { key: key.clone() });
+            notify_activity(state);
+            return KeyboardAction::CommandIntercepted;
         }
     }
 
@@ -575,6 +624,8 @@ pub const ACCEL_PROFILE_VALUES: &str = "flat, adaptive";
 pub const CLICK_METHOD_VALUES: &str = "button-areas, clickfinger";
 pub const SCROLL_METHOD_VALUES: &str = "no-scroll, two-finger, edge, on-button-down";
 pub const TAP_BUTTON_MAP_VALUES: &str = "left-right-middle, left-middle-right";
+pub const DEFAULT_KEYBOARD_REPEAT_DELAY: i32 = 200;
+pub const DEFAULT_KEYBOARD_REPEAT_RATE: i32 = 25;
 
 /// A single input configuration entry, either a type default or device-specific.
 ///
@@ -603,6 +654,19 @@ pub struct InputConfigEntry {
     pub xkb_layouts: Option<String>,
     pub xkb_variants: Option<String>,
     pub xkb_options: Option<String>,
+}
+
+pub fn effective_keyboard_repeat(configs: &[InputConfigEntry]) -> (i32, i32) {
+    let keyboard_config = configs
+        .iter()
+        .find(|c| c.device.is_none() && c.device_type == Some(DeviceType::Keyboard));
+    let rate = keyboard_config
+        .and_then(|config| config.repeat_rate)
+        .unwrap_or(DEFAULT_KEYBOARD_REPEAT_RATE);
+    let delay = keyboard_config
+        .and_then(|config| config.repeat_delay)
+        .unwrap_or(DEFAULT_KEYBOARD_REPEAT_DELAY);
+    (rate, delay)
 }
 
 /// Detect the type of a libinput device.
@@ -852,6 +916,44 @@ mod tests {
         assert_eq!(parse_click_method("areas"), None);
         assert_eq!(parse_scroll_method("wheel"), None);
         assert_eq!(parse_tap_button_map("middle-left-right"), None);
+    }
+
+    #[test]
+    fn keyboard_repeat_config_uses_one_effective_source() {
+        assert_eq!(
+            effective_keyboard_repeat(&[]),
+            (DEFAULT_KEYBOARD_REPEAT_RATE, DEFAULT_KEYBOARD_REPEAT_DELAY),
+        );
+
+        let xkb_only = InputConfigEntry {
+            device_type: Some(DeviceType::Keyboard),
+            xkb_layouts: Some("us,ru".to_string()),
+            ..InputConfigEntry::default()
+        };
+        assert_eq!(
+            effective_keyboard_repeat(&[xkb_only]),
+            (DEFAULT_KEYBOARD_REPEAT_RATE, DEFAULT_KEYBOARD_REPEAT_DELAY),
+        );
+
+        let rate_only = InputConfigEntry {
+            device_type: Some(DeviceType::Keyboard),
+            repeat_rate: Some(17),
+            ..InputConfigEntry::default()
+        };
+        assert_eq!(
+            effective_keyboard_repeat(&[rate_only]),
+            (17, DEFAULT_KEYBOARD_REPEAT_DELAY),
+        );
+
+        let delay_only = InputConfigEntry {
+            device_type: Some(DeviceType::Keyboard),
+            repeat_delay: Some(450),
+            ..InputConfigEntry::default()
+        };
+        assert_eq!(
+            effective_keyboard_repeat(&[delay_only]),
+            (DEFAULT_KEYBOARD_REPEAT_RATE, 450),
+        );
     }
 }
 

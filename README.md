@@ -21,7 +21,7 @@ cd compositor
 ./test.sh
 ```
 
-The script builds EWM with screencast support, sets `EWM_MODULE_PATH`, and starts Emacs with `--fg-daemon=vt2`. The named daemon is intentional: plain `--fg-daemon` uses the default Emacs server socket and can conflict with an existing Emacs daemon. Connect to this session with `emacsclient --socket-name=vt2`.
+The script builds EWM with screencast support, sets `EWM_MODULE_PATH`, and starts Emacs with `--fg-daemon=vt2`. Pass an init directory as the only argument when you need one, for example `./test.sh /etc/nixos/emacs`. The named daemon is intentional: plain `--fg-daemon` uses the default Emacs server socket and can conflict with an existing Emacs daemon. Connect to this session with `emacsclient --socket-name=vt2`.
 
 Launch apps with `s-d`. See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for full setup, configuration, and NixOS instructions.
 

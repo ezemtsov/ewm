@@ -1,11 +1,12 @@
-//! Properties for the input-method relay state machine.
+//! Properties for the text-input commit gate.
 //!
-//! The relay must never deliver a commit to whichever text-input surface is
-//! active by accident. Commits are either delivered to their target surface,
+//! The commit gate must never deliver a commit to whichever text-input surface
+//! is active by accident. Commits are either delivered to their target surface,
 //! queued while no surface is active, or dropped once another surface is known
 //! to be active.
 
-use ewm_core::im_relay::{CommitResult, ImEvent, ImRelayState};
+use ewm_core::im::relay::ImEvent;
+use ewm_core::im::text_input::{CommitResult, TextInputCommitState};
 use proptest::prelude::*;
 
 const SURFACE_IDS: std::ops::RangeInclusive<u64> = 1..=4;
@@ -26,8 +27,8 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     ]
 }
 
-fn pending_tuples(relay: &ImRelayState) -> Vec<(u64, String)> {
-    relay
+fn pending_tuples(commit_state: &TextInputCommitState) -> Vec<(u64, String)> {
+    commit_state
         .pending_commits()
         .iter()
         .map(|commit| (commit.surface_id, commit.text.clone()))
@@ -50,10 +51,10 @@ fn drain_expected(
 
 proptest! {
     #[test]
-    fn im_relay_state_matches_surface_aware_model(
+    fn text_input_commit_state_matches_surface_aware_model(
         ops in prop::collection::vec(op_strategy(), 1..MAX_OPS),
     ) {
-        let mut relay = ImRelayState::default();
+        let mut commit_state = TextInputCommitState::default();
         let mut active_surface_id = None;
         let mut events = Vec::new();
         let mut delivered = Vec::new();
@@ -68,10 +69,10 @@ proptest! {
                 Op::Activate(surface_id) => {
                     active_surface_id = surface_id;
 
-                    if relay.activate() {
+                    if commit_state.activate() {
                         events.push(ImEvent::Activated);
                     }
-                    if let Some(text) = relay.drain_pending_for_active_surface(active_surface_id) {
+                    if let Some(text) = commit_state.drain_pending_for_active_surface(active_surface_id) {
                         delivered.push((active_surface_id.unwrap(), text));
                     }
 
@@ -86,7 +87,7 @@ proptest! {
                 Op::Deactivate => {
                     active_surface_id = None;
 
-                    if relay.deactivate() {
+                    if commit_state.deactivate() {
                         events.push(ImEvent::Deactivated);
                     }
 
@@ -96,7 +97,7 @@ proptest! {
                     }
                 }
                 Op::Commit { surface_id, text } => {
-                    let result = relay.commit(active_surface_id, surface_id, text.clone());
+                    let result = commit_state.commit(active_surface_id, surface_id, text.clone());
 
                     match active_surface_id {
                         Some(active) if active == surface_id => {
@@ -115,8 +116,8 @@ proptest! {
                 }
             }
 
-            prop_assert_eq!(relay.is_active(), expected_active);
-            let actual_pending = pending_tuples(&relay);
+            prop_assert_eq!(commit_state.is_active(), expected_active);
+            let actual_pending = pending_tuples(&commit_state);
             prop_assert_eq!(&actual_pending, &expected_pending);
             prop_assert_eq!(&events, &expected_events);
             prop_assert_eq!(&delivered, &expected_delivered);

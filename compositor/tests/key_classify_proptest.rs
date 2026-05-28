@@ -1,34 +1,46 @@
 //! K-series: classification of intercept keys against the fullscreen state.
 //!
 //! K1  - Allow-fullscreen binding under fullscreen redirects to Emacs.
-//!       (`allow_fullscreen=true` + `fullscreen_surface_id=Some` +
-//!        `focus_on_emacs=false` -> `Redirect`).
+//!       (`allow_fullscreen=true` + `fullscreen_active=true` +
+//!        `focus_on_emacs=false` -> `KeyboardRedirect` or `Command`).
 //!
 //! K2  - Non-flagged binding under fullscreen forwards to the client.
-//!       (`allow_fullscreen=false` + `fullscreen_surface_id=Some` +
+//!       (`allow_fullscreen=false` + `fullscreen_active=true` +
 //!        `focus_on_emacs=false` -> `Forward`).
 //!
 //! K3  - Without fullscreen, intercepted bindings redirect regardless of
-//!       the flag. (`fullscreen_surface_id=None` + `focus_on_emacs=false`
-//!        -> `Redirect`).
+//!       the flag. (`fullscreen_active=false` + `focus_on_emacs=false`
+//!        -> `KeyboardRedirect` or `Command`).
 //!
 //! K4  - When Emacs already holds focus, intercept rules defer — the key
 //!       forwards (Emacs is the focused client). Independent of the flag
 //!       and of fullscreen.
 
 use ewm_core::input::{classify_key, KeyAction};
-use ewm_core::{EmulatedKey, InterceptedKey};
+use ewm_core::{EmulatedKey, InterceptDispatch, InterceptedKey};
 use proptest::prelude::*;
 use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
 
 fn ik(keysym: u32, allow_fullscreen: bool) -> InterceptedKey {
+    ik_with_dispatch_and_repeat(keysym, allow_fullscreen, InterceptDispatch::Keyboard, false)
+}
+
+fn ik_with_dispatch_and_repeat(
+    keysym: u32,
+    allow_fullscreen: bool,
+    dispatch: InterceptDispatch,
+    repeat: bool,
+) -> InterceptedKey {
     InterceptedKey {
         keysym,
+        key: format!("key-{keysym}"),
         ctrl: false,
         alt: false,
         shift: false,
         logo: false,
         allow_fullscreen,
+        dispatch,
+        repeat,
     }
 }
 
@@ -56,11 +68,19 @@ fn classify(
     keys: &[InterceptedKey],
     text_input: bool,
     focus_on_emacs: bool,
-    fs: Option<u64>,
+    fullscreen_active: bool,
     is_press: bool,
     keysym: u32,
 ) -> KeyAction {
-    classify_with(keys, &[], text_input, focus_on_emacs, fs, is_press, keysym)
+    classify_with(
+        keys,
+        &[],
+        text_input,
+        focus_on_emacs,
+        fullscreen_active,
+        is_press,
+        keysym,
+    )
 }
 
 fn classify_with(
@@ -68,7 +88,7 @@ fn classify_with(
     emulated_keys: &[EmulatedKey],
     text_input: bool,
     focus_on_emacs: bool,
-    fs: Option<u64>,
+    fullscreen_active: bool,
     is_press: bool,
     keysym: u32,
 ) -> KeyAction {
@@ -77,7 +97,7 @@ fn classify_with(
         emulated_keys,
         text_input,
         focus_on_emacs,
-        fs,
+        fullscreen_active,
         is_press,
         keysym,
         keysym,
@@ -89,13 +109,13 @@ fn classify_with(
 proptest! {
     #[test]
     fn k1_allow_fullscreen_under_fullscreen_redirects(keysym in keysym_strategy()) {
-        let action = classify(&[ik(keysym, true)], false, false, Some(1), true, keysym);
-        prop_assert_eq!(action, KeyAction::Redirect(keysym));
+        let action = classify(&[ik(keysym, true)], false, false, true, true, keysym);
+        prop_assert_eq!(action, KeyAction::KeyboardRedirect(keysym));
     }
 
     #[test]
     fn k2_no_flag_under_fullscreen_forwards(keysym in keysym_strategy()) {
-        let action = classify(&[ik(keysym, false)], false, false, Some(1), true, keysym);
+        let action = classify(&[ik(keysym, false)], false, false, true, true, keysym);
         prop_assert_eq!(action, KeyAction::Forward);
     }
 
@@ -104,17 +124,35 @@ proptest! {
         keysym in keysym_strategy(),
         flag in any::<bool>(),
     ) {
-        let action = classify(&[ik(keysym, flag)], false, false, None, true, keysym);
-        prop_assert_eq!(action, KeyAction::Redirect(keysym));
+        let action = classify(&[ik(keysym, flag)], false, false, false, true, keysym);
+        prop_assert_eq!(action, KeyAction::KeyboardRedirect(keysym));
+    }
+
+    #[test]
+    fn command_dispatch_intercepts_without_keyboard_redirect(
+        keysym in keysym_strategy(),
+        flag in any::<bool>(),
+        repeat in any::<bool>(),
+    ) {
+        let key = format!("key-{keysym}");
+        let action = classify(
+            &[ik_with_dispatch_and_repeat(keysym, flag, InterceptDispatch::Command, repeat)],
+            false,
+            false,
+            false,
+            true,
+            keysym,
+        );
+        prop_assert_eq!(action, KeyAction::Command { key, repeat });
     }
 
     #[test]
     fn k4_focus_on_emacs_forwards(
         keysym in keysym_strategy(),
         flag in any::<bool>(),
-        fs in proptest::option::of(Just(1u64)),
+        fullscreen_active in any::<bool>(),
     ) {
-        let action = classify(&[ik(keysym, flag)], false, true, fs, true, keysym);
+        let action = classify(&[ik(keysym, flag)], false, true, fullscreen_active, true, keysym);
         prop_assert_eq!(action, KeyAction::Forward);
     }
 
@@ -124,9 +162,16 @@ proptest! {
         keysym in keysym_strategy(),
         flag in any::<bool>(),
         focus_on_emacs in any::<bool>(),
-        fs in proptest::option::of(Just(1u64)),
+        fullscreen_active in any::<bool>(),
     ) {
-        let action = classify(&[ik(keysym, flag)], false, focus_on_emacs, fs, false, keysym);
+        let action = classify(
+            &[ik(keysym, flag)],
+            false,
+            focus_on_emacs,
+            fullscreen_active,
+            false,
+            keysym,
+        );
         prop_assert_eq!(action, KeyAction::Forward);
     }
 
@@ -135,7 +180,7 @@ proptest! {
         vt in 1u32..=12,
         text_input in any::<bool>(),
         focus_on_emacs in any::<bool>(),
-        fs in proptest::option::of(Just(1u64)),
+        fullscreen_active in any::<bool>(),
     ) {
         let keysym = keysyms::KEY_XF86Switch_VT_1 + vt - 1;
         let action = classify_with(
@@ -143,7 +188,7 @@ proptest! {
             &[ek(keysym, "ctrl")],
             text_input,
             focus_on_emacs,
-            fs,
+            fullscreen_active,
             true,
             keysym,
         );
@@ -157,7 +202,7 @@ proptest! {
             &[ek(keysym, "ctrl")],
             false,
             false,
-            None,
+            false,
             true,
             keysym,
         );
@@ -171,7 +216,7 @@ proptest! {
             &[ek(keysym, "ctrl")],
             false,
             true,
-            None,
+            false,
             true,
             keysym,
         );
@@ -183,7 +228,7 @@ proptest! {
         letter in 0u32..26,
     ) {
         let keysym = keysyms::KEY_a + letter;
-        let action = classify_with(&[], &[], true, false, None, true, keysym);
+        let action = classify_with(&[], &[], true, false, false, true, keysym);
         let expected = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
 
         prop_assert_eq!(action, KeyAction::TextInput(keysym, Some(expected)));
@@ -207,7 +252,7 @@ proptest! {
             &[],
             true,
             focus_on_emacs,
-            None,
+            false,
             true,
             keysym,
             keysym,

@@ -44,20 +44,22 @@ EWM provides full input method support:
 ### Configuration
 
 ```elisp
-(setq ewm-xkb-layouts '("us" "ru" "no"))     ; Available layouts
-(setq ewm-xkb-options "grp:caps_toggle")     ; Caps Lock toggles layout
+(setopt ewm-input-config
+        '((keyboard :xkb-layouts "us,ru,no"
+                    :xkb-options "grp:caps_toggle")))
 ```
 
-On startup, Emacs configures XKB via the dynamic module.
+On startup, Emacs configures XKB through the input-device configuration sent
+to the dynamic module.
 
 ### Module Interface
 
 **Emacs -> Compositor (module functions):**
 
 ```elisp
-(ewm-configure-xkb-module layouts options)  ; Set layouts and XKB options
-(ewm-switch-layout-module layout)           ; Switch to layout by name
-(ewm-get-layouts-module)                    ; Query current layouts
+(ewm-configure-input-module configs) ; Set keyboard layouts/options
+(ewm-switch-layout-module layout)    ; Switch to layout by name
+(ewm-get-layouts-module)             ; Query current layouts
 ```
 
 **Compositor -> Emacs (events via pipe fd):**
@@ -65,7 +67,7 @@ On startup, Emacs configures XKB via the dynamic module.
 | Event | Fields | Purpose |
 |-------|--------|---------|
 | `layouts` | `layouts`, `current` | Report configured layouts |
-| `layout_switched` | `layout`, `index` | Layout changed |
+| `layout-switched` | `layout`, `index` | Layout changed |
 
 ### Implementation
 
@@ -75,18 +77,55 @@ between groups is fast (no keymap recompilation). XKB options like
 
 #### Layout preservation during key interception
 
-When an intercepted key (e.g., `s-d`, `C-x`) redirects focus to Emacs, the
-compositor temporarily switches to the base layout (index 0) so Emacs
+When keyboard capture routes a key sequence to Emacs (for example `C-x ...`),
+the compositor temporarily switches to the base layout (index 0) so Emacs
 receives Latin keysyms for keybinding dispatch. The layout is restored
-immediately after the key is forwarded; no persistent change occurs.
+immediately after each forwarded key; no persistent change occurs.
 
-For prefix sequences (`C-x ...`), the same temporary reset is applied to
-each subsequent key while the sequence is active, using the existing
-`in_prefix_sequence` flag. Once the sequence completes and focus returns
-to the external surface, the user's chosen layout is intact.
+Emacs requests keyboard capture through tokened leases. Beginning capture
+returns a token, and ending capture must present that same token. Capture stays
+active while any lease remains, so stale cleanup from one
+minibuffer/transient/read-key unwind cannot clear another live capture.
+Keyboard-dispatch intercepts also open synchronous redirect capture in
+the compositor so a prefix like `C-x` keeps the next key routed to Emacs even
+if the physical prefix key is released before Lisp's post-command hook runs.
+The next inactive command-loop sync clears that redirect capture.
 
-This is implemented entirely with local variables in `handle_keyboard_event`
-with no cross-function state needed.
+`ewm-mode-map` command bindings do not move Wayland keyboard focus. They are
+delivered to Lisp over the event pipe. Only commands listed in
+`ewm-repeatable-commands` and the built-in media/brightness keys repeat from
+the compositor timer. Plain `ewm-intercept-prefixes` entries that are not also
+bound in `ewm-mode-map` use keyboard delivery, so keys such as `M-x` and `C-u`
+enter Emacs's normal command loop.
+
+The repeat configuration has one effective source: the `(keyboard
+:repeat-rate ... :repeat-delay ...)` entry in `ewm-input-config`, falling back
+to `25Hz` and `200ms`. The compositor applies that same `(rate, delay)` to
+Wayland keyboard repeat and to intercepted command/text-input repeat.
+Repeatable command-dispatch bindings use the compositor timer. Text-input
+repeat still follows XKB repeatability so client text input behaves like
+ordinary Wayland keyboard input.
+
+Held-key ownership and timers live in `im::repeat`.
+
+#### Intercepted key invariants
+
+The intercept/capture hot path keeps these invariants:
+
+1. Keyboard capture is a Wayland keyboard-focus overlay; it does not change
+   EWM's stored focused frame/view pair.
+2. Command-dispatch intercepted keys are `ewm-mode-map` command bindings; they
+   go through the event pipe and do not move keyboard focus to Emacs by
+   themselves.
+3. Once EWM consumes an intercepted physical press, backend repeat presses and
+   the matching release are consumed by EWM too, never forwarded to the client
+   surface.
+4. Keyboard capture and command-repeat ownership are mutually exclusive, so a
+   held command/media key cannot keep repeating behind a minibuffer, transient,
+   or `read-key` sequence.
+5. Stale keyboard-capture token ends are ignored; capture remains active while
+   any other lease is live.
+6. Repeat timers are valid only for the currently held intercepted key.
 
 ## Text Input (Emacs IM in External Apps)
 
@@ -102,7 +141,7 @@ Application                    Compositor                      Emacs
      |                              |--text-input-activated------->|
      |                              |                              |
      |  [user types]                |                              |
-     |                              |--input-key {keysym}--------->|
+     |                              |--key {keysym, utf8}--------->|
      |                              |                              |
      |                              |<--im-commit {text, id}-------|
      |<--commit_string (direct)-----|                              |
@@ -121,8 +160,8 @@ methods cannot leak between surfaces.
 
 | Event | Fields | Purpose |
 |-------|--------|---------|
-| `text_input_activated` | - | Text field focused in client |
-| `text_input_deactivated` | - | Text field unfocused |
+| `text-input-activated` | - | Text field focused in client |
+| `text-input-deactivated` | - | Text field unfocused |
 | `key` | `keysym`, `utf8` | Key press in text field |
 
 **Emacs -> Compositor (module functions):**

@@ -67,11 +67,12 @@ impl Fixture {
     /// on the other end. Roundtrip after to bind globals.
     pub fn new_client(&mut self) -> Result<TestClient, Box<dyn std::error::Error>> {
         let (server_end, client_end) = UnixStream::pair()?;
-        self.state
+        let server_client = self
+            .state
             .ewm
             .display_handle
             .insert_client(server_end, Arc::new(ClientState::default()))?;
-        TestClient::new(client_end)
+        TestClient::new(client_end, server_client.id())
     }
 
     /// Attach an SHM buffer + commit; populates server-side surface_view and
@@ -143,25 +144,29 @@ impl Fixture {
         }
     }
 
-    /// Find the server-side surface_id for a client `WlSurface`. Matches by
-    /// the protocol wire id (unique within a client connection).
+    /// Find the server-side surface_id for a client `WlSurface`. The protocol
+    /// id is only unique within one Wayland client, so multi-client tests must
+    /// also match the owning server-side client.
     pub fn find_surface_id(
         &self,
+        client: &TestClient,
         client_surface: &wayland_client::protocol::wl_surface::WlSurface,
     ) -> Option<u64> {
         use smithay::reexports::wayland_server::Resource as _;
         use smithay::wayland::seat::WaylandFocus;
         use wayland_client::Proxy as _;
         let target = client_surface.id().protocol_id();
-        for (&id, window) in &self.state.ewm.id_windows {
-            let Some(server_surface) = window.wl_surface() else {
-                continue;
-            };
-            if server_surface.id().protocol_id() == target {
-                return Some(id);
-            }
-        }
-        None
+        self.state.ewm.id_windows.iter().find_map(|(&id, window)| {
+            let server_surface = window.wl_surface()?;
+            (server_surface.id().protocol_id() == target).then_some(())?;
+            let server_client_id = self
+                .state
+                .ewm
+                .display_handle
+                .get_client(server_surface.id())
+                .ok()?;
+            (server_client_id.id() == client.server_client_id).then_some(id)
+        })
     }
 
     /// Add a virtual output with the given name and size
@@ -224,6 +229,14 @@ impl Fixture {
         self.state.ewm.focused_surface_id()
     }
 
+    pub fn keyboard_focus_surface_id(&self) -> Option<u64> {
+        self.state
+            .ewm
+            .keyboard_focus
+            .as_ref()
+            .and_then(|surface| self.state.ewm.surface_id(surface))
+    }
+
     /// Apply stored output config for the named output (headless backend)
     pub fn apply_output_config(&mut self, output_name: &str) {
         self.state
@@ -253,6 +266,38 @@ impl Fixture {
 
     pub fn handle_module_command(&mut self, command: crate::module::ModuleCommand) {
         self.state.handle_module_command(command);
+    }
+
+    pub fn set_intercepted_keys(&mut self, keys: Vec<crate::InterceptedKey>) {
+        crate::module::set_intercepted_keys_for_test(keys);
+    }
+
+    pub fn set_emulated_keys(&mut self, keys: Vec<crate::EmulatedKey>) {
+        crate::module::set_emulated_keys_for_test(keys);
+    }
+
+    pub fn clear_keyboard_capture(&mut self) {
+        crate::module::clear_keyboard_capture_holders();
+        self.state.sync_keyboard_focus();
+    }
+
+    pub fn keyboard_capture_active(&self) -> bool {
+        crate::module::get_keyboard_capture()
+    }
+
+    pub fn sync_keyboard_focus(&mut self) {
+        self.state.sync_keyboard_focus();
+    }
+
+    pub fn keyboard_key(&mut self, keycode: u32, pressed: bool) -> crate::input::KeyboardAction {
+        use smithay::backend::input::KeyState;
+
+        let state = if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        };
+        crate::input::handle_keyboard_event(&mut self.state, keycode, state, 0)
     }
 
     /// Send a pointer button event at the seat's current pointer focus.

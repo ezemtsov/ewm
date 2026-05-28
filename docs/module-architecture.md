@@ -20,7 +20,7 @@ contexts communicate.
 │  │    pipe fd                           │                   │ │
 │  │   (open_channel)           ┌─────────┴─────────┐         │ │
 │  │         │                  │    Elisp API      │         │ │
-│  │         ▼                  │ ewm-focus-module  │         │ │
+│  │         ▼                  │ ewm-*-module fns  │         │ │
 │  │  ┌─────────────┐           │                   │         │ │
 │  │  │ Event Pipe  │──────────▶│ ewm--event-filter │         │ │
 │  │  │ (JSON/fd)   │           └───────────────────┘         │ │
@@ -102,14 +102,17 @@ JSON line is delivered exactly once. Serde serialization replaces the manual
 | Event | Rust | Purpose |
 |-------|------|---------|
 | `ready` | `Event::Ready` | Compositor initialized |
-| `new` | `Event::New{id,app,output}` | Surface created |
+| `new` | `Event::New{id,app,output,frame_surface_id,pid}` | Surface created |
 | `close` | `Event::Close{id}` | Surface destroyed |
-| `focus` | `Event::Focus{id}` | External surface focused |
+| `focus` | `Event::Focus{view_id,x,y}` | View focused |
 | `title` | `Event::Title{id,app,title}` | Surface title changed |
 | `output_detected` | `Event::OutputDetected(info)` | Monitor connected |
 | `output_disconnected` | `Event::OutputDisconnected{name}` | Monitor removed |
 | `outputs_complete` | `Event::OutputsComplete` | All outputs sent |
-| `key` | `Event::Key{keysym,utf8}` | Intercepted key |
+| `key` | `Event::Key{keysym,utf8}` | Text-input intercepted key |
+| `intercepted-command` | `Event::InterceptedCommand{key}` | Emacs command binding |
+| `text-input-activated` | `Event::TextInputActivated` | Client text field focused |
+| `text-input-deactivated` | `Event::TextInputDeactivated` | Client text field unfocused |
 
 ## Command Delivery: Emacs -> Compositor
 
@@ -118,11 +121,11 @@ Commands flow in the opposite direction via `COMMAND_QUEUE`:
 ```
 Emacs Main Thread              │  Compositor Thread
                                │
-ewm-focus-module(id)           │
-  └─ queue.push(Focus{id})     │
+ewm-focus-view-module(view-id) │
+  └─ queue.push(FocusView{view-id})
   └─ wake LOOP_SIGNAL ────────►│  calloop wakes
                                │    └─ drain_commands()
-                               │    └─ handle Focus{id}
+                               │    └─ handle FocusView{view-id}
 ```
 
 All `ewm-*-module` functions push to the command queue and wake the
@@ -136,7 +139,8 @@ this event instead of using arbitrary sleep delays:
 ```elisp
 (defun ewm-start-module ()
   (ewm--init-event-channel)         ; Set up pipe before starting compositor
-  (ewm-start)                       ; Start compositor thread
+  (ewm-start (ewm--cursor-theme)
+             (ewm--cursor-size))    ; Start compositor thread
   (setq ewm--module-mode t)
   (ewm-mode 1)                      ; Enable BEFORE processing events
   ;; Wait for ready event
@@ -155,10 +159,10 @@ this event instead of using arbitrary sleep delays:
 ### Lifecycle
 
 ```elisp
-(ewm-start)      ; Start compositor thread, returns t/nil
-(ewm-stop)       ; Request graceful shutdown
-(ewm-running)    ; Check if compositor running
-(ewm-socket)     ; Get Wayland socket name
+(ewm-start cursor-theme cursor-size) ; Start compositor thread, returns t/nil
+(ewm-stop)                         ; Request graceful shutdown
+(ewm-running)                      ; Check if compositor running
+(ewm-socket)                       ; Get Wayland socket name
 ```
 
 ### Event Channel
@@ -172,17 +176,23 @@ this event instead of using arbitrary sleep delays:
 All `*-module` functions push to command queue:
 
 ```elisp
-(ewm-focus-module id)
+(ewm-focus-view-module view-id)
+(ewm-focus-output-direction-module dx dy)
 (ewm-close-module id)
-(ewm-output-layout-module output surfaces-vector)
+(ewm-output-layout-module output frames-vector)
 (ewm-warp-pointer-module x y)
 (ewm-screenshot-module &optional path)
-(ewm-configure-output-module name &key x y width height refresh enabled)
+(ewm-configure-output-module name x y width height refresh scale transform enabled)
 (ewm-intercept-keys-module keys-vector)
+(ewm-configure-input-module configs-vector)
 (ewm-im-commit-module text surface-id)
-(ewm-configure-xkb-module layouts &optional options)
+(ewm-text-input-intercept-module enable)
+(ewm-keyboard-capture-begin-module reason)
+(ewm-keyboard-capture-end-module token)
+(ewm-keyboard-redirect-capture-clear-module)
 (ewm-switch-layout-module layout-name)
 (ewm-get-layouts-module)
+(ewm-get-debug-state-module)
 ```
 
 ## Timer Usage
@@ -197,7 +207,8 @@ All `*-module` functions push to command queue:
 | Frame deletion | Defer during creation | Kept (one-shot) |
 
 The focus debounce timer is for user experience (prevents flicker), not
-correctness. All state is synchronous via the module.
+correctness. Correctness-critical state changes are edge-triggered through
+module commands and pipe events, not polling.
 
 ## Benefits
 
@@ -223,7 +234,7 @@ correctness. All state is synchronous via the module.
 - `compositor/src/event.rs` - Event enum shared with module
 - `lisp/ewm.el` - Main module initialization, event dispatch
 - `lisp/ewm-focus.el` - Bidirectional focus synchronization
-- `lisp/ewm-input.el` - Input handling, intercepted keys, prefix sequences
+- `lisp/ewm-input.el` - Input handling, intercepted keys, keyboard capture
 - `lisp/ewm-layout.el` - Per-output layout declaration and refresh
 - `lisp/ewm-surface.el` - Surface ↔ buffer mapping
 - `lisp/ewm-text-input.el` - Input method bridge
@@ -234,4 +245,4 @@ correctness. All state is synchronous via the module.
 
 ## Related Documents
 
-- [focus-design.md](focus-design.md) - Focus handling and prefix key sequences
+- [focus-design.md](focus-design.md) - Focus handling and keyboard capture

@@ -57,7 +57,7 @@ fn destroying_real_toplevel_cleans_layout_focus_indexes_and_emits_close() {
         Size::<i32, Logical>::from((400, 300)),
     );
     let sid = fix
-        .find_surface_id(&toplevel.surface)
+        .find_surface_id(&client, &toplevel.surface)
         .expect("server did not assign a surface id");
 
     let frame_id = 100;
@@ -107,7 +107,7 @@ fn disconnecting_focused_toplevel_cleans_layout_focus_indexes_and_emits_close() 
         Size::<i32, Logical>::from((400, 300)),
     );
     let sid = fix
-        .find_surface_id(&toplevel.surface)
+        .find_surface_id(&client, &toplevel.surface)
         .expect("server did not assign a surface id");
 
     let frame_id = 100;

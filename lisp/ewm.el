@@ -55,6 +55,7 @@
 (declare-function ewm-notify-initialized-module "ewm-core")
 (declare-function ewm-focus-output-direction-module "ewm-core")
 (declare-function ewm-get-focused-frame-id "ewm-core")
+(declare-function ewm--handle-intercepted-command "ewm-input" (event))
 
 ;;; Logging
 
@@ -107,7 +108,14 @@ FORMAT-STRING and ARGS are passed to `format'."
       (when (> (length line) 0)
         (condition-case err
             (let ((event (json-parse-string line :object-type 'alist :false-object nil)))
-              (ewm--handle-event event))
+              (condition-case dispatch-err
+                  (ewm--handle-event event)
+                (quit
+                 (setq quit-flag nil)
+                 (ewm--log "Event handler quit while handling %S"
+                           (alist-get 'event event)))
+                (error
+                 (message "EWM: event handler error: %s" dispatch-err))))
           (error (message "EWM: event parse error: %s" err)))))))
 
 (defun ewm--init-event-channel ()
@@ -349,6 +357,7 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ("text-input-activated" (ewm--handle-text-input-activated))
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
       ("key" (ewm--handle-key event))
+      ("intercepted-command" (ewm--handle-intercepted-command event))
       ("working_area" (ewm--handle-working-area event))
       ("selection-changed" (ewm--handle-selection-changed event))
       ("activate_workspace" (ewm--handle-activate-workspace event))

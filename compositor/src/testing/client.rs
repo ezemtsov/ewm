@@ -8,10 +8,11 @@ use std::collections::HashMap;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
+use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::utils::{Logical, Rectangle, Size};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm,
+    wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::xdg::shell::client::{
@@ -37,6 +38,10 @@ pub enum ClientEvent {
         button: u32,
         pressed: bool,
     },
+    KeyboardKey {
+        key: u32,
+        pressed: bool,
+    },
     ToplevelConfigure {
         width: i32,
         height: i32,
@@ -52,6 +57,7 @@ pub enum ClientEvent {
 }
 
 pub struct TestClient {
+    pub(crate) server_client_id: ClientId,
     pub(crate) conn: Connection,
     pub(crate) eq: EventQueue<ClientState>,
     pub(crate) state: ClientState,
@@ -64,6 +70,7 @@ pub struct ClientState {
     pub shm: Option<wl_shm::WlShm>,
     pub seat: Option<wl_seat::WlSeat>,
     pub pointer: Option<wl_pointer::WlPointer>,
+    pub keyboard: Option<wl_keyboard::WlKeyboard>,
     /// `wl_output` protocol id -> server-advertised name.
     pub output_names: HashMap<u32, String>,
     pub events: Vec<ClientEvent>,
@@ -83,12 +90,16 @@ pub struct Popup {
 }
 
 impl TestClient {
-    pub fn new(stream: UnixStream) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        stream: UnixStream,
+        server_client_id: ClientId,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let conn = Connection::from_socket(stream)?;
         let eq = conn.new_event_queue::<ClientState>();
         let qh = eq.handle();
         let _registry = conn.display().get_registry(&qh, ());
         Ok(Self {
+            server_client_id,
             conn,
             eq,
             state: ClientState::default(),
@@ -108,6 +119,10 @@ impl TestClient {
     /// or `None` if the client hasn't received a `Name` event for it yet.
     pub fn output_name(&self, proxy_id: u32) -> Option<&str> {
         self.state.output_names.get(&proxy_id).map(|s| s.as_str())
+    }
+
+    pub fn has_keyboard(&self) -> bool {
+        self.state.keyboard.is_some()
     }
 
     fn compositor(&self) -> &wl_compositor::WlCompositor {
@@ -247,6 +262,9 @@ impl Dispatch<wl_seat::WlSeat, ()> for ClientState {
             if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
                 state.pointer = Some(seat.get_pointer(qh, ()));
             }
+            if caps.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
+                state.keyboard = Some(seat.get_keyboard(qh, ()));
+            }
         }
     }
 }
@@ -289,6 +307,29 @@ impl Dispatch<wl_pointer::WlPointer, ()> for ClientState {
             } => state.events.push(ClientEvent::PointerButton {
                 button,
                 pressed: button_state == wl_pointer::ButtonState::Pressed,
+            }),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_keyboard::Event::Key {
+                key,
+                state: WEnum::Value(key_state),
+                ..
+            } => state.events.push(ClientEvent::KeyboardKey {
+                key,
+                pressed: key_state == wl_keyboard::KeyState::Pressed,
             }),
             _ => {}
         }

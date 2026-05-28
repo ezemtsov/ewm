@@ -34,7 +34,7 @@ pub mod dbus_screensaver;
 pub mod event;
 pub mod frame_clock;
 pub mod gtk;
-pub mod im_relay;
+pub mod im;
 pub mod input;
 mod module;
 pub mod protocols;
@@ -99,8 +99,9 @@ use std::time::{Duration, Instant};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
+use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
 use serde::{Deserialize, Serialize};
-use smithay::backend::input::TabletToolDescriptor;
+use smithay::backend::input::{KeyState, TabletToolDescriptor};
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
 use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
 use smithay::backend::renderer::element::{
@@ -589,6 +590,7 @@ where
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InterceptedKey {
     pub keysym: u32,
+    pub key: String,
     #[serde(default)]
     pub ctrl: bool,
     #[serde(default)]
@@ -600,6 +602,10 @@ pub struct InterceptedKey {
     /// If true, this key is redirected to Emacs even during fullscreen
     #[serde(default)]
     pub allow_fullscreen: bool,
+    #[serde(default)]
+    pub dispatch: InterceptDispatch,
+    #[serde(default)]
+    pub repeat: bool,
 }
 
 impl InterceptedKey {
@@ -624,6 +630,25 @@ impl InterceptedKey {
             modified_keysym,
             mods,
         )
+    }
+}
+
+/// How an intercepted key is delivered to Emacs.
+///
+/// Keyboard delivery temporarily gives Emacs Wayland keyboard focus and lets
+/// Emacs's command loop read the following key sequence. Command delivery
+/// executes the resolved Emacs binding through the event pipe, so Wayland
+/// keyboard focus stays on the client surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterceptDispatch {
+    Keyboard,
+    Command,
+}
+
+impl Default for InterceptDispatch {
+    fn default() -> Self {
+        Self::Keyboard
     }
 }
 
@@ -794,6 +819,7 @@ pub struct Ewm {
     pub focused_frame_id: u64,
     pub focused_view_id: Option<ViewId>,
     pub keyboard_focus: Option<WlSurface>,
+    pub(crate) im_repeat: InterceptRepeatState,
     /// Output geometry or working areas changed; shared active_outputs need recomputation.
     pub active_outputs_dirty: bool,
     /// Focus follows mouse
@@ -849,7 +875,7 @@ pub struct Ewm {
     pub text_input_intercept: bool,
     // Deduplicates relay activate/deactivate events and holds commits queued
     // during the client's disable->enable gap.
-    pub im_relay_state: im_relay::ImRelayState,
+    pub im_text_input: im::text_input::TextInputCommitState,
 
     // Popup manager for XDG popups
     pub popups: PopupManager,
@@ -952,13 +978,9 @@ pub struct Ewm {
     pub xkb_layout_names: Vec<String>,
     pub xkb_current_layout: usize,
 
-    /// Keycodes currently being emulated. Their release must also be emulated.
-    /// Maps keycode -> target modifier name (e.g. "ctrl").
-    pub emulated_keycodes: HashMap<u32, String>,
-
     // IM relay keepalive. Smithay requires an input_method_v2 instance
     // for text_input_v3. Commits bypass the relay (direct TextInputHandle).
-    pub im_relay: Option<im_relay::ImRelay>,
+    pub im_relay: Option<im::relay::ImRelay>,
 
     // Event loop handle (for idle timer registration)
     pub loop_handle: LoopHandle<'static, State>,
@@ -1053,7 +1075,11 @@ impl Ewm {
         );
         let mut seat: Seat<State> = seat_state.new_wl_seat(&display_handle, "seat0");
         let keyboard = seat
-            .add_keyboard(Default::default(), 200, 25)
+            .add_keyboard(
+                Default::default(),
+                input::DEFAULT_KEYBOARD_REPEAT_DELAY,
+                input::DEFAULT_KEYBOARD_REPEAT_RATE,
+            )
             .expect("Failed to add keyboard to seat");
         let pointer = seat.add_pointer();
 
@@ -1181,6 +1207,10 @@ impl Ewm {
             focused_frame_id: 0,
             focused_view_id: None,
             keyboard_focus: None,
+            im_repeat: InterceptRepeatState::new(
+                input::DEFAULT_KEYBOARD_REPEAT_RATE,
+                input::DEFAULT_KEYBOARD_REPEAT_DELAY,
+            ),
             active_outputs_dirty: true,
             focus_follows_mouse_mode: false,
             unfocused_alpha: 1.0,
@@ -1198,7 +1228,7 @@ impl Ewm {
             input_method_state,
             virtual_keyboard_state,
             text_input_intercept: false,
-            im_relay_state: im_relay::ImRelayState::default(),
+            im_text_input: im::text_input::TextInputCommitState::default(),
             popups: PopupManager::default(),
             dnd_icon: None,
             layer_shell_state,
@@ -1235,7 +1265,6 @@ impl Ewm {
             introspect_reply_tx: None,
             xkb_layout_names: vec!["us".to_string()],
             xkb_current_layout: 0,
-            emulated_keycodes: HashMap::new(),
             im_relay: None,
             loop_handle: loop_handle_clone,
             satellite: None,
@@ -1263,7 +1292,7 @@ impl Ewm {
 
     /// Connect the input method relay after socket is ready.
     pub fn connect_im_relay(&mut self, socket_path: &std::path::Path) {
-        self.im_relay = Some(im_relay::ImRelay::connect(socket_path));
+        self.im_relay = Some(im::relay::ImRelay::connect(socket_path));
     }
 
     /// Remove a surface from all output strips and the reverse index.
@@ -1665,17 +1694,6 @@ impl Ewm {
     fn set_focus_state(&mut self, frame_id: u64, view_id: Option<ViewId>) {
         self.focused_frame_id = frame_id;
         self.focused_view_id = view_id;
-    }
-
-    /// Park focus on an Emacs frame's chrome during an intercepted prefix key;
-    /// bypasses `set_focus_frame`'s view derivation.  Restored on the next layout
-    /// refresh after `ewm-input--clear-prefix`.
-    pub fn enter_prefix_redirect(&mut self, emacs_id: u64) {
-        let Some((output, idx)) = self.lookup_frame(emacs_id) else {
-            return;
-        };
-        self.set_focus_state(emacs_id, None);
-        self.activate_frame(&output, idx);
     }
 
     /// Resolve a frame's xdg_toplevel `surface_id` to `(output_name, frame_idx)`.
@@ -3877,6 +3895,81 @@ impl Ewm {
         self.focused_view_id.is_none() && self.is_emacs_frame(self.focused_frame_id)
     }
 
+    pub(crate) fn is_keyboard_focus_on_emacs(&self) -> bool {
+        self.keyboard_focus
+            .as_ref()
+            .and_then(|surface| self.surface_id(surface))
+            .is_some_and(|id| self.is_emacs_frame(id))
+    }
+
+    pub(crate) fn begin_key_hold(&mut self, keycode: u32, owner: HeldKeyOwner) {
+        self.im_repeat.begin_hold(keycode, owner);
+    }
+
+    pub(crate) fn held_key_owner(&self, keycode: u32) -> Option<HeldKeyOwner> {
+        self.im_repeat.held_owner(keycode)
+    }
+
+    pub(crate) fn end_key_hold(&mut self, keycode: u32) {
+        self.im_repeat.end_hold(&self.loop_handle, keycode);
+    }
+
+    pub(crate) fn configure_keyboard_repeat(&mut self, rate: i32, delay: i32) {
+        self.im_repeat
+            .configure_repeat(&self.loop_handle, rate, delay);
+    }
+
+    pub(crate) fn start_text_input_repeat(
+        &mut self,
+        keycode: u32,
+        keysym: u32,
+        utf8: Option<String>,
+    ) {
+        self.im_repeat
+            .start_text_input_repeat(&self.loop_handle, keycode, keysym, utf8);
+    }
+
+    pub(crate) fn start_command_repeat(&mut self, keycode: u32, key: String) {
+        self.im_repeat
+            .start_command_repeat(&self.loop_handle, keycode, key);
+    }
+
+    pub(crate) fn cancel_command_repeat(&mut self) {
+        self.im_repeat.cancel_command_repeat(&self.loop_handle);
+    }
+
+    fn take_intercept_repeat_for_timer(&mut self, keycode: u32) -> Option<InterceptRepeat> {
+        self.im_repeat.take_due_repeat(keycode)
+    }
+
+    fn reschedule_intercept_repeat(&mut self, keycode: u32) {
+        self.im_repeat
+            .reschedule_if_active(&self.loop_handle, keycode);
+    }
+
+    pub(crate) fn emacs_surface_for_focused_output(&self) -> Option<WlSurface> {
+        self.get_emacs_surface_for_focused_output()
+            .and_then(|id| self.id_windows.get(&id))
+            .and_then(|window| window.wl_surface())
+            .map(|surface| surface.into_owned())
+    }
+
+    fn emacs_keyboard_redirect_focus(&self) -> Option<WlSurface> {
+        if !self.im_repeat.has_keyboard_redirect_hold() && !module::get_keyboard_capture() {
+            return None;
+        }
+
+        self.emacs_surface_for_focused_output().or_else(|| {
+            self.keyboard_focus
+                .as_ref()
+                .filter(|surface| {
+                    self.surface_id(surface)
+                        .is_some_and(|id| self.is_emacs_frame(id))
+                })
+                .cloned()
+        })
+    }
+
     /// Focus a surface by id; resolves to either a view or an Emacs frame and
     /// delegates to the canonical mutator (`set_focus_view` / `set_focus_frame`).
     /// Callers with a known kind should call those directly.
@@ -4188,46 +4281,19 @@ impl Ewm {
     ///
     /// Emacs surfaces and None both clear text_input (leave + set_focus(None)),
     /// causing the client to disable. Commits that arrive during the resulting
-    /// disable->enable gap are queued in `im_relay_state` and drained on the
+    /// disable->enable gap are queued in `im_text_input` and drained on the
     /// next `ImEvent::Activated` for the same surface.
     pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u64>) {
-        use smithay::wayland::text_input::TextInputSeat;
-        let text_input = self.seat.text_input();
-
         let is_emacs = surface_id.is_some_and(|id| self.is_emacs_frame(id));
-
-        if is_emacs || surface.is_none() {
-            text_input.leave();
-            text_input.set_focus(None);
-        } else if let Some(s) = surface {
-            text_input.set_focus(Some(s.clone()));
-            text_input.enter();
-        }
+        im::text_input::update_focus(&self.seat, surface, is_emacs);
     }
 
     fn active_text_input_surface_id(&self) -> Option<u64> {
-        use smithay::wayland::text_input::TextInputSeat;
-        let text_input = self.seat.text_input();
-        let mut active_surface_id = None;
-        text_input.with_active_text_input(|_, surface| {
-            active_surface_id = self.surface_id(surface);
-        });
-        active_surface_id
+        im::text_input::active_surface_id(&self.seat, |surface| self.surface_id(surface))
     }
 
-    fn commit_active_text_input(&self, text: String) -> bool {
-        use smithay::wayland::text_input::TextInputSeat;
-        let text_input = self.seat.text_input();
-        let mut text = Some(text);
-        let mut delivered = false;
-        text_input.with_active_text_input(|ti, _surface| {
-            ti.commit_string(text.take());
-            delivered = true;
-        });
-        if delivered {
-            text_input.done(false);
-        }
-        delivered
+    fn commit_active_text_input(&self, text: String) {
+        im::text_input::commit_active(&self.seat, text)
     }
 
     /// Get surface ID from a WlSurface
@@ -4951,6 +5017,9 @@ impl Ewm {
             })
         });
 
+        let held_intercept_keycodes = self.im_repeat.held_debug();
+        let (keyboard_repeat_rate, keyboard_repeat_delay) = self.im_repeat.repeat_config_debug();
+
         serde_json::json!({
             "surfaces": &self.surface_info,
             "emacs_surfaces": emacs_surfaces,
@@ -4972,7 +5041,13 @@ impl Ewm {
             "emulated_keys": module::get_emulated_keys(),
             "emacs_pid": self.emacs_pid,
             "text_input_intercept": self.text_input_intercept,
-            "text_input_active": self.im_relay_state.is_active(),
+            "text_input_active": self.im_text_input.is_active(),
+            "held_intercept_keycodes": held_intercept_keycodes,
+            "intercept_repeat": self.im_repeat.repeat_debug(),
+            "keyboard_repeat": {
+                "rate": keyboard_repeat_rate,
+                "delay": keyboard_repeat_delay,
+            },
             "xkb_layouts": &self.xkb_layout_names,
             "xkb_current_layout": self.xkb_current_layout,
             "next_surface_id": self.next_surface_id,
@@ -4985,7 +5060,8 @@ impl Ewm {
             "workspace_protocol": self.workspace_state.debug_state(),
             "pending_frame_outputs": module::peek_pending_frame_outputs(),
             "pending_active_frame_closes": module::peek_pending_active_frame_closes(),
-            "in_prefix_sequence": module::get_in_prefix_sequence(),
+            "keyboard_capture": module::get_keyboard_capture(),
+            "keyboard_capture_holders": module::keyboard_capture_holders_debug(),
             "debug_mode": module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed),
             "pending_commands": module::peek_commands(),
             "focus_history": module::get_focus_history(),
@@ -6763,6 +6839,9 @@ impl State {
         };
         let ewm = &self.ewm;
         let new_focus = resolve_keyboard_focus_target(locked, lock_surface, layer_focus, || {
+            if let Some(surface) = ewm.emacs_keyboard_redirect_focus() {
+                return Some(surface);
+            }
             let id = ewm.focused_surface_id();
             ewm.id_windows
                 .get(&id)
@@ -6775,6 +6854,70 @@ impl State {
             let keyboard = self.ewm.keyboard.clone();
             keyboard.set_focus(self, new_focus, SERIAL_COUNTER.next_serial());
         }
+    }
+
+    pub(crate) fn send_intercept_key_to_emacs(
+        &mut self,
+        keycode: u32,
+        key_state: KeyState,
+        time: u32,
+        mods_changed: bool,
+    ) {
+        let keyboard = self.ewm.keyboard.clone();
+        self.sync_keyboard_focus();
+
+        if !self.ewm.is_keyboard_focus_on_emacs() {
+            return;
+        }
+
+        let saved_layout = self.ewm.xkb_current_layout;
+        if saved_layout != 0 {
+            keyboard.with_xkb_state(self, |mut context| {
+                context.set_layout(smithay::input::keyboard::Layout(0));
+            });
+        }
+
+        keyboard.input_forward(
+            self,
+            keycode.into(),
+            key_state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            mods_changed,
+        );
+
+        if saved_layout != 0 {
+            keyboard.with_xkb_state(self, |mut context| {
+                context.set_layout(smithay::input::keyboard::Layout(saved_layout as u32));
+            });
+        }
+    }
+
+    pub(crate) fn on_intercept_repeat_timer(&mut self, keycode: u32) {
+        let Some(repeat) = self.ewm.take_intercept_repeat_for_timer(keycode) else {
+            return;
+        };
+        if self.ewm.held_key_owner(keycode).is_none() {
+            return;
+        }
+
+        self.ewm.notify_activity();
+        self.ewm.reset_idle_timer();
+
+        match repeat {
+            InterceptRepeat::TextInput { keysym, utf8, .. } => {
+                self.ewm.queue_event(Event::Key { keysym, utf8 });
+            }
+            InterceptRepeat::Command { key, .. } => {
+                if module::get_keyboard_capture() {
+                    self.ewm.cancel_command_repeat();
+                    return;
+                }
+                self.ewm.queue_event(Event::InterceptedCommand { key });
+            }
+        }
+
+        self.ewm.reschedule_intercept_repeat(keycode);
     }
 
     /// Drain pending module commands, dispatch them, and sync keyboard focus.
@@ -6955,16 +7098,16 @@ impl State {
                 let active_surface_id = self.ewm.active_text_input_surface_id();
                 match self
                     .ewm
-                    .im_relay_state
+                    .im_text_input
                     .commit(active_surface_id, surface_id, text)
                 {
-                    im_relay::CommitResult::Deliver(text) => {
+                    im::text_input::CommitResult::Deliver(text) => {
                         self.ewm.commit_active_text_input(text);
                     }
-                    im_relay::CommitResult::Queued => {
+                    im::text_input::CommitResult::Queued => {
                         debug!("ImCommit: queued (surface_id={surface_id})");
                     }
-                    im_relay::CommitResult::DroppedStale => {
+                    im::text_input::CommitResult::DroppedStale => {
                         debug!("ImCommit: dropped stale commit (surface_id={surface_id})");
                     }
                 }
@@ -6973,6 +7116,12 @@ impl State {
                 if self.ewm.text_input_intercept != enabled {
                     info!("Text input intercept: {}", enabled);
                     self.ewm.text_input_intercept = enabled;
+                }
+            }
+            ModuleCommand::KeyboardCaptureChanged { active } => {
+                trace!("Keyboard capture changed: active={}", active);
+                if active {
+                    self.ewm.cancel_command_repeat();
                 }
             }
             ModuleCommand::SwitchLayout { layout } => {
@@ -7045,20 +7194,14 @@ impl State {
             ModuleCommand::ConfigureInput { configs } => {
                 info!("Input config updated: {} entries", configs.len());
 
-                // Extract keyboard settings before storing configs (avoids borrow conflict)
-                let kb_repeat = configs
-                    .iter()
-                    .find(|c| c.device_type == Some(crate::input::DeviceType::Keyboard))
-                    .and_then(|kb| {
-                        if kb.repeat_rate.is_some() || kb.repeat_delay.is_some() {
-                            Some((kb.repeat_rate.unwrap_or(25), kb.repeat_delay.unwrap_or(200)))
-                        } else {
-                            None
-                        }
-                    });
+                // Extract keyboard settings before storing configs (avoids borrow conflict).
+                let kb_repeat = input::effective_keyboard_repeat(&configs);
                 let kb_xkb = configs
                     .iter()
-                    .find(|c| c.device_type == Some(crate::input::DeviceType::Keyboard))
+                    .find(|c| {
+                        c.device.is_none()
+                            && c.device_type == Some(crate::input::DeviceType::Keyboard)
+                    })
                     .and_then(|kb| {
                         kb.xkb_layouts.clone().map(|layouts| {
                             (layouts, kb.xkb_variants.clone(), kb.xkb_options.clone())
@@ -7069,12 +7212,13 @@ impl State {
                 self.backend
                     .reapply_libinput_config(&self.ewm.input_configs);
 
-                // Apply keyboard repeat settings
-                if let Some((rate, delay)) = kb_repeat {
-                    let keyboard = self.ewm.keyboard.clone();
-                    keyboard.change_repeat_info(rate, delay);
-                    info!("Keyboard repeat: rate={}, delay={}", rate, delay);
-                }
+                // Apply the same effective repeat settings to Wayland clients
+                // and intercepted command/text-input repeat.
+                let (rate, delay) = kb_repeat;
+                let keyboard = self.ewm.keyboard.clone();
+                keyboard.change_repeat_info(rate, delay);
+                self.ewm.configure_keyboard_repeat(rate, delay);
+                info!("Keyboard repeat: rate={}, delay={}", rate, delay);
 
                 // Apply XKB layout settings
                 if let Some((layouts_str, variants, options)) = kb_xkb {
@@ -7218,8 +7362,8 @@ impl State {
 
         for event in events {
             match event {
-                im_relay::ImEvent::Activated => {
-                    if self.ewm.im_relay_state.activate() {
+                im::relay::ImEvent::Activated => {
+                    if self.ewm.im_text_input.activate() {
                         self.ewm.queue_event(Event::TextInputActivated);
                     }
 
@@ -7227,15 +7371,15 @@ impl State {
                     let active_surface_id = self.ewm.active_text_input_surface_id();
                     if let Some(text) = self
                         .ewm
-                        .im_relay_state
+                        .im_text_input
                         .drain_pending_for_active_surface(active_surface_id)
                     {
                         debug!("ImCommit: draining queued commit(s)");
                         self.ewm.commit_active_text_input(text);
                     }
                 }
-                im_relay::ImEvent::Deactivated => {
-                    if self.ewm.im_relay_state.deactivate() {
+                im::relay::ImEvent::Deactivated => {
+                    if self.ewm.im_text_input.deactivate() {
                         self.ewm.queue_event(Event::TextInputDeactivated);
                     }
                 }
@@ -7634,7 +7778,7 @@ mod tests {
         fix.add_output(HEAD_A, 1600, 900);
 
         let toplevel = fix.open_toplevel(&mut client, "requests", Size::from((400, 400)));
-        let surface_id = fix.find_surface_id(&toplevel.surface).unwrap();
+        let surface_id = fix.find_surface_id(&client, &toplevel.surface).unwrap();
         fix.ewm()
             .apply_output_layout(HEAD_A, vec![frame_with_entry(100, nz(3001), surface_id)]);
 

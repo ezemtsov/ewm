@@ -17,97 +17,10 @@ use wayland_client::{Connection, Dispatch, QueueHandle};
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_v2::ZwpInputMethodV2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ImEvent {
     Activated,
     Deactivated,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct PendingCommit {
-    pub surface_id: u64,
-    pub text: String,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum CommitResult {
-    Deliver(String),
-    Queued,
-    DroppedStale,
-}
-
-/// Surface-aware commit gate for the input-method relay.
-///
-/// Commits may arrive while a client is cycling text-input disable/enable.
-/// Queue only while no active text-input surface is known; once a surface is
-/// active, text for any other surface is stale and must not be delivered later.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct ImRelayState {
-    active: bool,
-    pending_commits: Vec<PendingCommit>,
-}
-
-impl ImRelayState {
-    pub fn is_active(&self) -> bool {
-        self.active
-    }
-
-    pub fn pending_commits(&self) -> &[PendingCommit] {
-        &self.pending_commits
-    }
-
-    pub fn activate(&mut self) -> bool {
-        if self.active {
-            false
-        } else {
-            self.active = true;
-            true
-        }
-    }
-
-    pub fn deactivate(&mut self) -> bool {
-        if self.active {
-            self.active = false;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn commit(
-        &mut self,
-        active_surface_id: Option<u64>,
-        target_surface_id: u64,
-        text: String,
-    ) -> CommitResult {
-        match active_surface_id {
-            Some(active) if active == target_surface_id => CommitResult::Deliver(text),
-            Some(_) => CommitResult::DroppedStale,
-            None => {
-                self.pending_commits.push(PendingCommit {
-                    surface_id: target_surface_id,
-                    text,
-                });
-                CommitResult::Queued
-            }
-        }
-    }
-
-    /// Drain queued text for `active_surface_id`, dropping text for any other
-    /// surface because it is stale once a different surface is active.
-    pub fn drain_pending_for_active_surface(
-        &mut self,
-        active_surface_id: Option<u64>,
-    ) -> Option<String> {
-        let active_surface_id = active_surface_id?;
-        let mut text = String::new();
-        for commit in self.pending_commits.drain(..) {
-            if commit.surface_id == active_surface_id {
-                text.push_str(&commit.text);
-            }
-        }
-        (!text.is_empty()).then_some(text)
-    }
 }
 
 /// Must stay alive for the compositor lifetime. Dropping destroys the

@@ -7,7 +7,7 @@
 //!    - `COMMAND_QUEUE`: Emacs -> Compositor commands (layouts, focus, etc.)
 //!    - `EVENT_WRITER`: Compositor -> Emacs events via pipe fd (open_channel)
 //!    - `SHARED_STATE`: Compositor -> Emacs snapshot (focus, pointer, outputs)
-//!    - `IN_PREFIX_SEQUENCE`: Bidirectional atomic (hot input path)
+//!    - `KEYBOARD_CAPTURE_ACTIVE`: derived from tokened Emacs input leases
 //!
 //! 2. **No blocking**: Module functions called from Emacs must never block. They push to queues and
 //!    return immediately. The compositor processes queues on its event loop. Exception:
@@ -52,11 +52,14 @@ use_symbols! {
     kw_h           => ":h"
     kw_fullscreen  => ":fullscreen"
     kw_key         => ":key"
+    kw_description => ":description"
     kw_ctrl        => ":ctrl"
     kw_alt         => ":alt"
     kw_shift       => ":shift"
     kw_super       => ":super"
     kw_emulate     => ":emulate"
+    kw_dispatch    => ":dispatch"
+    kw_repeat      => ":repeat"
     kw_name       => ":name"
     kw_width      => ":width"
     kw_surfaces   => ":surfaces"
@@ -102,7 +105,7 @@ define_errors! {
     ewm_input_unknown_key  "Unknown input config key"            (ewm_input_error)
 }
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
@@ -113,10 +116,9 @@ use smithay::reexports::calloop::LoopSignal;
 
 use crate::cursor::CursorConfig;
 use crate::strip::Frame;
-use crate::utils::reply::{reply_channel, ReplyError};
-use crate::{EmulatedKey, InterceptedKey, LayoutEntry};
-
 pub use crate::utils::reply::Reply;
+use crate::utils::reply::{reply_channel, ReplyError};
+use crate::{EmulatedKey, InterceptDispatch, InterceptedKey, LayoutEntry};
 
 /// Extract a number from a Lisp value as f64, accepting both int and float.
 fn value_as_f64(val: Value<'_>) -> Result<f64> {
@@ -235,6 +237,11 @@ pub fn get_intercepted_keys() -> Vec<InterceptedKey> {
     intercepted_keys().read().unwrap().clone()
 }
 
+#[doc(hidden)]
+pub fn set_intercepted_keys_for_test(keys: Vec<InterceptedKey>) {
+    *intercepted_keys().write().unwrap() = keys;
+}
+
 /// Emulated keys (synchronous, like intercepted keys)
 static EMULATED_KEYS: OnceLock<RwLock<Vec<EmulatedKey>>> = OnceLock::new();
 
@@ -247,18 +254,119 @@ pub fn get_emulated_keys() -> Vec<EmulatedKey> {
     emulated_keys().read().unwrap().clone()
 }
 
-/// Flag indicating we're in an incomplete prefix key sequence.
-/// Set when prefix key intercepted, cleared when Emacs completes a command.
-static IN_PREFIX_SEQUENCE: AtomicBool = AtomicBool::new(false);
-
-/// Set the prefix sequence flag (called from input handling)
-pub fn set_in_prefix_sequence(value: bool) {
-    IN_PREFIX_SEQUENCE.store(value, Ordering::Relaxed);
+#[doc(hidden)]
+pub fn set_emulated_keys_for_test(keys: Vec<EmulatedKey>) {
+    *emulated_keys().write().unwrap() = keys;
 }
 
-/// Get the prefix sequence flag (for state dump)
-pub fn get_in_prefix_sequence() -> bool {
-    IN_PREFIX_SEQUENCE.load(Ordering::Relaxed)
+/// Emacs currently needs Wayland keyboard focus for command-loop input.
+///
+/// Capture is represented as tokened leases so cleanup from one input context
+/// cannot clear capture that another still owns.
+static KEYBOARD_CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static KEYBOARD_CAPTURE_STATE: OnceLock<Mutex<KeyboardCaptureState>> = OnceLock::new();
+
+#[derive(Debug, Default)]
+struct KeyboardCaptureState {
+    next_token: u64,
+    leases: BTreeMap<u64, String>,
+    redirect_active: bool,
+}
+
+impl KeyboardCaptureState {
+    fn begin(&mut self, reason: String) -> u64 {
+        let token = self.allocate_token();
+        self.leases.insert(token, reason);
+        token
+    }
+
+    fn end(&mut self, token: u64) -> bool {
+        self.leases.remove(&token).is_some()
+    }
+
+    fn begin_redirect(&mut self) {
+        self.redirect_active = true;
+    }
+
+    fn clear_redirect(&mut self) -> bool {
+        std::mem::take(&mut self.redirect_active)
+    }
+
+    fn is_active(&self) -> bool {
+        self.redirect_active || !self.leases.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.leases.clear();
+        self.redirect_active = false;
+    }
+
+    fn debug_holders(&self) -> Vec<(u64, String)> {
+        self.redirect_active
+            .then(|| (0, "keyboard-redirect".to_string()))
+            .into_iter()
+            .chain(
+                self.leases
+                    .iter()
+                    .map(|(&token, reason)| (token, reason.clone())),
+            )
+            .collect()
+    }
+
+    fn allocate_token(&mut self) -> u64 {
+        loop {
+            self.next_token = self.next_token.wrapping_add(1);
+            if self.next_token == 0 {
+                self.next_token = 1;
+            }
+            if !self.leases.contains_key(&self.next_token) {
+                return self.next_token;
+            }
+        }
+    }
+}
+
+fn keyboard_capture_state() -> &'static Mutex<KeyboardCaptureState> {
+    KEYBOARD_CAPTURE_STATE.get_or_init(|| Mutex::new(KeyboardCaptureState::default()))
+}
+
+fn sync_keyboard_capture_active(state: &KeyboardCaptureState) {
+    KEYBOARD_CAPTURE_ACTIVE.store(state.is_active(), Ordering::Release);
+}
+
+fn update_keyboard_capture_state<T>(f: impl FnOnce(&mut KeyboardCaptureState) -> T) -> T {
+    let mut state = keyboard_capture_state().lock().unwrap();
+    let result = f(&mut state);
+    sync_keyboard_capture_active(&state);
+    result
+}
+
+pub fn begin_keyboard_capture(reason: impl Into<String>) -> u64 {
+    update_keyboard_capture_state(|state| state.begin(reason.into()))
+}
+
+pub fn end_keyboard_capture(token: u64) -> bool {
+    update_keyboard_capture_state(|state| state.end(token))
+}
+
+pub fn clear_keyboard_capture_holders() {
+    update_keyboard_capture_state(KeyboardCaptureState::clear);
+}
+
+pub fn keyboard_capture_holders_debug() -> Vec<(u64, String)> {
+    keyboard_capture_state().lock().unwrap().debug_holders()
+}
+
+pub fn begin_keyboard_redirect_capture() {
+    update_keyboard_capture_state(KeyboardCaptureState::begin_redirect);
+}
+
+pub fn clear_keyboard_redirect_capture() -> bool {
+    update_keyboard_capture_state(KeyboardCaptureState::clear_redirect)
+}
+
+pub fn get_keyboard_capture() -> bool {
+    KEYBOARD_CAPTURE_ACTIVE.load(Ordering::Acquire)
 }
 
 // Per-field accessors: thin defuns for hot-path reads.
@@ -343,6 +451,9 @@ pub enum ModuleCommand {
     TextInputIntercept {
         enabled: bool,
     },
+    KeyboardCaptureChanged {
+        active: bool,
+    },
     SwitchLayout {
         layout: String,
     },
@@ -350,7 +461,8 @@ pub enum ModuleCommand {
     /// Request verbose state dump for debugging (ewm-show-state).
     /// Compositor sends the JSON string back via the reply channel.
     GetDebugState(Reply<String>),
-    /// Request activation token creation. Compositor sends the token string back via the reply channel.
+    /// Request activation token creation. Compositor sends the token string back via the reply
+    /// channel.
     CreateActivationToken(Reply<String>),
     /// Set clipboard selection from Emacs
     SetSelection {
@@ -440,6 +552,14 @@ fn push_command(cmd: ModuleCommand) {
     if let Some(signal) = LOOP_SIGNAL.get() {
         signal.wakeup();
     }
+}
+
+fn push_keyboard_capture_changed() {
+    // Snapshot the edge at enqueue time. A begin+end pair can be queued before
+    // the compositor drains commands; the begin still needs to cancel repeat.
+    push_command(ModuleCommand::KeyboardCaptureChanged {
+        active: get_keyboard_capture(),
+    });
 }
 
 /// Flag to request compositor shutdown from Emacs thread
@@ -672,6 +792,7 @@ fn start(cursor_theme: Option<String>, cursor_size: i64) -> Result<bool> {
 
     // Reset stop flag
     STOP_REQUESTED.store(false, Ordering::SeqCst);
+    clear_keyboard_capture_holders();
 
     // Spawn compositor thread - frames are created via output_detected events
     // (Emacs receives events and creates frames with ewm--create-frame-for-output)
@@ -1051,7 +1172,8 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
 }
 
 /// Set intercepted and emulated keys (module mode).
-/// KEYS is a vector of plists with :key :ctrl :alt :shift :super keys.
+/// KEYS is a vector of plists with :key :description :ctrl :alt :shift
+/// :super :fullscreen :dispatch keys.
 /// Keys with :emulate "ctrl" (etc.) go into the emulated set; the rest are intercepted.
 #[defun]
 fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
@@ -1066,6 +1188,18 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         // Resolve keysym from Emacs key description using libxkbcommon.
         // Emacs passes either an integer (Unicode codepoint) or a string (key name).
         let key_val = env.call(plist_get, (key_spec, kw_key))?;
+        let description_val = env.call(plist_get, (key_spec, kw_description))?;
+        let key_description = if let Ok(description) = description_val.into_rust::<String>() {
+            description
+        } else if let Ok(codepoint) = key_val.into_rust::<i64>() {
+            char::from_u32(codepoint as u32)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| format!("U+{:X}", codepoint))
+        } else if let Ok(name) = key_val.into_rust::<String>() {
+            format!("<{name}>")
+        } else {
+            String::new()
+        };
         let keysym = if let Ok(codepoint) = key_val.into_rust::<i64>() {
             xkb::utf32_to_keysym(codepoint as u32)
         } else if let Ok(name) = key_val.into_rust::<String>() {
@@ -1095,6 +1229,20 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         let shift_val = env.call(plist_get, (key_spec, kw_shift))?;
         let super_val = env.call(plist_get, (key_spec, kw_super))?;
         let allow_fullscreen_val = env.call(plist_get, (key_spec, kw_fullscreen))?;
+        let dispatch_val = env.call(plist_get, (key_spec, kw_dispatch))?;
+        let repeat_val = env.call(plist_get, (key_spec, kw_repeat))?;
+        let dispatch = if let Ok(dispatch) = dispatch_val.into_rust::<String>() {
+            match dispatch.as_str() {
+                "command" => InterceptDispatch::Command,
+                "keyboard" => InterceptDispatch::Keyboard,
+                other => {
+                    tracing::warn!("Unknown intercept dispatch {:?}, using keyboard", other);
+                    InterceptDispatch::Keyboard
+                }
+            }
+        } else {
+            InterceptDispatch::Keyboard
+        };
 
         // Check :emulate flag: keys with this go to emulated set
         let emulate_val = env.call(plist_get, (key_spec, kw_emulate))?;
@@ -1110,11 +1258,14 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         } else {
             parsed_keys.push(InterceptedKey {
                 keysym: keysym.raw(),
+                key: key_description,
                 ctrl: is_true(ctrl_val),
                 alt: is_true(alt_val),
                 shift: is_true(shift_val),
                 logo: is_true(super_val),
                 allow_fullscreen: is_true(allow_fullscreen_val),
+                dispatch,
+                repeat: is_true(repeat_val),
             });
         }
     }
@@ -1146,9 +1297,41 @@ fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
 #[defun]
 fn text_input_intercept_module(enabled: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::TextInputIntercept {
-        enabled: enabled.is_not_nil(),
+        enabled: enabled.is_not_nil() && enabled != *kw_false,
     });
     Ok(())
+}
+
+/// Begin an Emacs keyboard-capture lease and return its token.
+#[defun]
+fn keyboard_capture_begin_module(reason: String) -> Result<i64> {
+    let token = begin_keyboard_capture(reason);
+    push_keyboard_capture_changed();
+    Ok(token as i64)
+}
+
+/// End a keyboard-capture lease. Stale tokens are ignored.
+#[defun]
+fn keyboard_capture_end_module(token: i64) -> Result<bool> {
+    if token <= 0 {
+        return Ok(false);
+    }
+    let token = token as u64;
+    let removed = end_keyboard_capture(token);
+    if removed {
+        push_keyboard_capture_changed();
+    }
+    Ok(removed)
+}
+
+/// Clear compositor-owned keyboard capture created by a keyboard redirect.
+#[defun]
+fn keyboard_redirect_capture_clear_module() -> Result<bool> {
+    let removed = clear_keyboard_redirect_capture();
+    if removed {
+        push_keyboard_capture_changed();
+    }
+    Ok(removed)
 }
 
 /// Switch to named XKB layout (module mode).
@@ -1409,19 +1592,6 @@ fn debug_mode_p() -> Result<bool> {
     Ok(DEBUG_MODE.load(Ordering::Relaxed))
 }
 
-/// Query prefix sequence state (called by Emacs before focus sync).
-#[defun]
-fn in_prefix_sequence_p() -> Result<bool> {
-    Ok(IN_PREFIX_SEQUENCE.load(Ordering::Relaxed))
-}
-
-/// Clear prefix sequence flag (called by Emacs when command completes).
-#[defun]
-fn clear_prefix_sequence() -> Result<()> {
-    IN_PREFIX_SEQUENCE.store(false, Ordering::Relaxed);
-    Ok(())
-}
-
 /// List installed XDG desktop applications.
 /// Returns an alist of (name . commandline) for apps that have a command.
 /// Runs synchronously in the Emacs thread (GIO just reads .desktop files).
@@ -1448,4 +1618,74 @@ fn list_xdg_apps<'a>(env: &'a Env) -> Result<Value<'a>> {
 
     result = env.call("nreverse", (result,))?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KeyboardCaptureState;
+
+    #[test]
+    fn stale_keyboard_capture_end_keeps_newer_lease() {
+        let mut state = KeyboardCaptureState::default();
+        let old = state.begin("prefix".to_string());
+        let new = state.begin("minibuffer".to_string());
+
+        assert!(state.end(old));
+        assert!(state.is_active());
+        assert_eq!(state.debug_holders(), vec![(new, "minibuffer".to_string())]);
+    }
+
+    #[test]
+    fn keyboard_capture_is_inactive_after_last_lease_ends() {
+        let mut state = KeyboardCaptureState::default();
+        let token = state.begin("read-key".to_string());
+
+        assert!(state.is_active());
+        assert!(state.end(token));
+        assert!(!state.is_active());
+    }
+
+    #[test]
+    fn ending_unknown_keyboard_capture_token_is_noop() {
+        let mut state = KeyboardCaptureState::default();
+        let token = state.begin("transient".to_string());
+
+        assert!(!state.end(token + 1));
+        assert!(state.is_active());
+        assert_eq!(
+            state.debug_holders(),
+            vec![(token, "transient".to_string())]
+        );
+    }
+
+    #[test]
+    fn redirect_and_tokened_capture_clear_independently() {
+        let mut state = KeyboardCaptureState::default();
+        let token = state.begin("read-key".to_string());
+
+        state.begin_redirect();
+        assert!(state.clear_redirect());
+        assert!(state.is_active());
+        assert_eq!(state.debug_holders(), vec![(token, "read-key".to_string())]);
+
+        state.begin_redirect();
+        assert!(state.end(token));
+        assert!(state.is_active());
+        assert_eq!(
+            state.debug_holders(),
+            vec![(0, "keyboard-redirect".to_string())]
+        );
+    }
+
+    #[test]
+    fn duplicate_redirect_capture_is_a_noop() {
+        let mut state = KeyboardCaptureState::default();
+
+        state.begin_redirect();
+        state.begin_redirect();
+        assert_eq!(
+            state.debug_holders(),
+            vec![(0, "keyboard-redirect".to_string())]
+        );
+    }
 }

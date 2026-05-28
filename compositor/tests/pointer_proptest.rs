@@ -164,7 +164,7 @@ impl Harness {
         fix.roundtrip(&mut client);
         let toplevel = fix.open_toplevel(&mut client, "ewm-test-toplevel", view_size());
         let sid = fix
-            .find_surface_id(&toplevel.surface)
+            .find_surface_id(&client, &toplevel.surface)
             .expect("server did not assign a surface_id");
         let mut h = Harness {
             fix,
