@@ -15,7 +15,6 @@
 (declare-function ewm-get-focused-id "ewm-core")
 
 (defvar ewm--surfaces)
-(defvar ewm-surface-id)
 
 (defvar ewm-text-input-activated-hook nil
   "Hook run when a client text field becomes active.
@@ -55,32 +54,10 @@ For quail-based input methods, looks up the translation directly."
              (t (string char)))))
       (string char))))
 
-(defun ewm-text-input--self-insert ()
-  "Handle self-insert when text input mode is active.
-Sends the typed character to the client via commit_string,
-applying input method translation if active."
-  (interactive)
-  (when ewm-surface-id
-    (let* ((char last-command-event)
-           (translated (ewm-text-input--translate-char char)))
-      (when (stringp translated)
-        (ewm-im-commit translated ewm-surface-id)))))
-
-(defvar ewm-text-input-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [remap self-insert-command] #'ewm-text-input--self-insert)
-    map)
-  "Keymap for `ewm-text-input-mode'.")
-
 (define-minor-mode ewm-text-input-mode
-  "Minor mode for typing in client text fields.
-When enabled, regular keystrokes are sent to the focused client
-text field via input method commit_string, while Emacs commands
-like C-x and M-x continue to work normally.
-
-Input method translations (e.g., russian-computer) are applied."
-  :lighter " IM"
-  :keymap ewm-text-input-mode-map)
+  "Mode-line indicator for active Wayland text-input relay."
+  :global t
+  :lighter " IM")
 
 (defun ewm-text-input-auto-mode-enable ()
   "Enable automatic text input mode switching.
@@ -95,6 +72,7 @@ client text fields gain/lose focus."
   (interactive)
   (remove-hook 'ewm-text-input-activated-hook #'ewm-text-input--auto-enable)
   (remove-hook 'ewm-text-input-deactivated-hook #'ewm-text-input--auto-disable)
+  (ewm-text-input-intercept :false)
   (ewm-text-input-mode -1))
 
 (defun ewm-text-input-intercept (enabled)

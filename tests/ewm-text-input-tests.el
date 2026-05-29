@@ -21,13 +21,15 @@
 
 (defvar ewm-text-input-tests--focused-id nil)
 (defvar ewm-text-input-tests--commits nil)
+(defvar ewm-text-input-tests--intercepts nil)
 
 ;; The compositor dynamic module isn't loaded in the test harness; stub
 ;; the module entry points `ewm-text-input' needs.
 (defun ewm-im-commit-module (text surface-id)
   (push (cons surface-id text) ewm-text-input-tests--commits))
 
-(defun ewm-text-input-intercept-module (_enabled) nil)
+(defun ewm-text-input-intercept-module (enabled)
+  (push enabled ewm-text-input-tests--intercepts))
 
 (defun ewm-get-focused-id ()
   ewm-text-input-tests--focused-id)
@@ -44,14 +46,18 @@
 (defmacro ewm-text-input-tests--with-state (&rest body)
   "Run BODY with isolated text-input globals."
   (declare (indent 0) (debug t))
-  `(let ((old-surfaces (and (boundp 'ewm--surfaces) ewm--surfaces))
+  `(let ((old-mode ewm-text-input-mode)
+         (ewm--surfaces (make-hash-table))
+         (ewm-text-input-activated-hook nil)
+         (ewm-text-input-deactivated-hook nil)
          (ewm-text-input-tests--focused-id nil)
-         (ewm-text-input-tests--commits nil))
+         (ewm-text-input-tests--commits nil)
+         (ewm-text-input-tests--intercepts nil))
      (unwind-protect
          (progn
-           (setq ewm--surfaces (make-hash-table))
+           (ewm-text-input-mode -1)
            ,@body)
-       (setq ewm--surfaces old-surfaces))))
+       (ewm-text-input-mode (if old-mode 1 -1)))))
 
 (defmacro ewm-text-input-tests--with-buffers (buffers &rest body)
   "Bind BUFFERS to temporary buffers while running BODY."
@@ -116,6 +122,19 @@
         (ewm-text-input-tests--with-fake-quail
           (ewm--handle-key '((utf8 . "a")))))
       (should-not ewm-text-input-tests--commits))))
+
+(ert-deftest ewm-text-input-tests/auto-mode-is-indicator-only ()
+  "Auto mode toggles relay state without remapping native self-insert."
+  (ewm-text-input-tests--with-state
+    (with-temp-buffer
+      (ewm-text-input-auto-mode-enable)
+      (ewm--handle-text-input-activated)
+      (should ewm-text-input-mode)
+      (should (equal ewm-text-input-tests--intercepts '(t)))
+      (should (eq (key-binding (kbd "a")) 'self-insert-command))
+      (ewm-text-input-auto-mode-disable)
+      (should-not ewm-text-input-mode)
+      (should (equal ewm-text-input-tests--intercepts '(nil t))))))
 
 (provide 'ewm-text-input-tests)
 ;;; ewm-text-input-tests.el ends here
