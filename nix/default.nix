@@ -23,7 +23,7 @@ let
     cargoLock = {
       lockFile = ./../compositor/Cargo.lock;
       outputHashes = {
-        "smithay-0.7.0" = "sha256-lup6XQVt1xh/Nyfwx34OM06vM4G9LqRMOV69QBbBWGs=";
+        "smithay-0.7.0" = "sha256-TV/GTfSvgfVwIFUGoASU7xm38opIBLjLMf1HeNTW07U=";
       };
     };
 

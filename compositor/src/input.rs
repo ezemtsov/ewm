@@ -728,10 +728,10 @@ pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputCo
         None => return,
     };
 
-    let device_name = device.name().to_owned();
+    let device_name = device.name().into_owned();
     let device_cfg = configs
         .iter()
-        .find(|c| c.device.as_deref() == Some(device_name.as_str()));
+        .find(|c| c.device.as_deref() == Some(device_name.as_ref()));
     let type_cfg = configs
         .iter()
         .find(|c| c.device.is_none() && c.device_type == Some(detected_type));
