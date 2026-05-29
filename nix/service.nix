@@ -13,13 +13,30 @@
 let
   cfg = config.programs.ewm;
 
-  # Extract the unwrapped emacs for building (withPackages results carry
-  # a passthru .emacs pointing to the base package).
-  baseEmacs = cfg.emacsPackage.emacs or cfg.emacsPackage;
+  applySkia = emacs: emacs.overrideAttrs (o: {
+    patches = (o.patches or []) ++ [ ../emacs/skia-30.2.patch ];
+    configureFlags = (o.configureFlags or []) ++ [ "--with-skia" ];
+    buildInputs = (o.buildInputs or []) ++ (with pkgs; [ skia libepoxy ]);
+    nativeBuildInputs = (o.nativeBuildInputs or []) ++ (with pkgs; [ autoconf automake ]);
+    preConfigure = (o.preConfigure or "") + ''
+      ./autogen.sh
+    '';
+  });
+
+  # Rewrap a withPackages result so its base emacs is skia-patched; on a
+  # bare emacs, patch it directly. withPackages results carry `emacs` and
+  # `explicitRequires` but no `.override`, so rebuild via overrideScope.
+  wrapSkia = pkg:
+    if !cfg.withSkia then pkg
+    else if pkg ? emacs && pkg ? explicitRequires then
+      ((pkgs.emacsPackagesFor pkg.emacs).overrideScope (_: _: {
+        emacs = applySkia pkg.emacs;
+      })).emacsWithPackages (_: pkg.explicitRequires)
+    else applySkia pkg;
 
   ewmPackage = pkgs.callPackage ./default.nix {
     withScreencastSupport = cfg.screencast.enable;
-    emacsPackage = baseEmacs;
+    emacsPackage = cfg.emacsPackage.emacs or cfg.emacsPackage;
   };
 
   # Launch script that runs EWM in the provided Emacs.
@@ -57,11 +74,18 @@ in
       description = "The EWM package to use.";
     };
 
+    withSkia = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Enable Skia backend for Emacs.";
+    };
+
     emacsPackage = lib.mkOption {
       type = lib.types.package;
       default = pkgs.emacs-pgtk.pkgs.withPackages (_: [ ewmPackage ]);
       description = "Emacs package to use. Must be a pgtk build with the EWM package available.";
       example = "pkgs.emacs30-pgtk";
+      apply = wrapSkia;
     };
 
     ewmPackage = lib.mkOption {

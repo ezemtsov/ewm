@@ -1,0 +1,331 @@
+diff --git a/src/pgtkterm.c b/src/pgtkterm.c
+index d6af8df..8b061bb 100644
+--- a/src/pgtkterm.c
++++ b/src/pgtkterm.c
+@@ -10765,6 +10765,312 @@ If FRAME is nil, use the selected frame.  */)
+   return Qnil;
+ }
+ 
++DEFUN ("pgtk-skia-test-framebuffer-color-counts",
++       Fpgtk_skia_test_framebuffer_color_counts,
++       Spgtk_skia_test_framebuffer_color_counts, 0, 1, 0,
++       doc: /* Return (WIDTH HEIGHT RED GREEN TRANSLUCENT-GREEN)
++for FRAME's Skia GL framebuffer.
++If FRAME is nil, use the selected frame.
++RED counts pixels that are mostly red; GREEN counts pixels that are mostly
++green.  TRANSLUCENT-GREEN counts mostly-green pixels with alpha below 255.
++Return nil if the frame has no readable Skia GL framebuffer.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int width, height;
++  ptrdiff_t npixels;
++  unsigned char *pixels;
++  GLint old_read_framebuffer = 0;
++  GLint old_draw_framebuffer = 0;
++  GLint old_pack_alignment = 0;
++  GLenum err;
++  intmax_t red = 0;
++  intmax_t green = 0;
++  intmax_t translucent_green = 0;
++
++  if (!FRAME_GDK_GL_CONTEXT (f)
++      || !FRAME_SKIA_GL_CONTEXT (f)
++      || !FRAME_SKIA_SURFACE (f)
++      || !FRAME_GL_FRAMEBUFFER (f))
++    return Qnil;
++
++  if (!pgtk_skia_make_gl_context_current (f))
++    return Qnil;
++
++  emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  width = emacs_skia_surface_get_width (FRAME_SKIA_SURFACE (f));
++  height = emacs_skia_surface_get_height (FRAME_SKIA_SURFACE (f));
++  if (width <= 0 || height <= 0)
++    return Qnil;
++
++  if (ckd_mul (&npixels, (ptrdiff_t) width, (ptrdiff_t) height))
++    memory_full (SIZE_MAX);
++  pixels = xnmalloc (npixels, 4);
++
++  glGetIntegerv (GL_READ_FRAMEBUFFER_BINDING, &old_read_framebuffer);
++  glGetIntegerv (GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_framebuffer);
++  glGetIntegerv (GL_PACK_ALIGNMENT, &old_pack_alignment);
++
++  glBindFramebuffer (GL_FRAMEBUFFER, FRAME_GL_FRAMEBUFFER (f));
++  glPixelStorei (GL_PACK_ALIGNMENT, 1);
++  while (glGetError () != GL_NO_ERROR)
++    ;
++  glReadPixels (0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
++  err = glGetError ();
++
++  glPixelStorei (GL_PACK_ALIGNMENT, old_pack_alignment);
++  glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
++  glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
++  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++
++  if (err != GL_NO_ERROR)
++    {
++      xfree (pixels);
++      fprintf (stderr, "Skia: framebuffer readback failed: 0x%x\n", err);
++      return Qnil;
++    }
++
++  for (ptrdiff_t i = 0; i < npixels; ++i)
++    {
++      unsigned char *pixel = pixels + i * 4;
++      unsigned char r = pixel[0];
++      unsigned char g = pixel[1];
++      unsigned char b = pixel[2];
++      unsigned char a = pixel[3];
++      int red_channel = r;
++      int green_channel = g;
++      int blue_channel = b;
++
++      /* GPU render targets store premultiplied color when alpha is not
++	 opaque.  Classify colors in straight-alpha space so alpha-background
++	 readback still identifies the frame background color.  */
++      if (a > 0 && a < 255)
++	{
++	  red_channel = (r * 255 + a / 2) / a;
++	  green_channel = (g * 255 + a / 2) / a;
++	  blue_channel = (b * 255 + a / 2) / a;
++	  if (red_channel > 255)
++	    red_channel = 255;
++	  if (green_channel > 255)
++	    green_channel = 255;
++	  if (blue_channel > 255)
++	    blue_channel = 255;
++	}
++
++      if (red_channel > 150 && green_channel < 140 && blue_channel < 140)
++	red++;
++      if (green_channel > 150 && red_channel < 140 && blue_channel < 140)
++	{
++	  green++;
++	  if (a > 16 && a < 240)
++	    translucent_green++;
++	}
++    }
++  xfree (pixels);
++
++  return list5 (make_int (width), make_int (height), make_int (red),
++		make_int (green), make_int (translucent_green));
++}
++
++DEFUN ("pgtk-skia-test-abandon-gl-context",
++       Fpgtk_skia_test_abandon_gl_context,
++       Spgtk_skia_test_abandon_gl_context, 0, 1, 0,
++       doc: /* Force-abandon Skia GL state for FRAME.
++This is intended for tests of Skia GL context-loss cleanup.
++If FRAME is nil, use the selected frame.
++Return non-nil if there was Skia GL state to abandon.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++
++  if (!FRAME_GDK_GL_CONTEXT (f)
++      && !FRAME_SKIA_GL_CONTEXT (f)
++      && !FRAME_SKIA_SURFACE (f))
++    return Qnil;
++
++  /* Simulate the lost-context cleanup path: no frame context should be
++     current when pgtk_abandon_gl_context drops Skia GPU wrappers.  */
++  gdk_gl_context_clear_current ();
++  FRAME_GL_MAKE_CURRENT_FAILURES (f)
++    = SKIA_MAX_GL_MAKE_CURRENT_FAILURES;
++  pgtk_abandon_gl_context (f);
++
++  /* The production path backs off before retrying after repeated
++     make-current failures.  Tests first verify cleanup, then drive an
++     explicit redisplay to recreate quickly.  */
++  FRAME_GL_CONTEXT_RECREATE_AFTER (f) = 0;
++
++  return Qt;
++}
++
++DEFUN ("pgtk-skia-test-gl-recreate-source-active-p",
++       Fpgtk_skia_test_gl_recreate_source_active_p,
++       Spgtk_skia_test_gl_recreate_source_active_p, 1, 1, 0,
++       doc: /* Return non-nil if a GLib source still carries FRAME.
++This is intended to catch stale Skia GL recreation timeouts after a
++frame is deleted.  FRAME may already be deleted.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f;
++
++  CHECK_FRAME (frame);
++  f = XFRAME (frame);
++  if (g_main_context_find_source_by_user_data (NULL, f))
++    return Qt;
++  return Qnil;
++}
++
++DEFUN ("pgtk-skia-test-framebuffer-size",
++       Fpgtk_skia_test_framebuffer_size,
++       Spgtk_skia_test_framebuffer_size, 0, 1, 0,
++       doc: /* Return (RENDER-WIDTH RENDER-HEIGHT TEXTURE-WIDTH TEXTURE-HEIGHT)
++for FRAME's Skia GL framebuffer.  If FRAME is nil, use the selected frame.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++
++  if (!FRAME_GDK_GL_CONTEXT (f) || !FRAME_GL_FRAMEBUFFER (f))
++    return Qnil;
++
++  return list4i (FRAME_GL_RENDER_WIDTH (f), FRAME_GL_RENDER_HEIGHT (f),
++		 FRAME_GL_TEXTURE_WIDTH (f), FRAME_GL_TEXTURE_HEIGHT (f));
++}
++
++DEFUN ("pgtk-skia-test-gl-invariants",
++       Fpgtk_skia_test_gl_invariants,
++       Spgtk_skia_test_gl_invariants, 0, 1, 0,
++       doc: /* Return GL texture/clear invariants for FRAME.
++The return value is (MIN-FILTER MAG-FILTER WRAP-S WRAP-T STENCIL-VALUE).
++If FRAME is nil, use the selected frame.  This is intended for fast
++deterministic Skia backend smoke tests.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  GLint old_texture = 0;
++  GLint old_read_framebuffer = 0;
++  GLint old_draw_framebuffer = 0;
++  GLint old_pack_alignment = 0;
++  GLint old_stencil_clear = 0;
++  GLint old_stencil_writemask = 0;
++  GLint min_filter = 0;
++  GLint mag_filter = 0;
++  GLint wrap_s = 0;
++  GLint wrap_t = 0;
++  unsigned char stencil_value = 255;
++  GLenum err;
++
++  if (!FRAME_GDK_GL_CONTEXT (f)
++      || !FRAME_GL_FRAMEBUFFER (f)
++      || !FRAME_GL_TEXTURE (f)
++      || !FRAME_GL_STENCIL (f)
++      || FRAME_GL_RENDER_WIDTH (f) <= 0
++      || FRAME_GL_RENDER_HEIGHT (f) <= 0)
++    return Qnil;
++
++  if (!pgtk_skia_make_gl_context_current (f))
++    return Qnil;
++
++  glGetIntegerv (GL_READ_FRAMEBUFFER_BINDING, &old_read_framebuffer);
++  glGetIntegerv (GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_framebuffer);
++  glGetIntegerv (GL_PACK_ALIGNMENT, &old_pack_alignment);
++  glGetIntegerv (GL_STENCIL_CLEAR_VALUE, &old_stencil_clear);
++  glGetIntegerv (GL_STENCIL_WRITEMASK, &old_stencil_writemask);
++
++  glBindFramebuffer (GL_FRAMEBUFFER, FRAME_GL_FRAMEBUFFER (f));
++  glStencilMask (0xff);
++  glClearStencil (5);
++  glClear (GL_STENCIL_BUFFER_BIT);
++
++  /* Leave hostile clear state behind, then ask production setup to
++     clear the framebuffer.  A robust setup path must choose the
++     stencil clear value and write mask explicitly.  */
++  glClearStencil (7);
++  glStencilMask (0);
++  if (!pgtk_setup_gl_framebuffer (f, FRAME_GL_RENDER_WIDTH (f),
++				  FRAME_GL_RENDER_HEIGHT (f), true))
++    {
++      glClearStencil (old_stencil_clear);
++      glStencilMask (old_stencil_writemask);
++      glPixelStorei (GL_PACK_ALIGNMENT, old_pack_alignment);
++      glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
++      glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
++      FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++      return Qnil;
++    }
++
++  glGetIntegerv (GL_TEXTURE_BINDING_2D, &old_texture);
++  glBindTexture (GL_TEXTURE_2D, FRAME_GL_TEXTURE (f));
++  glGetTexParameteriv (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
++		       &min_filter);
++  glGetTexParameteriv (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
++		       &mag_filter);
++  glGetTexParameteriv (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &wrap_s);
++  glGetTexParameteriv (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wrap_t);
++  glBindTexture (GL_TEXTURE_2D, old_texture);
++
++  glBindFramebuffer (GL_READ_FRAMEBUFFER, FRAME_GL_FRAMEBUFFER (f));
++  glPixelStorei (GL_PACK_ALIGNMENT, 1);
++  while (glGetError () != GL_NO_ERROR)
++    ;
++  glReadPixels (0, 0, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE,
++		&stencil_value);
++  err = glGetError ();
++
++  glClearStencil (old_stencil_clear);
++  glStencilMask (old_stencil_writemask);
++  glPixelStorei (GL_PACK_ALIGNMENT, old_pack_alignment);
++  glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
++  glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
++  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++
++  if (err != GL_NO_ERROR)
++    {
++      fprintf (stderr, "Skia: stencil readback failed: 0x%x\n", err);
++      return Qnil;
++    }
++
++  return list5 (make_int (min_filter), make_int (mag_filter),
++		make_int (wrap_s), make_int (wrap_t),
++		make_int (stencil_value));
++}
++
++DEFUN ("pgtk-skia-test-recover-visible-bell",
++       Fpgtk_skia_test_recover_visible_bell,
++       Spgtk_skia_test_recover_visible_bell, 0, 1, 0,
++       doc: /* Force visible-bell recovery for FRAME and return non-nil if active.
++If FRAME is nil, use the selected frame.  This is intended for deterministic
++Skia visible-bell tests that should not depend on async timer scheduling.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  struct atimer timer;
++  bool active = FRAME_X_OUTPUT (f)->skia_image_pre_bell != NULL;
++
++  if (!active)
++    return Qnil;
++
++  if (FRAME_X_OUTPUT (f)->atimer_visible_bell)
++    {
++      cancel_atimer (FRAME_X_OUTPUT (f)->atimer_visible_bell);
++      FRAME_X_OUTPUT (f)->atimer_visible_bell = NULL;
++    }
++
++  timer.client_data = f;
++  recover_from_visible_bell (&timer);
++  return Qt;
++}
++
++DEFUN ("pgtk-skia-test-visible-bell-active-p",
++       Fpgtk_skia_test_visible_bell_active_p,
++       Spgtk_skia_test_visible_bell_active_p, 0, 1, 0,
++       doc: /* Return non-nil if FRAME has a pending Skia visible-bell snapshot.
++If FRAME is nil, use the selected frame.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  return FRAME_X_OUTPUT (f)->skia_image_pre_bell ? Qt : Qnil;
++}
+ #endif
+ 
+ void
+@@ -10859,6 +11165,13 @@ If set to a non-float value, there will be no wait at all.  */);
+ 
+ #ifdef USE_SKIA
+   defsubr (&Spgtk_skia_gl_enabled_p);
++  defsubr (&Spgtk_skia_test_framebuffer_color_counts);
++  defsubr (&Spgtk_skia_test_abandon_gl_context);
++  defsubr (&Spgtk_skia_test_gl_recreate_source_active_p);
++  defsubr (&Spgtk_skia_test_framebuffer_size);
++  defsubr (&Spgtk_skia_test_gl_invariants);
++  defsubr (&Spgtk_skia_test_recover_visible_bell);
++  defsubr (&Spgtk_skia_test_visible_bell_active_p);
+ #endif
+ 
+   /* Tell Emacs about this window system.  */
