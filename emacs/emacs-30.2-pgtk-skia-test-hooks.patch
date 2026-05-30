@@ -1,8 +1,8 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 6121dff..835440d 100644
+index 6121dff..7138917 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10667,6 +10667,660 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10667,6 +10667,667 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -181,7 +181,7 @@ index 6121dff..835440d 100644
 +       doc: /* Force-abandon Skia GL state for FRAME.
 +This is intended for tests of Skia GL context-loss cleanup.
 +If FRAME is nil, use the selected frame.
-+Return non-nil if there was Skia GL state to abandon.  */)
++Return non-nil if there was Skia GL state to abandon and it was cleared.  */)
 +  (Lisp_Object frame)
 +{
 +  struct frame *f = decode_window_system_frame (frame);
@@ -206,6 +206,13 @@ index 6121dff..835440d 100644
 +     make-current failures.  Tests first verify cleanup, then drive an
 +     explicit redisplay to recreate quickly.  */
 +  FRAME_GL_CONTEXT_RECREATE_AFTER (f) = 0;
++
++  if (FRAME_GDK_GL_CONTEXT (f)
++      || FRAME_SKIA_GL_CONTEXT (f)
++      || FRAME_SKIA_SURFACE (f)
++      || FRAME_GL_FRAMEBUFFER (f)
++      || FRAME_GL_TEXTURE (f))
++    return Qnil;
 +
 +  return Qt;
 +}
@@ -663,7 +670,7 @@ index 6121dff..835440d 100644
  #endif
  
  void
-@@ -10761,6 +11415,16 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10761,6 +11422,16 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);

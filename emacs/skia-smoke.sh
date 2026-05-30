@@ -400,6 +400,74 @@ static char *image[] = {
     (ewm-skia-smoke-check-red-decoration
      phase (nth 0 case) (nth 1 case) (nth 2 case))))
 
+(defun ewm-skia-smoke-check-glyphless-text (phase)
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-glyphless-smoke*"))
+         stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 6)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)
+                          (glyphless-char (:foreground "#ff0000"
+                                           :background "#00ff00")
+                           glyphless-char)))
+            (setq-local glyphless-char-display
+                        (make-char-table 'glyphless-char-display nil))
+            (set-char-table-range glyphless-char-display #x200b "ZWS")
+            (erase-buffer)
+            (insert (make-string 12 #x200b)))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq stats (pgtk-skia-test-framebuffer-color-counts
+                       nil (ewm-skia-smoke-window-rect 700 120)))
+          (unless (and (consp stats)
+                       (> (nth 2 stats) 1000))
+            (ewm-skia-smoke-fail
+             "glyphless text missing red pixels after %s: stats=%S"
+             phase stats)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-composite-text (phase)
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-composite-smoke*"))
+         stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 6)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (let ((start (point)))
+              (insert (propertize "  "
+                                  'face '(:foreground "#ff0000"
+                                          :background "#00ff00")))
+              (compose-region start (point) "MMMMMMMM")))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq stats (pgtk-skia-test-framebuffer-color-counts
+                       nil (ewm-skia-smoke-window-rect 700 120)))
+          (unless (and (consp stats)
+                       (> (nth 2 stats) 400))
+            (ewm-skia-smoke-fail
+             "composite text missing red pixels after %s: stats=%S"
+             phase stats)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
                  (fboundp 'pgtk-skia-gl-enabled-p)))
@@ -458,6 +526,8 @@ static char *image[] = {
 (ewm-skia-smoke-check-rotated-transparent-image "initial draw")
 (ewm-skia-smoke-check-sliced-scaled-image "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
+(ewm-skia-smoke-check-glyphless-text "initial draw")
+(ewm-skia-smoke-check-composite-text "initial draw")
 
 (goto-char (point-min))
 (ewm-skia-smoke-redraw)
@@ -597,9 +667,8 @@ static char *image[] = {
 (let ((frame (selected-frame))
       (restored nil))
   (unless (pgtk-skia-test-abandon-gl-context frame)
-    (ewm-skia-smoke-fail "test abandon hook found no Skia GL state"))
-  (when (pgtk-skia-gl-enabled-p frame)
-    (ewm-skia-smoke-fail "Skia GL state remained active after forced abandon"))
+    (ewm-skia-smoke-fail
+     "test abandon hook found no Skia GL state or failed cleanup"))
   (dotimes (_ 20)
     (select-frame-set-input-focus frame)
     (goto-char (point-min))
