@@ -39,7 +39,7 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 238fe5d..edaaa99 100644
+index 1737a5c..19ee92d 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
 @@ -10594,6 +10594,998 @@ If FRAME is nil, use the selected frame.  */)
@@ -286,7 +286,7 @@ index 238fe5d..edaaa99 100644
 +    { window_x + 180, window_y + 40, 70, 60 },
 +  };
 +  XRectangle gap = { window_x + 110, window_y + 40, 70, 60 };
-+  emacs_skia_irect_t draw_rect
++  emacs_skia_rect_t draw_rect
 +    = { clips[0].x, clips[0].y,
 +	clips[1].x + clips[1].width,
 +	clips[1].y + clips[1].height };
@@ -295,12 +295,12 @@ index 238fe5d..edaaa99 100644
 +  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 0, 255, 0));
 +  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC_OVER);
 +  emacs_skia_paint_set_stroke (paint, false);
-+  emacs_skia_canvas_draw_irect (canvas, &draw_rect, paint);
++  emacs_skia_canvas_draw_rect (canvas, &draw_rect, paint);
 +
 +  emacs_skia_canvas_save (canvas);
 +  pgtk_skia_set_clip_rectangles (f, canvas, clips, 2);
 +  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
-+  emacs_skia_canvas_draw_irect (canvas, &draw_rect, paint);
++  emacs_skia_canvas_draw_rect (canvas, &draw_rect, paint);
 +  emacs_skia_canvas_restore (canvas);
 +
 +  pgtk_end_skia_clip (f);
@@ -374,19 +374,19 @@ index 238fe5d..edaaa99 100644
 +      return Qnil;
 +    }
 +
-+  emacs_skia_irect_t draw_rect
++  emacs_skia_rect_t draw_rect
 +    = { draw_left, draw_top, draw_left + draw_width, draw_bottom };
 +  emacs_skia_paint_t *paint = FRAME_SKIA_PAINT (f);
 +
 +  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 0, 255, 0));
 +  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC_OVER);
 +  emacs_skia_paint_set_stroke (paint, false);
-+  emacs_skia_canvas_draw_irect (canvas, &draw_rect, paint);
++  emacs_skia_canvas_draw_rect (canvas, &draw_rect, paint);
 +
 +  emacs_skia_canvas_save (canvas);
 +  pgtk_skia_set_glyph_string_clipping (&s, canvas);
 +  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
-+  emacs_skia_canvas_draw_irect (canvas, &draw_rect, paint);
++  emacs_skia_canvas_draw_rect (canvas, &draw_rect, paint);
 +  emacs_skia_canvas_restore (canvas);
 +
 +  pgtk_end_skia_clip (f);
@@ -425,14 +425,14 @@ index 238fe5d..edaaa99 100644
 +  int clear_width = 96;
 +  int clear_height = 48;
 +
-+  emacs_skia_irect_t red_rect
++  emacs_skia_rect_t red_rect
 +    = { left, top, left + width, top + height };
 +  emacs_skia_paint_t *paint = FRAME_SKIA_PAINT (f);
 +
 +  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
 +  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC_OVER);
 +  emacs_skia_paint_set_stroke (paint, false);
-+  emacs_skia_canvas_draw_irect (canvas, &red_rect, paint);
++  emacs_skia_canvas_draw_rect (canvas, &red_rect, paint);
 +
 +  pgtk_end_skia_clip (f);
 +  pgtk_clear_area (f, clear_left, clear_top, clear_width, clear_height);
@@ -703,8 +703,8 @@ index 238fe5d..edaaa99 100644
 +  cairo_rectangle_t dst_rect = { 144, 48, 64, 48 };
 +  emacs_skia_canvas_t *canvas;
 +  emacs_skia_paint_t *paint;
-+  emacs_skia_irect_t src_draw = { 48, 48, 112, 96 };
-+  emacs_skia_irect_t dst_clear = { 144, 48, 208, 96 };
++  emacs_skia_rect_t src_draw = { 48, 48, 112, 96 };
++  emacs_skia_rect_t dst_clear = { 144, 48, 208, 96 };
 +
 +  if (!FRAME_GDK_GL_CONTEXT (f)
 +      || !FRAME_SKIA_SURFACE (f)
@@ -721,9 +721,9 @@ index 238fe5d..edaaa99 100644
 +  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 0, 255, 0));
 +  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC);
 +  emacs_skia_paint_set_stroke (paint, false);
-+  emacs_skia_canvas_draw_irect (canvas, &dst_clear, paint);
++  emacs_skia_canvas_draw_rect (canvas, &dst_clear, paint);
 +  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
-+  emacs_skia_canvas_draw_irect (canvas, &src_draw, paint);
++  emacs_skia_canvas_draw_rect (canvas, &src_draw, paint);
 +  pgtk_end_skia_clip (f);
 +  emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
 +

@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..a82a2724b2f
+index 00000000000..be3281afd67
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1406 @@
+@@ -0,0 +1,1395 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -628,17 +628,6 @@ index 00000000000..a82a2724b2f
 +  if (canvas && canvas->canvas && rect && paint)
 +    {
 +      canvas->canvas->drawRect (to_sk_rect (rect), paint->paint);
-+    }
-+}
-+
-+void
-+emacs_skia_canvas_draw_irect (emacs_skia_canvas_t *canvas,
-+			      const emacs_skia_irect_t *rect,
-+			      emacs_skia_paint_t *paint)
-+{
-+  if (canvas && canvas->canvas && rect && paint)
-+    {
-+      canvas->canvas->drawIRect (to_sk_irect (rect), paint->paint);
 +    }
 +}
 +
@@ -1412,10 +1401,10 @@ index 00000000000..a82a2724b2f
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..d886c0bbd4c
+index 00000000000..358e63e016a
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,382 @@
+@@ -0,0 +1,378 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1607,10 +1596,6 @@ index 00000000000..d886c0bbd4c
 +				    const emacs_skia_rect_t *rect,
 +				    emacs_skia_paint_t *paint);
 +
-+  void emacs_skia_canvas_draw_irect (emacs_skia_canvas_t *canvas,
-+				     const emacs_skia_irect_t *rect,
-+				     emacs_skia_paint_t *paint);
-+
 +  /* Draw glyphs at specified positions */
 +  void emacs_skia_canvas_draw_glyphs (
 +    emacs_skia_canvas_t *canvas, int count,
@@ -1800,7 +1785,7 @@ index 00000000000..d886c0bbd4c
 +#endif /* EMACS_SKIA_H */
 diff --git a/src/skiafont.c b/src/skiafont.c
 new file mode 100644
-index 00000000000..e47c73cf0ca
+index 00000000000..f7c0f81cfdb
 --- /dev/null
 +++ b/src/skiafont.c
 @@ -0,0 +1,739 @@
@@ -2402,10 +2387,10 @@ index 00000000000..e47c73cf0ca
 +    {
 +      pgtk_skia_set_paint_color (f, s->xgcv.background,
 +				 s->hl != DRAW_CURSOR);
-+      emacs_skia_irect_t rect
++      emacs_skia_rect_t rect
 +	= { x, y - FONT_BASE (s->font), x + s->width,
 +	    y - FONT_BASE (s->font) + FONT_HEIGHT (s->font) };
-+      emacs_skia_canvas_draw_irect (canvas, &rect, paint);
++      emacs_skia_canvas_draw_rect (canvas, &rect, paint);
 +    }
 +
 +  /* Set foreground color for text.  */

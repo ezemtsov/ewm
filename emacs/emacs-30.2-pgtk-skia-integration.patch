@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..238fe5d 100644
+index 617ed3c..1737a5c 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -14573,13 +14573,13 @@ index 617ed3c..238fe5d 100644
 +	      if ((cursor_glyph->resolved_level & 1) != 0)
 +		x += cursor_glyph->pixel_width - width;
 +
-+	      emacs_skia_irect_t rect
++	      emacs_skia_rect_t rect
 +		= { x, WINDOW_TO_FRAME_PIXEL_Y (w, w->phys_cursor.y),
 +		    x + width,
 +		    WINDOW_TO_FRAME_PIXEL_Y (w, w->phys_cursor.y)
 +		      + row->height };
-+	      emacs_skia_canvas_draw_irect (canvas, &rect,
-+					    FRAME_SKIA_PAINT (f));
++	      emacs_skia_canvas_draw_rect (canvas, &rect,
++					   FRAME_SKIA_PAINT (f));
 +	    }
 +	  else /* HBAR_CURSOR */
 +	    {
@@ -14604,10 +14604,10 @@ index 617ed3c..238fe5d 100644
 +	      int y = WINDOW_TO_FRAME_PIXEL_Y (w, w->phys_cursor.y
 +						    + row->height
 +						    - width);
-+	      emacs_skia_irect_t rect
++	      emacs_skia_rect_t rect
 +		= { x, y, x + w->phys_cursor_width - 1, y + width };
-+	      emacs_skia_canvas_draw_irect (canvas, &rect,
-+					    FRAME_SKIA_PAINT (f));
++	      emacs_skia_canvas_draw_rect (canvas, &rect,
++					   FRAME_SKIA_PAINT (f));
 +	    }
 +
 +	  pgtk_end_skia_clip (f);
@@ -19420,8 +19420,8 @@ index 617ed3c..238fe5d 100644
 +
 +  pgtk_skia_set_paint_color (f, color, respect_alpha_background);
 +
-+  emacs_skia_irect_t rect = { x, y, x + width, y + height };
-+  emacs_skia_canvas_draw_irect (canvas, &rect, FRAME_SKIA_PAINT (f));
++  emacs_skia_rect_t rect = { x, y, x + width, y + height };
++  emacs_skia_canvas_draw_rect (canvas, &rect, FRAME_SKIA_PAINT (f));
 +
 +  pgtk_end_skia_clip (f);
 +}
