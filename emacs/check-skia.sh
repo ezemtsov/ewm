@@ -7,6 +7,9 @@ repo_root="$(cd "$script_dir/.." && pwd -P)"
 input="${1:-${EMACS_TREE:-$HOME/git/emacs}}"
 base_ref="${EWM_SKIA_BASE_REF:-emacs-30.2}"
 jobs="${EWM_SKIA_JOBS:-8}"
+build_mode="${EWM_SKIA_CHECK_BUILD_MODE:-full}"
+object_targets="${EWM_SKIA_CHECK_OBJECT_TARGETS:-pgtkterm.o pgtkfns.o image.o gtkutil.o skia/emacs_skia.o skiafont.o}"
+smoke_groups="${EWM_SKIA_CHECK_SMOKE_GROUPS:-${EWM_SKIA_SMOKE_GROUPS:-}}"
 
 if [[ -d "$input" ]]; then
     emacs_tree="$(cd "$input" && pwd -P)"
@@ -48,14 +51,30 @@ production_patch="$script_dir/emacs-30.2-pgtk-skia-integration.patch"
 test_hooks_patch="$script_dir/emacs-30.2-pgtk-skia-test-hooks.patch"
 
 if [[ -z "${EWM_SKIA_CHECK_SKIP_BUILD:-}" ]]; then
-    nix_run "make -C $(quote "$emacs_tree") -j$jobs"
+    case "$build_mode" in
+        full)
+            nix_run "make -C $(quote "$emacs_tree") -j$jobs"
+            ;;
+        src)
+            nix_run "make -C $(quote "$emacs_tree/src") -j$jobs all"
+            ;;
+        objects)
+            nix_run "make -C $(quote "$emacs_tree/src") -j$jobs $object_targets"
+            ;;
+        *)
+            echo "error: unknown EWM_SKIA_CHECK_BUILD_MODE: $build_mode" >&2
+            echo "expected one of: full, src, objects" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 run git -C "$emacs_tree" diff --check -- \
     src/pgtkterm.c src/pgtkfns.c src/skia/emacs_skia.cpp \
     src/skia/emacs_skia.h src/pgtkterm.h
 run git -C "$repo_root" diff --check -- \
-    emacs/skia-smoke.sh emacs/skia-profile.sh nix/service.nix
+    emacs/check-skia.sh emacs/skia-smoke.sh emacs/skia-profile.sh \
+    nix/service.nix
 
 if rg -n "pgtk-skia-test-|Spgtk_skia_test" "$production_patch"; then
     echo "error: production patch contains local Skia test hooks" >&2
@@ -116,7 +135,11 @@ if [[ -z "${EWM_SKIA_CHECK_SKIP_SMOKE:-}" ]]; then
         echo "error: Emacs executable not found: $emacs_bin" >&2
         exit 1
     fi
-    nix_run "$(quote "$script_dir/skia-smoke.sh") $(quote "$emacs_bin")"
+    smoke_cmd="$(quote "$script_dir/skia-smoke.sh") $(quote "$emacs_bin")"
+    if [[ -n "$smoke_groups" ]]; then
+        smoke_cmd="EWM_SKIA_SMOKE_GROUPS=$(quote "$smoke_groups") $smoke_cmd"
+    fi
+    nix_run "$smoke_cmd"
 fi
 
 echo "ok: Skia patch stack checks passed"

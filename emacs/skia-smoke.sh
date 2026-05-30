@@ -56,6 +56,24 @@ cat >"$payload" <<'EOF'
 (defconst ewm-skia-smoke-min-translucent-green
   (string-to-number
    (or (getenv "EWM_SKIA_SMOKE_MIN_TRANSLUCENT_GREEN") "5000")))
+(defconst ewm-skia-smoke-selected-groups
+  (let ((groups (getenv "EWM_SKIA_SMOKE_GROUPS")))
+    (if (and groups (> (length groups) 0))
+        (split-string groups "[,[:space:]]+" t)
+      '("all"))))
+
+(defun ewm-skia-smoke-group-enabled-p (&rest groups)
+  (or (member "all" ewm-skia-smoke-selected-groups)
+      (catch 'found
+        (dolist (group groups nil)
+          (when (member group ewm-skia-smoke-selected-groups)
+            (throw 'found t))))))
+
+(defmacro ewm-skia-smoke-run-group (groups &rest body)
+  (declare (indent 1))
+  `(when (ewm-skia-smoke-group-enabled-p
+          ,@(if (listp groups) groups (list groups)))
+     ,@body))
 
 (defun ewm-skia-smoke-framebuffer-size ()
   (unless (fboundp 'pgtk-skia-test-framebuffer-size)
@@ -1643,227 +1661,249 @@ static char *image[] = {
   (sit-for 0.02))
 
 (ewm-skia-smoke-check-framebuffer "initial draw")
-(ewm-skia-smoke-check-alpha-background "initial draw")
-(ewm-skia-smoke-check-partial-clear "initial draw")
-(ewm-skia-smoke-check-framebuffer-capacity "initial draw")
-(ewm-skia-smoke-check-gl-invariants "initial draw")
-(ewm-skia-smoke-check-scratch-state "initial draw")
-(ewm-skia-smoke-check-copy-bits-gl-error "initial draw")
-(ewm-skia-smoke-check-copy-bits-fallback "initial draw")
-(ewm-skia-smoke-check-clear-state "initial draw")
-(ewm-skia-smoke-check-setup-state "initial draw")
-(ewm-skia-smoke-check-force-surface-update "initial draw")
-(ewm-skia-smoke-check-png-export "initial draw")
-(ewm-skia-smoke-check-image-transform-capabilities "initial draw")
-(ewm-skia-smoke-check-unavailable-export
- 'pdf "Skia PDF export is not available")
-(ewm-skia-smoke-check-unavailable-export
- 'svg "Skia SVG export is not available")
-(ewm-skia-smoke-check-export-input-unwind "export error path")
-(ewm-skia-smoke-check-tooltip-frame "initial draw")
-(ewm-skia-smoke-check-scaled-transparent-image "initial draw")
-(ewm-skia-smoke-check-rotated-transparent-image "initial draw")
-(ewm-skia-smoke-check-sliced-scaled-image "initial draw")
-(ewm-skia-smoke-check-png-image-loader "initial draw")
-(ewm-skia-smoke-check-jpeg-image-loader "initial draw")
-(ewm-skia-smoke-check-webp-image-loader "initial draw")
-(ewm-skia-smoke-check-masked-image-cursor "initial draw")
-(ewm-skia-smoke-check-window-clipping "initial draw")
-(ewm-skia-smoke-check-glyph-window-clipping "initial draw")
-(ewm-skia-smoke-check-decorated-composite-window-clipping "initial draw")
-(ewm-skia-smoke-check-multirect-clipping "initial draw")
-(ewm-skia-smoke-check-glyph-overlap-clipping "initial draw")
-(ewm-skia-smoke-check-overlap-scroll-copy "initial draw")
-(ewm-skia-smoke-check-partial-window-scroll-copy "initial draw")
-(ewm-skia-smoke-check-large-scroll-copy "initial draw")
-(ewm-skia-smoke-check-horizontal-scroll-text "initial draw")
-(ewm-skia-smoke-check-text-decorations "initial draw")
-(ewm-skia-smoke-check-glyphless-text "initial draw")
-(ewm-skia-smoke-check-composite-text "initial draw")
-(ewm-skia-smoke-check-mixed-font-text "initial draw")
-(ewm-skia-smoke-check-minspace-font-metrics "initial draw")
-(ewm-skia-smoke-check-cursor "initial draw")
-(ewm-skia-smoke-check-fringe "initial draw")
-
-(goto-char (point-min))
-(ewm-skia-smoke-redraw)
-(dotimes (_ 6)
-  (scroll-up-command 3)
-  (ewm-skia-smoke-pump))
-(ewm-skia-smoke-check-framebuffer "scroll copy")
-
-(let ((largest nil)
-      (shrunk nil))
-  (set-frame-size nil 124 36)
-  (ewm-skia-smoke-redraw)
-  (setq largest (ewm-skia-smoke-check-framebuffer-capacity "large resize"))
-  (set-frame-size nil 72 20)
-  (ewm-skia-smoke-redraw)
-  (setq shrunk (ewm-skia-smoke-check-framebuffer-capacity "shrink resize"))
-  (unless (and (<= (nth 2 largest) (nth 2 shrunk))
-               (<= (nth 3 largest) (nth 3 shrunk)))
-    (ewm-skia-smoke-fail
-     "framebuffer capacity shrank after resize: large=%S shrunk=%S"
-     largest shrunk))
-  (ewm-skia-smoke-check-framebuffer "resize capacity")
-  (ewm-skia-smoke-check-alpha-background "resize capacity")
-  (ewm-skia-smoke-check-gl-invariants "resize capacity")
-  (ewm-skia-smoke-check-scratch-state "resize capacity")
-  (ewm-skia-smoke-check-clear-state "resize capacity")
-  (ewm-skia-smoke-check-setup-state "resize capacity"))
-
-(let ((main-frame (selected-frame))
-      (frame nil))
-  (unwind-protect
-      (progn
-        (setq frame
-              (make-frame `((parent-frame . ,main-frame)
-                            (left . 24)
-                            (top . 24)
-                            (width . 56)
-                            (height . 12)
-                            (minibuffer . nil)
-                            (visibility . t))))
-        (select-frame-set-input-focus frame)
-        (unless (eq (window-buffer (frame-selected-window frame))
-                    (get-buffer "*ewm-skia-smoke*"))
-          (ewm-skia-smoke-fail
-           "child frame did not inherit smoke buffer"))
-        (goto-char (point-min))
-        (ewm-skia-smoke-settle-framebuffer
-         frame "child lifecycle frame" 56 12 200 100)
-        (ewm-skia-smoke-check-gl-enabled frame "child lifecycle frame")
-        (ewm-skia-smoke-check-framebuffer
-         "child lifecycle frame" frame t))
-    (when (and frame (frame-live-p frame))
-      (delete-frame frame t))
-    (select-frame-set-input-focus main-frame)
-    (redisplay 'force)
-    (sit-for 0.01)))
-
-(let ((main-frame (selected-frame)))
-  (dotimes (step 3)
-    (let ((frame nil))
-      (unwind-protect
-          (progn
-            (setq frame
-                  (make-frame `((width . ,(+ 64 (* step 8)))
-                                (height . ,(+ 18 step))
-                                (minibuffer . nil)
-                                (visibility . t))))
-            (select-frame-set-input-focus frame)
-            (switch-to-buffer "*ewm-skia-smoke*")
-            (goto-char (point-min))
-            (forward-line (* step 30))
-            (ewm-skia-smoke-settle-framebuffer
-             frame (format "lifecycle frame %d" step)
-             (+ 64 (* step 8)) (+ 18 step) 200 100)
-            (ewm-skia-smoke-check-gl-enabled
-             frame (format "lifecycle frame %d" step))
-            (ewm-skia-smoke-check-framebuffer
-             (format "lifecycle frame %d" step) frame t))
-        (when (and frame (frame-live-p frame))
-          (delete-frame frame t)
-          (select-frame-set-input-focus main-frame)
-          (redisplay 'force)
-          (sit-for 0.01)))))
-  (select-frame-set-input-focus main-frame)
-  (raise-frame main-frame)
-  (redisplay 'force)
-  (sit-for 0.05))
-
 (ewm-skia-smoke-check-gl-enabled nil "initial draw")
+
+(ewm-skia-smoke-run-group "core"
+  (ewm-skia-smoke-check-alpha-background "initial draw")
+  (ewm-skia-smoke-check-partial-clear "initial draw")
+  (ewm-skia-smoke-check-framebuffer-capacity "initial draw")
+  (ewm-skia-smoke-check-gl-invariants "initial draw")
+  (ewm-skia-smoke-check-scratch-state "initial draw")
+  (ewm-skia-smoke-check-clear-state "initial draw")
+  (ewm-skia-smoke-check-setup-state "initial draw")
+  (ewm-skia-smoke-check-force-surface-update "initial draw"))
+
+(ewm-skia-smoke-run-group "copy"
+  (ewm-skia-smoke-check-copy-bits-gl-error "initial draw")
+  (ewm-skia-smoke-check-copy-bits-fallback "initial draw"))
+
+(ewm-skia-smoke-run-group "export"
+  (ewm-skia-smoke-check-png-export "initial draw")
+  (ewm-skia-smoke-check-image-transform-capabilities "initial draw")
+  (ewm-skia-smoke-check-unavailable-export
+   'pdf "Skia PDF export is not available")
+  (ewm-skia-smoke-check-unavailable-export
+   'svg "Skia SVG export is not available")
+  (ewm-skia-smoke-check-export-input-unwind "export error path"))
+
+(ewm-skia-smoke-run-group "tooltip"
+  (ewm-skia-smoke-check-tooltip-frame "initial draw"))
+
+(ewm-skia-smoke-run-group "images"
+  (ewm-skia-smoke-check-scaled-transparent-image "initial draw")
+  (ewm-skia-smoke-check-rotated-transparent-image "initial draw")
+  (ewm-skia-smoke-check-sliced-scaled-image "initial draw")
+  (ewm-skia-smoke-check-png-image-loader "initial draw")
+  (ewm-skia-smoke-check-jpeg-image-loader "initial draw")
+  (ewm-skia-smoke-check-webp-image-loader "initial draw")
+  (ewm-skia-smoke-check-masked-image-cursor "initial draw"))
+
+(ewm-skia-smoke-run-group "clip"
+  (ewm-skia-smoke-check-window-clipping "initial draw")
+  (ewm-skia-smoke-check-glyph-window-clipping "initial draw")
+  (ewm-skia-smoke-check-decorated-composite-window-clipping "initial draw")
+  (ewm-skia-smoke-check-multirect-clipping "initial draw")
+  (ewm-skia-smoke-check-glyph-overlap-clipping "initial draw"))
+
+(ewm-skia-smoke-run-group "copy"
+  (ewm-skia-smoke-check-overlap-scroll-copy "initial draw")
+  (ewm-skia-smoke-check-partial-window-scroll-copy "initial draw")
+  (ewm-skia-smoke-check-large-scroll-copy "initial draw"))
+
+(ewm-skia-smoke-run-group "text"
+  (ewm-skia-smoke-check-horizontal-scroll-text "initial draw")
+  (ewm-skia-smoke-check-text-decorations "initial draw")
+  (ewm-skia-smoke-check-glyphless-text "initial draw")
+  (ewm-skia-smoke-check-composite-text "initial draw")
+  (ewm-skia-smoke-check-mixed-font-text "initial draw")
+  (ewm-skia-smoke-check-minspace-font-metrics "initial draw")
+  (ewm-skia-smoke-check-cursor "initial draw")
+  (ewm-skia-smoke-check-fringe "initial draw"))
+
+(ewm-skia-smoke-run-group "copy"
+  (goto-char (point-min))
+  (ewm-skia-smoke-redraw)
+  (dotimes (_ 6)
+    (scroll-up-command 3)
+    (ewm-skia-smoke-pump))
+  (ewm-skia-smoke-check-framebuffer "scroll copy"))
+
+(ewm-skia-smoke-run-group ("core" "resize")
+  (let ((largest nil)
+        (shrunk nil))
+    (set-frame-size nil 124 36)
+    (ewm-skia-smoke-redraw)
+    (setq largest (ewm-skia-smoke-check-framebuffer-capacity "large resize"))
+    (set-frame-size nil 72 20)
+    (ewm-skia-smoke-redraw)
+    (setq shrunk (ewm-skia-smoke-check-framebuffer-capacity "shrink resize"))
+    (unless (and (<= (nth 2 largest) (nth 2 shrunk))
+                 (<= (nth 3 largest) (nth 3 shrunk)))
+      (ewm-skia-smoke-fail
+       "framebuffer capacity shrank after resize: large=%S shrunk=%S"
+       largest shrunk))
+    (ewm-skia-smoke-check-framebuffer "resize capacity")
+    (ewm-skia-smoke-check-alpha-background "resize capacity")
+    (ewm-skia-smoke-check-gl-invariants "resize capacity")
+    (ewm-skia-smoke-check-scratch-state "resize capacity")
+    (ewm-skia-smoke-check-clear-state "resize capacity")
+    (ewm-skia-smoke-check-setup-state "resize capacity")))
+
+(ewm-skia-smoke-run-group "frames"
+  (let ((main-frame (selected-frame))
+        (frame nil))
+    (unwind-protect
+        (progn
+          (setq frame
+                (make-frame `((parent-frame . ,main-frame)
+                              (left . 24)
+                              (top . 24)
+                              (width . 56)
+                              (height . 12)
+                              (minibuffer . nil)
+                              (visibility . t))))
+          (select-frame-set-input-focus frame)
+          (unless (eq (window-buffer (frame-selected-window frame))
+                      (get-buffer "*ewm-skia-smoke*"))
+            (ewm-skia-smoke-fail
+             "child frame did not inherit smoke buffer"))
+          (goto-char (point-min))
+          (ewm-skia-smoke-settle-framebuffer
+           frame "child lifecycle frame" 56 12 200 100)
+          (ewm-skia-smoke-check-gl-enabled frame "child lifecycle frame")
+          (ewm-skia-smoke-check-framebuffer
+           "child lifecycle frame" frame t))
+      (when (and frame (frame-live-p frame))
+        (delete-frame frame t))
+      (select-frame-set-input-focus main-frame)
+      (redisplay 'force)
+      (sit-for 0.01))))
+
+(ewm-skia-smoke-run-group "frames"
+  (let ((main-frame (selected-frame)))
+    (dotimes (step 3)
+      (let ((frame nil))
+        (unwind-protect
+            (progn
+              (setq frame
+                    (make-frame `((width . ,(+ 64 (* step 8)))
+                                  (height . ,(+ 18 step))
+                                  (minibuffer . nil)
+                                  (visibility . t))))
+              (select-frame-set-input-focus frame)
+              (switch-to-buffer "*ewm-skia-smoke*")
+              (goto-char (point-min))
+              (forward-line (* step 30))
+              (ewm-skia-smoke-settle-framebuffer
+               frame (format "lifecycle frame %d" step)
+               (+ 64 (* step 8)) (+ 18 step) 200 100)
+              (ewm-skia-smoke-check-gl-enabled
+               frame (format "lifecycle frame %d" step))
+              (ewm-skia-smoke-check-framebuffer
+               (format "lifecycle frame %d" step) frame t))
+          (when (and frame (frame-live-p frame))
+            (delete-frame frame t)
+            (select-frame-set-input-focus main-frame)
+            (redisplay 'force)
+            (sit-for 0.01)))))
+    (select-frame-set-input-focus main-frame)
+    (raise-frame main-frame)
+    (redisplay 'force)
+    (sit-for 0.05)))
 
 (unless (fboundp 'pgtk-skia-test-visible-bell-active-p)
   (ewm-skia-smoke-fail "missing Skia visible-bell test hook"))
 (unless (fboundp 'pgtk-skia-test-recover-visible-bell)
   (ewm-skia-smoke-fail "missing Skia visible-bell recovery test hook"))
-(let ((visible-bell t)
-      (ring-bell-function nil))
-  (ding)
-  (unless (pgtk-skia-test-visible-bell-active-p)
-    (ewm-skia-smoke-fail "visible bell did not create a Skia snapshot"))
-  (unless (pgtk-skia-test-recover-visible-bell)
-    (ewm-skia-smoke-fail "visible bell recovery hook found no snapshot"))
-  (when (pgtk-skia-test-visible-bell-active-p)
-    (ewm-skia-smoke-fail "visible bell Skia snapshot was not released"))
-  (ewm-skia-smoke-check-framebuffer "visible bell restore"))
+(ewm-skia-smoke-run-group "bell"
+  (let ((visible-bell t)
+        (ring-bell-function nil))
+    (ding)
+    (unless (pgtk-skia-test-visible-bell-active-p)
+      (ewm-skia-smoke-fail "visible bell did not create a Skia snapshot"))
+    (unless (pgtk-skia-test-recover-visible-bell)
+      (ewm-skia-smoke-fail "visible bell recovery hook found no snapshot"))
+    (when (pgtk-skia-test-visible-bell-active-p)
+      (ewm-skia-smoke-fail "visible bell Skia snapshot was not released"))
+    (ewm-skia-smoke-check-framebuffer "visible bell restore"))
 
-(let ((main-frame (selected-frame))
-      (bell-frame nil)
-      (visible-bell t)
-      (ring-bell-function nil))
-  (unwind-protect
-      (progn
-        (setq bell-frame
-              (make-frame '((width . 64)
-                            (height . 18)
-                            (minibuffer . nil)
-                            (visibility . t))))
-        (select-frame-set-input-focus bell-frame)
-        (switch-to-buffer "*ewm-skia-smoke*")
-        (ewm-skia-smoke-redraw)
-        (ding)
-        (unless (pgtk-skia-test-visible-bell-active-p bell-frame)
-          (ewm-skia-smoke-fail
-           "visible bell did not create a Skia snapshot on deletion frame"))
-        (delete-frame bell-frame t)
-        (setq bell-frame nil)
-        (select-frame-set-input-focus main-frame)
-        (redisplay 'force)
-        (sit-for 0.03))
-    (when (and bell-frame (frame-live-p bell-frame))
-      (delete-frame bell-frame t))
-    (select-frame-set-input-focus main-frame)))
+  (let ((main-frame (selected-frame))
+        (bell-frame nil)
+        (visible-bell t)
+        (ring-bell-function nil))
+    (unwind-protect
+        (progn
+          (setq bell-frame
+                (make-frame '((width . 64)
+                              (height . 18)
+                              (minibuffer . nil)
+                              (visibility . t))))
+          (select-frame-set-input-focus bell-frame)
+          (switch-to-buffer "*ewm-skia-smoke*")
+          (ewm-skia-smoke-redraw)
+          (ding)
+          (unless (pgtk-skia-test-visible-bell-active-p bell-frame)
+            (ewm-skia-smoke-fail
+             "visible bell did not create a Skia snapshot on deletion frame"))
+          (delete-frame bell-frame t)
+          (setq bell-frame nil)
+          (select-frame-set-input-focus main-frame)
+          (redisplay 'force)
+          (sit-for 0.03))
+      (when (and bell-frame (frame-live-p bell-frame))
+        (delete-frame bell-frame t))
+      (select-frame-set-input-focus main-frame))))
 
 (unless (fboundp 'pgtk-skia-test-abandon-gl-context)
   (ewm-skia-smoke-fail "missing Skia forced-abandon test hook"))
 (unless (fboundp 'pgtk-skia-test-gl-recreate-source-active-p)
   (ewm-skia-smoke-fail "missing Skia stale-source test hook"))
 
-(let ((main-frame (selected-frame))
-      (lost-frame nil))
-  (unwind-protect
-      (progn
-        (setq lost-frame
-              (make-frame '((width . 64)
-                            (height . 18)
-                            (minibuffer . nil)
-                            (visibility . t))))
-        (select-frame-set-input-focus lost-frame)
-        (switch-to-buffer "*ewm-skia-smoke*")
-        (ewm-skia-smoke-redraw)
-        (unless (pgtk-skia-test-abandon-gl-context lost-frame)
-          (ewm-skia-smoke-fail
-           "test abandon hook found no Skia GL state on deletion frame"))
-        (let ((deleted-frame lost-frame))
-          (delete-frame lost-frame t)
-          (setq lost-frame nil)
-          (when (pgtk-skia-test-gl-recreate-source-active-p deleted-frame)
+(ewm-skia-smoke-run-group "recovery"
+  (let ((main-frame (selected-frame))
+        (lost-frame nil))
+    (unwind-protect
+        (progn
+          (setq lost-frame
+                (make-frame '((width . 64)
+                              (height . 18)
+                              (minibuffer . nil)
+                              (visibility . t))))
+          (select-frame-set-input-focus lost-frame)
+          (switch-to-buffer "*ewm-skia-smoke*")
+          (ewm-skia-smoke-redraw)
+          (unless (pgtk-skia-test-abandon-gl-context lost-frame)
             (ewm-skia-smoke-fail
-             "Skia GL recreate source survived deleted frame")))
-        (select-frame-set-input-focus main-frame))
-    (when (and lost-frame (frame-live-p lost-frame))
-      (delete-frame lost-frame t))
-    (select-frame-set-input-focus main-frame)))
+             "test abandon hook found no Skia GL state on deletion frame"))
+          (let ((deleted-frame lost-frame))
+            (delete-frame lost-frame t)
+            (setq lost-frame nil)
+            (when (pgtk-skia-test-gl-recreate-source-active-p deleted-frame)
+              (ewm-skia-smoke-fail
+               "Skia GL recreate source survived deleted frame")))
+          (select-frame-set-input-focus main-frame))
+      (when (and lost-frame (frame-live-p lost-frame))
+        (delete-frame lost-frame t))
+      (select-frame-set-input-focus main-frame))))
 
-(let ((frame (selected-frame))
-      (restored nil))
-  (unless (pgtk-skia-test-abandon-gl-context frame)
-    (ewm-skia-smoke-fail
-     "test abandon hook found no Skia GL state or failed cleanup"))
-  (dotimes (_ 20)
-    (select-frame-set-input-focus frame)
-    (goto-char (point-min))
-    (set-frame-size frame 96 32)
-    (redisplay 'force)
-    (sit-for 0.05)
-    (when (pgtk-skia-gl-enabled-p frame)
-      (setq restored t)))
-  (unless restored
-    (ewm-skia-smoke-fail
-     "Skia GL state did not recover after forced abandon"))
-  (ewm-skia-smoke-check-framebuffer "forced abandon recovery" frame))
+(ewm-skia-smoke-run-group "recovery"
+  (let ((frame (selected-frame))
+        (restored nil))
+    (unless (pgtk-skia-test-abandon-gl-context frame)
+      (ewm-skia-smoke-fail
+       "test abandon hook found no Skia GL state or failed cleanup"))
+    (dotimes (_ 20)
+      (select-frame-set-input-focus frame)
+      (goto-char (point-min))
+      (set-frame-size frame 96 32)
+      (redisplay 'force)
+      (sit-for 0.05)
+      (when (pgtk-skia-gl-enabled-p frame)
+        (setq restored t)))
+    (unless restored
+      (ewm-skia-smoke-fail
+       "Skia GL state did not recover after forced abandon"))
+    (ewm-skia-smoke-check-framebuffer "forced abandon recovery" frame)))
 
 (princ "EWM_SKIA_SMOKE_OK\n" #'external-debugging-output)
 (kill-emacs 0)
