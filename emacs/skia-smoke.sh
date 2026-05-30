@@ -1046,6 +1046,124 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-large-scroll-copy (phase)
+  (let* ((source-buffer (current-buffer))
+         (source-window (selected-window))
+         (buffer (get-buffer-create "*ewm-skia-large-scroll-smoke*"))
+         bottom-line top-before target-before top-after second-after
+         bottom-after)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 10)
+          (delete-other-windows)
+          (with-current-buffer buffer
+            (ewm-skia-smoke-fill-scroll-buffer 5))
+          (switch-to-buffer buffer)
+          (goto-char (point-min))
+          (ewm-skia-smoke-redraw)
+          (setq top-before
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (setq target-before
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 5 520)))
+          (unless (and (consp top-before)
+                       (< (nth 2 top-before) 50)
+                       (> (nth 3 top-before) 1000)
+                       (consp target-before)
+                       (> (nth 2 target-before) 1000))
+            (ewm-skia-smoke-fail
+             "large scroll setup wrong colors after %s: top=%S target=%S"
+             phase top-before target-before))
+          (scroll-up-command 5)
+          (ewm-skia-smoke-pump)
+          (setq bottom-line
+                (1- (ewm-skia-smoke-window-visible-lines)))
+          (setq top-after
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (setq second-after
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 1 520)))
+          (setq bottom-after
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect bottom-line 520)))
+          (unless (and (consp top-after)
+                       (> (nth 2 top-after) 1000)
+                       (consp second-after)
+                       (< (nth 2 second-after) 50)
+                       (> (nth 3 second-after) 1000)
+                       (consp bottom-after)
+                       (< (nth 2 bottom-after) 50)
+                       (> (nth 3 bottom-after) 1000))
+            (ewm-skia-smoke-fail
+             "large scroll copy wrong colors after %s: top=%S second=%S bottom=%S"
+             phase top-after second-after bottom-after)))
+      (delete-other-windows)
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (when (window-live-p source-window)
+        (select-window source-window))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-horizontal-scroll-text (phase)
+  (let* ((source-buffer (current-buffer))
+         (source-window (selected-window))
+         (buffer (get-buffer-create "*ewm-skia-hscroll-smoke*"))
+         before after)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 6)
+          (delete-other-windows)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local truncate-lines t)
+            (setq-local bidi-display-reordering nil)
+            (erase-buffer)
+            (insert (propertize (make-string 90 ?M)
+                                'face '(:foreground "#00ff00"
+                                        :background "#00ff00"))
+                    (propertize (make-string 80 ?M)
+                                'face '(:foreground "#ff0000"
+                                        :background "#00ff00"))
+                    "\n"))
+          (switch-to-buffer buffer)
+          (goto-char (point-min))
+          (set-window-hscroll nil 0)
+          (ewm-skia-smoke-redraw)
+          (setq before
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (unless (and (consp before)
+                       (< (nth 2 before) 50)
+                       (> (nth 3 before) 1000))
+            (ewm-skia-smoke-fail
+             "horizontal scroll setup wrong colors after %s: stats=%S"
+             phase before))
+          (set-window-hscroll nil 90)
+          (ewm-skia-smoke-redraw)
+          (unless (> (window-hscroll) 0)
+            (ewm-skia-smoke-fail
+             "horizontal scroll did not set hscroll after %s" phase))
+          (setq after
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (unless (and (consp after)
+                       (> (nth 2 after) 1000))
+            (ewm-skia-smoke-fail
+             "horizontal scroll did not expose red text after %s: before=%S after=%S"
+             phase before after)))
+      (set-window-hscroll nil 0)
+      (delete-other-windows)
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (when (window-live-p source-window)
+        (select-window source-window))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-red-decoration (phase label face min-red)
   (let* ((source-buffer (current-buffer))
          (buffer (get-buffer-create
@@ -1456,6 +1574,8 @@ static char *image[] = {
 (ewm-skia-smoke-check-glyph-overlap-clipping "initial draw")
 (ewm-skia-smoke-check-overlap-scroll-copy "initial draw")
 (ewm-skia-smoke-check-partial-window-scroll-copy "initial draw")
+(ewm-skia-smoke-check-large-scroll-copy "initial draw")
+(ewm-skia-smoke-check-horizontal-scroll-text "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")
