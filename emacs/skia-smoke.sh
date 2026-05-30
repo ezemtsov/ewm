@@ -213,6 +213,25 @@ static char *image[] = {
   (let ((edges (window-inside-pixel-edges)))
     (list (nth 0 edges) (nth 1 edges) width height)))
 
+(defun ewm-skia-smoke-left-fringe-rect ()
+  (let ((outer (window-pixel-edges))
+        (inside (window-inside-pixel-edges)))
+    (list (nth 0 outer)
+          (nth 1 inside)
+          (max 1 (- (nth 0 inside) (nth 0 outer)))
+          (max 1 (- (nth 3 inside) (nth 1 inside))))))
+
+(defun ewm-skia-smoke-check-region-colors
+    (phase label rect min-red min-green)
+  (let ((stats (pgtk-skia-test-framebuffer-color-counts nil rect)))
+    (unless (and (consp stats)
+                 (> (nth 2 stats) min-red)
+                 (> (nth 3 stats) min-green))
+      (ewm-skia-smoke-fail
+       "%s missing expected colors after %s: stats=%S rect=%S thresholds=(red=%d green=%d)"
+       label phase stats rect min-red min-green))
+    stats))
+
 (defun ewm-skia-smoke-check-scaled-transparent-image (phase)
   (unless (image-type-available-p 'xpm)
     (ewm-skia-smoke-fail "XPM images are not available"))
@@ -492,6 +511,86 @@ static char *image[] = {
          "bad :minspace nil font metrics after %s: info=%S"
          phase info)))))
 
+(defun ewm-skia-smoke-check-cursor (phase)
+  (let ((source-buffer (current-buffer))
+        (buffer (get-buffer-create "*ewm-skia-cursor-smoke*"))
+        (old-cursor-color (frame-parameter nil 'cursor-color)))
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 6)
+          (blink-cursor-mode -1)
+          (modify-frame-parameters nil '((cursor-color . "#ff0000")))
+          (with-current-buffer buffer
+            (setq-local cursor-type 'box)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert "MMMMMMMMMMMMMMMMMMMM\n")
+            (goto-char (point-min)))
+          (switch-to-buffer buffer)
+          (goto-char (point-min))
+          (ewm-skia-smoke-redraw)
+          (ewm-skia-smoke-check-region-colors
+           phase "block cursor" (ewm-skia-smoke-window-rect 260 120)
+           200 1000))
+      (modify-frame-parameters nil `((cursor-color . ,old-cursor-color)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-fringe (phase)
+  (define-fringe-bitmap
+    'ewm-skia-smoke-fringe
+    [#b11111111 #b11111111 #b11111111 #b11111111
+     #b11111111 #b11111111 #b11111111 #b11111111
+     #b11111111 #b11111111 #b11111111 #b11111111
+     #b11111111 #b11111111 #b11111111 #b11111111]
+    nil nil 'center)
+  (unless (facep 'ewm-skia-smoke-fringe-face)
+    (make-face 'ewm-skia-smoke-fringe-face))
+  (set-face-attribute 'ewm-skia-smoke-fringe-face nil
+                      :foreground "#ff0000"
+                      :background "#00ff00")
+  (let ((source-buffer (current-buffer))
+        (buffer (get-buffer-create "*ewm-skia-fringe-smoke*"))
+        (old-fringes (window-fringes)))
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 6)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)
+                          (fringe (:foreground "#ff0000"
+                                   :background "#00ff00") fringe)))
+            (erase-buffer)
+            (insert
+             (propertize
+              " "
+              'display
+              '(left-fringe ewm-skia-smoke-fringe
+                            ewm-skia-smoke-fringe-face)))
+            (insert "fringe marker\n"))
+          (switch-to-buffer buffer)
+          (set-window-fringes nil 24 24)
+          (ewm-skia-smoke-redraw)
+          (ewm-skia-smoke-check-region-colors
+           phase "left fringe" (ewm-skia-smoke-left-fringe-rect)
+           50 100))
+      (set-window-fringes nil (nth 0 old-fringes)
+                          (nth 1 old-fringes)
+                          (nth 2 old-fringes)
+                          (nth 3 old-fringes))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
                  (fboundp 'pgtk-skia-gl-enabled-p)))
@@ -553,6 +652,8 @@ static char *image[] = {
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")
 (ewm-skia-smoke-check-minspace-font-metrics "initial draw")
+(ewm-skia-smoke-check-cursor "initial draw")
+(ewm-skia-smoke-check-fringe "initial draw")
 
 (goto-char (point-min))
 (ewm-skia-smoke-redraw)
