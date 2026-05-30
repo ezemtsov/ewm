@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..22b8d0b1aa5
+index 00000000000..97329641da7
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1652 @@
+@@ -0,0 +1,1649 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1628,11 +1628,8 @@ index 00000000000..22b8d0b1aa5
 +    transform && transform->smoothing ? SkFilterMode::kLinear
 +				      : SkFilterMode::kNearest);
 +
-+  if (paint)
-+    canvas->canvas->drawImage (image->image.get (), x, y, sampling,
-+			       &paint->paint);
-+  else
-+    canvas->canvas->drawImage (image->image.get (), x, y, sampling);
++  canvas->canvas->drawImage (image->image.get (), x, y, sampling,
++			     paint ? &paint->paint : nullptr);
 +
 +  canvas->canvas->restore ();
 +}
