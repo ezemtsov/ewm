@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..67f0947c517
+index 00000000000..f7ef9fa4965
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1358 @@
+@@ -0,0 +1,1359 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -66,6 +66,7 @@ index 00000000000..67f0947c517
 +#endif
 +
 +#include <memory>
++#include <utility>
 +
 +extern "C" void xfree (void *);
 +
@@ -211,11 +212,11 @@ index 00000000000..67f0947c517
 +
 +#ifdef SK_GL
 +  return new emacs_skia_surface_t {
-+    surface, context, { nullptr, nullptr, nullptr }
++    std::move (surface), std::move (context), { nullptr, nullptr, nullptr }
 +  };
 +#else
 +  return new emacs_skia_surface_t {
-+    surface, { nullptr, nullptr, nullptr }
++    std::move (surface), { nullptr, nullptr, nullptr }
 +  };
 +#endif
 +}
@@ -226,7 +227,7 @@ index 00000000000..67f0947c517
 +  if (!image)
 +    return nullptr;
 +
-+  return new emacs_skia_image_t { image };
++  return new emacs_skia_image_t { std::move (image) };
 +}
 +
 +/* ============================================================
