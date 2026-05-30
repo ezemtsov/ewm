@@ -11529,7 +11529,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..999f4b3 100644
+index 617ed3c..d002944 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -18236,7 +18236,7 @@ index 617ed3c..999f4b3 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,162 +9457,1341 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,162 +9457,1348 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -19090,14 +19090,21 @@ index 617ed3c..999f4b3 100644
 +  if (FRAME_SKIA_SURFACE_DESIRED_WIDTH (f) != width
 +      || FRAME_SKIA_SURFACE_DESIRED_HEIGHT (f) != height || force)
 +    {
-+      /* Don't destroy the Skia surface here.  Keep the old surface
-+	 alive so that the draw callback can still composite stale
-+	 content instead of showing a black frame.  The surface will
-+	 be recreated in pgtk_begin_skia_clip when it detects a size
-+	 mismatch between the surface and the desired dimensions.
-+	 This is analogous to Cairo's double-buffering via
-+	 FRAME_CR_ACTIVE_CONTEXT, which keeps old content visible
-+	 until new content is ready.  */
++      /* Don't destroy the Skia surface immediately for ordinary size
++	 changes.  Keep the old surface alive so that the draw callback
++	 can still composite stale content instead of showing a black
++	 frame.  The surface will be recreated in pgtk_begin_skia_clip
++	 when it detects a size mismatch between the surface and the
++	 desired dimensions.  This is analogous to Cairo's
++	 double-buffering via FRAME_CR_ACTIVE_CONTEXT, which keeps old
++	 content visible until new content is ready.
++
++	 FORCE is different: callers use it when rendering assumptions
++	 changed even though logical dimensions may not have changed
++	 (for example the monitor scale watcher).  In that case a size
++	 mismatch may never appear, so drop the old Skia surface now.  */
++      if (force)
++	pgtk_skia_destroy_surface_only (f);
 +      FRAME_SKIA_SURFACE_DESIRED_WIDTH (f) = width;
 +      FRAME_SKIA_SURFACE_DESIRED_HEIGHT (f) = height;
 +      SET_FRAME_GARBAGED (f);
@@ -19686,7 +19693,7 @@ index 617ed3c..999f4b3 100644
  
  void
  pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
-@@ -7595,12 +10828,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
+@@ -7595,12 +10835,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
        cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
  			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
@@ -19702,7 +19709,7 @@ index 617ed3c..999f4b3 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10846,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10853,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19712,7 +19719,7 @@ index 617ed3c..999f4b3 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10871,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10878,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19730,7 +19737,7 @@ index 617ed3c..999f4b3 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10892,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10899,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19787,7 +19794,7 @@ index 617ed3c..999f4b3 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10954,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10961,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  

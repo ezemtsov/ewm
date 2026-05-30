@@ -88,6 +88,16 @@ cat >"$payload" <<'EOF'
        "invalid framebuffer scale after %s: %S" phase size))
     size))
 
+(defun ewm-skia-smoke-check-force-surface-update (phase)
+  (unless (fboundp 'pgtk-skia-test-force-surface-update)
+    (ewm-skia-smoke-fail "missing Skia force surface update test hook"))
+  (unless (pgtk-skia-test-force-surface-update)
+    (ewm-skia-smoke-fail
+     "forced Skia surface update kept the old surface after %s" phase))
+  (ewm-skia-smoke-redraw)
+  (ewm-skia-smoke-check-framebuffer "forced surface update")
+  (ewm-skia-smoke-check-framebuffer-capacity "forced surface update"))
+
 (defun ewm-skia-smoke-pump ()
   (redisplay 'force)
   (sit-for 0.03))
@@ -1603,6 +1613,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-copy-bits-gl-error "initial draw")
 (ewm-skia-smoke-check-clear-state "initial draw")
 (ewm-skia-smoke-check-setup-state "initial draw")
+(ewm-skia-smoke-check-force-surface-update "initial draw")
 (ewm-skia-smoke-check-png-export "initial draw")
 (ewm-skia-smoke-check-image-transform-capabilities "initial draw")
 (ewm-skia-smoke-check-unavailable-export

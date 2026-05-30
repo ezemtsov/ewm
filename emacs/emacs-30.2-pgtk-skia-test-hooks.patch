@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 999f4b3..7b1ed38 100644
+index d002944..02b2faa 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10644,6 +10644,912 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10651,6 +10651,934 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -531,6 +531,28 @@ index 999f4b3..7b1ed38 100644
 +		make_int (pgtk_gl_scale (f)));
 +}
 +
++DEFUN ("pgtk-skia-test-force-surface-update",
++       Fpgtk_skia_test_force_surface_update,
++       Spgtk_skia_test_force_surface_update, 0, 1, 0,
++       doc: /* Return non-nil if forced Skia surface update drops the old surface.
++If FRAME is nil, use the selected frame.  This is intended for deterministic
++smoke coverage of the monitor-scale watcher path, which calls
++`pgtk_skia_update_surface_desired_size' with FORCE set even when logical frame
++dimensions are unchanged.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++
++  if (!FRAME_SKIA_SURFACE (f))
++    return Qnil;
++
++  pgtk_skia_update_surface_desired_size
++    (f, FRAME_SKIA_SURFACE_DESIRED_WIDTH (f),
++     FRAME_SKIA_SURFACE_DESIRED_HEIGHT (f), true);
++
++  return FRAME_SKIA_SURFACE (f) ? Qnil : Qt;
++}
++
 +DEFUN ("pgtk-skia-test-gl-invariants",
 +       Fpgtk_skia_test_gl_invariants,
 +       Spgtk_skia_test_gl_invariants, 0, 1, 0,
@@ -955,7 +977,7 @@ index 999f4b3..7b1ed38 100644
  #endif
  
  void
-@@ -10738,6 +11644,22 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10745,6 +11673,23 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
@@ -968,6 +990,7 @@ index 999f4b3..7b1ed38 100644
 +  defsubr (&Spgtk_skia_test_abandon_gl_context);
 +  defsubr (&Spgtk_skia_test_gl_recreate_source_active_p);
 +  defsubr (&Spgtk_skia_test_framebuffer_size);
++  defsubr (&Spgtk_skia_test_force_surface_update);
 +  defsubr (&Spgtk_skia_test_gl_invariants);
 +  defsubr (&Spgtk_skia_test_copy_bits_gl_error_return);
 +  defsubr (&Spgtk_skia_test_scratch_state_preserved);
