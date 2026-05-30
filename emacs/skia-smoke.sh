@@ -216,6 +216,18 @@ cat >"$payload" <<'EOF'
      phase))
   (ewm-skia-smoke-redraw))
 
+(defun ewm-skia-smoke-check-copy-bits-fallback (phase)
+  (unless (fboundp 'pgtk-skia-test-copy-bits-snapshot-fallback)
+    (ewm-skia-smoke-fail "missing Skia copy-bits fallback test hook"))
+  (let* ((rect (pgtk-skia-test-copy-bits-snapshot-fallback))
+         (stats (and (consp rect)
+                     (pgtk-skia-test-framebuffer-color-counts nil rect))))
+    (unless (and (consp stats) (> (nth 2 stats) 1000))
+      (ewm-skia-smoke-fail
+       "copy_bits snapshot fallback did not render copied red pixels after %s: rect=%S stats=%S"
+       phase rect stats)))
+  (ewm-skia-smoke-redraw))
+
 (defun ewm-skia-smoke-check-clear-state (phase)
   (unless (fboundp 'pgtk-skia-test-clear-state-preserved)
     (ewm-skia-smoke-fail "missing Skia clear-state test hook"))
@@ -1611,6 +1623,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-gl-invariants "initial draw")
 (ewm-skia-smoke-check-scratch-state "initial draw")
 (ewm-skia-smoke-check-copy-bits-gl-error "initial draw")
+(ewm-skia-smoke-check-copy-bits-fallback "initial draw")
 (ewm-skia-smoke-check-clear-state "initial draw")
 (ewm-skia-smoke-check-setup-state "initial draw")
 (ewm-skia-smoke-check-force-surface-update "initial draw")

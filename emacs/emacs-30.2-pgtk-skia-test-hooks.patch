@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index d002944..02b2faa 100644
+index d3e8900..1d420dd 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10651,6 +10651,934 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10644,6 +10644,997 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -687,6 +687,69 @@ index d002944..02b2faa 100644
 +  return !ok && err == GL_NO_ERROR ? Qt : Qnil;
 +}
 +
++DEFUN ("pgtk-skia-test-copy-bits-snapshot-fallback",
++       Fpgtk_skia_test_copy_bits_snapshot_fallback,
++       Spgtk_skia_test_copy_bits_snapshot_fallback, 0, 1, 0,
++       doc: /* Force copy_bits through its snapshot fallback on FRAME.
++Return the destination rectangle if the fallback path ran.  If FRAME is nil,
++use the selected frame.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  GLuint old_framebuffer = FRAME_GL_FRAMEBUFFER (f);
++  GLuint incomplete_framebuffer = 0;
++  cairo_rectangle_t src_rect = { 48, 48, 64, 48 };
++  cairo_rectangle_t dst_rect = { 144, 48, 64, 48 };
++  emacs_skia_canvas_t *canvas;
++  emacs_skia_paint_t *paint;
++  emacs_skia_irect_t src_draw = { 48, 48, 112, 96 };
++  emacs_skia_irect_t dst_clear = { 144, 48, 208, 96 };
++
++  if (!FRAME_GDK_GL_CONTEXT (f)
++      || !FRAME_SKIA_SURFACE (f)
++      || !old_framebuffer
++      || FRAME_GL_RENDER_WIDTH (f) < 240
++      || FRAME_GL_RENDER_HEIGHT (f) < 140)
++    return Qnil;
++
++  canvas = pgtk_begin_skia_clip (f);
++  if (!canvas)
++    return Qnil;
++
++  paint = FRAME_SKIA_PAINT (f);
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 0, 255, 0));
++  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC);
++  emacs_skia_paint_set_stroke (paint, false);
++  emacs_skia_canvas_draw_irect (canvas, &dst_clear, paint);
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
++  emacs_skia_canvas_draw_irect (canvas, &src_draw, paint);
++  pgtk_end_skia_clip (f);
++  emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  if (!pgtk_skia_make_gl_context_current (f))
++    return Qnil;
++
++  glGenFramebuffers (1, &incomplete_framebuffer);
++  if (!incomplete_framebuffer)
++    return Qnil;
++
++  /* Poison the shared paint so the fallback must reset paint state
++     rather than inheriting alpha from earlier drawing.  */
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (0, 255, 255, 255));
++  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC_OVER);
++
++  FRAME_GL_FRAMEBUFFER (f) = incomplete_framebuffer;
++  pgtk_copy_bits (f, &src_rect, &dst_rect);
++  FRAME_GL_FRAMEBUFFER (f) = old_framebuffer;
++  glDeleteFramebuffers (1, &incomplete_framebuffer);
++
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  return list4 (make_int (dst_rect.x), make_int (dst_rect.y),
++		make_int (dst_rect.width), make_int (dst_rect.height));
++}
++
 +DEFUN ("pgtk-skia-test-scratch-state-preserved",
 +       Fpgtk_skia_test_scratch_state_preserved,
 +       Spgtk_skia_test_scratch_state_preserved, 0, 1, 0,
@@ -977,7 +1040,7 @@ index d002944..02b2faa 100644
  #endif
  
  void
-@@ -10745,6 +11673,23 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10738,6 +11729,24 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
@@ -993,6 +1056,7 @@ index d002944..02b2faa 100644
 +  defsubr (&Spgtk_skia_test_force_surface_update);
 +  defsubr (&Spgtk_skia_test_gl_invariants);
 +  defsubr (&Spgtk_skia_test_copy_bits_gl_error_return);
++  defsubr (&Spgtk_skia_test_copy_bits_snapshot_fallback);
 +  defsubr (&Spgtk_skia_test_scratch_state_preserved);
 +  defsubr (&Spgtk_skia_test_clear_state_preserved);
 +  defsubr (&Spgtk_skia_test_setup_state_preserved);
