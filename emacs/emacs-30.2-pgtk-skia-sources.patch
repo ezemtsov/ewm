@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..8c66c758a72
+index 00000000000..6c3df476035
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1605 @@
+@@ -0,0 +1,1597 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -461,15 +461,14 @@ index 00000000000..8c66c758a72
 +#ifdef SK_GL
 +emacs_skia_surface_t *
 +emacs_skia_surface_create_gl (emacs_skia_gl_context_t *ctx, int width,
-+			      int height, unsigned int framebuffer_id,
-+			      unsigned int format)
++			      int height, unsigned int framebuffer_id)
 +{
 +  if (!ctx || !ctx->context)
 +    return nullptr;
 +
 +  GrGLFramebufferInfo fbInfo;
 +  fbInfo.fFBOID = framebuffer_id;
-+  fbInfo.fFormat = format;
++  fbInfo.fFormat = GL_RGBA8;
 +
 +  /* Create backend render target with stencil buffer for clip mask
 +     operations.  */
@@ -490,14 +489,12 @@ index 00000000000..8c66c758a72
 +#else
 +emacs_skia_surface_t *
 +emacs_skia_surface_create_gl (emacs_skia_gl_context_t *ctx, int width,
-+			      int height, unsigned int framebuffer_id,
-+			      unsigned int format)
++			      int height, unsigned int framebuffer_id)
 +{
 +  (void) ctx;
 +  (void) width;
 +  (void) height;
 +  (void) framebuffer_id;
-+  (void) format;
 +  return nullptr;
 +}
 +#endif
@@ -1237,8 +1234,7 @@ index 00000000000..8c66c758a72
 +#ifdef SK_PDF
 +emacs_skia_document_t *
 +emacs_skia_document_create_pdf (emacs_skia_write_fn write_fn,
-+				void *write_ctx, float width,
-+				float height)
++				void *write_ctx)
 +{
 +  if (!write_fn)
 +    {
@@ -1314,13 +1310,10 @@ index 00000000000..8c66c758a72
 +/* Stub implementations when PDF support is not compiled in.  */
 +emacs_skia_document_t *
 +emacs_skia_document_create_pdf (emacs_skia_write_fn write_fn,
-+				void *write_ctx, float width,
-+				float height)
++				void *write_ctx)
 +{
 +  (void) write_fn;
 +  (void) write_ctx;
-+  (void) width;
-+  (void) height;
 +  return nullptr;
 +}
 +
@@ -1555,7 +1548,6 @@ index 00000000000..8c66c758a72
 +emacs_skia_canvas_draw_image_transformed (emacs_skia_canvas_t *canvas,
 +					  emacs_skia_image_t *image,
 +					  emacs_skia_image_transform_t *transform,
-+					  float x, float y,
 +					  emacs_skia_paint_t *paint)
 +{
 +  if (!canvas || !canvas->canvas || !image || !image->image)
@@ -1584,7 +1576,7 @@ index 00000000000..8c66c758a72
 +    transform && transform->smoothing ? SkFilterMode::kLinear
 +				      : SkFilterMode::kNearest);
 +
-+  canvas->canvas->drawImage (image->image.get (), x, y, sampling,
++  canvas->canvas->drawImage (image->image.get (), 0, 0, sampling,
 +			     paint ? &paint->paint : nullptr);
 +
 +  canvas->canvas->restore ();
@@ -1611,10 +1603,10 @@ index 00000000000..8c66c758a72
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..c6bf6ca9c5c
+index 00000000000..6b0bfda4fa8
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,453 @@
+@@ -0,0 +1,450 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1755,7 +1747,7 @@ index 00000000000..c6bf6ca9c5c
 +  /* Create a GPU-backed surface using GL framebuffer */
 +  emacs_skia_surface_t *emacs_skia_surface_create_gl (
 +    emacs_skia_gl_context_t *ctx, int width, int height,
-+    unsigned int framebuffer_id, unsigned int format);
++    unsigned int framebuffer_id);
 +
 +  void emacs_skia_surface_destroy (emacs_skia_surface_t *surface);
 +
@@ -1879,8 +1871,7 @@ index 00000000000..c6bf6ca9c5c
 +  /* Draw image with transformation applied.  */
 +  void emacs_skia_canvas_draw_image_transformed (
 +    emacs_skia_canvas_t *canvas, emacs_skia_image_t *image,
-+    emacs_skia_image_transform_t *transform, float x, float y,
-+    emacs_skia_paint_t *paint);
++    emacs_skia_image_transform_t *transform, emacs_skia_paint_t *paint);
 +
 +  /* Draw a path */
 +  void emacs_skia_canvas_draw_path (emacs_skia_canvas_t *canvas,
@@ -2030,12 +2021,10 @@ index 00000000000..c6bf6ca9c5c
 +  /* Opaque document type for multi-page PDF output */
 +  typedef struct emacs_skia_document emacs_skia_document_t;
 +
-+  /* Create a PDF document that writes to a callback.
-+     width/height are the initial page dimensions in points.  */
++  /* Create a PDF document that writes to a callback.  */
 +  emacs_skia_document_t *
 +  emacs_skia_document_create_pdf (emacs_skia_write_fn write_fn,
-+				  void *write_ctx, float width,
-+				  float height);
++				  void *write_ctx);
 +
 +  /* Begin a new page in the document.
 +     Returns a canvas to draw on.  */

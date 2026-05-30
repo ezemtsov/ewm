@@ -11513,7 +11513,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..24af58c 100644
+index 617ed3c..fc15bea 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -13766,7 +13766,7 @@ index 617ed3c..24af58c 100644
 +	  emacs_skia_canvas_draw_image_transformed (canvas,
 +						    s->img->skia_data,
 +						    s->img->skia_transform,
-+						    0, 0, paint);
++						    paint);
 +	}
 +      else
 +	{
@@ -19132,7 +19132,7 @@ index 617ed3c..24af58c 100644
 +  FRAME_SKIA_SURFACE (f)
 +    = emacs_skia_surface_create_gl (FRAME_SKIA_GL_CONTEXT (f),
 +				    width, height,
-+				    FRAME_GL_FRAMEBUFFER (f), GL_RGBA8);
++				    FRAME_GL_FRAMEBUFFER (f));
 +  if (FRAME_SKIA_SURFACE (f))
 +    return;
 +
@@ -19883,7 +19883,7 @@ index 617ed3c..24af58c 100644
 +      /* Create PDF document.  */
 +      emacs_skia_document_t *doc
 +	= emacs_skia_document_create_pdf (pgtk_skia_accumulate_data,
-+					  &acc, width, height);
++					  &acc);
 +      if (!doc)
 +	{
 +	  unblock_input ();
