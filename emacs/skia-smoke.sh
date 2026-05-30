@@ -143,6 +143,32 @@ cat >"$payload" <<'EOF'
        "framebuffer missing translucent green background after %s: stats=%S threshold=%d"
        phase stats ewm-skia-smoke-min-translucent-green))))
 
+(defun ewm-skia-smoke-check-partial-clear (phase)
+  (unless (fboundp 'pgtk-skia-test-clear-area)
+    (ewm-skia-smoke-fail "missing Skia clear-area test hook"))
+  (let* ((rects (pgtk-skia-test-clear-area))
+         (left (and (consp rects)
+                    (pgtk-skia-test-framebuffer-color-counts
+                     nil (nth 0 rects))))
+         (cleared (and (consp rects)
+                       (pgtk-skia-test-framebuffer-color-counts
+                        nil (nth 1 rects))))
+         (right (and (consp rects)
+                     (pgtk-skia-test-framebuffer-color-counts
+                      nil (nth 2 rects)))))
+    (unless (and (consp left)
+                 (> (nth 2 left) 1000)
+                 (consp cleared)
+                 (< (nth 2 cleared) 50)
+                 (> (nth 3 cleared) 1000)
+                 (> (nth 4 cleared) 1000)
+                 (consp right)
+                 (> (nth 2 right) 1000))
+      (ewm-skia-smoke-fail
+       "partial clear-area lost alpha/background isolation after %s: rects=%S left=%S cleared=%S right=%S"
+       phase rects left cleared right)))
+  (ewm-skia-smoke-redraw))
+
 (defun ewm-skia-smoke-check-gl-invariants (phase)
   (unless (fboundp 'pgtk-skia-test-gl-invariants)
     (ewm-skia-smoke-fail "missing Skia GL invariant test hook"))
@@ -1402,6 +1428,7 @@ static char *image[] = {
 
 (ewm-skia-smoke-check-framebuffer "initial draw")
 (ewm-skia-smoke-check-alpha-background "initial draw")
+(ewm-skia-smoke-check-partial-clear "initial draw")
 (ewm-skia-smoke-check-framebuffer-capacity "initial draw")
 (ewm-skia-smoke-check-gl-invariants "initial draw")
 (ewm-skia-smoke-check-scratch-state "initial draw")
