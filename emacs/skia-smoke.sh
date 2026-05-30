@@ -179,6 +179,123 @@ cat >"$payload" <<'EOF'
        "bad PNG export after %s: prefix=%S length=%d"
        phase prefix length))))
 
+(defun ewm-skia-smoke-check-unavailable-export (type expected-message)
+  (condition-case err
+      (let ((data (x-export-frames nil type)))
+        (ewm-skia-smoke-fail
+         "%S export unexpectedly succeeded with %d bytes"
+         type (if (stringp data) (length data) 0)))
+    (error
+     (unless (string-match-p expected-message (error-message-string err))
+       (ewm-skia-smoke-fail
+        "unexpected %S export error: %S" type err)))))
+
+(defun ewm-skia-smoke-xpm (width height rows)
+  (concat "/* XPM */
+static char *image[] = {
+"
+          (format "\"%d %d 2 1\",\n" width height)
+          "\". c None\",
+\"R c #ff0000\",
+"
+          (mapconcat (lambda (row) (format "\"%s\"" row)) rows ",\n")
+          "};"))
+
+(defun ewm-skia-smoke-window-rect (width height)
+  (let ((edges (window-inside-pixel-edges)))
+    (list (nth 0 edges) (nth 1 edges) width height)))
+
+(defun ewm-skia-smoke-check-scaled-transparent-image (phase)
+  (unless (image-type-available-p 'xpm)
+    (ewm-skia-smoke-fail "XPM images are not available"))
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-image-smoke*"))
+         (xpm (ewm-skia-smoke-xpm
+               20 20 (make-list 20 (concat "R" (make-string 19 ?.)))))
+         image-rect baseline after)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 40 8)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert "\n"))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq image-rect (ewm-skia-smoke-window-rect 520 220))
+          (setq baseline (pgtk-skia-test-framebuffer-color-counts
+                          nil image-rect))
+          (with-current-buffer buffer
+            (erase-buffer)
+            (insert-image
+             (create-image xpm 'xpm t :width 480 :height 180)
+             " "))
+          (ewm-skia-smoke-redraw)
+          (setq after (pgtk-skia-test-framebuffer-color-counts nil image-rect))
+          (unless (and (consp baseline)
+                       (consp after)
+                       (> (nth 2 after) 1500)
+                       (>= (* (nth 3 after) 100)
+                           (* (nth 3 baseline) 90)))
+            (ewm-skia-smoke-fail
+             "scaled transparent image damaged background after %s: baseline=%S after=%S"
+             phase baseline after)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-rotated-transparent-image (phase)
+  (unless (image-type-available-p 'xpm)
+    (ewm-skia-smoke-fail "XPM images are not available"))
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-rotated-image-smoke*"))
+         (transparent-row (make-string 120 ?.))
+         (red-row (make-string 120 ?R))
+         (xpm (ewm-skia-smoke-xpm
+               120 30
+               (append (make-list 20 transparent-row)
+                       (make-list 10 red-row))))
+         after red-bounds red-width red-height)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 40 8)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert-image
+             (create-image xpm 'xpm t
+                           :rotation 90
+                           :transform-smoothing nil)
+             " "))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq after (pgtk-skia-test-framebuffer-color-counts
+                       nil (ewm-skia-smoke-window-rect 180 220)))
+          (setq red-bounds (and (consp after) (nth 5 after)))
+          (when (consp red-bounds)
+            (setq red-width (1+ (- (nth 2 red-bounds) (nth 0 red-bounds)))
+                  red-height (1+ (- (nth 3 red-bounds) (nth 1 red-bounds)))))
+          (unless (and (consp after)
+                       (> (nth 2 after) 800)
+                       red-bounds
+                       (> red-height (* red-width 2)))
+            (ewm-skia-smoke-fail
+             "rotated transparent image did not produce a vertical red band after %s: stats=%S red-bounds=%S red-size=%Sx%S"
+             phase after red-bounds red-width red-height)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
                  (fboundp 'pgtk-skia-gl-enabled-p)))
@@ -228,6 +345,12 @@ cat >"$payload" <<'EOF'
 (ewm-skia-smoke-check-clear-state "initial draw")
 (ewm-skia-smoke-check-setup-state "initial draw")
 (ewm-skia-smoke-check-png-export "initial draw")
+(ewm-skia-smoke-check-unavailable-export
+ 'pdf "Skia PDF export is not available")
+(ewm-skia-smoke-check-unavailable-export
+ 'svg "Skia SVG export is not available")
+(ewm-skia-smoke-check-scaled-transparent-image "initial draw")
+(ewm-skia-smoke-check-rotated-transparent-image "initial draw")
 
 (goto-char (point-min))
 (ewm-skia-smoke-redraw)

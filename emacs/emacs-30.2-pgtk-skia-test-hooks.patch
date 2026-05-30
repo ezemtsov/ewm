@@ -1,24 +1,27 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 3b6b6d1..601593a 100644
+index 6121dff..835440d 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10701,6 +10701,598 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10667,6 +10667,660 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
 +DEFUN ("pgtk-skia-test-framebuffer-color-counts",
 +       Fpgtk_skia_test_framebuffer_color_counts,
-+       Spgtk_skia_test_framebuffer_color_counts, 0, 1, 0,
-+       doc: /* Return (WIDTH HEIGHT RED GREEN TRANSLUCENT-GREEN)
++       Spgtk_skia_test_framebuffer_color_counts, 0, 2, 0,
++       doc: /* Return (WIDTH HEIGHT RED GREEN TRANSLUCENT-GREEN RED-BOUNDS GREEN-BOUNDS)
 +for FRAME's Skia GL framebuffer.
 +If FRAME is nil, use the selected frame.
++If RECT is non-nil, restrict counts to (X Y WIDTH HEIGHT) in frame pixels.
 +RED counts pixels that are mostly red; GREEN counts pixels that are mostly
 +green.  TRANSLUCENT-GREEN counts mostly-green pixels with alpha below 255.
++RED-BOUNDS and GREEN-BOUNDS are (MIN-X MIN-Y MAX-X MAX-Y), or nil if absent.
 +Return nil if the frame has no readable Skia GL framebuffer.  */)
-+  (Lisp_Object frame)
++  (Lisp_Object frame, Lisp_Object rect)
 +{
 +  struct frame *f = decode_window_system_frame (frame);
 +  int width, height;
++  int rect_left = 0, rect_top = 0, rect_right, rect_bottom;
 +  ptrdiff_t npixels;
 +  unsigned char *pixels;
 +  GLint old_read_framebuffer = 0;
@@ -28,6 +31,8 @@ index 3b6b6d1..601593a 100644
 +  intmax_t red = 0;
 +  intmax_t green = 0;
 +  intmax_t translucent_green = 0;
++  int red_min_x = 0, red_min_y = 0, red_max_x = -1, red_max_y = -1;
++  int green_min_x = 0, green_min_y = 0, green_max_x = -1, green_max_y = -1;
 +
 +  if (!FRAME_GDK_GL_CONTEXT (f)
 +      || !FRAME_SKIA_GL_CONTEXT (f)
@@ -44,6 +49,32 @@ index 3b6b6d1..601593a 100644
 +  height = emacs_skia_surface_get_height (FRAME_SKIA_SURFACE (f));
 +  if (width <= 0 || height <= 0)
 +    return Qnil;
++  rect_right = width;
++  rect_bottom = height;
++
++  if (!NILP (rect))
++    {
++      Lisp_Object tail = rect;
++      EMACS_INT values[4];
++      int scale = pgtk_gl_scale (f);
++
++      CHECK_LIST (rect);
++      for (int i = 0; i < 4; ++i)
++	{
++	  CHECK_TYPE (CONSP (tail), Qlistp, rect);
++	  CHECK_FIXNUM (XCAR (tail));
++	  values[i] = XFIXNUM (XCAR (tail));
++	  tail = XCDR (tail);
++	}
++      CHECK_LIST_END (tail, rect);
++
++      rect_left = max (0, min (width, (int) values[0] * scale));
++      rect_top = max (0, min (height, (int) values[1] * scale));
++      rect_right = max (rect_left,
++			min (width, (int) (values[0] + values[2]) * scale));
++      rect_bottom = max (rect_top,
++			 min (height, (int) (values[1] + values[3]) * scale));
++    }
 +
 +  if (ckd_mul (&npixels, (ptrdiff_t) width, (ptrdiff_t) height))
 +    memory_full (SIZE_MAX);
@@ -81,6 +112,13 @@ index 3b6b6d1..601593a 100644
 +      int red_channel = r;
 +      int green_channel = g;
 +      int blue_channel = b;
++      int x = i % width;
++      int y = i / width;
++      int top_y = height - y - 1;
++
++      if (x < rect_left || x >= rect_right
++	  || top_y < rect_top || top_y >= rect_bottom)
++	continue;
 +
 +      /* GPU render targets store premultiplied color when alpha is not
 +	 opaque.  Classify colors in straight-alpha space so alpha-background
@@ -99,18 +137,42 @@ index 3b6b6d1..601593a 100644
 +	}
 +
 +      if (red_channel > 150 && green_channel < 140 && blue_channel < 140)
-+	red++;
++	{
++	  if (red++ == 0)
++	    red_min_x = red_max_x = x, red_min_y = red_max_y = y;
++	  else
++	    {
++	      red_min_x = min (red_min_x, x);
++	      red_min_y = min (red_min_y, y);
++	      red_max_x = max (red_max_x, x);
++	      red_max_y = max (red_max_y, y);
++	    }
++	}
 +      if (green_channel > 150 && red_channel < 140 && blue_channel < 140)
 +	{
-+	  green++;
++	  if (green++ == 0)
++	    green_min_x = green_max_x = x, green_min_y = green_max_y = y;
++	  else
++	    {
++	      green_min_x = min (green_min_x, x);
++	      green_min_y = min (green_min_y, y);
++	      green_max_x = max (green_max_x, x);
++	      green_max_y = max (green_max_y, y);
++	    }
 +	  if (a > 16 && a < 240)
 +	    translucent_green++;
 +	}
 +    }
 +  xfree (pixels);
 +
-+  return list5 (make_int (width), make_int (height), make_int (red),
-+		make_int (green), make_int (translucent_green));
++  return list (make_int (width), make_int (height), make_int (red),
++	       make_int (green), make_int (translucent_green),
++	       red ? list4 (make_int (red_min_x), make_int (red_min_y),
++			    make_int (red_max_x), make_int (red_max_y))
++		   : Qnil,
++	       green ? list4 (make_int (green_min_x), make_int (green_min_y),
++			      make_int (green_max_x), make_int (green_max_y))
++		     : Qnil);
 +}
 +
 +DEFUN ("pgtk-skia-test-abandon-gl-context",
@@ -601,7 +663,7 @@ index 3b6b6d1..601593a 100644
  #endif
  
  void
-@@ -10795,6 +11387,16 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10761,6 +11415,16 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);

@@ -1,6 +1,6 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..2029b049980
+index 00000000000..d4ec4c16ef8
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
 @@ -0,0 +1,2259 @@
@@ -2216,19 +2216,19 @@ index 00000000000..2029b049980
 +
 +  if (transform)
 +    {
-+      /* Apply the transformation matrix.
-+	 Skia uses column-major SkMatrix, but our matrix is in
-+	 [a c e; b d f] format which maps to:
-+	 SkMatrix: [scaleX, skewX, transX, skewY, scaleY, transY, ...] */
-+      SkMatrix sk_matrix;
-+      sk_matrix.setAll (transform->matrix[0], /* scaleX = a */
-+			transform->matrix[2], /* skewX = c */
-+			transform->matrix[4], /* transX = e */
-+			transform->matrix[1], /* skewY = b */
-+			transform->matrix[3], /* scaleY = d */
-+			transform->matrix[5], /* transY = f */
-+			0, 0, 1);
-+      canvas->canvas->concat (sk_matrix);
++      SkMatrix display_to_image;
++      display_to_image.setAll (transform->matrix[0], transform->matrix[2],
++			       transform->matrix[4], transform->matrix[1],
++			       transform->matrix[3], transform->matrix[5],
++			       0, 0, 1);
++
++      SkMatrix image_to_display;
++      if (!display_to_image.invert (&image_to_display))
++	{
++	  canvas->canvas->restore ();
++	  return;
++	}
++      canvas->canvas->concat (image_to_display);
 +    }
 +
 +  SkSamplingOptions sampling (
