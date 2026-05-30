@@ -14,7 +14,10 @@ let
   cfg = config.programs.ewm;
 
   applySkia = emacs: emacs.overrideAttrs (o: {
-    patches = (o.patches or []) ++ [ ../emacs/skia-30.2.patch ];
+    patches = (o.patches or []) ++ [
+      ../emacs/emacs-30.2-pgtk-skia-sources.patch
+      ../emacs/emacs-30.2-pgtk-skia-integration.patch
+    ];
     configureFlags = (o.configureFlags or []) ++ [ "--with-skia" ];
     buildInputs = (o.buildInputs or []) ++ (with pkgs; [ skia libepoxy ]);
     nativeBuildInputs = (o.nativeBuildInputs or []) ++ (with pkgs; [ autoconf automake ]);

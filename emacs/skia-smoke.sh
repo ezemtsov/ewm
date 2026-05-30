@@ -134,6 +134,51 @@ cat >"$payload" <<'EOF'
   ;; GL state recovery, so redraw before the next visual assertion.
   (ewm-skia-smoke-redraw))
 
+(defun ewm-skia-smoke-check-scratch-state (phase)
+  (unless (fboundp 'pgtk-skia-test-scratch-state-preserved)
+    (ewm-skia-smoke-fail "missing Skia scratch-state test hook"))
+  (let ((state (pgtk-skia-test-scratch-state-preserved)))
+    (unless (equal state '(t t t t t))
+      (ewm-skia-smoke-fail
+       "scratch framebuffer leaked GL state after %s: state=%S"
+       phase state))))
+
+(defun ewm-skia-smoke-check-clear-state (phase)
+  (unless (fboundp 'pgtk-skia-test-clear-state-preserved)
+    (ewm-skia-smoke-fail "missing Skia clear-state test hook"))
+  (let ((state (pgtk-skia-test-clear-state-preserved)))
+    (unless (equal state '(t t t t t))
+      (ewm-skia-smoke-fail
+       "framebuffer clear leaked GL state after %s: state=%S"
+       phase state)))
+  ;; The hook deliberately clears part of the framebuffer while testing
+  ;; hostile GL state recovery, so redraw before the next visual assertion.
+  (ewm-skia-smoke-redraw))
+
+(defun ewm-skia-smoke-check-setup-state (phase)
+  (unless (fboundp 'pgtk-skia-test-setup-state-preserved)
+    (ewm-skia-smoke-fail "missing Skia setup-state test hook"))
+  (let ((state (pgtk-skia-test-setup-state-preserved)))
+    (unless (equal state '(t t t t t))
+      (ewm-skia-smoke-fail
+       "framebuffer setup leaked GL state after %s: state=%S"
+       phase state)))
+  ;; The hook runs the production setup clear path, so redraw before
+  ;; checking framebuffer pixels again.
+  (ewm-skia-smoke-redraw))
+
+(defun ewm-skia-smoke-check-png-export (phase)
+  (let* ((data (x-export-frames nil 'png))
+         (length (if (stringp data) (length data) 0))
+         (prefix (and (stringp data)
+                      (substring data 0 (min 8 length)))))
+    (unless (and (stringp data)
+                 (> length 8)
+                 (equal prefix "\211PNG\r\n\032\n"))
+      (ewm-skia-smoke-fail
+       "bad PNG export after %s: prefix=%S length=%d"
+       phase prefix length))))
+
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
                  (fboundp 'pgtk-skia-gl-enabled-p)))
@@ -179,6 +224,10 @@ cat >"$payload" <<'EOF'
 (ewm-skia-smoke-check-alpha-background "initial draw")
 (ewm-skia-smoke-check-framebuffer-capacity "initial draw")
 (ewm-skia-smoke-check-gl-invariants "initial draw")
+(ewm-skia-smoke-check-scratch-state "initial draw")
+(ewm-skia-smoke-check-clear-state "initial draw")
+(ewm-skia-smoke-check-setup-state "initial draw")
+(ewm-skia-smoke-check-png-export "initial draw")
 
 (goto-char (point-min))
 (ewm-skia-smoke-redraw)
@@ -202,7 +251,10 @@ cat >"$payload" <<'EOF'
      largest shrunk))
   (ewm-skia-smoke-check-framebuffer "resize capacity")
   (ewm-skia-smoke-check-alpha-background "resize capacity")
-  (ewm-skia-smoke-check-gl-invariants "resize capacity"))
+  (ewm-skia-smoke-check-gl-invariants "resize capacity")
+  (ewm-skia-smoke-check-scratch-state "resize capacity")
+  (ewm-skia-smoke-check-clear-state "resize capacity")
+  (ewm-skia-smoke-check-setup-state "resize capacity"))
 
 (let ((main-frame (selected-frame)))
   (dotimes (step 3)
@@ -312,23 +364,24 @@ cat >"$payload" <<'EOF'
       (delete-frame lost-frame t))
     (select-frame-set-input-focus main-frame)))
 
-(unless (pgtk-skia-test-abandon-gl-context)
-  (ewm-skia-smoke-fail "test abandon hook found no Skia GL state"))
-(when (pgtk-skia-gl-enabled-p)
-  (ewm-skia-smoke-fail "Skia GL state remained active after forced abandon"))
-(let ((restored nil))
+(let ((frame (selected-frame))
+      (restored nil))
+  (unless (pgtk-skia-test-abandon-gl-context frame)
+    (ewm-skia-smoke-fail "test abandon hook found no Skia GL state"))
+  (when (pgtk-skia-gl-enabled-p frame)
+    (ewm-skia-smoke-fail "Skia GL state remained active after forced abandon"))
   (dotimes (_ 20)
+    (select-frame-set-input-focus frame)
     (goto-char (point-min))
-    (set-frame-size nil 96 32)
+    (set-frame-size frame 96 32)
     (redisplay 'force)
     (sit-for 0.05)
-    (when (and (fboundp 'pgtk-skia-gl-enabled-p)
-               (pgtk-skia-gl-enabled-p))
+    (when (pgtk-skia-gl-enabled-p frame)
       (setq restored t)))
   (unless restored
     (ewm-skia-smoke-fail
      "Skia GL state did not recover after forced abandon"))
-  (ewm-skia-smoke-check-framebuffer "forced abandon recovery"))
+  (ewm-skia-smoke-check-framebuffer "forced abandon recovery" frame))
 
 (princ "EWM_SKIA_SMOKE_OK\n" #'external-debugging-output)
 (kill-emacs 0)
