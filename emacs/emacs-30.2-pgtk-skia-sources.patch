@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..3f5c8bf03d3
+index 00000000000..2371321cdf0
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1486 @@
+@@ -0,0 +1,1479 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1149,13 +1149,6 @@ index 00000000000..3f5c8bf03d3
 +}
 +
 +void
-+emacs_skia_path_close (emacs_skia_path_t *path)
-+{
-+  if (path)
-+    path->builder.close ();
-+}
-+
-+void
 +emacs_skia_path_add_rect (emacs_skia_path_t *path,
 +			  const emacs_skia_rect_t *rect)
 +{
@@ -1492,10 +1485,10 @@ index 00000000000..3f5c8bf03d3
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..b8a864ae556
+index 00000000000..f6801832584
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,413 @@
+@@ -0,0 +1,410 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1753,9 +1746,6 @@ index 00000000000..b8a864ae556
 +			       const emacs_skia_rect_t *oval,
 +			       float start_angle, float sweep_angle,
 +			       bool force_move_to);
-+
-+  /* Close the current contour */
-+  void emacs_skia_path_close (emacs_skia_path_t *path);
 +
 +  /* Add a rectangle to the path */
 +  void emacs_skia_path_add_rect (emacs_skia_path_t *path,
