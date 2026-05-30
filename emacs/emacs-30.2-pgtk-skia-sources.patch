@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..b512c37fe93
+index 00000000000..22b8d0b1aa5
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,2034 @@
+@@ -0,0 +1,1652 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -87,7 +87,7 @@ index 00000000000..b512c37fe93
 +# include "gpu/ganesh/gl/GrGLBackendSurface.h"
 +# include "gpu/ganesh/gl/GrGLDirectContext.h"
 +# include "gpu/ganesh/gl/GrGLInterface.h"
-+/* GL types for fence sync - use epoxy for portable GL loading.  */
++/* Use epoxy for portable GL/EGL loading.  */
 +# include <epoxy/egl.h>
 +# include <epoxy/gl.h>
 +# include <dlfcn.h>
@@ -257,22 +257,6 @@ index 00000000000..b512c37fe93
 +    }
 +}
 +
-+static inline SkFont::Edging
-+to_sk_edging (emacs_skia_antialias_t aa)
-+{
-+  switch (aa)
-+    {
-+    case EMACS_SKIA_ANTIALIAS_NONE:
-+      return SkFont::Edging::kAlias;
-+    case EMACS_SKIA_ANTIALIAS_NORMAL:
-+      return SkFont::Edging::kAntiAlias;
-+    case EMACS_SKIA_ANTIALIAS_SUBPIXEL:
-+      return SkFont::Edging::kSubpixelAntiAlias;
-+    default:
-+      return SkFont::Edging::kAntiAlias;
-+    }
-+}
-+
 +#ifdef SK_GL
 +static emacs_skia_surface_t *
 +make_surface (sk_sp<SkSurface> surface, void *pixels,
@@ -339,46 +323,8 @@ index 00000000000..b512c37fe93
 +}
 +
 +/* ============================================================
-+   Initialization / Cleanup
-+   ============================================================ */
-+
-+void
-+emacs_skia_init (void)
-+{
-+  /* Initialize global font manager */
-+  (void) get_font_mgr ();
-+}
-+
-+/* Forward declaration for SVG cleanup.  */
-+#ifdef SK_SVG
-+static void cleanup_svg_canvas_map (void);
-+#endif
-+
-+void
-+emacs_skia_cleanup (void)
-+{
-+#ifdef SK_SVG
-+  /* Clean up any leaked SVG canvases.  */
-+  cleanup_svg_canvas_map ();
-+#endif
-+
-+  /* Release global font manager */
-+  global_font_mgr.reset ();
-+}
-+
-+/* ============================================================
 +   Capability Queries
 +   ============================================================ */
-+
-+bool
-+emacs_skia_has_gl_support (void)
-+{
-+#ifdef SK_GL
-+  return true;
-+#else
-+  return false;
-+#endif
-+}
 +
 +bool
 +emacs_skia_has_pdf_support (void)
@@ -473,16 +419,6 @@ index 00000000000..b512c37fe93
 +}
 +
 +#ifdef SK_GL
-+emacs_skia_gl_context_t *
-+emacs_skia_gl_context_create (emacs_skia_gl_get_proc_fn get_proc,
-+			      void *ctx)
-+{
-+  return make_gl_context (
-+    GrGLMakeAssembledInterface (ctx, (GrGLGetProc) get_proc),
-+    "Skia: Failed to assemble GL interface",
-+    "Skia: Failed to create GrDirectContext");
-+}
-+
 +void
 +emacs_skia_gl_context_destroy (emacs_skia_gl_context_t *ctx)
 +{
@@ -518,15 +454,6 @@ index 00000000000..b512c37fe93
 +    }
 +}
 +#else
-+emacs_skia_gl_context_t *
-+emacs_skia_gl_context_create (emacs_skia_gl_get_proc_fn get_proc,
-+			      void *ctx)
-+{
-+  (void) get_proc;
-+  (void) ctx;
-+  return nullptr;
-+}
-+
 +void
 +emacs_skia_gl_context_destroy (emacs_skia_gl_context_t *ctx)
 +{
@@ -545,101 +472,6 @@ index 00000000000..b512c37fe93
 +  (void) ctx;
 +}
 +#endif
-+
-+/* ============================================================
-+   GL Fence Sync
-+   ============================================================ */
-+
-+#ifdef SK_GL
-+struct emacs_skia_fence
-+{
-+  GLsync sync;
-+};
-+
-+emacs_skia_fence_t *
-+emacs_skia_fence_create (void)
-+{
-+  auto *fence = new emacs_skia_fence_t {
-+    glFenceSync (GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
-+  };
-+
-+  /* glFenceSync returns 0 on failure.  */
-+  if (!fence->sync)
-+    {
-+      SKIA_LOG_ERROR ("fence_create: glFenceSync failed (no valid GL context?)");
-+      delete fence;
-+      return nullptr;
-+    }
-+
-+  return fence;
-+}
-+
-+bool
-+emacs_skia_fence_wait (emacs_skia_fence_t *fence, uint64_t timeout_ns)
-+{
-+  if (!fence || !fence->sync)
-+    return true;
-+
-+  GLenum result = glClientWaitSync (fence->sync,
-+				    GL_SYNC_FLUSH_COMMANDS_BIT,
-+				    timeout_ns);
-+  return result != GL_TIMEOUT_EXPIRED;
-+}
-+
-+bool
-+emacs_skia_fence_is_signaled (emacs_skia_fence_t *fence)
-+{
-+  if (!fence || !fence->sync)
-+    return true;
-+
-+  GLint status = GL_UNSIGNALED;
-+  GLsizei length;
-+  glGetSynciv (fence->sync, GL_SYNC_STATUS, sizeof (status),
-+	       &length, &status);
-+  return status == GL_SIGNALED;
-+}
-+
-+void
-+emacs_skia_fence_destroy (emacs_skia_fence_t *fence)
-+{
-+  if (fence)
-+    {
-+      if (fence->sync)
-+	glDeleteSync (fence->sync);
-+      delete fence;
-+    }
-+}
-+
-+#else /* !SK_GL */
-+
-+emacs_skia_fence_t *
-+emacs_skia_fence_create (void)
-+{
-+  return nullptr;
-+}
-+
-+bool
-+emacs_skia_fence_wait (emacs_skia_fence_t *fence, uint64_t timeout_ns)
-+{
-+  (void) fence;
-+  (void) timeout_ns;
-+  return true;
-+}
-+
-+bool
-+emacs_skia_fence_is_signaled (emacs_skia_fence_t *fence)
-+{
-+  (void) fence;
-+  return true;
-+}
-+
-+void
-+emacs_skia_fence_destroy (emacs_skia_fence_t *fence)
-+{
-+  (void) fence;
-+}
-+
-+#endif /* SK_GL */
 +
 +/* ============================================================
 +   Surface
@@ -695,15 +527,6 @@ index 00000000000..b512c37fe93
 +  return nullptr;
 +}
 +#endif
-+
-+emacs_skia_surface_t *
-+emacs_skia_surface_create_from_pixels (int width, int height,
-+				       void *pixels, size_t row_bytes)
-+{
-+  SkImageInfo info = SkImageInfo::MakeN32Premul (width, height);
-+  return make_surface (SkSurfaces::WrapPixels (info, pixels, row_bytes),
-+		       pixels);
-+}
 +
 +void
 +emacs_skia_surface_destroy (emacs_skia_surface_t *surface)
@@ -832,16 +655,6 @@ index 00000000000..b512c37fe93
 +  if (canvas && canvas->canvas && rect)
 +    {
 +      canvas->canvas->clipRect (to_sk_rect (rect));
-+    }
-+}
-+
-+void
-+emacs_skia_canvas_clip_irect (emacs_skia_canvas_t *canvas,
-+			      const emacs_skia_irect_t *rect)
-+{
-+  if (canvas && canvas->canvas && rect)
-+    {
-+      canvas->canvas->clipIRect (to_sk_irect (rect));
 +    }
 +}
 +
@@ -982,64 +795,6 @@ index 00000000000..b512c37fe93
 +      canvas->canvas->drawPath (path->builder.snapshot (),
 +				paint->paint);
 +    }
-+}
-+
-+void
-+emacs_skia_canvas_draw_arc (emacs_skia_canvas_t *canvas,
-+			    const emacs_skia_rect_t *oval,
-+			    float start_angle, float sweep_angle,
-+			    bool use_center,
-+			    emacs_skia_paint_t *paint)
-+{
-+  if (!canvas || !canvas->canvas || !oval || !paint)
-+    return;
-+
-+  canvas->canvas->drawArc (to_sk_rect (oval), start_angle,
-+			   sweep_angle, use_center, paint->paint);
-+}
-+
-+void
-+emacs_skia_canvas_draw_image_with_mask (emacs_skia_canvas_t *canvas,
-+					emacs_skia_image_t *image,
-+					emacs_skia_image_t *mask,
-+					float x, float y,
-+					emacs_skia_paint_t *paint)
-+{
-+  if (!canvas || !canvas->canvas || !image || !image->image)
-+    return;
-+
-+  /* If no mask, just draw the image normally */
-+  if (!mask || !mask->image)
-+    {
-+      emacs_skia_canvas_draw_image_with_sampling (canvas, image, x, y,
-+						  true, paint);
-+      return;
-+    }
-+
-+  /* Use a layer with mask as alpha:
-+     1. Create a layer to composite mask + image
-+     2. Draw the mask (provides the alpha channel for the layer)
-+     3. Draw the image with SrcIn blend mode (uses mask alpha)
-+     4. Restore the layer (composites with underlying canvas) */
-+  SkRect bounds = SkRect::MakeXYWH (x, y, image->image->width (),
-+				    image->image->height ());
-+  canvas->canvas->saveLayer (bounds, nullptr);
-+
-+  /* Draw mask — its pixel values become the layer's initial alpha.  */
-+  SkSamplingOptions sampling (SkFilterMode::kNearest);
-+  canvas->canvas->drawImage (mask->image.get (), x, y, sampling,
-+			     nullptr);
-+
-+  /* Draw image with SrcIn: uses the layer alpha (from mask).
-+     Copy all paint properties, not just color.  */
-+  SkPaint srcInPaint;
-+  if (paint)
-+    srcInPaint = paint->paint;
-+  srcInPaint.setBlendMode (SkBlendMode::kSrcIn);
-+  canvas->canvas->drawImage (image->image.get (), x, y, sampling,
-+			     &srcInPaint);
-+
-+  canvas->canvas->restore (); /* Restore and composite layer */
 +}
 +
 +void
@@ -1215,28 +970,6 @@ index 00000000000..b512c37fe93
 +}
 +#endif
 +
-+const char *
-+emacs_skia_typeface_get_path (emacs_skia_typeface_t *typeface)
-+{
-+  if (!typeface)
-+    return nullptr;
-+
-+  /* Skia doesn't expose the font file path directly.
-+     This would need platform-specific code or tracking during
-+     creation. For now, return nullptr - callers should use the path
-+     they originally provided.  */
-+  return nullptr;
-+}
-+
-+int
-+emacs_skia_typeface_get_index (emacs_skia_typeface_t *typeface)
-+{
-+  /* Skia doesn't expose the face index directly.
-+     Return 0 as the default.  */
-+  (void) typeface;
-+  return 0;
-+}
-+
 +emacs_skia_font_t *
 +emacs_skia_font_create (emacs_skia_typeface_t *typeface, float size)
 +{
@@ -1260,21 +993,6 @@ index 00000000000..b512c37fe93
 +}
 +
 +void
-+emacs_skia_font_set_size (emacs_skia_font_t *font, float size)
-+{
-+  if (font)
-+    {
-+      font->font.setSize (size);
-+    }
-+}
-+
-+float
-+emacs_skia_font_get_size (emacs_skia_font_t *font)
-+{
-+  return font ? font->font.getSize () : 0;
-+}
-+
-+void
 +emacs_skia_font_set_hinting (emacs_skia_font_t *font,
 +			     emacs_skia_hinting_t hinting)
 +{
@@ -1285,43 +1003,12 @@ index 00000000000..b512c37fe93
 +}
 +
 +void
-+emacs_skia_font_set_edging (emacs_skia_font_t *font,
-+			    emacs_skia_antialias_t edging)
-+{
-+  if (font)
-+    {
-+      font->font.setEdging (to_sk_edging (edging));
-+    }
-+}
-+
-+void
 +emacs_skia_font_set_subpixel (emacs_skia_font_t *font, bool subpixel)
 +{
 +  if (font)
 +    {
 +      font->font.setSubpixel (subpixel);
 +    }
-+}
-+
-+void
-+emacs_skia_font_get_metrics (emacs_skia_font_t *font,
-+			     emacs_skia_font_metrics_t *metrics)
-+{
-+  if (!font || !metrics)
-+    {
-+      return;
-+    }
-+
-+  SkFontMetrics sk_metrics;
-+  font->font.getMetrics (&sk_metrics);
-+
-+  metrics->ascent = sk_metrics.fAscent;
-+  metrics->descent = sk_metrics.fDescent;
-+  metrics->leading = sk_metrics.fLeading;
-+  metrics->avg_char_width = sk_metrics.fAvgCharWidth;
-+  metrics->max_char_width = sk_metrics.fMaxCharWidth;
-+  metrics->x_height = sk_metrics.fXHeight;
-+  metrics->cap_height = sk_metrics.fCapHeight;
 +}
 +
 +void
@@ -1387,52 +1074,9 @@ index 00000000000..b512c37fe93
 +  return font->font.unicharToGlyph (codepoint);
 +}
 +
-+void
-+emacs_skia_font_get_widths (emacs_skia_font_t *font,
-+			    const emacs_skia_glyph_t *glyphs,
-+			    int count, float *widths)
-+{
-+  if (!font || !glyphs || !widths)
-+    {
-+      return;
-+    }
-+  /* New Skia API uses SkSpan instead of raw pointers */
-+  SkSpan<const SkGlyphID> glyph_span (glyphs, count);
-+  SkSpan<SkScalar> width_span (widths, count);
-+  font->font.getWidths (glyph_span, width_span);
-+}
-+
-+float
-+emacs_skia_font_measure_text (emacs_skia_font_t *font,
-+			      const char *text, size_t byte_length)
-+{
-+  if (!font || !text)
-+    {
-+      return 0;
-+    }
-+  return font->font.measureText (text, byte_length,
-+				 SkTextEncoding::kUTF8);
-+}
-+
 +/* ============================================================
 +   Image
 +   ============================================================ */
-+
-+emacs_skia_image_t *
-+emacs_skia_image_create_from_pixels (int width, int height,
-+				     const void *pixels,
-+				     size_t row_bytes, bool has_alpha)
-+{
-+  SkColorType colorType
-+    = has_alpha ? kRGBA_8888_SkColorType : kRGB_888x_SkColorType;
-+  SkAlphaType alphaType
-+    = has_alpha ? kPremul_SkAlphaType : kOpaque_SkAlphaType;
-+  SkImageInfo info
-+    = SkImageInfo::Make (width, height, colorType, alphaType);
-+
-+  return make_image (SkImages::RasterFromPixmapCopy (
-+    SkPixmap (info, pixels, row_bytes)));
-+}
 +
 +emacs_skia_image_t *
 +emacs_skia_image_create_from_bgra_pixels (int width, int height,
@@ -1450,13 +1094,6 @@ index 00000000000..b512c37fe93
 +
 +  return make_image (SkImages::RasterFromPixmapCopy (
 +    SkPixmap (info, pixels, row_bytes)));
-+}
-+
-+emacs_skia_image_t *
-+emacs_skia_image_create_from_encoded (const void *data, size_t size)
-+{
-+  auto skdata = SkData::MakeWithCopy (data, size);
-+  return make_image (SkImages::DeferredFromEncodedData (skdata));
 +}
 +
 +void
@@ -1531,13 +1168,6 @@ index 00000000000..b512c37fe93
 +emacs_skia_path_destroy (emacs_skia_path_t *path)
 +{
 +  delete path;
-+}
-+
-+void
-+emacs_skia_path_reset (emacs_skia_path_t *path)
-+{
-+  if (path)
-+    path->builder.reset ();
 +}
 +
 +void
@@ -1768,21 +1398,9 @@ index 00000000000..b512c37fe93
 +
 +   Thread safety: Accessed only from the main thread during SVG export
 +   operations.  Emacs display code runs single-threaded, so no mutex
-+   is needed.  The map is cleaned up in emacs_skia_cleanup() to prevent
-+   leaks if canvases are not properly finished.  */
++   is needed.  */
 +static std::map<SkCanvas *, std::unique_ptr<emacs_skia_svg_canvas_data>>
 +  svg_canvas_map;
-+
-+/* Clean up any remaining SVG canvases that were not properly finished.
-+   Called from emacs_skia_cleanup() to prevent memory leaks.  */
-+static void
-+cleanup_svg_canvas_map (void)
-+{
-+  if (!svg_canvas_map.empty ())
-+    SKIA_LOG_ERROR ("cleanup_svg_canvas_map: leaking %zu SVG canvas(es)",
-+		    svg_canvas_map.size ());
-+  svg_canvas_map.clear ();
-+}
 +
 +emacs_skia_canvas_t *
 +emacs_skia_svg_canvas_create (emacs_skia_write_fn write_fn,
@@ -2040,10 +1658,10 @@ index 00000000000..b512c37fe93
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..f9023067c1d
+index 00000000000..6e0066c755b
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,601 @@
+@@ -0,0 +1,471 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -2113,18 +1731,6 @@ index 00000000000..f9023067c1d
 +  /* Glyph ID */
 +  typedef uint16_t emacs_skia_glyph_t;
 +
-+  /* Font metrics */
-+  typedef struct
-+  {
-+    float ascent;
-+    float descent;
-+    float leading;
-+    float avg_char_width;
-+    float max_char_width;
-+    float x_height;
-+    float cap_height;
-+  } emacs_skia_font_metrics_t;
-+
 +  /* Glyph extents (replacement for cairo_text_extents_t) */
 +  typedef struct
 +  {
@@ -2162,14 +1768,6 @@ index 00000000000..f9023067c1d
 +  /* Opaque path type for complex shapes */
 +  typedef struct emacs_skia_path emacs_skia_path_t;
 +
-+  /* Anti-alias mode */
-+  typedef enum
-+  {
-+    EMACS_SKIA_ANTIALIAS_NONE,
-+    EMACS_SKIA_ANTIALIAS_NORMAL,
-+    EMACS_SKIA_ANTIALIAS_SUBPIXEL,
-+  } emacs_skia_antialias_t;
-+
 +  /* Font hinting */
 +  typedef enum
 +  {
@@ -2180,39 +1778,17 @@ index 00000000000..f9023067c1d
 +  } emacs_skia_hinting_t;
 +
 +  /* ============================================================
-+     Initialization / Cleanup
-+     ============================================================ */
-+
-+  /* Initialize the Skia subsystem. Call once at startup. */
-+  void emacs_skia_init (void);
-+
-+  /* Cleanup the Skia subsystem. Call once at shutdown. */
-+  void emacs_skia_cleanup (void);
-+
-+  /* ============================================================
 +     Capability Queries
 +     ============================================================ */
 +
 +  /* Query whether specific Skia features are available.
 +     These functions return true if the feature was compiled in.  */
-+  bool emacs_skia_has_gl_support (void);
 +  bool emacs_skia_has_pdf_support (void);
 +  bool emacs_skia_has_svg_support (void);
 +
 +  /* ============================================================
 +     GL Context (for GPU-accelerated rendering)
 +     ============================================================ */
-+
-+  /* Create a GL context for GPU rendering.
-+     gl_get_proc: function to get GL proc addresses
-+     Returns NULL on failure. */
-+  typedef void (*emacs_skia_gl_proc_t) (void);
-+  typedef emacs_skia_gl_proc_t (*emacs_skia_gl_get_proc_fn) (
-+    void *ctx, const char *name);
-+
-+  emacs_skia_gl_context_t *
-+  emacs_skia_gl_context_create (emacs_skia_gl_get_proc_fn get_proc,
-+				void *ctx);
 +
 +  /* Create a GL context using the native GL interface.  This uses
 +     the currently active GL context (e.g., set by GDK).  */
@@ -2229,28 +1805,6 @@ index 00000000000..f9023067c1d
 +  void emacs_skia_gl_context_reset (emacs_skia_gl_context_t *ctx);
 +
 +  /* ============================================================
-+     GL Fence Sync (for async GPU synchronization)
-+     ============================================================ */
-+
-+  /* Opaque fence object for non-blocking GPU synchronization.  */
-+  typedef struct emacs_skia_fence emacs_skia_fence_t;
-+
-+  /* Create a fence that will be signaled when all preceding GL
-+     commands have completed on the GPU.  */
-+  emacs_skia_fence_t *emacs_skia_fence_create (void);
-+
-+  /* Wait for fence to be signaled.  Returns true if signaled within
-+     timeout_ns nanoseconds, false if timed out.  Pass 0 for no wait
-+     (poll), or UINT64_MAX for infinite wait.  */
-+  bool emacs_skia_fence_wait (emacs_skia_fence_t *fence, uint64_t timeout_ns);
-+
-+  /* Check if fence is signaled without waiting.  */
-+  bool emacs_skia_fence_is_signaled (emacs_skia_fence_t *fence);
-+
-+  /* Destroy fence object.  */
-+  void emacs_skia_fence_destroy (emacs_skia_fence_t *fence);
-+
-+  /* ============================================================
 +     Surface
 +     ============================================================ */
 +
@@ -2262,10 +1816,6 @@ index 00000000000..f9023067c1d
 +  emacs_skia_surface_t *emacs_skia_surface_create_gl (
 +    emacs_skia_gl_context_t *ctx, int width, int height,
 +    unsigned int framebuffer_id, unsigned int format);
-+
-+  /* Create a surface wrapping existing pixel data */
-+  emacs_skia_surface_t *emacs_skia_surface_create_from_pixels (
-+    int width, int height, void *pixels, size_t row_bytes);
 +
 +  void emacs_skia_surface_destroy (emacs_skia_surface_t *surface);
 +
@@ -2344,8 +1894,6 @@ index 00000000000..f9023067c1d
 +  /* Clipping */
 +  void emacs_skia_canvas_clip_rect (emacs_skia_canvas_t *canvas,
 +				    const emacs_skia_rect_t *rect);
-+  void emacs_skia_canvas_clip_irect (emacs_skia_canvas_t *canvas,
-+				     const emacs_skia_irect_t *rect);
 +
 +  /* Transform */
 +  void emacs_skia_canvas_translate (emacs_skia_canvas_t *canvas,
@@ -2399,35 +1947,12 @@ index 00000000000..f9023067c1d
 +				    emacs_skia_path_t *path,
 +				    emacs_skia_paint_t *paint);
 +
-+  /* Draw an arc (part of an ellipse)
-+     oval: bounding rectangle of the ellipse
-+     start_angle: starting angle in degrees (0 = 3 o'clock)
-+     sweep_angle: arc extent in degrees (positive = clockwise)
-+     use_center: if true, draws pie slice; if false, draws arc */
-+  void emacs_skia_canvas_draw_arc (emacs_skia_canvas_t *canvas,
-+				   const emacs_skia_rect_t *oval,
-+				   float start_angle,
-+				   float sweep_angle, bool use_center,
-+				   emacs_skia_paint_t *paint);
-+
-+  /* Draw image with a mask (for stipples and transparency masks)
-+     image: the image to draw
-+     mask: alpha mask image (A8 format preferred)
-+     x, y: destination position */
-+  void emacs_skia_canvas_draw_image_with_mask (
-+    emacs_skia_canvas_t *canvas, emacs_skia_image_t *image,
-+    emacs_skia_image_t *mask, float x, float y,
-+    emacs_skia_paint_t *paint);
-+
 +  /* ============================================================
 +     Path (for complex shapes)
 +     ============================================================ */
 +
 +  emacs_skia_path_t *emacs_skia_path_create (void);
 +  void emacs_skia_path_destroy (emacs_skia_path_t *path);
-+
-+  /* Reset path to empty */
-+  void emacs_skia_path_reset (emacs_skia_path_t *path);
 +
 +  /* Path construction */
 +  void emacs_skia_path_move_to (emacs_skia_path_t *path, float x,
@@ -2503,33 +2028,16 @@ index 00000000000..f9023067c1d
 +
 +  void emacs_skia_typeface_destroy (emacs_skia_typeface_t *typeface);
 +
-+  /* Get the font file path from a typeface (if available) */
-+  const char *
-+  emacs_skia_typeface_get_path (emacs_skia_typeface_t *typeface);
-+
-+  /* Get FreeType face index within the font file */
-+  int emacs_skia_typeface_get_index (emacs_skia_typeface_t *typeface);
-+
 +  /* Create a font from a typeface at given size */
 +  emacs_skia_font_t *
 +  emacs_skia_font_create (emacs_skia_typeface_t *typeface,
 +			  float size);
 +  void emacs_skia_font_destroy (emacs_skia_font_t *font);
 +
-+  void emacs_skia_font_set_size (emacs_skia_font_t *font, float size);
-+  float emacs_skia_font_get_size (emacs_skia_font_t *font);
-+
 +  void emacs_skia_font_set_hinting (emacs_skia_font_t *font,
 +				    emacs_skia_hinting_t hinting);
-+  void emacs_skia_font_set_edging (emacs_skia_font_t *font,
-+				   emacs_skia_antialias_t edging);
 +  void emacs_skia_font_set_subpixel (emacs_skia_font_t *font,
 +				     bool subpixel);
-+
-+  /* Get font metrics */
-+  void
-+  emacs_skia_font_get_metrics (emacs_skia_font_t *font,
-+			       emacs_skia_font_metrics_t *metrics);
 +
 +  /* Get font extents (replacement for cairo_scaled_font_extents) */
 +  void
@@ -2548,24 +2056,9 @@ index 00000000000..f9023067c1d
 +  emacs_skia_font_char_to_glyph (emacs_skia_font_t *font,
 +				 int32_t codepoint);
 +
-+  /* Get glyph advance widths */
-+  void emacs_skia_font_get_widths (emacs_skia_font_t *font,
-+				   const emacs_skia_glyph_t *glyphs,
-+				   int count, float *widths);
-+
-+  /* Measure text width */
-+  float emacs_skia_font_measure_text (emacs_skia_font_t *font,
-+				      const char *text,
-+				      size_t byte_length);
-+
 +  /* ============================================================
 +     Image
 +     ============================================================ */
-+
-+  /* Create an image from pixel data (RGBA format) */
-+  emacs_skia_image_t *emacs_skia_image_create_from_pixels (
-+    int width, int height, const void *pixels, size_t row_bytes,
-+    bool has_alpha);
 +
 +  /* Create an image from BGRA pixel data (Cairo/native format).
 +     This is the format used by Cairo (ARGB32 in native byte order),
@@ -2573,11 +2066,6 @@ index 00000000000..f9023067c1d
 +  emacs_skia_image_t *emacs_skia_image_create_from_bgra_pixels (
 +    int width, int height, const void *pixels, size_t row_bytes,
 +    bool has_alpha);
-+
-+  /* Create an image from encoded data (PNG, JPEG, etc.) */
-+  emacs_skia_image_t *
-+  emacs_skia_image_create_from_encoded (const void *data,
-+					size_t size);
 +
 +  void emacs_skia_image_destroy (emacs_skia_image_t *image);
 +
