@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..5ebebab 100644
+index 617ed3c..a14e11e 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -18237,7 +18237,7 @@ index 617ed3c..5ebebab 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,159 +9453,1280 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,159 +9453,1272 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -19341,19 +19341,11 @@ index 617ed3c..5ebebab 100644
 +  if (!paint)
 +    return;
 +
-+  uint8_t a;
-+
-+  if (!respects_alpha_background)
-+    {
-+      a = 255;
-+      emacs_skia_paint_set_blend_mode (paint,
-+				       EMACS_SKIA_BLEND_SRC_OVER);
-+    }
-+  else
-+    {
-+      a = (uint8_t) (f->alpha_background * 255.0);
-+      emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC);
-+    }
++  uint8_t a = respects_alpha_background
++		? (uint8_t) (f->alpha_background * 255.0) : 255;
++  emacs_skia_paint_set_blend_mode (paint, respects_alpha_background
++					  ? EMACS_SKIA_BLEND_SRC
++					  : EMACS_SKIA_BLEND_SRC_OVER);
 +
 +  /* Always ensure we're in fill mode, not stroke mode.  */
 +  emacs_skia_paint_set_stroke (paint, false);
@@ -19624,7 +19616,7 @@ index 617ed3c..5ebebab 100644
  {
    cairo_restore (FRAME_CR_CONTEXT (f));
  }
-@@ -7595,12 +10766,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
+@@ -7595,12 +10758,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
        cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
  			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
@@ -19640,7 +19632,7 @@ index 617ed3c..5ebebab 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10784,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10776,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19650,7 +19642,7 @@ index 617ed3c..5ebebab 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10809,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10801,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19668,7 +19660,7 @@ index 617ed3c..5ebebab 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10830,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10822,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19725,7 +19717,7 @@ index 617ed3c..5ebebab 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10892,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10884,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  
