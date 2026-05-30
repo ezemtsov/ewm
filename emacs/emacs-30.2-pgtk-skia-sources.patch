@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..82dc1c8a3eb
+index 00000000000..3f5c8bf03d3
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1494 @@
+@@ -0,0 +1,1486 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1135,14 +1135,6 @@ index 00000000000..82dc1c8a3eb
 +}
 +
 +void
-+emacs_skia_path_rel_line_to (emacs_skia_path_t *path, float dx,
-+			     float dy)
-+{
-+  if (path)
-+    path->builder.rLineTo (dx, dy);
-+}
-+
-+void
 +emacs_skia_path_arc_to (emacs_skia_path_t *path,
 +			const emacs_skia_rect_t *oval,
 +			float start_angle, float sweep_angle,
@@ -1500,10 +1492,10 @@ index 00000000000..82dc1c8a3eb
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..d60ccbdca47
+index 00000000000..b8a864ae556
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,415 @@
+@@ -0,0 +1,413 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1752,8 +1744,6 @@ index 00000000000..d60ccbdca47
 +				float y);
 +  void emacs_skia_path_line_to (emacs_skia_path_t *path, float x,
 +				float y);
-+  void emacs_skia_path_rel_line_to (emacs_skia_path_t *path, float dx,
-+				    float dy);
 +
 +  /* Add an arc to the path
 +     oval: bounding rectangle of the ellipse

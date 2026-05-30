@@ -1,8 +1,8 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 5b35e18..50541c2 100644
+index 150d5f2..9b1d71a 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10632,6 +10632,869 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10637,6 +10637,869 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -872,7 +872,7 @@ index 5b35e18..50541c2 100644
  #endif
  
  void
-@@ -10726,6 +11589,21 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10731,6 +11594,21 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
