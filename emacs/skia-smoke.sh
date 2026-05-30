@@ -209,8 +209,8 @@ static char *image[] = {
           (mapconcat (lambda (row) (format "\"%s\"" row)) rows ",\n")
           "};"))
 
-(defun ewm-skia-smoke-window-rect (width height)
-  (let ((edges (window-inside-pixel-edges)))
+(defun ewm-skia-smoke-window-rect (width height &optional window)
+  (let ((edges (window-inside-pixel-edges window)))
     (list (nth 0 edges) (nth 1 edges) width height)))
 
 (defun ewm-skia-smoke-left-fringe-rect ()
@@ -366,6 +366,74 @@ static char *image[] = {
              phase red-slice transparent-slice)))
       (when (buffer-live-p source-buffer)
         (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-window-clipping (phase)
+  (unless (image-type-available-p 'xpm)
+    (ewm-skia-smoke-fail "XPM images are not available"))
+  (let* ((source-buffer (current-buffer))
+         (source-window (selected-window))
+         (left-buffer (get-buffer-create "*ewm-skia-clip-left-smoke*"))
+         (right-buffer (get-buffer-create "*ewm-skia-clip-right-smoke*"))
+         (left-window nil)
+         (right-window nil)
+         (xpm (ewm-skia-smoke-xpm
+               120 40 (make-list 40 (make-string 120 ?R))))
+         left-stats right-stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 80 10)
+          (delete-other-windows)
+          (setq left-window (selected-window)
+                right-window (split-window-right))
+          (with-current-buffer left-buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert-image
+             (create-image xpm 'xpm t
+                           :width 900
+                           :height 140
+                           :transform-smoothing nil)
+             " "))
+          (with-current-buffer right-buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert "right window clipping guard\n"))
+          (set-window-buffer left-window left-buffer)
+          (set-window-buffer right-window right-buffer)
+          (select-window left-window)
+          (ewm-skia-smoke-redraw)
+          (setq left-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-rect 260 160 left-window)))
+          (setq right-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-rect 260 160 right-window)))
+          (unless (and (consp left-stats)
+                       (> (nth 2 left-stats) 10000))
+            (ewm-skia-smoke-fail
+             "window clipping source missing red pixels after %s: stats=%S"
+             phase left-stats))
+          (unless (and (consp right-stats)
+                       (< (nth 2 right-stats) 50)
+                       (> (nth 3 right-stats) 1000))
+            (ewm-skia-smoke-fail
+             "window clipping leaked red pixels after %s: stats=%S"
+             phase right-stats)))
+      (delete-other-windows)
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (when (window-live-p source-window)
+        (select-window source-window))
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
@@ -648,6 +716,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-scaled-transparent-image "initial draw")
 (ewm-skia-smoke-check-rotated-transparent-image "initial draw")
 (ewm-skia-smoke-check-sliced-scaled-image "initial draw")
+(ewm-skia-smoke-check-window-clipping "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")
