@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..d4ec4c16ef8
+index 00000000000..4a06ee99011
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,2259 @@
+@@ -0,0 +1,2245 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -974,21 +974,6 @@ index 00000000000..d4ec4c16ef8
 +    delete[] sk_positions;
 +}
 +
-+void
-+emacs_skia_canvas_draw_image (emacs_skia_canvas_t *canvas,
-+			      emacs_skia_image_t *image, float x,
-+			      float y, emacs_skia_paint_t *paint)
-+{
-+  if (!canvas || !canvas->canvas || !image || !image->image)
-+    {
-+      return;
-+    }
-+
-+  SkSamplingOptions sampling (SkFilterMode::kLinear);
-+  canvas->canvas->drawImage (image->image.get (), x, y, sampling,
-+			     paint ? &paint->paint : nullptr);
-+}
-+
 +/* Draw image with explicit sampling control.
 +   If smooth is true, use linear filtering (good for scaling down).
 +   If smooth is false, use nearest neighbor (shows pixels when scaling up).  */
@@ -1072,7 +1057,8 @@ index 00000000000..d4ec4c16ef8
 +  /* If no mask, just draw the image normally */
 +  if (!mask || !mask->image)
 +    {
-+      emacs_skia_canvas_draw_image (canvas, image, x, y, paint);
++      emacs_skia_canvas_draw_image_with_sampling (canvas, image, x, y,
++						  true, paint);
 +      return;
 +    }
 +
@@ -2265,10 +2251,10 @@ index 00000000000..d4ec4c16ef8
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..c94424f6d04
+index 00000000000..2f2d684d8d4
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,662 @@
+@@ -0,0 +1,656 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -2618,12 +2604,6 @@ index 00000000000..c94424f6d04
 +    const emacs_skia_glyph_t *glyphs,
 +    const emacs_skia_point_t *positions, emacs_skia_point_t origin,
 +    emacs_skia_font_t *font, emacs_skia_paint_t *paint);
-+
-+  /* Draw image */
-+  void emacs_skia_canvas_draw_image (emacs_skia_canvas_t *canvas,
-+				     emacs_skia_image_t *image,
-+				     float x, float y,
-+				     emacs_skia_paint_t *paint);
 +
 +  /* Draw image with explicit sampling control.
 +     If smooth is true, use linear filtering (good for scaling down).
