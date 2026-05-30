@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..3e9bfd800d5
+index 00000000000..a155d1c0e68
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1419 @@
+@@ -0,0 +1,1414 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -465,7 +465,8 @@ index 00000000000..3e9bfd800d5
 +#ifdef SK_GL
 +emacs_skia_surface_t *
 +emacs_skia_surface_create_gl (emacs_skia_gl_context_t *ctx, int width,
-+			      int height, unsigned int framebuffer_id)
++			      int height, unsigned int framebuffer_id,
++			      float scale)
 +{
 +  if (!ctx || !ctx->context)
 +    return nullptr;
@@ -486,6 +487,8 @@ index 00000000000..3e9bfd800d5
 +			     kBottomLeft_GrSurfaceOrigin,
 +			     kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB (),
 +			     nullptr);
++  if (surface && scale > 1.0f)
++    surface->getCanvas ()->scale (scale, scale);
 +
 +  /* Share ownership to prevent dangling pointer.  */
 +  return make_surface (surface, ctx->context);
@@ -493,12 +496,14 @@ index 00000000000..3e9bfd800d5
 +#else
 +emacs_skia_surface_t *
 +emacs_skia_surface_create_gl (emacs_skia_gl_context_t *ctx, int width,
-+			      int height, unsigned int framebuffer_id)
++			      int height, unsigned int framebuffer_id,
++			      float scale)
 +{
 +  (void) ctx;
 +  (void) width;
 +  (void) height;
 +  (void) framebuffer_id;
++  (void) scale;
 +  return nullptr;
 +}
 +#endif
@@ -612,16 +617,6 @@ index 00000000000..3e9bfd800d5
 +  if (canvas && canvas->canvas && rect)
 +    {
 +      canvas->canvas->clipRect (to_sk_rect (rect));
-+    }
-+}
-+
-+void
-+emacs_skia_canvas_scale (emacs_skia_canvas_t *canvas, float sx,
-+			 float sy)
-+{
-+  if (canvas && canvas->canvas)
-+    {
-+      canvas->canvas->scale (sx, sy);
 +    }
 +}
 +
@@ -1425,10 +1420,10 @@ index 00000000000..3e9bfd800d5
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..1bef56a57c0
+index 00000000000..c9a385e922f
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,385 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1569,7 +1564,7 @@ index 00000000000..1bef56a57c0
 +  /* Create a GPU-backed surface using GL framebuffer */
 +  emacs_skia_surface_t *emacs_skia_surface_create_gl (
 +    emacs_skia_gl_context_t *ctx, int width, int height,
-+    unsigned int framebuffer_id);
++    unsigned int framebuffer_id, float scale);
 +
 +  void emacs_skia_surface_destroy (emacs_skia_surface_t *surface);
 +
@@ -1614,10 +1609,6 @@ index 00000000000..1bef56a57c0
 +  /* Clipping */
 +  void emacs_skia_canvas_clip_rect (emacs_skia_canvas_t *canvas,
 +				    const emacs_skia_rect_t *rect);
-+
-+  /* Transform */
-+  void emacs_skia_canvas_scale (emacs_skia_canvas_t *canvas, float sx,
-+				float sy);
 +
 +  /* Drawing primitives */
 +  void emacs_skia_canvas_draw_rect (emacs_skia_canvas_t *canvas,

@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..f07616c 100644
+index 617ed3c..fffbad6 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -18243,7 +18243,7 @@ index 617ed3c..f07616c 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,162 +9469,1295 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,162 +9469,1290 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -19131,7 +19131,8 @@ index 617ed3c..f07616c 100644
 +  FRAME_SKIA_SURFACE (f)
 +    = emacs_skia_surface_create_gl (FRAME_SKIA_GL_CONTEXT (f),
 +				    width, height,
-+				    FRAME_GL_FRAMEBUFFER (f));
++				    FRAME_GL_FRAMEBUFFER (f),
++				    (float) pgtk_gl_scale (f));
 +  if (FRAME_SKIA_SURFACE (f))
 +    return;
 +
@@ -19174,8 +19175,8 @@ index 617ed3c..f07616c 100644
 +	 pixels, producing crisp text and graphics.  The Skia canvas
 +	 gets a scale transform so drawing code can continue using
 +	 logical pixel coordinates.  */
-+      int width, height, scale;
-+      pgtk_skia_surface_device_size (f, &width, &height, &scale);
++      int width, height;
++      pgtk_skia_surface_device_size (f, &width, &height, NULL);
 +
 +      /* If we've exceeded the maximum number of consecutive surface
 +	 creation failures, don't attempt again.  The counter is reset
@@ -19277,12 +19278,6 @@ index 617ed3c..f07616c 100644
 +	}
 +      FRAME_SKIA_CANVAS (f) = canvas;
 +
-+      /* Apply HiDPI scale transform so drawing code works in logical
-+	 pixels while the underlying surface has device-pixel
-+	 resolution.  This is the base transform for all subsequent
-+	 save/restore cycles in pgtk_begin/end_skia_clip.  */
-+      if (scale > 1)
-+	emacs_skia_canvas_scale (canvas, (float) scale, (float) scale);
 +    }
 +  else if (FRAME_GDK_GL_CONTEXT (f))
 +    {
@@ -19647,7 +19642,7 @@ index 617ed3c..f07616c 100644
  
  void
  pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
-@@ -7595,12 +10794,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
+@@ -7595,12 +10789,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
        cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
  			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
@@ -19663,7 +19658,7 @@ index 617ed3c..f07616c 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10812,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10807,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19673,7 +19668,7 @@ index 617ed3c..f07616c 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10837,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10832,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19691,7 +19686,7 @@ index 617ed3c..f07616c 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10858,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10853,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19748,7 +19743,7 @@ index 617ed3c..f07616c 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10920,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10915,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  
