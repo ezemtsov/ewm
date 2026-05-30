@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..e3d524b 100644
+index 617ed3c..3e80f69 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -11664,14 +11664,14 @@ index 617ed3c..e3d524b 100644
 +    return false;
 +
 +  emacs_skia_image_get_size (image, &image_width, &image_height);
-+  dst = (emacs_skia_rect_t) { 0, 0, image_width, image_height };
 +  scale = pgtk_gl_scale (f);
-+  emacs_skia_canvas_save (canvas);
-+  if (scale > 1)
-+    emacs_skia_canvas_scale (canvas, 1.0f / scale, 1.0f / scale);
++  dst = (emacs_skia_rect_t) {
++    0, 0,
++    (float) image_width / scale,
++    (float) image_height / scale
++  };
 +  emacs_skia_canvas_draw_image_rect (
 +    canvas, image, NULL, &dst, true, NULL);
-+  emacs_skia_canvas_restore (canvas);
 +  return true;
 +}
 +
