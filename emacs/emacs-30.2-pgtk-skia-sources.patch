@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..6c3df476035
+index 00000000000..73212025cdf
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1597 @@
+@@ -0,0 +1,1547 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1494,60 +1494,12 @@ index 00000000000..6c3df476035
 +  return write_image_to_png (image.get (), ctx, write_fn, write_ctx);
 +}
 +
-+/* ============================================================
-+   Image Transformation
-+   ============================================================ */
-+
-+/* Image transformation data for Skia.
-+   This is used to store transformation matrices for images,
-+   replacing the use of cairo_pattern_t for this purpose.  */
-+struct emacs_skia_image_transform
-+{
-+  /* 3x3 transformation matrix in row-major order.
-+     [a c e]   [0 2 4]
-+     [b d f] = [1 3 5]
-+     [0 0 1]   (implicit) */
-+  float matrix[6] = { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
-+  /* Filter mode: true = bilinear, false = nearest neighbor.  */
-+  bool smoothing = true;
-+};
-+
-+emacs_skia_image_transform_t *
-+emacs_skia_image_transform_create (void)
-+{
-+  return new emacs_skia_image_transform_t;
-+}
-+
-+void
-+emacs_skia_image_transform_destroy (emacs_skia_image_transform_t *transform)
-+{
-+  delete transform;
-+}
-+
-+void
-+emacs_skia_image_transform_set_matrix (emacs_skia_image_transform_t *transform,
-+				       const float matrix[6])
-+{
-+  if (transform && matrix)
-+    {
-+      for (int i = 0; i < 6; i++)
-+	transform->matrix[i] = matrix[i];
-+    }
-+}
-+
-+void
-+emacs_skia_image_transform_set_smoothing (emacs_skia_image_transform_t *transform,
-+					  bool smoothing)
-+{
-+  if (transform)
-+    transform->smoothing = smoothing;
-+}
-+
 +/* Draw an image with transformation applied.  */
 +void
 +emacs_skia_canvas_draw_image_transformed (emacs_skia_canvas_t *canvas,
 +					  emacs_skia_image_t *image,
-+					  emacs_skia_image_transform_t *transform,
++					  const double matrix[3][3],
++					  bool smooth,
 +					  emacs_skia_paint_t *paint)
 +{
 +  if (!canvas || !canvas->canvas || !image || !image->image)
@@ -1555,13 +1507,12 @@ index 00000000000..6c3df476035
 +
 +  canvas->canvas->save ();
 +
-+  if (transform)
++  if (matrix)
 +    {
 +      SkMatrix display_to_image;
-+      display_to_image.setAll (transform->matrix[0], transform->matrix[2],
-+			       transform->matrix[4], transform->matrix[1],
-+			       transform->matrix[3], transform->matrix[5],
-+			       0, 0, 1);
++      display_to_image.setAll (matrix[0][0], matrix[1][0], matrix[2][0],
++			       matrix[0][1], matrix[1][1], matrix[2][1],
++			       matrix[0][2], matrix[1][2], matrix[2][2]);
 +
 +      SkMatrix image_to_display;
 +      if (!display_to_image.invert (&image_to_display))
@@ -1572,9 +1523,8 @@ index 00000000000..6c3df476035
 +      canvas->canvas->concat (image_to_display);
 +    }
 +
-+  SkSamplingOptions sampling (
-+    transform && transform->smoothing ? SkFilterMode::kLinear
-+				      : SkFilterMode::kNearest);
++  SkSamplingOptions sampling (smooth ? SkFilterMode::kLinear
++				     : SkFilterMode::kNearest);
 +
 +  canvas->canvas->drawImage (image->image.get (), 0, 0, sampling,
 +			     paint ? &paint->paint : nullptr);
@@ -1603,10 +1553,10 @@ index 00000000000..6c3df476035
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..6b0bfda4fa8
+index 00000000000..79b88e2d44b
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,426 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1788,30 +1738,6 @@ index 00000000000..6b0bfda4fa8
 +  int emacs_skia_format_stride_for_width (int format, int width);
 +
 +  /* ============================================================
-+     Image Transformation
-+     ============================================================ */
-+
-+  /* Opaque image transformation type.  */
-+  typedef struct emacs_skia_image_transform emacs_skia_image_transform_t;
-+
-+  /* Create/destroy image transformation.  */
-+  emacs_skia_image_transform_t *emacs_skia_image_transform_create (void);
-+  void emacs_skia_image_transform_destroy (
-+    emacs_skia_image_transform_t *transform);
-+
-+  /* Set transformation matrix.
-+     matrix is [a, b, c, d, e, f] representing:
-+     [a c e]
-+     [b d f]
-+     [0 0 1]  */
-+  void emacs_skia_image_transform_set_matrix (
-+    emacs_skia_image_transform_t *transform, const float matrix[6]);
-+
-+  /* Set smoothing (filter mode).  */
-+  void emacs_skia_image_transform_set_smoothing (
-+    emacs_skia_image_transform_t *transform, bool smoothing);
-+
-+  /* ============================================================
 +     Canvas (drawing context)
 +     ============================================================ */
 +
@@ -1871,7 +1797,7 @@ index 00000000000..6b0bfda4fa8
 +  /* Draw image with transformation applied.  */
 +  void emacs_skia_canvas_draw_image_transformed (
 +    emacs_skia_canvas_t *canvas, emacs_skia_image_t *image,
-+    emacs_skia_image_transform_t *transform, emacs_skia_paint_t *paint);
++    const double matrix[3][3], bool smooth, emacs_skia_paint_t *paint);
 +
 +  /* Draw a path */
 +  void emacs_skia_canvas_draw_path (emacs_skia_canvas_t *canvas,
