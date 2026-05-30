@@ -22,7 +22,7 @@ if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
     exit 1
 fi
 
-timeout_seconds="${EWM_SKIA_SMOKE_TIMEOUT:-8}"
+timeout_seconds="${EWM_SKIA_SMOKE_TIMEOUT:-15}"
 tmp_dir="$(mktemp -d -t ewm-skia-smoke.XXXXXX)"
 if [[ -n "${EWM_SKIA_SMOKE_KEEP_TMP:-}" ]]; then
     echo "debug: keeping smoke artifacts in $tmp_dir" >&2
@@ -105,6 +105,21 @@ cat >"$payload" <<'EOF'
       (ewm-skia-smoke-fail
        "framebuffer missing expected red text on green background after %s: stats=%S thresholds=(red=%d green=%d)"
        phase stats ewm-skia-smoke-min-red ewm-skia-smoke-min-green))))
+
+(defun ewm-skia-smoke-check-gl-enabled (frame phase)
+  (unless (fboundp 'pgtk-skia-gl-enabled-p)
+    (ewm-skia-smoke-fail "missing Skia GL enabled test hook"))
+  (let ((enabled nil))
+    (catch 'done
+      (dotimes (_ 10)
+        (redisplay 'force)
+        (sit-for 0.03)
+        (when (pgtk-skia-gl-enabled-p frame)
+          (setq enabled t)
+          (throw 'done t))))
+    (unless enabled
+      (ewm-skia-smoke-fail
+       "Skia GL acceleration is not active after %s" phase))))
 
 (defun ewm-skia-smoke-check-alpha-background (phase)
   (let ((stats (pgtk-skia-test-framebuffer-color-counts)))
@@ -198,6 +213,34 @@ cat >"$payload" <<'EOF'
        (ewm-skia-smoke-fail
         "unexpected %S export error: %S" type err)))))
 
+(defun ewm-skia-smoke-check-export-input-unwind (phase)
+  (unless (fboundp 'pgtk-skia-test-input-unwind-preserved-p)
+    (ewm-skia-smoke-fail "missing Skia input-block unwind test hook"))
+  (unless (pgtk-skia-test-input-unwind-preserved-p)
+    (ewm-skia-smoke-fail
+     "Skia input block leaked after %s" phase)))
+
+(defun ewm-skia-smoke-check-tooltip-frame (phase)
+  (let ((use-system-tooltips nil)
+        (tooltip-reuse-hidden-frame nil))
+    (x-show-tip
+     (propertize "Skia tooltip smoke"
+                 'face '(:foreground "#ff0000"
+                         :background "#00ff00"))
+     nil
+     '((name . "skia-tooltip-smoke")
+       (left . 40)
+       (top . 40)
+       (foreground-color . "#ff0000")
+       (background-color . "#00ff00")
+       (border-color . "#ff0000"))
+     1 0 0)
+    (redisplay 'force)
+    (sit-for 0.05)
+    (unless (x-hide-tip)
+      (ewm-skia-smoke-fail
+       "tooltip frame was not open after %s" phase))))
+
 (defun ewm-skia-smoke-xpm (width height rows)
   (concat "/* XPM */
 static char *image[] = {
@@ -253,6 +296,23 @@ static char *image[] = {
           (max 1 (- (nth 0 inside) (nth 0 outer)))
           (max 1 (- (nth 3 inside) (nth 1 inside))))))
 
+(defun ewm-skia-smoke-right-fringe-rect ()
+  (let ((outer (window-pixel-edges))
+        (inside (window-inside-pixel-edges)))
+    (list (nth 2 inside)
+          (nth 1 inside)
+          (max 1 (- (nth 2 outer) (nth 2 inside)))
+          (max 1 (- (nth 3 inside) (nth 1 inside))))))
+
+(defun ewm-skia-smoke-cursor-cell-rect (&optional column)
+  (let ((edges (window-inside-pixel-edges))
+        (char-width (frame-char-width))
+        (char-height (frame-char-height)))
+    (list (+ (nth 0 edges) (* (or column 0) char-width))
+          (nth 1 edges)
+          (max 1 char-width)
+          (max 1 char-height))))
+
 (defun ewm-skia-smoke-check-region-colors
     (phase label rect min-red min-green)
   (let ((stats (pgtk-skia-test-framebuffer-color-counts nil rect)))
@@ -262,6 +322,17 @@ static char *image[] = {
       (ewm-skia-smoke-fail
        "%s missing expected colors after %s: stats=%S rect=%S thresholds=(red=%d green=%d)"
        label phase stats rect min-red min-green))
+    stats))
+
+(defun ewm-skia-smoke-check-region-no-red
+    (phase label rect max-red min-green)
+  (let ((stats (pgtk-skia-test-framebuffer-color-counts nil rect)))
+    (unless (and (consp stats)
+                 (< (nth 2 stats) max-red)
+                 (> (nth 3 stats) min-green))
+      (ewm-skia-smoke-fail
+       "%s leaked red pixels after %s: stats=%S rect=%S thresholds=(red<%d green>%d)"
+       label phase stats rect max-red min-green))
     stats))
 
 (defun ewm-skia-smoke-check-scaled-transparent-image (phase)
@@ -401,14 +472,14 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
-(defun ewm-skia-smoke-check-png-image-loader (phase)
-  (unless (image-type-available-p 'png)
-    (ewm-skia-smoke-fail "PNG images are not available"))
+(defun ewm-skia-smoke-check-transparent-image-loader
+    (phase type data label)
+  (unless (image-type-available-p type)
+    (ewm-skia-smoke-fail "%s images are not available" label))
   (let* ((source-buffer (current-buffer))
-         (buffer (get-buffer-create "*ewm-skia-png-image-smoke*"))
-         (png (base64-decode-string
-               "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAIElEQVR42mP4z8DwHx0zUAJGDRw1cNTAUQNHDRypBgIA3FfHOfmPdmEAAAAASUVORK5CYII="))
-         (image (create-image png 'png t
+         (buffer (get-buffer-create
+                  (format "*ewm-skia-%s-image-smoke*" type)))
+         (image (create-image data type t
                               :width 400
                               :height 160
                               :transform-smoothing nil))
@@ -431,22 +502,80 @@ static char *image[] = {
                  nil (ewm-skia-smoke-window-offset-rect 0 0 180 180)))
           (setq transparent-stats
                 (pgtk-skia-test-framebuffer-color-counts
-                 nil (ewm-skia-smoke-window-offset-rect 240 0 160 180)))
+                 nil (ewm-skia-smoke-window-offset-rect 320 0 80 180)))
           (unless (and (consp red-stats)
                        (> (nth 2 red-stats) 10000))
             (ewm-skia-smoke-fail
-             "PNG image loader missing opaque red pixels after %s: stats=%S"
-             phase red-stats))
+             "%s image loader missing opaque red pixels after %s: stats=%S"
+             label phase red-stats))
           (unless (and (consp transparent-stats)
                        (< (nth 2 transparent-stats) 50)
                        (> (nth 3 transparent-stats) 10000))
             (ewm-skia-smoke-fail
-             "PNG image loader did not preserve transparent green pixels after %s: stats=%S"
-             phase transparent-stats)))
+             "%s image loader did not preserve transparent green pixels after %s: stats=%S"
+             label phase transparent-stats)))
       (when (buffer-live-p source-buffer)
         (switch-to-buffer source-buffer))
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-opaque-image-loader (phase type data label)
+  (unless (image-type-available-p type)
+    (ewm-skia-smoke-fail "%s images are not available" label))
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create
+                  (format "*ewm-skia-%s-image-smoke*" type)))
+         (image (create-image data type t
+                              :width 400
+                              :height 160
+                              :transform-smoothing nil))
+         stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 8)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert-image image " "))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-offset-rect 0 0 420 180)))
+          (unless (and (consp stats)
+                       (> (nth 2 stats) 10000))
+            (ewm-skia-smoke-fail
+             "%s image loader missing opaque red pixels after %s: stats=%S"
+             label phase stats)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-png-image-loader (phase)
+  (ewm-skia-smoke-check-transparent-image-loader
+   phase 'png
+   (base64-decode-string
+    "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAIElEQVR42mP4z8DwHx0zUAJGDRw1cNTAUQNHDRypBgIA3FfHOfmPdmEAAAAASUVORK5CYII=")
+   "PNG"))
+
+(defun ewm-skia-smoke-check-jpeg-image-loader (phase)
+  (ewm-skia-smoke-check-opaque-image-loader
+   phase 'jpeg
+   (base64-decode-string
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAAUABQDAREAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD4vr+Uz/fwKACgAoAKACgAoAKACgD/2Q==")
+   "JPEG"))
+
+(defun ewm-skia-smoke-check-webp-image-loader (phase)
+  (ewm-skia-smoke-check-transparent-image-loader
+   phase 'webp
+   (base64-decode-string
+    "UklGRiYAAABXRUJQVlA4TBoAAAAvE8AEEA8Q8x/zHwwCAYri/2YDHIjof6z8AA==")
+   "WebP"))
 
 (defun ewm-skia-smoke-check-masked-image-cursor (phase)
   (unless (image-type-available-p 'xpm)
@@ -681,6 +810,53 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-glyph-overlap-clipping (phase)
+  (unless (fboundp 'pgtk-skia-test-draw-glyph-overlap-clip)
+    (ewm-skia-smoke-fail "missing Skia glyph overlap clip test hook"))
+  (let* ((source-window (selected-window))
+         rects top-rect gap-rect bottom-rect
+         top-stats gap-stats bottom-stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 10)
+          (delete-other-windows)
+          (ewm-skia-smoke-redraw)
+          (setq rects (pgtk-skia-test-draw-glyph-overlap-clip))
+          (unless (and (consp rects)
+                       (= (length rects) 3))
+            (ewm-skia-smoke-fail
+             "glyph overlap clip hook could not draw after %s: rects=%S"
+             phase rects))
+          (setq top-rect (nth 0 rects)
+                gap-rect (nth 1 rects)
+                bottom-rect (nth 2 rects))
+          (setq top-stats
+                (pgtk-skia-test-framebuffer-color-counts nil top-rect))
+          (setq gap-stats
+                (pgtk-skia-test-framebuffer-color-counts nil gap-rect))
+          (setq bottom-stats
+                (pgtk-skia-test-framebuffer-color-counts nil bottom-rect))
+          (unless (and (consp top-stats)
+                       (> (nth 2 top-stats) 1000))
+            (ewm-skia-smoke-fail
+             "glyph overlap clip top rect missing red pixels after %s: rect=%S stats=%S"
+             phase top-rect top-stats))
+          (unless (and (consp bottom-stats)
+                       (> (nth 2 bottom-stats) 1000))
+            (ewm-skia-smoke-fail
+             "glyph overlap clip bottom rect missing red pixels after %s: rect=%S stats=%S"
+             phase bottom-rect bottom-stats))
+          (unless (and (consp gap-stats)
+                       (< (nth 2 gap-stats) 50)
+                       (> (nth 3 gap-stats) 1000))
+            (ewm-skia-smoke-fail
+             "glyph overlap clip filled excluded row after %s: rect=%S stats=%S"
+             phase gap-rect gap-stats)))
+      (when (window-live-p source-window)
+        (select-window source-window))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-overlap-scroll-copy (phase)
   (let* ((source-buffer (current-buffer))
          (source-window (selected-window))
@@ -868,6 +1044,10 @@ static char *image[] = {
                    (:foreground "#0000ff"
                     :underline (:color "#ff0000" :style line))
                    150)
+                  ("underwave"
+                   (:foreground "#0000ff"
+                    :underline (:color "#ff0000" :style wave))
+                   150)
                   ("overline"
                    (:foreground "#0000ff" :overline "#ff0000")
                    150)
@@ -949,6 +1129,73 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-font-name (font)
+  (and font
+       (or (ignore-errors (font-xlfd-name font))
+           (format "%S" font))))
+
+(defun ewm-skia-smoke-find-fallback-char (phase)
+  (let* ((base-font (car (internal-char-font nil ?M)))
+         (base-name (ewm-skia-smoke-font-name base-font))
+         (candidates '(#x4e2d #x05d0 #x0915 #x0e01
+                       #x3042 #x03a9 #x0416 #x1f642)))
+    (or
+     (catch 'found
+       (dolist (char candidates)
+         (let* ((entry (ignore-errors (internal-char-font nil char)))
+                (font (and (consp entry) (car entry)))
+                (font-name (ewm-skia-smoke-font-name font)))
+           (when (and font-name
+                      (not (equal font-name base-name))
+                      (or (not (fboundp 'pgtk-skia-test-font-ft-size-p))
+                          (pgtk-skia-test-font-ft-size-p font)))
+             (throw 'found (list char font-name))))))
+     (ewm-skia-smoke-fail
+      "could not find a live fallback font after %s: base=%S"
+      phase base-name))))
+
+(defun ewm-skia-smoke-check-mixed-font-text (phase)
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-mixed-font-smoke*"))
+         (fallback (ewm-skia-smoke-find-fallback-char phase))
+         (fallback-char (car fallback))
+         (fallback-font (cadr fallback))
+         stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 6)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert "MMMM ")
+            (dotimes (_ 18)
+              (insert (propertize (char-to-string fallback-char)
+                                  'face '(:foreground "#ff0000"
+                                          :background "#00ff00"))
+                      " "))
+            (insert " MMMM"))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq stats (ewm-skia-smoke-check-region-colors
+                       phase
+                       (format "mixed fallback font U+%04X %s"
+                               fallback-char fallback-font)
+                       (ewm-skia-smoke-window-rect 700 120)
+                       80 1000))
+          (ewm-skia-smoke-check-region-no-red
+           phase "mixed-font default text"
+           (ewm-skia-smoke-window-offset-rect
+            0 0 (* 4 (frame-char-width)) (frame-char-height))
+           5 20))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-minspace-font-metrics (phase)
   (let* ((family (face-attribute 'default :family nil t))
          (name (and (stringp family)
@@ -971,7 +1218,18 @@ static char *image[] = {
                    (<= height (* pixel-size 4)))
         (ewm-skia-smoke-fail
          "bad :minspace nil font metrics after %s: info=%S"
-         phase info)))))
+         phase info)))
+    (unless (fboundp 'pgtk-skia-test-font-ft-size-p)
+      (ewm-skia-smoke-fail "missing Skia font ft_size test hook"))
+    (let ((char-font (internal-char-font nil ?M)))
+      (unless (consp char-font)
+        (ewm-skia-smoke-fail
+         "could not get default font object after %s" phase))
+      (unless (pgtk-skia-test-font-ft-size-p (car char-font))
+        (ewm-skia-smoke-fail
+         "default font object missing live FreeType size after %s"
+         phase)))
+    (clear-font-cache)))
 
 (defun ewm-skia-smoke-check-cursor (phase)
   (let ((source-buffer (current-buffer))
@@ -989,14 +1247,29 @@ static char *image[] = {
                         '((default (:foreground "#0000ff"
                                      :background "#00ff00") default)))
             (erase-buffer)
-            (insert "MMMMMMMMMMMMMMMMMMMM\n")
+            (insert "    MMMMMMMMMMMMMMMMMMMM\n")
             (goto-char (point-min)))
           (switch-to-buffer buffer)
           (goto-char (point-min))
           (ewm-skia-smoke-redraw)
           (ewm-skia-smoke-check-region-colors
            phase "block cursor" (ewm-skia-smoke-window-rect 260 120)
-           200 1000))
+           200 1000)
+          (dolist (case '((bar . "bar cursor")
+                          ((hbar . 6) . "hbar cursor")
+                          (hollow . "hollow cursor")))
+            (with-current-buffer buffer
+              (setq-local cursor-type (car case))
+              (goto-char (point-min)))
+            (goto-char (point-min))
+            (ewm-skia-smoke-redraw)
+            (ewm-skia-smoke-check-region-colors
+             phase (cdr case) (ewm-skia-smoke-cursor-cell-rect 0)
+             10 20)
+            (ewm-skia-smoke-check-region-no-red
+             phase (format "%s adjacent cell" (cdr case))
+             (ewm-skia-smoke-cursor-cell-rect 2)
+             5 20)))
       (modify-frame-parameters nil `((cursor-color . ,old-cursor-color)))
       (when (buffer-live-p source-buffer)
         (switch-to-buffer source-buffer))
@@ -1037,12 +1310,22 @@ static char *image[] = {
               'display
               '(left-fringe ewm-skia-smoke-fringe
                             ewm-skia-smoke-fringe-face)))
-            (insert "fringe marker\n"))
+            (insert "left fringe marker\n")
+            (insert
+             (propertize
+              " "
+              'display
+              '(right-fringe ewm-skia-smoke-fringe
+                             ewm-skia-smoke-fringe-face)))
+            (insert "right fringe marker\n"))
           (switch-to-buffer buffer)
           (set-window-fringes nil 24 24)
           (ewm-skia-smoke-redraw)
           (ewm-skia-smoke-check-region-colors
            phase "left fringe" (ewm-skia-smoke-left-fringe-rect)
+           50 100)
+          (ewm-skia-smoke-check-region-colors
+           phase "right fringe" (ewm-skia-smoke-right-fringe-rect)
            50 100))
       (set-window-fringes nil (nth 0 old-fringes)
                           (nth 1 old-fringes)
@@ -1107,20 +1390,26 @@ static char *image[] = {
  'pdf "Skia PDF export is not available")
 (ewm-skia-smoke-check-unavailable-export
  'svg "Skia SVG export is not available")
+(ewm-skia-smoke-check-export-input-unwind "export error path")
+(ewm-skia-smoke-check-tooltip-frame "initial draw")
 (ewm-skia-smoke-check-scaled-transparent-image "initial draw")
 (ewm-skia-smoke-check-rotated-transparent-image "initial draw")
 (ewm-skia-smoke-check-sliced-scaled-image "initial draw")
 (ewm-skia-smoke-check-png-image-loader "initial draw")
+(ewm-skia-smoke-check-jpeg-image-loader "initial draw")
+(ewm-skia-smoke-check-webp-image-loader "initial draw")
 (ewm-skia-smoke-check-masked-image-cursor "initial draw")
 (ewm-skia-smoke-check-window-clipping "initial draw")
 (ewm-skia-smoke-check-glyph-window-clipping "initial draw")
 (ewm-skia-smoke-check-decorated-composite-window-clipping "initial draw")
 (ewm-skia-smoke-check-multirect-clipping "initial draw")
+(ewm-skia-smoke-check-glyph-overlap-clipping "initial draw")
 (ewm-skia-smoke-check-overlap-scroll-copy "initial draw")
 (ewm-skia-smoke-check-partial-window-scroll-copy "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")
+(ewm-skia-smoke-check-mixed-font-text "initial draw")
 (ewm-skia-smoke-check-minspace-font-metrics "initial draw")
 (ewm-skia-smoke-check-cursor "initial draw")
 (ewm-skia-smoke-check-fringe "initial draw")
@@ -1152,6 +1441,33 @@ static char *image[] = {
   (ewm-skia-smoke-check-clear-state "resize capacity")
   (ewm-skia-smoke-check-setup-state "resize capacity"))
 
+(let ((main-frame (selected-frame))
+      (frame nil))
+  (unwind-protect
+      (progn
+        (setq frame
+              (make-frame `((parent-frame . ,main-frame)
+                            (left . 24)
+                            (top . 24)
+                            (width . 56)
+                            (height . 12)
+                            (minibuffer . nil)
+                            (visibility . t))))
+        (select-frame-set-input-focus frame)
+        (unless (eq (window-buffer (frame-selected-window frame))
+                    (get-buffer "*ewm-skia-smoke*"))
+          (ewm-skia-smoke-fail
+           "child frame did not inherit smoke buffer"))
+        (goto-char (point-min))
+        (ewm-skia-smoke-check-gl-enabled frame "child lifecycle frame")
+        (ewm-skia-smoke-check-framebuffer
+         "child lifecycle frame" frame t))
+    (when (and frame (frame-live-p frame))
+      (delete-frame frame t))
+    (select-frame-set-input-focus main-frame)
+    (redisplay 'force)
+    (sit-for 0.01)))
+
 (let ((main-frame (selected-frame)))
   (dotimes (step 3)
     (let ((frame nil))
@@ -1166,13 +1482,10 @@ static char *image[] = {
             (switch-to-buffer "*ewm-skia-smoke*")
             (goto-char (point-min))
             (forward-line (* step 30))
-            (redisplay 'force)
-            (sit-for 0.02)
-            (unless (and (fboundp 'pgtk-skia-gl-enabled-p)
-                         (pgtk-skia-gl-enabled-p frame))
-              (ewm-skia-smoke-fail
-               "Skia GL acceleration is not active for lifecycle frame %d"
-               step)))
+            (ewm-skia-smoke-check-gl-enabled
+             frame (format "lifecycle frame %d" step))
+            (ewm-skia-smoke-check-framebuffer
+             (format "lifecycle frame %d" step) frame t))
         (when (and frame (frame-live-p frame))
           (delete-frame frame t)
           (select-frame-set-input-focus main-frame)
@@ -1183,9 +1496,7 @@ static char *image[] = {
   (redisplay 'force)
   (sit-for 0.05))
 
-(unless (and (fboundp 'pgtk-skia-gl-enabled-p)
-             (pgtk-skia-gl-enabled-p))
-  (ewm-skia-smoke-fail "Skia GL acceleration is not active"))
+(ewm-skia-smoke-check-gl-enabled nil "initial draw")
 
 (unless (fboundp 'pgtk-skia-test-visible-bell-active-p)
   (ewm-skia-smoke-fail "missing Skia visible-bell test hook"))

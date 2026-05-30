@@ -1,8 +1,8 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 721fdec..06dce6b 100644
+index 741495f..fad52be 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10631,6 +10631,672 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10626,6 +10626,814 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -170,6 +170,59 @@ index 721fdec..06dce6b 100644
 +		     : Qnil);
 +}
 +
++# include "ftfont.h"
++
++DEFUN ("pgtk-skia-test-font-ft-size-p",
++       Fpgtk_skia_test_font_ft_size_p,
++       Spgtk_skia_test_font_ft_size_p, 1, 1, 0,
++       doc: /* Return non-nil if FONT-OBJECT has a live FreeType size.
++This is a local Skia smoke hook for checking that Skia-owned FreeType font
++state is available to inherited FreeType callbacks for the font lifetime.  */)
++  (Lisp_Object font_object)
++{
++  struct font *font = CHECK_FONT_GET_OBJECT (font_object);
++  struct font_info *info = (struct font_info *) font;
++
++  return info->ft_face && info->ft_size && info->ft_size->face == info->ft_face
++    ? Qt : Qnil;
++}
++
++DEFUN ("pgtk-skia-test-input-unwind-preserved-p",
++       Fpgtk_skia_test_input_unwind_preserved_p,
++       Spgtk_skia_test_input_unwind_preserved_p, 0, 0, 0,
++       doc: /* Return non-nil if the Skia input-block unwind guard restores input state.  */)
++  (void)
++{
++  struct pgtk_skia_input_block_state state;
++  int level = interrupt_input_blocked;
++  specpdl_ref count = SPECPDL_INDEX ();
++
++  pgtk_skia_block_input_with_unwind (&state);
++  if (interrupt_input_blocked != level + 1)
++    {
++      pgtk_skia_unblock_input (&state);
++      unbind_to (count, Qnil);
++      return Qnil;
++    }
++  unbind_to (count, Qnil);
++  if (interrupt_input_blocked != level)
++    return Qnil;
++
++  count = SPECPDL_INDEX ();
++  pgtk_skia_block_input_with_unwind (&state);
++  pgtk_skia_unblock_input (&state);
++  if (interrupt_input_blocked != level)
++    {
++      unbind_to (count, Qnil);
++      return Qnil;
++    }
++  block_input ();
++  state.blocked = true;
++  unbind_to (count, Qnil);
++
++  return interrupt_input_blocked == level ? Qt : Qnil;
++}
++
 +DEFUN ("pgtk-skia-test-draw-multirect-clip",
 +       Fpgtk_skia_test_draw_multirect_clip,
 +       Spgtk_skia_test_draw_multirect_clip, 0, 1, 0,
@@ -217,6 +270,95 @@ index 721fdec..06dce6b 100644
 +		       make_int (gap.width), make_int (gap.height)),
 +		list4 (make_int (clips[1].x), make_int (clips[1].y),
 +		       make_int (clips[1].width), make_int (clips[1].height)));
++}
++
++DEFUN ("pgtk-skia-test-draw-glyph-overlap-clip",
++       Fpgtk_skia_test_draw_glyph_overlap_clip,
++       Spgtk_skia_test_draw_glyph_overlap_clip, 0, 1, 0,
++       doc: /* Draw red through glyph overlap clipping on FRAME.
++If FRAME is nil, use the selected frame.  This uses the production
++`get_glyph_string_clip_rects' and `pgtk_skia_set_glyph_string_clipping'
++caller shape with synthetic row geometry, so tests can cover the
++multi-rectangle glyph clipping path without redrawing live overlap rows.
++Return (TOP GAP BOTTOM) sample rectangles.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  emacs_skia_canvas_t *canvas = pgtk_begin_skia_clip (f);
++  if (!canvas)
++    return Qnil;
++
++  struct window *w = XWINDOW (FRAME_SELECTED_WINDOW (f));
++  int window_x, window_width;
++  window_box (w, TEXT_AREA, &window_x, NULL, &window_width, NULL);
++
++  int text_top = WINDOW_TAB_LINE_HEIGHT (w) + WINDOW_HEADER_LINE_HEIGHT (w);
++  int text_bottom = window_text_bottom_y (w);
++  int text_height = text_bottom - text_top;
++  if (window_width < 120 || text_height < 90)
++    {
++      pgtk_end_skia_clip (f);
++      return Qnil;
++    }
++
++  int draw_left = window_x + 40;
++  int draw_width = min (220, window_width - 80);
++  int row_height = min (40, text_height / 3);
++  int row_y = text_top + (text_height - row_height) / 2;
++  int draw_top = WINDOW_TO_FRAME_PIXEL_Y (w, text_top);
++  int draw_bottom = WINDOW_TO_FRAME_PIXEL_Y (w, text_bottom);
++  int row_frame_y = WINDOW_TO_FRAME_PIXEL_Y (w, row_y);
++
++  struct glyph_row row;
++  struct glyph_string s;
++  memset (&row, 0, sizeof row);
++  memset (&s, 0, sizeof s);
++  row.y = row_y;
++  row.height = row.visible_height = row_height;
++  row.ascent = row.phys_ascent = row_height / 2;
++  row.phys_height = row_height;
++
++  s.f = f;
++  s.w = w;
++  s.row = &row;
++  s.area = TEXT_AREA;
++  s.height = row_height;
++  s.for_overlaps = OVERLAPS_BOTH;
++
++  XRectangle clips[2];
++  int n = get_glyph_string_clip_rects (&s, clips, 2);
++  if (n != 2 || clips[0].height == 0 || clips[1].height == 0)
++    {
++      pgtk_end_skia_clip (f);
++      return Qnil;
++    }
++
++  emacs_skia_irect_t draw_rect
++    = { draw_left, draw_top, draw_left + draw_width, draw_bottom };
++  emacs_skia_paint_t *paint = FRAME_SKIA_PAINT (f);
++
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 0, 255, 0));
++  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC_OVER);
++  emacs_skia_paint_set_stroke (paint, false);
++  emacs_skia_canvas_draw_irect (canvas, &draw_rect, paint);
++
++  emacs_skia_canvas_save (canvas);
++  pgtk_skia_set_glyph_string_clipping (&s, canvas);
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
++  emacs_skia_canvas_draw_irect (canvas, &draw_rect, paint);
++  emacs_skia_canvas_restore (canvas);
++
++  pgtk_end_skia_clip (f);
++  emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  int top_height = min ((int) clips[0].height, 50);
++  int bottom_height = min ((int) clips[1].height, 50);
++  return list3 (list4 (make_int (draw_left), make_int (clips[0].y),
++		       make_int (draw_width), make_int (top_height)),
++		list4 (make_int (draw_left), make_int (row_frame_y),
++		       make_int (draw_width), make_int (row_height)),
++		list4 (make_int (draw_left), make_int (clips[1].y),
++		       make_int (draw_width), make_int (bottom_height)));
 +}
 +
 +DEFUN ("pgtk-skia-test-abandon-gl-context",
@@ -675,12 +817,15 @@ index 721fdec..06dce6b 100644
  #endif
  
  void
-@@ -10725,6 +11391,17 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10720,6 +11528,20 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
 +  defsubr (&Spgtk_skia_test_framebuffer_color_counts);
++  defsubr (&Spgtk_skia_test_font_ft_size_p);
++  defsubr (&Spgtk_skia_test_input_unwind_preserved_p);
 +  defsubr (&Spgtk_skia_test_draw_multirect_clip);
++  defsubr (&Spgtk_skia_test_draw_glyph_overlap_clip);
 +  defsubr (&Spgtk_skia_test_abandon_gl_context);
 +  defsubr (&Spgtk_skia_test_gl_recreate_source_active_p);
 +  defsubr (&Spgtk_skia_test_framebuffer_size);

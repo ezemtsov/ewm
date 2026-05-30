@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..be125b2006e
+index 00000000000..89de34c02f2
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1519 @@
+@@ -0,0 +1,1513 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -67,8 +67,9 @@ index 00000000000..be125b2006e
 +
 +#include <cmath>
 +#include <cstring>
-+#include <map>
 +#include <memory>
++
++extern "C" void xfree (void *);
 +
 +/* PDF and SVG support */
 +#ifdef SK_PDF
@@ -101,6 +102,8 @@ index 00000000000..be125b2006e
 +struct emacs_skia_canvas
 +{
 +  SkCanvas *canvas; /* Borrowed pointer, owned by surface/document */
++  void *owner;
++  void (*destroy_owner) (void *);
 +};
 +
 +struct emacs_skia_surface
@@ -244,9 +247,13 @@ index 00000000000..be125b2006e
 +    return nullptr;
 +
 +#ifdef SK_GL
-+  return new emacs_skia_surface_t { surface, pixels, context, { nullptr } };
++  return new emacs_skia_surface_t {
++    surface, pixels, context, { nullptr, nullptr, nullptr }
++  };
 +#else
-+  return new emacs_skia_surface_t { surface, pixels, { nullptr } };
++  return new emacs_skia_surface_t {
++    surface, pixels, { nullptr, nullptr, nullptr }
++  };
 +#endif
 +}
 +
@@ -1029,7 +1036,7 @@ index 00000000000..be125b2006e
 +
 +emacs_skia_image_t *
 +emacs_skia_image_create_from_bgra_pixels (int width, int height,
-+					  const void *pixels,
++					  void *pixels,
 +					  size_t row_bytes,
 +					  bool has_alpha)
 +{
@@ -1041,8 +1048,12 @@ index 00000000000..be125b2006e
 +  SkImageInfo info
 +    = SkImageInfo::Make (width, height, colorType, alphaType);
 +
-+  return make_image (SkImages::RasterFromPixmapCopy (
-+    SkPixmap (info, pixels, row_bytes)));
++  sk_sp<SkImage> image = SkImages::RasterFromPixmap (
++    SkPixmap (info, pixels, row_bytes),
++    [] (const void *, void *context) { xfree (context); }, pixels);
++  if (!image)
++    xfree (pixels);
++  return make_image (std::move (image));
 +}
 +
 +void
@@ -1067,20 +1078,28 @@ index 00000000000..be125b2006e
 +  if (!data || width <= 0 || height <= 0)
 +    return nullptr;
 +
-+  /* Calculate stride if not provided */
++  int min_stride = (width - 1) / 8 + 1;
++
++  /* Calculate stride if not provided.  */
 +  if (stride <= 0)
-+    stride = (width + 7) / 8;
++    stride = min_stride;
++  else if (stride < min_stride)
++    return nullptr;
++
++  if ((size_t) height > SIZE_MAX / (size_t) width)
++    return nullptr;
 +
 +  /* Convert 1-bit packed data to 8-bit alpha.
 +     Cairo A1 format: MSB first, rows padded to 32-bit boundary.
 +     We convert to Skia A8 format for compatibility.  */
 +  int a8_stride = width;
-+  std::vector<uint8_t> a8_data (width * height);
++  size_t a8_size = (size_t) width * (size_t) height;
++  std::unique_ptr<uint8_t[]> a8_data (new uint8_t[a8_size]);
 +
 +  for (int y = 0; y < height; y++)
 +    {
 +      const unsigned char *src_row = data + y * stride;
-+      uint8_t *dst_row = a8_data.data () + y * a8_stride;
++      uint8_t *dst_row = a8_data.get () + y * a8_stride;
 +
 +      for (int x = 0; x < width; x++)
 +	{
@@ -1095,8 +1114,15 @@ index 00000000000..be125b2006e
 +  SkImageInfo info
 +    = SkImageInfo::Make (width, height, kAlpha_8_SkColorType,
 +			 kPremul_SkAlphaType);
-+  return make_image (SkImages::RasterFromPixmapCopy (
-+    SkPixmap (info, a8_data.data (), a8_stride)));
++  sk_sp<SkImage> image = SkImages::RasterFromPixmap (
++    SkPixmap (info, a8_data.get (), a8_stride),
++    [] (const void *, void *context) {
++      delete[] static_cast<uint8_t *> (context);
++    },
++    a8_data.get ());
++  if (image)
++    a8_data.release ();
++  return make_image (std::move (image));
 +}
 +
 +/* ============================================================
@@ -1245,7 +1271,7 @@ index 00000000000..be125b2006e
 +    return nullptr;
 +
 +  return new emacs_skia_document_t {
-+    document, std::move (stream), nullptr, { nullptr }
++    document, std::move (stream), nullptr, { nullptr, nullptr, nullptr }
 +  };
 +}
 +
@@ -1333,15 +1359,11 @@ index 00000000000..be125b2006e
 +#endif
 +
 +#ifdef SK_SVG
-+/* Global map to track SVG canvas data.
-+   This is needed because we return a generic emacs_skia_canvas_t
-+   pointer but need to track the underlying stream ownership.
-+
-+   Thread safety: Accessed only from the main thread during SVG export
-+   operations.  Emacs display code runs single-threaded, so no mutex
-+   is needed.  */
-+static std::map<SkCanvas *, std::unique_ptr<emacs_skia_svg_canvas_data>>
-+  svg_canvas_map;
++static void
++emacs_skia_svg_canvas_destroy_owner (void *owner)
++{
++  delete static_cast<emacs_skia_svg_canvas_data *> (owner);
++}
 +
 +emacs_skia_canvas_t *
 +emacs_skia_svg_canvas_create (emacs_skia_write_fn write_fn,
@@ -1362,32 +1384,31 @@ index 00000000000..be125b2006e
 +  if (!canvas)
 +    return nullptr;
 +
-+  std::unique_ptr<emacs_skia_svg_canvas_data> data (
++  emacs_skia_svg_canvas_data *data =
 +    new emacs_skia_svg_canvas_data {
-+      std::move (stream), std::move (canvas), { nullptr }
-+    });
-+  SkCanvas *key = data->canvas.get ();
++      std::move (stream), std::move (canvas),
++      { nullptr, nullptr, nullptr }
++    };
 +  emacs_skia_canvas_t *wrapper = &data->canvas_wrapper;
 +
-+  svg_canvas_map[key] = std::move (data);
-+
-+  /* Use the per-SVG-canvas wrapper for thread safety.  */
-+  wrapper->canvas = key;
++  wrapper->canvas = data->canvas.get ();
++  wrapper->owner = data;
++  wrapper->destroy_owner = emacs_skia_svg_canvas_destroy_owner;
 +  return wrapper;
 +}
 +
 +void
 +emacs_skia_svg_canvas_finish (emacs_skia_canvas_t *canvas)
 +{
-+  if (!canvas || !canvas->canvas)
++  if (!canvas || !canvas->destroy_owner)
 +    return;
 +
-+  auto it = svg_canvas_map.find (canvas->canvas);
-+  if (it != svg_canvas_map.end ())
-+    {
-+      /* Deleting the canvas flushes and finishes the SVG output.  */
-+      svg_canvas_map.erase (it);
-+    }
++  void (*destroy_owner) (void *) = canvas->destroy_owner;
++  void *owner = canvas->owner;
++  canvas->canvas = nullptr;
++  canvas->owner = nullptr;
++  canvas->destroy_owner = nullptr;
++  destroy_owner (owner);
 +}
 +#else
 +/* Stub implementations when SVG support is not compiled in.  */
@@ -1414,20 +1435,11 @@ index 00000000000..be125b2006e
 +   PNG Export
 +   ============================================================ */
 +
-+/* Helper to encode pixmap to PNG and write via callback.
-+   Uses SkDynamicMemoryWStream to avoid RTTI issues with custom streams.  */
++/* Helper to write encoded data via callback.  */
 +static bool
-+encode_png_to_callback (const SkPixmap &pixmap,
-+			emacs_skia_write_fn write_fn, void *write_ctx)
++write_data_to_callback (sk_sp<SkData> data, emacs_skia_write_fn write_fn,
++			void *write_ctx)
 +{
-+  SkDynamicMemoryWStream stream;
-+  SkPngEncoder::Options options;
-+
-+  if (!SkPngEncoder::Encode (&stream, pixmap, options))
-+    return false;
-+
-+  /* Write the encoded data to the callback.  */
-+  sk_sp<SkData> data = stream.detachAsData ();
 +  if (!data)
 +    return false;
 +
@@ -1439,28 +1451,15 @@ index 00000000000..be125b2006e
 +write_image_to_png (SkImage *image, void *readback_ctx,
 +		    emacs_skia_write_fn write_fn, void *write_ctx)
 +{
-+  SkPixmap pixmap;
-+  if (image->peekPixels (&pixmap))
-+    return encode_png_to_callback (pixmap, write_fn, write_ctx);
-+
-+  SkImageInfo info = SkImageInfo::Make (image->width (), image->height (),
-+					kRGBA_8888_SkColorType,
-+					kUnpremul_SkAlphaType);
-+  std::vector<uint8_t> pixels (info.computeMinByteSize ());
-+  bool ok;
 +#ifdef SK_GL
 +  GrDirectContext *ctx = static_cast<GrDirectContext *> (readback_ctx);
-+  if (ctx)
-+    ok = image->readPixels (ctx, info, pixels.data (),
-+			    info.minRowBytes (), 0, 0);
-+  else
++  return write_data_to_callback (SkPngEncoder::Encode (ctx, image, {}),
++				 write_fn, write_ctx);
++#else
++  (void) readback_ctx;
++  return write_data_to_callback (SkPngEncoder::Encode (nullptr, image, {}),
++				 write_fn, write_ctx);
 +#endif
-+    ok = image->readPixels (info, pixels.data (), info.minRowBytes (), 0, 0);
-+  if (!ok)
-+    return false;
-+
-+  SkPixmap temp_pixmap (info, pixels.data (), info.minRowBytes ());
-+  return encode_png_to_callback (temp_pixmap, write_fn, write_ctx);
 +}
 +
 +/* Write surface to PNG using a callback function.
@@ -1497,7 +1496,7 @@ index 00000000000..be125b2006e
 +  if (!canvas || !canvas->canvas || !image || !image->image)
 +    return;
 +
-+  canvas->canvas->save ();
++  SkAutoCanvasRestore restore (canvas->canvas, true);
 +
 +  if (matrix)
 +    {
@@ -1508,10 +1507,7 @@ index 00000000000..be125b2006e
 +
 +      SkMatrix image_to_display;
 +      if (!display_to_image.invert (&image_to_display))
-+	{
-+	  canvas->canvas->restore ();
-+	  return;
-+	}
++	return;
 +      canvas->canvas->concat (image_to_display);
 +    }
 +
@@ -1520,12 +1516,10 @@ index 00000000000..be125b2006e
 +
 +  canvas->canvas->drawImage (image->image.get (), 0, 0, sampling,
 +			     paint ? &paint->paint : nullptr);
-+
-+  canvas->canvas->restore ();
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..6db04e2fcdd
+index 00000000000..83275f58b33
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
 @@ -0,0 +1,421 @@
@@ -1879,11 +1873,11 @@ index 00000000000..6db04e2fcdd
 +     Image
 +     ============================================================ */
 +
-+  /* Create an image from BGRA pixel data (Cairo/native format).
-+     This is the format used by Cairo (ARGB32 in native byte order),
-+     which on little-endian machines is BGRA when viewed as bytes. */
++  /* Create an image from xmalloc-allocated BGRA pixel data
++     (Cairo/native format).  This takes ownership of PIXELS, which on
++     little-endian machines is BGRA when viewed as bytes.  */
 +  emacs_skia_image_t *emacs_skia_image_create_from_bgra_pixels (
-+    int width, int height, const void *pixels, size_t row_bytes,
++    int width, int height, void *pixels, size_t row_bytes,
 +    bool has_alpha);
 +
 +  void emacs_skia_image_destroy (emacs_skia_image_t *image);
@@ -1952,10 +1946,10 @@ index 00000000000..6db04e2fcdd
 +#endif /* EMACS_SKIA_H */
 diff --git a/src/skiafont.c b/src/skiafont.c
 new file mode 100644
-index 00000000000..b6ea4220c7b
+index 00000000000..e47c73cf0ca
 --- /dev/null
 +++ b/src/skiafont.c
-@@ -0,0 +1,827 @@
+@@ -0,0 +1,739 @@
 +/* skiafont.c -- FreeType font driver with Skia rendering.
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -2191,6 +2185,7 @@ index 00000000000..b6ea4220c7b
 +  skiafont_info->base.metrics_nrows = 0;
 +  skiafont_info->base.bitmap_position_unit = 0;
 +  skiafont_info->base.ft_face = NULL;
++  skiafont_info->base.ft_size = NULL;
 +
 +  /* Initialize FT matrix from fontconfig pattern.  */
 +  {
@@ -2316,8 +2311,8 @@ index 00000000000..b6ea4220c7b
 +
 +  /* Get underline metrics from FreeType directly.  */
 +  if (skiafont_init_freetype ()
-+      && FT_New_Face (ft_library, filename_str, font_index, &ft_face)
-+	   == 0)
++      && FT_New_Face (ft_library, filename_str, font_index, &ft_face) == 0
++      && FT_Set_Pixel_Sizes (ft_face, size, size) == 0)
 +    {
 +      if (ft_face->face_flags & FT_FACE_FLAG_SCALABLE)
 +	{
@@ -2333,6 +2328,7 @@ index 00000000000..b6ea4220c7b
 +	}
 +      /* Store ft_face for later use (encode_char, etc.).  */
 +      skiafont_info->base.ft_face = ft_face;
++      skiafont_info->base.ft_size = ft_face->size;
 +
 +      /* Compute bitmap_position_unit for bitmap fonts (Bug#73752).  */
 +      if (ft_face->units_per_EM)
@@ -2359,6 +2355,8 @@ index 00000000000..b6ea4220c7b
 +    }
 +  else
 +    {
++      if (ft_face)
++	FT_Done_Face (ft_face);
 +      /* Default underline metrics.  */
 +      font->underline_position = -1;
 +      font->underline_thickness = 1;
@@ -2382,6 +2380,21 @@ index 00000000000..b6ea4220c7b
 +  int i;
 +
 +  block_input ();
++
++#ifdef HAVE_LIBOTF
++  if (skiafont_info->base.otf)
++    {
++      OTF_close (skiafont_info->base.otf);
++      skiafont_info->base.otf = NULL;
++    }
++#endif
++#ifdef HAVE_HARFBUZZ
++  if (skiafont_info->base.hb_font)
++    {
++      hb_font_destroy (skiafont_info->base.hb_font);
++      skiafont_info->base.hb_font = NULL;
++    }
++#endif
 +
 +  if (skiafont_info->skia_font)
 +    {
@@ -2578,101 +2591,6 @@ index 00000000000..b6ea4220c7b
 +  return len;
 +}
 +
-+/* These functions use the stored FT_Face directly for FreeType
-+ * operations.  */
-+
-+static int
-+skiafont_get_bitmap (struct font *font, unsigned int code,
-+		     struct font_bitmap *bitmap, int bits_per_pixel)
-+{
-+  struct font_info *ftfont_info = (struct font_info *) font;
-+  FT_Face ft_face = ftfont_info->ft_face;
-+
-+  if (!ft_face)
-+    return -1;
-+
-+  ftfont_info->ft_size = ft_face->size;
-+  int result = ftfont_get_bitmap (font, code, bitmap, bits_per_pixel);
-+  ftfont_info->ft_size = NULL;
-+
-+  return result;
-+}
-+
-+static int
-+skiafont_anchor_point (struct font *font, unsigned int code, int idx,
-+		       int *x, int *y)
-+{
-+  struct font_info *ftfont_info = (struct font_info *) font;
-+  FT_Face ft_face = ftfont_info->ft_face;
-+
-+  if (!ft_face)
-+    return -1;
-+
-+  ftfont_info->ft_size = ft_face->size;
-+  int result = ftfont_anchor_point (font, code, idx, x, y);
-+  ftfont_info->ft_size = NULL;
-+
-+  return result;
-+}
-+
-+# ifdef HAVE_LIBOTF
-+static Lisp_Object
-+skiafont_otf_capability (struct font *font)
-+{
-+  struct font_info *ftfont_info = (struct font_info *) font;
-+  FT_Face ft_face = ftfont_info->ft_face;
-+
-+  if (!ft_face)
-+    return Qnil;
-+
-+  ftfont_info->ft_size = ft_face->size;
-+  Lisp_Object result = ftfont_otf_capability (font);
-+  ftfont_info->ft_size = NULL;
-+
-+  return result;
-+}
-+# endif
-+
-+# if defined HAVE_M17N_FLT && defined HAVE_LIBOTF
-+static Lisp_Object
-+skiafont_shape (Lisp_Object lgstring, Lisp_Object direction)
-+{
-+  struct font *font
-+    = CHECK_FONT_GET_OBJECT (LGSTRING_FONT (lgstring));
-+  struct font_info *ftfont_info = (struct font_info *) font;
-+  FT_Face ft_face = ftfont_info->ft_face;
-+
-+  if (!ft_face)
-+    return Qnil;
-+
-+  ftfont_info->ft_size = ft_face->size;
-+  Lisp_Object result = ftfont_shape (lgstring, direction);
-+  ftfont_info->ft_size = NULL;
-+
-+  return result;
-+}
-+# endif
-+
-+# if defined HAVE_OTF_GET_VARIATION_GLYPHS \
-+   || defined HAVE_FT_FACE_GETCHARVARIANTINDEX
-+static int
-+skiafont_variation_glyphs (struct font *font, int c,
-+			   unsigned variations[256])
-+{
-+  struct font_info *ftfont_info = (struct font_info *) font;
-+  FT_Face ft_face = ftfont_info->ft_face;
-+
-+  if (!ft_face)
-+    return 0;
-+
-+  ftfont_info->ft_size = ft_face->size;
-+  int result = ftfont_variation_glyphs (font, c, variations);
-+  ftfont_info->ft_size = NULL;
-+
-+  return result;
-+}
-+# endif
-+
 +# ifdef HAVE_HARFBUZZ
 +
 +static Lisp_Object
@@ -2696,24 +2614,13 @@ index 00000000000..b6ea4220c7b
 +  if (!ft_face)
 +    return NULL;
 +
-+  ftfont_info->ft_size = ft_face->size;
 +  hb_font_t *hb_font = fthbfont_begin_hb_font (font, position_unit);
++
 +  if ((hb_version_atleast (5, 2, 0) || !hb_version_atleast (5, 0, 0))
 +      && ftfont_info->bitmap_position_unit)
 +    *position_unit = ftfont_info->bitmap_position_unit;
 +
 +  return hb_font;
-+}
-+
-+static void
-+skiahbfont_end_hb_font (struct font *font, hb_font_t *hb_font)
-+{
-+  struct font_info *ftfont_info = (struct font_info *) font;
-+
-+  eassert (hb_font == ftfont_info->hb_font);
-+  hb_font_destroy (ftfont_info->hb_font);
-+  ftfont_info->hb_font = NULL;
-+  ftfont_info->ft_size = NULL;
 +}
 +
 +# endif /* HAVE_HARFBUZZ */
@@ -2732,17 +2639,17 @@ index 00000000000..b6ea4220c7b
 +  .encode_char = skiafont_encode_char,
 +  .text_extents = skiafont_text_extents,
 +  .draw = skiafont_draw,
-+  .get_bitmap = skiafont_get_bitmap,
-+  .anchor_point = skiafont_anchor_point,
++  .get_bitmap = ftfont_get_bitmap,
++  .anchor_point = ftfont_anchor_point,
 +# ifdef HAVE_LIBOTF
-+  .otf_capability = skiafont_otf_capability,
++  .otf_capability = ftfont_otf_capability,
 +# endif
 +# if defined HAVE_M17N_FLT && defined HAVE_LIBOTF
-+  .shape = skiafont_shape,
++  .shape = ftfont_shape,
 +# endif
 +# if defined HAVE_OTF_GET_VARIATION_GLYPHS \
 +   || defined HAVE_FT_FACE_GETCHARVARIANTINDEX
-+  .get_variation_glyphs = skiafont_variation_glyphs,
++  .get_variation_glyphs = ftfont_variation_glyphs,
 +# endif
 +  .filter_properties = ftfont_filter_properties,
 +  .combining_capability = ftfont_combining_capability,
@@ -2777,7 +2684,6 @@ index 00000000000..b6ea4220c7b
 +  skiahbfont_driver.combining_capability
 +    = hbfont_combining_capability;
 +  skiahbfont_driver.begin_hb_font = skiahbfont_begin_hb_font;
-+  skiahbfont_driver.end_hb_font = skiahbfont_end_hb_font;
 +  register_font_driver (&skiahbfont_driver, NULL);
 +# endif
 +}
