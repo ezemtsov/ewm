@@ -2898,10 +2898,10 @@ index 00000000000..2f2d684d8d4
 +#endif /* EMACS_SKIA_H */
 diff --git a/src/skiafont.c b/src/skiafont.c
 new file mode 100644
-index 00000000000..0998ed91d27
+index 00000000000..ed4d289b275
 --- /dev/null
 +++ b/src/skiafont.c
-@@ -0,0 +1,866 @@
+@@ -0,0 +1,852 @@
 +/* skiafont.c -- FreeType font driver with Skia rendering.
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -3525,20 +3525,6 @@ index 00000000000..0998ed91d27
 +      emacs_skia_canvas_draw_glyphs (canvas, len, glyphs, positions,
 +				     origin, skiafont_info->skia_font,
 +				     paint);
-+    }
-+  else
-+    {
-+      /* Fallback: draw each glyph as a rectangle (placeholder).  */
-+      float current_x = x;
-+      for (i = 0; i < len; i++)
-+	{
-+	  int glyph_width
-+	    = skiafont_glyph_extents (s->font, s->char2b[from + i],
-+				      NULL);
-+	  /* For fallback, we could potentially use Cairo here,
-+	     but for now just advance.  */
-+	  current_x += (s->padding_p ? 1 : glyph_width);
-+	}
 +    }
 +
 +  pgtk_end_skia_clip (f);
