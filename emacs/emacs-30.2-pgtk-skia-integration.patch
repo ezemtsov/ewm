@@ -576,7 +576,7 @@ index ee56e2d..36636ab 100644
    /* These are used by the XFT backend.  */
    Display *display;
 diff --git a/src/gtkutil.c b/src/gtkutil.c
-index 655e838..6de6843 100644
+index 655e838..58616dc 100644
 --- a/src/gtkutil.c
 +++ b/src/gtkutil.c
 @@ -41,6 +41,9 @@ typedef struct pgtk_output xp_output;
@@ -618,8 +618,8 @@ index 655e838..6de6843 100644
 +  if (!old_widget && img->skia_data)
 +    {
 +      emacs_skia_image_t *skia_img = img->skia_data;
-+      int w, h;
-+      emacs_skia_image_get_size (skia_img, &w, &h);
++      int w = img->width;
++      int h = img->height;
 +      if (w > 0 && h > 0)
 +	{
 +	  /* Create a raster surface, draw the image, read pixels back.  */
@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..fffbad6 100644
+index 617ed3c..8488620 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -11657,18 +11657,18 @@ index 617ed3c..fffbad6 100644
 +  emacs_skia_canvas_t *canvas = FRAME_SKIA_CANVAS (f);
 +  emacs_skia_image_t *image = FRAME_X_OUTPUT (f)->skia_image_pre_bell;
 +  emacs_skia_rect_t dst;
-+  int image_width, image_height;
-+  int scale;
++  int width;
++  int height;
 +
 +  if (!image || !canvas)
 +    return false;
 +
-+  emacs_skia_image_get_size (image, &image_width, &image_height);
-+  scale = pgtk_gl_scale (f);
++  width = FRAME_PIXEL_WIDTH (f);
++  height = FRAME_PIXEL_HEIGHT (f);
 +  dst = (emacs_skia_rect_t) {
 +    0, 0,
-+    (float) image_width / scale,
-+    (float) image_height / scale
++    (float) width,
++    (float) height
 +  };
 +  emacs_skia_canvas_draw_image_rect (
 +    canvas, image, NULL, &dst, true, NULL);
@@ -14469,7 +14469,7 @@ index 617ed3c..fffbad6 100644
    /* When on R2L character, show cursor at the right edge of the
       glyph, unless the cursor box is as wide as the glyph or wider
       (the latter happens when x-stretch-cursor is non-nil).  */
-@@ -2874,23 +3999,52 @@ pgtk_draw_hollow_cursor (struct window *w, struct glyph_row *row)
+@@ -2874,14 +3999,43 @@ pgtk_draw_hollow_cursor (struct window *w, struct glyph_row *row)
        if (wd > 0)
  	wd -= 1;
      }
@@ -14479,8 +14479,9 @@ index 617ed3c..fffbad6 100644
 -		       x, y, wd, h - 1, false);
 -  pgtk_end_cr_clip (f);
 -}
- 
+-
 -/* Draw a bar cursor on window W in glyph row ROW.
++
 +#ifdef USE_SKIA
 +  /* Use Skia directly with Skia clipping.  */
 +  emacs_skia_canvas_t *canvas = pgtk_begin_skia_clip (f);
@@ -14489,9 +14490,7 @@ index 617ed3c..fffbad6 100644
 +      pgtk_skia_clip_to_row (w, row, TEXT_AREA, canvas);
 +      pgtk_skia_set_paint_color (f, FRAME_X_OUTPUT (f)->cursor_color,
 +				 false);
- 
--   Implementation note: One would like to draw a bar cursor with an
--   angle equal to the one given by the font property XA_ITALIC_ANGLE.
++
 +      emacs_skia_paint_t *paint = FRAME_SKIA_PAINT (f);
 +      emacs_skia_paint_set_stroke (paint, true);
 +      emacs_skia_paint_set_stroke_width (paint, 1.0f);
@@ -14519,10 +14518,10 @@ index 617ed3c..fffbad6 100644
 +}
 +
 +/* Draw a bar cursor on window W in glyph row ROW.
-+
-+   Implementation note: One would like to draw a bar cursor with an
-+   angle equal to the one given by the font property XA_ITALIC_ANGLE.
-    Unfortunately, I didn't find a font yet that has this property set.
+ 
+    Implementation note: One would like to draw a bar cursor with an
+    angle equal to the one given by the font property XA_ITALIC_ANGLE.
+@@ -2889,8 +4043,8 @@ pgtk_draw_hollow_cursor (struct window *w, struct glyph_row *row)
     --gerd.  */
  
  static void
@@ -15328,12 +15327,12 @@ index 617ed3c..fffbad6 100644
 +	*((unsigned short *) data) = bits[i];
 +	data += stride;
 +      }
-+
+ 
+-  fringe_bmp[which] = pattern;
 +    cairo_surface_mark_dirty (surface);
 +    pattern = cairo_pattern_create_for_surface (surface);
 +    cairo_surface_destroy (surface);
- 
--  fringe_bmp[which] = pattern;
++
 +    fringe_bmp[which] = pattern;
 +  }
 +#endif
@@ -15628,27 +15627,37 @@ index 617ed3c..fffbad6 100644
    if (FRAME_X_OUTPUT (f)->atimer_visible_bell != NULL)
      FRAME_X_OUTPUT (f)->atimer_visible_bell = NULL;
  }
-@@ -3768,6 +5470,128 @@ recover_from_visible_bell (struct atimer *timer)
+@@ -3768,32 +5470,64 @@ recover_from_visible_bell (struct atimer *timer)
  static void
  pgtk_flash (struct frame *f)
  {
+-  cairo_surface_t *surface_orig, *surface;
+-  cairo_t *cr;
+-  int width, height, flash_height, flash_left, flash_right;
 +#ifdef USE_SKIA
 +  emacs_skia_canvas_t *canvas;
 +  emacs_skia_paint_t *paint;
 +  int height, flash_height, flash_left, flash_right, width;
-+  struct timespec delay;
-+
+   struct timespec delay;
+ 
+-  if (!FRAME_CR_CONTEXT (f))
 +  if (!FRAME_SKIA_SURFACE (f) || !FRAME_SKIA_CANVAS (f))
-+    return;
-+
-+  block_input ();
-+
+     return;
+ 
+   block_input ();
+ 
+-  surface_orig = FRAME_CR_SURFACE (f);
 +  if (!pgtk_skia_make_gl_context_current (f))
 +    {
 +      unblock_input ();
 +      return;
 +    }
-+
+ 
+-  width = FRAME_CR_SURFACE_DESIRED_WIDTH (f);
+-  height = FRAME_CR_SURFACE_DESIRED_HEIGHT (f);
+-  surface = cairo_surface_create_similar (surface_orig,
+-					  CAIRO_CONTENT_COLOR_ALPHA,
+-					  width, height);
 +  /* Draw the flash effect directly onto the main GL-backed Skia
 +     surface.  The canvas already has the HiDPI scale transform, so
 +     all coordinates are in logical pixels (matching FRAME_PIXEL_*
@@ -15657,11 +15666,18 @@ index 617ed3c..fffbad6 100644
 +     without a full redisplay (which would be racy — concurrent
 +     redraws during the 50ms flash window would composite on top of
 +     the inverted region).
-+
+ 
+-  cr = cairo_create (surface);
+-  cairo_set_source_surface (cr, surface_orig, 0, 0);
+-  cairo_rectangle (cr, 0, 0, width, height);
+-  cairo_clip (cr);
+-  cairo_paint (cr);
 +     If a previous flash is still active (rapid bell invocations),
 +     restore the prior snapshot first to avoid double-inversion.  */
 +  canvas = FRAME_SKIA_CANVAS (f);
-+
+ 
+-  cairo_set_source_rgb (cr, 1, 1, 1);
+-  cairo_set_operator (cr, CAIRO_OPERATOR_DIFFERENCE);
 +  if (pgtk_draw_skia_pre_bell_image (f))
 +    pgtk_destroy_skia_pre_bell_image (f);
 +
@@ -15690,20 +15706,36 @@ index 617ed3c..fffbad6 100644
 +  emacs_skia_paint_set_blend_mode (paint,
 +				   EMACS_SKIA_BLEND_DIFFERENCE);
 +  emacs_skia_paint_set_stroke (paint, false);
-+
-+  /* Get the height not including a menu bar widget.  */
-+  height = FRAME_PIXEL_HEIGHT (f);
-+  /* Height of each line to flash.  */
-+  flash_height = FRAME_LINE_HEIGHT (f);
-+  /* These will be the left and right margins of the rectangles.  */
-+  flash_left = FRAME_INTERNAL_BORDER_WIDTH (f);
+ 
+   /* Get the height not including a menu bar widget.  */
+   height = FRAME_PIXEL_HEIGHT (f);
+@@ -3801,38 +5535,48 @@ pgtk_flash (struct frame *f)
+   flash_height = FRAME_LINE_HEIGHT (f);
+   /* These will be the left and right margins of the rectangles.  */
+   flash_left = FRAME_INTERNAL_BORDER_WIDTH (f);
+-  flash_right = (FRAME_PIXEL_WIDTH (f)
+-		 - FRAME_INTERNAL_BORDER_WIDTH (f));
 +  flash_right
 +    = (FRAME_PIXEL_WIDTH (f) - FRAME_INTERNAL_BORDER_WIDTH (f));
-+  width = flash_right - flash_left;
-+
-+  /* If window is tall, flash top and bottom line.  */
-+  if (height > 3 * FRAME_LINE_HEIGHT (f))
-+    {
+   width = flash_right - flash_left;
+ 
+   /* If window is tall, flash top and bottom line.  */
+   if (height > 3 * FRAME_LINE_HEIGHT (f))
+     {
+-      cairo_rectangle (cr,
+-		       flash_left,
+-		       (FRAME_INTERNAL_BORDER_WIDTH (f)
+-			+ FRAME_TOP_MARGIN_HEIGHT (f)),
+-		       width, flash_height);
+-      cairo_fill (cr);
+-
+-      cairo_rectangle (cr,
+-		       flash_left,
+-		       (height - flash_height
+-			- FRAME_INTERNAL_BORDER_WIDTH (f)
+-			- FRAME_BOTTOM_MARGIN_HEIGHT (f)),
+-		       width, flash_height);
+-      cairo_fill (cr);
 +      emacs_skia_rect_t rect1
 +	= { flash_left,
 +	    FRAME_INTERNAL_BORDER_WIDTH (f)
@@ -15721,17 +15753,22 @@ index 617ed3c..fffbad6 100644
 +	    height - FRAME_INTERNAL_BORDER_WIDTH (f)
 +	      - FRAME_BOTTOM_MARGIN_HEIGHT (f) };
 +      emacs_skia_canvas_draw_rect (canvas, &rect2, paint);
-+    }
-+  else
-+    {
-+      /* If it is short, flash it all.  */
+     }
+   else
+     {
+       /* If it is short, flash it all.  */
+-      cairo_rectangle (cr,
+-		       flash_left, FRAME_INTERNAL_BORDER_WIDTH (f),
+-		       width, height - 2 * FRAME_INTERNAL_BORDER_WIDTH (f));
+-      cairo_fill (cr);
 +      emacs_skia_rect_t rect
 +	= { flash_left, FRAME_INTERNAL_BORDER_WIDTH (f),
 +	    flash_left + width,
 +	    height - FRAME_INTERNAL_BORDER_WIDTH (f) };
 +      emacs_skia_canvas_draw_rect (canvas, &rect, paint);
-+    }
-+
+     }
+ 
+-  FRAME_X_OUTPUT (f)->cr_surface_visible_bell = surface;
 +  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC_OVER);
 +
 +  /* Flush the flash into the GL texture and queue a draw so the
@@ -15739,6 +15776,87 @@ index 617ed3c..fffbad6 100644
 +  emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
 +  if (FRAME_GL_DRAWING_AREA (f))
 +    gtk_widget_queue_draw (FRAME_GL_DRAWING_AREA (f));
+ 
+   delay = make_timespec (0, 50 * 1000 * 1000);
+ 
+@@ -3843,14 +5587,93 @@ pgtk_flash (struct frame *f)
+     }
+ 
+   FRAME_X_OUTPUT (f)->atimer_visible_bell
+-    = start_atimer (ATIMER_RELATIVE, delay, recover_from_visible_bell, f);
++    = start_atimer (ATIMER_RELATIVE, delay, recover_from_visible_bell,
++		    f);
+ 
+-
+-  cairo_destroy (cr);
+   unblock_input ();
+-}
+-
+-/* Make audible bell.  */
++#else
++  cairo_surface_t *surface_orig, *surface;
++  cairo_t *cr;
++  int width, height, flash_height, flash_left, flash_right;
++  struct timespec delay;
++
++  if (!FRAME_CR_CONTEXT (f))
++    return;
++
++  block_input ();
++
++  surface_orig = FRAME_CR_SURFACE (f);
++
++  width = FRAME_CR_SURFACE_DESIRED_WIDTH (f);
++  height = FRAME_CR_SURFACE_DESIRED_HEIGHT (f);
++  surface = cairo_surface_create_similar (surface_orig,
++					  CAIRO_CONTENT_COLOR_ALPHA,
++					  width, height);
++
++  cr = cairo_create (surface);
++  cairo_set_source_surface (cr, surface_orig, 0, 0);
++  cairo_rectangle (cr, 0, 0, width, height);
++  cairo_clip (cr);
++  cairo_paint (cr);
++
++  cairo_set_source_rgb (cr, 1, 1, 1);
++  cairo_set_operator (cr, CAIRO_OPERATOR_DIFFERENCE);
++
++  /* Get the height not including a menu bar widget.  */
++  height = FRAME_PIXEL_HEIGHT (f);
++  /* Height of each line to flash.  */
++  flash_height = FRAME_LINE_HEIGHT (f);
++  /* These will be the left and right margins of the rectangles.  */
++  flash_left = FRAME_INTERNAL_BORDER_WIDTH (f);
++  flash_right
++    = (FRAME_PIXEL_WIDTH (f) - FRAME_INTERNAL_BORDER_WIDTH (f));
++  width = flash_right - flash_left;
++
++  /* If window is tall, flash top and bottom line.  */
++  if (height > 3 * FRAME_LINE_HEIGHT (f))
++    {
++      cairo_rectangle (cr, flash_left,
++		       (FRAME_INTERNAL_BORDER_WIDTH (f)
++			+ FRAME_TOP_MARGIN_HEIGHT (f)),
++		       width, flash_height);
++      cairo_fill (cr);
++
++      cairo_rectangle (cr, flash_left,
++		       (height - flash_height
++			- FRAME_INTERNAL_BORDER_WIDTH (f)
++			- FRAME_BOTTOM_MARGIN_HEIGHT (f)),
++		       width, flash_height);
++      cairo_fill (cr);
++    }
++  else
++    {
++      /* If it is short, flash it all.  */
++      cairo_rectangle (cr, flash_left,
++		       FRAME_INTERNAL_BORDER_WIDTH (f), width,
++		       height - 2 * FRAME_INTERNAL_BORDER_WIDTH (f));
++      cairo_fill (cr);
++    }
++
++  FRAME_X_OUTPUT (f)->cr_surface_visible_bell = surface;
 +
 +  delay = make_timespec (0, 50 * 1000 * 1000);
 +
@@ -15752,66 +15870,15 @@ index 617ed3c..fffbad6 100644
 +    = start_atimer (ATIMER_RELATIVE, delay, recover_from_visible_bell,
 +		    f);
 +
++  cairo_destroy (cr);
 +  unblock_input ();
-+#else
-   cairo_surface_t *surface_orig, *surface;
-   cairo_t *cr;
-   int width, height, flash_height, flash_left, flash_right;
-@@ -3801,22 +5625,20 @@ pgtk_flash (struct frame *f)
-   flash_height = FRAME_LINE_HEIGHT (f);
-   /* These will be the left and right margins of the rectangles.  */
-   flash_left = FRAME_INTERNAL_BORDER_WIDTH (f);
--  flash_right = (FRAME_PIXEL_WIDTH (f)
--		 - FRAME_INTERNAL_BORDER_WIDTH (f));
-+  flash_right
-+    = (FRAME_PIXEL_WIDTH (f) - FRAME_INTERNAL_BORDER_WIDTH (f));
-   width = flash_right - flash_left;
- 
-   /* If window is tall, flash top and bottom line.  */
-   if (height > 3 * FRAME_LINE_HEIGHT (f))
-     {
--      cairo_rectangle (cr,
--		       flash_left,
-+      cairo_rectangle (cr, flash_left,
- 		       (FRAME_INTERNAL_BORDER_WIDTH (f)
- 			+ FRAME_TOP_MARGIN_HEIGHT (f)),
- 		       width, flash_height);
-       cairo_fill (cr);
- 
--      cairo_rectangle (cr,
--		       flash_left,
-+      cairo_rectangle (cr, flash_left,
- 		       (height - flash_height
- 			- FRAME_INTERNAL_BORDER_WIDTH (f)
- 			- FRAME_BOTTOM_MARGIN_HEIGHT (f)),
-@@ -3826,9 +5648,9 @@ pgtk_flash (struct frame *f)
-   else
-     {
-       /* If it is short, flash it all.  */
--      cairo_rectangle (cr,
--		       flash_left, FRAME_INTERNAL_BORDER_WIDTH (f),
--		       width, height - 2 * FRAME_INTERNAL_BORDER_WIDTH (f));
-+      cairo_rectangle (cr, flash_left,
-+		       FRAME_INTERNAL_BORDER_WIDTH (f), width,
-+		       height - 2 * FRAME_INTERNAL_BORDER_WIDTH (f));
-       cairo_fill (cr);
-     }
- 
-@@ -3843,11 +5665,12 @@ pgtk_flash (struct frame *f)
-     }
- 
-   FRAME_X_OUTPUT (f)->atimer_visible_bell
--    = start_atimer (ATIMER_RELATIVE, delay, recover_from_visible_bell, f);
--
-+    = start_atimer (ATIMER_RELATIVE, delay, recover_from_visible_bell,
-+		    f);
- 
-   cairo_destroy (cr);
-   unblock_input ();
 +#endif
- }
++}
++
++/* Make audible bell.  */
  
- /* Make audible bell.  */
+ static void
+ pgtk_ring_bell (struct frame *f)
 @@ -3876,7 +5699,8 @@ pgtk_ring_bell (struct frame *f)
     C chars).  */
  
@@ -17810,15 +17877,15 @@ index 617ed3c..fffbad6 100644
 +			G_CALLBACK (window_state_event), NULL);
 +      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
 +			"delete-event", G_CALLBACK (delete_event),
++			NULL);
++      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
++			"event", G_CALLBACK (pgtk_handle_event),
  			NULL);
 -      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)), "delete-event",
 -			G_CALLBACK (delete_event), NULL);
 -      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)), "event",
 -			G_CALLBACK (pgtk_handle_event), NULL);
 -      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)), "configure-event",
-+      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
-+			"event", G_CALLBACK (pgtk_handle_event),
-+			NULL);
 +      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
 +			"configure-event",
  			G_CALLBACK (configure_event), NULL);
@@ -18075,10 +18142,10 @@ index 617ed3c..fffbad6 100644
 +	g_log_remove_handler ("GLib", id);
  
 -        g_log_remove_handler ("GLib", id);
--
--        xg_initialize ();
 +	xg_initialize ();
  
+-        xg_initialize ();
+-
 -        dpy = DEFAULT_GDK_DISPLAY ();
 +	dpy = DEFAULT_GDK_DISPLAY ();
  
@@ -18243,7 +18310,7 @@ index 617ed3c..fffbad6 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,162 +9469,1290 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,91 +9469,1216 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -18467,33 +18534,22 @@ index 617ed3c..fffbad6 100644
 +      FRAME_GDK_GL_CONTEXT (f) = NULL;
 +      return;
 +    }
- 
--Emacs will wait up to this many seconds to receive some GTK events
--after making changes which affect the state of the graphical
--interface.  Under some window managers this can take an indefinite
--amount of time, so it is important to limit the wait.
++
 +  /* Create GL framebuffer and texture for offscreen rendering.  */
 +  glGenFramebuffers (1, &FRAME_GL_FRAMEBUFFER (f));
 +  glGenTextures (1, &FRAME_GL_TEXTURE (f));
 +  pgtk_clear_primary_gl_size (f);
 +  pgtk_clear_resize_scratch_refs (f);
- 
--If set to a non-float value, there will be no wait at all.  */);
--  Vpgtk_wait_for_event_timeout = make_float (0.1);
++
 +  /* Initialize GL state as dirty so Skia resets on first use.  */
 +  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
 +  FRAME_GL_MAKE_CURRENT_FAILURES (f) = 0;
 +  FRAME_GL_CONTEXT_RECREATE_AFTER (f) = 0;
 +  FRAME_SKIA_GL_CONTEXT_LOST (f) = false;
 +  FRAME_GL_SURFACE_CREATION_FAILURES (f) = 0;
- 
--  DEFVAR_LISP ("pgtk-keysym-table", Vpgtk_keysym_table,
--    doc: /* Hash table of character codes indexed by X keysym codes.  */);
--  Vpgtk_keysym_table = make_hash_table (&hashtest_eql, 900, Weak_None, false);
++
 +  FRAME_SKIA_GL_INITIALIZED (f) = true;
- 
--  window_being_scrolled = Qnil;
--  staticpro (&window_being_scrolled);
++
 +  /* Get the initial size and set up the FBO.  On HiDPI displays, the
 +     FBO and Skia surface are created at device-pixel resolution
 +     (logical pixels * scale factor) for crisp rendering.  The Skia
@@ -18513,27 +18569,17 @@ index 617ed3c..fffbad6 100644
 +      FRAME_SKIA_SURFACE_DESIRED_WIDTH (f) = alloc.width;
 +      FRAME_SKIA_SURFACE_DESIRED_HEIGHT (f) = alloc.height;
 +    }
- 
--  /* Tell Emacs about this window system.  */
--  Fprovide (Qpgtk, Qnil);
++
 +  if (pgtk_skia_debug_gl_enabled ())
 +    pgtk_log_gl_frame_state ("realize-ready", f);
- }
- 
--/* Cairo does not allow resizing a surface/context after it is
--   created, so we need to trash the old context, create a new context
--   on the next cr_clip_begin with the new dimensions and request a
--   re-draw.
++}
++
 +static bool
 +pgtk_present_gl_texture (struct frame *f, GtkWidget *widget, cairo_t *cr,
 +			 int width, int height)
 +{
 +  GdkWindow *gdk_window = gtk_widget_get_window (widget);
- 
--   This will leave the active context available to present on screen
--   until a redrawn frame is completed.  */
--void
--pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, bool force)
++
 +  if (!gdk_window || !FRAME_GL_TEXTURE (f) || width <= 0 || height <= 0)
 +    return false;
 +
@@ -18562,48 +18608,26 @@ index 617ed3c..fffbad6 100644
 +static gboolean
 +pgtk_gl_drawing_area_draw (GtkWidget *widget, cairo_t *cr,
 +			   gpointer user_data)
- {
--  if (FRAME_CR_SURFACE_DESIRED_WIDTH (f) != width
--      || FRAME_CR_SURFACE_DESIRED_HEIGHT (f) != height
--      || force)
++{
 +  struct frame *f = (struct frame *) user_data;
 +  emacs_skia_surface_t *skia_surface;
 +  int width, height;
 +
 +  if (!FRAME_GDK_GL_CONTEXT (f) || !FRAME_GL_TEXTURE (f))
-     {
--      pgtk_cr_destroy_frame_context (f);
--      FRAME_CR_SURFACE_DESIRED_WIDTH (f) = width;
--      FRAME_CR_SURFACE_DESIRED_HEIGHT (f) = height;
--      SET_FRAME_GARBAGED (f);
++    {
 +      if (!pgtk_init_gl_context (f) || !FRAME_GL_TEXTURE (f))
 +	return FALSE;
-     }
--}
- 
++    }
++
 +  if (!gtk_widget_get_window (widget))
 +    return FALSE;
- 
--cairo_t *
--pgtk_begin_cr_clip (struct frame *f)
--{
--  cairo_t *cr = FRAME_CR_CONTEXT (f);
++
 +  skia_surface = FRAME_SKIA_SURFACE (f);
- 
--  if (!cr)
++
 +  if (!skia_surface)
-     {
--      cairo_surface_t *surface
--	= gdk_window_create_similar_surface (gtk_widget_get_window
--					     (FRAME_GTK_WIDGET (f)),
--					     CAIRO_CONTENT_COLOR_ALPHA,
--					     FRAME_CR_SURFACE_DESIRED_WIDTH (f),
--					     FRAME_CR_SURFACE_DESIRED_HEIGHT
--					     (f));
++    {
 +      bool have_current = true;
- 
--      cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
--      cairo_surface_destroy (surface);
++
 +      /* Surface is NULL — during resize or before first redisplay.
 +	 If the GL texture still has content from a previous frame,
 +	 composite it rather than showing a black box.  The stale
@@ -18625,16 +18649,14 @@ index 617ed3c..fffbad6 100644
 +      if (have_current)
 +	SET_FRAME_GARBAGED (f);
 +      return FALSE;
-     }
- 
--  cairo_save (cr);
++    }
++
 +  /* Make our context current and flush Skia rendering.
 +     Validate the GL context to avoid crashing if it was lost
 +     (e.g. during compositor shutdown).  */
 +  if (!pgtk_skia_make_gl_context_current (f))
 +    return FALSE;
- 
--  return cr;
++
 +  emacs_skia_surface_flush (skia_surface);
 +
 +  width = FRAME_GL_RENDER_WIDTH (f);
@@ -18663,19 +18685,15 @@ index 617ed3c..fffbad6 100644
 +  pgtk_present_gl_texture (f, widget, cr, width, height);
 +
 +  return TRUE;
- }
- 
--void
--pgtk_end_cr_clip (struct frame *f)
++}
++
 +/* Resize FBO while preserving existing content.  This blits the old
 +   content to a reusable scratch FBO, resizes the main FBO, and blits
 +   the preserved content back after pgtk_setup_gl_framebuffer has
 +   cleared newly exposed pixels to the frame background.  */
 +static bool
 +pgtk_grow_gl_size (int current, int requested, int *grown)
- {
--  cairo_restore (FRAME_CR_CONTEXT (f));
--}
++{
 +  int extra;
 +
 +  if (requested <= 0)
@@ -19565,83 +19583,76 @@ index 617ed3c..fffbad6 100644
 +
 +  DEFVAR_LISP ("pgtk-wait-for-event-timeout", Vpgtk_wait_for_event_timeout,
 +	       doc: /* How long to wait for GTK events.
-+
-+Emacs will wait up to this many seconds to receive some GTK events
-+after making changes which affect the state of the graphical
-+interface.  Under some window managers this can take an indefinite
-+amount of time, so it is important to limit the wait.
-+
-+If set to a non-float value, there will be no wait at all.  */);
-+  Vpgtk_wait_for_event_timeout = make_float (0.1);
-+
-+  DEFVAR_LISP ("pgtk-keysym-table", Vpgtk_keysym_table,
+ 
+ Emacs will wait up to this many seconds to receive some GTK events
+ after making changes which affect the state of the graphical
+@@ -7498,16 +10689,23 @@ If set to a non-float value, there will be no wait at all.  */);
+   Vpgtk_wait_for_event_timeout = make_float (0.1);
+ 
+   DEFVAR_LISP ("pgtk-keysym-table", Vpgtk_keysym_table,
+-    doc: /* Hash table of character codes indexed by X keysym codes.  */);
+-  Vpgtk_keysym_table = make_hash_table (&hashtest_eql, 900, Weak_None, false);
 +	       doc
 +:/* Hash table of character codes indexed by X keysym codes.  */);
 +  Vpgtk_keysym_table
 +    = make_hash_table (&hashtest_eql, 900, Weak_None, false);
-+
-+  window_being_scrolled = Qnil;
-+  staticpro (&window_being_scrolled);
-+
+ 
+   window_being_scrolled = Qnil;
+   staticpro (&window_being_scrolled);
+ 
 +#ifdef USE_SKIA
 +  defsubr (&Spgtk_skia_gl_enabled_p);
 +#endif
 +
-+  /* Tell Emacs about this window system.  */
-+  Fprovide (Qpgtk, Qnil);
-+}
-+
+   /* Tell Emacs about this window system.  */
+   Fprovide (Qpgtk, Qnil);
+ }
+ 
 +#ifdef USE_CAIRO
-+/* Cairo does not allow resizing a surface/context after it is
-+   created, so we need to trash the old context, create a new context
-+   on the next cr_clip_begin with the new dimensions and request a
-+   re-draw.
-+
-+   This will leave the active context available to present on screen
-+   until a redrawn frame is completed.  */
-+void
+ /* Cairo does not allow resizing a surface/context after it is
+    created, so we need to trash the old context, create a new context
+    on the next cr_clip_begin with the new dimensions and request a
+@@ -7516,11 +10714,11 @@ If set to a non-float value, there will be no wait at all.  */);
+    This will leave the active context available to present on screen
+    until a redrawn frame is completed.  */
+ void
+-pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, bool force)
 +pgtk_cr_update_surface_desired_size (struct frame *f, int width,
 +				     int height, bool force)
-+{
-+  if (FRAME_CR_SURFACE_DESIRED_WIDTH (f) != width
+ {
+   if (FRAME_CR_SURFACE_DESIRED_WIDTH (f) != width
+-      || FRAME_CR_SURFACE_DESIRED_HEIGHT (f) != height
+-      || force)
 +      || FRAME_CR_SURFACE_DESIRED_HEIGHT (f) != height || force)
-+    {
-+      pgtk_cr_destroy_frame_context (f);
-+      FRAME_CR_SURFACE_DESIRED_WIDTH (f) = width;
-+      FRAME_CR_SURFACE_DESIRED_HEIGHT (f) = height;
-+      SET_FRAME_GARBAGED (f);
-+    }
-+}
-+
-+cairo_t *
-+pgtk_begin_cr_clip (struct frame *f)
-+{
-+  cairo_t *cr = FRAME_CR_CONTEXT (f);
-+
-+  if (!cr)
-+    {
+     {
+       pgtk_cr_destroy_frame_context (f);
+       FRAME_CR_SURFACE_DESIRED_WIDTH (f) = width;
+@@ -7529,7 +10727,6 @@ pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, boo
+     }
+ }
+ 
+-
+ cairo_t *
+ pgtk_begin_cr_clip (struct frame *f)
+ {
+@@ -7537,13 +10734,10 @@ pgtk_begin_cr_clip (struct frame *f)
+ 
+   if (!cr)
+     {
+-      cairo_surface_t *surface
+-	= gdk_window_create_similar_surface (gtk_widget_get_window
+-					     (FRAME_GTK_WIDGET (f)),
+-					     CAIRO_CONTENT_COLOR_ALPHA,
+-					     FRAME_CR_SURFACE_DESIRED_WIDTH (f),
+-					     FRAME_CR_SURFACE_DESIRED_HEIGHT
+-					     (f));
 +      cairo_surface_t *surface = gdk_window_create_similar_surface (
 +	gtk_widget_get_window (FRAME_GTK_WIDGET (f)),
 +	CAIRO_CONTENT_COLOR_ALPHA, FRAME_CR_SURFACE_DESIRED_WIDTH (f),
 +	FRAME_CR_SURFACE_DESIRED_HEIGHT (f));
-+
-+      cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
-+      cairo_surface_destroy (surface);
-+    }
-+
-+  cairo_save (cr);
-+
-+  return cr;
-+}
-+
-+void
-+pgtk_end_cr_clip (struct frame *f)
-+{
-+  cairo_restore (FRAME_CR_CONTEXT (f));
-+}
  
- void
- pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
+       cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
+       cairo_surface_destroy (surface);
 @@ -7595,12 +10789,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
        cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
  			     col.green / 65535.0, col.blue / 65535.0,

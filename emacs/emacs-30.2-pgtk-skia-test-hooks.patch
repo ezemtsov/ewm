@@ -39,7 +39,7 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index fffbad6..12c38d1 100644
+index 8488620..6e9888a 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
 @@ -10605,6 +10605,998 @@ If FRAME is nil, use the selected frame.  */)
