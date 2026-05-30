@@ -11529,7 +11529,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..741495f 100644
+index 617ed3c..5b14125 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -17708,7 +17708,7 @@ index 617ed3c..741495f 100644
  /* Callbacks for sundries.  */
  
  static void
-@@ -6768,18 +8724,30 @@ pgtk_monitors_changed_cb (GdkScreen *screen, gpointer user_data)
+@@ -6768,17 +8724,72 @@ pgtk_monitors_changed_cb (GdkScreen *screen, gpointer user_data)
    evq_enqueue (&inev);
  }
  
@@ -17727,21 +17727,63 @@ index 617ed3c..741495f 100644
 +				       bool);
 +static bool pgtk_init_gl_context (struct frame *);
 +#endif
++
++#ifdef USE_SKIA
++static void
++pgtk_setup_skia_drawing_area (struct frame *f)
++{
++  /* For Skia GL rendering, create a GtkDrawingArea and manage our own
++     GdkGLContext.  We call gdk_cairo_draw_from_gl directly in the
++     draw callback, handing it our FBO texture.  This eliminates the
++     extra FBO copy that GtkGLArea's internal FBO would require:
++     Skia renders into our single FBO, and gdk_cairo_draw_from_gl
++     composites that texture directly to the window back buffer.
++
++     gdk_cairo_draw_from_gl's texture compositing path (gdkgl.c:526-656)
++     trashes GL state (shaders, VAOs, textures, blend).  This is safe
++     because pgtk_begin_skia_clip calls emacs_skia_gl_context_reset when
++     the frame's Skia GL state has been marked dirty.  */
++  GtkWidget *drawing_area = gtk_drawing_area_new ();
++  FRAME_GL_DRAWING_AREA (f) = drawing_area;
++
++  /* The GL context is created in realize once the GdkWindow exists,
++     and draw composites the frame FBO via gdk_cairo_draw_from_gl.  */
++  g_signal_connect (G_OBJECT (drawing_area), "realize",
++		    G_CALLBACK (pgtk_gl_drawing_area_realize), f);
++  g_signal_connect (G_OBJECT (drawing_area), "unrealize",
++		    G_CALLBACK (pgtk_gl_drawing_area_unrealize), f);
++  g_signal_connect (G_OBJECT (drawing_area), "draw",
++		    G_CALLBACK (pgtk_gl_drawing_area_draw), f);
++
++  /* Keep keyboard focus on FRAME_GTK_WIDGET where the key event
++     handlers are connected.  */
++  gtk_widget_set_can_focus (drawing_area, FALSE);
++
++  gtk_fixed_put (GTK_FIXED (FRAME_GTK_WIDGET (f)), drawing_area, 0, 0);
++  gtk_widget_set_size_request (drawing_area, 1, 1);
++  gtk_widget_set_hexpand (drawing_area, TRUE);
++  gtk_widget_set_vexpand (drawing_area, TRUE);
++  gtk_widget_show (drawing_area);
++}
++#endif
  
  void
  pgtk_set_event_handler (struct frame *f)
  {
    if (f->tooltip)
      {
-+#ifndef USE_SKIA
++#ifdef USE_SKIA
++      g_signal_connect (G_OBJECT (FRAME_GTK_WIDGET (f)), "size-allocate",
++			G_CALLBACK (size_allocate), f);
++      pgtk_setup_skia_drawing_area (f);
++#else
        g_signal_connect (G_OBJECT (FRAME_GTK_WIDGET (f)), "draw",
  			G_CALLBACK (pgtk_handle_draw), NULL);
-       return;
 +#endif
+       return;
      }
  
-   gtk_drag_dest_set (FRAME_GTK_WIDGET (f), 0, NULL, 0,
-@@ -6789,13 +8757,16 @@ pgtk_set_event_handler (struct frame *f)
+@@ -6789,13 +8800,16 @@ pgtk_set_event_handler (struct frame *f)
    if (FRAME_GTK_OUTER_WIDGET (f))
      {
        g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
@@ -17750,6 +17792,9 @@ index 617ed3c..741495f 100644
 +			G_CALLBACK (window_state_event), NULL);
 +      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
 +			"delete-event", G_CALLBACK (delete_event),
++			NULL);
++      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
++			"event", G_CALLBACK (pgtk_handle_event),
  			NULL);
 -      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)), "delete-event",
 -			G_CALLBACK (delete_event), NULL);
@@ -17757,14 +17802,11 @@ index 617ed3c..741495f 100644
 -			G_CALLBACK (pgtk_handle_event), NULL);
 -      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)), "configure-event",
 +      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
-+			"event", G_CALLBACK (pgtk_handle_event),
-+			NULL);
-+      g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
 +			"configure-event",
  			G_CALLBACK (configure_event), NULL);
      }
  
-@@ -6803,43 +8774,101 @@ pgtk_set_event_handler (struct frame *f)
+@@ -6803,43 +8817,63 @@ pgtk_set_event_handler (struct frame *f)
  		    G_CALLBACK (map_event), NULL);
    g_signal_connect (G_OBJECT (FRAME_GTK_WIDGET (f)), "size-allocate",
  		    G_CALLBACK (size_allocate), f);
@@ -17821,45 +17863,7 @@ index 617ed3c..741495f 100644
  		    G_CALLBACK (drag_drop), NULL);
 +
 +#ifdef USE_SKIA
-+  /* For Skia GL rendering, create a GtkDrawingArea and manage our own
-+     GdkGLContext.  We call gdk_cairo_draw_from_gl directly in the
-+     draw callback, handing it our FBO texture.  This eliminates the
-+     extra FBO copy that GtkGLArea's internal FBO would require:
-+     Skia renders into our single FBO, and gdk_cairo_draw_from_gl
-+     composites that texture directly to the window back buffer.
-+
-+     gdk_cairo_draw_from_gl's texture compositing path (gdkgl.c:526-656)
-+     trashes GL state (shaders, VAOs, textures, blend).  This is safe
-+     because pgtk_begin_skia_clip calls emacs_skia_gl_context_reset when
-+     the frame's Skia GL state has been marked dirty.  */
-+  {
-+    GtkWidget *drawing_area = gtk_drawing_area_new ();
-+    FRAME_GL_DRAWING_AREA (f) = drawing_area;
-+
-+    /* Connect signals.  The GL context is created in realize (once the
-+       GdkWindow exists), and the draw callback composites via
-+       gdk_cairo_draw_from_gl.  */
-+    g_signal_connect (G_OBJECT (drawing_area), "realize",
-+		      G_CALLBACK (pgtk_gl_drawing_area_realize), f);
-+    g_signal_connect (G_OBJECT (drawing_area), "unrealize",
-+		      G_CALLBACK (pgtk_gl_drawing_area_unrealize), f);
-+    g_signal_connect (G_OBJECT (drawing_area), "draw",
-+		      G_CALLBACK (pgtk_gl_drawing_area_draw), f);
-+
-+    /* CRITICAL: Make drawing area non-focusable so that keyboard
-+       focus stays on FRAME_GTK_WIDGET where the key-press-event
-+       handler is connected.  */
-+    gtk_widget_set_can_focus (drawing_area, FALSE);
-+
-+    /* Add to the GtkFixed at position (0,0).  */
-+    gtk_fixed_put (GTK_FIXED (FRAME_GTK_WIDGET (f)), drawing_area, 0, 0);
-+
-+    /* Make it fill the entire frame.  Updated on resize.  */
-+    gtk_widget_set_size_request (drawing_area, 1, 1);
-+    gtk_widget_set_hexpand (drawing_area, TRUE);
-+    gtk_widget_set_vexpand (drawing_area, TRUE);
-+    gtk_widget_show (drawing_area);
-+  }
++  pgtk_setup_skia_drawing_area (f);
 +#else
 +  /* For Cairo, use the draw callback.  */
    g_signal_connect (G_OBJECT (FRAME_GTK_WIDGET (f)), "draw",
@@ -17884,7 +17888,7 @@ index 617ed3c..741495f 100644
  		    G_CALLBACK (pgtk_selection_event), NULL);
    g_signal_connect (G_OBJECT (FRAME_GTK_WIDGET (f)), "touch-event",
  		    G_CALLBACK (touch_event_cb), NULL);
-@@ -6848,15 +8877,15 @@ pgtk_set_event_handler (struct frame *f)
+@@ -6848,15 +8882,15 @@ pgtk_set_event_handler (struct frame *f)
  }
  
  static void
@@ -17904,7 +17908,7 @@ index 617ed3c..741495f 100644
  static bool
  same_x_server (const char *name1, const char *name2)
  {
-@@ -6897,8 +8926,7 @@ same_x_server (const char *name1, const char *name2)
+@@ -6897,8 +8931,7 @@ same_x_server (const char *name1, const char *name2)
        if (seen_colon && *name1 == '.')
  	return true;
      }
@@ -17914,7 +17918,7 @@ index 617ed3c..741495f 100644
  	  && (*name2 == '.' || *name2 == '\0'));
  }
  
-@@ -6909,13 +8937,12 @@ pgtk_find_selection_owner (GdkWindow *window)
+@@ -6909,13 +8942,12 @@ pgtk_find_selection_owner (GdkWindow *window)
    struct frame *f;
  
    FOR_EACH_FRAME (tail, tem)
@@ -17933,7 +17937,7 @@ index 617ed3c..741495f 100644
  
    return NULL;
  }
-@@ -6939,24 +8966,29 @@ pgtk_selection_event (GtkWidget *widget, GdkEvent *event,
+@@ -6939,24 +8971,29 @@ pgtk_selection_event (GtkWidget *widget, GdkEvent *event,
  	  EVENT_INIT (inev.ie);
  
  	  inev.sie.kind = (event->type == GDK_SELECTION_CLEAR
@@ -17973,7 +17977,7 @@ index 617ed3c..741495f 100644
  	    }
  
  	  evq_enqueue (&inev);
-@@ -6982,8 +9014,7 @@ pgtk_display_x_warning (GdkDisplay *display)
+@@ -6982,8 +9019,7 @@ pgtk_display_x_warning (GdkDisplay *display)
  
    /* Do this instead of GDK_IS_X11_DISPLAY because the GDK X header
       pulls in Xlib, which conflicts with definitions in pgtkgui.h.  */
@@ -17983,7 +17987,7 @@ index 617ed3c..741495f 100644
      return;
  
    dialog_widget = gtk_dialog_new ();
-@@ -6995,12 +9026,13 @@ pgtk_display_x_warning (GdkDisplay *display)
+@@ -6995,12 +9031,13 @@ pgtk_display_x_warning (GdkDisplay *display)
    gtk_window_set_title (window, "Warning");
    gtk_window_set_screen (window, screen);
  
@@ -18003,7 +18007,7 @@ index 617ed3c..741495f 100644
    gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
    gtk_container_add (GTK_CONTAINER (content_area), label);
    gtk_widget_show (label);
-@@ -7060,14 +9092,14 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7060,14 +9097,14 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
        }
      else
        {
@@ -18024,7 +18028,7 @@ index 617ed3c..741495f 100644
  
  	if (strlen (dpy_name) != 0)
  	  {
-@@ -7075,27 +9107,28 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7075,27 +9112,28 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
  	    argv[argc++] = dpy_name;
  	  }
  
@@ -18053,16 +18057,16 @@ index 617ed3c..741495f 100644
 +	g_log_remove_handler ("GLib", id);
  
 -        g_log_remove_handler ("GLib", id);
--
--        xg_initialize ();
 +	xg_initialize ();
  
+-        xg_initialize ();
+-
 -        dpy = DEFAULT_GDK_DISPLAY ();
 +	dpy = DEFAULT_GDK_DISPLAY ();
  
  	initial_display = g_strdup (gdk_display_get_name (dpy));
  	dpy_name = initial_display;
-@@ -7122,7 +9155,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7122,7 +9160,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
      struct pgtk_display_info *share;
  
      for (share = x_display_list; share; share = share->next)
@@ -18072,7 +18076,7 @@ index 617ed3c..741495f 100644
  	break;
      if (share)
        terminal->kboard = share->terminal->kboard;
-@@ -7130,9 +9164,9 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7130,9 +9169,9 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
        {
  	terminal->kboard = allocate_kboard (Qpgtk);
  
@@ -18085,7 +18089,7 @@ index 617ed3c..741495f 100644
  	if (current_kboard == initial_kboard)
  	  current_kboard = terminal->kboard;
        }
-@@ -7155,7 +9189,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7155,7 +9194,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
  
    Lisp_Object system_name = Fsystem_name ();
    ptrdiff_t nbytes;
@@ -18095,7 +18099,7 @@ index 617ed3c..741495f 100644
      memory_full (SIZE_MAX);
    dpyinfo->x_id = ++x_display_id;
    dpyinfo->x_id_name = xmalloc (nbytes);
-@@ -7168,10 +9203,12 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7168,10 +9208,12 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
    dpyinfo->xg_cursor = xg_create_default_cursor (dpyinfo->gdpy);
  
    dpyinfo->vertical_scroll_bar_cursor
@@ -18110,7 +18114,7 @@ index 617ed3c..741495f 100644
  
    dpyinfo->icon_bitmap_id = -1;
  
-@@ -7187,8 +9224,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7187,8 +9229,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
    dpyinfo->resy = dpi;
  
    g_signal_connect (G_OBJECT (gscr), "monitors-changed",
@@ -18120,7 +18124,7 @@ index 617ed3c..741495f 100644
  
    /* Set up scrolling increments.  */
    dpyinfo->scroll.x_per_char = 1;
-@@ -7207,8 +9243,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7207,8 +9248,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
        int (*x_connection_number) (void *)
  	= dlsym (handle, "XConnectionNumber");
  
@@ -18130,7 +18134,7 @@ index 617ed3c..741495f 100644
  	dpyinfo->connection
  	  = x_connection_number (gdk_x11_display_get_xdisplay (dpy));
      }
-@@ -7217,7 +9252,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7217,7 +9257,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
  #ifdef GDK_WINDOWING_WAYLAND
    if (GDK_IS_WAYLAND_DISPLAY (dpy) && handle)
      {
@@ -18140,7 +18144,7 @@ index 617ed3c..741495f 100644
        int (*display_get_fd) (struct wl_display *)
  	= dlsym (handle, "wl_display_get_fd");
  
-@@ -7269,8 +9305,8 @@ pgtk_delete_display (struct pgtk_display_info *dpyinfo)
+@@ -7269,8 +9310,8 @@ pgtk_delete_display (struct pgtk_display_info *dpyinfo)
    for (t = terminal_list; t; t = t->next_terminal)
      if (t->type == output_pgtk && t->display_info.pgtk == dpyinfo)
        {
@@ -18151,7 +18155,7 @@ index 617ed3c..741495f 100644
        }
  
    if (x_display_list == dpyinfo)
-@@ -7303,7 +9339,8 @@ pgtk_xlfd_to_fontname (const char *xlfd)
+@@ -7303,7 +9344,8 @@ pgtk_xlfd_to_fontname (const char *xlfd)
      Convert an X font name (XLFD) to an Gtk font name.
      Only family is used.
      The string returned is temporarily allocated.
@@ -18161,7 +18165,7 @@ index 617ed3c..741495f 100644
  {
    char *name = xmalloc (180);
  
-@@ -7330,12 +9367,13 @@ pgtk_defined_color (struct frame *f, const char *name,
+@@ -7330,12 +9372,13 @@ pgtk_defined_color (struct frame *f, const char *name,
  		    Emacs_Color *color_def, bool alloc,
  		    bool makeIndex)
  /* --------------------------------------------------------------------------
@@ -18181,7 +18185,7 @@ index 617ed3c..741495f 100644
  {
    int r;
  
-@@ -7357,7 +9395,7 @@ pgtk_defined_color (struct frame *f, const char *name,
+@@ -7357,7 +9400,7 @@ pgtk_defined_color (struct frame *f, const char *name,
  
  int
  pgtk_parse_color (struct frame *f, const char *color_name,
@@ -18190,7 +18194,7 @@ index 617ed3c..741495f 100644
  {
    GdkRGBA rgba;
    if (gdk_rgba_parse (&rgba, color_name))
-@@ -7365,9 +9403,9 @@ pgtk_parse_color (struct frame *f, const char *color_name,
+@@ -7365,9 +9408,9 @@ pgtk_parse_color (struct frame *f, const char *color_name,
        color->red = rgba.red * 65535;
        color->green = rgba.green * 65535;
        color->blue = rgba.blue * 65535;
@@ -18203,7 +18207,7 @@ index 617ed3c..741495f 100644
        return 1;
      }
    return 0;
-@@ -7377,7 +9415,7 @@ pgtk_parse_color (struct frame *f, const char *color_name,
+@@ -7377,7 +9420,7 @@ pgtk_parse_color (struct frame *f, const char *color_name,
     colors in COLORS.  On W32, we no longer try to map colors to
     a palette.  */
  void
@@ -18212,7 +18216,7 @@ index 617ed3c..741495f 100644
  {
    int i;
  
-@@ -7395,7 +9433,7 @@ pgtk_query_colors (struct frame *f, Emacs_Color * colors, int ncolors)
+@@ -7395,7 +9438,7 @@ pgtk_query_colors (struct frame *f, Emacs_Color * colors, int ncolors)
  }
  
  void
@@ -18221,7 +18225,7 @@ index 617ed3c..741495f 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,166 +9441,1343 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,173 +9446,1350 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -18587,19 +18591,15 @@ index 617ed3c..741495f 100644
 +     (e.g. during compositor shutdown).  */
 +  if (!pgtk_skia_make_gl_context_current (f))
 +    return FALSE;
-+
-+  emacs_skia_surface_flush (skia_surface);
  
 -cairo_t *
 -pgtk_begin_cr_clip (struct frame *f)
 -{
 -  cairo_t *cr = FRAME_CR_CONTEXT (f);
-+  emacs_skia_surface_get_size (skia_surface, &width, &height);
-+  scale = gtk_widget_get_scale_factor (widget);
++  emacs_skia_surface_flush (skia_surface);
  
 -  if (!cr)
-+  if (pgtk_skia_debug_gl_enabled ())
-     {
+-    {
 -      cairo_surface_t *surface
 -	= gdk_window_create_similar_surface (gtk_widget_get_window
 -					     (FRAME_GTK_WIDGET (f)),
@@ -18607,9 +18607,13 @@ index 617ed3c..741495f 100644
 -					     FRAME_CR_SURFACE_DESIRED_WIDTH (f),
 -					     FRAME_CR_SURFACE_DESIRED_HEIGHT
 -					     (f));
--
++  emacs_skia_surface_get_size (skia_surface, &width, &height);
++  scale = gtk_widget_get_scale_factor (widget);
+ 
 -      cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
 -      cairo_surface_destroy (surface);
++  if (pgtk_skia_debug_gl_enabled ())
++    {
 +      static bool logged_once = false;
 +      if (!logged_once)
 +	{
@@ -18628,13 +18632,18 @@ index 617ed3c..741495f 100644
 +     the underlying cairo surface for correct blending.
  
 -  return cr;
+-}
 +     After this call, our GL context is NO LONGER current — GDK
 +     switched to the paint context.  */
 +  gdk_cairo_draw_from_gl (cr, gdk_window,
 +			  FRAME_GL_TEXTURE (f),
 +			  GL_TEXTURE,
 +			  scale, 0, 0, width, height);
-+
+ 
+-void
+-pgtk_end_cr_clip (struct frame *f)
+-{
+-  cairo_restore (FRAME_CR_CONTEXT (f));
 +  /* gdk_cairo_draw_from_gl uses GDK's paint context and may bind or
 +     retune the texture object it was handed.  Other frame contexts do
 +     not share current GL state, so only this frame needs a Skia state
@@ -18645,7 +18654,8 @@ index 617ed3c..741495f 100644
  }
  
 -void
--pgtk_end_cr_clip (struct frame *f)
+-pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
+-				       bool respects_alpha_background)
 +/* Resize FBO while preserving existing content.  This blits the old
 +   content to a reusable scratch FBO, resizes the main FBO, and blits
 +   the preserved content back after pgtk_setup_gl_framebuffer has
@@ -18653,9 +18663,13 @@ index 617ed3c..741495f 100644
 +static bool
 +pgtk_grow_gl_size (int current, int requested, int *grown)
  {
--  cairo_restore (FRAME_CR_CONTEXT (f));
+-  pgtk_set_cr_source_with_color (f, gc->foreground,
+-				 respects_alpha_background);
+-}
 +  int extra;
-+
+ 
+-void
+-pgtk_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
 +  if (requested <= 0)
 +    return false;
 +
@@ -18673,11 +18687,8 @@ index 617ed3c..741495f 100644
 +  else
 +    *grown = requested + extra;
 +  return true;
- }
- 
--void
--pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
--				       bool respects_alpha_background)
++}
++
 +static bool
 +pgtk_ensure_resize_scratch_framebuffer (struct frame *f, int width,
 +					int height)
@@ -19676,10 +19687,17 @@ index 617ed3c..741495f 100644
 +void
 +pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
 +				       bool respects_alpha_background)
++{
++  pgtk_set_cr_source_with_color (f, gc->foreground,
++				 respects_alpha_background);
++}
++
++void
++pgtk_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
+ 				       bool respects_alpha_background)
  {
-   pgtk_set_cr_source_with_color (f, gc->foreground,
- 				 respects_alpha_background);
-@@ -7595,12 +10810,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
+   pgtk_set_cr_source_with_color (f, gc->background,
+@@ -7595,12 +10815,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
        cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
  			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
@@ -19695,7 +19713,7 @@ index 617ed3c..741495f 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10828,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10833,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19705,7 +19723,7 @@ index 617ed3c..741495f 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10853,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10858,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19723,7 +19741,7 @@ index 617ed3c..741495f 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10874,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10879,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19780,7 +19798,7 @@ index 617ed3c..741495f 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10936,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10941,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  
