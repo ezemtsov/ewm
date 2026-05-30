@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..0ccfe40969e
+index 00000000000..b512c37fe93
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,2230 @@
+@@ -0,0 +1,2034 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -38,10 +38,7 @@ index 00000000000..0ccfe40969e
 +#define SKIA_LOG_ERROR(fmt, ...) ((void)0)
 +#endif
 +
-+/* Skia C++ headers - paths work with both:
-+   - Nix skia package: -I.../include/skia -> codec/SkCodec.h
-+   - Source build: -I.../skia -> include/codec/SkCodec.h  */
-+#include "codec/SkCodec.h"
++/* Skia C++ headers.  */
 +#include "core/SkCanvas.h"
 +#include "core/SkColorSpace.h"
 +#include "core/SkData.h"
@@ -810,41 +807,11 @@ index 00000000000..0ccfe40969e
 +}
 +
 +void
-+emacs_skia_canvas_save_layer (emacs_skia_canvas_t *canvas,
-+			      const emacs_skia_rect_t *bounds)
-+{
-+  if (canvas && canvas->canvas)
-+    {
-+      if (bounds)
-+	canvas->canvas->saveLayer (to_sk_rect (bounds), nullptr);
-+      else
-+	canvas->canvas->saveLayer (nullptr, nullptr);
-+    }
-+}
-+
-+void
 +emacs_skia_canvas_restore (emacs_skia_canvas_t *canvas)
 +{
 +  if (canvas && canvas->canvas)
 +    {
 +      canvas->canvas->restore ();
-+    }
-+}
-+
-+int
-+emacs_skia_canvas_get_save_count (emacs_skia_canvas_t *canvas)
-+{
-+  return canvas && canvas->canvas ? canvas->canvas->getSaveCount ()
-+				  : 0;
-+}
-+
-+void
-+emacs_skia_canvas_restore_to_count (emacs_skia_canvas_t *canvas,
-+				    int count)
-+{
-+  if (canvas && canvas->canvas)
-+    {
-+      canvas->canvas->restoreToCount (count);
 +    }
 +}
 +
@@ -875,20 +842,6 @@ index 00000000000..0ccfe40969e
 +  if (canvas && canvas->canvas && rect)
 +    {
 +      canvas->canvas->clipIRect (to_sk_irect (rect));
-+    }
-+}
-+
-+void
-+emacs_skia_canvas_get_clip_bounds (emacs_skia_canvas_t *canvas,
-+				   emacs_skia_rect_t *bounds)
-+{
-+  if (canvas && canvas->canvas && bounds)
-+    {
-+      SkRect sk_bounds = canvas->canvas->getLocalClipBounds ();
-+      bounds->left = sk_bounds.left ();
-+      bounds->top = sk_bounds.top ();
-+      bounds->right = sk_bounds.right ();
-+      bounds->bottom = sk_bounds.bottom ();
 +    }
 +}
 +
@@ -1128,31 +1081,6 @@ index 00000000000..0ccfe40969e
 +    }
 +}
 +
-+emacs_skia_color_t
-+emacs_skia_paint_get_color (emacs_skia_paint_t *paint)
-+{
-+  return paint ? paint->paint.getColor () : 0;
-+}
-+
-+void
-+emacs_skia_paint_set_alpha (emacs_skia_paint_t *paint, uint8_t alpha)
-+{
-+  if (paint)
-+    {
-+      paint->paint.setAlpha (alpha);
-+    }
-+}
-+
-+void
-+emacs_skia_paint_set_antialias (emacs_skia_paint_t *paint,
-+				bool antialias)
-+{
-+  if (paint)
-+    {
-+      paint->paint.setAntiAlias (antialias);
-+    }
-+}
-+
 +void
 +emacs_skia_paint_set_blend_mode (emacs_skia_paint_t *paint,
 +				 emacs_skia_blend_mode_t mode)
@@ -1235,55 +1163,6 @@ index 00000000000..0ccfe40969e
 +/* ============================================================
 +   Font and Typeface
 +   ============================================================ */
-+
-+emacs_skia_typeface_t *
-+emacs_skia_typeface_create_from_file (const char *path)
-+{
-+  sk_sp<SkFontMgr> fontMgr = get_font_mgr ();
-+  if (!fontMgr)
-+    {
-+      SKIA_LOG_ERROR ("typeface_create_from_file: no font manager available");
-+      return nullptr;
-+    }
-+
-+  auto typeface = fontMgr->makeFromFile (path);
-+  if (!typeface)
-+    {
-+      SKIA_LOG_ERROR ("typeface_create_from_file: failed to load '%s'", path);
-+      return nullptr;
-+    }
-+
-+  return make_typeface (typeface);
-+}
-+
-+emacs_skia_typeface_t *
-+emacs_skia_typeface_create_from_data (const void *data, size_t size)
-+{
-+  sk_sp<SkFontMgr> fontMgr = get_font_mgr ();
-+  if (!fontMgr)
-+    {
-+      return nullptr;
-+    }
-+
-+  auto skdata = SkData::MakeWithCopy (data, size);
-+  return make_typeface (fontMgr->makeFromData (skdata));
-+}
-+
-+emacs_skia_typeface_t *
-+emacs_skia_typeface_create_from_name (const char *family_name,
-+				      int weight, int width,
-+				      int slant)
-+{
-+  sk_sp<SkFontMgr> fontMgr = get_font_mgr ();
-+  if (!fontMgr)
-+    {
-+      return nullptr;
-+    }
-+
-+  SkFontStyle style (weight, width,
-+		     static_cast<SkFontStyle::Slant> (slant));
-+  return make_typeface (fontMgr->legacyMakeTypeface (family_name, style));
-+}
 +
 +void
 +emacs_skia_typeface_destroy (emacs_skia_typeface_t *typeface)
@@ -1495,50 +1374,6 @@ index 00000000000..0ccfe40969e
 +      extents[i].x_advance = widths[i];
 +      extents[i].y_advance = 0; /* Horizontal fonts */
 +    }
-+}
-+
-+void
-+emacs_skia_font_get_glyph_bounds (emacs_skia_font_t *font,
-+				  const emacs_skia_glyph_t *glyphs,
-+				  int count,
-+				  emacs_skia_rect_t *bounds)
-+{
-+  if (!font || !glyphs || !bounds || count <= 0)
-+    return;
-+
-+  emacs_skia_stack_array<SkRect, GLYPH_STACK_BUFFER_SIZE> sk_bounds (count);
-+
-+  SkSpan<const SkGlyphID> glyph_span (glyphs, count);
-+  SkSpan<SkRect> bounds_span (sk_bounds.get (), count);
-+
-+  font->font.getBounds (glyph_span, bounds_span, nullptr);
-+
-+  for (int i = 0; i < count; i++)
-+    {
-+      bounds[i].left = sk_bounds[i].left ();
-+      bounds[i].top = sk_bounds[i].top ();
-+      bounds[i].right = sk_bounds[i].right ();
-+      bounds[i].bottom = sk_bounds[i].bottom ();
-+    }
-+}
-+
-+int
-+emacs_skia_font_text_to_glyphs (emacs_skia_font_t *font,
-+				const char *text, size_t byte_length,
-+				emacs_skia_glyph_t *glyphs,
-+				int max_glyphs)
-+{
-+  if (!font || !text)
-+    {
-+      return 0;
-+    }
-+
-+  /* New Skia API uses SkSpan for output buffer */
-+  SkSpan<SkGlyphID> glyph_span (glyphs, max_glyphs);
-+  size_t count
-+    = font->font.textToGlyphs (text, byte_length,
-+			       SkTextEncoding::kUTF8, glyph_span);
-+  return static_cast<int> (count);
 +}
 +
 +emacs_skia_glyph_t
@@ -2092,20 +1927,6 @@ index 00000000000..0ccfe40969e
 +  return write_image_to_png (image.get (), ctx, write_fn, write_ctx);
 +}
 +
-+/* Write image to PNG using a callback function.
-+   Returns true on success, false on failure.  */
-+bool
-+emacs_skia_image_write_to_png (emacs_skia_image_t *image,
-+			       emacs_skia_write_fn write_fn,
-+			       void *write_ctx)
-+{
-+  if (!image || !image->image || !write_fn)
-+    return false;
-+
-+  return write_image_to_png (image->image.get (), nullptr, write_fn,
-+			     write_ctx);
-+}
-+
 +/* ============================================================
 +   Image Transformation
 +   ============================================================ */
@@ -2148,28 +1969,11 @@ index 00000000000..0ccfe40969e
 +}
 +
 +void
-+emacs_skia_image_transform_get_matrix (emacs_skia_image_transform_t *transform,
-+				       float matrix[6])
-+{
-+  if (transform && matrix)
-+    {
-+      for (int i = 0; i < 6; i++)
-+	matrix[i] = transform->matrix[i];
-+    }
-+}
-+
-+void
 +emacs_skia_image_transform_set_smoothing (emacs_skia_image_transform_t *transform,
 +					  bool smoothing)
 +{
 +  if (transform)
 +    transform->smoothing = smoothing;
-+}
-+
-+bool
-+emacs_skia_image_transform_get_smoothing (emacs_skia_image_transform_t *transform)
-+{
-+  return transform ? transform->smoothing : true;
 +}
 +
 +/* Draw an image with transformation applied.  */
@@ -2236,10 +2040,10 @@ index 00000000000..0ccfe40969e
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..2f2d684d8d4
+index 00000000000..f9023067c1d
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,656 @@
+@@ -0,0 +1,601 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -2496,12 +2300,6 @@ index 00000000000..2f2d684d8d4
 +					emacs_skia_write_fn write_fn,
 +					void *write_ctx);
 +
-+  /* Write image to PNG using a callback function.
-+     Returns true on success, false on failure.  */
-+  bool emacs_skia_image_write_to_png (emacs_skia_image_t *image,
-+				      emacs_skia_write_fn write_fn,
-+				      void *write_ctx);
-+
 +  /* Calculate stride for pixel buffers.
 +     format: 0 = A8 (1 byte/pixel), 1 = RGB24/ARGB32 (4 bytes/pixel).
 +     Returns stride in bytes (4-byte aligned).  */
@@ -2526,14 +2324,10 @@ index 00000000000..2f2d684d8d4
 +     [0 0 1]  */
 +  void emacs_skia_image_transform_set_matrix (
 +    emacs_skia_image_transform_t *transform, const float matrix[6]);
-+  void emacs_skia_image_transform_get_matrix (
-+    emacs_skia_image_transform_t *transform, float matrix[6]);
 +
-+  /* Set/get smoothing (filter mode).  */
++  /* Set smoothing (filter mode).  */
 +  void emacs_skia_image_transform_set_smoothing (
 +    emacs_skia_image_transform_t *transform, bool smoothing);
-+  bool emacs_skia_image_transform_get_smoothing (
-+    emacs_skia_image_transform_t *transform);
 +
 +  /* ============================================================
 +     Canvas (drawing context)
@@ -2541,13 +2335,7 @@ index 00000000000..2f2d684d8d4
 +
 +  /* State save/restore */
 +  void emacs_skia_canvas_save (emacs_skia_canvas_t *canvas);
-+  void emacs_skia_canvas_save_layer (emacs_skia_canvas_t *canvas,
-+				     const emacs_skia_rect_t *bounds);
 +  void emacs_skia_canvas_restore (emacs_skia_canvas_t *canvas);
-+  int emacs_skia_canvas_get_save_count (emacs_skia_canvas_t *canvas);
-+  void
-+  emacs_skia_canvas_restore_to_count (emacs_skia_canvas_t *canvas,
-+				      int count);
 +
 +  /* Clear entire canvas */
 +  void emacs_skia_canvas_clear (emacs_skia_canvas_t *canvas,
@@ -2558,10 +2346,6 @@ index 00000000000..2f2d684d8d4
 +				    const emacs_skia_rect_t *rect);
 +  void emacs_skia_canvas_clip_irect (emacs_skia_canvas_t *canvas,
 +				     const emacs_skia_irect_t *rect);
-+
-+  /* Get current clip bounds */
-+  void emacs_skia_canvas_get_clip_bounds (emacs_skia_canvas_t *canvas,
-+					  emacs_skia_rect_t *bounds);
 +
 +  /* Transform */
 +  void emacs_skia_canvas_translate (emacs_skia_canvas_t *canvas,
@@ -2682,14 +2466,6 @@ index 00000000000..2f2d684d8d4
 +
 +  void emacs_skia_paint_set_color (emacs_skia_paint_t *paint,
 +				   emacs_skia_color_t color);
-+  emacs_skia_color_t
-+  emacs_skia_paint_get_color (emacs_skia_paint_t *paint);
-+
-+  void emacs_skia_paint_set_alpha (emacs_skia_paint_t *paint,
-+				   uint8_t alpha);
-+
-+  void emacs_skia_paint_set_antialias (emacs_skia_paint_t *paint,
-+				       bool antialias);
 +  void emacs_skia_paint_set_blend_mode (emacs_skia_paint_t *paint,
 +					emacs_skia_blend_mode_t mode);
 +
@@ -2713,19 +2489,6 @@ index 00000000000..2f2d684d8d4
 +  /* ============================================================
 +     Font and Typeface
 +     ============================================================ */
-+
-+  /* Load a typeface from a file path */
-+  emacs_skia_typeface_t *
-+  emacs_skia_typeface_create_from_file (const char *path);
-+
-+  /* Load a typeface from memory */
-+  emacs_skia_typeface_t *
-+  emacs_skia_typeface_create_from_data (const void *data,
-+					size_t size);
-+
-+  /* Load a typeface by family name and style */
-+  emacs_skia_typeface_t *emacs_skia_typeface_create_from_name (
-+    const char *family_name, int weight, int width, int slant);
 +
 +#ifdef HAVE_FONTCONFIG
 +  /* Forward declaration for FcPattern */
@@ -2779,20 +2542,6 @@ index 00000000000..2f2d684d8d4
 +  void emacs_skia_font_get_glyph_extents (
 +    emacs_skia_font_t *font, const emacs_skia_glyph_t *glyphs,
 +    int count, emacs_skia_glyph_extents_t *extents);
-+
-+  /* Get bounds for multiple glyphs (array version) */
-+  void emacs_skia_font_get_glyph_bounds (
-+    emacs_skia_font_t *font, const emacs_skia_glyph_t *glyphs,
-+    int count, emacs_skia_rect_t *bounds);
-+
-+  /* Convert text to glyphs (UTF-8 input).
-+     The caller must ensure that byte_length does not exceed the actual
-+     buffer size of text to prevent buffer over-read.  */
-+  int emacs_skia_font_text_to_glyphs (emacs_skia_font_t *font,
-+				      const char *text,
-+				      size_t byte_length,
-+				      emacs_skia_glyph_t *glyphs,
-+				      int max_glyphs);
 +
 +  /* Convert single Unicode codepoint to glyph */
 +  emacs_skia_glyph_t
