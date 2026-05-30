@@ -11513,7 +11513,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..af87ed8 100644
+index 617ed3c..74e2bf7 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -19783,7 +19783,7 @@ index 617ed3c..af87ed8 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10913,196 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10913,180 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  
@@ -19825,6 +19825,18 @@ index 617ed3c..af87ed8 100644
 +  acc->data = Fcons (make_unibyte_string ((const char *) data, size),
 +		     acc->data);
 +  return size;
++}
++
++static void
++pgtk_skia_export_frame_to_canvas (struct frame *f,
++				  emacs_skia_canvas_t *canvas,
++				  int width, int height)
++{
++  emacs_skia_canvas_t *saved_canvas = FRAME_SKIA_CANVAS (f);
++  FRAME_SKIA_CANVAS (f) = canvas;
++  emacs_skia_canvas_clear (canvas, EMACS_SKIA_COLOR_RGB (255, 255, 255));
++  expose_frame (f, 0, 0, width, height);
++  FRAME_SKIA_CANVAS (f) = saved_canvas;
 +}
 +
 +/* Export frames to PDF, SVG, or PNG using Skia.
@@ -19881,17 +19893,7 @@ index 617ed3c..af87ed8 100644
 +	      error ("Failed to begin PDF page");
 +	    }
 +
-+	  /* Save current Skia canvas and use document page.  */
-+	  emacs_skia_canvas_t *saved_canvas = FRAME_SKIA_CANVAS (f);
-+	  FRAME_SKIA_CANVAS (f) = canvas;
-+
-+	  /* Clear and redraw the frame.  */
-+	  emacs_skia_canvas_clear (canvas,
-+				   EMACS_SKIA_COLOR_RGB (255, 255,
-+							 255));
-+	  expose_frame (f, 0, 0, width, height);
-+
-+	  FRAME_SKIA_CANVAS (f) = saved_canvas;
++	  pgtk_skia_export_frame_to_canvas (f, canvas, width, height);
 +	  emacs_skia_document_end_page (doc);
 +
 +	  if (NILP (frames))
@@ -19921,16 +19923,7 @@ index 617ed3c..af87ed8 100644
 +	  error ("Failed to create SVG canvas");
 +	}
 +
-+      /* Save current Skia canvas and use SVG canvas.  */
-+      emacs_skia_canvas_t *saved_canvas = FRAME_SKIA_CANVAS (f);
-+      FRAME_SKIA_CANVAS (f) = canvas;
-+
-+      /* Clear and redraw the frame.  */
-+      emacs_skia_canvas_clear (canvas,
-+			       EMACS_SKIA_COLOR_RGB (255, 255, 255));
-+      expose_frame (f, 0, 0, width, height);
-+
-+      FRAME_SKIA_CANVAS (f) = saved_canvas;
++      pgtk_skia_export_frame_to_canvas (f, canvas, width, height);
 +      emacs_skia_svg_canvas_finish (canvas);
 +    }
 +  else if (is_png)
@@ -19953,16 +19946,7 @@ index 617ed3c..af87ed8 100644
 +	  error ("Failed to get PNG canvas");
 +	}
 +
-+      /* Save current Skia canvas and use PNG canvas.  */
-+      emacs_skia_canvas_t *saved_canvas = FRAME_SKIA_CANVAS (f);
-+      FRAME_SKIA_CANVAS (f) = canvas;
-+
-+      /* Clear and redraw the frame.  */
-+      emacs_skia_canvas_clear (canvas,
-+			       EMACS_SKIA_COLOR_RGB (255, 255, 255));
-+      expose_frame (f, 0, 0, width, height);
-+
-+      FRAME_SKIA_CANVAS (f) = saved_canvas;
++      pgtk_skia_export_frame_to_canvas (f, canvas, width, height);
 +
 +      /* Flush the surface and encode to PNG.  */
 +      emacs_skia_surface_flush (png_surface);

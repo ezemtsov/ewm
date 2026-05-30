@@ -1,5 +1,5 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index af87ed8..4ea2e6b 100644
+index 74e2bf7..a5fa3a3 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
 @@ -10603,6 +10603,667 @@ If FRAME is nil, use the selected frame.  */)
