@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..4c476b082d3
+index 00000000000..585a5994e40
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1380 @@
+@@ -0,0 +1,1372 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -677,11 +677,7 @@ index 00000000000..4c476b082d3
 +			     emacs_skia_paint_t *paint)
 +{
 +  if (canvas && canvas->canvas && path && paint)
-+    {
-+      /* Convert builder to path for drawing.  */
-+      canvas->canvas->drawPath (path->builder.snapshot (),
-+				paint->paint);
-+    }
++    canvas->canvas->drawPath (path->builder.detach (), paint->paint);
 +}
 +
 +void
@@ -689,10 +685,7 @@ index 00000000000..4c476b082d3
 +			     emacs_skia_path_t *path)
 +{
 +  if (canvas && canvas->canvas && path)
-+    {
-+      /* Convert builder to path for clipping.  */
-+      canvas->canvas->clipPath (path->builder.snapshot ());
-+    }
++    canvas->canvas->clipPath (path->builder.detach ());
 +}
 +
 +/* ============================================================
@@ -1066,7 +1059,6 @@ index 00000000000..4c476b082d3
 +  if (!path || !oval)
 +    return;
 +
-+  /* SkPathBuilder::arcTo uses forceMoveTo parameter.  */
 +  path->builder.arcTo (to_sk_rect (oval), start_angle, sweep_angle,
 +		       force_move_to);
 +}
