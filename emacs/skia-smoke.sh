@@ -213,6 +213,10 @@ static char *image[] = {
   (let ((edges (window-inside-pixel-edges window)))
     (list (nth 0 edges) (nth 1 edges) width height)))
 
+(defun ewm-skia-smoke-window-offset-rect (x y width height &optional window)
+  (let ((edges (window-inside-pixel-edges window)))
+    (list (+ (nth 0 edges) x) (+ (nth 1 edges) y) width height)))
+
 (defun ewm-skia-smoke-left-fringe-rect ()
   (let ((outer (window-pixel-edges))
         (inside (window-inside-pixel-edges)))
@@ -364,6 +368,72 @@ static char *image[] = {
             (ewm-skia-smoke-fail
              "scaled image slice selected wrong source region after %s: red=%S transparent=%S"
              phase red-slice transparent-slice)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-masked-image-cursor (phase)
+  (unless (image-type-available-p 'xpm)
+    (ewm-skia-smoke-fail "XPM images are not available"))
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-masked-image-smoke*"))
+         (old-cursor-color (frame-parameter nil 'cursor-color))
+         (row (concat (make-string 30 ?R) (make-string 90 ?.)))
+         (xpm (ewm-skia-smoke-xpm 120 40 (make-list 40 row)))
+         (image (create-image xpm 'xpm t
+                              :width 480
+                              :height 160
+                              :transform-smoothing nil))
+         red-stats transparent-stats cursor-stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 8)
+          (blink-cursor-mode -1)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert-image image " "))
+          (switch-to-buffer buffer)
+          (goto-char (point-min))
+          (ewm-skia-smoke-redraw)
+          (setq red-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-offset-rect 0 0 180 180)))
+          (setq transparent-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-offset-rect 260 0 200 180)))
+          (unless (and (consp red-stats)
+                       (> (nth 2 red-stats) 10000))
+            (ewm-skia-smoke-fail
+             "masked image missing opaque red pixels after %s: stats=%S"
+             phase red-stats))
+          (unless (and (consp transparent-stats)
+                       (< (nth 2 transparent-stats) 50)
+                       (> (nth 3 transparent-stats) 10000))
+            (ewm-skia-smoke-fail
+             "masked image did not preserve transparent green pixels after %s: stats=%S"
+             phase transparent-stats))
+          (modify-frame-parameters nil '((cursor-color . "#ff0000")))
+          (with-current-buffer buffer
+            (setq-local cursor-type 'box))
+          (goto-char (point-min))
+          (ewm-skia-smoke-redraw)
+          (setq cursor-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-offset-rect 260 0 200 180)))
+          (unless (and (consp cursor-stats)
+                       (> (- (nth 2 cursor-stats)
+                             (nth 2 transparent-stats))
+                          100))
+            (ewm-skia-smoke-fail
+             "cursor over masked image did not expose red cursor pixels after %s: baseline=%S cursor=%S"
+             phase transparent-stats cursor-stats)))
+      (modify-frame-parameters nil `((cursor-color . ,old-cursor-color)))
       (when (buffer-live-p source-buffer)
         (switch-to-buffer source-buffer))
       (set-frame-size nil 96 32)
@@ -716,6 +786,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-scaled-transparent-image "initial draw")
 (ewm-skia-smoke-check-rotated-transparent-image "initial draw")
 (ewm-skia-smoke-check-sliced-scaled-image "initial draw")
+(ewm-skia-smoke-check-masked-image-cursor "initial draw")
 (ewm-skia-smoke-check-window-clipping "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
