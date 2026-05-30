@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..585a5994e40
+index 00000000000..0c4fc71bbe5
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1372 @@
+@@ -0,0 +1,1360 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -195,18 +195,6 @@ index 00000000000..585a5994e40
 +to_sk_rect (const emacs_skia_rect_t *r)
 +{
 +  return SkRect::MakeLTRB (r->left, r->top, r->right, r->bottom);
-+}
-+
-+static inline SkPoint
-+to_sk_point (emacs_skia_point_t p)
-+{
-+  return SkPoint::Make (p.x, p.y);
-+}
-+
-+static inline SkColor
-+to_sk_color (emacs_skia_color_t c)
-+{
-+  return static_cast<SkColor> (c);
 +}
 +
 +static inline SkBlendMode
@@ -591,7 +579,7 @@ index 00000000000..585a5994e40
 +{
 +  if (canvas && canvas->canvas)
 +    {
-+      canvas->canvas->clear (to_sk_color (color));
++      canvas->canvas->clear (static_cast<SkColor> (color));
 +    }
 +}
 +
@@ -636,13 +624,13 @@ index 00000000000..585a5994e40
 +
 +  /* Convert positions to SkPoint array.  */
 +  for (int i = 0; i < count; i++)
-+    sk_positions[i] = to_sk_point (positions[i]);
++    sk_positions[i] = SkPoint::Make (positions[i].x, positions[i].y);
 +
 +  /* New Skia API uses SkSpan instead of raw pointers.  */
 +  SkSpan<const SkGlyphID> glyph_span (glyphs, count);
 +  SkSpan<const SkPoint> pos_span (sk_positions.get (), count);
 +  canvas->canvas->drawGlyphs (glyph_span, pos_span,
-+			      to_sk_point (origin), font->font,
++			      SkPoint::Make (origin.x, origin.y), font->font,
 +			      paint->paint);
 +}
 +
@@ -712,7 +700,7 @@ index 00000000000..585a5994e40
 +{
 +  if (paint)
 +    {
-+      paint->paint.setColor (to_sk_color (color));
++      paint->paint.setColor (static_cast<SkColor> (color));
 +    }
 +}
 +
