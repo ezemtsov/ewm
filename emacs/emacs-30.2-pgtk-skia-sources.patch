@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..083de71ba11
+index 00000000000..82dc1c8a3eb
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1502 @@
+@@ -0,0 +1,1494 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -629,16 +629,6 @@ index 00000000000..083de71ba11
 +  if (canvas && canvas->canvas && rect)
 +    {
 +      canvas->canvas->clipRect (to_sk_rect (rect));
-+    }
-+}
-+
-+void
-+emacs_skia_canvas_translate (emacs_skia_canvas_t *canvas, float dx,
-+			     float dy)
-+{
-+  if (canvas && canvas->canvas)
-+    {
-+      canvas->canvas->translate (dx, dy);
 +    }
 +}
 +
@@ -1479,6 +1469,7 @@ index 00000000000..083de71ba11
 +emacs_skia_canvas_draw_image_transformed (emacs_skia_canvas_t *canvas,
 +					  emacs_skia_image_t *image,
 +					  const double matrix[3][3],
++					  float x, float y,
 +					  bool smooth,
 +					  emacs_skia_paint_t *paint)
 +{
@@ -1486,6 +1477,7 @@ index 00000000000..083de71ba11
 +    return;
 +
 +  SkAutoCanvasRestore restore (canvas->canvas, true);
++  canvas->canvas->translate (x, y);
 +
 +  if (matrix)
 +    {
@@ -1508,10 +1500,10 @@ index 00000000000..083de71ba11
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..7ac3e05668f
+index 00000000000..d60ccbdca47
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,415 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1704,8 +1696,6 @@ index 00000000000..7ac3e05668f
 +				    const emacs_skia_rect_t *rect);
 +
 +  /* Transform */
-+  void emacs_skia_canvas_translate (emacs_skia_canvas_t *canvas,
-+				    float dx, float dy);
 +  void emacs_skia_canvas_scale (emacs_skia_canvas_t *canvas, float sx,
 +				float sy);
 +
@@ -1742,7 +1732,8 @@ index 00000000000..7ac3e05668f
 +  /* Draw image with transformation applied.  */
 +  void emacs_skia_canvas_draw_image_transformed (
 +    emacs_skia_canvas_t *canvas, emacs_skia_image_t *image,
-+    const double matrix[3][3], bool smooth, emacs_skia_paint_t *paint);
++    const double matrix[3][3], float x, float y, bool smooth,
++    emacs_skia_paint_t *paint);
 +
 +  /* Draw a path */
 +  void emacs_skia_canvas_draw_path (emacs_skia_canvas_t *canvas,

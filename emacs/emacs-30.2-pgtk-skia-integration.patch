@@ -11529,7 +11529,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..733da5a 100644
+index 617ed3c..5b35e18 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -13778,11 +13778,11 @@ index 617ed3c..733da5a 100644
 +	 pattern matrix.  */
 +      if (s->img->skia_transform_p)
 +	{
-+	  emacs_skia_canvas_translate (canvas, x - s->slice.x,
-+				       y - s->slice.y);
 +	  emacs_skia_canvas_draw_image_transformed (canvas,
 +						    s->img->skia_data,
 +						    s->img->skia_transform,
++						    x - s->slice.x,
++						    y - s->slice.y,
 +						    s->img->skia_transform_smoothing,
 +						    paint);
 +	}
