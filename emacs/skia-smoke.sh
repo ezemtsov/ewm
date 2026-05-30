@@ -179,6 +179,14 @@ cat >"$payload" <<'EOF'
        "bad PNG export after %s: prefix=%S length=%d"
        phase prefix length))))
 
+(defun ewm-skia-smoke-check-image-transform-capabilities (phase)
+  (let ((capabilities (image-transforms-p)))
+    (unless (and (memq 'scale capabilities)
+                 (memq 'rotate90 capabilities))
+      (ewm-skia-smoke-fail
+       "missing image transform capability after %s: %S"
+       phase capabilities))))
+
 (defun ewm-skia-smoke-check-unavailable-export (type expected-message)
   (condition-case err
       (let ((data (x-export-frames nil type)))
@@ -296,6 +304,52 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-sliced-scaled-image (phase)
+  (unless (image-type-available-p 'xpm)
+    (ewm-skia-smoke-fail "XPM images are not available"))
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-sliced-image-smoke*"))
+         (row (concat (make-string 30 ?R) (make-string 90 ?.)))
+         (xpm (ewm-skia-smoke-xpm 120 30 (make-list 30 row)))
+         (image (create-image xpm 'xpm t
+                              :width 480
+                              :height 120
+                              :transform-smoothing nil))
+         red-slice transparent-slice)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 40 8)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert-image image " " nil '(0 0 120 120)))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq red-slice (pgtk-skia-test-framebuffer-color-counts
+                           nil (ewm-skia-smoke-window-rect 160 160)))
+          (with-current-buffer buffer
+            (erase-buffer)
+            (insert-image image " " nil '(240 0 120 120)))
+          (ewm-skia-smoke-redraw)
+          (setq transparent-slice (pgtk-skia-test-framebuffer-color-counts
+                                   nil (ewm-skia-smoke-window-rect 160 160)))
+          (unless (and (consp red-slice)
+                       (consp transparent-slice)
+                       (> (nth 2 red-slice) 10000)
+                       (< (nth 2 transparent-slice)
+                          (/ (nth 2 red-slice) 20)))
+            (ewm-skia-smoke-fail
+             "scaled image slice selected wrong source region after %s: red=%S transparent=%S"
+             phase red-slice transparent-slice)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
                  (fboundp 'pgtk-skia-gl-enabled-p)))
@@ -345,12 +399,14 @@ static char *image[] = {
 (ewm-skia-smoke-check-clear-state "initial draw")
 (ewm-skia-smoke-check-setup-state "initial draw")
 (ewm-skia-smoke-check-png-export "initial draw")
+(ewm-skia-smoke-check-image-transform-capabilities "initial draw")
 (ewm-skia-smoke-check-unavailable-export
  'pdf "Skia PDF export is not available")
 (ewm-skia-smoke-check-unavailable-export
  'svg "Skia SVG export is not available")
 (ewm-skia-smoke-check-scaled-transparent-image "initial draw")
 (ewm-skia-smoke-check-rotated-transparent-image "initial draw")
+(ewm-skia-smoke-check-sliced-scaled-image "initial draw")
 
 (goto-char (point-min))
 (ewm-skia-smoke-redraw)
