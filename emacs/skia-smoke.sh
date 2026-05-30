@@ -1070,6 +1070,16 @@ static char *image[] = {
                   ("box"
                    (:foreground "#0000ff"
                     :box (:line-width 2 :color "#ff0000"))
+                   600)
+                  ("raised-box"
+                   (:foreground "#0000ff"
+                    :box (:line-width 4 :color "#ff0000"
+                          :style released-button))
+                   600)
+                  ("sunken-box"
+                   (:foreground "#0000ff"
+                    :box (:line-width 4 :color "#ff0000"
+                          :style pressed-button))
                    600)))
     (ewm-skia-smoke-check-red-decoration
      phase (nth 0 case) (nth 1 case) (nth 2 case))))
