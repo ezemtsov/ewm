@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..97329641da7
+index 00000000000..8c66c758a72
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1649 @@
+@@ -0,0 +1,1605 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -224,36 +224,10 @@ index 00000000000..97329641da7
 +      return SkBlendMode::kSrc;
 +    case EMACS_SKIA_BLEND_SRC_OVER:
 +      return SkBlendMode::kSrcOver;
-+    case EMACS_SKIA_BLEND_DST_OVER:
-+      return SkBlendMode::kDstOver;
-+    case EMACS_SKIA_BLEND_CLEAR:
-+      return SkBlendMode::kClear;
-+    case EMACS_SKIA_BLEND_XOR:
-+      return SkBlendMode::kXor;
 +    case EMACS_SKIA_BLEND_DIFFERENCE:
 +      return SkBlendMode::kDifference;
-+    case EMACS_SKIA_BLEND_EXCLUSION:
-+      return SkBlendMode::kExclusion;
 +    default:
 +      return SkBlendMode::kSrcOver;
-+    }
-+}
-+
-+static inline SkFontHinting
-+to_sk_hinting (emacs_skia_hinting_t h)
-+{
-+  switch (h)
-+    {
-+    case EMACS_SKIA_HINTING_NONE:
-+      return SkFontHinting::kNone;
-+    case EMACS_SKIA_HINTING_SLIGHT:
-+      return SkFontHinting::kSlight;
-+    case EMACS_SKIA_HINTING_NORMAL:
-+      return SkFontHinting::kNormal;
-+    case EMACS_SKIA_HINTING_FULL:
-+      return SkFontHinting::kFull;
-+    default:
-+      return SkFontHinting::kNormal;
 +    }
 +}
 +
@@ -983,6 +957,7 @@ index 00000000000..97329641da7
 +    SkFont (typeface->typeface, size), typeface->typeface
 +  };
 +  font->font.setSubpixel (true);
++  font->font.setHinting (SkFontHinting::kNormal);
 +  return font;
 +}
 +
@@ -990,25 +965,6 @@ index 00000000000..97329641da7
 +emacs_skia_font_destroy (emacs_skia_font_t *font)
 +{
 +  delete font;
-+}
-+
-+void
-+emacs_skia_font_set_hinting (emacs_skia_font_t *font,
-+			     emacs_skia_hinting_t hinting)
-+{
-+  if (font)
-+    {
-+      font->font.setHinting (to_sk_hinting (hinting));
-+    }
-+}
-+
-+void
-+emacs_skia_font_set_subpixel (emacs_skia_font_t *font, bool subpixel)
-+{
-+  if (font)
-+    {
-+      font->font.setSubpixel (subpixel);
-+    }
 +}
 +
 +void
@@ -1655,10 +1611,10 @@ index 00000000000..97329641da7
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..6e0066c755b
+index 00000000000..c6bf6ca9c5c
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,471 @@
+@@ -0,0 +1,453 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1755,24 +1711,11 @@ index 00000000000..6e0066c755b
 +  {
 +    EMACS_SKIA_BLEND_SRC,
 +    EMACS_SKIA_BLEND_SRC_OVER,
-+    EMACS_SKIA_BLEND_DST_OVER,
-+    EMACS_SKIA_BLEND_CLEAR,
-+    EMACS_SKIA_BLEND_XOR,
 +    EMACS_SKIA_BLEND_DIFFERENCE,
-+    EMACS_SKIA_BLEND_EXCLUSION,
 +  } emacs_skia_blend_mode_t;
 +
 +  /* Opaque path type for complex shapes */
 +  typedef struct emacs_skia_path emacs_skia_path_t;
-+
-+  /* Font hinting */
-+  typedef enum
-+  {
-+    EMACS_SKIA_HINTING_NONE,
-+    EMACS_SKIA_HINTING_SLIGHT,
-+    EMACS_SKIA_HINTING_NORMAL,
-+    EMACS_SKIA_HINTING_FULL,
-+  } emacs_skia_hinting_t;
 +
 +  /* ============================================================
 +     Capability Queries
@@ -2031,11 +1974,6 @@ index 00000000000..6e0066c755b
 +			  float size);
 +  void emacs_skia_font_destroy (emacs_skia_font_t *font);
 +
-+  void emacs_skia_font_set_hinting (emacs_skia_font_t *font,
-+				    emacs_skia_hinting_t hinting);
-+  void emacs_skia_font_set_subpixel (emacs_skia_font_t *font,
-+				     bool subpixel);
-+
 +  /* Get font extents (replacement for cairo_scaled_font_extents) */
 +  void
 +  emacs_skia_font_get_extents (emacs_skia_font_t *font,
@@ -2132,10 +2070,10 @@ index 00000000000..6e0066c755b
 +#endif /* EMACS_SKIA_H */
 diff --git a/src/skiafont.c b/src/skiafont.c
 new file mode 100644
-index 00000000000..5811e86522a
+index 00000000000..b6ea4220c7b
 --- /dev/null
 +++ b/src/skiafont.c
-@@ -0,0 +1,836 @@
+@@ -0,0 +1,827 @@
 +/* skiafont.c -- FreeType font driver with Skia rendering.
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -2406,17 +2344,8 @@ index 00000000000..5811e86522a
 +  skiafont_info->skia_typeface
 +    = emacs_skia_typeface_create_from_fc_pattern (match);
 +  if (skiafont_info->skia_typeface)
-+    {
-+      skiafont_info->skia_font
-+	= emacs_skia_font_create (skiafont_info->skia_typeface, size);
-+      if (skiafont_info->skia_font)
-+	{
-+	  emacs_skia_font_set_subpixel (skiafont_info->skia_font,
-+					true);
-+	  emacs_skia_font_set_hinting (skiafont_info->skia_font,
-+				       EMACS_SKIA_HINTING_NORMAL);
-+	}
-+    }
++    skiafont_info->skia_font
++      = emacs_skia_font_create (skiafont_info->skia_typeface, size);
 +  else
 +    skiafont_info->skia_font = NULL;
 +
