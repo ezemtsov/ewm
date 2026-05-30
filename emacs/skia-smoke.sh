@@ -381,6 +381,53 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-png-image-loader (phase)
+  (unless (image-type-available-p 'png)
+    (ewm-skia-smoke-fail "PNG images are not available"))
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-png-image-smoke*"))
+         (png (base64-decode-string
+               "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAIElEQVR42mP4z8DwHx0zUAJGDRw1cNTAUQNHDRypBgIA3FfHOfmPdmEAAAAASUVORK5CYII="))
+         (image (create-image png 'png t
+                              :width 400
+                              :height 160
+                              :transform-smoothing nil))
+         red-stats transparent-stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 8)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert-image image " "))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq red-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-offset-rect 0 0 180 180)))
+          (setq transparent-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-offset-rect 240 0 160 180)))
+          (unless (and (consp red-stats)
+                       (> (nth 2 red-stats) 10000))
+            (ewm-skia-smoke-fail
+             "PNG image loader missing opaque red pixels after %s: stats=%S"
+             phase red-stats))
+          (unless (and (consp transparent-stats)
+                       (< (nth 2 transparent-stats) 50)
+                       (> (nth 3 transparent-stats) 10000))
+            (ewm-skia-smoke-fail
+             "PNG image loader did not preserve transparent green pixels after %s: stats=%S"
+             phase transparent-stats)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-masked-image-cursor (phase)
   (unless (image-type-available-p 'xpm)
     (ewm-skia-smoke-fail "XPM images are not available"))
@@ -971,6 +1018,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-scaled-transparent-image "initial draw")
 (ewm-skia-smoke-check-rotated-transparent-image "initial draw")
 (ewm-skia-smoke-check-sliced-scaled-image "initial draw")
+(ewm-skia-smoke-check-png-image-loader "initial draw")
 (ewm-skia-smoke-check-masked-image-cursor "initial draw")
 (ewm-skia-smoke-check-window-clipping "initial draw")
 (ewm-skia-smoke-check-glyph-window-clipping "initial draw")
