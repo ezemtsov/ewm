@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..0c4fc71bbe5
+index 00000000000..67f0947c517
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1360 @@
+@@ -0,0 +1,1358 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -195,22 +195,6 @@ index 00000000000..0c4fc71bbe5
 +to_sk_rect (const emacs_skia_rect_t *r)
 +{
 +  return SkRect::MakeLTRB (r->left, r->top, r->right, r->bottom);
-+}
-+
-+static inline SkBlendMode
-+to_sk_blend_mode (emacs_skia_blend_mode_t mode)
-+{
-+  switch (mode)
-+    {
-+    case EMACS_SKIA_BLEND_SRC:
-+      return SkBlendMode::kSrc;
-+    case EMACS_SKIA_BLEND_SRC_OVER:
-+      return SkBlendMode::kSrcOver;
-+    case EMACS_SKIA_BLEND_DIFFERENCE:
-+      return SkBlendMode::kDifference;
-+    default:
-+      return SkBlendMode::kSrcOver;
-+    }
 +}
 +
 +#ifdef SK_GL
@@ -710,7 +694,21 @@ index 00000000000..0c4fc71bbe5
 +{
 +  if (paint)
 +    {
-+      paint->paint.setBlendMode (to_sk_blend_mode (mode));
++      switch (mode)
++	{
++	case EMACS_SKIA_BLEND_SRC:
++	  paint->paint.setBlendMode (SkBlendMode::kSrc);
++	  break;
++	case EMACS_SKIA_BLEND_SRC_OVER:
++	  paint->paint.setBlendMode (SkBlendMode::kSrcOver);
++	  break;
++	case EMACS_SKIA_BLEND_DIFFERENCE:
++	  paint->paint.setBlendMode (SkBlendMode::kDifference);
++	  break;
++	default:
++	  paint->paint.setBlendMode (SkBlendMode::kSrcOver);
++	  break;
++	}
 +    }
 +}
 +
