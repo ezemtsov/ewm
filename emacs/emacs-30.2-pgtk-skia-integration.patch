@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..3e80f69 100644
+index 617ed3c..f07616c 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -14836,8 +14836,8 @@ index 617ed3c..3e80f69 100644
 +	(int) ((src_rect->y + src_rect->height) * scale) };
 +
 +  emacs_skia_image_t *snapshot
-+    = emacs_skia_surface_make_image_snapshot_rect (skia_surface,
-+						   &src_irect);
++    = emacs_skia_surface_make_image_snapshot (skia_surface,
++					      &src_irect);
 +  if (snapshot)
 +    {
 +      emacs_skia_canvas_t *canvas = pgtk_begin_skia_clip (f);
@@ -15670,7 +15670,7 @@ index 617ed3c..3e80f69 100644
 +
 +  /* Save a snapshot of the clean surface for restoration.  */
 +  FRAME_X_OUTPUT (f)->skia_image_pre_bell
-+    = emacs_skia_surface_make_image_snapshot (FRAME_SKIA_SURFACE (f));
++    = emacs_skia_surface_make_image_snapshot (FRAME_SKIA_SURFACE (f), NULL);
 +
 +  paint = FRAME_SKIA_PAINT (f);
 +  if (!paint)

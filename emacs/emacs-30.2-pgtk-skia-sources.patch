@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..2a51a01f482
+index 00000000000..3e9bfd800d5
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1425 @@
+@@ -0,0 +1,1419 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -559,20 +559,14 @@ index 00000000000..2a51a01f482
 +}
 +
 +emacs_skia_image_t *
-+emacs_skia_surface_make_image_snapshot (emacs_skia_surface_t *surface)
++emacs_skia_surface_make_image_snapshot (emacs_skia_surface_t *surface,
++					const emacs_skia_irect_t *rect)
 +{
 +  if (!surface || !surface->surface)
 +    return nullptr;
 +
-+  return make_image (surface->surface->makeImageSnapshot ());
-+}
-+
-+emacs_skia_image_t *
-+emacs_skia_surface_make_image_snapshot_rect (
-+  emacs_skia_surface_t *surface, const emacs_skia_irect_t *rect)
-+{
-+  if (!surface || !surface->surface || !rect)
-+    return nullptr;
++  if (!rect)
++    return make_image (surface->surface->makeImageSnapshot ());
 +
 +  SkIRect sk_rect = SkIRect::MakeLTRB (rect->left, rect->top,
 +				       rect->right, rect->bottom);
@@ -1431,10 +1425,10 @@ index 00000000000..2a51a01f482
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..c2bce060007
+index 00000000000..1bef56a57c0
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,391 @@
+@@ -0,0 +1,389 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1589,11 +1583,9 @@ index 00000000000..c2bce060007
 +  /* Flush surface drawing */
 +  void emacs_skia_surface_flush (emacs_skia_surface_t *surface);
 +
-+  /* Make an image snapshot from the surface (for scrolling/copying)
-+   */
++  /* Make an image snapshot from the surface.  If RECT is non-NULL,
++     snapshot only that rectangle.  */
 +  emacs_skia_image_t *emacs_skia_surface_make_image_snapshot (
-+    emacs_skia_surface_t *surface);
-+  emacs_skia_image_t *emacs_skia_surface_make_image_snapshot_rect (
 +    emacs_skia_surface_t *surface, const emacs_skia_irect_t *rect);
 +
 +  /* Write callback for PNG/document output.
