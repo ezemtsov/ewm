@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 1737a5c..19ee92d 100644
+index 6941232..f0c1fe6 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10594,6 +10594,998 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10592,6 +10592,998 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -298,7 +298,7 @@ index 1737a5c..19ee92d 100644
 +  emacs_skia_canvas_draw_rect (canvas, &draw_rect, paint);
 +
 +  emacs_skia_canvas_save (canvas);
-+  pgtk_skia_set_clip_rectangles (f, canvas, clips, 2);
++  pgtk_skia_set_clip_rectangles (canvas, clips, 2);
 +  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
 +  emacs_skia_canvas_draw_rect (canvas, &draw_rect, paint);
 +  emacs_skia_canvas_restore (canvas);
@@ -1041,7 +1041,7 @@ index 1737a5c..19ee92d 100644
  #endif
  
  void
-@@ -10688,6 +11680,24 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10686,6 +11678,24 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
