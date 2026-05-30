@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..2371321cdf0
+index 00000000000..507818a17a9
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1479 @@
+@@ -0,0 +1,1457 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1399,33 +1399,6 @@ index 00000000000..2371321cdf0
 +   PNG Export
 +   ============================================================ */
 +
-+/* Helper to write encoded data via callback.  */
-+static bool
-+write_data_to_callback (sk_sp<SkData> data, emacs_skia_write_fn write_fn,
-+			void *write_ctx)
-+{
-+  if (!data)
-+    return false;
-+
-+  size_t written = write_fn (write_ctx, data->data (), data->size ());
-+  return written == data->size ();
-+}
-+
-+static bool
-+write_image_to_png (SkImage *image, void *readback_ctx,
-+		    emacs_skia_write_fn write_fn, void *write_ctx)
-+{
-+#ifdef SK_GL
-+  GrDirectContext *ctx = static_cast<GrDirectContext *> (readback_ctx);
-+  return write_data_to_callback (SkPngEncoder::Encode (ctx, image, {}),
-+				 write_fn, write_ctx);
-+#else
-+  (void) readback_ctx;
-+  return write_data_to_callback (SkPngEncoder::Encode (nullptr, image, {}),
-+				 write_fn, write_ctx);
-+#endif
-+}
-+
 +/* Write surface to PNG using a callback function.
 +   Returns true on success, false on failure.  */
 +bool
@@ -1443,10 +1416,15 @@ index 00000000000..2371321cdf0
 +
 +#ifdef SK_GL
 +  GrDirectContext *ctx = surface->context ? surface->context.get () : nullptr;
++  sk_sp<SkData> data = SkPngEncoder::Encode (ctx, image.get (), {});
 +#else
-+  void *ctx = nullptr;
++  sk_sp<SkData> data = SkPngEncoder::Encode (nullptr, image.get (), {});
 +#endif
-+  return write_image_to_png (image.get (), ctx, write_fn, write_ctx);
++  if (!data)
++    return false;
++
++  size_t written = write_fn (write_ctx, data->data (), data->size ());
++  return written == data->size ();
 +}
 +
 +/* Draw an image with transformation applied.  */
