@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..507818a17a9
+index 00000000000..7d0e1661581
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1457 @@
+@@ -0,0 +1,1456 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -109,7 +109,6 @@ index 00000000000..507818a17a9
 +struct emacs_skia_surface
 +{
 +  sk_sp<SkSurface> surface;
-+  void *pixels; /* For raster surfaces with external pixels */
 +#ifdef SK_GL
 +  sk_sp<GrDirectContext> context; /* Shared ownership for GPU surfaces */
 +#endif
@@ -236,11 +235,11 @@ index 00000000000..507818a17a9
 +
 +#ifdef SK_GL
 +static emacs_skia_surface_t *
-+make_surface (sk_sp<SkSurface> surface, void *pixels,
++make_surface (sk_sp<SkSurface> surface,
 +	      sk_sp<GrDirectContext> context = nullptr)
 +#else
 +static emacs_skia_surface_t *
-+make_surface (sk_sp<SkSurface> surface, void *pixels)
++make_surface (sk_sp<SkSurface> surface)
 +#endif
 +{
 +  if (!surface)
@@ -248,11 +247,11 @@ index 00000000000..507818a17a9
 +
 +#ifdef SK_GL
 +  return new emacs_skia_surface_t {
-+    surface, pixels, context, { nullptr, nullptr, nullptr }
++    surface, context, { nullptr, nullptr, nullptr }
 +  };
 +#else
 +  return new emacs_skia_surface_t {
-+    surface, pixels, { nullptr, nullptr, nullptr }
++    surface, { nullptr, nullptr, nullptr }
 +  };
 +#endif
 +}
@@ -462,7 +461,7 @@ index 00000000000..507818a17a9
 +emacs_skia_surface_create_raster (int width, int height)
 +{
 +  SkImageInfo info = SkImageInfo::MakeN32Premul (width, height);
-+  return make_surface (SkSurfaces::Raster (info), nullptr);
++  return make_surface (SkSurfaces::Raster (info));
 +}
 +
 +#ifdef SK_GL
@@ -491,7 +490,7 @@ index 00000000000..507818a17a9
 +			     nullptr);
 +
 +  /* Share ownership to prevent dangling pointer.  */
-+  return make_surface (surface, nullptr, ctx->context);
++  return make_surface (surface, ctx->context);
 +}
 +#else
 +emacs_skia_surface_t *
@@ -536,7 +535,7 @@ index 00000000000..507818a17a9
 +    {
 +      return const_cast<void *> (pixmap.addr ());
 +    }
-+  return surface->pixels;
++  return nullptr;
 +}
 +
 +void
