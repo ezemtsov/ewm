@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..73212025cdf
+index 00000000000..05b7021b380
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1547 @@
+@@ -0,0 +1,1527 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1531,32 +1531,12 @@ index 00000000000..73212025cdf
 +
 +  canvas->canvas->restore ();
 +}
-+
-+/* Calculate stride for pixel buffers (replacement for
-+   cairo_format_stride_for_width). Skia uses 4-byte aligned rows for RGBA.  */
-+int
-+emacs_skia_format_stride_for_width (int format, int width)
-+{
-+  /* format: 0 = A8 (1 byte per pixel), 1 = RGB24/ARGB32 (4 bytes per pixel) */
-+  int bytes_per_pixel = (format == 0) ? 1 : 4;
-+
-+  /* Check for integer overflow.  */
-+  if (width > INT_MAX / bytes_per_pixel)
-+    {
-+      SKIA_LOG_ERROR ("format_stride_for_width: width %d too large", width);
-+      return -1;
-+    }
-+
-+  int stride = width * bytes_per_pixel;
-+  /* Align to 4 bytes (Skia's default alignment).  */
-+  return (stride + 3) & ~3;
-+}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..79b88e2d44b
+index 00000000000..b7e6eb13f45
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,426 @@
+@@ -0,0 +1,421 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1731,11 +1711,6 @@ index 00000000000..79b88e2d44b
 +  bool emacs_skia_surface_write_to_png (emacs_skia_surface_t *surface,
 +					emacs_skia_write_fn write_fn,
 +					void *write_ctx);
-+
-+  /* Calculate stride for pixel buffers.
-+     format: 0 = A8 (1 byte/pixel), 1 = RGB24/ARGB32 (4 bytes/pixel).
-+     Returns stride in bytes (4-byte aligned).  */
-+  int emacs_skia_format_stride_for_width (int format, int width);
 +
 +  /* ============================================================
 +     Canvas (drawing context)
