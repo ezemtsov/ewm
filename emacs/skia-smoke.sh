@@ -556,6 +556,56 @@ static char *image[] = {
      (insert "\n"))
    400))
 
+(defun ewm-skia-smoke-check-multirect-clipping (phase)
+  (unless (fboundp 'pgtk-skia-test-draw-multirect-clip)
+    (ewm-skia-smoke-fail "missing Skia multi-rect clip test hook"))
+  (let* ((source-window (selected-window))
+         rects left-rect gap-rect right-rect
+         left-stats gap-stats right-stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 8)
+          (delete-other-windows)
+          (ewm-skia-smoke-redraw)
+          (setq rects (pgtk-skia-test-draw-multirect-clip))
+          (unless (and (consp rects)
+                       (= (length rects) 3))
+            (ewm-skia-smoke-fail
+             "multi-rect clip hook could not draw after %s: rects=%S"
+             phase rects))
+          (setq left-rect (nth 0 rects)
+                gap-rect (nth 1 rects)
+                right-rect (nth 2 rects))
+          (setq left-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil left-rect))
+          (setq gap-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil gap-rect))
+          (setq right-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil right-rect))
+          (unless (and (consp left-stats)
+                       (> (nth 2 left-stats) 1000))
+            (ewm-skia-smoke-fail
+             "multi-rect clip left rect missing red pixels after %s: rect=%S stats=%S"
+             phase left-rect left-stats))
+          (unless (and (consp right-stats)
+                       (> (nth 2 right-stats) 1000))
+            (ewm-skia-smoke-fail
+             "multi-rect clip right rect missing red pixels after %s: rect=%S stats=%S"
+             phase right-rect right-stats))
+          (unless (and (consp gap-stats)
+                       (< (nth 2 gap-stats) 50)
+                       (> (nth 3 gap-stats) 1000))
+            (ewm-skia-smoke-fail
+             "multi-rect clip filled excluded gap after %s: rect=%S stats=%S"
+             phase gap-rect gap-stats)))
+      (when (window-live-p source-window)
+        (select-window source-window))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-red-decoration (phase label face min-red)
   (let* ((source-buffer (current-buffer))
          (buffer (get-buffer-create
@@ -839,6 +889,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-window-clipping "initial draw")
 (ewm-skia-smoke-check-glyph-window-clipping "initial draw")
 (ewm-skia-smoke-check-decorated-composite-window-clipping "initial draw")
+(ewm-skia-smoke-check-multirect-clipping "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")

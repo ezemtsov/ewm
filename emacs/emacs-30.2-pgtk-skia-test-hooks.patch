@@ -1,8 +1,8 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 721fdec..863a184 100644
+index 721fdec..06dce6b 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10631,6 +10631,623 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10631,6 +10631,672 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -168,6 +168,55 @@ index 721fdec..863a184 100644
 +	       green ? list4 (make_int (green_min_x), make_int (green_min_y),
 +			      make_int (green_max_x), make_int (green_max_y))
 +		     : Qnil);
++}
++
++DEFUN ("pgtk-skia-test-draw-multirect-clip",
++       Fpgtk_skia_test_draw_multirect_clip,
++       Spgtk_skia_test_draw_multirect_clip, 0, 1, 0,
++       doc: /* Draw red through two disjoint Skia clip rectangles on FRAME.
++If FRAME is nil, use the selected frame.  This is intended for tests of the
++Skia multi-rectangle clip-union path.  Return (LEFT GAP RIGHT) rectangles.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  emacs_skia_canvas_t *canvas = pgtk_begin_skia_clip (f);
++  if (!canvas)
++    return Qnil;
++
++  struct window *w = XWINDOW (FRAME_SELECTED_WINDOW (f));
++  int window_x, window_y;
++  window_box (w, TEXT_AREA, &window_x, &window_y, 0, 0);
++
++  XRectangle clips[2] = {
++    { window_x + 40, window_y + 40, 70, 60 },
++    { window_x + 180, window_y + 40, 70, 60 },
++  };
++  XRectangle gap = { window_x + 110, window_y + 40, 70, 60 };
++  emacs_skia_irect_t draw_rect
++    = { clips[0].x, clips[0].y,
++	clips[1].x + clips[1].width,
++	clips[1].y + clips[1].height };
++  emacs_skia_paint_t *paint = FRAME_SKIA_PAINT (f);
++
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 0, 255, 0));
++  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC_OVER);
++  emacs_skia_paint_set_stroke (paint, false);
++  emacs_skia_canvas_draw_irect (canvas, &draw_rect, paint);
++
++  emacs_skia_canvas_save (canvas);
++  pgtk_skia_set_clip_rectangles (f, canvas, clips, 2);
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
++  emacs_skia_canvas_draw_irect (canvas, &draw_rect, paint);
++  emacs_skia_canvas_restore (canvas);
++
++  pgtk_end_skia_clip (f);
++  emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++  return list3 (list4 (make_int (clips[0].x), make_int (clips[0].y),
++		       make_int (clips[0].width), make_int (clips[0].height)),
++		list4 (make_int (gap.x), make_int (gap.y),
++		       make_int (gap.width), make_int (gap.height)),
++		list4 (make_int (clips[1].x), make_int (clips[1].y),
++		       make_int (clips[1].width), make_int (clips[1].height)));
 +}
 +
 +DEFUN ("pgtk-skia-test-abandon-gl-context",
@@ -626,11 +675,12 @@ index 721fdec..863a184 100644
  #endif
  
  void
-@@ -10725,6 +11342,16 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10725,6 +11391,17 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
 +  defsubr (&Spgtk_skia_test_framebuffer_color_counts);
++  defsubr (&Spgtk_skia_test_draw_multirect_clip);
 +  defsubr (&Spgtk_skia_test_abandon_gl_context);
 +  defsubr (&Spgtk_skia_test_gl_recreate_source_active_p);
 +  defsubr (&Spgtk_skia_test_framebuffer_size);
