@@ -2898,10 +2898,10 @@ index 00000000000..2f2d684d8d4
 +#endif /* EMACS_SKIA_H */
 diff --git a/src/skiafont.c b/src/skiafont.c
 new file mode 100644
-index 00000000000..ed4d289b275
+index 00000000000..5811e86522a
 --- /dev/null
 +++ b/src/skiafont.c
-@@ -0,0 +1,852 @@
+@@ -0,0 +1,836 @@
 +/* skiafont.c -- FreeType font driver with Skia rendering.
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -3673,19 +3673,6 @@ index 00000000000..ed4d289b275
 +
 +# endif /* HAVE_HARFBUZZ */
 +
-+# ifdef HAVE_PGTK
-+static bool
-+skiafont_cached_font_ok (struct frame *f, Lisp_Object font_object,
-+			 Lisp_Object entity)
-+{
-+  /* Skia manages its own font rendering settings independently of
-+     the system font options.  For now, always accept cached fonts.
-+     If Skia font rendering settings need to track gsettings changes,
-+     this callback should query xsettings and compare.  */
-+  return true;
-+}
-+# endif
-+
 +static void syms_of_skiafont_for_pdumper (void);
 +
 +struct font_driver const skiafont_driver = {
@@ -3714,9 +3701,6 @@ index 00000000000..ed4d289b275
 +# endif
 +  .filter_properties = ftfont_filter_properties,
 +  .combining_capability = ftfont_combining_capability,
-+# ifdef HAVE_PGTK
-+  .cached_font_ok = skiafont_cached_font_ok,
-+# endif
 +};
 +
 +# ifdef HAVE_HARFBUZZ
