@@ -1,8 +1,8 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 5b14125..f17d130 100644
+index 5b14125..62c31e7 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10631,6 +10631,814 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10631,6 +10631,822 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -423,8 +423,10 @@ index 5b14125..f17d130 100644
 +DEFUN ("pgtk-skia-test-framebuffer-size",
 +       Fpgtk_skia_test_framebuffer_size,
 +       Spgtk_skia_test_framebuffer_size, 0, 1, 0,
-+       doc: /* Return (RENDER-WIDTH RENDER-HEIGHT TEXTURE-WIDTH TEXTURE-HEIGHT)
-+for FRAME's Skia GL framebuffer.  If FRAME is nil, use the selected frame.  */)
++       doc: /* Return Skia GL framebuffer sizing for FRAME.
++The return value is (RENDER-WIDTH RENDER-HEIGHT TEXTURE-WIDTH TEXTURE-HEIGHT
++LOGICAL-WIDTH LOGICAL-HEIGHT SCALE).  If FRAME is nil, use the selected
++frame.  */)
 +  (Lisp_Object frame)
 +{
 +  struct frame *f = decode_window_system_frame (frame);
@@ -432,8 +434,14 @@ index 5b14125..f17d130 100644
 +  if (!FRAME_GDK_GL_CONTEXT (f) || !FRAME_GL_FRAMEBUFFER (f))
 +    return Qnil;
 +
-+  return list4i (FRAME_GL_RENDER_WIDTH (f), FRAME_GL_RENDER_HEIGHT (f),
-+		 FRAME_GL_TEXTURE_WIDTH (f), FRAME_GL_TEXTURE_HEIGHT (f));
++  return CALLN (Flist,
++		make_int (FRAME_GL_RENDER_WIDTH (f)),
++		make_int (FRAME_GL_RENDER_HEIGHT (f)),
++		make_int (FRAME_GL_TEXTURE_WIDTH (f)),
++		make_int (FRAME_GL_TEXTURE_HEIGHT (f)),
++		make_int (FRAME_SKIA_SURFACE_DESIRED_WIDTH (f)),
++		make_int (FRAME_SKIA_SURFACE_DESIRED_HEIGHT (f)),
++		make_int (pgtk_gl_scale (f)));
 +}
 +
 +DEFUN ("pgtk-skia-test-gl-invariants",
@@ -817,7 +825,7 @@ index 5b14125..f17d130 100644
  #endif
  
  void
-@@ -10725,6 +11533,20 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10725,6 +11541,20 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
