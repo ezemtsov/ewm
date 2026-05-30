@@ -439,17 +439,15 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
-(defun ewm-skia-smoke-check-window-clipping (phase)
-  (unless (image-type-available-p 'xpm)
-    (ewm-skia-smoke-fail "XPM images are not available"))
+(defun ewm-skia-smoke-check-window-clipping-case
+    (phase label left-buffer-name setup-left min-left-red)
   (let* ((source-buffer (current-buffer))
          (source-window (selected-window))
-         (left-buffer (get-buffer-create "*ewm-skia-clip-left-smoke*"))
-         (right-buffer (get-buffer-create "*ewm-skia-clip-right-smoke*"))
+         (left-buffer (get-buffer-create left-buffer-name))
+         (right-buffer (get-buffer-create
+                        (format "*ewm-skia-%s-clip-right-smoke*" label)))
          (left-window nil)
          (right-window nil)
-         (xpm (ewm-skia-smoke-xpm
-               120 40 (make-list 40 (make-string 120 ?R))))
          left-stats right-stats)
     (unwind-protect
         (progn
@@ -464,12 +462,7 @@ static char *image[] = {
                         '((default (:foreground "#0000ff"
                                      :background "#00ff00") default)))
             (erase-buffer)
-            (insert-image
-             (create-image xpm 'xpm t
-                           :width 900
-                           :height 140
-                           :transform-smoothing nil)
-             " "))
+            (funcall setup-left))
           (with-current-buffer right-buffer
             (setq-local cursor-type nil)
             (setq-local mode-line-format nil)
@@ -489,16 +482,16 @@ static char *image[] = {
                 (pgtk-skia-test-framebuffer-color-counts
                  nil (ewm-skia-smoke-window-rect 260 160 right-window)))
           (unless (and (consp left-stats)
-                       (> (nth 2 left-stats) 10000))
+                       (> (nth 2 left-stats) min-left-red))
             (ewm-skia-smoke-fail
-             "window clipping source missing red pixels after %s: stats=%S"
-             phase left-stats))
+             "%s clipping source missing red pixels after %s: stats=%S threshold=%d"
+             label phase left-stats min-left-red))
           (unless (and (consp right-stats)
                        (< (nth 2 right-stats) 50)
                        (> (nth 3 right-stats) 1000))
             (ewm-skia-smoke-fail
-             "window clipping leaked red pixels after %s: stats=%S"
-             phase right-stats)))
+             "%s clipping leaked red pixels after %s: stats=%S"
+             label phase right-stats)))
       (delete-other-windows)
       (when (buffer-live-p source-buffer)
         (switch-to-buffer source-buffer))
@@ -506,6 +499,34 @@ static char *image[] = {
         (select-window source-window))
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-window-clipping (phase)
+  (unless (image-type-available-p 'xpm)
+    (ewm-skia-smoke-fail "XPM images are not available"))
+  (let ((xpm (ewm-skia-smoke-xpm
+              120 40 (make-list 40 (make-string 120 ?R)))))
+    (ewm-skia-smoke-check-window-clipping-case
+     phase "image" "*ewm-skia-image-clip-left-smoke*"
+     (lambda ()
+       (insert-image
+        (create-image xpm 'xpm t
+                      :width 900
+                      :height 140
+                      :transform-smoothing nil)
+        " "))
+     10000)))
+
+(defun ewm-skia-smoke-check-glyph-window-clipping (phase)
+  (ewm-skia-smoke-check-window-clipping-case
+   phase "glyph" "*ewm-skia-glyph-clip-left-smoke*"
+   (lambda ()
+     (setq-local bidi-display-reordering nil)
+     (setq-local truncate-lines t)
+     (setq-local face-remapping-alist
+                 '((default (:foreground "#ff0000"
+                              :background "#00ff00") default)))
+     (insert (make-string 240 ?M) "\n"))
+   1000))
 
 (defun ewm-skia-smoke-check-red-decoration (phase label face min-red)
   (let* ((source-buffer (current-buffer))
@@ -788,6 +809,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-sliced-scaled-image "initial draw")
 (ewm-skia-smoke-check-masked-image-cursor "initial draw")
 (ewm-skia-smoke-check-window-clipping "initial draw")
+(ewm-skia-smoke-check-glyph-window-clipping "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")
