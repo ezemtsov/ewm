@@ -77,6 +77,9 @@ cat >"$payload" <<'EOF'
     (ewm-skia-profile-report
      name iterations (ewm-skia-profile-seconds start))))
 
+(defun ewm-skia-profile-redraw ()
+  (redisplay 'force))
+
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
                  (fboundp 'pgtk-skia-gl-enabled-p)))
@@ -103,10 +106,14 @@ cat >"$payload" <<'EOF'
     (setq-local cursor-type nil)
     (setq-local mode-line-format nil)
     (setq-local truncate-lines t)
+    (buffer-disable-undo)
     (erase-buffer)
     (dotimes (line 1200)
-      (insert (format "skia profile line %04d: abcdefghijklmnopqrstuvwxyz 0123456789 []{}<>/_-+=\n"
-                      line)))
+      (insert (format "skia profile line %04d: abcdefghijklmnopqrstuvwxyz 0123456789 []{}<>/_-+= %s\n"
+                      line
+                      (make-string 180
+                                   (aref "abcdefghijklmnopqrstuvwxyz"
+                                         (% line 26))))))
     (goto-char (point-min)))
   (switch-to-buffer buffer))
 
@@ -121,10 +128,30 @@ cat >"$payload" <<'EOF'
  "redisplay-force" ewm-skia-profile-iterations
  (lambda ()
    (force-window-update)
-   (redisplay 'force)))
+   (ewm-skia-profile-redraw)))
+
+(let ((line-state nil))
+  (ewm-skia-profile-time
+   "line-update" ewm-skia-profile-iterations
+   (lambda ()
+     (save-excursion
+       (goto-char (point-min))
+       (delete-char 1)
+       (insert (if line-state "s" "S"))
+       (setq line-state (not line-state)))
+     (ewm-skia-profile-redraw))))
+
+(let ((hscroll 0))
+  (ewm-skia-profile-time
+   "hscroll-redraw" ewm-skia-profile-iterations
+   (lambda ()
+     (setq hscroll (if (zerop hscroll) 96 0))
+     (set-window-hscroll nil hscroll)
+     (ewm-skia-profile-redraw))))
 
 (goto-char (point-min))
-(redisplay 'force)
+(set-window-hscroll nil 0)
+(ewm-skia-profile-redraw)
 
 (let ((scroll-direction 1))
   (ewm-skia-profile-time
@@ -134,7 +161,7 @@ cat >"$payload" <<'EOF'
          (scroll-up-command 1)
        (scroll-down-command 1))
      (setq scroll-direction (- scroll-direction))
-     (redisplay 'force))))
+     (ewm-skia-profile-redraw))))
 
 (kill-emacs 0)
 EOF
