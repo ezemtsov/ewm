@@ -11529,7 +11529,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..0fb7005 100644
+index 617ed3c..8be92db 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -14494,7 +14494,7 @@ index 617ed3c..0fb7005 100644
  {
    struct frame *f = XFRAME (w->frame);
    struct glyph *cursor_glyph;
-@@ -2920,21 +4046,85 @@ pgtk_draw_bar_cursor (struct window *w, struct glyph_row *row, int width,
+@@ -2920,19 +4046,83 @@ pgtk_draw_bar_cursor (struct window *w, struct glyph_row *row, int width,
        struct face *face = FACE_FROM_ID (f, cursor_glyph->face_id);
        unsigned long color;
  
@@ -14515,8 +14515,6 @@ index 617ed3c..0fb7005 100644
  	color = FRAME_X_OUTPUT (f)->cursor_color;
  
 -      pgtk_clip_to_row (w, row, TEXT_AREA, cr);
--
--      if (kind == BAR_CURSOR)
 +#ifdef USE_SKIA
 +      emacs_skia_canvas_t *canvas = pgtk_begin_skia_clip (f);
 +      if (canvas)
@@ -14584,11 +14582,9 @@ index 617ed3c..0fb7005 100644
 +      cairo_t *cr = pgtk_begin_cr_clip (f);
 +
 +      pgtk_clip_to_row (w, row, TEXT_AREA, cr);
-+
-+      if (kind == BAR_CURSOR)
- 	{
- 	  int x = WINDOW_TEXT_TO_FRAME_PIXEL_X (w, w->phys_cursor.x);
  
+       if (kind == BAR_CURSOR)
+ 	{
 @@ -2950,10 +4140,12 @@ pgtk_draw_bar_cursor (struct window *w, struct glyph_row *row, int width,
  	    x += cursor_glyph->pixel_width - width;
  
@@ -14741,7 +14737,7 @@ index 617ed3c..0fb7005 100644
 +		     GL_NEAREST);
 +  if (pgtk_check_gl_error ("copy_bits source blit"))
 +    goto out;
-+
+ 
 +  glBindFramebuffer (GL_READ_FRAMEBUFFER,
 +		     FRAME_GL_RESIZE_FRAMEBUFFER (f));
 +  glBindFramebuffer (GL_DRAW_FRAMEBUFFER, FRAME_GL_FRAMEBUFFER (f));
@@ -14749,7 +14745,7 @@ index 617ed3c..0fb7005 100644
 +		     dst_x1, dst_y1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 +  if (pgtk_check_gl_error ("copy_bits blit"))
 +    goto out;
- 
++
 + out:
 +  pgtk_restore_fbo_bindings (f, &saved_fbo);
 +  return true;
@@ -16338,22 +16334,12 @@ index 617ed3c..0fb7005 100644
      }
  
    pgtk_frame_rehighlight (dpyinfo);
-@@ -4806,47 +6629,72 @@ static void
+@@ -4806,8 +6629,27 @@ static void
  pgtk_buffer_flipping_unblocked_hook (struct frame *f)
  {
    block_input ();
 -  flip_cr_context (f);
 -  gtk_widget_queue_draw (FRAME_GTK_WIDGET (f));
--  unblock_input ();
--}
--
--static struct terminal *
--pgtk_create_terminal (struct pgtk_display_info *dpyinfo)
--{
--  struct terminal *terminal;
--
--  terminal = create_terminal (output_pgtk, &pgtk_redisplay_interface);
--
 +#ifdef USE_SKIA
 +  /* For Skia GL, queue a draw on the drawing area.  */
 +  if (FRAME_SKIA_SURFACE (f))
@@ -16375,18 +16361,10 @@ index 617ed3c..0fb7005 100644
 +#endif
 +      gtk_widget_queue_draw (FRAME_GTK_WIDGET (f));
 +    }
-+  unblock_input ();
-+}
-+
-+static struct terminal *
-+pgtk_create_terminal (struct pgtk_display_info *dpyinfo)
-+{
-+  struct terminal *terminal;
-+
-+  terminal = create_terminal (output_pgtk, &pgtk_redisplay_interface);
-+
-   terminal->display_info.pgtk = dpyinfo;
-   dpyinfo->terminal = terminal;
+   unblock_input ();
+ }
+ 
+@@ -4823,30 +6665,36 @@ pgtk_create_terminal (struct pgtk_display_info *dpyinfo)
  
    terminal->clear_frame_hook = pgtk_clear_frame;
    terminal->ring_bell_hook = pgtk_ring_bell;
@@ -18056,10 +18034,10 @@ index 617ed3c..0fb7005 100644
 +	g_log_remove_handler ("GLib", id);
  
 -        g_log_remove_handler ("GLib", id);
--
--        xg_initialize ();
 +	xg_initialize ();
  
+-        xg_initialize ();
+-
 -        dpy = DEFAULT_GDK_DISPLAY ();
 +	dpy = DEFAULT_GDK_DISPLAY ();
  
@@ -18224,7 +18202,7 @@ index 617ed3c..0fb7005 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,166 +9437,1343 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,188 +9437,1367 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -18458,16 +18436,23 @@ index 617ed3c..0fb7005 100644
 +  glGenTextures (1, &FRAME_GL_TEXTURE (f));
 +  pgtk_clear_primary_gl_size (f);
 +  pgtk_clear_resize_scratch_refs (f);
-+
+ 
+-If set to a non-float value, there will be no wait at all.  */);
+-  Vpgtk_wait_for_event_timeout = make_float (0.1);
 +  /* Initialize GL state as dirty so Skia resets on first use.  */
 +  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
 +  FRAME_GL_MAKE_CURRENT_FAILURES (f) = 0;
 +  FRAME_GL_CONTEXT_RECREATE_AFTER (f) = 0;
 +  FRAME_SKIA_GL_CONTEXT_LOST (f) = false;
 +  FRAME_GL_SURFACE_CREATION_FAILURES (f) = 0;
-+
+ 
+-  DEFVAR_LISP ("pgtk-keysym-table", Vpgtk_keysym_table,
+-    doc: /* Hash table of character codes indexed by X keysym codes.  */);
+-  Vpgtk_keysym_table = make_hash_table (&hashtest_eql, 900, Weak_None, false);
 +  FRAME_SKIA_GL_INITIALIZED (f) = true;
-+
+ 
+-  window_being_scrolled = Qnil;
+-  staticpro (&window_being_scrolled);
 +  /* Get the initial size and set up the FBO.  On HiDPI displays, the
 +     FBO and Skia surface are created at device-pixel resolution
 +     (logical pixels * scale factor) for crisp rendering.  The Skia
@@ -18487,9 +18472,42 @@ index 617ed3c..0fb7005 100644
 +      FRAME_SKIA_SURFACE_DESIRED_WIDTH (f) = alloc.width;
 +      FRAME_SKIA_SURFACE_DESIRED_HEIGHT (f) = alloc.height;
 +    }
-+
+ 
+-  /* Tell Emacs about this window system.  */
+-  Fprovide (Qpgtk, Qnil);
 +  if (pgtk_skia_debug_gl_enabled ())
 +    pgtk_log_gl_frame_state ("realize-ready", f);
+ }
+ 
+-/* Cairo does not allow resizing a surface/context after it is
+-   created, so we need to trash the old context, create a new context
+-   on the next cr_clip_begin with the new dimensions and request a
+-   re-draw.
++static bool
++pgtk_present_gl_texture (struct frame *f, GtkWidget *widget, cairo_t *cr,
++			 int width, int height)
++{
++  GdkWindow *gdk_window = gtk_widget_get_window (widget);
+ 
+-   This will leave the active context available to present on screen
+-   until a redrawn frame is completed.  */
+-void
+-pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, bool force)
++  if (!gdk_window || !FRAME_GL_TEXTURE (f) || width <= 0 || height <= 0)
++    return false;
++
++  cairo_save (cr);
++  gdk_cairo_draw_from_gl (cr, gdk_window, FRAME_GL_TEXTURE (f),
++			  GL_TEXTURE, gtk_widget_get_scale_factor (widget),
++			  0, 0, width, height);
++  cairo_restore (cr);
++
++  /* gdk_cairo_draw_from_gl uses GDK's paint context and may bind or
++     retune the texture object it was handed.  Other frame contexts do
++     not share current GL state, so only this frame needs a Skia state
++     reset before it draws again.  */
++  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++  return true;
 +}
 +
 +/* Drawing area "draw" callback — composite our FBO texture to the
@@ -18503,42 +18521,48 @@ index 617ed3c..0fb7005 100644
 +static gboolean
 +pgtk_gl_drawing_area_draw (GtkWidget *widget, cairo_t *cr,
 +			   gpointer user_data)
-+{
+ {
+-  if (FRAME_CR_SURFACE_DESIRED_WIDTH (f) != width
+-      || FRAME_CR_SURFACE_DESIRED_HEIGHT (f) != height
+-      || force)
 +  struct frame *f = (struct frame *) user_data;
-+  GdkWindow *gdk_window;
 +  emacs_skia_surface_t *skia_surface;
-+  int width, height, scale;
- 
--If set to a non-float value, there will be no wait at all.  */);
--  Vpgtk_wait_for_event_timeout = make_float (0.1);
++  int width, height;
++
 +  if (!FRAME_GDK_GL_CONTEXT (f) || !FRAME_GL_TEXTURE (f))
-+    {
+     {
+-      pgtk_cr_destroy_frame_context (f);
+-      FRAME_CR_SURFACE_DESIRED_WIDTH (f) = width;
+-      FRAME_CR_SURFACE_DESIRED_HEIGHT (f) = height;
+-      SET_FRAME_GARBAGED (f);
 +      if (!pgtk_init_gl_context (f) || !FRAME_GL_TEXTURE (f))
 +	return FALSE;
-+    }
+     }
+-}
  
--  DEFVAR_LISP ("pgtk-keysym-table", Vpgtk_keysym_table,
--    doc: /* Hash table of character codes indexed by X keysym codes.  */);
--  Vpgtk_keysym_table = make_hash_table (&hashtest_eql, 900, Weak_None, false);
-+  gdk_window = gtk_widget_get_window (widget);
-+  if (!gdk_window)
++  if (!gtk_widget_get_window (widget))
 +    return FALSE;
  
--  window_being_scrolled = Qnil;
--  staticpro (&window_being_scrolled);
+-cairo_t *
+-pgtk_begin_cr_clip (struct frame *f)
+-{
+-  cairo_t *cr = FRAME_CR_CONTEXT (f);
 +  skia_surface = FRAME_SKIA_SURFACE (f);
  
--  /* Tell Emacs about this window system.  */
--  Fprovide (Qpgtk, Qnil);
--}
+-  if (!cr)
 +  if (!skia_surface)
-+    {
+     {
+-      cairo_surface_t *surface
+-	= gdk_window_create_similar_surface (gtk_widget_get_window
+-					     (FRAME_GTK_WIDGET (f)),
+-					     CAIRO_CONTENT_COLOR_ALPHA,
+-					     FRAME_CR_SURFACE_DESIRED_WIDTH (f),
+-					     FRAME_CR_SURFACE_DESIRED_HEIGHT
+-					     (f));
 +      bool have_current = true;
  
--/* Cairo does not allow resizing a surface/context after it is
--   created, so we need to trash the old context, create a new context
--   on the next cr_clip_begin with the new dimensions and request a
--   re-draw.
+-      cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
+-      cairo_surface_destroy (surface);
 +      /* Surface is NULL — during resize or before first redisplay.
 +	 If the GL texture still has content from a previous frame,
 +	 composite it rather than showing a black box.  The stale
@@ -18547,123 +18571,93 @@ index 617ed3c..0fb7005 100644
 +      if (FRAME_GL_TEXTURE (f) && FRAME_GDK_GL_CONTEXT (f))
 +	{
 +	  have_current = pgtk_frame_gl_context_make_current (f);
- 
--   This will leave the active context available to present on screen
--   until a redrawn frame is completed.  */
--void
--pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, bool force)
--{
--  if (FRAME_CR_SURFACE_DESIRED_WIDTH (f) != width
--      || FRAME_CR_SURFACE_DESIRED_HEIGHT (f) != height
--      || force)
--    {
--      pgtk_cr_destroy_frame_context (f);
--      FRAME_CR_SURFACE_DESIRED_WIDTH (f) = width;
--      FRAME_CR_SURFACE_DESIRED_HEIGHT (f) = height;
--      SET_FRAME_GARBAGED (f);
++
 +	  if (have_current)
 +	    {
 +	      int tex_w = FRAME_GL_RENDER_WIDTH (f);
 +	      int tex_h = FRAME_GL_RENDER_HEIGHT (f);
 +
 +	      if (tex_w > 0 && tex_h > 0)
-+		{
-+		  scale = gtk_widget_get_scale_factor (widget);
-+		  gdk_cairo_draw_from_gl (
-+		    cr, gdk_window, FRAME_GL_TEXTURE (f),
-+		    GL_TEXTURE, scale, 0, 0, tex_w, tex_h);
-+		  /* GDK may change object state on the texture it was handed;
-+		     reset Skia's cached GL state before this frame draws
-+		     again.  */
-+		  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
-+		}
++		pgtk_present_gl_texture (f, widget, cr, tex_w, tex_h);
 +	    }
 +	}
 +      if (have_current)
 +	SET_FRAME_GARBAGED (f);
 +      return FALSE;
      }
--}
  
+-  cairo_save (cr);
 +  /* Make our context current and flush Skia rendering.
 +     Validate the GL context to avoid crashing if it was lost
 +     (e.g. during compositor shutdown).  */
 +  if (!pgtk_skia_make_gl_context_current (f))
 +    return FALSE;
  
--cairo_t *
--pgtk_begin_cr_clip (struct frame *f)
--{
--  cairo_t *cr = FRAME_CR_CONTEXT (f);
-+  emacs_skia_surface_flush (skia_surface);
- 
--  if (!cr)
--    {
--      cairo_surface_t *surface
--	= gdk_window_create_similar_surface (gtk_widget_get_window
--					     (FRAME_GTK_WIDGET (f)),
--					     CAIRO_CONTENT_COLOR_ALPHA,
--					     FRAME_CR_SURFACE_DESIRED_WIDTH (f),
--					     FRAME_CR_SURFACE_DESIRED_HEIGHT
--					     (f));
-+  emacs_skia_surface_get_size (skia_surface, &width, &height);
-+  scale = gtk_widget_get_scale_factor (widget);
- 
--      cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
--      cairo_surface_destroy (surface);
-+  if (pgtk_skia_debug_gl_enabled ())
-+    {
-+      static bool logged_once = false;
-+      if (!logged_once)
-+	{
-+	  fprintf (stderr,
-+		   "Skia draw: texture=%u, size=%dx%d, scale=%d\n",
-+		   FRAME_GL_TEXTURE (f), width, height, scale);
-+	  logged_once = true;
-+	}
-     }
- 
--  cairo_save (cr);
-+  /* Hand our FBO texture directly to GDK for compositing.  GDK
-+     switches to the window's paint context, inserts a fence sync to
-+     wait for our rendering, then draws a textured quad onto the
-+     window's back buffer.  For textures with alpha, it also uploads
-+     the underlying cairo surface for correct blending.
- 
 -  return cr;
 -}
-+     After this call, our GL context is NO LONGER current — GDK
-+     switched to the paint context.  */
-+  gdk_cairo_draw_from_gl (cr, gdk_window,
-+			  FRAME_GL_TEXTURE (f),
-+			  GL_TEXTURE,
-+			  scale, 0, 0, width, height);
++  emacs_skia_surface_flush (skia_surface);
  
 -void
 -pgtk_end_cr_clip (struct frame *f)
 -{
 -  cairo_restore (FRAME_CR_CONTEXT (f));
-+  /* gdk_cairo_draw_from_gl uses GDK's paint context and may bind or
-+     retune the texture object it was handed.  Other frame contexts do
-+     not share current GL state, so only this frame needs a Skia state
-+     reset before it draws again.  */
-+  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
+-}
++  emacs_skia_surface_get_size (skia_surface, &width, &height);
+ 
+-void
+-pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
+-				       bool respects_alpha_background)
+-{
+-  pgtk_set_cr_source_with_color (f, gc->foreground,
+-				 respects_alpha_background);
+-}
++  if (pgtk_skia_debug_gl_enabled ())
++    {
++      static bool logged_once = false;
++      if (!logged_once)
++	{
++	  int scale = gtk_widget_get_scale_factor (widget);
++	  fprintf (stderr,
++		   "Skia draw: texture=%u, size=%dx%d, scale=%d\n",
++		   FRAME_GL_TEXTURE (f), width, height, scale);
++	  logged_once = true;
++	}
++    }
+ 
+-void
+-pgtk_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
+-				       bool respects_alpha_background)
+-{
+-  pgtk_set_cr_source_with_color (f, gc->background,
+-				 respects_alpha_background);
++  /* Hand our FBO texture directly to GDK for compositing.  GDK
++     switches to the window's paint context, inserts a fence sync to
++     wait for our rendering, then draws a textured quad onto the
++     window's back buffer.
++
++     After this call, our GL context is NO LONGER current — GDK
++     switched to the paint context.  */
++  pgtk_present_gl_texture (f, widget, cr, width, height);
 +
 +  return TRUE;
  }
  
 -void
--pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
--				       bool respects_alpha_background)
+-pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
+-			       bool respects_alpha_background)
 +/* Resize FBO while preserving existing content.  This blits the old
 +   content to a reusable scratch FBO, resizes the main FBO, and blits
 +   the preserved content back after pgtk_setup_gl_framebuffer has
 +   cleared newly exposed pixels to the frame background.  */
 +static bool
 +pgtk_grow_gl_size (int current, int requested, int *grown)
-+{
+ {
+-  Emacs_Color col;
+-  col.pixel = color;
+-  pgtk_query_color (f, &col);
 +  int extra;
-+
+ 
+-  if (!respects_alpha_background)
 +  if (requested <= 0)
 +    return false;
 +
@@ -19681,10 +19675,32 @@ index 617ed3c..0fb7005 100644
 +void
 +pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
 +				       bool respects_alpha_background)
- {
-   pgtk_set_cr_source_with_color (f, gc->foreground,
- 				 respects_alpha_background);
-@@ -7595,12 +10806,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
++{
++  pgtk_set_cr_source_with_color (f, gc->foreground,
++				 respects_alpha_background);
++}
++
++void
++pgtk_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
++				       bool respects_alpha_background)
++{
++  pgtk_set_cr_source_with_color (f, gc->background,
++				 respects_alpha_background);
++}
++
++void
++pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
++			       bool respects_alpha_background)
++{
++  Emacs_Color col;
++  col.pixel = color;
++  pgtk_query_color (f, &col);
++
++  if (!respects_alpha_background)
+     {
+       cairo_set_source_rgb (FRAME_CR_CONTEXT (f), col.red / 65535.0,
+ 			    col.green / 65535.0, col.blue / 65535.0);
+@@ -7595,12 +10808,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
        cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
  			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
@@ -19700,7 +19716,7 @@ index 617ed3c..0fb7005 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10824,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10826,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19710,7 +19726,7 @@ index 617ed3c..0fb7005 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10849,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10851,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19728,7 +19744,7 @@ index 617ed3c..0fb7005 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10870,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10872,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19785,7 +19801,7 @@ index 617ed3c..0fb7005 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10932,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10934,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  
