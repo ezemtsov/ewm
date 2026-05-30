@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..4a06ee99011
+index 00000000000..0ccfe40969e
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,2245 @@
+@@ -0,0 +1,2230 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -122,6 +122,25 @@ index 00000000000..4a06ee99011
 +struct emacs_skia_paint
 +{
 +  SkPaint paint;
++};
++
++template <typename T, int stack_count>
++class emacs_skia_stack_array
++{
++public:
++  explicit emacs_skia_stack_array (int count)
++    : heap_ (count > stack_count ? new T[count] : nullptr),
++      data_ (heap_ ? heap_.get () : stack_)
++  {}
++
++  T *get () { return data_; }
++  const T *get () const { return data_; }
++  T &operator[] (int i) { return data_[i]; }
++
++private:
++  T stack_[stack_count];
++  std::unique_ptr<T[]> heap_;
++  T *data_;
 +};
 +
 +struct emacs_skia_font
@@ -926,7 +945,7 @@ index 00000000000..4a06ee99011
 +    }
 +}
 +
-+/* Stack buffer size for glyph positions - covers most common cases.  */
++/* Stack buffer size for transient glyph data - covers most common cases.  */
 +constexpr int GLYPH_STACK_BUFFER_SIZE = 64;
 +
 +void
@@ -941,37 +960,19 @@ index 00000000000..4a06ee99011
 +      || !paint || count <= 0)
 +    return;
 +
-+  /* Use stack buffer for small glyph counts to avoid heap allocation.
-+     Most text rendering fits within 64 glyphs per call.  */
-+  SkPoint stack_buffer[GLYPH_STACK_BUFFER_SIZE];
-+  SkPoint *sk_positions;
-+  bool heap_allocated = false;
-+
-+  if (count <= GLYPH_STACK_BUFFER_SIZE)
-+    {
-+      sk_positions = stack_buffer;
-+    }
-+  else
-+    {
-+      sk_positions = new SkPoint[count];
-+      heap_allocated = true;
-+    }
++  emacs_skia_stack_array<SkPoint, GLYPH_STACK_BUFFER_SIZE>
++    sk_positions (count);
 +
 +  /* Convert positions to SkPoint array.  */
 +  for (int i = 0; i < count; i++)
-+    {
-+      sk_positions[i] = to_sk_point (positions[i]);
-+    }
++    sk_positions[i] = to_sk_point (positions[i]);
 +
 +  /* New Skia API uses SkSpan instead of raw pointers.  */
 +  SkSpan<const SkGlyphID> glyph_span (glyphs, count);
-+  SkSpan<const SkPoint> pos_span (sk_positions, count);
++  SkSpan<const SkPoint> pos_span (sk_positions.get (), count);
 +  canvas->canvas->drawGlyphs (glyph_span, pos_span,
 +			      to_sk_point (origin), font->font,
 +			      paint->paint);
-+
-+  if (heap_allocated)
-+    delete[] sk_positions;
 +}
 +
 +/* Draw image with explicit sampling control.
@@ -1473,16 +1474,12 @@ index 00000000000..4a06ee99011
 +  if (!font || !glyphs || !extents || count <= 0)
 +    return;
 +
-+  /* Use stack buffers for common case to avoid heap allocation.  */
-+  constexpr int STACK_BUF = 64;
-+  SkRect stack_bounds[STACK_BUF];
-+  SkScalar stack_widths[STACK_BUF];
-+  SkRect *bounds_ptr = count <= STACK_BUF ? stack_bounds : new SkRect[count];
-+  SkScalar *widths_ptr = count <= STACK_BUF ? stack_widths : new SkScalar[count];
++  emacs_skia_stack_array<SkRect, GLYPH_STACK_BUFFER_SIZE> bounds (count);
++  emacs_skia_stack_array<SkScalar, GLYPH_STACK_BUFFER_SIZE> widths (count);
 +
 +  SkSpan<const SkGlyphID> glyph_span (glyphs, count);
-+  SkSpan<SkScalar> width_span (widths_ptr, count);
-+  SkSpan<SkRect> bounds_span (bounds_ptr, count);
++  SkSpan<SkScalar> width_span (widths.get (), count);
++  SkSpan<SkRect> bounds_span (bounds.get (), count);
 +
 +  font->font.getWidthsBounds (glyph_span, width_span, bounds_span,
 +			      nullptr);
@@ -1491,18 +1488,12 @@ index 00000000000..4a06ee99011
 +     (compatible with Cairo's cairo_text_extents_t) */
 +  for (int i = 0; i < count; i++)
 +    {
-+      extents[i].x_bearing = bounds_ptr[i].left ();
-+      extents[i].y_bearing = bounds_ptr[i].top ();
-+      extents[i].width = bounds_ptr[i].width ();
-+      extents[i].height = bounds_ptr[i].height ();
-+      extents[i].x_advance = widths_ptr[i];
++      extents[i].x_bearing = bounds[i].left ();
++      extents[i].y_bearing = bounds[i].top ();
++      extents[i].width = bounds[i].width ();
++      extents[i].height = bounds[i].height ();
++      extents[i].x_advance = widths[i];
 +      extents[i].y_advance = 0; /* Horizontal fonts */
-+    }
-+
-+  if (count > STACK_BUF)
-+    {
-+      delete[] bounds_ptr;
-+      delete[] widths_ptr;
 +    }
 +}
 +
@@ -1515,13 +1506,10 @@ index 00000000000..4a06ee99011
 +  if (!font || !glyphs || !bounds || count <= 0)
 +    return;
 +
-+  /* Use stack buffer for common case.  */
-+  constexpr int STACK_BUF = 64;
-+  SkRect stack_sk_bounds[STACK_BUF];
-+  SkRect *sk_bounds = count <= STACK_BUF ? stack_sk_bounds : new SkRect[count];
++  emacs_skia_stack_array<SkRect, GLYPH_STACK_BUFFER_SIZE> sk_bounds (count);
 +
 +  SkSpan<const SkGlyphID> glyph_span (glyphs, count);
-+  SkSpan<SkRect> bounds_span (sk_bounds, count);
++  SkSpan<SkRect> bounds_span (sk_bounds.get (), count);
 +
 +  font->font.getBounds (glyph_span, bounds_span, nullptr);
 +
@@ -1532,9 +1520,6 @@ index 00000000000..4a06ee99011
 +      bounds[i].right = sk_bounds[i].right ();
 +      bounds[i].bottom = sk_bounds[i].bottom ();
 +    }
-+
-+  if (count > STACK_BUF)
-+    delete[] sk_bounds;
 +}
 +
 +int
