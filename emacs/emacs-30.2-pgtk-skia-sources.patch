@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..05b7021b380
+index 00000000000..be125b2006e
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1527 @@
+@@ -0,0 +1,1519 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -554,16 +554,12 @@ index 00000000000..05b7021b380
 +    }
 +}
 +
-+int
-+emacs_skia_surface_get_width (emacs_skia_surface_t *surface)
++void
++emacs_skia_surface_get_size (emacs_skia_surface_t *surface,
++			     int *width, int *height)
 +{
-+  return surface ? surface->surface->width () : 0;
-+}
-+
-+int
-+emacs_skia_surface_get_height (emacs_skia_surface_t *surface)
-+{
-+  return surface ? surface->surface->height () : 0;
++  *width = surface && surface->surface ? surface->surface->width () : 0;
++  *height = surface && surface->surface ? surface->surface->height () : 0;
 +}
 +
 +emacs_skia_image_t *
@@ -1055,16 +1051,12 @@ index 00000000000..05b7021b380
 +  delete image;
 +}
 +
-+int
-+emacs_skia_image_get_width (emacs_skia_image_t *image)
++void
++emacs_skia_image_get_size (emacs_skia_image_t *image,
++			   int *width, int *height)
 +{
-+  return image && image->image ? image->image->width () : 0;
-+}
-+
-+int
-+emacs_skia_image_get_height (emacs_skia_image_t *image)
-+{
-+  return image && image->image ? image->image->height () : 0;
++  *width = image && image->image ? image->image->width () : 0;
++  *height = image && image->image ? image->image->height () : 0;
 +}
 +
 +emacs_skia_image_t *
@@ -1533,7 +1525,7 @@ index 00000000000..05b7021b380
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..b7e6eb13f45
+index 00000000000..6db04e2fcdd
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
 @@ -0,0 +1,421 @@
@@ -1691,8 +1683,8 @@ index 00000000000..b7e6eb13f45
 +  /* Flush surface drawing */
 +  void emacs_skia_surface_flush (emacs_skia_surface_t *surface);
 +
-+  int emacs_skia_surface_get_width (emacs_skia_surface_t *surface);
-+  int emacs_skia_surface_get_height (emacs_skia_surface_t *surface);
++  void emacs_skia_surface_get_size (emacs_skia_surface_t *surface,
++				    int *width, int *height);
 +
 +  /* Make an image snapshot from the surface (for scrolling/copying)
 +   */
@@ -1896,8 +1888,8 @@ index 00000000000..b7e6eb13f45
 +
 +  void emacs_skia_image_destroy (emacs_skia_image_t *image);
 +
-+  int emacs_skia_image_get_width (emacs_skia_image_t *image);
-+  int emacs_skia_image_get_height (emacs_skia_image_t *image);
++  void emacs_skia_image_get_size (emacs_skia_image_t *image,
++				  int *width, int *height);
 +
 +  /* Create a 1-bit (A1 format) image from packed bitmap data.
 +     This is used for fringe bitmaps and stipple patterns.

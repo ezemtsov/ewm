@@ -576,7 +576,7 @@ index ee56e2d..36636ab 100644
    /* These are used by the XFT backend.  */
    Display *display;
 diff --git a/src/gtkutil.c b/src/gtkutil.c
-index 655e838..ba7da55 100644
+index 655e838..af2fd73 100644
 --- a/src/gtkutil.c
 +++ b/src/gtkutil.c
 @@ -41,6 +41,9 @@ typedef struct pgtk_output xp_output;
@@ -618,8 +618,8 @@ index 655e838..ba7da55 100644
 +  if (!old_widget && img->skia_data)
 +    {
 +      emacs_skia_image_t *skia_img = img->skia_data;
-+      int w = emacs_skia_image_get_width (skia_img);
-+      int h = emacs_skia_image_get_height (skia_img);
++      int w, h;
++      emacs_skia_image_get_size (skia_img, &w, &h);
 +      if (w > 0 && h > 0)
 +	{
 +	  /* Create a raster surface, draw the image, read pixels back.  */
@@ -11484,7 +11484,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..88f8fe2 100644
+index 617ed3c..721fdec 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -18630,8 +18630,7 @@ index 617ed3c..88f8fe2 100644
 +
 +  emacs_skia_surface_flush (skia_surface);
 +
-+  width = emacs_skia_surface_get_width (skia_surface);
-+  height = emacs_skia_surface_get_height (skia_surface);
++  emacs_skia_surface_get_size (skia_surface, &width, &height);
 +  scale = gtk_widget_get_scale_factor (widget);
 +
 +  if (pgtk_skia_debug_gl_enabled ())
@@ -19129,8 +19128,9 @@ index 617ed3c..88f8fe2 100644
 +    {
 +      int desired_w, desired_h;
 +      pgtk_skia_surface_device_size (f, &desired_w, &desired_h, NULL);
-+      int cur_w = emacs_skia_surface_get_width (FRAME_SKIA_SURFACE (f));
-+      int cur_h = emacs_skia_surface_get_height (FRAME_SKIA_SURFACE (f));
++      int cur_w, cur_h;
++      emacs_skia_surface_get_size (FRAME_SKIA_SURFACE (f),
++				   &cur_w, &cur_h);
 +
 +      if (cur_w != desired_w || cur_h != desired_h)
 +	{
