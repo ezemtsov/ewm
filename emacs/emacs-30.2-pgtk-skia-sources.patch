@@ -1,6 +1,6 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..bbb6f222eaf
+index 00000000000..767807f858f
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
 @@ -0,0 +1,1433 @@
@@ -803,7 +803,16 @@ index 00000000000..bbb6f222eaf
 +			   const float *intervals, int count,
 +			   float phase)
 +{
-+  if (!paint || !intervals || count < 2 || (count % 2) != 0)
++  if (!paint)
++    return;
++
++  if (!intervals || count == 0)
++    {
++      paint->paint.setPathEffect (nullptr);
++      return;
++    }
++
++  if (count < 2 || (count % 2) != 0)
 +    return;
 +
 +  /* Skia requires SkScalar array with even count.
@@ -812,15 +821,6 @@ index 00000000000..bbb6f222eaf
 +    = SkDashPathEffect::Make (SkSpan<const float> (intervals, count),
 +			      phase);
 +  paint->paint.setPathEffect (effect);
-+}
-+
-+void
-+emacs_skia_paint_clear_dash (emacs_skia_paint_t *paint)
-+{
-+  if (paint)
-+    {
-+      paint->paint.setPathEffect (nullptr);
-+    }
 +}
 +
 +void
@@ -1439,10 +1439,10 @@ index 00000000000..bbb6f222eaf
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..30506f9b197
+index 00000000000..797eec40146
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,394 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1719,15 +1719,11 @@ index 00000000000..30506f9b197
 +					  float width);
 +
 +  /* Dash pattern for strokes.
-+     intervals: array of on/off lengths (must have even count)
-+     count: number of elements in intervals array
-+     phase: offset into the dash pattern */
++     Pass NULL for INTERVALS to clear the dash pattern.  Otherwise,
++     INTERVALS must have an even COUNT of on/off lengths.  */
 +  void emacs_skia_paint_set_dash (emacs_skia_paint_t *paint,
 +				  const float *intervals, int count,
 +				  float phase);
-+
-+  /* Clear dash pattern (solid line) */
-+  void emacs_skia_paint_clear_dash (emacs_skia_paint_t *paint);
 +
 +  /* ============================================================
 +     Font and Typeface

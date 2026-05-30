@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..24bf0c5 100644
+index 617ed3c..2f26e99 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -14030,7 +14030,7 @@ index 617ed3c..24bf0c5 100644
 +  emacs_skia_path_line_to (path, s->x + width, y_center);
 +  emacs_skia_canvas_draw_path (canvas, path, paint);
 +  emacs_skia_path_destroy (path);
-+  emacs_skia_paint_clear_dash (paint);
++  emacs_skia_paint_set_dash (paint, NULL, 0, 0.0f);
 +  /* Reset stroke mode on the shared paint object so subsequent draws
 +     (which expect a filled paint) are not accidentally stroked.  */
 +  emacs_skia_paint_set_stroke (paint, false);
@@ -14849,7 +14849,7 @@ index 617ed3c..24bf0c5 100644
 +
 +      emacs_skia_paint_t *paint = FRAME_SKIA_PAINT (f);
 +      emacs_skia_paint_set_image_shader (paint, NULL);
-+      emacs_skia_paint_clear_dash (paint);
++      emacs_skia_paint_set_dash (paint, NULL, 0, 0.0f);
 +      emacs_skia_paint_set_color (paint,
 +				  EMACS_SKIA_COLOR_RGB (255, 255, 255));
 +      emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC);
@@ -15684,7 +15684,7 @@ index 617ed3c..24bf0c5 100644
 +
 +  /* Set up for DIFFERENCE blend mode with white color.  */
 +  emacs_skia_paint_set_image_shader (paint, NULL);
-+  emacs_skia_paint_clear_dash (paint);
++  emacs_skia_paint_set_dash (paint, NULL, 0, 0.0f);
 +  emacs_skia_paint_set_color (paint,
 +			      EMACS_SKIA_COLOR_RGB (255, 255, 255));
 +  emacs_skia_paint_set_blend_mode (paint,
