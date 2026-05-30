@@ -350,6 +350,56 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-red-decoration (phase label face min-red)
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create
+                  (format "*ewm-skia-%s-smoke*" label)))
+         stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 6)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (insert (propertize
+                     "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM"
+                     'face face)))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-redraw)
+          (setq stats (pgtk-skia-test-framebuffer-color-counts
+                       nil (ewm-skia-smoke-window-rect 700 120)))
+          (unless (and (consp stats)
+                       (> (nth 2 stats) min-red))
+            (ewm-skia-smoke-fail
+             "%s decoration missing red pixels after %s: stats=%S threshold=%d"
+             label phase stats min-red)))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
+(defun ewm-skia-smoke-check-text-decorations (phase)
+  (dolist (case `(("underline"
+                   (:foreground "#0000ff"
+                    :underline (:color "#ff0000" :style line))
+                   150)
+                  ("overline"
+                   (:foreground "#0000ff" :overline "#ff0000")
+                   150)
+                  ("strike"
+                   (:foreground "#0000ff" :strike-through "#ff0000")
+                   150)
+                  ("box"
+                   (:foreground "#0000ff"
+                    :box (:line-width 2 :color "#ff0000"))
+                   600)))
+    (ewm-skia-smoke-check-red-decoration
+     phase (nth 0 case) (nth 1 case) (nth 2 case))))
+
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
                  (fboundp 'pgtk-skia-gl-enabled-p)))
@@ -407,6 +457,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-scaled-transparent-image "initial draw")
 (ewm-skia-smoke-check-rotated-transparent-image "initial draw")
 (ewm-skia-smoke-check-sliced-scaled-image "initial draw")
+(ewm-skia-smoke-check-text-decorations "initial draw")
 
 (goto-char (point-min))
 (ewm-skia-smoke-redraw)
