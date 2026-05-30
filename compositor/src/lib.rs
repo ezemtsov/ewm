@@ -111,7 +111,7 @@ use smithay::desktop::utils::{
     bbox_from_surface_tree, output_update, send_dmabuf_feedback_surface_tree,
     send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
     surface_primary_scanout_output, take_presentation_feedback_surface_tree,
-    update_surface_primary_scanout_output, OutputPresentationFeedback,
+    under_from_surface_tree, update_surface_primary_scanout_output, OutputPresentationFeedback,
 };
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
@@ -2102,8 +2102,10 @@ impl Ewm {
         )
     }
 
-    /// Hit-test layout surfaces under a global position; falls back to the
-    /// frame's own surface when no entry hits.
+    /// Hit-test layout toplevel/subsurfaces under a global position; falls
+    /// back to the frame's own surface when no entry hits. Popups are handled
+    /// separately by `popup_surface_under`, so popup placement and z-order stay
+    /// identical to rendering.
     pub fn layout_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         if let Some(surface) = self
             .layout_entry_under(pos)
@@ -2132,13 +2134,7 @@ impl Ewm {
         let window_origin: Point<f64, Logical> =
             Point::from((pos.x - pos_in_window.x, pos.y - pos_in_window.y));
 
-        let (surface, surface_offset) =
-            window.surface_under(pos_in_window, WindowSurfaceType::ALL)?;
-        let global_loc = Point::from((
-            window_origin.x + surface_offset.x as f64,
-            window_origin.y + surface_offset.y as f64,
-        ));
-        Some((surface, global_loc))
+        Self::surface_under_non_popup_window(window, pos_in_window, window_origin)
     }
 
     /// Find the frame containing `pos`, returning the frame surface itself.
@@ -2159,17 +2155,48 @@ impl Ewm {
             let window_origin: Point<f64, Logical> =
                 Point::from((rect.loc.x as f64, rect.loc.y as f64));
             let pos_in_window = Point::from((pos.x - window_origin.x, pos.y - window_origin.y));
-            if let Some((surface, surface_offset)) =
-                window.surface_under(pos_in_window, WindowSurfaceType::ALL)
+            if let Some(hit) =
+                Self::surface_under_non_popup_window(window, pos_in_window, window_origin)
             {
-                let global_loc = Point::from((
-                    window_origin.x + surface_offset.x as f64,
-                    window_origin.y + surface_offset.y as f64,
-                ));
-                return Some((surface, global_loc));
+                return Some(hit);
             }
         }
 
+        None
+    }
+
+    fn surface_under_non_popup_window(
+        window: &Window,
+        pos_in_window: Point<f64, Logical>,
+        window_origin: Point<f64, Logical>,
+    ) -> Option<SurfaceHit> {
+        let (surface, surface_offset) = window.surface_under(
+            pos_in_window,
+            WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+        )?;
+        Some((
+            surface,
+            Point::from((
+                window_origin.x + surface_offset.x as f64,
+                window_origin.y + surface_offset.y as f64,
+            )),
+        ))
+    }
+
+    fn popup_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
+        let output = self.output_at(pos)?;
+        let output_geo = self.space.output_geometry(output)?;
+        for placement in crate::render::collect_popup_placements(self, output_geo) {
+            let Some((surface, surface_offset)) = under_from_surface_tree(
+                &placement.surface,
+                pos,
+                placement.location,
+                WindowSurfaceType::ALL,
+            ) else {
+                continue;
+            };
+            return Some((surface, surface_offset.to_f64()));
+        }
         None
     }
 
@@ -4468,12 +4495,17 @@ impl Ewm {
             }
         }
 
-        // 3. Layout surfaces (entries + frame's own surface)
+        // 3. Popups, matching render insertion above layout surfaces and frames.
+        if let Some(result) = self.popup_surface_under(pos) {
+            return Some(result);
+        }
+
+        // 4. Layout surfaces (entries + frame's own surface)
         if let Some(result) = self.layout_surface_under(pos) {
             return Some(result);
         }
 
-        // 4. Deferred layers (Top deferred behind fullscreen, then Bottom/Background)
+        // 5. Deferred layers (Top deferred behind fullscreen, then Bottom/Background)
         if let (Some(output), Some(geo)) = (output, output_geo) {
             let pos_within_output = pos - geo.loc.to_f64();
 

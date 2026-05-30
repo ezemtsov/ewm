@@ -110,6 +110,10 @@ impl TestClient {
         self.eq.handle()
     }
 
+    pub fn server_client_id(&self) -> ClientId {
+        self.server_client_id.clone()
+    }
+
     /// Take and clear the recorded client-side events.
     pub fn drain_events(&mut self) -> Vec<ClientEvent> {
         std::mem::take(&mut self.state.events)

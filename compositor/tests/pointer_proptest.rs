@@ -29,11 +29,11 @@
 //!       emits exactly one placement, anchored to S's focused-or-primary
 //!       view origin.
 //!
-//! PP2 - Popup placement is hit-testable. The centre of every popup
-//!       placement hits *some* popup surface (one of our `popups` set),
-//!       never the parent toplevel. Strict "hits its own surface" doesn't
-//!       hold when popups overlap; the topmost wins per `popups_for_surface`
-//!       iteration order.
+//! PP2 - Popup placement/render-order parity. The centre of every visible
+//!       popup placement, whether parented to an embedded app surface or an
+//!       Emacs frame, hits *some* owned popup surface, never the parent or an
+//!       underlying layout surface. Strict "hits its own surface" doesn't hold
+//!       when popups overlap; the topmost rendered popup wins.
 //!
 //! P3  - Button delivery. After a `PointerButton(pressed)` op + roundtrip,
 //!       the client receives a `PointerButton` event with the same
@@ -70,6 +70,8 @@ use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel};
 use ewm_core::{fullscreen_center_offset, LayoutEntry, ViewId};
 use proptest::prelude::*;
 use smithay::desktop::PopupManager;
+use smithay::reexports::wayland_server::backend::ClientId;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface as ServerWlSurface;
 use smithay::reexports::wayland_server::Resource as _;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
@@ -96,6 +98,33 @@ fn world_rect() -> Rectangle<i32, Logical> {
     Rectangle::new(Point::from((-100, -100)), Size::from((5000, 5000)))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SurfaceKey {
+    client: ClientId,
+    protocol_id: u32,
+}
+
+fn client_surface_key(
+    client: &TestClient,
+    surface: &wayland_client::protocol::wl_surface::WlSurface,
+) -> SurfaceKey {
+    SurfaceKey {
+        client: client.server_client_id(),
+        protocol_id: surface.id().protocol_id(),
+    }
+}
+
+fn server_surface_key(ewm: &ewm_core::Ewm, surface: &ServerWlSurface) -> Option<SurfaceKey> {
+    Some(SurfaceKey {
+        client: ewm.display_handle.get_client(surface.id()).ok()?.id(),
+        protocol_id: surface.id().protocol_id(),
+    })
+}
+
+fn server_hit_key(ewm: &ewm_core::Ewm, hit: Option<&ServerWlSurface>) -> Option<SurfaceKey> {
+    hit.and_then(|surface| server_surface_key(ewm, surface))
+}
+
 #[derive(Debug, Clone)]
 enum Op {
     AddOutput(usize),
@@ -115,6 +144,10 @@ enum Op {
         pressed: bool,
     },
     CreatePopup {
+        ax: i32,
+        ay: i32,
+    },
+    CreateFramePopup {
         ax: i32,
         ay: i32,
     },
@@ -139,6 +172,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::WarpPointer { x, y }),
         any::<bool>().prop_map(|pressed| Op::PointerButton { pressed }),
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreatePopup { ax, ay }),
+        (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreateFramePopup { ax, ay }),
         any::<bool>().prop_map(|on| Op::SetClientFullscreen { on }),
     ]
 }
@@ -148,7 +182,11 @@ struct Harness {
     client: TestClient,
     toplevel: Toplevel,
     sid: u64,
-    popups: Vec<Popup>,
+    app_popups: Vec<Popup>,
+    frame_client: TestClient,
+    frame_toplevel: Toplevel,
+    frame_sid: u64,
+    frame_popups: Vec<Popup>,
     /// Latest `xdg_toplevel.configure` size the client has been told, accumulated
     /// across drain windows. `None` until the first configure arrives.
     last_configure: Option<(i32, i32)>,
@@ -166,19 +204,38 @@ impl Harness {
         let sid = fix
             .find_surface_id(&client, &toplevel.surface)
             .expect("server did not assign a surface_id");
+
+        let mut frame_client = fix.new_client().expect("frame client");
+        fix.roundtrip(&mut frame_client);
+        let frame_toplevel = fix.open_toplevel(&mut frame_client, "ewm-test-frame", view_size());
+        let frame_sid = fix
+            .find_surface_id(&frame_client, &frame_toplevel.surface)
+            .expect("server did not assign a frame surface_id");
+
         let mut h = Harness {
             fix,
             client,
             toplevel,
             sid,
-            popups: Vec::new(),
+            app_popups: Vec::new(),
+            frame_client,
+            frame_toplevel,
+            frame_sid,
+            frame_popups: Vec::new(),
             last_configure: None,
             toplevel_on_outputs: HashSet::new(),
         };
         // Drain setup events into the harness so the first op starts clean.
         let setup_events = h.client.drain_events();
         h.fold_events(&setup_events);
+        h.frame_client.drain_events();
         h
+    }
+
+    fn roundtrip_all(&mut self) {
+        self.fix.roundtrip(&mut self.client);
+        self.fix.roundtrip(&mut self.frame_client);
+        self.frame_client.drain_events();
     }
 
     /// Apply enter/leave/configure events from a drain window to harness state.
@@ -216,14 +273,35 @@ impl Harness {
             .any(|s| s.surfaces().any(|e| e.surface_id == self.sid))
     }
 
-    /// Protocol ids of surfaces this client owns (toplevel + popups).
-    fn our_surface_ids(&self) -> HashSet<u32> {
+    fn frame_in_some_strip(&self) -> bool {
+        self.fix.ewm_ref().output_strips.values().any(|strip| {
+            strip
+                .frames
+                .iter()
+                .any(|frame| frame.surface_id == self.frame_sid)
+        })
+    }
+
+    /// Surfaces the app client owns (toplevel + app popups).
+    fn our_surface_keys(&self) -> HashSet<SurfaceKey> {
         let mut s = HashSet::new();
-        s.insert(self.toplevel.surface.id().protocol_id());
-        for p in &self.popups {
-            s.insert(p.surface.id().protocol_id());
+        s.insert(client_surface_key(&self.client, &self.toplevel.surface));
+        for p in &self.app_popups {
+            s.insert(client_surface_key(&self.client, &p.surface));
         }
         s
+    }
+
+    fn popup_surface_keys(&self) -> HashSet<SurfaceKey> {
+        self.app_popups
+            .iter()
+            .map(|p| client_surface_key(&self.client, &p.surface))
+            .chain(
+                self.frame_popups
+                    .iter()
+                    .map(|p| client_surface_key(&self.frame_client, &p.surface)),
+            )
+            .collect()
     }
 }
 
@@ -253,7 +331,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
             let frames: Vec<Frame> = (0..n_views)
                 .map(|i| Frame {
                     name: String::new(),
-                    surface_id: 100 + i as u64,
+                    surface_id: if i == 0 { h.frame_sid } else { 100 + i as u64 },
                     view_id: nz(100 + i as u64),
                     width: VIEW_W as f64,
                     surfaces: vec![LayoutEntry {
@@ -294,7 +372,21 @@ fn apply_op(h: &mut Harness, op: &Op) {
             let popup =
                 h.fix
                     .open_popup(&mut h.client, &h.toplevel, anchor, Size::from((100, 100)));
-            h.popups.push(popup);
+            h.app_popups.push(popup);
+        }
+        Op::CreateFramePopup { ax, ay } => {
+            // Skip when the frame isn't placed; unconstrain would zero-clamp.
+            if !h.frame_in_some_strip() {
+                return;
+            }
+            let anchor = Rectangle::new(Point::from((ax, ay)), Size::from((1, 1)));
+            let popup = h.fix.open_popup(
+                &mut h.frame_client,
+                &h.frame_toplevel,
+                anchor,
+                Size::from((100, 100)),
+            );
+            h.frame_popups.push(popup);
         }
     }
 }
@@ -334,12 +426,6 @@ fn apply_multi_entry_layout(
             move_anim: None,
         }],
     );
-}
-
-fn server_id(
-    s: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
-) -> Option<u32> {
-    s.map(|s| s.id().protocol_id())
 }
 
 fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
@@ -461,11 +547,11 @@ fn check_l3(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let hit = ewm.surface_under_point(p);
     let focus = ewm.pointer_focus.as_ref();
-    let hit_id = server_id(hit.as_ref().map(|(s, _)| s));
-    let focus_id = server_id(focus.map(|(s, _)| s));
+    let hit_id = server_hit_key(ewm, hit.as_ref().map(|(s, _)| s));
+    let focus_id = server_hit_key(ewm, focus.map(|(s, _)| s));
     prop_assert_eq!(
-        focus_id,
-        hit_id,
+        focus_id.as_ref(),
+        hit_id.as_ref(),
         "L3 pointer_focus mismatch at {:?}: focus={:?}, hit={:?}",
         p,
         focus_id,
@@ -480,9 +566,9 @@ fn check_p1(
     p: Point<f64, Logical>,
 ) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    let expected = server_id(ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
+    let expected = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
     let last_enter = events.iter().rev().find_map(|e| match e {
-        ClientEvent::PointerEnter { surface, .. } => Some(surface.id().protocol_id()),
+        ClientEvent::PointerEnter { surface, .. } => Some(client_surface_key(&h.client, surface)),
         _ => None,
     });
     // The client only sees an Enter when focus actually changed (smithay
@@ -490,8 +576,8 @@ fn check_p1(
     // window, we have nothing to compare; only assert when one was delivered.
     if let Some(actual) = last_enter {
         prop_assert_eq!(
-            Some(actual),
-            expected,
+            Some(&actual),
+            expected.as_ref(),
             "P1 enter target mismatch at {:?}: client got {:?}, hit-test {:?}",
             p,
             actual,
@@ -504,20 +590,16 @@ fn check_p1(
 fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let placements = collect_popup_placements(ewm, world_rect());
-    let popup_ids: HashSet<u32> = h
-        .popups
-        .iter()
-        .map(|p| p.surface.id().protocol_id())
-        .collect();
+    let popup_ids = h.popup_surface_keys();
     for p in &placements {
         let centre = Point::from((
             (p.location.x + p.size.w / 2) as f64,
             (p.location.y + p.size.h / 2) as f64,
         ));
         let hit = ewm.surface_under_point(centre);
-        let hit_id = hit.as_ref().map(|(s, _)| s.id().protocol_id());
+        let hit_id = server_hit_key(ewm, hit.as_ref().map(|(s, _)| s));
         prop_assert!(
-            hit_id.is_some_and(|id| popup_ids.contains(&id)),
+            hit_id.as_ref().is_some_and(|id| popup_ids.contains(id)),
             "PP2: popup centre {:?} hit {:?}, expected a popup (one of {:?})",
             centre,
             hit_id,
@@ -532,9 +614,9 @@ fn check_p3(h: &Harness, events: &[ClientEvent], pressed: bool) -> Result<(), Te
     let focus_id = ewm
         .pointer_focus
         .as_ref()
-        .map(|(s, _)| s.id().protocol_id());
-    let ours = h.our_surface_ids();
-    let focused_on_ours = focus_id.is_some_and(|id| ours.contains(&id));
+        .and_then(|(s, _)| server_surface_key(ewm, s));
+    let ours = h.our_surface_keys();
+    let focused_on_ours = focus_id.as_ref().is_some_and(|id| ours.contains(id));
     let saw_button = events
         .iter()
         .any(|e| matches!(e, ClientEvent::PointerButton { button: BTN_LEFT, pressed: p } if *p == pressed));
@@ -605,8 +687,8 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
     let Some((surf, _)) = ewm.surface_under_point(p) else {
         return Ok(());
     };
-    let our_id = h.toplevel.surface.id().protocol_id();
-    if surf.id().protocol_id() != our_id {
+    let our_key = client_surface_key(&h.client, &h.toplevel.surface);
+    if server_surface_key(ewm, &surf).as_ref() != Some(&our_key) {
         return Ok(());
     }
     let p_int = Point::from((p.x as i32, p.y as i32));
@@ -670,17 +752,17 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
         let has_anchor = ewm.window_global_position(window).is_some();
         let placements = collect_popup_placements(ewm, world_rect());
         for (popup, _) in &popups {
-            let popup_id = popup.wl_surface().id().protocol_id();
+            let popup_key = server_surface_key(ewm, popup.wl_surface());
             let matching = placements
                 .iter()
-                .filter(|p| p.surface.id().protocol_id() == popup_id)
+                .filter(|p| server_surface_key(ewm, &p.surface) == popup_key)
                 .count();
             let expected = if has_anchor { 1 } else { 0 };
             prop_assert_eq!(
                 matching,
                 expected,
                 "PP1 popup {} (parent sid={}): expected {} placement(s), got {}",
-                popup_id,
+                popup.wl_surface().id().protocol_id(),
                 sid,
                 expected,
                 matching,
@@ -713,6 +795,46 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
     Ok(())
 }
 
+#[test]
+fn emacs_frame_popup_receives_hits_above_embedded_surface() {
+    let mut h = Harness::new();
+    apply_op(&mut h, &Op::AddOutput(0));
+    h.roundtrip_all();
+    apply_op(
+        &mut h,
+        &Op::ApplyLayout {
+            output: 0,
+            n_views: 1,
+            fullscreen_mask: 0,
+        },
+    );
+    h.roundtrip_all();
+    apply_op(&mut h, &Op::CreateFramePopup { ax: 120, ay: 120 });
+    h.roundtrip_all();
+
+    let popup = h.frame_popups.last().expect("frame popup was created");
+    let popup_key = client_surface_key(&h.frame_client, &popup.surface);
+    let (centre, hit_key) = {
+        let ewm = h.fix.ewm_ref();
+        let placement = collect_popup_placements(ewm, world_rect())
+            .into_iter()
+            .find(|p| server_surface_key(ewm, &p.surface).as_ref() == Some(&popup_key))
+            .expect("frame popup placement");
+        let centre = Point::from((
+            (placement.location.x + placement.size.w / 2) as f64,
+            (placement.location.y + placement.size.h / 2) as f64,
+        ));
+        let hit = ewm.surface_under_point(centre);
+        (centre, server_hit_key(ewm, hit.as_ref().map(|(s, _)| s)))
+    };
+
+    assert_eq!(
+        hit_key,
+        Some(popup_key),
+        "frame popup centre {centre:?} should hit the popup, not the embedded surface",
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,
@@ -724,7 +846,7 @@ proptest! {
         let mut h = Harness::new();
         for op in &ops {
             apply_op(&mut h, op);
-            h.fix.roundtrip(&mut h.client);
+            h.roundtrip_all();
             assert_invariants(&mut h, op)?;
         }
     }
@@ -737,10 +859,10 @@ proptest! {
         let mut h = Harness::new();
         let add = Op::AddOutput(output);
         apply_op(&mut h, &add);
-        h.fix.roundtrip(&mut h.client);
+        h.roundtrip_all();
 
         apply_multi_entry_layout(&mut h, output, n_entries, (1 << n_entries) - 1);
-        h.fix.roundtrip(&mut h.client);
+        h.roundtrip_all();
 
         check_n4(&h)?;
     }
