@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..aaacd7e9c9a
+index 00000000000..07bad78e339
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1438 @@
+@@ -0,0 +1,1436 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -65,8 +65,6 @@ index 00000000000..aaacd7e9c9a
 +# include "ports/SkFontScanner_FreeType.h"
 +#endif
 +
-+#include <cmath>
-+#include <cstring>
 +#include <memory>
 +
 +extern "C" void xfree (void *);
