@@ -528,6 +528,34 @@ static char *image[] = {
      (insert (make-string 240 ?M) "\n"))
    1000))
 
+(defun ewm-skia-smoke-check-decorated-composite-window-clipping (phase)
+  (ewm-skia-smoke-check-window-clipping-case
+   phase "decorated-glyph" "*ewm-skia-decorated-clip-left-smoke*"
+   (lambda ()
+     (setq-local bidi-display-reordering nil)
+     (setq-local truncate-lines t)
+     (insert
+      (propertize
+       (make-string 240 ?M)
+       'face '(:foreground "#0000ff"
+               :background "#00ff00"
+               :underline (:color "#ff0000" :style line)))
+      "\n"))
+   100)
+  (ewm-skia-smoke-check-window-clipping-case
+   phase "composite-glyph" "*ewm-skia-composite-clip-left-smoke*"
+   (lambda ()
+     (setq-local bidi-display-reordering nil)
+     (setq-local truncate-lines t)
+     (dotimes (_ 48)
+       (let ((start (point)))
+         (insert (propertize "  "
+                             'face '(:foreground "#ff0000"
+                                     :background "#00ff00")))
+         (compose-region start (point) "MMMMMMMM")))
+     (insert "\n"))
+   400))
+
 (defun ewm-skia-smoke-check-red-decoration (phase label face min-red)
   (let* ((source-buffer (current-buffer))
          (buffer (get-buffer-create
@@ -810,6 +838,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-masked-image-cursor "initial draw")
 (ewm-skia-smoke-check-window-clipping "initial draw")
 (ewm-skia-smoke-check-glyph-window-clipping "initial draw")
+(ewm-skia-smoke-check-decorated-composite-window-clipping "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")
