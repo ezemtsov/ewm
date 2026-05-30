@@ -1,8 +1,8 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 74e2bf7..a5fa3a3 100644
+index 102f3d9..5af482b 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10603,6 +10603,667 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10613,6 +10613,645 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -24,8 +24,7 @@ index 74e2bf7..a5fa3a3 100644
 +  int rect_left = 0, rect_top = 0, rect_right, rect_bottom;
 +  ptrdiff_t npixels;
 +  unsigned char *pixels;
-+  GLint old_read_framebuffer = 0;
-+  GLint old_draw_framebuffer = 0;
++  struct pgtk_fbo_bindings saved_fbo;
 +  GLint old_pack_alignment = 0;
 +  GLenum err;
 +  intmax_t red = 0;
@@ -80,8 +79,7 @@ index 74e2bf7..a5fa3a3 100644
 +    memory_full (SIZE_MAX);
 +  pixels = xnmalloc (npixels, 4);
 +
-+  glGetIntegerv (GL_READ_FRAMEBUFFER_BINDING, &old_read_framebuffer);
-+  glGetIntegerv (GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_framebuffer);
++  pgtk_save_fbo_bindings (&saved_fbo);
 +  glGetIntegerv (GL_PACK_ALIGNMENT, &old_pack_alignment);
 +
 +  glBindFramebuffer (GL_FRAMEBUFFER, FRAME_GL_FRAMEBUFFER (f));
@@ -91,9 +89,7 @@ index 74e2bf7..a5fa3a3 100644
 +  err = glGetError ();
 +
 +  glPixelStorei (GL_PACK_ALIGNMENT, old_pack_alignment);
-+  glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
-+  glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
-+  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++  pgtk_restore_fbo_bindings (f, &saved_fbo);
 +
 +  if (err != GL_NO_ERROR)
 +    {
@@ -261,8 +257,7 @@ index 74e2bf7..a5fa3a3 100644
 +{
 +  struct frame *f = decode_window_system_frame (frame);
 +  GLint old_texture = 0;
-+  GLint old_read_framebuffer = 0;
-+  GLint old_draw_framebuffer = 0;
++  struct pgtk_fbo_bindings saved_fbo;
 +  GLint old_pack_alignment = 0;
 +  GLint old_stencil_clear = 0;
 +  GLint old_stencil_writemask = 0;
@@ -284,8 +279,7 @@ index 74e2bf7..a5fa3a3 100644
 +  if (!pgtk_skia_make_gl_context_current (f))
 +    return Qnil;
 +
-+  glGetIntegerv (GL_READ_FRAMEBUFFER_BINDING, &old_read_framebuffer);
-+  glGetIntegerv (GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_framebuffer);
++  pgtk_save_fbo_bindings (&saved_fbo);
 +  glGetIntegerv (GL_PACK_ALIGNMENT, &old_pack_alignment);
 +  glGetIntegerv (GL_STENCIL_CLEAR_VALUE, &old_stencil_clear);
 +  glGetIntegerv (GL_STENCIL_WRITEMASK, &old_stencil_writemask);
@@ -306,9 +300,7 @@ index 74e2bf7..a5fa3a3 100644
 +      glClearStencil (old_stencil_clear);
 +      glStencilMask (old_stencil_writemask);
 +      glPixelStorei (GL_PACK_ALIGNMENT, old_pack_alignment);
-+      glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
-+      glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
-+      FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++      pgtk_restore_fbo_bindings (f, &saved_fbo);
 +      return Qnil;
 +    }
 +
@@ -332,9 +324,7 @@ index 74e2bf7..a5fa3a3 100644
 +  glClearStencil (old_stencil_clear);
 +  glStencilMask (old_stencil_writemask);
 +  glPixelStorei (GL_PACK_ALIGNMENT, old_pack_alignment);
-+  glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
-+  glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
-+  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++  pgtk_restore_fbo_bindings (f, &saved_fbo);
 +
 +  if (err != GL_NO_ERROR)
 +    {
@@ -360,8 +350,7 @@ index 74e2bf7..a5fa3a3 100644
 +  GLuint sentinel_texture = 0;
 +  GLint old_active_texture = 0;
 +  GLint old_unit1_texture = 0;
-+  GLint old_read_framebuffer = 0;
-+  GLint old_draw_framebuffer = 0;
++  struct pgtk_fbo_bindings saved_fbo;
 +  GLint after_active_texture = 0;
 +  GLint after_unit1_texture = 0;
 +  GLint after_read_framebuffer = 0;
@@ -386,8 +375,7 @@ index 74e2bf7..a5fa3a3 100644
 +    height = FRAME_GL_RENDER_HEIGHT (f);
 +
 +  glGetIntegerv (GL_ACTIVE_TEXTURE, &old_active_texture);
-+  glGetIntegerv (GL_READ_FRAMEBUFFER_BINDING, &old_read_framebuffer);
-+  glGetIntegerv (GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_framebuffer);
++  pgtk_save_fbo_bindings (&saved_fbo);
 +
 +  glActiveTexture (GL_TEXTURE1);
 +  glGetIntegerv (GL_TEXTURE_BINDING_2D, &old_unit1_texture);
@@ -408,18 +396,16 @@ index 74e2bf7..a5fa3a3 100644
 +  if (sentinel_texture)
 +    glDeleteTextures (1, &sentinel_texture);
 +  glActiveTexture (old_active_texture);
-+  glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
-+  glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
-+  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++  pgtk_restore_fbo_bindings (f, &saved_fbo);
 +
 +  return list5 (ok ? Qt : Qnil,
 +		after_active_texture == GL_TEXTURE1 ? Qt : Qnil,
 +		(sentinel_texture
 +		 && after_unit1_texture == (GLint) sentinel_texture)
 +		? Qt : Qnil,
-+		after_read_framebuffer == old_read_framebuffer
++		after_read_framebuffer == saved_fbo.read
 +		? Qt : Qnil,
-+		after_draw_framebuffer == old_draw_framebuffer
++		after_draw_framebuffer == saved_fbo.draw
 +		? Qt : Qnil);
 +}
 +
@@ -449,8 +435,7 @@ index 74e2bf7..a5fa3a3 100644
 +  GLint old_scissor_box[4] = { 0, 0, 0, 0 };
 +  GLint sentinel_scissor_box[4] = { 1, 2, 3, 4 };
 +  GLint after_scissor_box[4] = { 0, 0, 0, 0 };
-+  GLint old_read_framebuffer = 0;
-+  GLint old_draw_framebuffer = 0;
++  struct pgtk_fbo_bindings saved_fbo;
 +  bool gl_ok;
 +  bool clear_color_ok;
 +  bool color_mask_ok;
@@ -473,8 +458,7 @@ index 74e2bf7..a5fa3a3 100644
 +  glGetIntegerv (GL_STENCIL_CLEAR_VALUE, &old_stencil_clear);
 +  old_scissor_enabled = glIsEnabled (GL_SCISSOR_TEST);
 +  glGetIntegerv (GL_SCISSOR_BOX, old_scissor_box);
-+  glGetIntegerv (GL_READ_FRAMEBUFFER_BINDING, &old_read_framebuffer);
-+  glGetIntegerv (GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_framebuffer);
++  pgtk_save_fbo_bindings (&saved_fbo);
 +
 +  glBindFramebuffer (GL_FRAMEBUFFER, FRAME_GL_FRAMEBUFFER (f));
 +  glClearColor (sentinel_clear_color[0], sentinel_clear_color[1],
@@ -529,9 +513,7 @@ index 74e2bf7..a5fa3a3 100644
 +    glEnable (GL_SCISSOR_TEST);
 +  else
 +    glDisable (GL_SCISSOR_TEST);
-+  glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
-+  glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
-+  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++  pgtk_restore_fbo_bindings (f, &saved_fbo);
 +
 +  return list5 ((gl_ok && clear_color_ok) ? Qt : Qnil,
 +		(gl_ok && color_mask_ok) ? Qt : Qnil,
@@ -556,8 +538,7 @@ index 74e2bf7..a5fa3a3 100644
 +  GLuint sentinel_draw_framebuffer = 0;
 +  GLint old_texture = 0;
 +  GLint old_renderbuffer = 0;
-+  GLint old_read_framebuffer = 0;
-+  GLint old_draw_framebuffer = 0;
++  struct pgtk_fbo_bindings saved_fbo;
 +  GLint after_texture = 0;
 +  GLint after_renderbuffer = 0;
 +  GLint after_read_framebuffer = 0;
@@ -577,8 +558,7 @@ index 74e2bf7..a5fa3a3 100644
 +
 +  glGetIntegerv (GL_TEXTURE_BINDING_2D, &old_texture);
 +  glGetIntegerv (GL_RENDERBUFFER_BINDING, &old_renderbuffer);
-+  glGetIntegerv (GL_READ_FRAMEBUFFER_BINDING, &old_read_framebuffer);
-+  glGetIntegerv (GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_framebuffer);
++  pgtk_save_fbo_bindings (&saved_fbo);
 +
 +  glGenTextures (1, &sentinel_texture);
 +  glBindTexture (GL_TEXTURE_2D, sentinel_texture);
@@ -600,8 +580,7 @@ index 74e2bf7..a5fa3a3 100644
 +  glGetIntegerv (GL_READ_FRAMEBUFFER_BINDING, &after_read_framebuffer);
 +  glGetIntegerv (GL_DRAW_FRAMEBUFFER_BINDING, &after_draw_framebuffer);
 +
-+  glBindFramebuffer (GL_READ_FRAMEBUFFER, old_read_framebuffer);
-+  glBindFramebuffer (GL_DRAW_FRAMEBUFFER, old_draw_framebuffer);
++  pgtk_restore_fbo_bindings (f, &saved_fbo);
 +  glBindRenderbuffer (GL_RENDERBUFFER, old_renderbuffer);
 +  glBindTexture (GL_TEXTURE_2D, old_texture);
 +  if (sentinel_read_framebuffer)
@@ -612,7 +591,6 @@ index 74e2bf7..a5fa3a3 100644
 +    glDeleteRenderbuffers (1, &sentinel_renderbuffer);
 +  if (sentinel_texture)
 +    glDeleteTextures (1, &sentinel_texture);
-+  FRAME_SKIA_GL_STATE_DIRTY (f) = true;
 +
 +  return list5 (ok ? Qt : Qnil,
 +		(sentinel_texture
@@ -670,7 +648,7 @@ index 74e2bf7..a5fa3a3 100644
  #endif
  
  void
-@@ -10697,6 +11358,16 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10707,6 +11346,16 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
