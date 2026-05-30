@@ -269,25 +269,62 @@ cat >"$payload" <<'EOF'
      "Skia input block leaked after %s" phase)))
 
 (defun ewm-skia-smoke-check-tooltip-frame (phase)
-  (let ((use-system-tooltips nil)
-        (tooltip-reuse-hidden-frame nil))
-    (x-show-tip
-     (propertize "Skia tooltip smoke"
-                 'face '(:foreground "#ff0000"
-                         :background "#00ff00"))
-     nil
-     '((name . "skia-tooltip-smoke")
-       (left . 40)
-       (top . 40)
-       (foreground-color . "#ff0000")
-       (background-color . "#00ff00")
-       (border-color . "#ff0000"))
-     1 0 0)
-    (redisplay 'force)
-    (sit-for 0.05)
-    (unless (x-hide-tip)
-      (ewm-skia-smoke-fail
-       "tooltip frame was not open after %s" phase))))
+  (let ((old-use-system-tooltips use-system-tooltips)
+        (old-x-gtk-use-system-tooltips x-gtk-use-system-tooltips)
+        (old-tooltip-reuse-hidden-frame tooltip-reuse-hidden-frame)
+        tooltip-frame stats ok)
+    (unwind-protect
+        (progn
+          (unless (fboundp 'pgtk-skia-test-current-tooltip-frame)
+            (ewm-skia-smoke-fail
+             "missing Skia tooltip frame test hook"))
+          (setq use-system-tooltips nil
+                x-gtk-use-system-tooltips nil
+                tooltip-reuse-hidden-frame nil)
+          (x-show-tip
+           (propertize "Skia tooltip smoke"
+                       'face '(:foreground "#ff0000"
+                               :background "#00ff00"))
+           nil
+           '((name . "skia-tooltip-smoke")
+             (left . 40)
+             (top . 40)
+             (foreground-color . "#ff0000")
+             (background-color . "#00ff00")
+             (border-color . "#ff0000"))
+           1 0 0)
+          (catch 'done
+            (dotimes (_ 10)
+              (redisplay 'force)
+              (sit-for 0.03)
+              (setq tooltip-frame
+                    (pgtk-skia-test-current-tooltip-frame))
+              (when tooltip-frame
+                (throw 'done t))))
+          (unless tooltip-frame
+            (ewm-skia-smoke-fail
+             "tooltip frame was not visible after %s" phase))
+          (ewm-skia-smoke-check-gl-enabled tooltip-frame
+                                           (format "tooltip %s" phase))
+          (catch 'done
+            (dotimes (_ 10)
+              (redisplay 'force)
+              (sit-for 0.03)
+              (setq stats
+                    (pgtk-skia-test-framebuffer-color-counts tooltip-frame))
+              (when (and (consp stats)
+                         (> (nth 2 stats) 50)
+                         (> (nth 3 stats) 200))
+                (setq ok t)
+                (throw 'done t))))
+          (unless ok
+            (ewm-skia-smoke-fail
+             "tooltip frame missing rendered red/green pixels after %s: stats=%S"
+             phase stats)))
+      (x-hide-tip)
+      (setq use-system-tooltips old-use-system-tooltips
+            x-gtk-use-system-tooltips old-x-gtk-use-system-tooltips
+            tooltip-reuse-hidden-frame old-tooltip-reuse-hidden-frame))))
 
 (defun ewm-skia-smoke-xpm (width height rows)
   (concat "/* XPM */

@@ -1,3 +1,43 @@
+diff --git production/src/pgtkfns.c hooked/src/pgtkfns.c
+index 822d946..73d72a0 100644
+--- production/src/pgtkfns.c
++++ hooked/src/pgtkfns.c
+@@ -3429,6 +3429,25 @@ Value is t if tooltip was open, nil otherwise.  */)
+   return pgtk_hide_tip (!tooltip_reuse_hidden_frame);
+ }
+ 
++#ifdef USE_SKIA
++DEFUN ("pgtk-skia-test-current-tooltip-frame",
++       Fpgtk_skia_test_current_tooltip_frame,
++       Spgtk_skia_test_current_tooltip_frame, 0, 0, 0,
++       doc: /* Return the currently visible PGTK tooltip frame.
++This is a local Skia smoke hook for framebuffer assertions on the real
++tooltip frame created by `x-show-tip'.  */)
++  (void)
++{
++  struct frame *f;
++
++  if (!FRAMEP (tip_frame) || !FRAME_LIVE_P (XFRAME (tip_frame)))
++    return Qnil;
++
++  f = XFRAME (tip_frame);
++  return f->tooltip && FRAME_VISIBLE_P (f) ? tip_frame : Qnil;
++}
++#endif
++
+ /* Return geometric attributes of FRAME.  According to the value of
+    ATTRIBUTES return the outer edges of FRAME (Qouter_edges), the inner
+    edges of FRAME, the root window edges of frame (Qroot_edges).  Any
+@@ -3972,6 +3991,9 @@ syms_of_pgtkfns (void)
+ 
+   defsubr (&Sx_show_tip);
+   defsubr (&Sx_hide_tip);
++#ifdef USE_SKIA
++  defsubr (&Spgtk_skia_test_current_tooltip_frame);
++#endif
+ 
+   defsubr (&Sx_export_frames);
+ #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
 index 999f4b3..7b1ed38 100644
 --- production/src/pgtkterm.c

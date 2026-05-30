@@ -35,17 +35,26 @@ git -C "$emacs_tree" rev-parse --verify "$base_ref" >/dev/null
 mkdir -p "$tmp_dir/production/src" "$tmp_dir/hooked/src"
 cp "$emacs_tree/src/pgtkterm.c" "$tmp_dir/production/src/pgtkterm.c"
 cp "$emacs_tree/src/pgtkterm.c" "$tmp_dir/hooked/src/pgtkterm.c"
+cp "$emacs_tree/src/pgtkfns.c" "$tmp_dir/production/src/pgtkfns.c"
+cp "$emacs_tree/src/pgtkfns.c" "$tmp_dir/hooked/src/pgtkfns.c"
 
 perl -0pi -e \
     's/\nDEFUN \("pgtk-skia-test-framebuffer-color-counts",.*?\n#endif\n\nvoid\nsyms_of_pgtkterm/\n#endif\n\nvoid\nsyms_of_pgtkterm/s' \
     "$tmp_dir/production/src/pgtkterm.c"
 perl -ni -e 'print unless /Spgtk_skia_test_/' \
     "$tmp_dir/production/src/pgtkterm.c"
+perl -0pi -e \
+    's/\n#ifdef USE_SKIA\nDEFUN \("pgtk-skia-test-current-tooltip-frame",.*?\n#endif\n(?=\n\/\* Return geometric attributes)//s' \
+    "$tmp_dir/production/src/pgtkfns.c"
+perl -0pi -e \
+    's/\n#ifdef USE_SKIA\n  defsubr \(&Spgtk_skia_test_current_tooltip_frame\);\n#endif\n/\n/s' \
+    "$tmp_dir/production/src/pgtkfns.c"
 
 if rg -n "pgtk-skia-test-|Spgtk_skia_test" \
-    "$tmp_dir/production/src/pgtkterm.c" >/dev/null
+    "$tmp_dir/production/src/pgtkterm.c" \
+    "$tmp_dir/production/src/pgtkfns.c" >/dev/null
 then
-    echo "error: failed to strip Skia test hooks from production pgtkterm.c" >&2
+    echo "error: failed to strip Skia test hooks from production sources" >&2
     exit 1
 fi
 
@@ -65,6 +74,7 @@ while IFS= read -r path; do
     cp "$emacs_tree/$path" "$tmp_dir/b/$path"
 done
 cp "$tmp_dir/production/src/pgtkterm.c" "$tmp_dir/b/src/pgtkterm.c"
+cp "$tmp_dir/production/src/pgtkfns.c" "$tmp_dir/b/src/pgtkfns.c"
 
 (
     cd "$tmp_dir"

@@ -52,7 +52,7 @@ if [[ -z "${EWM_SKIA_CHECK_SKIP_BUILD:-}" ]]; then
 fi
 
 run git -C "$emacs_tree" diff --check -- \
-    src/pgtkterm.c src/skia/emacs_skia.cpp \
+    src/pgtkterm.c src/pgtkfns.c src/skia/emacs_skia.cpp \
     src/skia/emacs_skia.h src/pgtkterm.h
 run git -C "$repo_root" diff --check -- \
     emacs/skia-smoke.sh emacs/skia-profile.sh nix/service.nix
