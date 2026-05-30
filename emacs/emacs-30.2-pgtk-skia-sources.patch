@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..767807f858f
+index 00000000000..2a51a01f482
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1433 @@
+@@ -0,0 +1,1425 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -556,14 +556,6 @@ index 00000000000..767807f858f
 +						GrSyncCpu::kNo);
 +#endif
 +    }
-+}
-+
-+void
-+emacs_skia_surface_get_size (emacs_skia_surface_t *surface,
-+			     int *width, int *height)
-+{
-+  *width = surface && surface->surface ? surface->surface->width () : 0;
-+  *height = surface && surface->surface ? surface->surface->height () : 0;
 +}
 +
 +emacs_skia_image_t *
@@ -1439,10 +1431,10 @@ index 00000000000..767807f858f
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..797eec40146
+index 00000000000..c2bce060007
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,394 @@
+@@ -0,0 +1,391 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1596,9 +1588,6 @@ index 00000000000..797eec40146
 +
 +  /* Flush surface drawing */
 +  void emacs_skia_surface_flush (emacs_skia_surface_t *surface);
-+
-+  void emacs_skia_surface_get_size (emacs_skia_surface_t *surface,
-+				    int *width, int *height);
 +
 +  /* Make an image snapshot from the surface (for scrolling/copying)
 +   */

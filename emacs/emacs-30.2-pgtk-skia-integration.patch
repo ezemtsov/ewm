@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..2f26e99 100644
+index 617ed3c..e3d524b 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -18637,7 +18637,8 @@ index 617ed3c..2f26e99 100644
 -  return cr;
 +  emacs_skia_surface_flush (skia_surface);
 +
-+  emacs_skia_surface_get_size (skia_surface, &width, &height);
++  width = FRAME_GL_RENDER_WIDTH (f);
++  height = FRAME_GL_RENDER_HEIGHT (f);
 +
 +  if (pgtk_skia_debug_gl_enabled ())
 +    {
@@ -19155,9 +19156,8 @@ index 617ed3c..2f26e99 100644
 +    {
 +      int desired_w, desired_h;
 +      pgtk_skia_surface_device_size (f, &desired_w, &desired_h, NULL);
-+      int cur_w, cur_h;
-+      emacs_skia_surface_get_size (FRAME_SKIA_SURFACE (f),
-+				   &cur_w, &cur_h);
++      int cur_w = FRAME_GL_RENDER_WIDTH (f);
++      int cur_h = FRAME_GL_RENDER_HEIGHT (f);
 +
 +      if (cur_w != desired_w || cur_h != desired_h)
 +	{
