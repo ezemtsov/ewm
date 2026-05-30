@@ -468,6 +468,30 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-minspace-font-metrics (phase)
+  (let* ((family (face-attribute 'default :family nil t))
+         (name (and (stringp family)
+                    (format "%s:pixelsize=18:minspace=false" family)))
+         (info (and (stringp family)
+                    (font-info name))))
+    (unless info
+      (ewm-skia-smoke-fail
+       "could not open :minspace nil font after %s: name=%S"
+       phase name))
+    (let ((pixel-size (aref info 2))
+          (height (aref info 3))
+          (ascent (aref info 8))
+          (descent (aref info 9)))
+      (unless (and (> pixel-size 0)
+                   (> height 0)
+                   (>= ascent 0)
+                   (>= descent 0)
+                   (= height (+ ascent descent))
+                   (<= height (* pixel-size 4)))
+        (ewm-skia-smoke-fail
+         "bad :minspace nil font metrics after %s: info=%S"
+         phase info)))))
+
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
                  (fboundp 'pgtk-skia-gl-enabled-p)))
@@ -528,6 +552,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")
+(ewm-skia-smoke-check-minspace-font-metrics "initial draw")
 
 (goto-char (point-min))
 (ewm-skia-smoke-redraw)

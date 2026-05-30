@@ -2913,10 +2913,10 @@ index 00000000000..2f2d684d8d4
 +#endif /* EMACS_SKIA_H */
 diff --git a/src/skiafont.c b/src/skiafont.c
 new file mode 100644
-index 00000000000..b354aded420
+index 00000000000..0998ed91d27
 --- /dev/null
 +++ b/src/skiafont.c
-@@ -0,0 +1,868 @@
+@@ -0,0 +1,866 @@
 +/* skiafont.c -- FreeType font driver with Skia rendering.
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -3220,10 +3220,8 @@ index 00000000000..b354aded420
 +	  }
 +	else
 +	  {
-+	    /* Fallback to max_x_advance if we couldn't measure
-+	     * characters.  */
-+	    font->min_width = font->average_width = font->space_width
-+	      = font->max_width = lround (extents.max_x_advance);
++	    font->height = lround (extents.height);
++	    font->descent = font->height - font->ascent;
 +	  }
 +      }
 +
