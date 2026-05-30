@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..be3281afd67
+index 00000000000..4c476b082d3
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1395 @@
+@@ -0,0 +1,1380 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -197,12 +197,6 @@ index 00000000000..be3281afd67
 +  return SkRect::MakeLTRB (r->left, r->top, r->right, r->bottom);
 +}
 +
-+static inline SkIRect
-+to_sk_irect (const emacs_skia_irect_t *r)
-+{
-+  return SkIRect::MakeLTRB (r->left, r->top, r->right, r->bottom);
-+}
-+
 +static inline SkPoint
 +to_sk_point (emacs_skia_point_t p)
 +{
@@ -261,15 +255,6 @@ index 00000000000..be3281afd67
 +    return nullptr;
 +
 +  return new emacs_skia_image_t { image };
-+}
-+
-+static emacs_skia_typeface_t *
-+make_typeface (sk_sp<SkTypeface> typeface)
-+{
-+  if (!typeface)
-+    return nullptr;
-+
-+  return new emacs_skia_typeface_t { typeface };
 +}
 +
 +/* ============================================================
@@ -865,7 +850,7 @@ index 00000000000..be3281afd67
 +      return nullptr;
 +    }
 +
-+  return make_typeface (typeface);
++  return new emacs_skia_typeface_t { typeface };
 +}
 +#endif
 +
