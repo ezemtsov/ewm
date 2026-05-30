@@ -144,6 +144,32 @@ cat >"$payload" <<'EOF'
       (ewm-skia-smoke-fail
        "Skia GL acceleration is not active after %s" phase))))
 
+(defun ewm-skia-smoke-settle-framebuffer
+    (frame phase columns rows min-logical-width min-logical-height)
+  (unless (fboundp 'pgtk-skia-test-framebuffer-size)
+    (ewm-skia-smoke-fail "missing Skia framebuffer size test hook"))
+  (let ((size nil)
+        (settled nil))
+    (catch 'done
+      (dotimes (_ 30)
+        (when (and columns rows)
+          (set-frame-size frame columns rows))
+        (with-selected-frame frame
+          (force-window-update)
+          (redraw-frame frame)
+          (redisplay 'force))
+        (sit-for 0.05)
+        (setq size (pgtk-skia-test-framebuffer-size frame))
+        (when (and (consp size)
+                   (>= (nth 4 size) min-logical-width)
+                   (>= (nth 5 size) min-logical-height))
+          (setq settled t)
+          (throw 'done t))))
+    (unless settled
+      (ewm-skia-smoke-fail
+       "framebuffer did not settle after %s: size=%S expected-logical>=(%d %d)"
+       phase size min-logical-width min-logical-height))))
+
 (defun ewm-skia-smoke-check-alpha-background (phase)
   (let ((stats (pgtk-skia-test-framebuffer-color-counts)))
     (unless (and (consp stats)
@@ -1704,6 +1730,8 @@ static char *image[] = {
           (ewm-skia-smoke-fail
            "child frame did not inherit smoke buffer"))
         (goto-char (point-min))
+        (ewm-skia-smoke-settle-framebuffer
+         frame "child lifecycle frame" 56 12 200 100)
         (ewm-skia-smoke-check-gl-enabled frame "child lifecycle frame")
         (ewm-skia-smoke-check-framebuffer
          "child lifecycle frame" frame t))
@@ -1727,6 +1755,9 @@ static char *image[] = {
             (switch-to-buffer "*ewm-skia-smoke*")
             (goto-char (point-min))
             (forward-line (* step 30))
+            (ewm-skia-smoke-settle-framebuffer
+             frame (format "lifecycle frame %d" step)
+             (+ 64 (* step 8)) (+ 18 step) 200 100)
             (ewm-skia-smoke-check-gl-enabled
              frame (format "lifecycle frame %d" step))
             (ewm-skia-smoke-check-framebuffer
