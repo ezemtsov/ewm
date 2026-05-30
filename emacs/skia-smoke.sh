@@ -217,6 +217,14 @@ static char *image[] = {
   (let ((edges (window-inside-pixel-edges window)))
     (list (+ (nth 0 edges) x) (+ (nth 1 edges) y) width height)))
 
+(defun ewm-skia-smoke-window-line-rect (line width &optional window)
+  (let* ((edges (window-inside-pixel-edges window))
+         (height (frame-char-height)))
+    (list (nth 0 edges)
+          (+ (nth 1 edges) (* line height) 2)
+          width
+          (max 1 (- height 4)))))
+
 (defun ewm-skia-smoke-left-fringe-rect ()
   (let ((outer (window-pixel-edges))
         (inside (window-inside-pixel-edges)))
@@ -606,6 +614,84 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-overlap-scroll-copy (phase)
+  (let* ((source-buffer (current-buffer))
+         (source-window (selected-window))
+         (buffer (get-buffer-create "*ewm-skia-overlap-scroll-smoke*"))
+         (red-face '(:foreground "#ff0000" :background "#00ff00"))
+         (green-face '(:foreground "#00ff00" :background "#00ff00"))
+         top-before second-before top-after second-after)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 8)
+          (delete-other-windows)
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local truncate-lines t)
+            (setq-local bidi-display-reordering nil)
+            (erase-buffer)
+            (dotimes (line 40)
+              (insert
+               (propertize (make-string 72 ?M)
+                           'face (if (= line 1)
+                                     red-face
+                                   green-face))
+               "\n")))
+          (switch-to-buffer buffer)
+          (goto-char (point-min))
+          (ewm-skia-smoke-redraw)
+          (setq top-before
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (setq second-before
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 1 520)))
+          (unless (and (consp top-before)
+                       (< (nth 2 top-before) 50)
+                       (> (nth 3 top-before) 1000))
+            (ewm-skia-smoke-fail
+             "scroll-copy setup top line is not green after %s: stats=%S"
+             phase top-before))
+          (unless (and (consp second-before)
+                       (> (nth 2 second-before) 1000))
+            (ewm-skia-smoke-fail
+             "scroll-copy setup second line is not red after %s: stats=%S"
+             phase second-before))
+          (scroll-up-command 1)
+          (ewm-skia-smoke-pump)
+          (setq top-after
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (unless (and (consp top-after)
+                       (> (nth 2 top-after) 1000))
+            (ewm-skia-smoke-fail
+             "overlapping upward scroll copy lost red line after %s: before=%S after=%S"
+             phase second-before top-after))
+          (scroll-down-command 1)
+          (ewm-skia-smoke-pump)
+          (setq top-after
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (setq second-after
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 1 520)))
+          (unless (and (consp top-after)
+                       (< (nth 2 top-after) 50)
+                       (> (nth 3 top-after) 1000)
+                       (consp second-after)
+                       (> (nth 2 second-after) 1000))
+            (ewm-skia-smoke-fail
+             "overlapping downward scroll copy restored wrong colors after %s: top=%S second=%S"
+             phase top-after second-after)))
+      (delete-other-windows)
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (when (window-live-p source-window)
+        (select-window source-window))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-red-decoration (phase label face min-red)
   (let* ((source-buffer (current-buffer))
          (buffer (get-buffer-create
@@ -890,6 +976,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-glyph-window-clipping "initial draw")
 (ewm-skia-smoke-check-decorated-composite-window-clipping "initial draw")
 (ewm-skia-smoke-check-multirect-clipping "initial draw")
+(ewm-skia-smoke-check-overlap-scroll-copy "initial draw")
 (ewm-skia-smoke-check-text-decorations "initial draw")
 (ewm-skia-smoke-check-glyphless-text "initial draw")
 (ewm-skia-smoke-check-composite-text "initial draw")
