@@ -1,8 +1,8 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 150d5f2..9b1d71a 100644
+index 999f4b3..7b1ed38 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10637,6 +10637,869 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10644,6 +10644,912 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -582,6 +582,49 @@ index 150d5f2..9b1d71a 100644
 +		make_int (stencil_value));
 +}
 +
++DEFUN ("pgtk-skia-test-copy-bits-gl-error-return",
++       Fpgtk_skia_test_copy_bits_gl_error_return,
++       Spgtk_skia_test_copy_bits_gl_error_return, 0, 1, 0,
++       doc: /* Return non-nil if copy_bits GL blit errors report failure.
++If FRAME is nil, use the selected frame.  This forces the production GL
++copy path to read from an incomplete framebuffer and verifies that the
++error is cleared while the helper returns false, allowing the caller to
++fall back to the snapshot path.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  GLuint old_framebuffer = FRAME_GL_FRAMEBUFFER (f);
++  GLuint incomplete_framebuffer = 0;
++  cairo_rectangle_t src_rect = { 0, 0, 1, 1 };
++  cairo_rectangle_t dst_rect = { 1, 1, 1, 1 };
++  bool ok;
++  GLenum err;
++
++  if (!FRAME_GDK_GL_CONTEXT (f)
++      || !FRAME_SKIA_SURFACE (f)
++      || !old_framebuffer
++      || FRAME_GL_RENDER_WIDTH (f) < 4
++      || FRAME_GL_RENDER_HEIGHT (f) < 4)
++    return Qnil;
++
++  if (!pgtk_skia_make_gl_context_current (f))
++    return Qnil;
++
++  glGenFramebuffers (1, &incomplete_framebuffer);
++  if (!incomplete_framebuffer)
++    return Qnil;
++
++  pgtk_clear_gl_errors ();
++  FRAME_GL_FRAMEBUFFER (f) = incomplete_framebuffer;
++  ok = pgtk_copy_bits_gl (f, &src_rect, &dst_rect);
++  FRAME_GL_FRAMEBUFFER (f) = old_framebuffer;
++  err = glGetError ();
++
++  glDeleteFramebuffers (1, &incomplete_framebuffer);
++
++  return !ok && err == GL_NO_ERROR ? Qt : Qnil;
++}
++
 +DEFUN ("pgtk-skia-test-scratch-state-preserved",
 +       Fpgtk_skia_test_scratch_state_preserved,
 +       Spgtk_skia_test_scratch_state_preserved, 0, 1, 0,
@@ -872,7 +915,7 @@ index 150d5f2..9b1d71a 100644
  #endif
  
  void
-@@ -10731,6 +11594,21 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10738,6 +11644,22 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
@@ -886,6 +929,7 @@ index 150d5f2..9b1d71a 100644
 +  defsubr (&Spgtk_skia_test_gl_recreate_source_active_p);
 +  defsubr (&Spgtk_skia_test_framebuffer_size);
 +  defsubr (&Spgtk_skia_test_gl_invariants);
++  defsubr (&Spgtk_skia_test_copy_bits_gl_error_return);
 +  defsubr (&Spgtk_skia_test_scratch_state_preserved);
 +  defsubr (&Spgtk_skia_test_clear_state_preserved);
 +  defsubr (&Spgtk_skia_test_setup_state_preserved);

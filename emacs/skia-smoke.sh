@@ -197,6 +197,15 @@ cat >"$payload" <<'EOF'
        "scratch framebuffer leaked GL state after %s: state=%S"
        phase state))))
 
+(defun ewm-skia-smoke-check-copy-bits-gl-error (phase)
+  (unless (fboundp 'pgtk-skia-test-copy-bits-gl-error-return)
+    (ewm-skia-smoke-fail "missing Skia copy-bits error test hook"))
+  (unless (pgtk-skia-test-copy-bits-gl-error-return)
+    (ewm-skia-smoke-fail
+     "copy_bits GL blit failure did not report fallback after %s"
+     phase))
+  (ewm-skia-smoke-redraw))
+
 (defun ewm-skia-smoke-check-clear-state (phase)
   (unless (fboundp 'pgtk-skia-test-clear-state-preserved)
     (ewm-skia-smoke-fail "missing Skia clear-state test hook"))
@@ -1554,6 +1563,7 @@ static char *image[] = {
 (ewm-skia-smoke-check-framebuffer-capacity "initial draw")
 (ewm-skia-smoke-check-gl-invariants "initial draw")
 (ewm-skia-smoke-check-scratch-state "initial draw")
+(ewm-skia-smoke-check-copy-bits-gl-error "initial draw")
 (ewm-skia-smoke-check-clear-state "initial draw")
 (ewm-skia-smoke-check-setup-state "initial draw")
 (ewm-skia-smoke-check-png-export "initial draw")
