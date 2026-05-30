@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..89de34c02f2
+index 00000000000..083de71ba11
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1513 @@
+@@ -0,0 +1,1502 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -671,17 +671,6 @@ index 00000000000..89de34c02f2
 +  if (canvas && canvas->canvas && rect && paint)
 +    {
 +      canvas->canvas->drawIRect (to_sk_irect (rect), paint->paint);
-+    }
-+}
-+
-+void
-+emacs_skia_canvas_draw_line (emacs_skia_canvas_t *canvas, float x0,
-+			     float y0, float x1, float y1,
-+			     emacs_skia_paint_t *paint)
-+{
-+  if (canvas && canvas->canvas && paint)
-+    {
-+      canvas->canvas->drawLine (x0, y0, x1, y1, paint->paint);
 +    }
 +}
 +
@@ -1519,10 +1508,10 @@ index 00000000000..89de34c02f2
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..83275f58b33
+index 00000000000..7ac3e05668f
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,416 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1728,11 +1717,6 @@ index 00000000000..83275f58b33
 +  void emacs_skia_canvas_draw_irect (emacs_skia_canvas_t *canvas,
 +				     const emacs_skia_irect_t *rect,
 +				     emacs_skia_paint_t *paint);
-+
-+  void emacs_skia_canvas_draw_line (emacs_skia_canvas_t *canvas,
-+				    float x0, float y0, float x1,
-+				    float y1,
-+				    emacs_skia_paint_t *paint);
 +
 +  /* Draw glyphs at specified positions */
 +  void emacs_skia_canvas_draw_glyphs (

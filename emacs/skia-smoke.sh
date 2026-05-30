@@ -1201,6 +1201,10 @@ static char *image[] = {
                    (:foreground "#0000ff"
                     :underline (:color "#ff0000" :style line))
                    150)
+                  ("dash-underline"
+                   (:foreground "#0000ff"
+                    :underline (:color "#ff0000" :style dashes))
+                   150)
                   ("underwave"
                    (:foreground "#0000ff"
                     :underline (:color "#ff0000" :style wave))
