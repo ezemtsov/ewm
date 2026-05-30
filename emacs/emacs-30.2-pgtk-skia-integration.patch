@@ -11529,7 +11529,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..5b14125 100644
+index 617ed3c..0fb7005 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -15072,7 +15072,7 @@ index 617ed3c..5b14125 100644
  }
  
  /* End update of frame F.  This function is installed as a hook in
-@@ -3407,36 +4819,97 @@ pgtk_frame_up_to_date (struct frame *f)
+@@ -3407,36 +4819,88 @@ pgtk_frame_up_to_date (struct frame *f)
  {
    block_input ();
    FRAME_MOUSE_UPDATE (f);
@@ -15116,18 +15116,9 @@ index 617ed3c..5b14125 100644
 +
 +      FRAME_LAST_RENDER_TIME (f) = now;
 +
-+      /* Make GL context current and validate it before flushing.
-+	 See pgtk_skia_make_gl_context_current for why this is needed.  */
-+      if (!pgtk_skia_make_gl_context_current (f))
-+	{
-+	  unblock_input ();
-+	  return;
-+	}
-+
-+      if (FRAME_SKIA_SURFACE (f))
-+	emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
-+
-+      /* Queue a draw on the drawing area.  */
++      /* Queue a draw on the drawing area.  The draw callback makes
++	 the GL context current and submits the Skia surface immediately
++	 before handing the texture to GDK.  */
 +      if (FRAME_GL_DRAWING_AREA (f))
 +	gtk_widget_queue_draw (FRAME_GL_DRAWING_AREA (f));
 +      unblock_input ();
@@ -15180,7 +15171,7 @@ index 617ed3c..5b14125 100644
  		     enum scroll_bar_part *part, Lisp_Object *x,
  		     Lisp_Object *y, Time *timestamp)
  {
-@@ -3455,8 +4928,8 @@ pgtk_mouse_position (struct frame **fp, int insist, Lisp_Object * bar_window,
+@@ -3455,8 +4919,8 @@ pgtk_mouse_position (struct frame **fp, int insist, Lisp_Object * bar_window,
  
    /* Clear the mouse-moved flag for every frame on this display.  */
    FOR_EACH_FRAME (tail, frame)
@@ -15191,7 +15182,7 @@ index 617ed3c..5b14125 100644
      XFRAME (frame)->mouse_moved = false;
  
    dpyinfo->last_mouse_scroll_bar = NULL;
-@@ -3497,8 +4970,8 @@ pgtk_mouse_position (struct frame **fp, int insist, Lisp_Object * bar_window,
+@@ -3497,8 +4961,8 @@ pgtk_mouse_position (struct frame **fp, int insist, Lisp_Object * bar_window,
    seat = gdk_display_get_default_seat (dpyinfo->gdpy);
    device = gdk_seat_get_pointer (seat);
  
@@ -15202,7 +15193,7 @@ index 617ed3c..5b14125 100644
  
    if (f1 != NULL)
      {
-@@ -3520,45 +4993,95 @@ pgtk_mouse_position (struct frame **fp, int insist, Lisp_Object * bar_window,
+@@ -3520,45 +4984,95 @@ pgtk_mouse_position (struct frame **fp, int insist, Lisp_Object * bar_window,
  /* Fringe bitmaps.  */
  
  static int max_fringe_bmp = 0;
@@ -15318,7 +15309,7 @@ index 617ed3c..5b14125 100644
  }
  
  static void
-@@ -3567,18 +5090,29 @@ pgtk_destroy_fringe_bitmap (int which)
+@@ -3567,18 +5081,29 @@ pgtk_destroy_fringe_bitmap (int which)
    if (which >= max_fringe_bmp)
      return;
  
@@ -15352,7 +15343,7 @@ index 617ed3c..5b14125 100644
  {
    int window_x, window_y, window_width;
    cairo_rectangle_int_t rect;
-@@ -3594,6 +5128,28 @@ pgtk_clip_to_row (struct window *w, struct glyph_row *row,
+@@ -3594,6 +5119,28 @@ pgtk_clip_to_row (struct window *w, struct glyph_row *row,
    cairo_rectangle (cr, rect.x, rect.y, rect.width, rect.height);
    cairo_clip (cr);
  }
@@ -15381,7 +15372,7 @@ index 617ed3c..5b14125 100644
  
  static void
  pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
-@@ -3602,6 +5158,90 @@ pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
+@@ -3602,6 +5149,90 @@ pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
    struct frame *f = XFRAME (WINDOW_FRAME (w));
    struct face *face = p->face;
  
@@ -15472,7 +15463,7 @@ index 617ed3c..5b14125 100644
    cairo_t *cr = pgtk_begin_cr_clip (f);
  
    /* Must clip because of partially visible lines.  */
-@@ -3610,8 +5250,7 @@ pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
+@@ -3610,8 +5241,7 @@ pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
    if (p->bx >= 0 && !p->overlay_p)
      fill_background_by_face (f, face, p->bx, p->by, p->nx, p->ny);
  
@@ -15482,7 +15473,7 @@ index 617ed3c..5b14125 100644
        && p->which < max_used_fringe_bitmap)
      {
        Emacs_GC gcv;
-@@ -3627,16 +5266,18 @@ pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
+@@ -3627,16 +5257,18 @@ pgtk_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
  	  gui_define_fringe_bitmap (f, p->which);
  	}
  
@@ -15505,7 +15496,7 @@ index 617ed3c..5b14125 100644
  }
  
  static struct atimer *hourglass_atimer = NULL;
-@@ -3645,7 +5286,6 @@ static int hourglass_enter_count = 0;
+@@ -3645,7 +5277,6 @@ static int hourglass_enter_count = 0;
  static void
  hourglass_cb (struct atimer *timer)
  {
@@ -15513,7 +15504,7 @@ index 617ed3c..5b14125 100644
  }
  
  static void
-@@ -3658,7 +5298,8 @@ pgtk_show_hourglass (struct frame *f)
+@@ -3658,7 +5289,8 @@ pgtk_show_hourglass (struct frame *f)
    /* This creates a GDK_INPUT_ONLY window.  */
    x->hourglass_widget = gtk_event_box_new ();
    gtk_widget_set_has_window (x->hourglass_widget, true);
@@ -15523,7 +15514,7 @@ index 617ed3c..5b14125 100644
    gtk_widget_show (x->hourglass_widget);
    gtk_widget_set_size_request (x->hourglass_widget, 30000, 30000);
    gdk_window_raise (gtk_widget_get_window (x->hourglass_widget));
-@@ -3700,6 +5341,21 @@ pgtk_hide_hourglass (struct frame *f)
+@@ -3700,6 +5332,21 @@ pgtk_hide_hourglass (struct frame *f)
  static void
  pgtk_flush_display (struct frame *f)
  {
@@ -15545,7 +15536,7 @@ index 617ed3c..5b14125 100644
  }
  
  extern frame_parm_handler pgtk_frame_parm_handlers[];
-@@ -3729,7 +5385,7 @@ static struct redisplay_interface pgtk_redisplay_interface = {
+@@ -3729,7 +5376,7 @@ static struct redisplay_interface pgtk_redisplay_interface = {
    pgtk_draw_window_cursor,
    pgtk_draw_vertical_window_border,
    pgtk_draw_window_divider,
@@ -15554,7 +15545,7 @@ index 617ed3c..5b14125 100644
    pgtk_show_hourglass,
    pgtk_hide_hourglass,
    pgtk_default_font_parameter,
-@@ -3744,7 +5400,8 @@ pgtk_clear_frame (struct frame *f)
+@@ -3744,7 +5391,8 @@ pgtk_clear_frame (struct frame *f)
    mark_window_cursors_off (XWINDOW (FRAME_ROOT_WINDOW (f)));
  
    block_input ();
@@ -15564,7 +15555,7 @@ index 617ed3c..5b14125 100644
    unblock_input ();
  }
  
-@@ -3753,12 +5410,36 @@ recover_from_visible_bell (struct atimer *timer)
+@@ -3753,12 +5401,36 @@ recover_from_visible_bell (struct atimer *timer)
  {
    struct frame *f = timer->client_data;
  
@@ -15602,7 +15593,7 @@ index 617ed3c..5b14125 100644
    if (FRAME_X_OUTPUT (f)->atimer_visible_bell != NULL)
      FRAME_X_OUTPUT (f)->atimer_visible_bell = NULL;
  }
-@@ -3768,6 +5449,126 @@ recover_from_visible_bell (struct atimer *timer)
+@@ -3768,6 +5440,126 @@ recover_from_visible_bell (struct atimer *timer)
  static void
  pgtk_flash (struct frame *f)
  {
@@ -15729,7 +15720,7 @@ index 617ed3c..5b14125 100644
    cairo_surface_t *surface_orig, *surface;
    cairo_t *cr;
    int width, height, flash_height, flash_left, flash_right;
-@@ -3801,22 +5602,20 @@ pgtk_flash (struct frame *f)
+@@ -3801,22 +5593,20 @@ pgtk_flash (struct frame *f)
    flash_height = FRAME_LINE_HEIGHT (f);
    /* These will be the left and right margins of the rectangles.  */
    flash_left = FRAME_INTERNAL_BORDER_WIDTH (f);
@@ -15756,7 +15747,7 @@ index 617ed3c..5b14125 100644
  		       (height - flash_height
  			- FRAME_INTERNAL_BORDER_WIDTH (f)
  			- FRAME_BOTTOM_MARGIN_HEIGHT (f)),
-@@ -3826,9 +5625,9 @@ pgtk_flash (struct frame *f)
+@@ -3826,9 +5616,9 @@ pgtk_flash (struct frame *f)
    else
      {
        /* If it is short, flash it all.  */
@@ -15769,7 +15760,7 @@ index 617ed3c..5b14125 100644
        cairo_fill (cr);
      }
  
-@@ -3843,11 +5642,12 @@ pgtk_flash (struct frame *f)
+@@ -3843,11 +5633,12 @@ pgtk_flash (struct frame *f)
      }
  
    FRAME_X_OUTPUT (f)->atimer_visible_bell
@@ -15784,7 +15775,7 @@ index 617ed3c..5b14125 100644
  }
  
  /* Make audible bell.  */
-@@ -3876,7 +5676,8 @@ pgtk_ring_bell (struct frame *f)
+@@ -3876,7 +5667,8 @@ pgtk_ring_bell (struct frame *f)
     C chars).  */
  
  static int
@@ -15794,7 +15785,7 @@ index 617ed3c..5b14125 100644
  {
    GMainContext *context;
    bool context_acquired = false;
-@@ -3884,9 +5685,7 @@ pgtk_read_socket (struct terminal *terminal, struct input_event *hold_quit)
+@@ -3884,9 +5676,7 @@ pgtk_read_socket (struct terminal *terminal, struct input_event *hold_quit)
  
    count = evq_flush (hold_quit);
    if (count > 0)
@@ -15805,7 +15796,7 @@ index 617ed3c..5b14125 100644
  
    context = g_main_context_default ();
    context_acquired = g_main_context_acquire (context);
-@@ -3921,16 +5720,16 @@ pgtk_read_socket (struct terminal *terminal, struct input_event *hold_quit)
+@@ -3921,16 +5711,16 @@ pgtk_read_socket (struct terminal *terminal, struct input_event *hold_quit)
  static Lisp_Object window_being_scrolled;
  
  static void
@@ -15827,7 +15818,7 @@ index 617ed3c..5b14125 100644
    inev.ie.frame_or_window = window;
    inev.ie.arg = Qnil;
    inev.ie.timestamp = 0;
-@@ -3943,18 +5742,18 @@ pgtk_send_scroll_bar_event (Lisp_Object window, enum scroll_bar_part part,
+@@ -3943,18 +5733,18 @@ pgtk_send_scroll_bar_event (Lisp_Object window, enum scroll_bar_part part,
    evq_enqueue (&inev);
  }
  
@@ -15850,7 +15841,7 @@ index 617ed3c..5b14125 100644
  
    if (xg_ignore_gtk_scrollbar)
      return false;
-@@ -3965,37 +5764,38 @@ xg_scroll_callback (GtkRange * range,
+@@ -3965,37 +5755,38 @@ xg_scroll_callback (GtkRange * range,
        if (bar->horizontal)
  	{
  	  part = scroll_bar_horizontal_handle;
@@ -15900,7 +15891,7 @@ index 617ed3c..5b14125 100644
        bar->dragging = -1;
        break;
      default:
-@@ -4012,11 +5812,12 @@ xg_scroll_callback (GtkRange * range,
+@@ -4012,11 +5803,12 @@ xg_scroll_callback (GtkRange * range,
    return false;
  }
  
@@ -15916,7 +15907,7 @@ index 617ed3c..5b14125 100644
  {
    struct scroll_bar *bar = user_data;
    bar->dragging = -1;
-@@ -4038,13 +5839,15 @@ xg_end_scroll_callback (GtkWidget *widget,
+@@ -4038,13 +5830,15 @@ xg_end_scroll_callback (GtkWidget *widget,
     and X window of the scroll bar in BAR.  */
  
  static void
@@ -15934,7 +15925,7 @@ index 617ed3c..5b14125 100644
    unblock_input ();
  }
  
-@@ -4055,28 +5858,33 @@ pgtk_create_horizontal_toolkit_scroll_bar (struct frame *f,
+@@ -4055,28 +5849,33 @@ pgtk_create_horizontal_toolkit_scroll_bar (struct frame *f,
    const char *scroll_bar_name = SCROLL_BAR_HORIZONTAL_NAME;
  
    block_input ();
@@ -15977,7 +15968,7 @@ index 617ed3c..5b14125 100644
  }
  
  /* Create a scroll bar and return the scroll bar vector for it.  W is
-@@ -4121,11 +5929,11 @@ pgtk_scroll_bar_create (struct window *w, int top, int left,
+@@ -4121,11 +5920,11 @@ pgtk_scroll_bar_create (struct window *w, int top, int left,
    /* Map the window/widget.  */
    {
      if (horizontal)
@@ -15993,7 +15984,7 @@ index 617ed3c..5b14125 100644
    }
  
    unblock_input ();
-@@ -4158,8 +5966,8 @@ pgtk_scroll_bar_remove (struct scroll_bar *bar)
+@@ -4158,8 +5957,8 @@ pgtk_scroll_bar_remove (struct scroll_bar *bar)
     create one.  */
  
  static void
@@ -16004,7 +15995,7 @@ index 617ed3c..5b14125 100644
  {
    struct frame *f = XFRAME (w->frame);
    Lisp_Object barobj;
-@@ -4180,11 +5988,12 @@ pgtk_set_vertical_scroll_bar (struct window *w, int portion, int whole,
+@@ -4180,11 +5979,12 @@ pgtk_set_vertical_scroll_bar (struct window *w, int portion, int whole,
        if (width > 0 && height > 0)
  	{
  	  block_input ();
@@ -16019,7 +16010,7 @@ index 617ed3c..5b14125 100644
      }
    else
      {
-@@ -4207,12 +6016,13 @@ pgtk_set_vertical_scroll_bar (struct window *w, int portion, int whole,
+@@ -4207,12 +6007,13 @@ pgtk_set_vertical_scroll_bar (struct window *w, int portion, int whole,
        /* Move/size the scroll bar widget.  */
        if (mask)
  	{
@@ -16037,7 +16028,7 @@ index 617ed3c..5b14125 100644
  	}
  
        /* Remember new settings.  */
-@@ -4231,8 +6041,8 @@ pgtk_set_vertical_scroll_bar (struct window *w, int portion, int whole,
+@@ -4231,8 +6032,8 @@ pgtk_set_vertical_scroll_bar (struct window *w, int portion, int whole,
  }
  
  static void
@@ -16048,7 +16039,7 @@ index 617ed3c..5b14125 100644
  {
    struct frame *f = XFRAME (w->frame);
    Lisp_Object barobj;
-@@ -4261,7 +6071,8 @@ pgtk_set_horizontal_scroll_bar (struct window *w, int portion, int whole,
+@@ -4261,7 +6062,8 @@ pgtk_set_horizontal_scroll_bar (struct window *w, int portion, int whole,
  	  unblock_input ();
  	}
  
@@ -16058,7 +16049,7 @@ index 617ed3c..5b14125 100644
      }
    else
      {
-@@ -4284,15 +6095,16 @@ pgtk_set_horizontal_scroll_bar (struct window *w, int portion, int whole,
+@@ -4284,15 +6086,16 @@ pgtk_set_horizontal_scroll_bar (struct window *w, int portion, int whole,
        /* Move/size the scroll bar widget.  */
        if (mask)
  	{
@@ -16082,7 +16073,7 @@ index 617ed3c..5b14125 100644
  	}
  
        /* Remember new settings.  */
-@@ -4304,7 +6116,8 @@ pgtk_set_horizontal_scroll_bar (struct window *w, int portion, int whole,
+@@ -4304,7 +6107,8 @@ pgtk_set_horizontal_scroll_bar (struct window *w, int portion, int whole,
        unblock_input ();
      }
  
@@ -16092,7 +16083,7 @@ index 617ed3c..5b14125 100644
  
    XSETVECTOR (barobj, bar);
    wset_horizontal_scroll_bar (w, barobj);
-@@ -4315,12 +6128,13 @@ pgtk_set_horizontal_scroll_bar (struct window *w, int portion, int whole,
+@@ -4315,12 +6119,13 @@ pgtk_set_horizontal_scroll_bar (struct window *w, int portion, int whole,
     are going to be deleted, because keeping track of when windows go
     away is a real pain - "Can you say set-window-configuration, boys
     and girls?"  Instead, we just assert at the beginning of redisplay
@@ -16109,7 +16100,7 @@ index 617ed3c..5b14125 100644
  
  static void
  pgtk_condemn_scroll_bars (struct frame *frame)
-@@ -4335,8 +6149,10 @@ pgtk_condemn_scroll_bars (struct frame *frame)
+@@ -4335,8 +6140,10 @@ pgtk_condemn_scroll_bars (struct frame *frame)
  	  while (!NILP (XSCROLL_BAR (last)->next))
  	    last = XSCROLL_BAR (last)->next;
  
@@ -16122,7 +16113,7 @@ index 617ed3c..5b14125 100644
  	}
  
        fset_condemned_scroll_bars (frame, FRAME_SCROLL_BARS (frame));
-@@ -4354,19 +6170,22 @@ pgtk_redeem_scroll_bar (struct window *w)
+@@ -4354,19 +6161,22 @@ pgtk_redeem_scroll_bar (struct window *w)
    Lisp_Object barobj;
    struct frame *f;
  
@@ -16150,7 +16141,7 @@ index 617ed3c..5b14125 100644
  	  if (EQ (FRAME_SCROLL_BARS (f), w->vertical_scroll_bar))
  	    /* It's not condemned.  Everything's fine.  */
  	    goto horizontal;
-@@ -4401,8 +6220,8 @@ horizontal:
+@@ -4401,8 +6211,8 @@ horizontal:
        f = XFRAME (WINDOW_FRAME (w));
        if (NILP (bar->prev))
  	{
@@ -16161,7 +16152,7 @@ index 617ed3c..5b14125 100644
  	  if (EQ (FRAME_SCROLL_BARS (f), w->horizontal_scroll_bar))
  	    /* It's not condemned.  Everything's fine.  */
  	    return;
-@@ -4504,7 +6323,8 @@ pgtk_fullscreen_hook (struct frame *f)
+@@ -4504,7 +6314,8 @@ pgtk_fullscreen_hook (struct frame *f)
      }
  }
  
@@ -16171,7 +16162,7 @@ index 617ed3c..5b14125 100644
  void
  pgtk_delete_terminal (struct terminal *terminal)
  {
-@@ -4537,10 +6357,12 @@ pgtk_delete_terminal (struct terminal *terminal)
+@@ -4537,10 +6348,12 @@ pgtk_delete_terminal (struct terminal *terminal)
        /* Disconnect these handlers before the display closes so
  	 useless removal signals don't fire.  */
        g_signal_handlers_disconnect_by_func (G_OBJECT (dpyinfo->gdpy),
@@ -16186,7 +16177,7 @@ index 617ed3c..5b14125 100644
  					    dpyinfo);
        xg_display_close (dpyinfo->gdpy);
  
-@@ -4560,7 +6382,8 @@ pgtk_delete_terminal (struct terminal *terminal)
+@@ -4560,7 +6373,8 @@ pgtk_delete_terminal (struct terminal *terminal)
  
  /* Store F's background color into *BGCOLOR.  */
  static void
@@ -16196,7 +16187,7 @@ index 617ed3c..5b14125 100644
  {
    bgcolor->pixel = FRAME_BACKGROUND_PIXEL (f);
    pgtk_query_color (f, bgcolor);
-@@ -4610,8 +6433,8 @@ set_opacity_recursively (GtkWidget *w, gpointer data)
+@@ -4610,8 +6424,8 @@ set_opacity_recursively (GtkWidget *w, gpointer data)
    gtk_widget_set_opacity (w, *(double *) data);
  
    if (GTK_IS_CONTAINER (w))
@@ -16207,7 +16198,7 @@ index 617ed3c..5b14125 100644
  }
  
  static void
-@@ -4650,15 +6473,18 @@ frame_highlight (struct frame *f)
+@@ -4650,15 +6464,18 @@ frame_highlight (struct frame *f)
    block_input ();
    GtkWidget *w = FRAME_WIDGET (f);
  
@@ -16231,7 +16222,7 @@ index 617ed3c..5b14125 100644
  				  GTK_STYLE_PROVIDER_PRIORITY_USER);
    g_free (css);
  
-@@ -4666,7 +6492,8 @@ frame_highlight (struct frame *f)
+@@ -4666,7 +6483,8 @@ frame_highlight (struct frame *f)
    FRAME_X_OUTPUT (f)->border_color_css_provider = css_provider;
    if (old != NULL)
      {
@@ -16241,7 +16232,7 @@ index 617ed3c..5b14125 100644
        g_object_unref (old);
      }
  
-@@ -4687,13 +6514,15 @@ frame_unhighlight (struct frame *f)
+@@ -4687,13 +6505,15 @@ frame_unhighlight (struct frame *f)
  
    w = FRAME_WIDGET (f);
  
@@ -16260,7 +16251,7 @@ index 617ed3c..5b14125 100644
  				  GTK_STYLE_PROVIDER_PRIORITY_USER);
    g_free (css);
  
-@@ -4701,7 +6530,8 @@ frame_unhighlight (struct frame *f)
+@@ -4701,7 +6521,8 @@ frame_unhighlight (struct frame *f)
    FRAME_X_OUTPUT (f)->border_color_css_provider = css_provider;
    if (old != NULL)
      {
@@ -16270,7 +16261,7 @@ index 617ed3c..5b14125 100644
        g_object_unref (old);
      }
  
-@@ -4710,7 +6540,6 @@ frame_unhighlight (struct frame *f)
+@@ -4710,7 +6531,6 @@ frame_unhighlight (struct frame *f)
    pgtk_set_frame_alpha (f);
  }
  
@@ -16278,7 +16269,7 @@ index 617ed3c..5b14125 100644
  void
  pgtk_frame_rehighlight (struct pgtk_display_info *dpyinfo)
  {
-@@ -4720,8 +6549,8 @@ pgtk_frame_rehighlight (struct pgtk_display_info *dpyinfo)
+@@ -4720,8 +6540,8 @@ pgtk_frame_rehighlight (struct pgtk_display_info *dpyinfo)
      {
        dpyinfo->highlight_frame
  	= ((FRAMEP (FRAME_FOCUS_FRAME (dpyinfo->x_focus_frame)))
@@ -16289,7 +16280,7 @@ index 617ed3c..5b14125 100644
        if (!FRAME_LIVE_P (dpyinfo->highlight_frame))
  	{
  	  fset_focus_frame (dpyinfo->x_focus_frame, Qnil);
-@@ -4741,9 +6570,9 @@ pgtk_frame_rehighlight (struct pgtk_display_info *dpyinfo)
+@@ -4741,9 +6561,9 @@ pgtk_frame_rehighlight (struct pgtk_display_info *dpyinfo)
     another frame (this happens when a frame uses a surrogate
     mini-buffer frame).  Shift the highlight as appropriate.
  
@@ -16302,7 +16293,7 @@ index 617ed3c..5b14125 100644
  
  static void
  pgtk_frame_rehighlight_hook (struct frame *frame)
-@@ -4772,12 +6601,14 @@ pgtk_toggle_invisible_pointer (struct frame *f, bool invisible)
+@@ -4772,12 +6592,14 @@ pgtk_toggle_invisible_pointer (struct frame *f, bool invisible)
  
  /* The focus has changed.  Update the frames as necessary to reflect
     the new situation.  Note that we can't change the selected frame
@@ -16321,7 +16312,7 @@ index 617ed3c..5b14125 100644
  {
    struct frame *old_focus = dpyinfo->x_focus_frame;
    /* doesn't work on wayland */
-@@ -4785,18 +6616,19 @@ pgtk_new_focus_frame (struct pgtk_display_info *dpyinfo, struct frame *frame)
+@@ -4785,18 +6607,19 @@ pgtk_new_focus_frame (struct pgtk_display_info *dpyinfo, struct frame *frame)
    if (frame != dpyinfo->x_focus_frame)
      {
        /* Set this before calling other routines, so that they see
@@ -16347,7 +16338,7 @@ index 617ed3c..5b14125 100644
      }
  
    pgtk_frame_rehighlight (dpyinfo);
-@@ -4806,13 +6638,32 @@ static void
+@@ -4806,47 +6629,72 @@ static void
  pgtk_buffer_flipping_unblocked_hook (struct frame *f)
  {
    block_input ();
@@ -16358,6 +16349,11 @@ index 617ed3c..5b14125 100644
 -
 -static struct terminal *
 -pgtk_create_terminal (struct pgtk_display_info *dpyinfo)
+-{
+-  struct terminal *terminal;
+-
+-  terminal = create_terminal (output_pgtk, &pgtk_redisplay_interface);
+-
 +#ifdef USE_SKIA
 +  /* For Skia GL, queue a draw on the drawing area.  */
 +  if (FRAME_SKIA_SURFACE (f))
@@ -16384,10 +16380,13 @@ index 617ed3c..5b14125 100644
 +
 +static struct terminal *
 +pgtk_create_terminal (struct pgtk_display_info *dpyinfo)
- {
-   struct terminal *terminal;
- 
-@@ -4823,30 +6674,36 @@ pgtk_create_terminal (struct pgtk_display_info *dpyinfo)
++{
++  struct terminal *terminal;
++
++  terminal = create_terminal (output_pgtk, &pgtk_redisplay_interface);
++
+   terminal->display_info.pgtk = dpyinfo;
+   dpyinfo->terminal = terminal;
  
    terminal->clear_frame_hook = pgtk_clear_frame;
    terminal->ring_bell_hook = pgtk_ring_bell;
@@ -16430,7 +16429,7 @@ index 617ed3c..5b14125 100644
    terminal->defined_color_hook = pgtk_defined_color;
    terminal->set_new_font_hook = pgtk_new_font;
    terminal->set_bitmap_icon_hook = pgtk_bitmap_icon;
-@@ -4872,7 +6729,8 @@ struct pgtk_window_is_of_frame_recursive_t
+@@ -4872,7 +6720,8 @@ struct pgtk_window_is_of_frame_recursive_t
  {
    GdkWindow *window;
    bool result;
@@ -16440,7 +16439,7 @@ index 617ed3c..5b14125 100644
  };
  
  static void
-@@ -4908,8 +6766,8 @@ pgtk_window_is_of_frame (struct frame *f, GdkWindow *window)
+@@ -4908,8 +6757,8 @@ pgtk_window_is_of_frame (struct frame *f, GdkWindow *window)
    return data.result;
  }
  
@@ -16451,7 +16450,7 @@ index 617ed3c..5b14125 100644
  static struct frame *
  pgtk_any_window_to_frame (GdkWindow *window)
  {
-@@ -4920,16 +6778,16 @@ pgtk_any_window_to_frame (GdkWindow *window)
+@@ -4920,16 +6769,16 @@ pgtk_any_window_to_frame (GdkWindow *window)
      return NULL;
  
    FOR_EACH_FRAME (tail, frame)
@@ -16478,7 +16477,7 @@ index 617ed3c..5b14125 100644
  
    return found;
  }
-@@ -4950,24 +6808,29 @@ pgtk_handle_event (GtkWidget *widget, GdkEvent *event, gpointer *data)
+@@ -4950,24 +6799,29 @@ pgtk_handle_event (GtkWidget *widget, GdkEvent *event, gpointer *data)
        frame_widget = FRAME_GTK_WIDGET (f);
  
        gtk_widget_translate_coordinates (widget, frame_widget,
@@ -16518,7 +16517,7 @@ index 617ed3c..5b14125 100644
  	  evq_enqueue (&inev);
  	}
  
-@@ -4977,15 +6840,21 @@ pgtk_handle_event (GtkWidget *widget, GdkEvent *event, gpointer *data)
+@@ -4977,15 +6831,21 @@ pgtk_handle_event (GtkWidget *widget, GdkEvent *event, gpointer *data)
  }
  
  static void
@@ -16542,7 +16541,7 @@ index 617ed3c..5b14125 100644
  }
  
  void
-@@ -5000,15 +6869,16 @@ pgtk_clear_under_internal_border (struct frame *f)
+@@ -5000,15 +6860,16 @@ pgtk_clear_under_internal_border (struct frame *f)
        int height = FRAME_PIXEL_HEIGHT (f);
        int margin = FRAME_TOP_MARGIN_HEIGHT (f);
        int bottom_margin = FRAME_BOTTOM_MARGIN_HEIGHT (f);
@@ -16568,7 +16567,7 @@ index 617ed3c..5b14125 100644
        struct face *face = FACE_FROM_ID_OR_NULL (f, face_id);
  
        block_input ();
-@@ -5019,9 +6889,8 @@ pgtk_clear_under_internal_border (struct frame *f)
+@@ -5019,9 +6880,8 @@ pgtk_clear_under_internal_border (struct frame *f)
  	  fill_background_by_face (f, face, 0, 0, border, height);
  	  fill_background_by_face (f, face, width - border, 0, border,
  				   height);
@@ -16580,7 +16579,7 @@ index 617ed3c..5b14125 100644
  				   width, border);
  	}
        else
-@@ -5037,6 +6906,7 @@ pgtk_clear_under_internal_border (struct frame *f)
+@@ -5037,6 +6897,7 @@ pgtk_clear_under_internal_border (struct frame *f)
      }
  }
  
@@ -16588,7 +16587,7 @@ index 617ed3c..5b14125 100644
  static gboolean
  pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
  {
-@@ -5044,38 +6914,61 @@ pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
+@@ -5044,38 +6905,61 @@ pgtk_handle_draw (GtkWidget *widget, cairo_t *cr, gpointer *data)
  
    GdkWindow *win = gtk_widget_get_window (widget);
  
@@ -16669,7 +16668,7 @@ index 617ed3c..5b14125 100644
      }
  }
  
-@@ -5109,7 +7002,8 @@ get_modifier_values (int *mod_ctrl, int *mod_meta, int *mod_alt,
+@@ -5109,7 +6993,8 @@ get_modifier_values (int *mod_ctrl, int *mod_meta, int *mod_alt,
  }
  
  int
@@ -16679,7 +16678,7 @@ index 617ed3c..5b14125 100644
  {
    int mod_ctrl;
    int mod_meta;
-@@ -5137,7 +7031,8 @@ pgtk_gtk_to_emacs_modifiers (struct pgtk_display_info *dpyinfo, int state)
+@@ -5137,7 +7022,8 @@ pgtk_gtk_to_emacs_modifiers (struct pgtk_display_info *dpyinfo, int state)
  }
  
  int
@@ -16689,7 +16688,7 @@ index 617ed3c..5b14125 100644
  {
    int mod_ctrl;
    int mod_meta;
-@@ -5163,17 +7058,19 @@ pgtk_emacs_to_gtk_modifiers (struct pgtk_display_info *dpyinfo, int state)
+@@ -5163,17 +7049,19 @@ pgtk_emacs_to_gtk_modifiers (struct pgtk_display_info *dpyinfo, int state)
    return mask;
  }
  
@@ -16718,7 +16717,7 @@ index 617ed3c..5b14125 100644
  void
  pgtk_enqueue_string (struct frame *f, gchar *str)
  {
-@@ -5188,8 +7085,8 @@ pgtk_enqueue_string (struct frame *f, gchar *str)
+@@ -5188,8 +7076,8 @@ pgtk_enqueue_string (struct frame *f, gchar *str)
        Lisp_Object c = make_fixnum (*ustr);
        EVENT_INIT (inev.ie);
        inev.ie.kind = (SINGLE_BYTE_CHAR_P (XFIXNAT (c))
@@ -16729,7 +16728,7 @@ index 617ed3c..5b14125 100644
        inev.ie.arg = Qnil;
        inev.ie.code = XFIXNAT (c);
        XSETFRAME (inev.ie.frame_or_window, f);
-@@ -5216,7 +7113,8 @@ pgtk_enqueue_preedit (struct frame *f, Lisp_Object preedit)
+@@ -5216,7 +7104,8 @@ pgtk_enqueue_preedit (struct frame *f, Lisp_Object preedit)
  }
  
  static gboolean
@@ -16739,7 +16738,7 @@ index 617ed3c..5b14125 100644
  {
    union buffered_input_event inev;
    ptrdiff_t nbytes;
-@@ -5241,16 +7139,16 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5241,16 +7130,16 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
      {
        guint keysym, orig_keysym;
        /* al%imercury@uunet.uu.net says that making this 81
@@ -16766,7 +16765,7 @@ index 617ed3c..5b14125 100644
        unsigned char copy_buffer[513];
        unsigned char *copy_bufptr = copy_buffer;
        int copy_bufsiz = sizeof (copy_buffer);
-@@ -5282,10 +7180,10 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5282,10 +7171,10 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
        /* This will have to go some day...  */
  
        /* make_lispy_event turns chars into control chars.
@@ -16780,7 +16779,7 @@ index 617ed3c..5b14125 100644
  
        nbytes = event->key.length;
        if (nbytes > copy_bufsiz)
-@@ -5298,11 +7196,12 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5298,11 +7187,12 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
        /* Common for all keysym input events.  */
        XSETFRAME (inev.ie.frame_or_window, f);
        inev.ie.modifiers
@@ -16795,7 +16794,7 @@ index 617ed3c..5b14125 100644
        if (keysym >= 32 && keysym < 128)
  	/* Avoid explicitly decoding each ASCII character.  */
  	{
-@@ -5310,7 +7209,8 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5310,7 +7200,8 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
  	  inev.ie.code = keysym;
  
  	  inev.ie.device
@@ -16805,7 +16804,7 @@ index 617ed3c..5b14125 100644
  	  goto done;
  	}
  
-@@ -5324,22 +7224,25 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5324,22 +7215,25 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
  	  inev.ie.code = keysym & 0xFFFFFF;
  
  	  inev.ie.device
@@ -16837,7 +16836,7 @@ index 617ed3c..5b14125 100644
  	  goto done;
  	}
  
-@@ -5347,10 +7250,11 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5347,10 +7241,11 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
        if (((keysym >= GDK_KEY_BackSpace && keysym <= GDK_KEY_Escape)
  	   || keysym == GDK_KEY_Delete
  #ifdef GDK_KEY_ISO_Left_Tab
@@ -16852,7 +16851,7 @@ index 617ed3c..5b14125 100644
  #ifdef HPUX
  	   /* This recognizes the "extended function
  	      keys".  It seems there's no cleaner way.
-@@ -5397,23 +7301,22 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5397,23 +7292,22 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
  #ifdef GDK_KEY_dead_abovedot
  	   || orig_keysym == GDK_KEY_dead_abovedot
  #endif
@@ -16885,7 +16884,7 @@ index 617ed3c..5b14125 100644
  	{
  	  /* make_lispy_event will convert this to a symbolic
  	     key.  */
-@@ -5421,13 +7324,15 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5421,13 +7315,15 @@ key_press_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
  	  inev.ie.code = keysym;
  
  	  inev.ie.device
@@ -16903,7 +16902,7 @@ index 617ed3c..5b14125 100644
  	inev.ie.device
  	  = pgtk_get_device_for_event (FRAME_DISPLAY_INFO (f), event);
  
-@@ -5461,8 +7366,7 @@ pgtk_display_info_for_display (GdkDisplay *dpy)
+@@ -5461,8 +7357,7 @@ pgtk_display_info_for_display (GdkDisplay *dpy)
  }
  
  static gboolean
@@ -16913,7 +16912,7 @@ index 617ed3c..5b14125 100644
  		   gpointer *user_data)
  {
    GdkDisplay *display;
-@@ -5481,11 +7385,11 @@ key_release_event (GtkWidget *widget,
+@@ -5481,11 +7376,11 @@ key_release_event (GtkWidget *widget,
  }
  
  static gboolean
@@ -16928,7 +16927,7 @@ index 617ed3c..5b14125 100644
  
    if (f && widget == FRAME_GTK_OUTER_WIDGET (f))
      {
-@@ -5501,8 +7405,8 @@ configure_event (GtkWidget *widget,
+@@ -5501,8 +7396,8 @@ configure_event (GtkWidget *widget,
  	}
  
        if (f->win_gravity == NorthWestGravity)
@@ -16939,7 +16938,7 @@ index 617ed3c..5b14125 100644
        else
  	{
  	  f->top_pos = event->configure.y;
-@@ -5513,9 +7417,7 @@ configure_event (GtkWidget *widget,
+@@ -5513,9 +7408,7 @@ configure_event (GtkWidget *widget,
  }
  
  static gboolean
@@ -16950,7 +16949,7 @@ index 617ed3c..5b14125 100644
  {
    struct frame *f = pgtk_any_window_to_frame (event->any.window);
    union buffered_input_event inev;
-@@ -5529,7 +7431,7 @@ map_event (GtkWidget *widget,
+@@ -5529,7 +7422,7 @@ map_event (GtkWidget *widget,
        bool iconified = FRAME_ICONIFIED_P (f);
  
        /* Check if fullscreen was specified before we where mapped the
@@ -16959,7 +16958,7 @@ index 617ed3c..5b14125 100644
        if (!FRAME_X_OUTPUT (f)->has_been_visible)
  	set_fullscreen_state (f);
  
-@@ -5547,6 +7449,17 @@ map_event (GtkWidget *widget,
+@@ -5547,6 +7440,17 @@ map_event (GtkWidget *widget,
        SET_FRAME_ICONIFIED (f, false);
        FRAME_X_OUTPUT (f)->has_been_visible = true;
  
@@ -16977,7 +16976,7 @@ index 617ed3c..5b14125 100644
        if (iconified)
  	{
  	  inev.ie.kind = DEICONIFY_EVENT;
-@@ -5560,11 +7473,11 @@ map_event (GtkWidget *widget,
+@@ -5560,11 +7464,11 @@ map_event (GtkWidget *widget,
  }
  
  static gboolean
@@ -16992,7 +16991,7 @@ index 617ed3c..5b14125 100644
    GdkWindowState new_state;
    union buffered_input_event inev;
  
-@@ -5629,14 +7542,24 @@ window_state_event (GtkWidget *widget,
+@@ -5629,14 +7533,24 @@ window_state_event (GtkWidget *widget,
    else
      store_frame_param (f, Qsticky, Qnil);
  
@@ -17019,7 +17018,7 @@ index 617ed3c..5b14125 100644
  {
    struct frame *f = pgtk_any_window_to_frame (event->any.window);
    union buffered_input_event inev;
-@@ -5656,8 +7579,8 @@ delete_event (GtkWidget *widget,
+@@ -5656,8 +7570,8 @@ delete_event (GtkWidget *widget,
    return TRUE;
  }
  
@@ -17030,7 +17029,7 @@ index 617ed3c..5b14125 100644
  
     Returns FOCUS_IN_EVENT event in *BUFP. */
  
-@@ -5667,7 +7590,8 @@ delete_event (GtkWidget *widget,
+@@ -5667,7 +7581,8 @@ delete_event (GtkWidget *widget,
  
  static void
  pgtk_focus_changed (gboolean is_enter, int state,
@@ -17040,7 +17039,7 @@ index 617ed3c..5b14125 100644
  		    union buffered_input_event *bufp)
  {
    if (is_enter)
-@@ -5680,30 +7604,31 @@ pgtk_focus_changed (gboolean is_enter, int state,
+@@ -5680,30 +7595,31 @@ pgtk_focus_changed (gboolean is_enter, int state,
  	  /* Don't stop displaying the initial startup message
  	     for a switch-frame event we don't need.  */
  	  /* When run as a daemon, Vterminal_frame is always NIL.  */
@@ -17084,7 +17083,7 @@ index 617ed3c..5b14125 100644
  
        if (frame->pointer_invisible)
  	pgtk_toggle_invisible_pointer (frame, false);
-@@ -5788,7 +7713,8 @@ leave_notify_event (GtkWidget *widget, GdkEvent *event,
+@@ -5788,7 +7704,8 @@ leave_notify_event (GtkWidget *widget, GdkEvent *event,
  }
  
  static gboolean
@@ -17094,7 +17093,7 @@ index 617ed3c..5b14125 100644
  {
    union buffered_input_event inev;
    struct frame *frame
-@@ -5808,11 +7734,24 @@ focus_in_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5808,11 +7725,24 @@ focus_in_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
  
    pgtk_im_focus_in (frame);
  
@@ -17120,7 +17119,7 @@ index 617ed3c..5b14125 100644
  {
    union buffered_input_event inev;
    struct frame *frame
-@@ -5841,11 +7780,11 @@ focus_out_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -5841,11 +7771,11 @@ focus_out_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
     We have received a mouse movement event, which is given in *event.
     If the mouse is over a different glyph than it was last time, tell
     the mainstream emacs code by setting mouse_moved.  If not, ask for
@@ -17135,7 +17134,7 @@ index 617ed3c..5b14125 100644
  {
    XRectangle *r;
    struct pgtk_display_info *dpyinfo;
-@@ -5859,7 +7798,8 @@ note_mouse_movement (struct frame *frame,
+@@ -5859,7 +7789,8 @@ note_mouse_movement (struct frame *frame,
    dpyinfo->last_mouse_motion_x = event->x;
    dpyinfo->last_mouse_motion_y = event->y;
  
@@ -17145,7 +17144,7 @@ index 617ed3c..5b14125 100644
      {
        frame->mouse_moved = true;
        dpyinfo->last_mouse_scroll_bar = NULL;
-@@ -5871,12 +7811,12 @@ note_mouse_movement (struct frame *frame,
+@@ -5871,12 +7802,12 @@ note_mouse_movement (struct frame *frame,
        return true;
      }
  
@@ -17163,7 +17162,7 @@ index 617ed3c..5b14125 100644
      {
        frame->mouse_moved = true;
        dpyinfo->last_mouse_scroll_bar = NULL;
-@@ -5906,11 +7846,12 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
+@@ -5906,11 +7837,12 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
    /* Ignore emulated pointer events generated from a touch screen
       event.  */
    if (gdk_event_get_pointer_emulated (event)
@@ -17180,7 +17179,7 @@ index 617ed3c..5b14125 100644
      return FALSE;
  
    EVENT_INIT (inev.ie);
-@@ -5922,8 +7863,9 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
+@@ -5922,8 +7854,9 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
  
    frame = pgtk_any_window_to_frame (gtk_widget_get_window (widget));
    dpyinfo = FRAME_DISPLAY_INFO (frame);
@@ -17192,7 +17191,7 @@ index 617ed3c..5b14125 100644
    hlinfo = MOUSE_HL_INFO (f);
  
    if (hlinfo->mouse_face_hidden)
-@@ -5938,8 +7880,8 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
+@@ -5938,8 +7871,8 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
    if (f)
      {
        /* Maybe generate a SELECT_WINDOW_EVENT for
@@ -17203,7 +17202,7 @@ index 617ed3c..5b14125 100644
        if (!NILP (Vmouse_autoselect_window)
  	  /* Don't switch if we're currently in the minibuffer.
  	     This tries to work around problems where the
-@@ -5949,11 +7891,14 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
+@@ -5949,11 +7882,14 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
  	  && !MINI_WINDOW_P (XWINDOW (selected_window))
  	  /* With `focus-follows-mouse' non-nil create an event
  	     also when the target window is on another frame.  */
@@ -17221,7 +17220,7 @@ index 617ed3c..5b14125 100644
  
  	  /* A window will be autoselected only when it is not
  	     selected now and the last mouse movement event was
-@@ -5963,8 +7908,7 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
+@@ -5963,8 +7899,7 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
  	     where the scroll bars don't count.  For delayed
  	     autoselection the window is usually the window's text
  	     area including the margins.  */
@@ -17231,7 +17230,7 @@ index 617ed3c..5b14125 100644
  	      && !EQ (window, selected_window))
  	    {
  	      inev.ie.kind = SELECT_WINDOW_EVENT;
-@@ -6016,18 +7960,18 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
+@@ -6016,18 +7951,18 @@ motion_notify_event (GtkWidget *widget, GdkEvent *event,
  
  static Lisp_Object
  construct_mouse_click (struct input_event *result,
@@ -17256,7 +17255,7 @@ index 617ed3c..5b14125 100644
  
    XSETINT (result->x, event->x);
    XSETINT (result->y, event->y);
-@@ -6039,8 +7983,7 @@ construct_mouse_click (struct input_event *result,
+@@ -6039,8 +7974,7 @@ construct_mouse_click (struct input_event *result,
  }
  
  static gboolean
@@ -17266,7 +17265,7 @@ index 617ed3c..5b14125 100644
  {
    union buffered_input_event inev;
    struct frame *f, *frame;
-@@ -6056,11 +7999,12 @@ button_event (GtkWidget *widget, GdkEvent *event,
+@@ -6056,11 +7990,12 @@ button_event (GtkWidget *widget, GdkEvent *event,
    /* Ignore emulated pointer events generated from a touch screen
       event.  */
    if (gdk_event_get_pointer_emulated (event)
@@ -17283,7 +17282,7 @@ index 617ed3c..5b14125 100644
      return FALSE;
  
    EVENT_INIT (inev.ie);
-@@ -6068,7 +8012,8 @@ button_event (GtkWidget *widget, GdkEvent *event,
+@@ -6068,7 +8003,8 @@ button_event (GtkWidget *widget, GdkEvent *event,
    inev.ie.arg = Qnil;
  
    /* ignore double click and triple click. */
@@ -17293,7 +17292,7 @@ index 617ed3c..5b14125 100644
      return TRUE;
  
    frame = pgtk_any_window_to_frame (gtk_widget_get_window (widget));
-@@ -6091,13 +8036,15 @@ button_event (GtkWidget *widget, GdkEvent *event,
+@@ -6091,13 +8027,15 @@ button_event (GtkWidget *widget, GdkEvent *event,
  	     frame.  */
  	  struct frame *hf = dpyinfo->highlight_frame;
  
@@ -17311,7 +17310,7 @@ index 617ed3c..5b14125 100644
  	      unblock_input ();
  	    }
  	}
-@@ -6117,13 +8064,15 @@ button_event (GtkWidget *widget, GdkEvent *event,
+@@ -6117,13 +8055,15 @@ button_event (GtkWidget *widget, GdkEvent *event,
  	  int x = event->button.x;
  	  int y = event->button.y;
  
@@ -17331,7 +17330,7 @@ index 617ed3c..5b14125 100644
  	}
  
        if (!(tab_bar_p && NILP (tab_bar_arg)) && !tool_bar_p)
-@@ -6131,7 +8080,8 @@ button_event (GtkWidget *widget, GdkEvent *event,
+@@ -6131,7 +8071,8 @@ button_event (GtkWidget *widget, GdkEvent *event,
  	  if (ignore_next_mouse_click_timeout)
  	    {
  	      if (event->type == GDK_BUTTON_PRESS
@@ -17341,7 +17340,7 @@ index 617ed3c..5b14125 100644
  		{
  		  ignore_next_mouse_click_timeout = 0;
  		  construct_mouse_click (&inev.ie, &event->button, f);
-@@ -6194,7 +8144,8 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -6194,7 +8135,8 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
    inev.ie.kind = NO_EVENT;
    inev.ie.timestamp = event->scroll.time;
    inev.ie.modifiers
@@ -17351,7 +17350,7 @@ index 617ed3c..5b14125 100644
    XSETINT (inev.ie.x, event->scroll.x);
    XSETINT (inev.ie.y, event->scroll.y);
    XSETFRAME (inev.ie.frame_or_window, f);
-@@ -6229,7 +8180,7 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -6229,7 +8171,7 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
  	  inev.ie.kind = HORIZ_WHEEL_EVENT;
  	  inev.ie.modifiers |= down_modifier;
  	  break;
@@ -17360,7 +17359,7 @@ index 617ed3c..5b14125 100644
  	  break;
  	}
      }
-@@ -6237,12 +8188,13 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -6237,12 +8179,13 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
      {
        if (!mwheel_coalesce_scroll_events)
  	{
@@ -17380,7 +17379,7 @@ index 617ed3c..5b14125 100644
  	  inev.ie.arg = list3 (Qnil, make_float (-delta_x * 100),
  			       make_float (-delta_y * 100));
  	}
-@@ -6252,47 +8204,61 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -6252,47 +8195,61 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
  	  dpyinfo->scroll.acc_y += delta_y;
  	  if (dpyinfo->scroll.acc_y >= dpyinfo->scroll.y_per_line)
  	    {
@@ -17464,7 +17463,7 @@ index 617ed3c..5b14125 100644
  	    }
  	}
      }
-@@ -6305,11 +8271,9 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
+@@ -6305,11 +8262,9 @@ scroll_event (GtkWidget *widget, GdkEvent *event, gpointer *user_data)
      }
    return TRUE;
  }
@@ -17477,7 +17476,7 @@ index 617ed3c..5b14125 100644
  
  static GdkDragAction
  symbol_to_drag_action (Lisp_Object act)
-@@ -6366,8 +8330,7 @@ pgtk_update_drop_status (Lisp_Object action, Lisp_Object event_time)
+@@ -6366,8 +8321,7 @@ pgtk_update_drop_status (Lisp_Object action, Lisp_Object event_time)
      return;
  
    gdk_drag_status (current_drop_context,
@@ -17487,7 +17486,7 @@ index 617ed3c..5b14125 100644
  }
  
  void
-@@ -6381,17 +8344,16 @@ pgtk_finish_drop (Lisp_Object success, Lisp_Object event_time,
+@@ -6381,17 +8335,16 @@ pgtk_finish_drop (Lisp_Object success, Lisp_Object event_time,
    if (!current_drop_context || time < current_drop_time)
      return;
  
@@ -17510,7 +17509,7 @@ index 617ed3c..5b14125 100644
  {
    struct frame *f;
    union buffered_input_event inev;
-@@ -6401,11 +8363,10 @@ drag_leave (GtkWidget *widget, GdkDragContext *context,
+@@ -6401,11 +8354,10 @@ drag_leave (GtkWidget *widget, GdkDragContext *context,
    if (current_drop_context)
      {
        if (current_drop_context_drop)
@@ -17525,7 +17524,7 @@ index 617ed3c..5b14125 100644
      }
  
    EVENT_INIT (inev.ie);
-@@ -6423,8 +8384,8 @@ drag_leave (GtkWidget *widget, GdkDragContext *context,
+@@ -6423,8 +8375,8 @@ drag_leave (GtkWidget *widget, GdkDragContext *context,
  }
  
  static gboolean
@@ -17536,7 +17535,7 @@ index 617ed3c..5b14125 100644
  
  {
    struct frame *f;
-@@ -6440,11 +8401,10 @@ drag_motion (GtkWidget *widget, GdkDragContext *context,
+@@ -6440,11 +8392,10 @@ drag_motion (GtkWidget *widget, GdkDragContext *context,
    if (current_drop_context)
      {
        if (current_drop_context_drop)
@@ -17551,7 +17550,7 @@ index 617ed3c..5b14125 100644
      }
  
    current_drop_context = g_object_ref (context);
-@@ -6458,9 +8418,9 @@ drag_motion (GtkWidget *widget, GdkDragContext *context,
+@@ -6458,9 +8409,9 @@ drag_motion (GtkWidget *widget, GdkDragContext *context,
  
    inev.ie.kind = DRAG_N_DROP_EVENT;
    inev.ie.modifiers = 0;
@@ -17564,7 +17563,7 @@ index 617ed3c..5b14125 100644
    inev.ie.timestamp = time;
  
    XSETINT (inev.ie.x, x);
-@@ -6473,8 +8433,8 @@ drag_motion (GtkWidget *widget, GdkDragContext *context,
+@@ -6473,8 +8424,8 @@ drag_motion (GtkWidget *widget, GdkDragContext *context,
  }
  
  static gboolean
@@ -17575,7 +17574,7 @@ index 617ed3c..5b14125 100644
  {
    struct frame *f;
    union buffered_input_event inev;
-@@ -6489,11 +8449,10 @@ drag_drop (GtkWidget *widget, GdkDragContext *context,
+@@ -6489,11 +8440,10 @@ drag_drop (GtkWidget *widget, GdkDragContext *context,
    if (current_drop_context)
      {
        if (current_drop_context_drop)
@@ -17590,7 +17589,7 @@ index 617ed3c..5b14125 100644
      }
  
    current_drop_context = g_object_ref (context);
-@@ -6507,9 +8466,9 @@ drag_drop (GtkWidget *widget, GdkDragContext *context,
+@@ -6507,9 +8457,9 @@ drag_drop (GtkWidget *widget, GdkDragContext *context,
  
    inev.ie.kind = DRAG_N_DROP_EVENT;
    inev.ie.modifiers = 0;
@@ -17603,7 +17602,7 @@ index 617ed3c..5b14125 100644
    inev.ie.timestamp = time;
  
    XSETINT (inev.ie.x, x);
-@@ -6520,28 +8479,27 @@ drag_drop (GtkWidget *widget, GdkDragContext *context,
+@@ -6520,28 +8470,27 @@ drag_drop (GtkWidget *widget, GdkDragContext *context,
  
    return TRUE;
  }
@@ -17641,7 +17640,7 @@ index 617ed3c..5b14125 100644
  
    if (FIXNUM_OVERFLOW_P (local_detail))
      local_detail = 0;
-@@ -6662,9 +8620,9 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
+@@ -6662,9 +8611,9 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
  	break;
  
        /* Record this in the display structure.  */
@@ -17654,7 +17653,7 @@ index 617ed3c..5b14125 100644
        /* Generate the input event.  */
        inev.ie.kind = TOUCHSCREEN_BEGIN_EVENT;
        inev.ie.timestamp = event->touch.time;
-@@ -6675,8 +8633,8 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
+@@ -6675,8 +8624,8 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
        break;
  
      case GDK_TOUCH_UPDATE:
@@ -17665,7 +17664,7 @@ index 617ed3c..5b14125 100644
  
        if (!touchpoint
  	  /* Don't send this event if nothing has changed
-@@ -6692,8 +8650,8 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
+@@ -6692,8 +8641,8 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
        inev.ie.timestamp = event->touch.time;
        XSETFRAME (inev.ie.frame_or_window, f);
  
@@ -17676,7 +17675,7 @@ index 617ed3c..5b14125 100644
  	{
  	  if (touchpoint->frame == f)
  	    arg = Fcons (list3i (touchpoint->x, touchpoint->y,
-@@ -6708,8 +8666,8 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
+@@ -6708,8 +8657,8 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
      case GDK_TOUCH_CANCEL:
        /* Remove this touch point's record, also establishing its
  	 existence.  */
@@ -17687,7 +17686,7 @@ index 617ed3c..5b14125 100644
        /* If it did exist... */
        if (state)
  	{
-@@ -6737,8 +8695,8 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
+@@ -6737,8 +8686,8 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
        inev.ie.device = pgtk_get_device_for_event (dpyinfo, event);
        evq_enqueue (&inev);
  
@@ -17698,7 +17697,7 @@ index 617ed3c..5b14125 100644
        if (event->type != GDK_TOUCH_UPDATE)
  	{
  	  if (dpyinfo->last_click_event != NULL)
-@@ -6749,9 +8707,7 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
+@@ -6749,9 +8698,7 @@ touch_event_cb (GtkWidget *self, GdkEvent *event, gpointer user_data)
  
    return inev.ie.kind != NO_EVENT;
  }
@@ -17708,7 +17707,7 @@ index 617ed3c..5b14125 100644
  /* Callbacks for sundries.  */
  
  static void
-@@ -6768,17 +8724,72 @@ pgtk_monitors_changed_cb (GdkScreen *screen, gpointer user_data)
+@@ -6768,17 +8715,72 @@ pgtk_monitors_changed_cb (GdkScreen *screen, gpointer user_data)
    evq_enqueue (&inev);
  }
  
@@ -17783,7 +17782,7 @@ index 617ed3c..5b14125 100644
        return;
      }
  
-@@ -6789,13 +8800,16 @@ pgtk_set_event_handler (struct frame *f)
+@@ -6789,13 +8791,16 @@ pgtk_set_event_handler (struct frame *f)
    if (FRAME_GTK_OUTER_WIDGET (f))
      {
        g_signal_connect (G_OBJECT (FRAME_GTK_OUTER_WIDGET (f)),
@@ -17806,7 +17805,7 @@ index 617ed3c..5b14125 100644
  			G_CALLBACK (configure_event), NULL);
      }
  
-@@ -6803,43 +8817,63 @@ pgtk_set_event_handler (struct frame *f)
+@@ -6803,43 +8808,63 @@ pgtk_set_event_handler (struct frame *f)
  		    G_CALLBACK (map_event), NULL);
    g_signal_connect (G_OBJECT (FRAME_GTK_WIDGET (f)), "size-allocate",
  		    G_CALLBACK (size_allocate), f);
@@ -17888,7 +17887,7 @@ index 617ed3c..5b14125 100644
  		    G_CALLBACK (pgtk_selection_event), NULL);
    g_signal_connect (G_OBJECT (FRAME_GTK_WIDGET (f)), "touch-event",
  		    G_CALLBACK (touch_event_cb), NULL);
-@@ -6848,15 +8882,15 @@ pgtk_set_event_handler (struct frame *f)
+@@ -6848,15 +8873,15 @@ pgtk_set_event_handler (struct frame *f)
  }
  
  static void
@@ -17908,7 +17907,7 @@ index 617ed3c..5b14125 100644
  static bool
  same_x_server (const char *name1, const char *name2)
  {
-@@ -6897,8 +8931,7 @@ same_x_server (const char *name1, const char *name2)
+@@ -6897,8 +8922,7 @@ same_x_server (const char *name1, const char *name2)
        if (seen_colon && *name1 == '.')
  	return true;
      }
@@ -17918,7 +17917,7 @@ index 617ed3c..5b14125 100644
  	  && (*name2 == '.' || *name2 == '\0'));
  }
  
-@@ -6909,13 +8942,12 @@ pgtk_find_selection_owner (GdkWindow *window)
+@@ -6909,13 +8933,12 @@ pgtk_find_selection_owner (GdkWindow *window)
    struct frame *f;
  
    FOR_EACH_FRAME (tail, tem)
@@ -17937,7 +17936,7 @@ index 617ed3c..5b14125 100644
  
    return NULL;
  }
-@@ -6939,24 +8971,29 @@ pgtk_selection_event (GtkWidget *widget, GdkEvent *event,
+@@ -6939,24 +8962,29 @@ pgtk_selection_event (GtkWidget *widget, GdkEvent *event,
  	  EVENT_INIT (inev.ie);
  
  	  inev.sie.kind = (event->type == GDK_SELECTION_CLEAR
@@ -17977,7 +17976,7 @@ index 617ed3c..5b14125 100644
  	    }
  
  	  evq_enqueue (&inev);
-@@ -6982,8 +9019,7 @@ pgtk_display_x_warning (GdkDisplay *display)
+@@ -6982,8 +9010,7 @@ pgtk_display_x_warning (GdkDisplay *display)
  
    /* Do this instead of GDK_IS_X11_DISPLAY because the GDK X header
       pulls in Xlib, which conflicts with definitions in pgtkgui.h.  */
@@ -17987,7 +17986,7 @@ index 617ed3c..5b14125 100644
      return;
  
    dialog_widget = gtk_dialog_new ();
-@@ -6995,12 +9031,13 @@ pgtk_display_x_warning (GdkDisplay *display)
+@@ -6995,12 +9022,13 @@ pgtk_display_x_warning (GdkDisplay *display)
    gtk_window_set_title (window, "Warning");
    gtk_window_set_screen (window, screen);
  
@@ -18007,7 +18006,7 @@ index 617ed3c..5b14125 100644
    gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
    gtk_container_add (GTK_CONTAINER (content_area), label);
    gtk_widget_show (label);
-@@ -7060,14 +9097,14 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7060,14 +9088,14 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
        }
      else
        {
@@ -18028,7 +18027,7 @@ index 617ed3c..5b14125 100644
  
  	if (strlen (dpy_name) != 0)
  	  {
-@@ -7075,27 +9112,28 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7075,27 +9103,28 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
  	    argv[argc++] = dpy_name;
  	  }
  
@@ -18057,16 +18056,16 @@ index 617ed3c..5b14125 100644
 +	g_log_remove_handler ("GLib", id);
  
 -        g_log_remove_handler ("GLib", id);
+-
+-        xg_initialize ();
 +	xg_initialize ();
  
--        xg_initialize ();
--
 -        dpy = DEFAULT_GDK_DISPLAY ();
 +	dpy = DEFAULT_GDK_DISPLAY ();
  
  	initial_display = g_strdup (gdk_display_get_name (dpy));
  	dpy_name = initial_display;
-@@ -7122,7 +9160,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7122,7 +9151,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
      struct pgtk_display_info *share;
  
      for (share = x_display_list; share; share = share->next)
@@ -18076,7 +18075,7 @@ index 617ed3c..5b14125 100644
  	break;
      if (share)
        terminal->kboard = share->terminal->kboard;
-@@ -7130,9 +9169,9 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7130,9 +9160,9 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
        {
  	terminal->kboard = allocate_kboard (Qpgtk);
  
@@ -18089,7 +18088,7 @@ index 617ed3c..5b14125 100644
  	if (current_kboard == initial_kboard)
  	  current_kboard = terminal->kboard;
        }
-@@ -7155,7 +9194,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7155,7 +9185,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
  
    Lisp_Object system_name = Fsystem_name ();
    ptrdiff_t nbytes;
@@ -18099,7 +18098,7 @@ index 617ed3c..5b14125 100644
      memory_full (SIZE_MAX);
    dpyinfo->x_id = ++x_display_id;
    dpyinfo->x_id_name = xmalloc (nbytes);
-@@ -7168,10 +9208,12 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7168,10 +9199,12 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
    dpyinfo->xg_cursor = xg_create_default_cursor (dpyinfo->gdpy);
  
    dpyinfo->vertical_scroll_bar_cursor
@@ -18114,7 +18113,7 @@ index 617ed3c..5b14125 100644
  
    dpyinfo->icon_bitmap_id = -1;
  
-@@ -7187,8 +9229,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7187,8 +9220,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
    dpyinfo->resy = dpi;
  
    g_signal_connect (G_OBJECT (gscr), "monitors-changed",
@@ -18124,7 +18123,7 @@ index 617ed3c..5b14125 100644
  
    /* Set up scrolling increments.  */
    dpyinfo->scroll.x_per_char = 1;
-@@ -7207,8 +9248,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7207,8 +9239,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
        int (*x_connection_number) (void *)
  	= dlsym (handle, "XConnectionNumber");
  
@@ -18134,7 +18133,7 @@ index 617ed3c..5b14125 100644
  	dpyinfo->connection
  	  = x_connection_number (gdk_x11_display_get_xdisplay (dpy));
      }
-@@ -7217,7 +9257,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
+@@ -7217,7 +9248,8 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
  #ifdef GDK_WINDOWING_WAYLAND
    if (GDK_IS_WAYLAND_DISPLAY (dpy) && handle)
      {
@@ -18144,7 +18143,7 @@ index 617ed3c..5b14125 100644
        int (*display_get_fd) (struct wl_display *)
  	= dlsym (handle, "wl_display_get_fd");
  
-@@ -7269,8 +9310,8 @@ pgtk_delete_display (struct pgtk_display_info *dpyinfo)
+@@ -7269,8 +9301,8 @@ pgtk_delete_display (struct pgtk_display_info *dpyinfo)
    for (t = terminal_list; t; t = t->next_terminal)
      if (t->type == output_pgtk && t->display_info.pgtk == dpyinfo)
        {
@@ -18155,7 +18154,7 @@ index 617ed3c..5b14125 100644
        }
  
    if (x_display_list == dpyinfo)
-@@ -7303,7 +9344,8 @@ pgtk_xlfd_to_fontname (const char *xlfd)
+@@ -7303,7 +9335,8 @@ pgtk_xlfd_to_fontname (const char *xlfd)
      Convert an X font name (XLFD) to an Gtk font name.
      Only family is used.
      The string returned is temporarily allocated.
@@ -18165,7 +18164,7 @@ index 617ed3c..5b14125 100644
  {
    char *name = xmalloc (180);
  
-@@ -7330,12 +9372,13 @@ pgtk_defined_color (struct frame *f, const char *name,
+@@ -7330,12 +9363,13 @@ pgtk_defined_color (struct frame *f, const char *name,
  		    Emacs_Color *color_def, bool alloc,
  		    bool makeIndex)
  /* --------------------------------------------------------------------------
@@ -18185,7 +18184,7 @@ index 617ed3c..5b14125 100644
  {
    int r;
  
-@@ -7357,7 +9400,7 @@ pgtk_defined_color (struct frame *f, const char *name,
+@@ -7357,7 +9391,7 @@ pgtk_defined_color (struct frame *f, const char *name,
  
  int
  pgtk_parse_color (struct frame *f, const char *color_name,
@@ -18194,7 +18193,7 @@ index 617ed3c..5b14125 100644
  {
    GdkRGBA rgba;
    if (gdk_rgba_parse (&rgba, color_name))
-@@ -7365,9 +9408,9 @@ pgtk_parse_color (struct frame *f, const char *color_name,
+@@ -7365,9 +9399,9 @@ pgtk_parse_color (struct frame *f, const char *color_name,
        color->red = rgba.red * 65535;
        color->green = rgba.green * 65535;
        color->blue = rgba.blue * 65535;
@@ -18207,7 +18206,7 @@ index 617ed3c..5b14125 100644
        return 1;
      }
    return 0;
-@@ -7377,7 +9420,7 @@ pgtk_parse_color (struct frame *f, const char *color_name,
+@@ -7377,7 +9411,7 @@ pgtk_parse_color (struct frame *f, const char *color_name,
     colors in COLORS.  On W32, we no longer try to map colors to
     a palette.  */
  void
@@ -18216,7 +18215,7 @@ index 617ed3c..5b14125 100644
  {
    int i;
  
-@@ -7395,7 +9438,7 @@ pgtk_query_colors (struct frame *f, Emacs_Color * colors, int ncolors)
+@@ -7395,7 +9429,7 @@ pgtk_query_colors (struct frame *f, Emacs_Color * colors, int ncolors)
  }
  
  void
@@ -18225,7 +18224,7 @@ index 617ed3c..5b14125 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,173 +9446,1350 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,166 +9437,1343 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -18662,14 +18661,9 @@ index 617ed3c..5b14125 100644
 +   cleared newly exposed pixels to the frame background.  */
 +static bool
 +pgtk_grow_gl_size (int current, int requested, int *grown)
- {
--  pgtk_set_cr_source_with_color (f, gc->foreground,
--				 respects_alpha_background);
--}
++{
 +  int extra;
- 
--void
--pgtk_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
++
 +  if (requested <= 0)
 +    return false;
 +
@@ -19687,17 +19681,10 @@ index 617ed3c..5b14125 100644
 +void
 +pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
 +				       bool respects_alpha_background)
-+{
-+  pgtk_set_cr_source_with_color (f, gc->foreground,
-+				 respects_alpha_background);
-+}
-+
-+void
-+pgtk_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
- 				       bool respects_alpha_background)
  {
-   pgtk_set_cr_source_with_color (f, gc->background,
-@@ -7595,12 +10815,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
+   pgtk_set_cr_source_with_color (f, gc->foreground,
+ 				 respects_alpha_background);
+@@ -7595,12 +10806,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
        cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
  			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
@@ -19713,7 +19700,7 @@ index 617ed3c..5b14125 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10833,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10824,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19723,7 +19710,7 @@ index 617ed3c..5b14125 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10858,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10849,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19741,7 +19728,7 @@ index 617ed3c..5b14125 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10879,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10870,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19798,7 +19785,7 @@ index 617ed3c..5b14125 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10941,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10932,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  
