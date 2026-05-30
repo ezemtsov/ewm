@@ -1,8 +1,8 @@
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 102f3d9..5af482b 100644
+index 24af58c..1ad5737 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10613,6 +10613,645 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10630,6 +10630,624 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -419,22 +419,17 @@ index 102f3d9..5af482b 100644
 +  (Lisp_Object frame)
 +{
 +  struct frame *f = decode_window_system_frame (frame);
-+  GLfloat old_clear_color[4] = { 0, 0, 0, 0 };
 +  GLfloat sentinel_clear_color[4] = { 0.25f, 0.5f, 0.75f, 0.125f };
 +  GLfloat after_clear_color[4] = { 0, 0, 0, 0 };
-+  GLboolean old_color_mask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
 +  GLboolean sentinel_color_mask[4]
 +    = { GL_FALSE, GL_TRUE, GL_FALSE, GL_TRUE };
 +  GLboolean after_color_mask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
-+  GLint old_stencil_writemask = 0;
 +  GLint after_stencil_writemask = 0;
-+  GLint old_stencil_clear = 0;
 +  GLint after_stencil_clear = 0;
-+  GLboolean old_scissor_enabled = GL_FALSE;
 +  GLboolean after_scissor_enabled = GL_FALSE;
-+  GLint old_scissor_box[4] = { 0, 0, 0, 0 };
 +  GLint sentinel_scissor_box[4] = { 1, 2, 3, 4 };
 +  GLint after_scissor_box[4] = { 0, 0, 0, 0 };
++  struct pgtk_gl_clear_state saved_clear;
 +  struct pgtk_fbo_bindings saved_fbo;
 +  bool gl_ok;
 +  bool clear_color_ok;
@@ -452,12 +447,7 @@ index 102f3d9..5af482b 100644
 +  if (!pgtk_skia_make_gl_context_current (f))
 +    return Qnil;
 +
-+  glGetFloatv (GL_COLOR_CLEAR_VALUE, old_clear_color);
-+  glGetBooleanv (GL_COLOR_WRITEMASK, old_color_mask);
-+  glGetIntegerv (GL_STENCIL_WRITEMASK, &old_stencil_writemask);
-+  glGetIntegerv (GL_STENCIL_CLEAR_VALUE, &old_stencil_clear);
-+  old_scissor_enabled = glIsEnabled (GL_SCISSOR_TEST);
-+  glGetIntegerv (GL_SCISSOR_BOX, old_scissor_box);
++  pgtk_save_gl_clear_state (&saved_clear);
 +  pgtk_save_fbo_bindings (&saved_fbo);
 +
 +  glBindFramebuffer (GL_FRAMEBUFFER, FRAME_GL_FRAMEBUFFER (f));
@@ -501,18 +491,7 @@ index 102f3d9..5af482b 100644
 +       && after_scissor_box[2] == sentinel_scissor_box[2]
 +       && after_scissor_box[3] == sentinel_scissor_box[3]);
 +
-+  glClearColor (old_clear_color[0], old_clear_color[1],
-+		old_clear_color[2], old_clear_color[3]);
-+  glColorMask (old_color_mask[0], old_color_mask[1],
-+	       old_color_mask[2], old_color_mask[3]);
-+  glStencilMask (old_stencil_writemask);
-+  glClearStencil (old_stencil_clear);
-+  glScissor (old_scissor_box[0], old_scissor_box[1],
-+	     old_scissor_box[2], old_scissor_box[3]);
-+  if (old_scissor_enabled)
-+    glEnable (GL_SCISSOR_TEST);
-+  else
-+    glDisable (GL_SCISSOR_TEST);
++  pgtk_restore_gl_clear_state (&saved_clear);
 +  pgtk_restore_fbo_bindings (f, &saved_fbo);
 +
 +  return list5 ((gl_ok && clear_color_ok) ? Qt : Qnil,
@@ -648,7 +627,7 @@ index 102f3d9..5af482b 100644
  #endif
  
  void
-@@ -10707,6 +11346,16 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10724,6 +11342,16 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
