@@ -54,6 +54,8 @@ cat >"$payload" <<'EOF'
   (getenv "EWM_SKIA_PROFILE_OUTPUT"))
 (defconst ewm-skia-profile-page-size
   (string-to-number (or (getenv "EWM_SKIA_PROFILE_PAGE_SIZE") "4096")))
+(defconst ewm-skia-profile-monitor-policy
+  (or (getenv "EWM_SKIA_PROFILE_MONITOR") "largest"))
 
 (defun ewm-skia-profile-fail (format-string &rest args)
   (princ (concat "EWM_SKIA_PROFILE_FAIL: "
@@ -84,6 +86,12 @@ cat >"$payload" <<'EOF'
         (append-to-file (point-min) (point-max)
                         ewm-skia-profile-output)))))
 
+(defun ewm-skia-profile-report-line (line)
+  (with-temp-buffer
+    (insert line "\n")
+    (append-to-file (point-min) (point-max)
+                    ewm-skia-profile-output)))
+
 (defun ewm-skia-profile-time (name iterations function)
   (garbage-collect)
   (let ((start (current-time)))
@@ -94,6 +102,48 @@ cat >"$payload" <<'EOF'
 
 (defun ewm-skia-profile-redraw ()
   (redisplay 'force))
+
+(defun ewm-skia-profile-monitor-rect (monitor key)
+  (let ((rect (cdr (assq key monitor))))
+    (and (consp rect) rect)))
+
+(defun ewm-skia-profile-rect-area (rect)
+  (if (and (consp rect)
+           (numberp (nth 2 rect))
+           (numberp (nth 3 rect)))
+      (* (nth 2 rect) (nth 3 rect))
+    0))
+
+(defun ewm-skia-profile-largest-monitor ()
+  (let ((best nil)
+        (best-area -1))
+    (dolist (monitor (display-monitor-attributes-list))
+      (let* ((workarea (ewm-skia-profile-monitor-rect monitor 'workarea))
+             (geometry (ewm-skia-profile-monitor-rect monitor 'geometry))
+             (area (max (ewm-skia-profile-rect-area workarea)
+                        (ewm-skia-profile-rect-area geometry))))
+        (when (> area best-area)
+          (setq best monitor
+                best-area area))))
+    best))
+
+(defun ewm-skia-profile-monitor-string (label monitor)
+  (let ((geometry (ewm-skia-profile-monitor-rect monitor 'geometry))
+        (workarea (ewm-skia-profile-monitor-rect monitor 'workarea)))
+    (format
+     "%s name=%S geometry=%S workarea=%S scale=%S source=%S"
+     label
+     (cdr (assq 'name monitor))
+     geometry workarea
+     (cdr (assq 'scale-factor monitor))
+     (cdr (assq 'source monitor)))))
+
+(defun ewm-skia-profile-position-frame-on-monitor (frame monitor)
+  (let ((workarea (ewm-skia-profile-monitor-rect monitor 'workarea)))
+    (when workarea
+      (set-frame-position frame
+                          (+ (nth 0 workarea) 24)
+                          (+ (nth 1 workarea) 24)))))
 
 (defun ewm-skia-profile-rss-kb ()
   (when (file-readable-p "/proc/self/statm")
@@ -132,6 +182,15 @@ cat >"$payload" <<'EOF'
                     :background "#00ff00"
                     :height 180)
 (set-frame-parameter nil 'background-color "#00ff00")
+(let ((target-monitor
+       (if (string= ewm-skia-profile-monitor-policy "largest")
+           (ewm-skia-profile-largest-monitor)
+         (frame-monitor-attributes))))
+  (when target-monitor
+    (ewm-skia-profile-report-line
+     (ewm-skia-profile-monitor-string "target-monitor" target-monitor))
+    (ewm-skia-profile-position-frame-on-monitor (selected-frame)
+                                                target-monitor)))
 (set-frame-size nil 96 32)
 
 (let ((buffer (get-buffer-create "*ewm-skia-profile*")))
@@ -152,6 +211,9 @@ cat >"$payload" <<'EOF'
 
 (redisplay 'force)
 (sit-for 0.02)
+(ewm-skia-profile-report-line
+ (ewm-skia-profile-monitor-string
+  "actual-monitor" (frame-monitor-attributes)))
 
 (unless (and (fboundp 'pgtk-skia-gl-enabled-p)
              (pgtk-skia-gl-enabled-p))
