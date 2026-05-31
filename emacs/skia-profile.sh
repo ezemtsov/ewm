@@ -29,6 +29,7 @@ if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
 fi
 
 timeout_seconds="${EWM_SKIA_PROFILE_TIMEOUT:-10}"
+page_size="$(getconf PAGESIZE 2>/dev/null || printf '4096')"
 tmp_dir="$(mktemp -d -t ewm-skia-profile.XXXXXX)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -47,8 +48,12 @@ cat >"$payload" <<'EOF'
 
 (defconst ewm-skia-profile-iterations
   (string-to-number (getenv "EWM_SKIA_PROFILE_ITERATIONS")))
+(defconst ewm-skia-profile-frame-count
+  (string-to-number (or (getenv "EWM_SKIA_PROFILE_FRAMES") "4")))
 (defconst ewm-skia-profile-output
   (getenv "EWM_SKIA_PROFILE_OUTPUT"))
+(defconst ewm-skia-profile-page-size
+  (string-to-number (or (getenv "EWM_SKIA_PROFILE_PAGE_SIZE") "4096")))
 
 (defun ewm-skia-profile-fail (format-string &rest args)
   (princ (concat "EWM_SKIA_PROFILE_FAIL: "
@@ -69,6 +74,16 @@ cat >"$payload" <<'EOF'
       (append-to-file (point-min) (point-max)
                       ewm-skia-profile-output))))
 
+(defun ewm-skia-profile-report-rss (name frames before-kb after-kb)
+  (when (and before-kb after-kb)
+    (let ((line (format "%-18s frames=%d rss-kb-before=%d rss-kb-after=%d rss-kb-delta=%d\n"
+                        name frames before-kb after-kb
+                        (- after-kb before-kb))))
+      (with-temp-buffer
+        (insert line)
+        (append-to-file (point-min) (point-max)
+                        ewm-skia-profile-output)))))
+
 (defun ewm-skia-profile-time (name iterations function)
   (garbage-collect)
   (let ((start (current-time)))
@@ -78,6 +93,24 @@ cat >"$payload" <<'EOF'
      name iterations (ewm-skia-profile-seconds start))))
 
 (defun ewm-skia-profile-redraw ()
+  (redisplay 'force))
+
+(defun ewm-skia-profile-rss-kb ()
+  (when (file-readable-p "/proc/self/statm")
+    (with-temp-buffer
+      (insert-file-contents "/proc/self/statm")
+      (let* ((fields (split-string (buffer-string)))
+             (rss-pages (and (cadr fields)
+                             (string-to-number (cadr fields)))))
+        (when (and rss-pages (> rss-pages 0))
+          (/ (* rss-pages ewm-skia-profile-page-size) 1024))))))
+
+(defun ewm-skia-profile-redraw-frames (frames)
+  (dolist (frame frames)
+    (when (frame-live-p frame)
+      (with-selected-frame frame
+        (force-window-update)
+        (redraw-frame frame))))
   (redisplay 'force))
 
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
@@ -163,6 +196,42 @@ cat >"$payload" <<'EOF'
      (setq scroll-direction (- scroll-direction))
      (ewm-skia-profile-redraw))))
 
+(let ((main-frame (selected-frame))
+      (frames nil)
+      (before-kb (ewm-skia-profile-rss-kb))
+      (multi-iterations (max 1 (/ ewm-skia-profile-iterations 4))))
+  (unwind-protect
+      (progn
+        (dotimes (index ewm-skia-profile-frame-count)
+          (let ((frame (make-frame `((width . 72)
+                                     (height . 18)
+                                     (minibuffer . nil)
+                                     (visibility . t)))))
+            (push frame frames)
+            (select-frame-set-input-focus frame)
+            (switch-to-buffer "*ewm-skia-profile*")
+            (goto-char (point-min))
+            (forward-line (* index 40))
+            (ewm-skia-profile-redraw)))
+        (setq frames (nreverse frames))
+        (dolist (frame frames)
+          (unless (and (pgtk-skia-gl-enabled-p frame)
+                       (frame-live-p frame))
+            (ewm-skia-profile-fail
+             "Skia GL acceleration is not active for profile frame")))
+        (ewm-skia-profile-report-rss
+         "multi-frame-rss" (length frames) before-kb
+         (ewm-skia-profile-rss-kb))
+        (ewm-skia-profile-time
+         "multi-frame-redraw" multi-iterations
+         (lambda ()
+           (ewm-skia-profile-redraw-frames frames))))
+    (dolist (frame frames)
+      (when (frame-live-p frame)
+        (delete-frame frame t)))
+    (when (frame-live-p main-frame)
+      (select-frame-set-input-focus main-frame))))
+
 (kill-emacs 0)
 EOF
 
@@ -171,6 +240,7 @@ timeout --kill-after=1s "$timeout_seconds" \
     env GDK_BACKEND=wayland NO_AT_BRIDGE=1 \
         EWM_SKIA_PROFILE_ITERATIONS="$iterations" \
         EWM_SKIA_PROFILE_OUTPUT="$result" \
+        EWM_SKIA_PROFILE_PAGE_SIZE="$page_size" \
     "$emacs_path" -Q --load "$payload" >"$stdout" 2>"$stderr"
 status=$?
 set -e
