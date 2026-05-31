@@ -747,6 +747,63 @@ static char *image[] = {
     "UklGRiYAAABXRUJQVlA4TBoAAAAvE8AEEA8Q8x/zHwwCAYri/2YDHIjof6z8AA==")
    "WebP"))
 
+(defun ewm-skia-smoke-check-animated-webp-image-loader (phase)
+  (unless (image-type-available-p 'webp)
+    (ewm-skia-smoke-fail "WebP images are not available"))
+  (let* ((source-buffer (current-buffer))
+         (buffer (get-buffer-create "*ewm-skia-animated-webp-smoke*"))
+         (data (base64-decode-string
+                "UklGRoQAAABXRUJQVlA4WAoAAAACAAAAAQAAAQAAQU5JTQYAAAD/////AABBTk1GKAAAAAAAAAAAAAEAAAEAAGQAAAJWUDhMDwAAAC8BQAAABxD9j/4HIqL/AQBBTk1GKAAAAAAAAAAAAAEAAAEAAGQAAABWUDhMDwAAAC8BQAAAB9D/iP4HIqL/AQA="))
+         (image (create-image data 'webp t
+                              :width 400
+                              :height 160
+                              :transform-smoothing nil))
+         animation red-stats green-stats)
+    (unwind-protect
+        (progn
+          (setq animation (image-multi-frame-p image))
+          (unless (and (consp animation) (= (car animation) 2))
+            (ewm-skia-smoke-fail
+             "animated WebP metadata missing after %s: %S"
+             phase animation))
+          (with-current-buffer buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#0000ff"
+                                     :background "#0000ff") default)))
+            (erase-buffer)
+            (insert-image image " "))
+          (switch-to-buffer buffer)
+          (ewm-skia-smoke-resize-selected-frame
+           44 8 "animated WebP image loader")
+          (setq red-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-offset-rect 0 0 420 180)))
+          (unless (and (consp red-stats)
+                       (> (nth 2 red-stats) 10000)
+                       (< (nth 3 red-stats) 100))
+            (ewm-skia-smoke-fail
+             "animated WebP first frame has wrong colors after %s: stats=%S"
+             phase red-stats))
+          (plist-put (cdr image) :animate-buffer buffer)
+          (image-show-frame image 1 t)
+          (ewm-skia-smoke-redraw)
+          (setq green-stats
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-offset-rect 0 0 420 180)))
+          (unless (and (consp green-stats)
+                       (> (nth 3 green-stats) 10000)
+                       (< (nth 2 green-stats) 100))
+            (ewm-skia-smoke-fail
+             "animated WebP second frame has wrong colors after %s: first=%S second=%S"
+             phase red-stats green-stats)))
+      (clear-image-cache nil image)
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-masked-image-cursor (phase)
   (unless (image-type-available-p 'xpm)
     (ewm-skia-smoke-fail "XPM images are not available"))
@@ -1745,6 +1802,7 @@ static char *image[] = {
   (ewm-skia-smoke-check-png-image-loader "initial draw")
   (ewm-skia-smoke-check-jpeg-image-loader "initial draw")
   (ewm-skia-smoke-check-webp-image-loader "initial draw")
+  (ewm-skia-smoke-check-animated-webp-image-loader "initial draw")
   (ewm-skia-smoke-check-masked-image-cursor "initial draw")
   (ewm-skia-smoke-check-tool-bar-image "initial draw"))
 
