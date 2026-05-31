@@ -11534,7 +11534,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..0488f83 100644
+index 617ed3c..ccb0897 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -16373,7 +16373,7 @@ index 617ed3c..0488f83 100644
  static struct frame *
  pgtk_any_window_to_frame (GdkWindow *window)
  {
-@@ -4920,20 +6716,20 @@ pgtk_any_window_to_frame (GdkWindow *window)
+@@ -4920,16 +6716,16 @@ pgtk_any_window_to_frame (GdkWindow *window)
      return NULL;
  
    FOR_EACH_FRAME (tail, frame)
@@ -16387,10 +16387,6 @@ index 617ed3c..0488f83 100644
 -	    found = f;
 -	}
 -    }
--
--  return found;
--}
--
 +  {
 +    if (found)
 +      break;
@@ -16401,13 +16397,9 @@ index 617ed3c..0488f83 100644
 +	  found = f;
 +      }
 +  }
-+
-+  return found;
-+}
-+
- static gboolean
- pgtk_handle_event (GtkWidget *widget, GdkEvent *event, gpointer *data)
- {
+ 
+   return found;
+ }
 @@ -4950,24 +6746,29 @@ pgtk_handle_event (GtkWidget *widget, GdkEvent *event, gpointer *data)
        frame_widget = FRAME_GTK_WIDGET (f);
  
@@ -17987,10 +17979,10 @@ index 617ed3c..0488f83 100644
 +	g_log_remove_handler ("GLib", id);
  
 -        g_log_remove_handler ("GLib", id);
+-
+-        xg_initialize ();
 +	xg_initialize ();
  
--        xg_initialize ();
--
 -        dpy = DEFAULT_GDK_DISPLAY ();
 +	dpy = DEFAULT_GDK_DISPLAY ();
  
@@ -18155,7 +18147,7 @@ index 617ed3c..0488f83 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,178 +9384,1285 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,204 +9384,1295 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -18553,9 +18545,17 @@ index 617ed3c..0488f83 100644
 -pgtk_end_cr_clip (struct frame *f)
 -{
 -  cairo_restore (FRAME_CR_CONTEXT (f));
+-}
 +  width = FRAME_GL_RENDER_WIDTH (f);
 +  height = FRAME_GL_RENDER_HEIGHT (f);
-+
+ 
+-void
+-pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
+-				       bool respects_alpha_background)
+-{
+-  pgtk_set_cr_source_with_color (f, gc->foreground,
+-				 respects_alpha_background);
+-}
 +  if (pgtk_skia_debug_gl_enabled ())
 +    {
 +      static bool logged_once = false;
@@ -18568,7 +18568,13 @@ index 617ed3c..0488f83 100644
 +	  logged_once = true;
 +	}
 +    }
-+
+ 
+-void
+-pgtk_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
+-				       bool respects_alpha_background)
+-{
+-  pgtk_set_cr_source_with_color (f, gc->background,
+-				 respects_alpha_background);
 +  /* Hand our FBO texture directly to GDK for compositing.  GDK
 +     switches to the window's paint context, inserts a fence sync to
 +     wait for our rendering, then draws a textured quad onto the
@@ -18582,8 +18588,8 @@ index 617ed3c..0488f83 100644
  }
  
 -void
--pgtk_set_cr_source_with_gc_foreground (struct frame *f, Emacs_GC *gc,
--				       bool respects_alpha_background)
+-pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
+-			       bool respects_alpha_background)
 +/* Resize FBO while preserving existing content.  This blits the old
 +   content to a reusable scratch FBO, resizes the main FBO, and blits
 +   the preserved content back after pgtk_setup_gl_framebuffer has
@@ -18591,39 +18597,41 @@ index 617ed3c..0488f83 100644
 +static bool
 +pgtk_grow_gl_size (int current, int requested, int *grown)
  {
--  pgtk_set_cr_source_with_color (f, gc->foreground,
--				 respects_alpha_background);
+-  Emacs_Color col;
+-  col.pixel = color;
+-  pgtk_query_color (f, &col);
 +  int extra;
-+
+ 
+-  if (!respects_alpha_background)
 +  if (requested <= 0)
 +    return false;
 +
 +  if (current >= requested)
-+    {
+     {
+-      cairo_set_source_rgb (FRAME_CR_CONTEXT (f), col.red / 65535.0,
+-			    col.green / 65535.0, col.blue / 65535.0);
+-      cairo_set_operator (FRAME_CR_CONTEXT (f), CAIRO_OPERATOR_OVER);
 +      *grown = current;
 +      return true;
-+    }
+     }
 +
 +  extra = requested / 8;
 +  if (extra < 64)
 +    extra = 64;
 +  if (requested > INT_MAX - extra)
 +    *grown = requested;
-+  else
+   else
+-    {
+-      cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
+-			     col.green / 65535.0, col.blue / 65535.0,
 +    *grown = requested + extra;
 +  return true;
- }
- 
--void
--pgtk_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
--				       bool respects_alpha_background)
++}
++
 +static bool
 +pgtk_ensure_resize_scratch_framebuffer (struct frame *f, int width,
 +					int height)
- {
--  pgtk_set_cr_source_with_color (f, gc->background,
--				 respects_alpha_background);
--}
++{
 +  int alloc_width, alloc_height;
 +  GLint old_texture = 0;
 +  struct pgtk_fbo_bindings saved_fbo;
@@ -19065,6 +19073,38 @@ index 617ed3c..0488f83 100644
 +  pgtk_check_gl_error (operation);
 +}
 +
++static bool
++pgtk_prepare_skia_gl_surface (struct frame *f, int width, int height,
++			      const char *operation)
++{
++  if (!pgtk_frame_gl_context_make_current (f))
++    return false;
++
++  pgtk_clear_gl_errors ();
++
++  if (!pgtk_ensure_gl_framebuffer (f, width, height, NULL))
++    {
++      fprintf (stderr, "Skia: Failed to ensure GL framebuffer\n");
++      pgtk_check_gl_error ("ensure_gl_framebuffer");
++      return false;
++    }
++
++  int render_width = FRAME_GL_RENDER_WIDTH (f);
++  int render_height = FRAME_GL_RENDER_HEIGHT (f);
++
++  if (render_width != width || render_height != height)
++    {
++      pgtk_resize_fbo_preserve_content (f, render_width,
++					render_height, width, height);
++      pgtk_destroy_skia_surface (f);
++    }
++
++  if (!FRAME_SKIA_SURFACE (f) && FRAME_GL_FRAMEBUFFER (f))
++    pgtk_create_skia_gl_surface (f, width, height, operation);
++
++  return FRAME_SKIA_SURFACE (f) != NULL;
++}
++
 +emacs_skia_canvas_t *
 +pgtk_begin_skia_clip (struct frame *f)
 +{
@@ -19110,61 +19150,12 @@ index 617ed3c..0488f83 100644
 +
 +      /* Use drawing area's context if available.  */
 +      if (FRAME_GL_DRAWING_AREA (f) && FRAME_GDK_GL_CONTEXT (f))
-+	{
-+	  /* Make our GL context current.  */
-+	  if (!pgtk_frame_gl_context_make_current (f))
-+	    return NULL;
-+
-+	  /* Clear any stale GL errors.  */
-+	  pgtk_clear_gl_errors ();
-+
-+	  /* Ensure the FBO exists and is complete before drawing.  This
-+	     handles driver/context loss.  */
-+	  if (!pgtk_ensure_gl_framebuffer (f, width, height, NULL))
-+	    {
-+	      fprintf (stderr, "Skia: Failed to ensure GL framebuffer\n");
-+	      pgtk_check_gl_error ("ensure_gl_framebuffer");
-+	      return NULL;
-+	    }
-+
-+	  /* Check if FBO needs resizing from cached render target size.
-+	     Avoid glGetTexLevelParameteriv here; drivers may synchronize
-+	     texture metadata queries with pending GPU work.  */
-+	  int render_width = FRAME_GL_RENDER_WIDTH (f);
-+	  int render_height = FRAME_GL_RENDER_HEIGHT (f);
-+
-+	  if (render_width != width || render_height != height)
-+	    {
-+	      pgtk_resize_fbo_preserve_content (f, render_width,
-+						render_height, width, height);
-+	      pgtk_destroy_skia_surface (f);
-+	    }
-+
-+	  /* Create Skia surface if needed.  */
-+	  if (!FRAME_SKIA_SURFACE (f) && FRAME_GL_FRAMEBUFFER (f))
-+	    pgtk_create_skia_gl_surface (f, width, height,
-+					 "surface_create_gl");
-+	}
++	pgtk_prepare_skia_gl_surface (f, width, height,
++				      "surface_create_gl");
 +      /* Fallback: create offscreen GL context if no drawing area.  */
-+      else if (pgtk_init_gl_context (f)
-+	       && pgtk_ensure_gl_framebuffer (f, width, height, NULL))
-+	{
-+	  /* Make GL context current.  */
-+	  if (!pgtk_frame_gl_context_make_current (f))
-+	    return NULL;
-+
-+	  /* Clear any stale GL errors.  */
-+	  pgtk_clear_gl_errors ();
-+
-+	  if (FRAME_GL_RENDER_WIDTH (f) != width
-+	      || FRAME_GL_RENDER_HEIGHT (f) != height)
-+	    pgtk_resize_fbo_preserve_content (f, FRAME_GL_RENDER_WIDTH (f),
-+					      FRAME_GL_RENDER_HEIGHT (f),
-+					      width, height);
-+
-+	  pgtk_create_skia_gl_surface (f, width, height,
-+				       "surface_create_gl_fallback");
-+	}
++      else if (pgtk_init_gl_context (f))
++	pgtk_prepare_skia_gl_surface (f, width, height,
++				      "surface_create_gl_fallback");
 +
 +      if (!FRAME_SKIA_SURFACE (f))
 +	{
@@ -19559,12 +19550,25 @@ index 617ed3c..0488f83 100644
 +  pgtk_set_cr_source_with_color (f, gc->background,
 +				 respects_alpha_background);
 +}
- 
- void
- pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
-@@ -7595,12 +10683,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
-       cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
- 			     col.green / 65535.0, col.blue / 65535.0,
++
++void
++pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
++			       bool respects_alpha_background)
++{
++  Emacs_Color col;
++  col.pixel = color;
++  pgtk_query_color (f, &col);
++
++  if (!respects_alpha_background)
++    {
++      cairo_set_source_rgb (FRAME_CR_CONTEXT (f), col.red / 65535.0,
++			    col.green / 65535.0, col.blue / 65535.0);
++      cairo_set_operator (FRAME_CR_CONTEXT (f), CAIRO_OPERATOR_OVER);
++    }
++  else
++    {
++      cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
++			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
 -      cairo_set_operator (FRAME_CR_CONTEXT (f), CAIRO_OPERATOR_SOURCE);
 +      cairo_set_operator (FRAME_CR_CONTEXT (f),
@@ -19578,7 +19582,7 @@ index 617ed3c..0488f83 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10701,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10684,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19588,7 +19592,7 @@ index 617ed3c..0488f83 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10726,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10709,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19606,7 +19610,7 @@ index 617ed3c..0488f83 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10747,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10730,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19663,7 +19667,7 @@ index 617ed3c..0488f83 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10809,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10792,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  
