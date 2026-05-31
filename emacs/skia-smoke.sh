@@ -2276,6 +2276,18 @@ static char *image[] = {
       (ewm-skia-smoke-fail "visible bell Skia snapshot was not released"))
     (ewm-skia-smoke-check-framebuffer "visible bell restore"))
 
+  (let ((visible-bell t)
+        (ring-bell-function nil))
+    (ding)
+    (unless (pgtk-skia-test-visible-bell-active-p)
+      (ewm-skia-smoke-fail "visible bell timer test created no snapshot"))
+    (dotimes (_ 50)
+      (when (pgtk-skia-test-visible-bell-active-p)
+        (sit-for 0.02)))
+    (when (pgtk-skia-test-visible-bell-active-p)
+      (ewm-skia-smoke-fail "visible bell timer did not release snapshot"))
+    (ewm-skia-smoke-check-framebuffer "visible bell timer restore"))
+
   (let ((main-frame (selected-frame))
         (bell-frame nil)
         (visible-bell t)
