@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..bc91c911f0f
+index 00000000000..75bdac35d31
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1379 @@
+@@ -0,0 +1,1369 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -104,7 +104,6 @@ index 00000000000..bc91c911f0f
 +{
 +  SkCanvas *canvas; /* Borrowed pointer, owned by surface/document */
 +  void *owner;
-+  void (*destroy_owner) (void *);
 +};
 +
 +struct emacs_skia_surface
@@ -214,11 +213,11 @@ index 00000000000..bc91c911f0f
 +
 +#ifdef SK_GL
 +  return new emacs_skia_surface_t {
-+    std::move (surface), std::move (context), { nullptr, nullptr, nullptr }
++    std::move (surface), std::move (context), { nullptr, nullptr }
 +  };
 +#else
 +  return new emacs_skia_surface_t {
-+    std::move (surface), { nullptr, nullptr, nullptr }
++    std::move (surface), { nullptr, nullptr }
 +  };
 +#endif
 +}
@@ -1157,7 +1156,7 @@ index 00000000000..bc91c911f0f
 +    return nullptr;
 +
 +  return new emacs_skia_document_t {
-+    document, std::move (stream), nullptr, { nullptr, nullptr, nullptr }
++    document, std::move (stream), nullptr, { nullptr, nullptr }
 +  };
 +}
 +
@@ -1245,12 +1244,6 @@ index 00000000000..bc91c911f0f
 +#endif
 +
 +#ifdef SK_SVG
-+static void
-+emacs_skia_svg_canvas_destroy_owner (void *owner)
-+{
-+  delete static_cast<emacs_skia_svg_canvas_data *> (owner);
-+}
-+
 +emacs_skia_canvas_t *
 +emacs_skia_svg_canvas_create (emacs_skia_write_fn write_fn,
 +			      void *write_ctx, float width,
@@ -1273,28 +1266,25 @@ index 00000000000..bc91c911f0f
 +  emacs_skia_svg_canvas_data *data =
 +    new emacs_skia_svg_canvas_data {
 +      std::move (stream), std::move (canvas),
-+      { nullptr, nullptr, nullptr }
++      { nullptr, nullptr }
 +    };
 +  emacs_skia_canvas_t *wrapper = &data->canvas_wrapper;
 +
 +  wrapper->canvas = data->canvas.get ();
 +  wrapper->owner = data;
-+  wrapper->destroy_owner = emacs_skia_svg_canvas_destroy_owner;
 +  return wrapper;
 +}
 +
 +void
 +emacs_skia_svg_canvas_finish (emacs_skia_canvas_t *canvas)
 +{
-+  if (!canvas || !canvas->destroy_owner)
++  if (!canvas || !canvas->owner)
 +    return;
 +
-+  void (*destroy_owner) (void *) = canvas->destroy_owner;
-+  void *owner = canvas->owner;
++  auto *owner = static_cast<emacs_skia_svg_canvas_data *> (canvas->owner);
 +  canvas->canvas = nullptr;
 +  canvas->owner = nullptr;
-+  canvas->destroy_owner = nullptr;
-+  destroy_owner (owner);
++  delete owner;
 +}
 +#else
 +/* Stub implementations when SVG support is not compiled in.  */
