@@ -805,6 +805,34 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-tool-bar-image (phase)
+  (require 'tool-bar)
+  (unless (image-type-available-p 'xpm)
+    (ewm-skia-smoke-fail "XPM images are not available"))
+  (let* ((xpm (ewm-skia-smoke-xpm
+               24 24 (make-list 24 "rrrrrrrrrrrrrrrrrrrrrrrr")))
+         (image (create-image xpm 'xpm t :ascent 'center))
+         (map (make-sparse-keymap))
+         (old-lines (frame-parameter nil 'tool-bar-lines))
+         (old-mode tool-bar-mode))
+    (define-key map [ewm-skia-smoke]
+                (list 'menu-item "Skia" #'ignore :image image))
+    (unwind-protect
+        (let ((tool-bar-map map)
+              (tool-bar-mode t))
+          (tool-bar--flush-cache)
+          (set-frame-parameter nil 'tool-bar-lines 1)
+          (redisplay 'force)
+          (sit-for 0.02)
+          (unless (> (or (frame-parameter nil 'tool-bar-lines) 0) 0)
+            (ewm-skia-smoke-fail
+             "tool bar image path did not enable after %s" phase)))
+      (tool-bar--flush-cache)
+      (set-frame-parameter nil 'tool-bar-lines old-lines)
+      (setq tool-bar-mode old-mode)
+      (redisplay 'force)
+      (sit-for 0.02))))
+
 (defun ewm-skia-smoke-check-window-clipping-case
     (phase label left-buffer-name setup-left min-left-red)
   (let* ((source-buffer (current-buffer))
@@ -1709,7 +1737,8 @@ static char *image[] = {
   (ewm-skia-smoke-check-png-image-loader "initial draw")
   (ewm-skia-smoke-check-jpeg-image-loader "initial draw")
   (ewm-skia-smoke-check-webp-image-loader "initial draw")
-  (ewm-skia-smoke-check-masked-image-cursor "initial draw"))
+  (ewm-skia-smoke-check-masked-image-cursor "initial draw")
+  (ewm-skia-smoke-check-tool-bar-image "initial draw"))
 
 (ewm-skia-smoke-run-group "clip"
   (ewm-skia-smoke-check-window-clipping "initial draw")

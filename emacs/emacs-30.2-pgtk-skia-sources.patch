@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..f7ef9fa4965
+index 00000000000..bc91c911f0f
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1359 @@
+@@ -0,0 +1,1379 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -50,6 +50,7 @@ index 00000000000..f7ef9fa4965
 +#include "core/SkPath.h"
 +#include "core/SkPathBuilder.h"
 +#include "core/SkPathEffect.h"
++#include "core/SkPixmap.h"
 +#include "core/SkShader.h"
 +#include "core/SkStream.h"
 +#include "core/SkSurface.h"
@@ -68,6 +69,7 @@ index 00000000000..f7ef9fa4965
 +#include <memory>
 +#include <utility>
 +
++extern "C" void *xmalloc (size_t);
 +extern "C" void xfree (void *);
 +
 +/* PDF and SVG support */
@@ -482,21 +484,6 @@ index 00000000000..f7ef9fa4965
 +     The canvas pointer is borrowed from the SkSurface.  */
 +  surface->canvas_wrapper.canvas = surface->surface->getCanvas ();
 +  return &surface->canvas_wrapper;
-+}
-+
-+void *
-+emacs_skia_surface_get_pixels (emacs_skia_surface_t *surface)
-+{
-+  if (!surface || !surface->surface)
-+    {
-+      return nullptr;
-+    }
-+  SkPixmap pixmap;
-+  if (surface->surface->peekPixels (&pixmap))
-+    {
-+      return const_cast<void *> (pixmap.addr ());
-+    }
-+  return nullptr;
 +}
 +
 +void
@@ -952,6 +939,39 @@ index 00000000000..f7ef9fa4965
 +  delete image;
 +}
 +
++unsigned char *
++emacs_skia_image_to_rgba_pixels (emacs_skia_image_t *image, int width,
++				 int height, size_t *row_bytes)
++{
++  if (row_bytes)
++    *row_bytes = 0;
++
++  if (!image || !image->image || width <= 0 || height <= 0)
++    return nullptr;
++
++  size_t stride = (size_t) width * 4;
++  if (stride / 4 != (size_t) width
++      || (size_t) height > SIZE_MAX / stride)
++    return nullptr;
++
++  SkImageInfo info = SkImageInfo::Make (width, height,
++					kRGBA_8888_SkColorType,
++					kUnpremul_SkAlphaType);
++  unsigned char *pixels
++    = static_cast<unsigned char *> (xmalloc (stride * (size_t) height));
++  SkPixmap pixmap (info, pixels, stride);
++  SkSamplingOptions sampling (SkFilterMode::kLinear);
++  if (!image->image->scalePixels (pixmap, sampling))
++    {
++      xfree (pixels);
++      return nullptr;
++    }
++
++  if (row_bytes)
++    *row_bytes = stride;
++  return pixels;
++}
++
 +emacs_skia_image_t *
 +emacs_skia_image_create_from_bitmap (const unsigned char *data,
 +				     int width, int height,
@@ -1365,10 +1385,10 @@ index 00000000000..f7ef9fa4965
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..358e63e016a
+index 00000000000..162e054c1be
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,378 @@
+@@ -0,0 +1,381 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1516,9 +1536,6 @@ index 00000000000..358e63e016a
 +  /* Get canvas from surface */
 +  emacs_skia_canvas_t *
 +  emacs_skia_surface_get_canvas (emacs_skia_surface_t *surface);
-+
-+  /* Get pixel data (for raster surfaces) */
-+  void *emacs_skia_surface_get_pixels (emacs_skia_surface_t *surface);
 +
 +  /* Flush surface drawing */
 +  void emacs_skia_surface_flush (emacs_skia_surface_t *surface);
@@ -1690,6 +1707,12 @@ index 00000000000..358e63e016a
 +    bool has_alpha);
 +
 +  void emacs_skia_image_destroy (emacs_skia_image_t *image);
++
++  /* Scale IMAGE into a newly allocated RGBA pixel buffer.  ROW_BYTES,
++     if non-NULL, receives the returned buffer's row stride.  The
++     caller must free the returned buffer with xfree.  */
++  unsigned char *emacs_skia_image_to_rgba_pixels (
++    emacs_skia_image_t *image, int width, int height, size_t *row_bytes);
 +
 +  /* Create a 1-bit (A1 format) image from packed bitmap data.
 +     This is used for fringe bitmaps and stipple patterns.

@@ -576,7 +576,7 @@ index ee56e2d..36636ab 100644
    /* These are used by the XFT backend.  */
    Display *display;
 diff --git a/src/gtkutil.c b/src/gtkutil.c
-index 655e838..58616dc 100644
+index 655e838..ce163ad 100644
 --- a/src/gtkutil.c
 +++ b/src/gtkutil.c
 @@ -41,6 +41,9 @@ typedef struct pgtk_output xp_output;
@@ -589,7 +589,23 @@ index 655e838..58616dc 100644
  #include "termhooks.h"
  #include "keyboard.h"
  #include "coding.h"
-@@ -510,7 +513,8 @@ xg_get_image_for_pixmap (struct frame *f,
+@@ -76,6 +79,15 @@ typedef struct pgtk_output xp_output;
+ #define XG_TEXT_OPEN   GTK_STOCK_OPEN
+ #endif
+ 
++#ifdef USE_SKIA
++static void
++xg_free_skia_pixbuf_pixels (guchar *pixels, gpointer data)
++{
++  (void) data;
++  xfree (pixels);
++}
++#endif
++
+ #ifdef HAVE_GTK3
+ static void emacs_menu_bar_get_preferred_width (GtkWidget *, gint *, gint *);
+ static GType emacs_menu_bar_get_type (void);
+@@ -510,7 +522,8 @@ xg_get_image_for_pixmap (struct frame *f,
  {
  #ifdef USE_CAIRO
    cairo_surface_t *surface;
@@ -599,7 +615,7 @@ index 655e838..58616dc 100644
    GdkPixbuf *icon_buf;
  #endif
  
-@@ -567,7 +571,7 @@ xg_get_image_for_pixmap (struct frame *f,
+@@ -567,7 +580,7 @@ xg_get_image_for_pixmap (struct frame *f,
  	}
  #endif	/* !HAVE_GTK3 */
      }
@@ -608,78 +624,37 @@ index 655e838..58616dc 100644
    /* This is a workaround to make icons look good on pseudo color
       displays.  Apparently GTK expects the images to have an alpha
       channel.  If they don't, insensitive and activated icons will
-@@ -590,6 +594,79 @@ xg_get_image_for_pixmap (struct frame *f,
+@@ -590,6 +603,38 @@ xg_get_image_for_pixmap (struct frame *f,
      }
  #endif
  
 +#ifdef USE_SKIA
 +  /* For Skia-only builds (without Cairo), create a GtkImage from
-+     the Skia image data via a temporary pixbuf.  */
++     the Skia image data via an owned RGBA pixbuf.  */
 +  if (!old_widget && img->skia_data)
 +    {
-+      emacs_skia_image_t *skia_img = img->skia_data;
 +      int w = img->width;
 +      int h = img->height;
 +      if (w > 0 && h > 0)
 +	{
-+	  /* Create a raster surface, draw the image, read pixels back.  */
-+	  emacs_skia_surface_t *tmp
-+	    = emacs_skia_surface_create_raster (w, h);
-+	  if (tmp)
++	  size_t row_bytes;
++	  guchar *pixels
++	    = emacs_skia_image_to_rgba_pixels (img->skia_data, w, h,
++					       &row_bytes);
++	  if (pixels)
 +	    {
-+	      emacs_skia_canvas_t *c
-+		= emacs_skia_surface_get_canvas (tmp);
-+	      if (c)
++	      GdkPixbuf *pixbuf = NULL;
++	      if (row_bytes <= INT_MAX)
++		pixbuf = gdk_pixbuf_new_from_data (
++		  pixels, GDK_COLORSPACE_RGB, TRUE, 8, w, h,
++		  (int) row_bytes, xg_free_skia_pixbuf_pixels, NULL);
++	      if (pixbuf)
 +		{
-+		  emacs_skia_rect_t dst = { 0, 0, w, h };
-+		  emacs_skia_canvas_clear (c, EMACS_SKIA_COLOR (0, 0, 0, 0));
-+		  emacs_skia_canvas_draw_image_rect (c, skia_img, NULL,
-+						     &dst, true, NULL);
-+		  void *pixels = emacs_skia_surface_get_pixels (tmp);
-+		  if (pixels)
-+		    {
-+		      /* Pixels are in premultiplied ARGB format.  Convert to
-+			 GdkPixbuf RGBA (non-premultiplied).  */
-+		      GdkPixbuf *pixbuf
-+			= gdk_pixbuf_new (GDK_COLORSPACE_RGB, TRUE, 8, w, h);
-+		      if (pixbuf)
-+			{
-+			  guchar *pb_pixels = gdk_pixbuf_get_pixels (pixbuf);
-+			  int pb_stride = gdk_pixbuf_get_rowstride (pixbuf);
-+			  uint32_t *src = (uint32_t *) pixels;
-+			  for (int y = 0; y < h; y++)
-+			    {
-+			      guchar *dst = pb_pixels + y * pb_stride;
-+			      for (int x = 0; x < w; x++)
-+				{
-+				  uint32_t p = src[y * w + x];
-+				  uint8_t a = (p >> 24) & 0xff;
-+				  uint8_t r = (p >> 16) & 0xff;
-+				  uint8_t g = (p >> 8) & 0xff;
-+				  uint8_t b = p & 0xff;
-+				  /* Undo premultiplication.  */
-+				  if (a > 0 && a < 255)
-+				    {
-+				      r = (r * 255 + a / 2) / a;
-+				      g = (g * 255 + a / 2) / a;
-+				      b = (b * 255 + a / 2) / a;
-+				    }
-+				  dst[x * 4 + 0] = r;
-+				  dst[x * 4 + 1] = g;
-+				  dst[x * 4 + 2] = b;
-+				  dst[x * 4 + 3] = a;
-+				}
-+			    }
-+			  if (!old_widget)
-+			    old_widget
-+			      = GTK_IMAGE (gtk_image_new_from_pixbuf (pixbuf));
-+			  else
-+			    gtk_image_set_from_pixbuf (old_widget, pixbuf);
-+			  g_object_unref (G_OBJECT (pixbuf));
-+			}
-+		    }
++		  old_widget = GTK_IMAGE (gtk_image_new_from_pixbuf (pixbuf));
++		  g_object_unref (G_OBJECT (pixbuf));
 +		}
-+	      emacs_skia_surface_destroy (tmp);
++	      else
++		xfree (pixels);
 +	    }
 +	}
 +    }
@@ -688,7 +663,7 @@ index 655e838..58616dc 100644
    return GTK_WIDGET (old_widget);
  }
  
-@@ -5670,7 +5747,11 @@ xg_tool_item_stale_p (GtkWidget *wbutton, const char *stock_name,
+@@ -5670,7 +5715,11 @@ xg_tool_item_stale_p (GtkWidget *wbutton, const char *stock_name,
        void *old_img = (void *) gold_img;
        if (old_img != img->cr_data)
  	return 1;
@@ -701,7 +676,7 @@ index 655e838..58616dc 100644
        Pixmap old_img = (Pixmap) gold_img;
        if (old_img != img->pixmap)
  	return 1;
-@@ -5978,6 +6059,8 @@ update_frame_tool_bar (struct frame *f)
+@@ -5978,6 +6027,8 @@ update_frame_tool_bar (struct frame *f)
            if (img->load_failed_p
  #ifdef USE_CAIRO
  	      || img->cr_data == NULL
@@ -710,7 +685,7 @@ index 655e838..58616dc 100644
  #else
  	      || img->pixmap == None
  #endif
-@@ -6036,8 +6119,12 @@ update_frame_tool_bar (struct frame *f)
+@@ -6036,8 +6087,12 @@ update_frame_tool_bar (struct frame *f)
                g_object_set_data (G_OBJECT (w), XG_TOOL_BAR_IMAGE_DATA,
  #ifdef USE_CAIRO
                                   (gpointer)img->cr_data
