@@ -8,9 +8,12 @@ build_dir="${2:-${EWM_SKIA_SANITIZE_BUILD_DIR:-/tmp/ewm-skia-asan-emacs}}"
 jobs="${EWM_SKIA_JOBS:-8}"
 smoke_groups="${EWM_SKIA_SANITIZE_SMOKE_GROUPS:-frames,bell,recovery,images,text,copy,export}"
 sanitize_flags="${EWM_SKIA_SANITIZE_FLAGS:--O1 -g -fsanitize=address,undefined -fno-sanitize=nonnull-attribute -fno-omit-frame-pointer}"
+detect_leaks="${EWM_SKIA_SANITIZE_LEAKS:-0}"
+lsan_suppressions="${EWM_SKIA_LSAN_SUPPRESSIONS:-$script_dir/skia-lsan.supp}"
 # Emacs' conservative stack scanner needs the real stack, not ASan's fake
 # stack used for use-after-return detection.
-asan_options="${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=0}"
+asan_options="${ASAN_OPTIONS:-detect_leaks=$detect_leaks:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=0}"
+lsan_options="${LSAN_OPTIONS:-suppressions=$lsan_suppressions:print_suppressions=0}"
 ubsan_options="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
 configure_args=(
     --with-pgtk
@@ -62,6 +65,7 @@ fi
 
 if [[ -z "${EWM_SKIA_SANITIZE_SKIP_BUILD:-}" ]]; then
     ASAN_OPTIONS="$asan_options" \
+    LSAN_OPTIONS="$lsan_options" \
     UBSAN_OPTIONS="$ubsan_options" \
         make -C "$build_dir/src" -j"$jobs" all
 fi
@@ -72,6 +76,7 @@ if [[ ! -x "$build_dir/src/emacs" ]]; then
 fi
 
 ASAN_OPTIONS="$asan_options" \
+LSAN_OPTIONS="$lsan_options" \
 UBSAN_OPTIONS="$ubsan_options" \
 EWM_SKIA_SMOKE_GROUPS="$smoke_groups" \
     "$script_dir/skia-smoke.sh" "$build_dir/src/emacs"

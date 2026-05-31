@@ -700,7 +700,7 @@ index 655e838..ce163ad 100644
  				 );
              }
 diff --git a/src/image.c b/src/image.c
-index b5b7de3..a4461a2 100644
+index b5b7de3..d3e4401 100644
 --- a/src/image.c
 +++ b/src/image.c
 @@ -15,7 +15,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -2132,7 +2132,16 @@ index b5b7de3..a4461a2 100644
  	  if (img->mask_picture)
  	    XRenderFreePicture (FRAME_X_DISPLAY (f),
  				img->mask_picture);
-@@ -1807,7 +1935,8 @@ free_image (struct frame *f, struct image *img)
+@@ -1802,12 +1930,17 @@ free_image (struct frame *f, struct image *img)
+ 	/* Free resources, then free IMG.  */
+ 	img->type->free_img (f, img);
+ 
++#if defined(HAVE_WEBP) || defined(HAVE_GIF)
++      anim_prune_animation_cache (XCDR (img->spec));
++#endif
++
+       xfree (img->face_font_family);
+       xfree (img);
      }
  }
  
@@ -2142,7 +2151,7 @@ index b5b7de3..a4461a2 100644
  
  static bool
  check_image_size (struct frame *f, int width, int height)
-@@ -1828,7 +1957,7 @@ check_image_size (struct frame *f, int width, int height)
+@@ -1828,7 +1961,7 @@ check_image_size (struct frame *f, int width, int height)
  	  h = FRAME_PIXEL_HEIGHT (f);
  	}
        else
@@ -2151,7 +2160,7 @@ index b5b7de3..a4461a2 100644
        return (width <= XFLOAT_DATA (Vmax_image_size) * w
  	      && height <= XFLOAT_DATA (Vmax_image_size) * h);
      }
-@@ -1848,19 +1977,26 @@ prepare_image_for_display (struct frame *f, struct image *img)
+@@ -1848,19 +1981,26 @@ prepare_image_for_display (struct frame *f, struct image *img)
    /* If IMG doesn't have a pixmap yet, load it now, using the image
       type dependent loader function.  */
    if (img->pixmap == NO_PIXMAP && !img->load_failed_p)
@@ -2181,7 +2190,7 @@ index b5b7de3..a4461a2 100644
  	  cr_put_image_to_cr_data (img);
  	  if (img->cr_data == NULL)
  	    {
-@@ -1870,6 +2006,23 @@ prepare_image_for_display (struct frame *f, struct image *img)
+@@ -1870,6 +2010,23 @@ prepare_image_for_display (struct frame *f, struct image *img)
  	}
        unblock_input ();
      }
@@ -2205,7 +2214,7 @@ index b5b7de3..a4461a2 100644
  #elif defined HAVE_X_WINDOWS || defined HAVE_ANDROID
    if (!img->load_failed_p)
      {
-@@ -1880,12 +2033,12 @@ prepare_image_for_display (struct frame *f, struct image *img)
+@@ -1880,12 +2037,12 @@ prepare_image_for_display (struct frame *f, struct image *img)
  #endif
  }
  
@@ -2220,7 +2229,7 @@ index b5b7de3..a4461a2 100644
  {
    int height;
    int ascent;
-@@ -1903,16 +2056,20 @@ image_ascent (struct image *img, struct face *face, struct glyph_slice *slice)
+@@ -1903,16 +2060,20 @@ image_ascent (struct image *img, struct face *face, struct glyph_slice *slice)
  	{
  #ifdef HAVE_NTGUI
  	  /* W32 specific version.  Why?. ++kfs  */
@@ -2247,7 +2256,7 @@ index b5b7de3..a4461a2 100644
  #endif /* HAVE_NTGUI */
  	}
        else
-@@ -1923,12 +2080,12 @@ image_ascent (struct image *img, struct face *face, struct glyph_slice *slice)
+@@ -1923,12 +2084,12 @@ image_ascent (struct image *img, struct face *face, struct glyph_slice *slice)
  
    return ascent;
  }
@@ -2262,7 +2271,7 @@ index b5b7de3..a4461a2 100644
  
  static RGB_PIXEL_COLOR
  four_corners_best (Emacs_Pix_Context pimg, int *corners,
-@@ -1941,10 +2098,14 @@ four_corners_best (Emacs_Pix_Context pimg, int *corners,
+@@ -1941,10 +2102,14 @@ four_corners_best (Emacs_Pix_Context pimg, int *corners,
    if (corners && corners[BOT_CORNER] >= 0)
      {
        /* Get the colors at the corner_pixels of pimg.  */
@@ -2281,7 +2290,7 @@ index b5b7de3..a4461a2 100644
      }
    else
  
-@@ -1977,10 +2138,12 @@ four_corners_best (Emacs_Pix_Context pimg, int *corners,
+@@ -1977,10 +2142,12 @@ four_corners_best (Emacs_Pix_Context pimg, int *corners,
     W32) to use for the heuristic.  */
  
  RGB_PIXEL_COLOR
@@ -2297,7 +2306,7 @@ index b5b7de3..a4461a2 100644
      {
        bool free_pimg = !pimg;
  #ifdef HAVE_NTGUI
-@@ -1991,7 +2154,8 @@ image_background (struct image *img, struct frame *f, Emacs_Pix_Context pimg)
+@@ -1991,7 +2158,8 @@ image_background (struct image *img, struct frame *f, Emacs_Pix_Context pimg)
  	pimg = image_get_x_image_or_dc (f, img, 0, &prev);
  
        RGB_PIXEL_COLOR bg
@@ -2307,7 +2316,7 @@ index b5b7de3..a4461a2 100644
  #ifdef USE_CAIRO
        {
  	char color_name[30];
-@@ -1999,7 +2163,8 @@ image_background (struct image *img, struct frame *f, Emacs_Pix_Context pimg)
+@@ -1999,7 +2167,8 @@ image_background (struct image *img, struct frame *f, Emacs_Pix_Context pimg)
  		 (unsigned int) RED16_FROM_ULONG (bg),
  		 (unsigned int) GREEN16_FROM_ULONG (bg),
  		 (unsigned int) BLUE16_FROM_ULONG (bg));
@@ -2317,7 +2326,7 @@ index b5b7de3..a4461a2 100644
        }
  #endif
        img->background = bg;
-@@ -2020,10 +2185,11 @@ image_background (struct image *img, struct frame *f, Emacs_Pix_Context pimg)
+@@ -2020,10 +2189,11 @@ image_background (struct image *img, struct frame *f, Emacs_Pix_Context pimg)
  
  int
  image_background_transparent (struct image *img, struct frame *f,
@@ -2332,7 +2341,7 @@ index b5b7de3..a4461a2 100644
      {
        if (img->mask)
  	{
-@@ -2036,7 +2202,9 @@ image_background_transparent (struct image *img, struct frame *f,
+@@ -2036,7 +2206,9 @@ image_background_transparent (struct image *img, struct frame *f,
  	    mask = image_get_x_image_or_dc (f, img, 1, &prev);
  
  	  img->background_transparent
@@ -2343,7 +2352,7 @@ index b5b7de3..a4461a2 100644
  
  	  if (free_mask)
  	    image_unget_x_image_or_dc (img, 1, mask, prev);
-@@ -2061,9 +2229,9 @@ image_background_transparent (struct image *img, struct frame *f,
+@@ -2061,9 +2233,9 @@ image_background_transparent (struct image *img, struct frame *f,
     CLEAR_IMAGE_COLORS means free colors allocated for the image, if
       any.  */
  
@@ -2356,7 +2365,7 @@ index b5b7de3..a4461a2 100644
  
  static void
  image_clear_image_1 (struct frame *f, struct image *img, int flags)
-@@ -2074,10 +2242,12 @@ image_clear_image_1 (struct frame *f, struct image *img, int flags)
+@@ -2074,10 +2246,12 @@ image_clear_image_1 (struct frame *f, struct image *img, int flags)
  	{
  	  FRAME_TERMINAL (f)->free_pixmap (f, img->pixmap);
  	  img->pixmap = NO_PIXMAP;
@@ -2371,7 +2380,7 @@ index b5b7de3..a4461a2 100644
        if (img->ximg)
  	{
  	  image_destroy_x_image (img->ximg);
-@@ -2095,7 +2265,8 @@ image_clear_image_1 (struct frame *f, struct image *img, int flags)
+@@ -2095,7 +2269,8 @@ image_clear_image_1 (struct frame *f, struct image *img, int flags)
  	  img->mask = NO_PIXMAP;
  	  img->background_transparent_valid = 0;
  	}
@@ -2381,7 +2390,7 @@ index b5b7de3..a4461a2 100644
        if (img->mask_img)
  	{
  	  image_destroy_x_image (img->mask_img);
-@@ -2122,7 +2293,16 @@ image_clear_image_1 (struct frame *f, struct image *img, int flags)
+@@ -2122,7 +2297,16 @@ image_clear_image_1 (struct frame *f, struct image *img, int flags)
        cairo_pattern_destroy (img->cr_data);
        img->cr_data = NULL;
      }
@@ -2399,7 +2408,7 @@ index b5b7de3..a4461a2 100644
  }
  
  /* Free X resources of image IMG which is used on frame F.  */
-@@ -2132,13 +2312,11 @@ image_clear_image (struct frame *f, struct image *img)
+@@ -2132,13 +2316,11 @@ image_clear_image (struct frame *f, struct image *img)
  {
    block_input ();
    image_clear_image_1 (f, img,
@@ -2414,7 +2423,7 @@ index b5b7de3..a4461a2 100644
  /* Allocate color COLOR_NAME for image IMG on frame F.  If color
     cannot be allocated, use DFLT.  Add a newly allocated color to
     IMG->colors, so that it can be freed again.  Value is the pixel
-@@ -2146,25 +2324,24 @@ image_clear_image (struct frame *f, struct image *img)
+@@ -2146,25 +2328,24 @@ image_clear_image (struct frame *f, struct image *img)
  
  static unsigned long
  image_alloc_image_color (struct frame *f, struct image *img,
@@ -2448,7 +2457,7 @@ index b5b7de3..a4461a2 100644
        img->colors[ncolors - 1] = color.pixel;
        img->ncolors = ncolors;
        result = color.pixel;
-@@ -2174,12 +2351,10 @@ image_alloc_image_color (struct frame *f, struct image *img,
+@@ -2174,12 +2355,10 @@ image_alloc_image_color (struct frame *f, struct image *img,
  
    return result;
  }
@@ -2463,7 +2472,7 @@ index b5b7de3..a4461a2 100644
  
  static void cache_image (struct frame *f, struct image *img);
  
-@@ -2194,7 +2369,8 @@ make_image_cache (void)
+@@ -2194,7 +2373,8 @@ make_image_cache (void)
    c->size = 50;
    c->used = c->refcount = 0;
    c->images = xmalloc (c->size * sizeof *c->images);
@@ -2473,7 +2482,7 @@ index b5b7de3..a4461a2 100644
    /* This value should never be encountered.  */
    c->scaling_col_width = -1;
    return c;
-@@ -2203,15 +2379,17 @@ make_image_cache (void)
+@@ -2203,15 +2383,17 @@ make_image_cache (void)
  /* Find an image matching SPEC in the cache, and return it.  If no
     image is found, return NULL.  */
  static struct image *
@@ -2495,7 +2504,7 @@ index b5b7de3..a4461a2 100644
  
    /* If the image spec does not specify a background color, the cached
       image must have the same background color as the current frame.
-@@ -2226,18 +2404,18 @@ search_image_cache (struct frame *f, Lisp_Object spec, EMACS_UINT hash,
+@@ -2226,18 +2408,18 @@ search_image_cache (struct frame *f, Lisp_Object spec, EMACS_UINT hash,
       usage is probably negligible in practice, so we don't bother.  */
  
    for (img = c->buckets[i]; img; img = img->next)
@@ -2522,7 +2531,7 @@ index b5b7de3..a4461a2 100644
  /* Filter out image elements that don't affect display, but will
     disrupt finding the image in the cache.  This should perhaps be
     user-configurable, but for now it's hard-coded (but new elements
-@@ -2287,7 +2465,8 @@ uncache_image (struct frame *f, Lisp_Object spec)
+@@ -2287,7 +2469,8 @@ uncache_image (struct frame *f, Lisp_Object spec)
       can have multiple copies of an image with the same spec. We want
       to remove them all to ensure the user doesn't see an old version
       of the image when the face changes.  */
@@ -2532,7 +2541,7 @@ index b5b7de3..a4461a2 100644
      {
        free_image (f, img);
        /* As display glyphs may still be referring to the image ID, we
-@@ -2296,7 +2475,6 @@ uncache_image (struct frame *f, Lisp_Object spec)
+@@ -2296,7 +2479,6 @@ uncache_image (struct frame *f, Lisp_Object spec)
      }
  }
  
@@ -2540,7 +2549,7 @@ index b5b7de3..a4461a2 100644
  /* Free image cache of frame F.  Be aware that X frames share images
     caches.  */
  
-@@ -2306,8 +2484,8 @@ free_image_cache (struct frame *f)
+@@ -2306,8 +2488,8 @@ free_image_cache (struct frame *f)
    struct image_cache *c = FRAME_IMAGE_CACHE (f);
    ptrdiff_t i;
  
@@ -2551,7 +2560,7 @@ index b5b7de3..a4461a2 100644
    eassert (c);
    /* Cache should not be referenced by any frame when freed.  */
    eassert (c->refcount == 0);
-@@ -2322,10 +2500,11 @@ free_image_cache (struct frame *f)
+@@ -2322,10 +2504,11 @@ free_image_cache (struct frame *f)
  /* Clear image cache of frame F.  FILTER=t means free all images.
     FILTER=nil means clear only images that haven't been
     displayed for some time.
@@ -2567,7 +2576,7 @@ index b5b7de3..a4461a2 100644
  
  void
  clear_image_cache (struct frame *f, Lisp_Object filter)
-@@ -2346,8 +2525,9 @@ clear_image_cache (struct frame *f, Lisp_Object filter)
+@@ -2346,8 +2529,9 @@ clear_image_cache (struct frame *f, Lisp_Object filter)
  	  for (i = 0; i < c->used; ++i)
  	    {
  	      struct image *img = c->images[i];
@@ -2579,7 +2588,7 @@ index b5b7de3..a4461a2 100644
  		{
  		  free_image (f, img);
  		  ++nfreed;
-@@ -2395,11 +2575,11 @@ clear_image_cache (struct frame *f, Lisp_Object filter)
+@@ -2395,11 +2579,11 @@ clear_image_cache (struct frame *f, Lisp_Object filter)
  	  Lisp_Object tail, frame;
  
  	  FOR_EACH_FRAME (tail, frame)
@@ -2596,7 +2605,7 @@ index b5b7de3..a4461a2 100644
  
  	  windows_or_buffers_changed = 19;
  	}
-@@ -2417,8 +2597,8 @@ clear_image_caches (Lisp_Object filter)
+@@ -2417,8 +2601,8 @@ clear_image_caches (Lisp_Object filter)
     *   clear_image_cache (t, filter); */
    Lisp_Object tail, frame;
    FOR_EACH_FRAME (tail, frame)
@@ -2607,7 +2616,7 @@ index b5b7de3..a4461a2 100644
  }
  
  DEFUN ("clear-image-cache", Fclear_image_cache, Sclear_image_cache,
-@@ -2433,18 +2613,18 @@ This function also clears the image animation cache.  If
+@@ -2433,18 +2617,18 @@ This function also clears the image animation cache.  If
  ANIMATION-CACHE is non-nil, only the image spec `eq' with
  ANIMATION-CACHE is removed, and other image cache entries are not
  evicted.  */)
@@ -2629,7 +2638,7 @@ index b5b7de3..a4461a2 100644
      clear_image_caches (filter);
    else
      clear_image_cache (decode_window_system_frame (filter), Qt);
-@@ -2528,7 +2708,7 @@ current contents of that file.
+@@ -2528,7 +2712,7 @@ current contents of that file.
  
  FRAME nil or omitted means use the selected frame.
  FRAME t means refresh the image on all frames.  */)
@@ -2638,7 +2647,7 @@ index b5b7de3..a4461a2 100644
  {
    if (!valid_image_p (spec))
      error ("Invalid image specification");
-@@ -2537,11 +2717,11 @@ FRAME t means refresh the image on all frames.  */)
+@@ -2537,11 +2721,11 @@ FRAME t means refresh the image on all frames.  */)
      {
        Lisp_Object tail;
        FOR_EACH_FRAME (tail, frame)
@@ -2655,7 +2664,7 @@ index b5b7de3..a4461a2 100644
      }
    else
      uncache_image (decode_window_system_frame (frame), spec);
-@@ -2549,7 +2729,6 @@ FRAME t means refresh the image on all frames.  */)
+@@ -2549,7 +2733,6 @@ FRAME t means refresh the image on all frames.  */)
    return Qnil;
  }
  
@@ -2663,7 +2672,7 @@ index b5b7de3..a4461a2 100644
  /* Compute masks and transform image IMG on frame F, as specified
     by the image's specification,  */
  
-@@ -2585,11 +2764,11 @@ postprocess_image (struct frame *f, struct image *img)
+@@ -2585,11 +2768,11 @@ postprocess_image (struct frame *f, struct image *img)
  
  	  if (EQ (mask, Qheuristic))
  	    image_build_heuristic_mask (f, img, Qt);
@@ -2678,7 +2687,7 @@ index b5b7de3..a4461a2 100644
  	      else
  		image_build_heuristic_mask (f, img, XCDR (mask));
  	    }
-@@ -2597,7 +2776,6 @@ postprocess_image (struct frame *f, struct image *img)
+@@ -2597,7 +2780,6 @@ postprocess_image (struct frame *f, struct image *img)
  	    image_clear_image_1 (f, img, CLEAR_IMAGE_MASK);
  	}
  
@@ -2686,7 +2695,7 @@ index b5b7de3..a4461a2 100644
        /* Should we apply an image transformation algorithm?  */
        conversion = image_spec_value (spec, QCconversion, NULL);
        if (EQ (conversion, Qdisabled))
-@@ -2612,14 +2790,14 @@ postprocess_image (struct frame *f, struct image *img)
+@@ -2612,14 +2794,14 @@ postprocess_image (struct frame *f, struct image *img)
  	  Lisp_Object tem;
  	  tem = XCDR (conversion);
  	  if (CONSP (tem))
@@ -2705,7 +2714,7 @@ index b5b7de3..a4461a2 100644
  /* Scale an image size by returning SIZE / DIVISOR * MULTIPLIER,
     safely rounded and clipped to int range.  */
  
-@@ -2631,7 +2809,8 @@ scale_image_size (int size, double divisor, double multiplier)
+@@ -2631,7 +2813,8 @@ scale_image_size (int size, double divisor, double multiplier)
        double scaled = size * multiplier / divisor;
        if (scaled < INT_MAX)
  	{
@@ -2715,7 +2724,7 @@ index b5b7de3..a4461a2 100644
  	  return ceil (scaled);
  	}
      }
-@@ -2658,27 +2837,26 @@ image_get_dimension (struct image *img, Lisp_Object symbol)
+@@ -2658,27 +2841,26 @@ image_get_dimension (struct image *img, Lisp_Object symbol)
        Lisp_Object dim = CDR (value);
  
        if (EQ (Qem, dim))
@@ -2754,7 +2763,7 @@ index b5b7de3..a4461a2 100644
  {
    double scale = 1;
    Lisp_Object value = image_spec_value (img->spec, QCscale, NULL);
-@@ -2693,11 +2871,12 @@ compute_image_size (struct frame *f, double width, double height,
+@@ -2693,11 +2875,12 @@ compute_image_size (struct frame *f, double width, double height,
      invalid_value:
        if (EQ (sval, Qauto))
  	{
@@ -2770,7 +2779,7 @@ index b5b7de3..a4461a2 100644
  	}
        else if (NUMBERP (sval))
  	scale = XFLOATINT (sval);
-@@ -2706,8 +2885,8 @@ compute_image_size (struct frame *f, double width, double height,
+@@ -2706,8 +2889,8 @@ compute_image_size (struct frame *f, double width, double height,
  	  image_error ("Invalid `image-scaling-factor': %s",
  		       Vimage_scaling_factor);
  
@@ -2781,7 +2790,7 @@ index b5b7de3..a4461a2 100644
  	  sval = Qauto;
  	  goto invalid_value;
  	}
-@@ -2733,7 +2912,8 @@ compute_image_size (struct frame *f, double width, double height,
+@@ -2733,7 +2916,8 @@ compute_image_size (struct frame *f, double width, double height,
        max_width = -1;
      }
  
@@ -2791,7 +2800,7 @@ index b5b7de3..a4461a2 100644
    if (desired_height < 0)
      max_height = image_get_dimension (img, QCmax_height);
    else
-@@ -2764,17 +2944,19 @@ compute_image_size (struct frame *f, double width, double height,
+@@ -2764,17 +2948,19 @@ compute_image_size (struct frame *f, double width, double height,
      {
        /* The image is wider than :max-width. */
        desired_width = max_width;
@@ -2814,7 +2823,7 @@ index b5b7de3..a4461a2 100644
    *d_width = desired_width;
    *d_height = desired_height;
  }
-@@ -2859,10 +3041,14 @@ compute_image_size (struct frame *f, double width, double height,
+@@ -2859,10 +3045,14 @@ compute_image_size (struct frame *f, double width, double height,
     It's possible to pre-calculate the matrix multiplications and just
     generate one transform matrix that will do everything we need in a
     single step, but the maths for each element is much more complex
@@ -2830,7 +2839,7 @@ index b5b7de3..a4461a2 100644
  static void
  matrix3x3_mult (matrix3x3 a, matrix3x3 b, matrix3x3 result)
  {
-@@ -2875,15 +3061,17 @@ matrix3x3_mult (matrix3x3 a, matrix3x3 b, matrix3x3 result)
+@@ -2875,15 +3065,17 @@ matrix3x3_mult (matrix3x3 a, matrix3x3 b, matrix3x3 result)
  	result[i][j] = sum;
        }
  }
@@ -2850,7 +2859,7 @@ index b5b7de3..a4461a2 100644
      {
        image_error ("Invalid image `:rotation' parameter");
        return;
-@@ -2896,7 +3084,7 @@ compute_image_rotation (struct image *img, double *rotation)
+@@ -2896,7 +3088,7 @@ compute_image_rotation (struct image *img, double *rotation)
      *rotation = XFIXNUM (reduced_angle);
  }
  
@@ -2859,7 +2868,7 @@ index b5b7de3..a4461a2 100644
  
  static void
  matrix_identity (matrix3x3 matrix)
-@@ -2984,14 +3172,14 @@ matrix_translate (matrix3x3 transform, float tx, float ty)
+@@ -2984,14 +3176,14 @@ matrix_translate (matrix3x3 transform, float tx, float ty)
    matrix3x3_mult (copy, temp, transform);
  }
  
@@ -2876,7 +2885,7 @@ index b5b7de3..a4461a2 100644
    matrix3x3 identity = {
      { 1, 0, 0 },
      { 0, 1, 0 },
-@@ -3003,15 +3191,15 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3003,15 +3195,15 @@ image_set_transform (struct frame *f, struct image *img)
    img->use_bilinear_filtering = false;
  
    memcpy (&img->transform, identity, sizeof identity);
@@ -2895,7 +2904,7 @@ index b5b7de3..a4461a2 100644
  
  # if (defined HAVE_IMAGEMAGICK \
        && !defined DONT_CREATE_TRANSFORMED_IMAGEMAGICK_IMAGE)
-@@ -3032,7 +3220,7 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3032,7 +3224,7 @@ image_set_transform (struct frame *f, struct image *img)
    /* Determine size.  */
    int width, height;
  
@@ -2904,7 +2913,7 @@ index b5b7de3..a4461a2 100644
    /* SVGs are pre-scaled to the correct size.  */
    if (EQ (image_spec_value (img->spec, QCtype, NULL), Qsvg))
      {
-@@ -3040,7 +3228,7 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3040,7 +3232,7 @@ image_set_transform (struct frame *f, struct image *img)
        height = img->height / FRAME_SCALE_FACTOR (f);
      }
    else
@@ -2913,7 +2922,7 @@ index b5b7de3..a4461a2 100644
      compute_image_size (f, img->width, img->height, img, &width,
  			&height);
  
-@@ -3051,43 +3239,51 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3051,43 +3243,51 @@ image_set_transform (struct frame *f, struct image *img)
    /* Determine flipping.  */
    flip = !NILP (image_spec_value (img->spec, QCflip, NULL));
  
@@ -2984,7 +2993,7 @@ index b5b7de3..a4461a2 100644
    img->width = width;
    img->height = height;
  
-@@ -3097,21 +3293,21 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3097,21 +3297,21 @@ image_set_transform (struct frame *f, struct image *img)
  
    /* Haiku needs this, since the transformation is done on the basis
       of the view, and not the image.  */
@@ -3012,7 +3021,7 @@ index b5b7de3..a4461a2 100644
        int cos_r, sin_r;
        if (rotation == 0)
  	{
-@@ -3124,10 +3320,10 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3124,10 +3324,10 @@ image_set_transform (struct frame *f, struct image *img)
  	  sin_r = 0;
  	  rotate_flag = 1;
  
@@ -3025,7 +3034,7 @@ index b5b7de3..a4461a2 100644
  	}
        else if (rotation == 90)
  	{
-@@ -3137,11 +3333,11 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3137,11 +3337,11 @@ image_set_transform (struct frame *f, struct image *img)
  	  sin_r = 1;
  	  rotate_flag = 1;
  
@@ -3039,7 +3048,7 @@ index b5b7de3..a4461a2 100644
  	}
        else if (rotation == 180)
  	{
-@@ -3149,11 +3345,11 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3149,11 +3349,11 @@ image_set_transform (struct frame *f, struct image *img)
  	  sin_r = 0;
  	  rotate_flag = 1;
  
@@ -3053,7 +3062,7 @@ index b5b7de3..a4461a2 100644
  	}
        else if (rotation == 270)
  	{
-@@ -3163,29 +3359,33 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3163,29 +3363,33 @@ image_set_transform (struct frame *f, struct image *img)
  	  sin_r = -1;
  	  rotate_flag = 1;
  
@@ -3097,7 +3106,7 @@ index b5b7de3..a4461a2 100644
  	  matrix3x3 v;
  	  matrix3x3_mult (rot, u, v);
  
-@@ -3198,42 +3398,46 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3198,42 +3402,46 @@ image_set_transform (struct frame *f, struct image *img)
  	      t[2][0] = -t[2][0];
  	    }
  	  matrix3x3_mult (t, v, matrix);
@@ -3160,7 +3169,7 @@ index b5b7de3..a4461a2 100644
  	{
  	  rotate_flag = 0;
  	  goto bail;
-@@ -3308,54 +3512,79 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3308,54 +3516,79 @@ image_set_transform (struct frame *f, struct image *img)
  	  img->height = width;
  	  img->width = height;
  	}
@@ -3266,7 +3275,7 @@ index b5b7de3..a4461a2 100644
      }
  # elif defined HAVE_NTGUI
    /* Store the transform matrix for application at draw time.  */
-@@ -3363,8 +3592,8 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3363,8 +3596,8 @@ image_set_transform (struct frame *f, struct image *img)
    img->xform.eM12 = matrix[0][1];
    img->xform.eM21 = matrix[1][0];
    img->xform.eM22 = matrix[1][1];
@@ -3277,7 +3286,7 @@ index b5b7de3..a4461a2 100644
  # elif defined HAVE_HAIKU
    /* Store the transform in the struct image for later.  */
    memcpy (&img->transform, &matrix, sizeof matrix);
-@@ -3391,15 +3620,13 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3391,15 +3624,13 @@ image_set_transform (struct frame *f, struct image *img)
    image = image_get_x_image (f, img, false);
  
    /* Make the transformed image.  */
@@ -3298,7 +3307,7 @@ index b5b7de3..a4461a2 100644
  
    /* Do the transform.  */
    transform.m1 = matrix[0][0];
-@@ -3425,7 +3652,7 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3425,7 +3656,7 @@ image_set_transform (struct frame *f, struct image *img)
  
    img->ximg = transformed_image;
  
@@ -3307,7 +3316,7 @@ index b5b7de3..a4461a2 100644
    /* Then replace the pixmap.  */
    android_free_pixmap (img->pixmap);
  
-@@ -3434,9 +3661,9 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3434,9 +3665,9 @@ image_set_transform (struct frame *f, struct image *img)
    img->pixmap = android_create_pixmap (img->width, img->height,
  				       transformed_image->depth);
    android_put_image (img->pixmap, transformed_image);
@@ -3319,7 +3328,7 @@ index b5b7de3..a4461a2 100644
  
    /* Now, transform the mask.  The mask should be depth 1, and is
       always transformed using a nearest neighbor filter.  */
-@@ -3444,9 +3671,9 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3444,9 +3675,9 @@ image_set_transform (struct frame *f, struct image *img)
    if (img->mask_img || img->mask)
      {
        image = image_get_x_image (f, img, true);
@@ -3332,7 +3341,7 @@ index b5b7de3..a4461a2 100644
        transformed_image->data
  	= xmalloc (transformed_image->bytes_per_line
  		   * transformed_image->height);
-@@ -3461,24 +3688,25 @@ image_set_transform (struct frame *f, struct image *img)
+@@ -3461,24 +3692,25 @@ image_set_transform (struct frame *f, struct image *img)
  
        img->mask_img = transformed_image;
  
@@ -3363,7 +3372,7 @@ index b5b7de3..a4461a2 100644
  
  ptrdiff_t
  lookup_image (struct frame *f, Lisp_Object spec, int face_id)
-@@ -3527,7 +3755,7 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
+@@ -3527,7 +3759,7 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
        img->face_font_width = face->font->average_width;
        img->face_font_family = xmalloc (strlen (font_family) + 1);
        strcpy (img->face_font_family, font_family);
@@ -3372,7 +3381,7 @@ index b5b7de3..a4461a2 100644
  
        /* If we can't load the image, and we don't have a width and
  	 height, use some arbitrary width and height so that we can
-@@ -3537,11 +3765,11 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
+@@ -3537,11 +3769,11 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
  	  Lisp_Object value;
  
  	  value = image_spec_value (spec, QCwidth, NULL);
@@ -3388,7 +3397,7 @@ index b5b7de3..a4461a2 100644
  	}
        else
  	{
-@@ -3568,34 +3796,36 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
+@@ -3568,34 +3800,36 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
  
  	  relief = image_spec_value (spec, QCrelief, NULL);
  	  relief_bound = INT_MAX - max (img->hmargin, img->vmargin);
@@ -3433,7 +3442,7 @@ index b5b7de3..a4461a2 100644
  #endif
  	}
  
-@@ -3610,7 +3840,6 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
+@@ -3610,7 +3844,6 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
    return img->id;
  }
  
@@ -3441,7 +3450,7 @@ index b5b7de3..a4461a2 100644
  /* Cache image IMG in the image cache of frame F.  */
  
  static void
-@@ -3632,7 +3861,8 @@ cache_image (struct frame *f, struct image *img)
+@@ -3632,7 +3865,8 @@ cache_image (struct frame *f, struct image *img)
  
    /* If no free slot found, maybe enlarge c->images.  */
    if (i == c->used && c->used == c->size)
@@ -3451,7 +3460,7 @@ index b5b7de3..a4461a2 100644
  
    /* Add IMG to c->images, and assign IMG an id.  */
    c->images[i] = img;
-@@ -3649,8 +3879,7 @@ cache_image (struct frame *f, struct image *img)
+@@ -3649,8 +3883,7 @@ cache_image (struct frame *f, struct image *img)
    c->buckets[i] = img;
  }
  
@@ -3461,7 +3470,7 @@ index b5b7de3..a4461a2 100644
  
  /* To speed animations up, we keep a cache (based on EQ-ness of the
     image spec/object) where we put the animator iterator.  */
-@@ -3658,7 +3887,8 @@ cache_image (struct frame *f, struct image *img)
+@@ -3658,7 +3891,8 @@ cache_image (struct frame *f, struct image *img)
  struct anim_cache
  {
    Lisp_Object spec;
@@ -3471,7 +3480,7 @@ index b5b7de3..a4461a2 100644
    void *handle;
    /* If we need to maintain temporary data of some sort.  */
    void *temp;
-@@ -3698,14 +3928,15 @@ static void
+@@ -3698,14 +3932,15 @@ static void
  anim_prune_animation_cache (Lisp_Object clear)
  {
    struct anim_cache **pcache = &anim_cache;
@@ -3490,7 +3499,7 @@ index b5b7de3..a4461a2 100644
  	  || EQ (clear, cache->spec))
  	{
  	  if (cache->handle)
-@@ -3731,11 +3962,11 @@ anim_get_animation_cache (Lisp_Object spec)
+@@ -3731,11 +3966,11 @@ anim_get_animation_cache (Lisp_Object spec)
    while (1)
      {
        cache = *pcache;
@@ -3506,7 +3515,7 @@ index b5b7de3..a4461a2 100644
        if (EQ (spec, cache->spec))
  	break;
        pcache = &cache->next;
-@@ -3745,7 +3976,7 @@ anim_get_animation_cache (Lisp_Object spec)
+@@ -3745,7 +3980,7 @@ anim_get_animation_cache (Lisp_Object spec)
    return cache;
  }
  
@@ -3515,7 +3524,7 @@ index b5b7de3..a4461a2 100644
  
  /* Call FN on every image in the image cache of frame F.  Used to mark
     Lisp Objects in the image cache.  */
-@@ -3762,7 +3993,6 @@ mark_image (struct image *img)
+@@ -3762,7 +3997,6 @@ mark_image (struct image *img)
      mark_object (img->lisp_data);
  }
  
@@ -3523,7 +3532,7 @@ index b5b7de3..a4461a2 100644
  void
  mark_image_cache (struct image_cache *c)
  {
-@@ -3775,18 +4005,17 @@ mark_image_cache (struct image_cache *c)
+@@ -3775,18 +4009,17 @@ mark_image_cache (struct image_cache *c)
      }
  
  #if defined HAVE_WEBP || defined HAVE_GIF
@@ -3548,7 +3557,7 @@ index b5b7de3..a4461a2 100644
  
  #if defined HAVE_X_WINDOWS || defined HAVE_ANDROID
  
-@@ -3799,17 +4028,18 @@ x_check_image_size (XImage *ximg, int width, int height)
+@@ -3799,17 +4032,18 @@ x_check_image_size (XImage *ximg, int width, int height)
    enum
    {
      XLIB_BYTES_MAX = min (INT_MAX, UINT_MAX),
@@ -3571,7 +3580,7 @@ index b5b7de3..a4461a2 100644
        depth = ximg->depth;
        bytes_per_line = ximg->bytes_per_line;
      }
-@@ -3824,38 +4054,41 @@ x_check_image_size (XImage *ximg, int width, int height)
+@@ -3824,38 +4058,41 @@ x_check_image_size (XImage *ximg, int width, int height)
  }
  
  static bool
@@ -3626,7 +3635,7 @@ index b5b7de3..a4461a2 100644
        return 0;
      }
  
-@@ -3863,15 +4096,15 @@ x_create_x_image_and_pixmap (struct frame *f, int width, int height, int depth,
+@@ -3863,15 +4100,15 @@ x_create_x_image_and_pixmap (struct frame *f, int width, int height, int depth,
    (*ximg)->data = xmalloc ((*ximg)->bytes_per_line * height);
  
    /* Allocate a pixmap of the same size.  */
@@ -3648,7 +3657,7 @@ index b5b7de3..a4461a2 100644
    if (*pixmap == NO_PIXMAP)
      {
        x_destroy_x_image (*ximg);
-@@ -3892,17 +4125,18 @@ x_destroy_x_image (XImage *ximg)
+@@ -3892,17 +4129,18 @@ x_destroy_x_image (XImage *ximg)
        ximg->data = NULL;
      }
  
@@ -3671,7 +3680,7 @@ index b5b7de3..a4461a2 100644
  {
    Picture p;
    Display *display = FRAME_X_DISPLAY (f);
-@@ -3911,38 +4145,45 @@ x_create_xrender_picture (struct frame *f, Emacs_Pixmap pixmap, int depth)
+@@ -3911,38 +4149,45 @@ x_create_xrender_picture (struct frame *f, Emacs_Pixmap pixmap, int depth)
      {
        if (depth <= 0)
  	depth = FRAME_DISPLAY_INFO (f)->n_planes;
@@ -3748,7 +3757,7 @@ index b5b7de3..a4461a2 100644
      }
    else
      {
-@@ -3961,13 +4202,16 @@ x_create_xrender_picture (struct frame *f, Emacs_Pixmap pixmap, int depth)
+@@ -3961,13 +4206,16 @@ x_create_xrender_picture (struct frame *f, Emacs_Pixmap pixmap, int depth)
     If XIMG is null, assume it is a bitmap.  */
  
  static bool
@@ -3769,7 +3778,7 @@ index b5b7de3..a4461a2 100644
    return 1;
  #endif
  }
-@@ -3983,11 +4227,13 @@ image_check_image_size (Emacs_Pix_Container ximg, int width, int height)
+@@ -3983,11 +4231,13 @@ image_check_image_size (Emacs_Pix_Container ximg, int width, int height)
     should indicate the bit depth of the image.  */
  
  static bool
@@ -3787,7 +3796,7 @@ index b5b7de3..a4461a2 100644
    eassert (input_blocked_p ());
  
    /* Allocate a pixmap of the same size.  */
-@@ -4002,7 +4248,8 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
+@@ -4002,7 +4252,8 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
    *pimg = *pixmap;
    return 1;
  #elif defined HAVE_X_WINDOWS || defined HAVE_ANDROID
@@ -3797,7 +3806,7 @@ index b5b7de3..a4461a2 100644
      return 0;
  # ifdef HAVE_XRENDER
    if (picture)
-@@ -4047,8 +4294,8 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
+@@ -4047,8 +4298,8 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
    if (depth == 0)
      depth = 24;
  
@@ -3808,7 +3817,7 @@ index b5b7de3..a4461a2 100644
      {
        image_error ("Invalid image bit depth specified");
        return 0;
-@@ -4065,13 +4312,15 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
+@@ -4065,13 +4316,15 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
    if (depth < 16)
      palette_colors = 1 << (depth - 1);
  
@@ -3826,7 +3835,7 @@ index b5b7de3..a4461a2 100644
    header->biPlanes = 1;
    header->biBitCount = depth;
    header->biCompression = BI_RGB;
-@@ -4087,17 +4336,17 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
+@@ -4087,17 +4340,17 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
        /* bmiColors is a variable-length array declared by w32api
  	 headers as bmiColors[1], which triggers a warning under
  	 -Warray-bounds; shut that up.  */
@@ -3851,7 +3860,7 @@ index b5b7de3..a4461a2 100644
      }
  
    hdc = get_frame_dc (f);
-@@ -4105,7 +4354,8 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
+@@ -4105,7 +4358,8 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
    /* Create a DIBSection and raster array for the bitmap,
       and store its handle in *pixmap.  */
    *pixmap = CreateDIBSection (hdc, &(*pimg)->info,
@@ -3861,7 +3870,7 @@ index b5b7de3..a4461a2 100644
  			      /* casting avoids a GCC warning */
  			      (void **) &(*pimg)->data, NULL, 0);
  
-@@ -4141,42 +4391,44 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
+@@ -4141,42 +4395,44 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
  #endif
  }
  
@@ -3919,7 +3928,7 @@ index b5b7de3..a4461a2 100644
    eassert (pimg == pixmap);
  #elif defined HAVE_X_WINDOWS
    GC gc;
-@@ -4184,20 +4436,21 @@ gui_put_x_image (struct frame *f, Emacs_Pix_Container pimg,
+@@ -4184,20 +4440,21 @@ gui_put_x_image (struct frame *f, Emacs_Pix_Container pimg,
    eassert (input_blocked_p ());
    gc = XCreateGC (FRAME_X_DISPLAY (f), pixmap, 0, NULL);
    XPutImage (FRAME_X_DISPLAY (f), pixmap, gc, pimg, 0, 0, 0, 0,
@@ -3945,7 +3954,7 @@ index b5b7de3..a4461a2 100644
  {
    eassert ((!mask_p ? img->pixmap : img->mask) == NO_PIXMAP);
  
-@@ -4205,22 +4458,25 @@ image_create_x_image_and_pixmap (struct frame *f, struct image *img,
+@@ -4205,22 +4462,25 @@ image_create_x_image_and_pixmap (struct frame *f, struct image *img,
  #if !defined USE_CAIRO && defined HAVE_XRENDER
    picture = !mask_p ? &img->picture : &img->mask_picture;
  #endif
@@ -3982,7 +3991,7 @@ index b5b7de3..a4461a2 100644
    if (!mask_p)
      {
        eassert (img->ximg == NULL);
-@@ -4233,12 +4489,13 @@ image_put_x_image (struct frame *f, struct image *img, Emacs_Pix_Container ximg,
+@@ -4233,12 +4493,13 @@ image_put_x_image (struct frame *f, struct image *img, Emacs_Pix_Container ximg,
      }
  #else
    gui_put_x_image (f, ximg, !mask_p ? img->pixmap : img->mask,
@@ -3998,7 +4007,7 @@ index b5b7de3..a4461a2 100644
  /* Put the X images recorded in IMG on frame F into pixmaps, then free
     the X images and their buffers.  */
  
-@@ -4247,13 +4504,15 @@ image_sync_to_pixmaps (struct frame *f, struct image *img)
+@@ -4247,13 +4508,15 @@ image_sync_to_pixmaps (struct frame *f, struct image *img)
  {
    if (img->ximg)
      {
@@ -4016,7 +4025,7 @@ index b5b7de3..a4461a2 100644
        image_destroy_x_image (img->mask_img);
        img->mask_img = NULL;
      }
-@@ -4266,8 +4525,8 @@ image_sync_to_pixmaps (struct frame *f, struct image *img)
+@@ -4266,8 +4529,8 @@ image_sync_to_pixmaps (struct frame *f, struct image *img)
     image_unget_x_image_or_dc.  */
  
  static HDC
@@ -4027,7 +4036,7 @@ index b5b7de3..a4461a2 100644
  {
    HDC frame_dc = get_frame_dc (f);
    HDC ximg = CreateCompatibleDC (frame_dc);
-@@ -4279,74 +4538,77 @@ image_get_x_image_or_dc (struct frame *f, struct image *img, bool mask_p,
+@@ -4279,74 +4542,77 @@ image_get_x_image_or_dc (struct frame *f, struct image *img, bool mask_p,
  }
  
  static void
@@ -4133,7 +4142,7 @@ index b5b7de3..a4461a2 100644
  
  /* Find image file FILE.  Look in data-directory/images, then
     x-bitmap-file-path.  Value is the full name of the file
-@@ -4362,12 +4624,13 @@ image_find_image_fd (Lisp_Object file, image_fd *pfd)
+@@ -4362,12 +4628,13 @@ image_find_image_fd (Lisp_Object file, image_fd *pfd)
    void *platform;
  
    /* TODO I think this should use something like image-load-path
@@ -4149,7 +4158,7 @@ index b5b7de3..a4461a2 100644
    platform = NULL;
    fd = openp (search_path, file, Qnil, &file_found,
  	      pfd ? Qt : make_fixnum (R_OK), false, false,
-@@ -4440,8 +4703,8 @@ slurp_file (image_fd fd, ptrdiff_t *size)
+@@ -4440,8 +4707,8 @@ slurp_file (image_fd fd, ptrdiff_t *size)
        specpdl_ref count = SPECPDL_INDEX ();
        record_unwind_protect_ptr (fclose_unwind, fp);
  
@@ -4160,7 +4169,7 @@ index b5b7de3..a4461a2 100644
  	{
  	  /* Report an error if we read past the purported EOF.
  	     This can happen if the file grows as we read it.  */
-@@ -4474,8 +4737,7 @@ slurp_file (image_fd fd, ptrdiff_t *size)
+@@ -4474,8 +4741,7 @@ slurp_file (image_fd fd, ptrdiff_t *size)
        /* Read one byte past the end of the file.  That allows
  	 detecting if the file grows as it is being read.  */
  
@@ -4170,7 +4179,7 @@ index b5b7de3..a4461a2 100644
  	*size = st.st_size;
        else
  	{
-@@ -4500,7 +4762,8 @@ slurp_file (image_fd fd, ptrdiff_t *size)
+@@ -4500,7 +4766,8 @@ slurp_file (image_fd fd, ptrdiff_t *size)
     IMAGE_TYPE describes the image type (e.g. "PNG").  */
  
  static char *
@@ -4180,7 +4189,7 @@ index b5b7de3..a4461a2 100644
  {
    image_fd fd;
    Lisp_Object file = image_find_image_fd (filename, &fd);
-@@ -4512,19 +4775,16 @@ slurp_image (Lisp_Object filename, ptrdiff_t *size, const char *image_type)
+@@ -4512,19 +4779,16 @@ slurp_image (Lisp_Object filename, ptrdiff_t *size, const char *image_type)
    char *result = slurp_file (fd, size);
    if (result == NULL)
      image_error ("Error loading %s image `%s'",
@@ -4203,7 +4212,7 @@ index b5b7de3..a4461a2 100644
  /* Indices of image specification fields in xbm_format, below.  */
  
  enum xbm_keyword_index
-@@ -4551,25 +4811,23 @@ enum xbm_keyword_index
+@@ -4551,25 +4815,23 @@ enum xbm_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid XBM image specifications.  */
  
@@ -4246,7 +4255,7 @@ index b5b7de3..a4461a2 100644
  
  /* Tokens returned from xbm_scan.  */
  
-@@ -4580,7 +4838,6 @@ enum xbm_token
+@@ -4580,7 +4842,6 @@ enum xbm_token
    XBM_TK_OVERFLOW
  };
  
@@ -4254,7 +4263,7 @@ index b5b7de3..a4461a2 100644
  /* Return true if OBJECT is a valid XBM-type image specification.
     A valid specification is a list starting with the symbol `image'
     The rest of the list is a property list which must contain an
-@@ -4590,8 +4847,8 @@ enum xbm_token
+@@ -4590,8 +4851,8 @@ enum xbm_token
     an entry `:file FILENAME' where FILENAME is a string.
  
     If the specification is for a bitmap loaded from memory it must
@@ -4265,7 +4274,7 @@ index b5b7de3..a4461a2 100644
  
     1. a string large enough to hold the bitmap data, i.e. it must
     have a size >= (WIDTH + 7) / 8 * HEIGHT
-@@ -4635,9 +4892,9 @@ xbm_image_p (Lisp_Object object)
+@@ -4635,9 +4896,9 @@ xbm_image_p (Lisp_Object object)
        Lisp_Object data;
        int width, height, stride;
  
@@ -4278,7 +4287,7 @@ index b5b7de3..a4461a2 100644
  	  || !kw[XBM_DATA].count)
  	return 0;
  
-@@ -4687,8 +4944,9 @@ xbm_image_p (Lisp_Object object)
+@@ -4687,8 +4948,9 @@ xbm_image_p (Lisp_Object object)
  	}
        else if (BOOL_VECTOR_P (data))
  	{
@@ -4290,7 +4299,7 @@ index b5b7de3..a4461a2 100644
  	    return 0;
  
  	  if (bool_vector_size (data) / height < stride)
-@@ -4701,7 +4959,6 @@ xbm_image_p (Lisp_Object object)
+@@ -4701,7 +4963,6 @@ xbm_image_p (Lisp_Object object)
    return 1;
  }
  
@@ -4298,7 +4307,7 @@ index b5b7de3..a4461a2 100644
  /* Scan a bitmap file.  FP is the stream to read from.  Value is
     either an enumerator from enum xbm_token, or a character for a
     single-character token, or 0 at end of file.  If scanning an
-@@ -4714,7 +4971,7 @@ xbm_scan (char **s, char *end, char *sval, int *ival)
+@@ -4714,7 +4975,7 @@ xbm_scan (char **s, char *end, char *sval, int *ival)
    unsigned char c UNINIT;
    char *sval_end = sval + BUFSIZ;
  
@@ -4307,7 +4316,7 @@ index b5b7de3..a4461a2 100644
  
    /* Skip white space.  */
    while (*s < end && (c = *(*s)++, c_isspace (c)))
-@@ -4745,8 +5002,7 @@ xbm_scan (char **s, char *end, char *sval, int *ival)
+@@ -4745,8 +5006,7 @@ xbm_scan (char **s, char *end, char *sval, int *ival)
  	  else if ('0' <= c && c <= '7')
  	    {
  	      value = c - '0';
@@ -4317,7 +4326,7 @@ index b5b7de3..a4461a2 100644
  		{
  		  overflow |= ckd_mul (&value, value, 8);
  		  value += c - '0';
-@@ -4756,8 +5012,7 @@ xbm_scan (char **s, char *end, char *sval, int *ival)
+@@ -4756,8 +5016,7 @@ xbm_scan (char **s, char *end, char *sval, int *ival)
        else
  	{
  	  value = c - '0';
@@ -4327,7 +4336,7 @@ index b5b7de3..a4461a2 100644
  	    {
  	      overflow |= ckd_mul (&value, value, 10);
  	      overflow |= ckd_add (&value, value, c - '0');
-@@ -4845,27 +5100,27 @@ static HBITMAP
+@@ -4845,27 +5104,27 @@ static HBITMAP
  w32_create_pixmap_from_bitmap_data (int width, int height, char *data)
  {
    static unsigned char swap_nibble[16]
@@ -4363,7 +4372,7 @@ index b5b7de3..a4461a2 100644
  	}
      }
    bmp = CreateBitmap (width, height, 1, 1, (char *) bits);
-@@ -4891,8 +5146,8 @@ convert_mono_to_color_image (struct frame *f, struct image *img,
+@@ -4891,8 +5150,8 @@ convert_mono_to_color_image (struct frame *f, struct image *img,
    SetTextColor (new_img_dc, foreground);
    SetBkColor (new_img_dc, background);
  
@@ -4374,7 +4383,7 @@ index b5b7de3..a4461a2 100644
  
    SelectObject (old_img_dc, old_prev);
    SelectObject (new_img_dc, new_prev);
-@@ -4907,27 +5162,27 @@ convert_mono_to_color_image (struct frame *f, struct image *img,
+@@ -4907,27 +5166,27 @@ convert_mono_to_color_image (struct frame *f, struct image *img,
  
  #endif /* HAVE_NTGUI */
  
@@ -4412,7 +4421,7 @@ index b5b7de3..a4461a2 100644
  				   FRAME_DISPLAY_INFO (f)->n_planes);
  # if !defined USE_CAIRO && defined HAVE_XRENDER
    if (img->pixmap)
-@@ -4935,23 +5190,27 @@ Create_Pixmap_From_Bitmap_Data (struct frame *f, struct image *img, char *data,
+@@ -4935,23 +5194,27 @@ Create_Pixmap_From_Bitmap_Data (struct frame *f, struct image *img, char *data,
  # endif
  
  #elif defined HAVE_ANDROID
@@ -4449,7 +4458,7 @@ index b5b7de3..a4461a2 100644
  #elif defined HAVE_HAIKU
    img->pixmap = BBitmap_new (img->width, img->height, 0);
  
-@@ -4970,8 +5229,6 @@ Create_Pixmap_From_Bitmap_Data (struct frame *f, struct image *img, char *data,
+@@ -4970,8 +5233,6 @@ Create_Pixmap_From_Bitmap_Data (struct frame *f, struct image *img, char *data,
  #endif
  }
  
@@ -4458,7 +4467,7 @@ index b5b7de3..a4461a2 100644
  /* Replacement for XReadBitmapFileData which isn't available under old
     X versions.  CONTENTS is a pointer to a buffer to parse; END is the
     buffer's end.  Set *WIDTH and *HEIGHT to the width and height of
-@@ -4995,23 +5252,22 @@ xbm_read_bitmap_data (struct frame *f, char *contents, char *end,
+@@ -4995,23 +5256,22 @@ xbm_read_bitmap_data (struct frame *f, char *contents, char *end,
    int value;
    int LA1;
  
@@ -4495,7 +4504,7 @@ index b5b7de3..a4461a2 100644
  
    *width = *height = -1;
    if (data)
-@@ -5076,11 +5332,11 @@ xbm_read_bitmap_data (struct frame *f, char *contents, char *end,
+@@ -5076,11 +5336,11 @@ xbm_read_bitmap_data (struct frame *f, char *contents, char *end,
    expect ('=');
    expect ('{');
  
@@ -4510,7 +4519,7 @@ index b5b7de3..a4461a2 100644
        goto failure;
      }
    bytes_per_line = (*width + 7) / 8 + padding_p;
-@@ -5120,10 +5376,10 @@ xbm_read_bitmap_data (struct frame *f, char *contents, char *end,
+@@ -5120,10 +5380,10 @@ xbm_read_bitmap_data (struct frame *f, char *contents, char *end,
  	}
      }
  
@@ -4523,7 +4532,7 @@ index b5b7de3..a4461a2 100644
  
    if (data && *data)
      {
-@@ -5137,20 +5393,20 @@ xbm_read_bitmap_data (struct frame *f, char *contents, char *end,
+@@ -5137,20 +5397,20 @@ xbm_read_bitmap_data (struct frame *f, char *contents, char *end,
  #undef expect_ident
  }
  
@@ -4548,7 +4557,7 @@ index b5b7de3..a4461a2 100644
  
    if (rc)
      {
-@@ -5161,25 +5417,28 @@ xbm_load_image (struct frame *f, struct image *img, char *contents, char *end)
+@@ -5161,25 +5421,28 @@ xbm_load_image (struct frame *f, struct image *img, char *contents, char *end)
  
        eassert (img->width > 0 && img->height > 0);
  
@@ -4582,7 +4591,7 @@ index b5b7de3..a4461a2 100644
  					non_default_colors);
        else
  	img->pixmap = NO_PIXMAP;
-@@ -5188,7 +5447,8 @@ xbm_load_image (struct frame *f, struct image *img, char *contents, char *end)
+@@ -5188,7 +5451,8 @@ xbm_load_image (struct frame *f, struct image *img, char *contents, char *end)
        if (img->pixmap == NO_PIXMAP)
  	{
  	  image_clear_image (f, img);
@@ -4592,7 +4601,7 @@ index b5b7de3..a4461a2 100644
  	}
        else
  	success_p = 1;
-@@ -5199,7 +5459,6 @@ xbm_load_image (struct frame *f, struct image *img, char *contents, char *end)
+@@ -5199,7 +5463,6 @@ xbm_load_image (struct frame *f, struct image *img, char *contents, char *end)
    return success_p;
  }
  
@@ -4600,7 +4609,7 @@ index b5b7de3..a4461a2 100644
  /* Value is true if DATA looks like an in-memory XBM file.  */
  
  static bool
-@@ -5208,11 +5467,10 @@ xbm_file_p (Lisp_Object data)
+@@ -5208,11 +5471,10 @@ xbm_file_p (Lisp_Object data)
    int w, h;
    return (STRINGP (data)
  	  && xbm_read_bitmap_data (NULL, SSDATA (data),
@@ -4614,7 +4623,7 @@ index b5b7de3..a4461a2 100644
  /* Fill image IMG which is used on frame F with pixmap data.  Value is
     true if successful.  */
  
-@@ -5224,7 +5482,8 @@ xbm_load (struct frame *f, struct image *img)
+@@ -5224,7 +5486,8 @@ xbm_load (struct frame *f, struct image *img)
  
    eassert (xbm_image_p (img->spec));
  
@@ -4624,7 +4633,7 @@ index b5b7de3..a4461a2 100644
    file_name = image_spec_value (img->spec, QCfile, NULL);
    if (STRINGP (file_name))
      {
-@@ -5268,24 +5527,25 @@ xbm_load (struct frame *f, struct image *img)
+@@ -5268,24 +5531,25 @@ xbm_load (struct frame *f, struct image *img)
  	    }
  	}
  
@@ -4659,7 +4668,7 @@ index b5b7de3..a4461a2 100644
  	  non_default_colors = 1;
  	}
  
-@@ -5319,22 +5579,23 @@ xbm_load (struct frame *f, struct image *img)
+@@ -5319,22 +5583,23 @@ xbm_load (struct frame *f, struct image *img)
  	    bits = (char *) bool_vector_data (data);
  
  #ifdef HAVE_NTGUI
@@ -4695,7 +4704,7 @@ index b5b7de3..a4461a2 100644
  					    non_default_colors);
  	  else
  	    img->pixmap = NO_PIXMAP;
-@@ -5343,7 +5604,8 @@ xbm_load (struct frame *f, struct image *img)
+@@ -5343,7 +5608,8 @@ xbm_load (struct frame *f, struct image *img)
  	    success_p = 1;
  	  else
  	    {
@@ -4705,7 +4714,7 @@ index b5b7de3..a4461a2 100644
  			   img->spec);
  	      image_clear_image (f, img);
  	    }
-@@ -5354,15 +5616,13 @@ xbm_load (struct frame *f, struct image *img)
+@@ -5354,15 +5620,13 @@ xbm_load (struct frame *f, struct image *img)
  
    return success_p;
  }
@@ -4725,7 +4734,7 @@ index b5b7de3..a4461a2 100644
  
  static bool xpm_image_p (Lisp_Object object);
  static bool xpm_load (struct frame *f, struct image *img);
-@@ -5370,30 +5630,31 @@ static bool xpm_load (struct frame *f, struct image *img);
+@@ -5370,30 +5634,31 @@ static bool xpm_load (struct frame *f, struct image *img);
  #endif /* HAVE_XPM || HAVE_NS */
  
  #ifdef HAVE_XPM
@@ -4779,7 +4788,7 @@ index b5b7de3..a4461a2 100644
  
  /* Indices of image specification fields in xpm_format, below.  */
  
-@@ -5413,43 +5674,42 @@ enum xpm_keyword_index
+@@ -5413,43 +5678,42 @@ enum xpm_keyword_index
    XPM_LAST
  };
  
@@ -4848,7 +4857,7 @@ index b5b7de3..a4461a2 100644
  
  /* An entry in a hash table used to cache color definitions of named
     colors.  This cache is necessary to speed up XPM image loading in
-@@ -5474,7 +5734,7 @@ struct xpm_cached_color
+@@ -5474,7 +5738,7 @@ struct xpm_cached_color
  /* The hash table used for the color cache, and its bucket vector
     size (which should be prime).  */
  
@@ -4857,7 +4866,7 @@ index b5b7de3..a4461a2 100644
  static struct xpm_cached_color **xpm_color_cache;
  
  /* Initialize the color cache.  */
-@@ -5496,7 +5756,8 @@ xpm_init_color_cache (struct frame *f, XpmAttributes *attrs)
+@@ -5496,7 +5760,8 @@ xpm_init_color_cache (struct frame *f, XpmAttributes *attrs)
  	  {
  	    color.pixel = lookup_rgb_color (f, color.red, color.green,
  					    color.blue);
@@ -4867,7 +4876,7 @@ index b5b7de3..a4461a2 100644
  	  }
      }
  }
-@@ -5531,13 +5792,13 @@ xpm_color_bucket (char *color_name)
+@@ -5531,13 +5796,13 @@ xpm_color_bucket (char *color_name)
    return hash % XPM_COLOR_CACHE_BUCKETS;
  }
  
@@ -4883,7 +4892,7 @@ index b5b7de3..a4461a2 100644
  {
    size_t nbytes;
    struct xpm_cached_color *p;
-@@ -5545,7 +5806,8 @@ xpm_cache_color (struct frame *f, char *color_name, XColor *color, int bucket)
+@@ -5545,7 +5810,8 @@ xpm_cache_color (struct frame *f, char *color_name, XColor *color, int bucket)
    if (bucket < 0)
      bucket = xpm_color_bucket (color_name);
  
@@ -4893,7 +4902,7 @@ index b5b7de3..a4461a2 100644
    p = xmalloc (nbytes);
    strcpy (p->name, color_name);
    p->color = *color;
-@@ -5573,15 +5835,16 @@ xpm_lookup_color (struct frame *f, char *color_name, XColor *color)
+@@ -5573,15 +5839,16 @@ xpm_lookup_color (struct frame *f, char *color_name, XColor *color)
      *color = p->color;
    else if (x_parse_color (f, color_name, color))
      {
@@ -4913,7 +4922,7 @@ index b5b7de3..a4461a2 100644
        color->pixel = FRAME_FOREGROUND_PIXEL (f);
        p = xpm_cache_color (f, color_name, color, h);
      }
-@@ -5589,45 +5852,43 @@ xpm_lookup_color (struct frame *f, char *color_name, XColor *color)
+@@ -5589,45 +5856,43 @@ xpm_lookup_color (struct frame *f, char *color_name, XColor *color)
    return p != NULL;
  }
  
@@ -4971,7 +4980,7 @@ index b5b7de3..a4461a2 100644
  
  static bool
  init_xpm_functions (void)
-@@ -5644,20 +5905,20 @@ init_xpm_functions (void)
+@@ -5644,20 +5909,20 @@ init_xpm_functions (void)
    return 1;
  }
  
@@ -5003,7 +5012,7 @@ index b5b7de3..a4461a2 100644
  /* Value is true if COLOR_SYMBOLS is a valid color symbols list
     for XPM images.  Such a list must consist of conses whose car and
     cdr are strings.  */
-@@ -5668,8 +5929,7 @@ xpm_valid_color_symbols_p (Lisp_Object color_symbols)
+@@ -5668,8 +5933,7 @@ xpm_valid_color_symbols_p (Lisp_Object color_symbols)
    while (CONSP (color_symbols))
      {
        Lisp_Object sym = XCAR (color_symbols);
@@ -5013,7 +5022,7 @@ index b5b7de3..a4461a2 100644
  	  || !STRINGP (XCDR (sym)))
  	break;
        color_symbols = XCDR (color_symbols);
-@@ -5685,17 +5945,20 @@ xpm_image_p (Lisp_Object object)
+@@ -5685,17 +5949,20 @@ xpm_image_p (Lisp_Object object)
  {
    struct image_keyword fmt[XPM_LAST];
    memcpy (fmt, xpm_format, sizeof fmt);
@@ -5043,7 +5052,7 @@ index b5b7de3..a4461a2 100644
  
  #if defined HAVE_XPM && defined HAVE_X_WINDOWS && !defined USE_GTK
  ptrdiff_t
-@@ -5714,16 +5977,17 @@ x_create_bitmap_from_xpm_data (struct frame *f, const char **bits)
+@@ -5714,16 +5981,17 @@ x_create_bitmap_from_xpm_data (struct frame *f, const char **bits)
    attrs.valuemask |= XpmVisual;
    attrs.valuemask |= XpmColormap;
  
@@ -5065,7 +5074,7 @@ index b5b7de3..a4461a2 100644
    if (rc != XpmSuccess)
      {
        XpmFreeAttributes (&attrs);
-@@ -5739,13 +6003,13 @@ x_create_bitmap_from_xpm_data (struct frame *f, const char **bits)
+@@ -5739,13 +6007,13 @@ x_create_bitmap_from_xpm_data (struct frame *f, const char **bits)
    dpyinfo->bitmaps[id - 1].width = attrs.width;
    dpyinfo->bitmaps[id - 1].depth = attrs.depth;
    dpyinfo->bitmaps[id - 1].refcount = 1;
@@ -5083,7 +5092,7 @@ index b5b7de3..a4461a2 100644
    XpmFreeAttributes (&attrs);
    return id;
  }
-@@ -5754,7 +6018,7 @@ x_create_bitmap_from_xpm_data (struct frame *f, const char **bits)
+@@ -5754,7 +6022,7 @@ x_create_bitmap_from_xpm_data (struct frame *f, const char **bits)
  /* Load image IMG which will be displayed on frame F.  Value is
     true if successful.  */
  
@@ -5092,7 +5101,7 @@ index b5b7de3..a4461a2 100644
  
  static bool
  xpm_load (struct frame *f, struct image *img)
-@@ -5764,42 +6028,42 @@ xpm_load (struct frame *f, struct image *img)
+@@ -5764,42 +6032,42 @@ xpm_load (struct frame *f, struct image *img)
    Lisp_Object specified_file, color_symbols;
    USE_SAFE_ALLOCA;
  
@@ -5146,7 +5155,7 @@ index b5b7de3..a4461a2 100644
  
    /* If image specification contains symbolic color definitions, add
       these to `attrs'.  */
-@@ -5824,8 +6088,7 @@ xpm_load (struct frame *f, struct image *img)
+@@ -5824,8 +6092,7 @@ xpm_load (struct frame *f, struct image *img)
        attrs.colorsymbols = xpm_syms;
  
        /* Fill the color symbol array.  */
@@ -5156,7 +5165,7 @@ index b5b7de3..a4461a2 100644
  	   ++i, tail = XCDR (tail))
  	{
  	  Lisp_Object name;
-@@ -5851,21 +6114,22 @@ xpm_load (struct frame *f, struct image *img)
+@@ -5851,21 +6118,22 @@ xpm_load (struct frame *f, struct image *img)
  	}
      }
  
@@ -5185,7 +5194,7 @@ index b5b7de3..a4461a2 100644
  
    if (STRINGP (specified_file))
      {
-@@ -5873,31 +6137,29 @@ xpm_load (struct frame *f, struct image *img)
+@@ -5873,31 +6141,29 @@ xpm_load (struct frame *f, struct image *img)
        if (!STRINGP (file))
  	{
  	  image_not_found_error (specified_file);
@@ -5227,7 +5236,7 @@ index b5b7de3..a4461a2 100644
      }
    else
      {
-@@ -5905,89 +6167,95 @@ xpm_load (struct frame *f, struct image *img)
+@@ -5905,89 +6171,95 @@ xpm_load (struct frame *f, struct image *img)
        if (!STRINGP (buffer))
  	{
  	  image_invalid_data_error (buffer);
@@ -5371,7 +5380,7 @@ index b5b7de3..a4461a2 100644
  	  SelectObject (hdc, old_obj);
  
  	  img->mask = xpm_mask->bitmap;
-@@ -5996,41 +6264,44 @@ xpm_load (struct frame *f, struct image *img)
+@@ -5996,41 +6268,44 @@ xpm_load (struct frame *f, struct image *img)
  	}
  
        DeleteDC (hdc);
@@ -5427,7 +5436,7 @@ index b5b7de3..a4461a2 100644
  
        switch (rc)
  	{
-@@ -6056,31 +6327,34 @@ xpm_load (struct frame *f, struct image *img)
+@@ -6056,31 +6331,34 @@ xpm_load (struct frame *f, struct image *img)
  	}
      }
  
@@ -5475,7 +5484,7 @@ index b5b7de3..a4461a2 100644
  
  /* Tokens returned from xpm_scan.  */
  
-@@ -6099,7 +6373,8 @@ enum xpm_token
+@@ -6099,7 +6377,8 @@ enum xpm_token
     length of the corresponding token, respectively.  */
  
  static int
@@ -5485,7 +5494,7 @@ index b5b7de3..a4461a2 100644
  {
    unsigned char c;
  
-@@ -6116,9 +6391,9 @@ xpm_scan (const char **s, const char *end, const char **beg, ptrdiff_t *len)
+@@ -6116,9 +6395,9 @@ xpm_scan (const char **s, const char *end, const char **beg, ptrdiff_t *len)
  	{
  	  *beg = *s - 1;
  	  while (*s < end
@@ -5498,7 +5507,7 @@ index b5b7de3..a4461a2 100644
  	  *len = *s - *beg;
  	  return XPM_TK_IDENT;
  	}
-@@ -6165,10 +6440,10 @@ xpm_scan (const char **s, const char *end, const char **beg, ptrdiff_t *len)
+@@ -6165,10 +6444,10 @@ xpm_scan (const char **s, const char *end, const char **beg, ptrdiff_t *len)
     hash table is used.  */
  
  static Lisp_Object
@@ -5513,7 +5522,7 @@ index b5b7de3..a4461a2 100644
  {
    *put_func = xpm_put_color_table_v;
    *get_func = xpm_get_color_table_v;
-@@ -6177,9 +6452,8 @@ xpm_make_color_table_v (void (**put_func) (Lisp_Object, const char *, int,
+@@ -6177,9 +6456,8 @@ xpm_make_color_table_v (void (**put_func) (Lisp_Object, const char *, int,
  
  static void
  xpm_put_color_table_v (Lisp_Object color_table,
@@ -5525,7 +5534,7 @@ index b5b7de3..a4461a2 100644
  {
    unsigned char uc = *chars_start;
    ASET (color_table, uc, color);
-@@ -6187,29 +6461,28 @@ xpm_put_color_table_v (Lisp_Object color_table,
+@@ -6187,29 +6465,28 @@ xpm_put_color_table_v (Lisp_Object color_table,
  
  static Lisp_Object
  xpm_get_color_table_v (Lisp_Object color_table,
@@ -5564,7 +5573,7 @@ index b5b7de3..a4461a2 100644
  {
    struct Lisp_Hash_Table *table = XHASH_TABLE (color_table);
    Lisp_Object chars = make_unibyte_string (chars_start, chars_len);
-@@ -6221,17 +6494,17 @@ xpm_put_color_table_h (Lisp_Object color_table,
+@@ -6221,17 +6498,17 @@ xpm_put_color_table_h (Lisp_Object color_table,
  
  static Lisp_Object
  xpm_get_color_table_h (Lisp_Object color_table,
@@ -5587,7 +5596,7 @@ index b5b7de3..a4461a2 100644
    XPM_COLOR_KEY_S,
    XPM_COLOR_KEY_M,
    XPM_COLOR_KEY_G4,
-@@ -6239,7 +6512,8 @@ enum xpm_color_key {
+@@ -6239,7 +6516,8 @@ enum xpm_color_key {
    XPM_COLOR_KEY_C
  };
  
@@ -5597,7 +5606,7 @@ index b5b7de3..a4461a2 100644
  
  static int
  xpm_str_to_color_key (const char *s)
-@@ -6253,10 +6527,8 @@ xpm_str_to_color_key (const char *s)
+@@ -6253,10 +6531,8 @@ xpm_str_to_color_key (const char *s)
  }
  
  static bool
@@ -5610,7 +5619,7 @@ index b5b7de3..a4461a2 100644
  {
    const char *s = contents, *beg, *str;
    char buffer[BUFSIZ];
-@@ -6264,33 +6536,33 @@ xpm_load_image (struct frame *f,
+@@ -6264,33 +6540,33 @@ xpm_load_image (struct frame *f,
    int num_colors, chars_per_pixel;
    ptrdiff_t len;
    int LA1;
@@ -5663,7 +5672,7 @@ index b5b7de3..a4461a2 100644
  
    if (!(end - s >= 9 && memcmp (s, "/* XPM */", 9) == 0))
      goto failure;
-@@ -6309,10 +6581,11 @@ xpm_load_image (struct frame *f,
+@@ -6309,10 +6585,11 @@ xpm_load_image (struct frame *f,
      goto failure;
    memcpy (buffer, beg, len);
    buffer[len] = '\0';
@@ -5679,7 +5688,7 @@ index b5b7de3..a4461a2 100644
      goto failure;
  
    if (!check_image_size (f, width, height))
-@@ -6321,12 +6594,13 @@ xpm_load_image (struct frame *f,
+@@ -6321,12 +6598,13 @@ xpm_load_image (struct frame *f,
        goto failure;
      }
  
@@ -5697,7 +5706,7 @@ index b5b7de3..a4461a2 100644
      {
        image_error ("Image too large");
        goto failure;
-@@ -6336,30 +6610,32 @@ xpm_load_image (struct frame *f,
+@@ -6336,30 +6614,32 @@ xpm_load_image (struct frame *f,
  
    XSETFRAME (frame, f);
  
@@ -5744,7 +5753,7 @@ index b5b7de3..a4461a2 100644
  
    while (num_colors-- > 0)
      {
-@@ -6411,42 +6687,54 @@ xpm_load_image (struct frame *f,
+@@ -6411,42 +6691,54 @@ xpm_load_image (struct frame *f,
        color_val = Qnil;
        if (!NILP (color_symbols) && !NILP (symbol_color))
  	{
@@ -5816,7 +5825,7 @@ index b5b7de3..a4461a2 100644
    for (y = 0; y < height; y++)
      {
        expect (XPM_TK_STRING);
-@@ -6455,19 +6743,21 @@ xpm_load_image (struct frame *f,
+@@ -6455,19 +6747,21 @@ xpm_load_image (struct frame *f,
  	goto failure;
        for (x = 0; x < width; x++, str += chars_per_pixel)
  	{
@@ -5848,7 +5857,7 @@ index b5b7de3..a4461a2 100644
  	}
        if (y + 1 < height)
  	expect (',');
-@@ -6481,7 +6771,7 @@ xpm_load_image (struct frame *f,
+@@ -6481,7 +6775,7 @@ xpm_load_image (struct frame *f,
      IMAGE_BACKGROUND (img, f, ximg);
  
    image_put_x_image (f, img, ximg, 0);
@@ -5857,7 +5866,7 @@ index b5b7de3..a4461a2 100644
    if (have_mask)
      {
        /* Fill in the background_transparent field while we have the
-@@ -6495,10 +6785,10 @@ xpm_load_image (struct frame *f,
+@@ -6495,10 +6789,10 @@ xpm_load_image (struct frame *f,
        image_destroy_x_image (mask_img);
        image_clear_image_1 (f, img, CLEAR_IMAGE_MASK);
      }
@@ -5870,7 +5879,7 @@ index b5b7de3..a4461a2 100644
    image_error ("Invalid XPM3 file (%s)", img->spec);
    if (ximg)
      {
-@@ -6509,19 +6799,19 @@ xpm_load_image (struct frame *f,
+@@ -6509,19 +6803,19 @@ xpm_load_image (struct frame *f,
      }
    return 0;
  
@@ -5896,7 +5905,7 @@ index b5b7de3..a4461a2 100644
    file_name = image_spec_value (img->spec, QCfile, NULL);
    if (STRINGP (file_name))
      {
-@@ -6550,17 +6840,17 @@ xpm_load (struct frame *f,
+@@ -6550,17 +6844,17 @@ xpm_load (struct frame *f,
    return success_p;
  }
  
@@ -5920,7 +5929,7 @@ index b5b7de3..a4461a2 100644
  
  struct ct_color
  {
-@@ -6573,7 +6863,7 @@ struct ct_color
+@@ -6573,7 +6867,7 @@ struct ct_color
  
  /* The bucket vector size to use.  Must be prime.  */
  
@@ -5929,7 +5938,7 @@ index b5b7de3..a4461a2 100644
  
  /* Value is a hash of the RGB color given by R, G, and B.  */
  
-@@ -6592,9 +6882,8 @@ static struct ct_color **ct_table;
+@@ -6592,9 +6886,8 @@ static struct ct_color **ct_table;
  static int ct_colors_allocated;
  enum
  {
@@ -5941,7 +5950,7 @@ index b5b7de3..a4461a2 100644
  };
  
  /* Initialize the color table.  */
-@@ -6607,7 +6896,6 @@ init_color_table (void)
+@@ -6607,7 +6900,6 @@ init_color_table (void)
    ct_colors_allocated = 0;
  }
  
@@ -5949,7 +5958,7 @@ index b5b7de3..a4461a2 100644
  /* Free memory associated with the color table.  */
  
  static void
-@@ -6627,7 +6915,6 @@ free_color_table (void)
+@@ -6627,7 +6919,6 @@ free_color_table (void)
    ct_table = NULL;
  }
  
@@ -5957,7 +5966,7 @@ index b5b7de3..a4461a2 100644
  /* Value is a pixel color for RGB color R, G, B on frame F.  If an
     entry for that color already is in the color table, return the
     pixel color of that entry.  Otherwise, allocate a new color for R,
-@@ -6666,19 +6953,18 @@ lookup_rgb_color (struct frame *f, int r, int g, int b)
+@@ -6666,19 +6957,18 @@ lookup_rgb_color (struct frame *f, int r, int g, int b)
  
    if (p == NULL)
      {
@@ -5981,7 +5990,7 @@ index b5b7de3..a4461a2 100644
        color.red = r;
        color.green = g;
        color.blue = b;
-@@ -6699,12 +6985,12 @@ lookup_rgb_color (struct frame *f, int r, int g, int b)
+@@ -6699,12 +6989,12 @@ lookup_rgb_color (struct frame *f, int r, int g, int b)
        else
  	return FRAME_FOREGROUND_PIXEL (f);
  
@@ -5998,7 +6007,7 @@ index b5b7de3..a4461a2 100644
        ++ct_colors_allocated;
        p = xmalloc (sizeof *p);
        p->r = r;
-@@ -6713,14 +6999,12 @@ lookup_rgb_color (struct frame *f, int r, int g, int b)
+@@ -6713,14 +7003,12 @@ lookup_rgb_color (struct frame *f, int r, int g, int b)
        p->pixel = color;
        p->next = ct_table[i];
        ct_table[i] = p;
@@ -6014,7 +6023,7 @@ index b5b7de3..a4461a2 100644
  /* Look up pixel color PIXEL which is used on frame F in the color
     table.  If not already present, allocate it.  Value is PIXEL.  */
  
-@@ -6743,19 +7027,19 @@ lookup_pixel_color (struct frame *f, unsigned long pixel)
+@@ -6743,19 +7031,19 @@ lookup_pixel_color (struct frame *f, unsigned long pixel)
        if (ct_colors_allocated >= ct_colors_allocated_max)
  	return FRAME_FOREGROUND_PIXEL (f);
  
@@ -6037,7 +6046,7 @@ index b5b7de3..a4461a2 100644
  
        if (rc)
  	{
-@@ -6775,7 +7059,6 @@ lookup_pixel_color (struct frame *f, unsigned long pixel)
+@@ -6775,7 +7063,6 @@ lookup_pixel_color (struct frame *f, unsigned long pixel)
    return p->pixel;
  }
  
@@ -6045,7 +6054,7 @@ index b5b7de3..a4461a2 100644
  /* Value is a vector of all pixel colors contained in the color table,
     allocated via xmalloc.  Set *N to the number of colors.  */
  
-@@ -6809,15 +7092,16 @@ colors_in_color_table (int *n)
+@@ -6809,15 +7096,16 @@ colors_in_color_table (int *n)
  static unsigned long
  lookup_rgb_color (struct frame *f, int r, int g, int b)
  {
@@ -6068,7 +6077,7 @@ index b5b7de3..a4461a2 100644
  }
  
  static void
-@@ -6825,27 +7109,26 @@ init_color_table (void)
+@@ -6825,27 +7113,26 @@ init_color_table (void)
  {
  }
  #endif /* COLOR_TABLE_SUPPORT */
@@ -6106,7 +6115,7 @@ index b5b7de3..a4461a2 100644
  };
  
  /* Value is the intensity of the color whose red/green/blue values
-@@ -6853,12 +7136,12 @@ static int laplace_matrix[9] = {
+@@ -6853,12 +7140,12 @@ static int laplace_matrix[9] = {
  
  #define COLOR_INTENSITY(R, G, B) ((2 * (R) + 3 * (G) + (B)) / 6)
  
@@ -6125,7 +6134,7 @@ index b5b7de3..a4461a2 100644
  
  static Emacs_Color *
  image_to_emacs_colors (struct frame *f, struct image *img, bool rgb_p)
-@@ -6872,29 +7155,29 @@ image_to_emacs_colors (struct frame *f, struct image *img, bool rgb_p)
+@@ -6872,29 +7159,29 @@ image_to_emacs_colors (struct frame *f, struct image *img, bool rgb_p)
  #endif /* HAVE_NTGUI */
  
    if (ckd_mul (&nbytes, sizeof *colors, img->width)
@@ -6165,7 +6174,7 @@ index b5b7de3..a4461a2 100644
        for (x = 0; x < img->width; ++x, ++p)
  	{
  	  p->pixel = GET_PIXEL (ximg, x, y);
-@@ -6905,7 +7188,7 @@ image_to_emacs_colors (struct frame *f, struct image *img, bool rgb_p)
+@@ -6905,7 +7192,7 @@ image_to_emacs_colors (struct frame *f, struct image *img, bool rgb_p)
  	      p->blue = BLUE16_FROM_ULONG (p->pixel);
  	    }
  	}
@@ -6174,7 +6183,7 @@ index b5b7de3..a4461a2 100644
      }
  
    image_unget_x_image_or_dc (img, 0, ximg, prev);
-@@ -6923,7 +7206,7 @@ static void
+@@ -6923,7 +7210,7 @@ static void
  XPutPixel (XImage *ximg, int x, int y, COLORREF color)
  {
    int width = ximg->info.bmiHeader.biWidth;
@@ -6183,7 +6192,7 @@ index b5b7de3..a4461a2 100644
  
    /* True color images.  */
    if (ximg->info.bmiHeader.biBitCount == 24)
-@@ -6959,12 +7242,14 @@ XPutPixel (XImage *ximg, int x, int y, COLORREF color)
+@@ -6959,12 +7246,14 @@ XPutPixel (XImage *ximg, int x, int y, COLORREF color)
  
  #endif /* HAVE_NTGUI */
  
@@ -6202,7 +6211,7 @@ index b5b7de3..a4461a2 100644
  {
    int x, y;
    Emacs_Pix_Container ximage;
-@@ -6978,7 +7263,8 @@ image_from_emacs_colors (struct frame *f, struct image *img, Emacs_Color *colors
+@@ -6978,7 +7267,8 @@ image_from_emacs_colors (struct frame *f, struct image *img, Emacs_Color *colors
  
    init_color_table ();
  
@@ -6212,7 +6221,7 @@ index b5b7de3..a4461a2 100644
    image_create_x_image_and_pixmap (f, img, img->width, img->height, 0,
  				   &ximage, 0);
    p = colors;
-@@ -6999,7 +7285,6 @@ image_from_emacs_colors (struct frame *f, struct image *img, Emacs_Color *colors
+@@ -6999,7 +7289,6 @@ image_from_emacs_colors (struct frame *f, struct image *img, Emacs_Color *colors
  #endif /* COLOR_TABLE_SUPPORT */
  }
  
@@ -6220,7 +6229,7 @@ index b5b7de3..a4461a2 100644
  /* On frame F, perform edge-detection on image IMG.
  
     MATRIX is a nine-element array specifying the transformation
-@@ -7009,8 +7294,8 @@ image_from_emacs_colors (struct frame *f, struct image *img, Emacs_Color *colors
+@@ -7009,8 +7298,8 @@ image_from_emacs_colors (struct frame *f, struct image *img, Emacs_Color *colors
     outgoing image.  */
  
  static void
@@ -6231,7 +6240,7 @@ index b5b7de3..a4461a2 100644
  {
    Emacs_Color *colors = image_to_emacs_colors (f, img, 1);
    Emacs_Color *new, *p;
-@@ -7030,17 +7315,17 @@ image_detect_edges (struct frame *f, struct image *img,
+@@ -7030,17 +7319,17 @@ image_detect_edges (struct frame *f, struct image *img,
    for (y = 0; y < img->height; ++y)
      {
        p = COLOR (new, 0, y);
@@ -6253,7 +6262,7 @@ index b5b7de3..a4461a2 100644
      }
  
    for (y = 1; y < img->height - 1; ++y)
-@@ -7055,8 +7340,8 @@ image_detect_edges (struct frame *f, struct image *img,
+@@ -7055,8 +7344,8 @@ image_detect_edges (struct frame *f, struct image *img,
  	  for (yy = y - 1; yy < y + 2; ++yy)
  	    for (xx = x - 1; xx < x + 2; ++xx, ++i)
  	      if (matrix[i])
@@ -6264,7 +6273,7 @@ index b5b7de3..a4461a2 100644
  		  r += matrix[i] * t->red;
  		  g += matrix[i] * t->green;
  		  b += matrix[i] * t->blue;
-@@ -7075,7 +7360,6 @@ image_detect_edges (struct frame *f, struct image *img,
+@@ -7075,7 +7364,6 @@ image_detect_edges (struct frame *f, struct image *img,
  #undef COLOR
  }
  
@@ -6272,7 +6281,7 @@ index b5b7de3..a4461a2 100644
  /* Perform the pre-defined `emboss' edge-detection on image IMG
     on frame F.  */
  
-@@ -7085,7 +7369,6 @@ image_emboss (struct frame *f, struct image *img)
+@@ -7085,7 +7373,6 @@ image_emboss (struct frame *f, struct image *img)
    image_detect_edges (f, img, emboss_matrix, 0xffff / 2);
  }
  
@@ -6280,7 +6289,7 @@ index b5b7de3..a4461a2 100644
  /* Transform image IMG which is used on frame F with a Laplace
     edge-detection algorithm.  The result is an image that can be used
     to draw disabled buttons, for example.  */
-@@ -7096,7 +7379,6 @@ image_laplace (struct frame *f, struct image *img)
+@@ -7096,7 +7383,6 @@ image_laplace (struct frame *f, struct image *img)
    image_detect_edges (f, img, laplace_matrix, 45000);
  }
  
@@ -6288,7 +6297,7 @@ index b5b7de3..a4461a2 100644
  /* Perform edge-detection on image IMG on frame F, with specified
     transformation matrix MATRIX and color-adjustment COLOR_ADJUST.
  
-@@ -7110,15 +7392,14 @@ image_laplace (struct frame *f, struct image *img)
+@@ -7110,15 +7396,14 @@ image_laplace (struct frame *f, struct image *img)
  
  static void
  image_edge_detection (struct frame *f, struct image *img,
@@ -6306,7 +6315,7 @@ index b5b7de3..a4461a2 100644
  	   ++i, matrix = XCDR (matrix))
  	trans[i] = XFLOATINT (XCAR (matrix));
      }
-@@ -7135,22 +7416,24 @@ image_edge_detection (struct frame *f, struct image *img,
+@@ -7135,22 +7420,24 @@ image_edge_detection (struct frame *f, struct image *img,
      image_detect_edges (f, img, trans, XFLOATINT (color_adjust));
  }
  
@@ -6343,7 +6352,7 @@ index b5b7de3..a4461a2 100644
  					   pixmap->bytes_per_line);
    cairo_t *cr = cairo_create (surface);
    cairo_surface_destroy (surface);
-@@ -7159,12 +7442,38 @@ image_pixmap_draw_cross (struct frame *f, Emacs_Pixmap pixmap,
+@@ -7159,12 +7446,38 @@ image_pixmap_draw_cross (struct frame *f, Emacs_Pixmap pixmap,
  			BLUE_FROM_ULONG (color) / 255.0);
    cairo_move_to (cr, x + 0.5, y + 0.5);
    cairo_rel_line_to (cr, width - 1, height - 1);
@@ -6385,7 +6394,7 @@ index b5b7de3..a4461a2 100644
    Display *dpy = FRAME_X_DISPLAY (f);
    GC gc = XCreateGC (dpy, pixmap, 0, NULL);
  
-@@ -7172,10 +7481,10 @@ image_pixmap_draw_cross (struct frame *f, Emacs_Pixmap pixmap,
+@@ -7172,10 +7485,10 @@ image_pixmap_draw_cross (struct frame *f, Emacs_Pixmap pixmap,
    XDrawLine (dpy, pixmap, gc, x, y, x + width - 1, y + height - 1);
    XDrawLine (dpy, pixmap, gc, x, y + height - 1, x + width - 1, y);
    XFreeGC (dpy, gc);
@@ -6399,7 +6408,7 @@ index b5b7de3..a4461a2 100644
    struct android_gc *gc;
  
    gc = android_create_gc (0, NULL);
-@@ -7183,13 +7492,13 @@ image_pixmap_draw_cross (struct frame *f, Emacs_Pixmap pixmap,
+@@ -7183,13 +7496,13 @@ image_pixmap_draw_cross (struct frame *f, Emacs_Pixmap pixmap,
    android_draw_line (pixmap, gc, x, y, x + width - 1, y + height - 1);
    android_draw_line (pixmap, gc, x, y + height - 1, x + width - 1, y);
    android_free_gc (gc);
@@ -6417,7 +6426,7 @@ index b5b7de3..a4461a2 100644
  
  /* Transform image IMG on frame F so that it looks disabled.  */
  
-@@ -7214,8 +7523,7 @@ image_disable_image (struct frame *f, struct image *img)
+@@ -7214,8 +7527,7 @@ image_disable_image (struct frame *f, struct image *img)
        const int l = 30000;
  
        for (p = colors, end = colors + img->width * img->height;
@@ -6427,7 +6436,7 @@ index b5b7de3..a4461a2 100644
  	{
  	  int i = COLOR_INTENSITY (p->red, p->green, p->blue);
  	  int i2 = (0xffff - h - l) * i / 0xffff + l;
-@@ -7230,25 +7538,27 @@ image_disable_image (struct frame *f, struct image *img)
+@@ -7230,25 +7542,27 @@ image_disable_image (struct frame *f, struct image *img)
    if (n_planes < 2 || cross_disabled_images)
      {
  #ifndef HAVE_NTGUI
@@ -6472,7 +6481,7 @@ index b5b7de3..a4461a2 100644
  #else
        HDC hdc, bmpdc;
        HGDIOBJ prev;
-@@ -7280,7 +7590,6 @@ image_disable_image (struct frame *f, struct image *img)
+@@ -7280,7 +7594,6 @@ image_disable_image (struct frame *f, struct image *img)
      }
  }
  
@@ -6480,7 +6489,7 @@ index b5b7de3..a4461a2 100644
  /* Build a mask for image IMG which is used on frame F.  FILE is the
     name of an image file, for error messages.  HOW determines how to
     determine the background color of IMG.  If it is a list '(R G B)',
-@@ -7290,7 +7599,7 @@ image_disable_image (struct frame *f, struct image *img)
+@@ -7290,7 +7603,7 @@ image_disable_image (struct frame *f, struct image *img)
  
  static void
  image_build_heuristic_mask (struct frame *f, struct image *img,
@@ -6489,7 +6498,7 @@ index b5b7de3..a4461a2 100644
  {
    Emacs_Pix_Context ximg;
  #ifdef HAVE_NTGUI
-@@ -7308,12 +7617,12 @@ image_build_heuristic_mask (struct frame *f, struct image *img,
+@@ -7308,12 +7621,12 @@ image_build_heuristic_mask (struct frame *f, struct image *img,
      image_clear_image_1 (f, img, CLEAR_IMAGE_MASK);
  
  #ifndef HAVE_NTGUI
@@ -6506,7 +6515,7 @@ index b5b7de3..a4461a2 100644
  #else
    /* Create the bit array serving as mask.  */
    row_width = (img->width + 7) / 8;
-@@ -7324,7 +7633,8 @@ image_build_heuristic_mask (struct frame *f, struct image *img,
+@@ -7324,7 +7637,8 @@ image_build_heuristic_mask (struct frame *f, struct image *img,
    ximg = image_get_x_image_or_dc (f, img, 0, &prev);
  
    /* Determine the background color of ximg.  If HOW is `(R G B)'
@@ -6516,7 +6525,7 @@ index b5b7de3..a4461a2 100644
    use_img_background = 1;
  
    if (CONSP (how))
-@@ -7341,42 +7651,46 @@ image_build_heuristic_mask (struct frame *f, struct image *img,
+@@ -7341,42 +7655,46 @@ image_build_heuristic_mask (struct frame *f, struct image *img,
  	{
  #ifndef USE_CAIRO
  	  char color_name[30];
@@ -6580,7 +6589,7 @@ index b5b7de3..a4461a2 100644
  #else
    for (y = 0; y < img->height; ++y)
      for (x = 0; x < img->width; ++x)
-@@ -7387,23 +7701,25 @@ image_build_heuristic_mask (struct frame *f, struct image *img,
+@@ -7387,23 +7705,25 @@ image_build_heuristic_mask (struct frame *f, struct image *img,
        }
  
    /* Create the mask image.  */
@@ -6613,7 +6622,7 @@ index b5b7de3..a4461a2 100644
  
  /* Indices of image specification fields in gs_format, below.  */
  
-@@ -7426,20 +7742,18 @@ enum pbm_keyword_index
+@@ -7426,20 +7746,18 @@ enum pbm_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
  
@@ -6646,7 +6655,7 @@ index b5b7de3..a4461a2 100644
  
  /* Return true if OBJECT is a valid PBM image specification.  */
  
-@@ -7457,7 +7771,6 @@ pbm_image_p (Lisp_Object object)
+@@ -7457,7 +7775,6 @@ pbm_image_p (Lisp_Object object)
    return fmt[PBM_DATA].count + fmt[PBM_FILE].count == 1;
  }
  
@@ -6654,7 +6663,7 @@ index b5b7de3..a4461a2 100644
  /* Get next char skipping comments in Netpbm header.  Returns -1 at
     end of input.  */
  
-@@ -7480,7 +7793,6 @@ pbm_next_char (char **s, char *end)
+@@ -7480,7 +7797,6 @@ pbm_next_char (char **s, char *end)
    return -1;
  }
  
@@ -6662,7 +6671,7 @@ index b5b7de3..a4461a2 100644
  /* Scan a decimal number from *S and return it.  Advance *S while
     reading the number.  END is the end of the string.  Value is -1 at
     end of input.  */
-@@ -7499,7 +7811,7 @@ pbm_scan_number (char **s, char *end)
+@@ -7499,7 +7815,7 @@ pbm_scan_number (char **s, char *end)
        /* Read decimal number.  */
        val = c - '0';
        while ((c = pbm_next_char (s, end)) != -1 && c_isdigit (c))
@@ -6671,7 +6680,7 @@ index b5b7de3..a4461a2 100644
      }
  
    return val;
-@@ -7524,7 +7836,6 @@ pbm_scan_index (char **s, bool two_byte)
+@@ -7524,7 +7840,6 @@ pbm_scan_index (char **s, bool two_byte)
    return n;
  }
  
@@ -6679,7 +6688,7 @@ index b5b7de3..a4461a2 100644
  /* Load PBM image IMG for use on frame F.  */
  
  static bool
-@@ -7534,7 +7845,12 @@ pbm_load (struct frame *f, struct image *img)
+@@ -7534,7 +7849,12 @@ pbm_load (struct frame *f, struct image *img)
    int x, y;
    int width, height, max_color_idx = 0;
    Lisp_Object specified_file;
@@ -6693,7 +6702,7 @@ index b5b7de3..a4461a2 100644
    char *contents = NULL;
    char *end, *p;
    Emacs_Pix_Container ximg;
-@@ -7626,7 +7942,8 @@ pbm_load (struct frame *f, struct image *img)
+@@ -7626,7 +7946,8 @@ pbm_load (struct frame *f, struct image *img)
        goto error;
      }
  
@@ -6703,7 +6712,7 @@ index b5b7de3..a4461a2 100644
      goto error;
  
    /* Initialize the color hash table.  */
-@@ -7643,24 +7960,30 @@ pbm_load (struct frame *f, struct image *img)
+@@ -7643,24 +7964,30 @@ pbm_load (struct frame *f, struct image *img)
        memcpy (fmt, pbm_format, sizeof fmt);
        parse_image_spec (img->spec, fmt, PBM_LAST, Qpbm);
  
@@ -6740,7 +6749,7 @@ index b5b7de3..a4461a2 100644
        }
  #endif
        for (y = 0; y < height; ++y)
-@@ -7674,7 +7997,8 @@ pbm_load (struct frame *f, struct image *img)
+@@ -7674,7 +8001,8 @@ pbm_load (struct frame *f, struct image *img)
  		      {
  			image_destroy_x_image (ximg);
  			image_clear_image (f, img);
@@ -6750,7 +6759,7 @@ index b5b7de3..a4461a2 100644
  				     img->spec);
  			goto error;
  		      }
-@@ -7687,7 +8011,8 @@ pbm_load (struct frame *f, struct image *img)
+@@ -7687,7 +8015,8 @@ pbm_load (struct frame *f, struct image *img)
  	      {
  		int c = 0;
  		/* Skip white-space and comments.  */
@@ -6760,7 +6769,7 @@ index b5b7de3..a4461a2 100644
  		  ;
  
  		if (c == '0' || c == '1')
-@@ -7741,7 +8066,8 @@ pbm_load (struct frame *f, struct image *img)
+@@ -7741,7 +8070,8 @@ pbm_load (struct frame *f, struct image *img)
  	    if (r < 0 || g < 0 || b < 0)
  	      {
  		image_destroy_x_image (ximg);
@@ -6770,7 +6779,7 @@ index b5b7de3..a4461a2 100644
  		goto error;
  	      }
  
-@@ -7768,7 +8094,7 @@ pbm_load (struct frame *f, struct image *img)
+@@ -7768,7 +8098,7 @@ pbm_load (struct frame *f, struct image *img)
  
    if (NILP (image_spec_value (img->spec, QCbackground, NULL)))
      /* Casting avoids a GCC warning.  */
@@ -6779,7 +6788,7 @@ index b5b7de3..a4461a2 100644
  
    /* Put ximg into the image.  */
    image_put_x_image (f, img, ximg, 0);
-@@ -7780,11 +8106,10 @@ pbm_load (struct frame *f, struct image *img)
+@@ -7780,11 +8110,10 @@ pbm_load (struct frame *f, struct image *img)
    xfree (contents);
    return 1;
  }
@@ -6793,7 +6802,7 @@ index b5b7de3..a4461a2 100644
  
  #if HAVE_NATIVE_IMAGE_API
  static bool
-@@ -7802,8 +8127,9 @@ image_can_use_native_api (Lisp_Object type)
+@@ -7802,8 +8131,9 @@ image_can_use_native_api (Lisp_Object type)
  }
  
  /*
@@ -6805,7 +6814,7 @@ index b5b7de3..a4461a2 100644
   */
  
  /* Indices of image specification fields in native format, below.  */
-@@ -7825,22 +8151,20 @@ enum native_image_keyword_index
+@@ -7825,22 +8155,20 @@ enum native_image_keyword_index
  
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
@@ -6842,7 +6851,7 @@ index b5b7de3..a4461a2 100644
  
  static bool
  native_image_p (Lisp_Object object)
-@@ -7852,7 +8176,8 @@ native_image_p (Lisp_Object object)
+@@ -7852,7 +8180,8 @@ native_image_p (Lisp_Object object)
      return 0;
  
    /* Must specify either the :data or :file keyword.  */
@@ -6852,7 +6861,7 @@ index b5b7de3..a4461a2 100644
  }
  
  static bool
-@@ -7865,26 +8190,26 @@ native_image_load (struct frame *f, struct image *img)
+@@ -7865,26 +8194,26 @@ native_image_load (struct frame *f, struct image *img)
  
  # ifdef HAVE_NTGUI
    return w32_load_image (f, img, image_file,
@@ -6887,7 +6896,7 @@ index b5b7de3..a4461a2 100644
  
  /* Indices of image specification fields in png_format, below.  */
  
-@@ -7906,19 +8231,17 @@ enum png_keyword_index
+@@ -7906,19 +8235,17 @@ enum png_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
  
@@ -6918,7 +6927,7 @@ index b5b7de3..a4461a2 100644
  
  /* Return true if OBJECT is a valid PNG image specification.  */
  
-@@ -7937,7 +8260,6 @@ png_image_p (Lisp_Object object)
+@@ -7937,7 +8264,6 @@ png_image_p (Lisp_Object object)
  
  #endif /* HAVE_PNG */
  
@@ -6926,7 +6935,7 @@ index b5b7de3..a4461a2 100644
  #ifdef HAVE_PNG
  
  # ifdef WINDOWSNT
-@@ -7946,28 +8268,31 @@ png_image_p (Lisp_Object object)
+@@ -7946,28 +8272,31 @@ png_image_p (Lisp_Object object)
  DEF_DLL_FN (png_voidp, png_get_io_ptr, (png_structp));
  DEF_DLL_FN (int, png_sig_cmp, (png_bytep, png_size_t, png_size_t));
  DEF_DLL_FN (png_structp, png_create_read_struct,
@@ -6966,7 +6975,7 @@ index b5b7de3..a4461a2 100644
  DEF_DLL_FN (void, png_read_update_info, (png_structp, png_infop));
  DEF_DLL_FN (png_byte, png_get_channels, (png_structp, png_infop));
  DEF_DLL_FN (png_size_t, png_get_rowbytes, (png_structp, png_infop));
-@@ -7978,7 +8303,7 @@ DEF_DLL_FN (void, png_error, (png_structp, png_const_charp));
+@@ -7978,7 +8307,7 @@ DEF_DLL_FN (void, png_error, (png_structp, png_const_charp));
  #  if (PNG_LIBPNG_VER >= 10500)
  DEF_DLL_FN (void, png_longjmp, (png_structp, int) PNG_NORETURN);
  DEF_DLL_FN (jmp_buf *, png_set_longjmp_fn,
@@ -6975,7 +6984,7 @@ index b5b7de3..a4461a2 100644
  #  endif /* libpng version >= 1.5 */
  
  static bool
-@@ -8074,9 +8399,9 @@ init_png_functions (void)
+@@ -8074,9 +8403,9 @@ init_png_functions (void)
  
  # endif /* WINDOWSNT */
  
@@ -6988,7 +6997,7 @@ index b5b7de3..a4461a2 100644
     It's OK if the longjmp substitute restores the signal mask.  */
  # ifdef HAVE__SETJMP
  #  define FAST_SETJMP(j) _setjmp (j)
-@@ -8093,7 +8418,7 @@ init_png_functions (void)
+@@ -8093,7 +8422,7 @@ init_png_functions (void)
  /* In libpng version 1.5, the jmpbuf member is hidden. (Bug#7908)  */
  #  define PNG_LONGJMP(ptr) png_longjmp (ptr, 1)
  #  define PNG_JMPBUF(ptr) \
@@ -6997,7 +7006,7 @@ index b5b7de3..a4461a2 100644
  # endif
  
  /* Error and warning handlers installed when the PNG library
-@@ -8109,7 +8434,6 @@ my_png_error (png_struct *png_ptr, const char *msg)
+@@ -8109,7 +8438,6 @@ my_png_error (png_struct *png_ptr, const char *msg)
    PNG_LONGJMP (png_ptr);
  }
  
@@ -7005,7 +7014,7 @@ index b5b7de3..a4461a2 100644
  static void
  my_png_warning (png_struct *png_ptr, const char *msg)
  {
-@@ -8121,18 +8445,18 @@ my_png_warning (png_struct *png_ptr, const char *msg)
+@@ -8121,18 +8449,18 @@ my_png_warning (png_struct *png_ptr, const char *msg)
  
  struct png_memory_storage
  {
@@ -7029,7 +7038,7 @@ index b5b7de3..a4461a2 100644
  {
    struct png_memory_storage *tbr = png_get_io_ptr (png_ptr);
  
-@@ -8143,13 +8467,13 @@ png_read_from_memory (png_structp png_ptr, png_bytep data, png_size_t length)
+@@ -8143,13 +8471,13 @@ png_read_from_memory (png_structp png_ptr, png_bytep data, png_size_t length)
    tbr->index = tbr->index + length;
  }
  
@@ -7045,7 +7054,7 @@ index b5b7de3..a4461a2 100644
  {
    FILE *fp = png_get_io_ptr (png_ptr);
  
-@@ -8157,13 +8481,13 @@ png_read_from_file (png_structp png_ptr, png_bytep data, png_size_t length)
+@@ -8157,13 +8485,13 @@ png_read_from_file (png_structp png_ptr, png_bytep data, png_size_t length)
      png_error (png_ptr, "Read error");
  }
  
@@ -7061,7 +7070,7 @@ index b5b7de3..a4461a2 100644
    png_struct *png_ptr;
    png_info *info_ptr;
    png_info *end_info;
-@@ -8173,7 +8497,8 @@ struct png_load_context
+@@ -8173,7 +8501,8 @@ struct png_load_context
  };
  
  static bool
@@ -7071,7 +7080,7 @@ index b5b7de3..a4461a2 100644
  {
    Lisp_Object specified_file, specified_data;
    FILE *fp = NULL;
-@@ -8189,7 +8514,7 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8189,7 +8518,7 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
    png_byte channels;
    png_uint_32 row_bytes;
    bool transparent_p;
@@ -7080,7 +7089,7 @@ index b5b7de3..a4461a2 100644
    ptrdiff_t nbytes;
    Emacs_Pix_Container ximg, mask_img = NULL;
  
-@@ -8203,8 +8528,9 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8203,8 +8532,9 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
        Lisp_Object file = image_find_image_file (specified_file);
  
        if (!STRINGP (file)
@@ -7092,7 +7101,7 @@ index b5b7de3..a4461a2 100644
  	{
  	  image_not_found_error (specified_file);
  	  return false;
-@@ -8253,9 +8579,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8253,9 +8583,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
      }
  
    /* Initialize read and info structs for PNG lib.  */
@@ -7104,7 +7113,7 @@ index b5b7de3..a4461a2 100644
    if (png_ptr)
      {
        info_ptr = png_create_info_struct (png_ptr);
-@@ -8269,14 +8594,16 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8269,14 +8598,16 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
    c->pixels = pixels;
    c->rows = rows;
  
@@ -7125,7 +7134,7 @@ index b5b7de3..a4461a2 100644
        return 0;
      }
  
-@@ -8286,7 +8613,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8286,7 +8617,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
      {
      error:
        if (c->png_ptr)
@@ -7135,7 +7144,7 @@ index b5b7de3..a4461a2 100644
        xfree (c->pixels);
        xfree (c->rows);
        if (c->fp)
-@@ -8302,11 +8630,11 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8302,11 +8634,11 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
  
    png_set_sig_bytes (png_ptr, sizeof sig);
    png_read_info (png_ptr, info_ptr);
@@ -7151,7 +7160,7 @@ index b5b7de3..a4461a2 100644
      {
        image_size_error ();
        goto error;
-@@ -8314,7 +8642,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8314,7 +8646,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
  
    /* Create the X image and pixmap now, so that the work below can be
       omitted if the image is too large for X.  */
@@ -7161,7 +7170,7 @@ index b5b7de3..a4461a2 100644
      goto error;
  
    /* If image contains simply transparency data, we prefer to
-@@ -8323,7 +8652,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8323,7 +8656,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
  # ifdef PNG_tRNS_SUPPORTED
    png_bytep trans_alpha;
    int num_trans;
@@ -7171,7 +7180,7 @@ index b5b7de3..a4461a2 100644
      {
        transparent_p = true;
        if (trans_alpha)
-@@ -8366,13 +8696,12 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8366,13 +8700,12 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
  	 current frame background, ignoring any default background
  	 color set by the image.  */
        if (STRINGP (specified_bg)
@@ -7191,7 +7200,7 @@ index b5b7de3..a4461a2 100644
  	/* The user specified `:background', use that.  */
  	{
  	  int shift = bit_depth == 16 ? 0 : 8;
-@@ -8390,10 +8719,11 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8390,10 +8723,11 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
    png_read_update_info (png_ptr, info_ptr);
  
    /* Get number of channels.  Valid values are 1 for grayscale images
@@ -7207,7 +7216,7 @@ index b5b7de3..a4461a2 100644
    channels = png_get_channels (png_ptr, info_ptr);
    eassert (channels == 3 || channels == 4);
  
-@@ -8420,8 +8750,7 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8420,8 +8754,7 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
  
    /* Create an image and pixmap serving as mask if the PNG image
       contains an alpha channel.  */
@@ -7217,7 +7226,7 @@ index b5b7de3..a4461a2 100644
        && !image_create_x_image_and_pixmap (f, img, width, height, 1,
  					   &mask_img, 1))
      {
-@@ -8448,23 +8777,26 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8448,23 +8781,26 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
  	  /* An alpha channel, aka mask channel, associates variable
  	     transparency with an image.  Where other image formats
  	     support binary transparency---fully transparent or fully
@@ -7252,7 +7261,7 @@ index b5b7de3..a4461a2 100644
  	      ++p;
  	    }
  	}
-@@ -8477,14 +8809,17 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8477,14 +8813,17 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
        png_color_16 *bg;
        if (png_get_bKGD (png_ptr, info_ptr, &bg))
  	{
@@ -7276,7 +7285,7 @@ index b5b7de3..a4461a2 100644
  	  img->background_valid = 1;
  	}
      }
-@@ -8505,7 +8840,7 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8505,7 +8844,7 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
  
    /* Maybe fill in the background field while we have ximg handy.
       Casting avoids a GCC warning.  */
@@ -7285,7 +7294,7 @@ index b5b7de3..a4461a2 100644
  
    /* Put ximg into the image.  */
    image_put_x_image (f, img, ximg, 0);
-@@ -8515,7 +8850,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
+@@ -8515,7 +8854,8 @@ png_load_body (struct frame *f, struct image *img, struct png_load_context *c)
      {
        /* Fill in the background_transparent field while we have the
  	 mask handy.  Casting avoids a GCC warning.  */
@@ -7295,7 +7304,7 @@ index b5b7de3..a4461a2 100644
  
        image_put_x_image (f, img, mask_img, 1);
      }
-@@ -8531,14 +8867,12 @@ png_load (struct frame *f, struct image *img)
+@@ -8531,14 +8871,12 @@ png_load (struct frame *f, struct image *img)
  }
  
  #endif /* HAVE_PNG */
@@ -7313,7 +7322,7 @@ index b5b7de3..a4461a2 100644
  
  /* Indices of image specification fields in gs_format, below.  */
  
-@@ -8560,19 +8894,17 @@ enum jpeg_keyword_index
+@@ -8560,19 +8898,17 @@ enum jpeg_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
  
@@ -7344,7 +7353,7 @@ index b5b7de3..a4461a2 100644
  
  /* Return true if OBJECT is a valid JPEG image specification.  */
  
-@@ -8600,9 +8932,10 @@ jpeg_image_p (Lisp_Object object)
+@@ -8600,9 +8936,10 @@ jpeg_image_p (Lisp_Object object)
  #  undef HAVE_STDLIB_H
  # endif
  
@@ -7358,7 +7367,7 @@ index b5b7de3..a4461a2 100644
  #  define __WIN32__ 1
  # endif
  
-@@ -8623,13 +8956,14 @@ jpeg_image_p (Lisp_Object object)
+@@ -8623,13 +8960,14 @@ jpeg_image_p (Lisp_Object object)
  # if defined CYGWIN && defined HAVE_NTGUI
  #  define boolean jpeg_boolean
  # endif
@@ -7375,7 +7384,7 @@ index b5b7de3..a4461a2 100644
  DEF_DLL_FN (boolean, jpeg_start_decompress, (j_decompress_ptr));
  DEF_DLL_FN (boolean, jpeg_finish_decompress, (j_decompress_ptr));
  DEF_DLL_FN (void, jpeg_destroy_decompress, (j_decompress_ptr));
-@@ -8637,8 +8971,9 @@ DEF_DLL_FN (int, jpeg_read_header, (j_decompress_ptr, boolean));
+@@ -8637,8 +8975,9 @@ DEF_DLL_FN (int, jpeg_read_header, (j_decompress_ptr, boolean));
  DEF_DLL_FN (JDIMENSION, jpeg_read_scanlines,
  	    (j_decompress_ptr, JSAMPARRAY, JDIMENSION));
  DEF_DLL_FN (struct jpeg_error_mgr *, jpeg_std_error,
@@ -7387,7 +7396,7 @@ index b5b7de3..a4461a2 100644
  
  static bool
  init_jpeg_functions (void)
-@@ -8678,7 +9013,8 @@ init_jpeg_functions (void)
+@@ -8678,7 +9017,8 @@ init_jpeg_functions (void)
  #  define jpeg_std_error fn_jpeg_std_error
  
  /* Wrapper since we can't directly assign the function pointer
@@ -7397,7 +7406,7 @@ index b5b7de3..a4461a2 100644
  static boolean
  jpeg_resync_to_restart_wrapper (j_decompress_ptr cinfo, int desired)
  {
-@@ -8698,23 +9034,22 @@ struct my_jpeg_error_mgr
+@@ -8698,23 +9038,22 @@ struct my_jpeg_error_mgr
       variables.  */
    struct jpeg_decompress_struct cinfo;
    enum
@@ -7428,7 +7437,7 @@ index b5b7de3..a4461a2 100644
  /* Init source method for JPEG data source manager.  Called by
     jpeg_read_header before any data is actually read.  See
     libjpeg.doc from the JPEG lib distribution.  */
-@@ -8724,7 +9059,6 @@ our_common_init_source (j_decompress_ptr cinfo)
+@@ -8724,7 +9063,6 @@ our_common_init_source (j_decompress_ptr cinfo)
  {
  }
  
@@ -7436,7 +7445,7 @@ index b5b7de3..a4461a2 100644
  /* Method to terminate data source.  Called by
     jpeg_finish_decompress after all data has been processed.  */
  
-@@ -8733,7 +9067,6 @@ our_common_term_source (j_decompress_ptr cinfo)
+@@ -8733,7 +9071,6 @@ our_common_term_source (j_decompress_ptr cinfo)
  {
  }
  
@@ -7444,7 +7453,7 @@ index b5b7de3..a4461a2 100644
  /* Fill input buffer method for JPEG data source manager.  Called
     whenever more data is needed.  We read the whole image in one step,
     so this only adds a fake end of input marker at the end.  */
-@@ -8754,12 +9087,12 @@ our_memory_fill_input_buffer (j_decompress_ptr cinfo)
+@@ -8754,12 +9091,12 @@ our_memory_fill_input_buffer (j_decompress_ptr cinfo)
    return 1;
  }
  
@@ -7459,7 +7468,7 @@ index b5b7de3..a4461a2 100644
  {
    struct jpeg_source_mgr *src = cinfo->src;
  
-@@ -8773,7 +9106,6 @@ our_memory_skip_input_data (j_decompress_ptr cinfo, long int num_bytes)
+@@ -8773,7 +9110,6 @@ our_memory_skip_input_data (j_decompress_ptr cinfo, long int num_bytes)
      }
  }
  
@@ -7467,7 +7476,7 @@ index b5b7de3..a4461a2 100644
  /* Set up the JPEG lib for reading an image from DATA which contains
     LEN bytes.  CINFO is the decompression info structure created for
     reading the image.  */
-@@ -8783,7 +9115,7 @@ jpeg_memory_src (j_decompress_ptr cinfo, JOCTET *data, ptrdiff_t len)
+@@ -8783,7 +9119,7 @@ jpeg_memory_src (j_decompress_ptr cinfo, JOCTET *data, ptrdiff_t len)
  {
    struct jpeg_source_mgr *src = cinfo->src;
  
@@ -7476,7 +7485,7 @@ index b5b7de3..a4461a2 100644
      {
        /* First time for this JPEG object?  */
        src = cinfo->mem->alloc_small ((j_common_ptr) cinfo,
-@@ -8795,13 +9127,13 @@ jpeg_memory_src (j_decompress_ptr cinfo, JOCTET *data, ptrdiff_t len)
+@@ -8795,13 +9131,13 @@ jpeg_memory_src (j_decompress_ptr cinfo, JOCTET *data, ptrdiff_t len)
    src->init_source = our_common_init_source;
    src->fill_input_buffer = our_memory_fill_input_buffer;
    src->skip_input_data = our_memory_skip_input_data;
@@ -7492,7 +7501,7 @@ index b5b7de3..a4461a2 100644
  struct jpeg_stdio_mgr
  {
    struct jpeg_source_mgr mgr;
-@@ -8810,11 +9142,9 @@ struct jpeg_stdio_mgr
+@@ -8810,11 +9146,9 @@ struct jpeg_stdio_mgr
    JOCTET *buffer;
  };
  
@@ -7505,7 +7514,7 @@ index b5b7de3..a4461a2 100644
  
  /* Fill input buffer method for JPEG data source manager.  Called
     whenever more data is needed.  The data is read from a FILE *.  */
-@@ -8829,24 +9159,24 @@ our_stdio_fill_input_buffer (j_decompress_ptr cinfo)
+@@ -8829,24 +9163,24 @@ our_stdio_fill_input_buffer (j_decompress_ptr cinfo)
      {
        ptrdiff_t bytes;
  
@@ -7540,7 +7549,7 @@ index b5b7de3..a4461a2 100644
  /* Method to skip over NUM_BYTES bytes in the image data.  CINFO->src
     is the JPEG data source manager.  */
  
-@@ -8859,23 +9189,22 @@ our_stdio_skip_input_data (j_decompress_ptr cinfo, long int num_bytes)
+@@ -8859,23 +9193,22 @@ our_stdio_skip_input_data (j_decompress_ptr cinfo, long int num_bytes)
    while (num_bytes > 0 && !src->finished)
      {
        if (num_bytes <= src->mgr.bytes_in_buffer)
@@ -7575,7 +7584,7 @@ index b5b7de3..a4461a2 100644
  /* Set up the JPEG lib for reading an image from a FILE *.
     CINFO is the decompression info structure created for
     reading the image.  */
-@@ -8885,7 +9214,7 @@ jpeg_file_src (j_decompress_ptr cinfo, FILE *fp)
+@@ -8885,7 +9218,7 @@ jpeg_file_src (j_decompress_ptr cinfo, FILE *fp)
  {
    struct jpeg_stdio_mgr *src = (struct jpeg_stdio_mgr *) cinfo->src;
  
@@ -7584,7 +7593,7 @@ index b5b7de3..a4461a2 100644
      {
        /* First time for this JPEG object?  */
        src = cinfo->mem->alloc_small ((j_common_ptr) cinfo,
-@@ -8901,7 +9230,8 @@ jpeg_file_src (j_decompress_ptr cinfo, FILE *fp)
+@@ -8901,7 +9234,8 @@ jpeg_file_src (j_decompress_ptr cinfo, FILE *fp)
    src->mgr.init_source = our_common_init_source;
    src->mgr.fill_input_buffer = our_stdio_fill_input_buffer;
    src->mgr.skip_input_data = our_stdio_skip_input_data;
@@ -7594,7 +7603,7 @@ index b5b7de3..a4461a2 100644
    src->mgr.term_source = our_common_term_source;
    src->mgr.bytes_in_buffer = 0;
    src->mgr.next_input_byte = NULL;
-@@ -8932,8 +9262,9 @@ jpeg_load_body (struct frame *f, struct image *img,
+@@ -8932,8 +9266,9 @@ jpeg_load_body (struct frame *f, struct image *img,
        int fd;
        Lisp_Object file = image_find_image_file (specified_file);
        if (!STRINGP (file)
@@ -7606,7 +7615,7 @@ index b5b7de3..a4461a2 100644
  	{
  	  image_not_found_error (specified_file);
  	  return false;
-@@ -8963,7 +9294,8 @@ jpeg_load_body (struct frame *f, struct image *img,
+@@ -8963,7 +9298,8 @@ jpeg_load_body (struct frame *f, struct image *img,
  	case MY_JPEG_ERROR_EXIT:
  	  {
  	    char buf[JMSG_LENGTH_MAX];
@@ -7616,7 +7625,7 @@ index b5b7de3..a4461a2 100644
  	    image_error ("Error reading JPEG image `%s': %s",
  			 img->spec, build_string (buf));
  	    break;
-@@ -8992,7 +9324,8 @@ jpeg_load_body (struct frame *f, struct image *img,
+@@ -8992,7 +9328,8 @@ jpeg_load_body (struct frame *f, struct image *img,
  
    /* Create the JPEG decompression object.  Let it read from fp.
  	 Read the JPEG image header.  */
@@ -7626,7 +7635,7 @@ index b5b7de3..a4461a2 100644
  
    if (NILP (specified_data))
      jpeg_file_src (&mgr->cinfo, fp);
-@@ -9016,17 +9349,19 @@ jpeg_load_body (struct frame *f, struct image *img,
+@@ -9016,17 +9353,19 @@ jpeg_load_body (struct frame *f, struct image *img,
      }
  
    /* Create X image and pixmap.  */
@@ -7651,7 +7660,7 @@ index b5b7de3..a4461a2 100644
    USE_SAFE_ALLOCA;
    {
      if (mgr->cinfo.out_color_components > 2)
-@@ -9053,11 +9388,11 @@ jpeg_load_body (struct frame *f, struct image *img,
+@@ -9053,11 +9392,11 @@ jpeg_load_body (struct frame *f, struct image *img,
  	colors[i] = lookup_rgb_color (f, r, g, b);
        }
  
@@ -7665,7 +7674,7 @@ index b5b7de3..a4461a2 100644
    }
  
    /* Read pixels.  */
-@@ -9080,7 +9415,7 @@ jpeg_load_body (struct frame *f, struct image *img,
+@@ -9080,7 +9419,7 @@ jpeg_load_body (struct frame *f, struct image *img,
    /* Maybe fill in the background field while we have ximg handy. */
    if (NILP (image_spec_value (img->spec, QCbackground, NULL)))
      /* Casting avoids a GCC warning.  */
@@ -7674,7 +7683,7 @@ index b5b7de3..a4461a2 100644
  
    /* Put ximg into the image.  */
    image_put_x_image (f, img, ximg, 0);
-@@ -9096,14 +9431,12 @@ jpeg_load (struct frame *f, struct image *img)
+@@ -9096,14 +9435,12 @@ jpeg_load (struct frame *f, struct image *img)
  }
  
  #endif /* !HAVE_JPEG */
@@ -7692,7 +7701,7 @@ index b5b7de3..a4461a2 100644
  
  /* Indices of image specification fields in tiff_format, below.  */
  
-@@ -9126,20 +9459,18 @@ enum tiff_keyword_index
+@@ -9126,20 +9463,18 @@ enum tiff_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
  
@@ -7725,7 +7734,7 @@ index b5b7de3..a4461a2 100644
  
  /* Return true if OBJECT is a valid TIFF image specification.  */
  
-@@ -9163,25 +9494,28 @@ tiff_image_p (Lisp_Object object)
+@@ -9163,25 +9498,28 @@ tiff_image_p (Lisp_Object object)
  # include <tiffio.h>
  
  /* libtiff version 4.3.0 deprecated uint32 typedef.  */
@@ -7766,7 +7775,7 @@ index b5b7de3..a4461a2 100644
  DEF_DLL_FN (int, TIFFSetDirectory, (TIFF *, tdir_t));
  
  static bool
-@@ -9223,7 +9557,6 @@ init_tiff_functions (void)
+@@ -9223,7 +9561,6 @@ init_tiff_functions (void)
  
  # endif /* WINDOWSNT */
  
@@ -7774,7 +7783,7 @@ index b5b7de3..a4461a2 100644
  /* Reading from a memory buffer for TIFF images Based on the PNG
     memory source, but we have to provide a lot of extra functions.
     Blah.
-@@ -9238,8 +9571,7 @@ typedef struct
+@@ -9238,8 +9575,7 @@ typedef struct
    unsigned char *bytes;
    ptrdiff_t len;
    ptrdiff_t index;
@@ -7784,7 +7793,7 @@ index b5b7de3..a4461a2 100644
  
  static tsize_t
  tiff_read_from_memory (thandle_t data, tdata_t buf, tsize_t size)
-@@ -9266,19 +9598,19 @@ tiff_seek_in_memory (thandle_t data, toff_t off, int whence)
+@@ -9266,19 +9602,19 @@ tiff_seek_in_memory (thandle_t data, toff_t off, int whence)
  
    switch (whence)
      {
@@ -7808,7 +7817,7 @@ index b5b7de3..a4461a2 100644
        return -1;
      }
  
-@@ -9319,14 +9651,14 @@ tiff_size_of_memory (thandle_t data)
+@@ -9319,14 +9655,14 @@ tiff_size_of_memory (thandle_t data)
     compiler error compiling tiff_handler, see Bugzilla bug #17406
     (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=17406).  Declaring
     this function as external works around that problem.  */
@@ -7826,7 +7835,7 @@ index b5b7de3..a4461a2 100644
    ATTRIBUTE_FORMAT_PRINTF (3, 0);
  MINGW_STATIC void
  tiff_handler (const char *log_format, const char *title,
-@@ -9352,16 +9684,15 @@ tiff_error_handler (const char *title, const char *format, va_list ap)
+@@ -9352,16 +9688,15 @@ tiff_error_handler (const char *title, const char *format, va_list ap)
    tiff_handler ("TIFF error: %s %s", title, format, ap);
  }
  
@@ -7845,7 +7854,7 @@ index b5b7de3..a4461a2 100644
  /* Load TIFF image IMG for use on frame F.  Value is true if
     successful.  */
  
-@@ -9420,18 +9751,17 @@ tiff_load (struct frame *f, struct image *img)
+@@ -9420,18 +9755,17 @@ tiff_load (struct frame *f, struct image *img)
        memsrc.len = SBYTES (specified_data);
        memsrc.index = 0;
  
@@ -7872,7 +7881,7 @@ index b5b7de3..a4461a2 100644
  	  return 0;
  	}
      }
-@@ -9440,8 +9770,9 @@ tiff_load (struct frame *f, struct image *img)
+@@ -9440,8 +9774,9 @@ tiff_load (struct frame *f, struct image *img)
    if (FIXNUMP (image))
      {
        EMACS_INT ino = XFIXNAT (image);
@@ -7884,7 +7893,7 @@ index b5b7de3..a4461a2 100644
  	{
  	  image_error ("Invalid image number `%s' in image `%s'",
  		       image, img->spec);
-@@ -9463,9 +9794,9 @@ tiff_load (struct frame *f, struct image *img)
+@@ -9463,9 +9798,9 @@ tiff_load (struct frame *f, struct image *img)
      }
  
    /* Create the X image and pixmap.  */
@@ -7897,7 +7906,7 @@ index b5b7de3..a4461a2 100644
      {
        TIFFClose (tiff);
        return 0;
-@@ -9480,9 +9811,8 @@ tiff_load (struct frame *f, struct image *img)
+@@ -9480,9 +9815,8 @@ tiff_load (struct frame *f, struct image *img)
      continue;
  
    if (count > 1)
@@ -7909,7 +7918,7 @@ index b5b7de3..a4461a2 100644
  
    TIFFClose (tiff);
    if (!rc)
-@@ -9495,7 +9825,7 @@ tiff_load (struct frame *f, struct image *img)
+@@ -9495,7 +9829,7 @@ tiff_load (struct frame *f, struct image *img)
    /* Initialize the color table.  */
    init_color_table ();
  
@@ -7918,7 +7927,7 @@ index b5b7de3..a4461a2 100644
    for (y = 0; y < height; ++y)
      {
        UINT32 *row = buf + y * width;
-@@ -9506,12 +9836,14 @@ tiff_load (struct frame *f, struct image *img)
+@@ -9506,12 +9840,14 @@ tiff_load (struct frame *f, struct image *img)
  	  int r = TIFFGetR (abgr) << 8;
  	  int g = TIFFGetG (abgr) << 8;
  	  int b = TIFFGetB (abgr) << 8;
@@ -7935,7 +7944,7 @@ index b5b7de3..a4461a2 100644
    img->colors = colors_in_color_table (&img->ncolors);
    free_color_table ();
  # endif /* COLOR_TABLE_SUPPORT */
-@@ -9522,7 +9854,7 @@ tiff_load (struct frame *f, struct image *img)
+@@ -9522,7 +9858,7 @@ tiff_load (struct frame *f, struct image *img)
    /* Maybe fill in the background field while we have ximg handy. */
    if (NILP (image_spec_value (img->spec, QCbackground, NULL)))
      /* Casting avoids a GCC warning on W32.  */
@@ -7944,7 +7953,7 @@ index b5b7de3..a4461a2 100644
  
    /* Put ximg into the image.  */
    image_put_x_image (f, img, ximg, 0);
-@@ -9532,14 +9864,12 @@ tiff_load (struct frame *f, struct image *img)
+@@ -9532,14 +9868,12 @@ tiff_load (struct frame *f, struct image *img)
  }
  
  #endif
@@ -7962,7 +7971,7 @@ index b5b7de3..a4461a2 100644
  
  /* Indices of image specification fields in gif_format, below.  */
  
-@@ -9562,20 +9892,18 @@ enum gif_keyword_index
+@@ -9562,20 +9896,18 @@ enum gif_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
  
@@ -7995,7 +8004,7 @@ index b5b7de3..a4461a2 100644
  
  /* Free X resources of GIF image IMG which is used on frame F.  */
  
-@@ -9639,11 +9967,11 @@ gif_image_p (Lisp_Object object)
+@@ -9639,11 +9971,11 @@ gif_image_p (Lisp_Object object)
  # endif
  /* Giflib before 5.0 didn't define these macros.  */
  # if GIFLIB_MAJOR < 5
@@ -8012,7 +8021,7 @@ index b5b7de3..a4461a2 100644
  # endif
  
  /* GifErrorString is declared to return char const * when GIFLIB_MAJOR
-@@ -9656,22 +9984,22 @@ gif_image_p (Lisp_Object object)
+@@ -9656,22 +9988,22 @@ gif_image_p (Lisp_Object object)
  
  /* GIF library details.  */
  #  if GIFLIB_MAJOR + (GIFLIB_MINOR >= 1) > 5
@@ -8044,7 +8053,7 @@ index b5b7de3..a4461a2 100644
  #  endif
  
  static bool
-@@ -9723,8 +10051,7 @@ typedef struct
+@@ -9723,8 +10055,7 @@ typedef struct
    unsigned char *bytes;
    ptrdiff_t len;
    ptrdiff_t index;
@@ -8054,7 +8063,7 @@ index b5b7de3..a4461a2 100644
  
  /* Make the current memory source available to gif_read_from_memory.
     It's done this way because not all versions of libungif support
-@@ -9749,28 +10076,28 @@ gif_close (GifFileType *gif, int *err)
+@@ -9749,28 +10080,28 @@ gif_close (GifFileType *gif, int *err)
  {
    int retval;
  
@@ -8092,7 +8101,7 @@ index b5b7de3..a4461a2 100644
  {
    int gif_err;
    gif_close (cache->handle, &gif_err);
-@@ -9783,15 +10110,19 @@ gif_load (struct frame *f, struct image *img)
+@@ -9783,15 +10114,19 @@ gif_load (struct frame *f, struct image *img)
    ColorMapObject *gif_color_map;
    GifFileType *gif = NULL;
    gif_memory_source memsrc;
@@ -8117,7 +8126,7 @@ index b5b7de3..a4461a2 100644
    int byte_size = 0;
  
    idx = FIXNUMP (image_number) ? XFIXNAT (image_number) : 0;
-@@ -9812,7 +10143,7 @@ gif_load (struct frame *f, struct image *img)
+@@ -9812,7 +10147,7 @@ gif_load (struct frame *f, struct image *img)
      }
  
    /* If we don't have a cached entry, read the image.  */
@@ -8126,7 +8135,7 @@ index b5b7de3..a4461a2 100644
      {
        if (NILP (specified_data))
  	{
-@@ -9824,25 +10155,25 @@ gif_load (struct frame *f, struct image *img)
+@@ -9824,25 +10159,25 @@ gif_load (struct frame *f, struct image *img)
  	    }
  
  	  Lisp_Object encoded_file = ENCODE_FILE (file);
@@ -8159,7 +8168,7 @@ index b5b7de3..a4461a2 100644
  		image_error ("Cannot open `%s'", file);
  	      return false;
  	    }
-@@ -9853,8 +10184,7 @@ gif_load (struct frame *f, struct image *img)
+@@ -9853,8 +10188,7 @@ gif_load (struct frame *f, struct image *img)
  	    struct stat st;
  	    int fd;
  
@@ -8169,7 +8178,7 @@ index b5b7de3..a4461a2 100644
  	    if (!sys_fstat (fd, &st))
  	      byte_size = st.st_size;
  	    emacs_close (fd);
-@@ -9875,26 +10205,28 @@ gif_load (struct frame *f, struct image *img)
+@@ -9875,26 +10209,28 @@ gif_load (struct frame *f, struct image *img)
  	  memsrc.index = 0;
  	  byte_size = memsrc.len;
  
@@ -8205,7 +8214,7 @@ index b5b7de3..a4461a2 100644
        if (!check_image_size (f, gif->SWidth, gif->SHeight))
  	{
  	  image_size_error ();
-@@ -9905,7 +10237,7 @@ gif_load (struct frame *f, struct image *img)
+@@ -9905,7 +10241,7 @@ gif_load (struct frame *f, struct image *img)
        rc = DGifSlurp (gif);
        if (rc == GIF_ERROR || gif->ImageCount <= 0)
  	{
@@ -8214,7 +8223,7 @@ index b5b7de3..a4461a2 100644
  	  const char *errstr = GifErrorString (gif->Error);
  	  if (errstr)
  	    if (NILP (specified_data))
-@@ -9915,19 +10247,20 @@ gif_load (struct frame *f, struct image *img)
+@@ -9915,19 +10251,20 @@ gif_load (struct frame *f, struct image *img)
  	      image_error ("Error reading GIF data: %s",
  			   build_string (errstr));
  	  else
@@ -8241,7 +8250,7 @@ index b5b7de3..a4461a2 100644
        for (j = 0; j < gif->ImageCount; ++j)
  	{
  	  struct SavedImage *subimage = gif->SavedImages + j;
-@@ -9935,9 +10268,7 @@ gif_load (struct frame *f, struct image *img)
+@@ -9935,9 +10272,7 @@ gif_load (struct frame *f, struct image *img)
  	  int subimg_height = subimage->ImageDesc.Height;
  	  int subimg_top = subimage->ImageDesc.Top;
  	  int subimg_left = subimage->ImageDesc.Left;
@@ -8252,7 +8261,7 @@ index b5b7de3..a4461a2 100644
  	      || subimg_left < 0
  	      || subimg_top + subimg_height > height
  	      || subimg_left + subimg_width > width)
-@@ -9965,7 +10296,7 @@ gif_load (struct frame *f, struct image *img)
+@@ -9965,7 +10300,7 @@ gif_load (struct frame *f, struct image *img)
    if (cache && !cache->handle)
      {
        cache->handle = gif;
@@ -8261,7 +8270,7 @@ index b5b7de3..a4461a2 100644
        cache->width = width;
        cache->height = height;
        cache->byte_size = byte_size;
-@@ -9986,7 +10317,8 @@ gif_load (struct frame *f, struct image *img)
+@@ -9986,7 +10321,8 @@ gif_load (struct frame *f, struct image *img)
  
    /* Create the X image and pixmap.  */
    Emacs_Pix_Container ximg;
@@ -8271,7 +8280,7 @@ index b5b7de3..a4461a2 100644
      goto gif_error;
  
    /* We construct the (possibly composited animated) image in this
-@@ -10003,15 +10335,16 @@ gif_load (struct frame *f, struct image *img)
+@@ -10003,15 +10339,16 @@ gif_load (struct frame *f, struct image *img)
       disposal methods).  Let's simply assume that the part not covered
       by a sub-image is in the frame's background color.  */
    unsigned long frame_bg;
@@ -8292,7 +8301,7 @@ index b5b7de3..a4461a2 100644
  
    for (y = 0; y < img->corners[TOP_CORNER]; ++y)
      for (x = 0; x < width; ++x)
-@@ -10021,7 +10354,8 @@ gif_load (struct frame *f, struct image *img)
+@@ -10021,7 +10358,8 @@ gif_load (struct frame *f, struct image *img)
      for (x = 0; x < width; ++x)
        *(pixmap + x + y * width) = frame_bg;
  
@@ -8302,7 +8311,7 @@ index b5b7de3..a4461a2 100644
      {
        for (x = 0; x < img->corners[LEFT_CORNER]; ++x)
  	*(pixmap + x + y * width) = frame_bg;
-@@ -10038,11 +10372,12 @@ gif_load (struct frame *f, struct image *img)
+@@ -10038,11 +10376,12 @@ gif_load (struct frame *f, struct image *img)
      {
        bgcolor = image_alloc_image_color (f, img, specified_bg,
  					 FRAME_BACKGROUND_PIXEL (f));
@@ -8319,7 +8328,7 @@ index b5b7de3..a4461a2 100644
      }
  
    int start_frame = 0;
-@@ -10072,7 +10407,7 @@ gif_load (struct frame *f, struct image *img)
+@@ -10072,7 +10411,7 @@ gif_load (struct frame *f, struct image *img)
        int disposal = DISPOSAL_UNSPECIFIED;
        int transparency_color_index = NO_TRANSPARENT_COLOR;
  
@@ -8328,7 +8337,7 @@ index b5b7de3..a4461a2 100644
        /* Find the Graphic Control Extension block for this sub-image.
  	 Extract the disposal method and transparency color.  */
        for (i = 0; i < subimage->ExtensionBlockCount; i++)
-@@ -10080,20 +10415,20 @@ gif_load (struct frame *f, struct image *img)
+@@ -10080,20 +10419,20 @@ gif_load (struct frame *f, struct image *img)
  	  ExtensionBlock *extblock = subimage->ExtensionBlocks + i;
  
  	  if ((extblock->Function == GIF_LOCAL_DESCRIPTOR_EXTENSION)
@@ -8354,7 +8363,7 @@ index b5b7de3..a4461a2 100644
  
        /* We can't "keep in place" the first subimage.  */
        if (j == 0)
-@@ -10103,7 +10438,8 @@ gif_load (struct frame *f, struct image *img)
+@@ -10103,7 +10442,8 @@ gif_load (struct frame *f, struct image *img)
  	 "No disposal specified.  The decoder is not required to take
  	 any action."  In practice, it seems we need to treat this
  	 like "keep in place" (DISPOSE_DO_NOT), see e.g.
@@ -8364,7 +8373,7 @@ index b5b7de3..a4461a2 100644
        if (disposal == DISPOSAL_UNSPECIFIED)
  	disposal = DISPOSE_DO_NOT;
  
-@@ -10120,14 +10456,16 @@ gif_load (struct frame *f, struct image *img)
+@@ -10120,14 +10460,16 @@ gif_load (struct frame *f, struct image *img)
  	gif_color_map = gif->SColorMap;
  
        /* Allocate subimage colors.  */
@@ -8384,7 +8393,7 @@ index b5b7de3..a4461a2 100644
  	    else
  	      {
  		int r = gif_color_map->Colors[i].Red << 8;
-@@ -10152,25 +10490,29 @@ gif_load (struct frame *f, struct image *img)
+@@ -10152,25 +10494,29 @@ gif_load (struct frame *f, struct image *img)
  	      for (x = 0; x < subimg_width; x++)
  		{
  		  int c = raster[y * subimg_width + x];
@@ -8424,7 +8433,7 @@ index b5b7de3..a4461a2 100644
  	      }
  	}
      }
-@@ -10181,19 +10523,21 @@ gif_load (struct frame *f, struct image *img)
+@@ -10181,19 +10527,21 @@ gif_load (struct frame *f, struct image *img)
      for (x = 0; x < width; ++x)
        PUT_PIXEL (ximg, x, y, *(pixmap + x + y * width));
  
@@ -8450,7 +8459,7 @@ index b5b7de3..a4461a2 100644
  	/* Append (... FUNCTION "BYTES") */
  	{
  	  img->lisp_data
-@@ -10212,14 +10556,14 @@ gif_load (struct frame *f, struct image *img)
+@@ -10212,14 +10560,14 @@ gif_load (struct frame *f, struct image *img)
        img->lisp_data
  	= Fcons (Qdelay,
  		 /* Default GIF delay is 1/15th of a second.  */
@@ -8469,7 +8478,7 @@ index b5b7de3..a4461a2 100644
  
    if (!cache)
      {
-@@ -10227,14 +10571,14 @@ gif_load (struct frame *f, struct image *img)
+@@ -10227,14 +10575,14 @@ gif_load (struct frame *f, struct image *img)
  	xfree (pixmap);
        if (gif_close (gif, &gif_err) == GIF_ERROR)
  	{
@@ -8488,7 +8497,7 @@ index b5b7de3..a4461a2 100644
  	    image_error ("Error closing `%s'", img->spec);
  	}
      }
-@@ -10242,14 +10586,14 @@ gif_load (struct frame *f, struct image *img)
+@@ -10242,14 +10590,14 @@ gif_load (struct frame *f, struct image *img)
    /* Maybe fill in the background field while we have ximg handy. */
    if (NILP (image_spec_value (img->spec, QCbackground, NULL)))
      /* Casting avoids a GCC warning.  */
@@ -8505,7 +8514,7 @@ index b5b7de3..a4461a2 100644
    if (pixmap)
      xfree (pixmap);
    gif_close (gif, NULL);
-@@ -10263,16 +10607,14 @@ gif_load (struct frame *f, struct image *img)
+@@ -10263,16 +10611,14 @@ gif_load (struct frame *f, struct image *img)
  
  #endif /* HAVE_GIF */
  
@@ -8526,7 +8535,7 @@ index b5b7de3..a4461a2 100644
  
  /* Indices of image specification fields in webp_format, below.  */
  
-@@ -10295,20 +10637,18 @@ enum webp_keyword_index
+@@ -10295,20 +10641,18 @@ enum webp_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
  
@@ -8559,7 +8568,7 @@ index b5b7de3..a4461a2 100644
  
  /* Return true if OBJECT is a valid WebP image specification.  */
  
-@@ -10325,32 +10665,37 @@ webp_image_p (Lisp_Object object)
+@@ -10325,32 +10669,37 @@ webp_image_p (Lisp_Object object)
    return fmt[WEBP_FILE].count + fmt[WEBP_DATA].count == 1;
  }
  
@@ -8611,7 +8620,7 @@ index b5b7de3..a4461a2 100644
  
  static bool
  init_webp_functions (void)
-@@ -10377,42 +10722,42 @@ init_webp_functions (void)
+@@ -10377,42 +10726,42 @@ init_webp_functions (void)
    return true;
  }
  
@@ -8688,7 +8697,7 @@ index b5b7de3..a4461a2 100644
  {
    WebPAnimDecoderDelete (cache->handle);
  }
-@@ -10428,15 +10773,18 @@ webp_load (struct frame *f, struct image *img)
+@@ -10428,15 +10777,18 @@ webp_load (struct frame *f, struct image *img)
    Lisp_Object file = Qnil;
    int frames = 0;
    double delay = 0;
@@ -8711,7 +8720,7 @@ index b5b7de3..a4461a2 100644
        if (contents == NULL)
  	return false;
      }
-@@ -10461,7 +10809,8 @@ webp_load (struct frame *f, struct image *img)
+@@ -10461,7 +10813,8 @@ webp_load (struct frame *f, struct image *img)
        goto webp_error1;
      }
  
@@ -8721,7 +8730,7 @@ index b5b7de3..a4461a2 100644
    ptrdiff_t idx = FIXNUMP (image_number) ? XFIXNAT (image_number) : 0;
  
    /* Get WebP features.  */
-@@ -10481,7 +10830,8 @@ webp_load (struct frame *f, struct image *img)
+@@ -10481,7 +10834,8 @@ webp_load (struct frame *f, struct image *img)
      default:
        /* Error out in all other cases.  */
        if (!NILP (file))
@@ -8731,7 +8740,7 @@ index b5b7de3..a4461a2 100644
        else
  	image_error ("Error when interpreting WebP image data");
        goto webp_error1;
-@@ -10495,11 +10845,13 @@ webp_load (struct frame *f, struct image *img)
+@@ -10495,11 +10849,13 @@ webp_load (struct frame *f, struct image *img)
        /* Animated image.  */
        int timestamp;
  
@@ -8747,12 +8756,32 @@ index b5b7de3..a4461a2 100644
  	  delay = timestamp;
  	  cache->index++;
  	  anim = cache->handle;
-@@ -10523,22 +10875,24 @@ webp_load (struct frame *f, struct image *img)
+@@ -10511,7 +10867,15 @@ webp_load (struct frame *f, struct image *img)
+ 	{
+ 	  /* Start a new cache entry.  */
+ 	  if (cache->handle)
+-	    WebPAnimDecoderDelete (cache->handle);
++	    {
++	      WebPAnimDecoderDelete (cache->handle);
++	      cache->handle = NULL;
++	    }
++	  if (cache->temp)
++	    {
++	      xfree (cache->temp);
++	      cache->temp = NULL;
++	    }
+ 
+ 	  WebPData webp_data;
+ 	  if (NILP (specified_data))
+@@ -10522,23 +10886,26 @@ webp_load (struct frame *f, struct image *img)
+ 	    /* We got the data from a string, so copy it over so that
  	       it doesn't get garbage-collected.  */
  	    {
- 	      webp_data.bytes = xmalloc (size);
+-	      webp_data.bytes = xmalloc (size);
 -	      memcpy ((void*) webp_data.bytes, contents, size);
-+	      memcpy ((void *) webp_data.bytes, contents, size);
++	      cache->temp = xmalloc (size);
++	      memcpy (cache->temp, contents, size);
++	      webp_data.bytes = cache->temp;
  	    }
  	  /* In any case, we release the allocated memory when we
  	     purge the anim cache.  */
@@ -8780,7 +8809,7 @@ index b5b7de3..a4461a2 100644
  	  WebPDemuxDelete (demux);
  
  	  WebPAnimDecoderOptions dec_options;
-@@ -10548,16 +10902,18 @@ webp_load (struct frame *f, struct image *img)
+@@ -10548,16 +10915,18 @@ webp_load (struct frame *f, struct image *img)
  	  cache->handle = anim;
  	  cache->index = idx;
  
@@ -8809,7 +8838,7 @@ index b5b7de3..a4461a2 100644
  	}
      }
    else
-@@ -10586,7 +10942,8 @@ webp_load (struct frame *f, struct image *img)
+@@ -10586,7 +10955,8 @@ webp_load (struct frame *f, struct image *img)
  
    /* Create the x image and pixmap.  */
    Emacs_Pix_Container ximg;
@@ -8819,7 +8848,7 @@ index b5b7de3..a4461a2 100644
      goto webp_error2;
  
    /* Find the background to use if the WebP image contains an alpha
-@@ -10603,14 +10960,14 @@ webp_load (struct frame *f, struct image *img)
+@@ -10603,14 +10973,14 @@ webp_load (struct frame *f, struct image *img)
        if (STRINGP (specified_bg))
  	FRAME_TERMINAL (f)->defined_color_hook (f,
  						SSDATA (specified_bg),
@@ -8839,7 +8868,7 @@ index b5b7de3..a4461a2 100644
      }
  
    /* Fill the X image from WebP data.  */
-@@ -10619,10 +10976,8 @@ webp_load (struct frame *f, struct image *img)
+@@ -10619,10 +10989,8 @@ webp_load (struct frame *f, struct image *img)
  
    img->corners[TOP_CORNER] = 0;
    img->corners[LEFT_CORNER] = 0;
@@ -8852,7 +8881,7 @@ index b5b7de3..a4461a2 100644
  
    uint8_t *p = decoded;
    for (int y = 0; y < height; ++y)
-@@ -10635,9 +10990,9 @@ webp_load (struct frame *f, struct image *img)
+@@ -10635,9 +11003,9 @@ webp_load (struct frame *f, struct image *img)
  	  if (features.has_alpha || anim)
  	    {
  	      float a = (float) p[3] / UINT8_MAX;
@@ -8865,7 +8894,7 @@ index b5b7de3..a4461a2 100644
  	      p += 4;
  	    }
  	  else
-@@ -10650,11 +11005,11 @@ webp_load (struct frame *f, struct image *img)
+@@ -10650,11 +11018,11 @@ webp_load (struct frame *f, struct image *img)
  	}
      }
  
@@ -8879,7 +8908,7 @@ index b5b7de3..a4461a2 100644
  
    /* Put ximg into the image.  */
    image_put_x_image (f, img, ximg, 0);
-@@ -10663,12 +11018,10 @@ webp_load (struct frame *f, struct image *img)
+@@ -10663,12 +11031,10 @@ webp_load (struct frame *f, struct image *img)
    img->height = height;
  
    /* Return animation data.  */
@@ -8896,7 +8925,7 @@ index b5b7de3..a4461a2 100644
  
    /* Clean up.  */
    if (!anim)
-@@ -10677,11 +11030,11 @@ webp_load (struct frame *f, struct image *img)
+@@ -10677,11 +11043,11 @@ webp_load (struct frame *f, struct image *img)
      xfree (contents);
    return true;
  
@@ -8910,7 +8939,7 @@ index b5b7de3..a4461a2 100644
    if (NILP (specified_data))
      xfree (contents);
    return false;
-@@ -10689,73 +11042,69 @@ webp_load (struct frame *f, struct image *img)
+@@ -10689,73 +11055,69 @@ webp_load (struct frame *f, struct image *img)
  
  #endif /* HAVE_WEBP */
  
@@ -9030,7 +9059,7 @@ index b5b7de3..a4461a2 100644
     identify the IMAGEMAGICK format.   */
  
  static bool
-@@ -10768,30 +11117,33 @@ imagemagick_image_p (Lisp_Object object)
+@@ -10768,30 +11130,33 @@ imagemagick_image_p (Lisp_Object object)
      return 0;
  
    /* Must specify either the :data or :file keyword.  */
@@ -9080,7 +9109,7 @@ index b5b7de3..a4461a2 100644
  
  static void
  imagemagick_initialize (void)
-@@ -10805,7 +11157,8 @@ imagemagick_initialize (void)
+@@ -10805,7 +11170,8 @@ imagemagick_initialize (void)
  }
  
  /* Log ImageMagick error message.
@@ -9090,7 +9119,7 @@ index b5b7de3..a4461a2 100644
  
  static void
  imagemagick_error (MagickWand *wand)
-@@ -10822,22 +11175,23 @@ imagemagick_error (MagickWand *wand)
+@@ -10822,22 +11188,23 @@ imagemagick_error (MagickWand *wand)
     type by supplying a "dummy" filename based on the Content-Type.  */
  
  static char *
@@ -9119,7 +9148,7 @@ index b5b7de3..a4461a2 100644
    snprintf (hint_buffer, MaxTextExtent, "/tmp/foo.%s", SSDATA (val));
    return hint_buffer;
  }
-@@ -10884,8 +11238,8 @@ static void
+@@ -10884,8 +11251,8 @@ static void
  imagemagick_prune_animation_cache (bool clear)
  {
    struct animation_cache **pcache = &animation_cache;
@@ -9130,7 +9159,7 @@ index b5b7de3..a4461a2 100644
  
    while (*pcache)
      {
-@@ -10914,11 +11268,11 @@ imagemagick_get_animation_cache (MagickWand *wand)
+@@ -10914,11 +11281,11 @@ imagemagick_get_animation_cache (MagickWand *wand)
    while (1)
      {
        cache = *pcache;
@@ -9146,7 +9175,7 @@ index b5b7de3..a4461a2 100644
        if (strcmp (signature, cache->signature) == 0)
  	break;
        pcache = &cache->next;
-@@ -10935,7 +11289,8 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
+@@ -10935,7 +11302,8 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
    int i;
    MagickWand *composite_wand;
    size_t dest_width, dest_height;
@@ -9156,7 +9185,7 @@ index b5b7de3..a4461a2 100644
  
    MagickSetIteratorIndex (super_wand, 0);
  
-@@ -10971,7 +11326,7 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
+@@ -10971,7 +11339,7 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
        dispose = MagickGetImageDispose (sub_wand);
  
        source_iterator = NewPixelIterator (sub_wand);
@@ -9165,7 +9194,7 @@ index b5b7de3..a4461a2 100644
  	{
  	  DestroyMagickWand (composite_wand);
  	  DestroyMagickWand (sub_wand);
-@@ -10981,7 +11336,7 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
+@@ -10981,7 +11349,7 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
  	}
  
        dest_iterator = NewPixelIterator (composite_wand);
@@ -9174,7 +9203,7 @@ index b5b7de3..a4461a2 100644
  	{
  	  DestroyMagickWand (composite_wand);
  	  DestroyMagickWand (sub_wand);
-@@ -10991,15 +11346,16 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
+@@ -10991,15 +11359,16 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
  	  return NULL;
  	}
  
@@ -9194,7 +9223,7 @@ index b5b7de3..a4461a2 100644
  	     != NULL)
  	{
  	  ptrdiff_t x;
-@@ -11019,7 +11375,8 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
+@@ -11019,7 +11388,8 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
  	      /* Normally we only copy over non-transparent pixels,
  		 but if the disposal method is "Background", then we
  		 copy over all pixels.  */
@@ -9204,7 +9233,7 @@ index b5b7de3..a4461a2 100644
  		{
  		  PixelGetMagickColor (source[x], &pixel);
  		  PixelSetMagickColor (dest[x + source_left], &pixel);
-@@ -11041,7 +11398,6 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
+@@ -11041,7 +11411,6 @@ imagemagick_compute_animated_image (MagickWand *super_wand, int ino)
    return composite_wand;
  }
  
@@ -9212,7 +9241,7 @@ index b5b7de3..a4461a2 100644
  /* Helper function for imagemagick_load, which does the actual loading
     given contents and size, apart from frame and image structures,
     passed from imagemagick_load.  Uses librimagemagick to do most of
-@@ -11067,25 +11423,25 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11067,25 +11436,25 @@ imagemagick_load_image (struct frame *f, struct image *img,
    MagickWand *image_wand;
    PixelIterator *iterator;
    PixelWand **pixels, *bg_wand = NULL;
@@ -9247,7 +9276,7 @@ index b5b7de3..a4461a2 100644
  
    image = image_spec_value (img->spec, QCindex, NULL);
    ino = FIXNUMP (image) ? XFIXNAT (image) : 0;
-@@ -11095,15 +11451,19 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11095,15 +11464,19 @@ imagemagick_load_image (struct frame *f, struct image *img,
      status = MagickReadImage (image_wand, filename);
    else
      {
@@ -9271,7 +9300,7 @@ index b5b7de3..a4461a2 100644
        MagickSetFilename (image_wand, filename_hint);
        status = MagickReadImageBlob (image_wand, contents, size);
      }
-@@ -11115,37 +11475,41 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11115,37 +11488,41 @@ imagemagick_load_image (struct frame *f, struct image *img,
        return 0;
      }
  
@@ -9328,7 +9357,7 @@ index b5b7de3..a4461a2 100644
  
    /* If we have an animated image, get the new wand based on the
       "super-wand". */
-@@ -11156,8 +11520,9 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11156,8 +11533,9 @@ imagemagick_load_image (struct frame *f, struct image *img,
        if (MagickGetImageDelay (image_wand) > 0)
  	{
  	  MagickWand *super_wand = image_wand;
@@ -9340,7 +9369,7 @@ index b5b7de3..a4461a2 100644
  	    image_wand = super_wand;
  	  else
  	    DestroyMagickWand (super_wand);
-@@ -11182,30 +11547,29 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11182,30 +11560,29 @@ imagemagick_load_image (struct frame *f, struct image *img,
  
      specified_bg = image_spec_value (img->spec, QCbackground, NULL);
      if (!STRINGP (specified_bg)
@@ -9383,7 +9412,7 @@ index b5b7de3..a4461a2 100644
        if (status == MagickFalse)
  	{
  	  image_error ("Imagemagick scale failed");
-@@ -11220,32 +11584,34 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11220,32 +11597,34 @@ imagemagick_load_image (struct frame *f, struct image *img,
  
    if (CONSP (crop) && TYPE_RANGED_FIXNUMP (size_t, XCAR (crop)))
      {
@@ -9428,7 +9457,7 @@ index b5b7de3..a4461a2 100644
    /* Furthermore :rotation. we need background color and angle for
       rotation.  */
    /*
-@@ -11258,13 +11624,13 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11258,13 +11637,13 @@ imagemagick_load_image (struct frame *f, struct image *img,
        rotation = XFLOAT_DATA (value);
        status = MagickRotateImage (image_wand, bg_wand, rotation);
        if (status == MagickFalse)
@@ -9447,7 +9476,7 @@ index b5b7de3..a4461a2 100644
  
    /* Set the canvas background color to the frame or specified
       background, and flatten the image.  Note: as of ImageMagick
-@@ -11273,12 +11639,12 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11273,12 +11652,12 @@ imagemagick_load_image (struct frame *f, struct image *img,
    {
      MagickWand *new_wand;
      MagickSetImageBackgroundColor (image_wand, bg_wand);
@@ -9464,7 +9493,7 @@ index b5b7de3..a4461a2 100644
      DestroyMagickWand (image_wand);
      image_wand = new_wand;
    }
-@@ -11288,8 +11654,8 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11288,8 +11667,8 @@ imagemagick_load_image (struct frame *f, struct image *img,
    image_height = MagickGetImageHeight (image_wand);
    image_width = MagickGetImageWidth (image_wand);
  
@@ -9475,7 +9504,7 @@ index b5b7de3..a4461a2 100644
      {
        image_size_error ();
        goto imagemagick_error;
-@@ -11298,29 +11664,30 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11298,29 +11677,30 @@ imagemagick_load_image (struct frame *f, struct image *img,
    width = image_width;
    height = image_height;
  
@@ -9518,7 +9547,7 @@ index b5b7de3..a4461a2 100644
  	  image_error ("Imagemagick X bitmap allocation failure");
  	  goto imagemagick_error;
  	}
-@@ -11339,18 +11706,19 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11339,18 +11719,19 @@ imagemagick_load_image (struct frame *f, struct image *img,
        /*   break; */
        /* } */
        /*
@@ -9544,7 +9573,7 @@ index b5b7de3..a4461a2 100644
      {
        size_t image_height;
        double quantum_range = QuantumRange;
-@@ -11358,44 +11726,44 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11358,44 +11739,44 @@ imagemagick_load_image (struct frame *f, struct image *img,
        /* Try to create a x pixmap to hold the imagemagick pixmap.  */
        if (!image_create_x_image_and_pixmap (f, img, width, height, 0,
  					    &ximg, 0))
@@ -9613,7 +9642,7 @@ index b5b7de3..a4461a2 100644
  					   color_scale * pixel.green,
  					   color_scale * pixel.blue));
  	    }
-@@ -11403,13 +11771,13 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11403,13 +11784,13 @@ imagemagick_load_image (struct frame *f, struct image *img,
        DestroyPixelIterator (iterator);
      }
  
@@ -9630,7 +9659,7 @@ index b5b7de3..a4461a2 100644
    img->height = height;
  
    /* Put ximg into the image.  */
-@@ -11417,28 +11785,31 @@ imagemagick_load_image (struct frame *f, struct image *img,
+@@ -11417,28 +11798,31 @@ imagemagick_load_image (struct frame *f, struct image *img,
  
    /* Final cleanup. image_wand should be the only resource left. */
    DestroyMagickWand (image_wand);
@@ -9671,7 +9700,7 @@ index b5b7de3..a4461a2 100644
  
  static bool
  imagemagick_load (struct frame *f, struct image *img)
-@@ -11446,7 +11817,8 @@ imagemagick_load (struct frame *f, struct image *img)
+@@ -11446,7 +11830,8 @@ imagemagick_load (struct frame *f, struct image *img)
    bool success_p = 0;
    Lisp_Object file_name;
  
@@ -9681,7 +9710,7 @@ index b5b7de3..a4461a2 100644
    file_name = image_spec_value (img->spec, QCfile, NULL);
    if (STRINGP (file_name))
      {
-@@ -11457,10 +11829,11 @@ imagemagick_load (struct frame *f, struct image *img)
+@@ -11457,10 +11842,11 @@ imagemagick_load (struct frame *f, struct image *img)
  	  return false;
  	}
        file = ENCODE_FILE (file);
@@ -9696,7 +9725,7 @@ index b5b7de3..a4461a2 100644
      }
    /* Else it's not a file, it's a Lisp object.  Load the image from a
       Lisp object rather than a file.  */
-@@ -11475,7 +11848,7 @@ imagemagick_load (struct frame *f, struct image *img)
+@@ -11475,7 +11861,7 @@ imagemagick_load (struct frame *f, struct image *img)
  	  return false;
  	}
        success_p = imagemagick_load_image (f, img, SDATA (data),
@@ -9705,7 +9734,7 @@ index b5b7de3..a4461a2 100644
      }
  
    return success_p;
-@@ -11491,7 +11864,7 @@ You can also try the shell command: `identify -list format'.
+@@ -11491,7 +11877,7 @@ You can also try the shell command: `identify -list format'.
  Note that ImageMagick recognizes many file-types that Emacs does not
  recognize as images, such as C.  See `imagemagick-enabled-types'
  and `imagemagick-types-inhibit'.  */)
@@ -9714,7 +9743,7 @@ index b5b7de3..a4461a2 100644
  {
    Lisp_Object typelist = Qnil;
    size_t numf = 0;
-@@ -11515,20 +11888,18 @@ and `imagemagick-types-inhibit'.  */)
+@@ -11515,20 +11901,18 @@ and `imagemagick-types-inhibit'.  */)
    return Fnreverse (typelist);
  }
  
@@ -9740,7 +9769,7 @@ index b5b7de3..a4461a2 100644
  
  /* Indices of image specification fields in svg_format, below.  */
  
-@@ -11553,22 +11924,20 @@ enum svg_keyword_index
+@@ -11553,22 +11937,20 @@ enum svg_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
  
@@ -9777,7 +9806,7 @@ index b5b7de3..a4461a2 100644
  
  /* Return true if OBJECT is a valid SVG image specification.  Do
     this by calling parse_image_spec and supplying the keywords that
-@@ -11617,112 +11986,121 @@ svg_image_p (Lisp_Object object)
+@@ -11617,112 +11999,121 @@ svg_image_p (Lisp_Object object)
  #  endif
  
  /* SVG library functions.  */
@@ -9948,7 +9977,7 @@ index b5b7de3..a4461a2 100644
    LOAD_DLL_FN (gdklib, gdk_pixbuf_get_width);
    LOAD_DLL_FN (gdklib, gdk_pixbuf_get_height);
    LOAD_DLL_FN (gdklib, gdk_pixbuf_get_pixels);
-@@ -11732,7 +12110,7 @@ init_svg_functions (void)
+@@ -11732,7 +12123,7 @@ init_svg_functions (void)
    LOAD_DLL_FN (gdklib, gdk_pixbuf_get_has_alpha);
    LOAD_DLL_FN (gdklib, gdk_pixbuf_get_bits_per_sample);
  
@@ -9957,7 +9986,7 @@ index b5b7de3..a4461a2 100644
    LOAD_DLL_FN (gobject, g_type_init);
  #  endif
    LOAD_DLL_FN (gobject, g_object_unref);
-@@ -11755,24 +12133,24 @@ init_svg_functions (void)
+@@ -11755,24 +12146,24 @@ init_svg_functions (void)
  #  undef g_error_free
  #  undef g_object_unref
  #  undef g_type_init
@@ -9987,7 +10016,7 @@ index b5b7de3..a4461a2 100644
  #   undef g_file_new_for_path
  #   undef g_memory_input_stream_new_from_data
  #   undef rsvg_handle_new_from_stream_sync
-@@ -11784,7 +12162,8 @@ init_svg_functions (void)
+@@ -11784,7 +12175,8 @@ init_svg_functions (void)
  #  endif
  #  undef rsvg_handle_set_dpi_x_y
  
@@ -9997,7 +10026,7 @@ index b5b7de3..a4461a2 100644
  #  define gdk_pixbuf_get_colorspace fn_gdk_pixbuf_get_colorspace
  #  define gdk_pixbuf_get_has_alpha fn_gdk_pixbuf_get_has_alpha
  #  define gdk_pixbuf_get_height fn_gdk_pixbuf_get_height
-@@ -11794,34 +12173,36 @@ init_svg_functions (void)
+@@ -11794,34 +12186,36 @@ init_svg_functions (void)
  #  define gdk_pixbuf_get_width fn_gdk_pixbuf_get_width
  #  define g_error_free fn_g_error_free
  #  define g_object_unref fn_g_object_unref
@@ -10047,7 +10076,7 @@ index b5b7de3..a4461a2 100644
  #  else
  #   define rsvg_handle_close fn_rsvg_handle_close
  #   define rsvg_handle_new fn_rsvg_handle_new
-@@ -11841,7 +12222,8 @@ svg_load (struct frame *f, struct image *img)
+@@ -11841,7 +12235,8 @@ svg_load (struct frame *f, struct image *img)
    bool success_p = 0;
    Lisp_Object file_name, base_uri;
  
@@ -10057,7 +10086,7 @@ index b5b7de3..a4461a2 100644
    file_name = image_spec_value (img->spec, QCfile, NULL);
    base_uri = image_spec_value (img->spec, QCbase_uri, NULL);
    if (STRINGP (file_name))
-@@ -11864,9 +12246,9 @@ svg_load (struct frame *f, struct image *img)
+@@ -11864,9 +12259,9 @@ svg_load (struct frame *f, struct image *img)
  	}
        /* If the file was slurped into memory properly, parse it.  */
        if (!STRINGP (base_uri))
@@ -10069,7 +10098,7 @@ index b5b7de3..a4461a2 100644
        xfree (contents);
      }
    /* Else it's not a file, it's a Lisp object.  Load the image from a
-@@ -11882,26 +12264,29 @@ svg_load (struct frame *f, struct image *img)
+@@ -11882,26 +12277,29 @@ svg_load (struct frame *f, struct image *img)
  	  return false;
  	}
        if (!STRINGP (base_uri))
@@ -10107,7 +10136,7 @@ index b5b7de3..a4461a2 100644
  
    switch (length.unit)
      {
-@@ -11957,7 +12342,7 @@ svg_css_length_to_pixels (RsvgLength length, double dpi, int font_size)
+@@ -11957,7 +12355,7 @@ svg_css_length_to_pixels (RsvgLength length, double dpi, int font_size)
  
    return value;
  }
@@ -10116,7 +10145,7 @@ index b5b7de3..a4461a2 100644
  
  /* Load frame F and image IMG.  CONTENTS contains the SVG XML data to
     be parsed, SIZE is its size, and FILENAME is the name of the SVG
-@@ -11995,58 +12380,64 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -11995,58 +12393,64 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
    const char *errmsg = "";
    ptrdiff_t errlen = 0;
  
@@ -10201,7 +10230,7 @@ index b5b7de3..a4461a2 100644
      }
    else
      {
-@@ -12054,58 +12445,63 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12054,58 +12458,63 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
        strncpy (css, SSDATA (lcss), SBYTES (lcss));
        *(css + SBYTES (lcss) + 1) = 0;
      }
@@ -10295,7 +10324,7 @@ index b5b7de3..a4461a2 100644
  
    if (has_viewbox)
      {
-@@ -12114,7 +12510,7 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12114,7 +12523,7 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
      }
    else
      {
@@ -10304,7 +10333,7 @@ index b5b7de3..a4461a2 100644
        double explicit_width = 0, explicit_height = 0;
  
        /* Try the intrinsic dimensions first.  */
-@@ -12122,17 +12518,19 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12122,17 +12531,19 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
        RsvgLength iwidth, iheight;
        double dpi = FRAME_DISPLAY_INFO (f)->resx;
  
@@ -10332,7 +10361,7 @@ index b5b7de3..a4461a2 100644
  
        if (explicit_width > 0 && explicit_height > 0)
  	{
-@@ -12142,12 +12540,14 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12142,12 +12553,14 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
        else if (explicit_width > 0 && has_viewbox)
  	{
  	  viewbox_width = explicit_width;
@@ -10349,7 +10378,7 @@ index b5b7de3..a4461a2 100644
  	}
        else if (has_viewbox)
  	{
-@@ -12157,44 +12557,48 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12157,44 +12570,48 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
        else
  	viewbox_width = viewbox_height = 0;
  
@@ -10413,7 +10442,7 @@ index b5b7de3..a4461a2 100644
      {
        image_size_error ();
        goto done_error;
-@@ -12212,7 +12616,8 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12212,7 +12629,8 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
      unsigned long background = img->face_background;
  
      Lisp_Object encoded_contents
@@ -10423,7 +10452,7 @@ index b5b7de3..a4461a2 100644
  
      /* The wrapper sets the foreground color, width and height, and
         viewBox must contain the dimensions of the original image.  It
-@@ -12220,48 +12625,53 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12220,48 +12638,53 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
         background color, before including the original image.  This
         acts to set the background color, instead of leaving it
         transparent.  */
@@ -10500,7 +10529,7 @@ index b5b7de3..a4461a2 100644
  				 background & 0xFFFFFF,
  				 SSDATA (encoded_contents)))
        goto rsvg_error;
-@@ -12271,75 +12681,86 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12271,75 +12694,86 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
  
    /* Now we parse the wrapped version.  */
  
@@ -10618,7 +10647,7 @@ index b5b7de3..a4461a2 100644
    rowstride = gdk_pixbuf_get_rowstride (pixbuf);
  
    /* Validate the svg meta data.  */
-@@ -12351,7 +12772,8 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12351,7 +12785,8 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
    {
      /* Try to create a x pixmap to hold the svg pixmap.  */
      Emacs_Pix_Container ximg;
@@ -10628,7 +10657,7 @@ index b5b7de3..a4461a2 100644
        {
  	g_object_unref (pixbuf);
  	return false;
-@@ -12367,33 +12789,35 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12367,33 +12802,35 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
        {
  	for (int x = 0; x < width; ++x)
  	  {
@@ -10673,7 +10702,7 @@ index b5b7de3..a4461a2 100644
  
      /* Put ximg into the image.  */
      image_put_x_image (f, img, ximg, 0);
-@@ -12402,7 +12826,7 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12402,7 +12839,7 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
    eassume (err == NULL);
    return true;
  
@@ -10682,7 +10711,7 @@ index b5b7de3..a4461a2 100644
    if (err && err->message[0])
      {
        errmsg = err->message;
-@@ -12417,34 +12841,32 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
+@@ -12417,34 +12854,32 @@ svg_load_image (struct frame *f, struct image *img, char *contents,
    if (empty_errmsg)
      image_error ("Error parsing SVG image");
    else
@@ -10726,7 +10755,7 @@ index b5b7de3..a4461a2 100644
  #endif /* HAVE_X_WINDOWS && !USE_CAIRO */
  
  #ifdef HAVE_GHOSTSCRIPT
-@@ -12472,22 +12894,20 @@ enum gs_keyword_index
+@@ -12472,22 +12907,20 @@ enum gs_keyword_index
  /* Vector of image_keyword structures describing the format
     of valid user-defined image specifications.  */
  
@@ -10763,7 +10792,7 @@ index b5b7de3..a4461a2 100644
  
  /* Return true if OBJECT is a valid Ghostscript image
     specification.  */
-@@ -12528,7 +12948,6 @@ gs_image_p (Lisp_Object object)
+@@ -12528,7 +12961,6 @@ gs_image_p (Lisp_Object object)
    return 1;
  }
  
@@ -10771,7 +10800,7 @@ index b5b7de3..a4461a2 100644
  /* Load Ghostscript image IMG for use on frame F.  Value is true
     if successful.  */
  
-@@ -12537,7 +12956,8 @@ gs_load (struct frame *f, struct image *img)
+@@ -12537,7 +12969,8 @@ gs_load (struct frame *f, struct image *img)
  {
    uintmax_t printnum1, printnum2;
    char buffer[sizeof " " + 2 * INT_STRLEN_BOUND (intmax_t)];
@@ -10781,7 +10810,7 @@ index b5b7de3..a4461a2 100644
    Lisp_Object frame;
    double in_width, in_height;
    Lisp_Object pixel_colors = Qnil;
-@@ -12553,8 +12973,8 @@ gs_load (struct frame *f, struct image *img)
+@@ -12553,8 +12986,8 @@ gs_load (struct frame *f, struct image *img)
    in_height = FIXNUMP (pt_height) ? XFIXNAT (pt_height) / 72.0 : 0;
    in_height *= FRAME_RES_Y (f);
  
@@ -10792,7 +10821,7 @@ index b5b7de3..a4461a2 100644
      {
        image_size_error ();
        return 0;
-@@ -12569,32 +12989,34 @@ gs_load (struct frame *f, struct image *img)
+@@ -12569,32 +13002,34 @@ gs_load (struct frame *f, struct image *img)
      {
        /* Only W32 version did BLOCK_INPUT here.  ++kfs */
        block_input ();
@@ -10834,7 +10863,7 @@ index b5b7de3..a4461a2 100644
  			     printnum1, printnum2);
  
    XSETFRAME (frame, f);
-@@ -12602,15 +13024,13 @@ gs_load (struct frame *f, struct image *img)
+@@ -12602,15 +13037,13 @@ gs_load (struct frame *f, struct image *img)
    if (NILP (loader))
      loader = Qgs_load_image;
  
@@ -10854,7 +10883,7 @@ index b5b7de3..a4461a2 100644
  /* Kill the Ghostscript process that was started to fill PIXMAP on
     frame F.  Called from XTread_socket when receiving an event
     telling Emacs that Ghostscript has finished drawing.  */
-@@ -12639,7 +13059,7 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
+@@ -12639,7 +13072,7 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
    Fkill_process (img->lisp_data, Qnil);
    img->lisp_data = Qnil;
  
@@ -10863,7 +10892,7 @@ index b5b7de3..a4461a2 100644
  
    /* On displays with a mutable colormap, figure out the colors
       allocated for the image by looking at the pixels of an XImage for
-@@ -12651,8 +13071,8 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
+@@ -12651,8 +13084,8 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
        block_input ();
  
        /* Try to get an XImage for img->pixmep.  */
@@ -10874,7 +10903,7 @@ index b5b7de3..a4461a2 100644
        if (ximg)
  	{
  	  /* Initialize the color table.  */
-@@ -12661,7 +13081,7 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
+@@ -12661,7 +13094,7 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
  	  /* For each pixel of the image, look its color up in the
  	     color table.  After having done so, the color table will
  	     contain an entry for each color used by the image.  */
@@ -10883,7 +10912,7 @@ index b5b7de3..a4461a2 100644
  	  for (int y = 0; y < img->height; ++y)
  	    for (int x = 0; x < img->width; ++x)
  	      {
-@@ -12670,19 +13090,21 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
+@@ -12670,19 +13103,21 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
  		lookup_pixel_color (f, pixel);
  	      }
  
@@ -10909,7 +10938,7 @@ index b5b7de3..a4461a2 100644
  
    /* Now that we have the pixmap, compute mask and transform the
       image if requested.  */
-@@ -12692,23 +13114,20 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
+@@ -12692,23 +13127,20 @@ x_kill_gs_process (Pixmap pixmap, struct frame *f)
  }
  
  #endif /* HAVE_GHOSTSCRIPT */
@@ -10940,7 +10969,7 @@ index b5b7de3..a4461a2 100644
  {
    ptrdiff_t id = -1;
  
-@@ -12721,7 +13140,6 @@ DEFUN ("lookup-image", Flookup_image, Slookup_image, 1, 1, 0,
+@@ -12721,7 +13153,6 @@ DEFUN ("lookup-image", Flookup_image, Slookup_image, 1, 1, 0,
  
  #endif /* GLYPH_DEBUG */
  
@@ -10948,7 +10977,7 @@ index b5b7de3..a4461a2 100644
  /***********************************************************************
  			    Initialization
   ***********************************************************************/
-@@ -12735,22 +13153,21 @@ The list of capabilities can include one or more of the following:
+@@ -12735,22 +13166,21 @@ The list of capabilities can include one or more of the following:
   - the symbol `scale' if FRAME supports image scaling
   - the symbol `rotate90' if FRAME supports image rotation only by angles
      that are integral multiples of 90 degrees.  */)
@@ -10978,7 +11007,7 @@ index b5b7de3..a4461a2 100644
  # endif
  #endif
      }
-@@ -12758,18 +13175,18 @@ The list of capabilities can include one or more of the following:
+@@ -12758,18 +13188,18 @@ The list of capabilities can include one or more of the following:
    return Qnil;
  }
  
@@ -11003,7 +11032,7 @@ index b5b7de3..a4461a2 100644
    struct anim_cache *pcache = anim_cache;
    while (pcache)
      {
-@@ -12781,7 +13198,6 @@ DEFUN ("image-cache-size", Fimage_cache_size, Simage_cache_size, 0, 0, 0,
+@@ -12781,7 +13211,6 @@ DEFUN ("image-cache-size", Fimage_cache_size, Simage_cache_size, 0, 0, 0,
    return make_int (total);
  }
  
@@ -11011,7 +11040,7 @@ index b5b7de3..a4461a2 100644
  DEFUN ("init-image-library", Finit_image_library, Sinit_image_library, 1, 1, 0,
         doc: /* Initialize image library implementing image type TYPE.
  Return t if TYPE is a supported image type.
-@@ -12789,10 +13205,7 @@ Return t if TYPE is a supported image type.
+@@ -12789,10 +13218,7 @@ Return t if TYPE is a supported image type.
  If image libraries are loaded dynamically (currently the case only on
  MS-Windows), load the library for TYPE if it is not yet loaded, using
  the library file(s) specified by `dynamic-library-alist'.  */)
@@ -11023,7 +11052,7 @@ index b5b7de3..a4461a2 100644
  
  static bool
  initialize_image_type (struct image_type const *type)
-@@ -12824,52 +13237,52 @@ initialize_image_type (struct image_type const *type)
+@@ -12824,52 +13250,52 @@ initialize_image_type (struct image_type const *type)
  
  /* Array of supported image types.  */
  
@@ -11101,7 +11130,7 @@ index b5b7de3..a4461a2 100644
  #endif
  
  /* Look up image type TYPE, and return a pointer to its image_type
-@@ -12897,8 +13310,8 @@ lookup_image_type (Lisp_Object type)
+@@ -12897,8 +13323,8 @@ lookup_image_type (Lisp_Object type)
  void
  image_prune_animation_caches (bool clear)
  {
@@ -11112,7 +11141,7 @@ index b5b7de3..a4461a2 100644
  #endif
  #ifdef HAVE_IMAGEMAGICK
    imagemagick_prune_animation_cache (clear);
-@@ -12981,36 +13394,35 @@ non-numeric, there is no explicit limit on the size of images.  */);
+@@ -12981,36 +13407,35 @@ non-numeric, there is no explicit limit on the size of images.  */);
  #endif /* HAVE_GHOSTSCRIPT */
  
  #ifdef HAVE_NTGUI
@@ -11166,7 +11195,7 @@ index b5b7de3..a4461a2 100644
  #endif
  
    DEFSYM (Qpbm, "pbm");
-@@ -13019,63 +13431,62 @@ non-numeric, there is no explicit limit on the size of images.  */);
+@@ -13019,63 +13444,62 @@ non-numeric, there is no explicit limit on the size of images.  */);
    DEFSYM (Qxbm, "xbm");
    add_image_type (Qxbm);
  
@@ -11249,7 +11278,7 @@ index b5b7de3..a4461a2 100644
        || defined HAVE_HAIKU)
    DEFSYM (Qsvg, "svg");
  
-@@ -13133,17 +13544,21 @@ A cross is always drawn on black & white displays.  */);
+@@ -13133,17 +13557,21 @@ A cross is always drawn on black & white displays.  */);
    cross_disabled_images = 0;
  
    DEFVAR_LISP ("x-bitmap-file-path", Vx_bitmap_file_path,
@@ -11280,7 +11309,7 @@ index b5b7de3..a4461a2 100644
    Vimage_cache_eviction_delay = make_fixnum (300);
  
    DEFVAR_LISP ("image-scaling-factor", Vimage_scaling_factor,
-@@ -13158,13 +13573,14 @@ based on the font pixel size.  */);
+@@ -13158,13 +13586,14 @@ based on the font pixel size.  */);
  
  #ifdef HAVE_IMAGEMAGICK
    DEFVAR_INT ("imagemagick-render-type", imagemagick_render_type,

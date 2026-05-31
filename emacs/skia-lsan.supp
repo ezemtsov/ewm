@@ -1,0 +1,27 @@
+# GTK frame realization and font fallback allocate process-lifetime caches.
+# Suppress those so opt-in LSan runs can report leaks in Emacs/Skia-owned code.
+leak:IA__FcValueSave
+leak:IA__FcFontRenderPrepare
+leak:FcPatternObjectAddWithBinding
+leak:FcValueListPrepend
+leak:FcConfigValues
+leak:FcConfigParseAndLoadFromMemoryInternal
+leak:FcCharSetPutLeaf
+leak:fc_thread_func
+leak:ftfont_get_charset
+leak:pango_context_get_metrics
+leak:pango_layout_check_lines
+leak:gtk_css_custom_gadget_get_preferred_size
+leak:gtk_header_bar_get_content_size
+leak:gtk_window_compute_configure_request
+leak:g_settings_schema_get_value
+leak:g_settings_schema_key_init
+leak:gvdb_table_value_from_item
+leak:gtk_container_get_children
+leak:dri2_add_config
+leak:_eglGrowArray
+leak:_eglLinkConfig
+leak:eglInitialize
+leak:gdk_wayland_display_init_gl
+leak:hash_table_alloc_bytes
+leak:xg_create_tool_bar

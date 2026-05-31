@@ -71,10 +71,10 @@ fi
 
 run git -C "$emacs_tree" diff --check HEAD -- \
     src/pgtkterm.c src/pgtkfns.c src/skia/emacs_skia.cpp \
-    src/skia/emacs_skia.h src/pgtkterm.h
+    src/skia/emacs_skia.h src/pgtkterm.h src/image.c
 run git -C "$repo_root" diff --check HEAD -- \
     emacs/check-skia.sh emacs/skia-smoke.sh emacs/skia-profile.sh \
-    emacs/skia-sanitize.sh nix/service.nix
+    emacs/skia-sanitize.sh emacs/skia-lsan.supp nix/service.nix
 
 if rg -n "pgtk-skia-test-|Spgtk_skia_test" "$production_patch"; then
     echo "error: production patch contains local Skia test hooks" >&2

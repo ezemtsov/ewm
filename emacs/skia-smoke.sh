@@ -2271,6 +2271,8 @@ static char *image[] = {
 
 (when (timerp ewm-skia-smoke-watchdog)
   (cancel-timer ewm-skia-smoke-watchdog))
+(clear-image-cache t)
+(garbage-collect)
 (princ "EWM_SKIA_SMOKE_OK\n" #'external-debugging-output)
 (kill-emacs 0))
   (error
