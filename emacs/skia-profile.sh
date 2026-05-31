@@ -153,10 +153,11 @@ cat >"$payload" <<'EOF'
          "invalid Skia context state for %s frame %d: %S"
          name index state))
       (ewm-skia-profile-report-line
-       (format "%-18s frame=%d gdk-context=%S current-gdk-context=%S gdk-current=%S skia-context=%S cache-resources=%S cache-bytes=%S framebuffer=%S texture=%S"
+       (format "%-18s frame=%d gdk-context=%S current-gdk-context=%S gdk-current=%S skia-context=%S cache-resources=%S cache-bytes=%S framebuffer=%S texture=%S gdk-shared-context=%S"
                name index
                (nth 0 state) (nth 1 state) (nth 2 state) (nth 3 state)
-               (nth 4 state) (nth 5 state) (nth 6 state) (nth 7 state))))))
+               (nth 4 state) (nth 5 state) (nth 6 state) (nth 7 state)
+               (nth 8 state))))))
 
 (defun ewm-skia-profile-time (name iterations function)
   (garbage-collect)

@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index ccb0897..a8be294 100644
+index ccb0897..4575aa8 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10482,6 +10482,1140 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10482,6 +10482,1147 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -61,13 +61,15 @@ index ccb0897..a8be294 100644
 +
 +The return value is
 +(GDK-CONTEXT CURRENT-GDK-CONTEXT GDK-CURRENT-P SKIA-CONTEXT
-+ CACHE-RESOURCE-COUNT CACHE-RESOURCE-BYTES FRAMEBUFFER TEXTURE).
++ CACHE-RESOURCE-COUNT CACHE-RESOURCE-BYTES FRAMEBUFFER TEXTURE
++ SHARED-GDK-CONTEXT).
 +Pointer values are opaque integers intended only for identity comparison in
 +tests.  */)
 +  (Lisp_Object frame, Lisp_Object make_current)
 +{
 +  struct frame *f = decode_window_system_frame (frame);
 +  GdkGLContext *current_gdk_context;
++  GdkGLContext *shared_gdk_context;
 +  void *skia_context = NULL;
 +  int cache_resources = 0;
 +  size_t cache_bytes = 0;
@@ -77,6 +79,10 @@ index ccb0897..a8be294 100644
 +    return Qnil;
 +
 +  current_gdk_context = gdk_gl_context_get_current ();
++  shared_gdk_context = (FRAME_GDK_GL_CONTEXT (f)
++			? gdk_gl_context_get_shared_context (
++			  FRAME_GDK_GL_CONTEXT (f))
++			: NULL);
 +  if (FRAME_SKIA_GL_CONTEXT (f))
 +    have_cache = emacs_skia_gl_context_get_diagnostics (
 +      FRAME_SKIA_GL_CONTEXT (f), &skia_context,
@@ -94,7 +100,8 @@ index ccb0897..a8be294 100644
 +		FRAME_GL_FRAMEBUFFER (f)
 +		  ? make_uint ((uintmax_t) FRAME_GL_FRAMEBUFFER (f)) : Qnil,
 +		FRAME_GL_TEXTURE (f)
-+		  ? make_uint ((uintmax_t) FRAME_GL_TEXTURE (f)) : Qnil);
++		  ? make_uint ((uintmax_t) FRAME_GL_TEXTURE (f)) : Qnil,
++		pgtk_skia_test_pointer_id (shared_gdk_context));
 +}
 +
 +DEFUN ("pgtk-skia-test-framebuffer-color-counts",
@@ -1183,7 +1190,7 @@ index ccb0897..a8be294 100644
  #endif
  
  void
-@@ -10576,6 +11710,27 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10576,6 +11717,27 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);

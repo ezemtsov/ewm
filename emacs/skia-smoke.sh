@@ -268,6 +268,9 @@ cat >"$payload" <<'EOF'
        "invalid Skia context state after %s: state=%S" phase state))
     state))
 
+(defun ewm-skia-smoke-context-share-id (state)
+  (or (nth 8 state) (nth 0 state)))
+
 (defun ewm-skia-smoke-check-context-ownership (phase)
   (let ((main-frame (selected-frame))
         (frames nil)
@@ -310,11 +313,22 @@ cat >"$payload" <<'EOF'
                        (car frames) (format "%s return first frame" phase))
                       (ewm-skia-smoke-context-state
                        (cadr frames) (format "%s return second frame" phase))))
+          (when (and (equal (nth 3 (car states)) (nth 3 (cadr states)))
+                     (not (equal (ewm-skia-smoke-context-share-id (car states))
+                                 (ewm-skia-smoke-context-share-id (cadr states)))))
+            (ewm-skia-smoke-fail
+             "Skia direct context is shared across unrelated GDK GL contexts after %s: states=%S"
+             phase states))
           (pcase policy
             ("shared"
              (unless (equal (nth 3 (car states)) (nth 3 (cadr states)))
                (ewm-skia-smoke-fail
                 "expected shared Skia direct context after %s: states=%S"
+                phase states))
+             (unless (equal (ewm-skia-smoke-context-share-id (car states))
+                            (ewm-skia-smoke-context-share-id (cadr states)))
+               (ewm-skia-smoke-fail
+                "shared Skia direct context requires a shared GDK GL context after %s: states=%S"
                 phase states)))
             ("per-frame"
              (when (equal (nth 3 (car states)) (nth 3 (cadr states)))
