@@ -291,6 +291,29 @@ cat >"$payload" <<'EOF'
        phase rect stats)))
   (ewm-skia-smoke-redraw))
 
+(defun ewm-skia-smoke-check-horizontal-copy-bits (phase)
+  (unless (fboundp 'pgtk-skia-test-copy-bits-horizontal-overlap)
+    (ewm-skia-smoke-fail "missing Skia horizontal copy-bits test hook"))
+  (let* ((rects (pgtk-skia-test-copy-bits-horizontal-overlap))
+         (dst (and (consp rects) (nth 0 rects)))
+         (guard (and (consp rects) (nth 1 rects)))
+         (dst-stats (and (consp dst)
+                         (pgtk-skia-test-framebuffer-color-counts nil dst)))
+         (guard-stats (and (consp guard)
+                           (pgtk-skia-test-framebuffer-color-counts
+                            nil guard))))
+    (unless (and (consp dst-stats) (> (nth 2 dst-stats) 1000))
+      (ewm-skia-smoke-fail
+       "horizontal copy_bits did not copy red pixels after %s: rects=%S stats=%S"
+       phase rects dst-stats))
+    (unless (and (consp guard-stats)
+                 (< (nth 2 guard-stats) 50)
+                 (> (nth 3 guard-stats) 1000))
+      (ewm-skia-smoke-fail
+       "horizontal copy_bits copied past destination after %s: rects=%S stats=%S"
+       phase rects guard-stats)))
+  (ewm-skia-smoke-redraw))
+
 (defun ewm-skia-smoke-check-clear-state (phase)
   (unless (fboundp 'pgtk-skia-test-clear-state-preserved)
     (ewm-skia-smoke-fail "missing Skia clear-state test hook"))
@@ -1781,7 +1804,8 @@ static char *image[] = {
 
 (ewm-skia-smoke-run-group "copy"
   (ewm-skia-smoke-check-copy-bits-gl-error "initial draw")
-  (ewm-skia-smoke-check-copy-bits-fallback "initial draw"))
+  (ewm-skia-smoke-check-copy-bits-fallback "initial draw")
+  (ewm-skia-smoke-check-horizontal-copy-bits "initial draw"))
 
 (ewm-skia-smoke-run-group "export"
   (ewm-skia-smoke-check-png-export "initial draw")

@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 8a265c4..a94db94 100644
+index 8a265c4..7d9157b 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10514,6 +10514,998 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10514,6 +10514,1048 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -751,6 +751,56 @@ index 8a265c4..a94db94 100644
 +		make_int (dst_rect.width), make_int (dst_rect.height));
 +}
 +
++DEFUN ("pgtk-skia-test-copy-bits-horizontal-overlap",
++       Fpgtk_skia_test_copy_bits_horizontal_overlap,
++       Spgtk_skia_test_copy_bits_horizontal_overlap, 0, 1, 0,
++       doc: /* Copy overlapping horizontal pixels through copy_bits on FRAME.
++Return (DST GUARD) sample rectangles if the copy ran.  If FRAME is nil,
++use the selected frame.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  cairo_rectangle_t src_rect = { 48, 48, 120, 48 };
++  cairo_rectangle_t dst_rect = { 96, 48, 120, 48 };
++  emacs_skia_canvas_t *canvas;
++  emacs_skia_paint_t *paint;
++  emacs_skia_rect_t clear_rect = { 48, 48, 248, 96 };
++  emacs_skia_rect_t src_draw = { 48, 48, 168, 96 };
++  cairo_rectangle_t guard_rect = { 216, 48, 32, 48 };
++
++  if (!FRAME_GDK_GL_CONTEXT (f)
++      || !FRAME_SKIA_SURFACE (f)
++      || !FRAME_GL_FRAMEBUFFER (f)
++      || FRAME_GL_RENDER_WIDTH (f) < 280
++      || FRAME_GL_RENDER_HEIGHT (f) < 140)
++    return Qnil;
++
++  canvas = pgtk_begin_skia_clip (f);
++  if (!canvas)
++    return Qnil;
++
++  paint = FRAME_SKIA_PAINT (f);
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 0, 255, 0));
++  emacs_skia_paint_set_blend_mode (paint, EMACS_SKIA_BLEND_SRC);
++  emacs_skia_paint_set_stroke (paint, false);
++  emacs_skia_canvas_draw_rect (canvas, &clear_rect, paint);
++  emacs_skia_paint_set_color (paint, EMACS_SKIA_COLOR (255, 255, 0, 0));
++  emacs_skia_canvas_draw_rect (canvas, &src_draw, paint);
++  pgtk_end_skia_clip (f);
++  emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  pgtk_copy_bits (f, &src_rect, &dst_rect);
++
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  return list2 (list4 (make_int (dst_rect.x), make_int (dst_rect.y),
++		       make_int (dst_rect.width), make_int (dst_rect.height)),
++		list4 (make_int (guard_rect.x), make_int (guard_rect.y),
++		       make_int (guard_rect.width),
++		       make_int (guard_rect.height)));
++}
++
 +DEFUN ("pgtk-skia-test-scratch-state-preserved",
 +       Fpgtk_skia_test_scratch_state_preserved,
 +       Spgtk_skia_test_scratch_state_preserved, 0, 1, 0,
@@ -1041,7 +1091,7 @@ index 8a265c4..a94db94 100644
  #endif
  
  void
-@@ -10608,6 +11600,24 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10608,6 +11650,25 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
@@ -1058,6 +1108,7 @@ index 8a265c4..a94db94 100644
 +  defsubr (&Spgtk_skia_test_gl_invariants);
 +  defsubr (&Spgtk_skia_test_copy_bits_gl_error_return);
 +  defsubr (&Spgtk_skia_test_copy_bits_snapshot_fallback);
++  defsubr (&Spgtk_skia_test_copy_bits_horizontal_overlap);
 +  defsubr (&Spgtk_skia_test_scratch_state_preserved);
 +  defsubr (&Spgtk_skia_test_clear_state_preserved);
 +  defsubr (&Spgtk_skia_test_setup_state_preserved);
