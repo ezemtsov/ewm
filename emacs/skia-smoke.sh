@@ -452,6 +452,12 @@ cat >"$payload" <<'EOF'
     (ewm-skia-smoke-fail
      "Skia input block leaked after %s" phase)))
 
+(defun ewm-skia-smoke-check-recovered-surface-operations (phase)
+  (ewm-skia-smoke-check-framebuffer phase nil t)
+  (ewm-skia-smoke-check-copy-bits-fallback phase)
+  (ewm-skia-smoke-check-horizontal-copy-bits phase)
+  (ewm-skia-smoke-check-png-export phase))
+
 (defun ewm-skia-smoke-check-tooltip-frame (phase)
   (let ((main-frame (selected-frame))
         (old-use-system-tooltips use-system-tooltips)
@@ -2250,7 +2256,8 @@ static char *image[] = {
     (unless restored
       (ewm-skia-smoke-fail
        "Skia GL state did not recover after forced abandon"))
-    (ewm-skia-smoke-check-framebuffer "forced abandon recovery" frame)))
+    (ewm-skia-smoke-check-recovered-surface-operations
+     "forced abandon recovery")))
 
 (ewm-skia-smoke-run-group "lifecycle"
   (let ((frame (selected-frame)))
