@@ -34,10 +34,11 @@ payload="$tmp_dir/smoke.el"
 stdout="$tmp_dir/stdout"
 stderr="$tmp_dir/stderr"
 
-env_args=(GDK_BACKEND=wayland NO_AT_BRIDGE=1)
+env_args=(GDK_BACKEND=wayland NO_AT_BRIDGE=1
+          EWM_SKIA_SMOKE_TIMEOUT_SECONDS="$timeout_seconds")
 
 cat >"$payload" <<'EOF'
-(setq debug-on-error t
+(setq debug-on-error nil
       inhibit-startup-screen t
       initial-scratch-message nil
       frame-resize-pixelwise t)
@@ -48,6 +49,43 @@ cat >"$payload" <<'EOF'
                  "\n")
          #'external-debugging-output)
   (kill-emacs 2))
+
+(defun ewm-skia-smoke-dump-messages ()
+  (let ((buffer (get-buffer "*Messages*")))
+    (when buffer
+      (princ "EWM_SKIA_SMOKE_MESSAGES_BEGIN\n"
+             #'external-debugging-output)
+      (with-current-buffer buffer
+        (princ
+         (buffer-substring-no-properties
+          (max (point-min) (- (point-max) 6000))
+          (point-max))
+         #'external-debugging-output))
+      (princ "\nEWM_SKIA_SMOKE_MESSAGES_END\n"
+             #'external-debugging-output))))
+
+(defun ewm-skia-smoke-report-error (err)
+  (princ (format "EWM_SKIA_SMOKE_ERROR: %S: %s\n"
+                 err (error-message-string err))
+         #'external-debugging-output)
+  (ewm-skia-smoke-dump-messages)
+  (kill-emacs 2))
+
+(defun ewm-skia-smoke-timeout-seconds ()
+  (max 1
+       (string-to-number
+        (or (getenv "EWM_SKIA_SMOKE_TIMEOUT_SECONDS") "30"))))
+
+(defun ewm-skia-smoke-watchdog-timeout ()
+  (princ (format "EWM_SKIA_SMOKE_TIMEOUT: Emacs watchdog fired after %ds\n"
+                 (ewm-skia-smoke-timeout-seconds))
+         #'external-debugging-output)
+  (ewm-skia-smoke-dump-messages)
+  (kill-emacs 2))
+
+(defvar ewm-skia-smoke-watchdog
+  (run-at-time (max 1 (- (ewm-skia-smoke-timeout-seconds) 1))
+               nil #'ewm-skia-smoke-watchdog-timeout))
 
 (defconst ewm-skia-smoke-min-red
   (string-to-number (or (getenv "EWM_SKIA_SMOKE_MIN_RED") "1000")))
@@ -490,12 +528,21 @@ static char *image[] = {
           (max 1 (- (nth 3 inside) (nth 1 inside))))))
 
 (defun ewm-skia-smoke-right-fringe-rect ()
-  (let ((outer (window-pixel-edges))
-        (inside (window-inside-pixel-edges)))
+  (let* ((inside (window-inside-pixel-edges))
+         (fringes (window-fringes))
+         (right-width (or (nth 1 fringes) 0)))
     (list (nth 2 inside)
           (nth 1 inside)
-          (max 1 (- (nth 2 outer) (nth 2 inside)))
+          (max 1 right-width)
           (max 1 (- (nth 3 inside) (nth 1 inside))))))
+
+(defun ewm-skia-smoke-bounds-width (bounds)
+  (and (consp bounds)
+       (1+ (- (nth 2 bounds) (nth 0 bounds)))))
+
+(defun ewm-skia-smoke-bounds-height (bounds)
+  (and (consp bounds)
+       (1+ (- (nth 3 bounds) (nth 1 bounds)))))
 
 (defun ewm-skia-smoke-cursor-cell-rect (&optional column)
   (let ((edges (window-inside-pixel-edges))
@@ -527,6 +574,33 @@ static char *image[] = {
        "%s leaked red pixels after %s: stats=%S rect=%S thresholds=(red<%d green>%d)"
        label phase stats rect max-red min-green))
     stats))
+
+(defun ewm-skia-smoke-check-fringe-geometry
+    (phase label rect stats scale)
+  (let* ((bounds (nth 5 stats))
+         (expected-width (* 8 scale))
+         (expected-height (* 16 scale))
+         (expected-red (* expected-width expected-height))
+         (expected-left
+          (+ (* (nth 0 rect) scale)
+             (/ (- (* (nth 2 rect) scale) expected-width) 2)))
+         (rect-raw-min
+          (- (nth 1 stats) (* (+ (nth 1 rect) (nth 3 rect)) scale)))
+         (rect-raw-max
+          (1- (- (nth 1 stats) (* (nth 1 rect) scale))))
+         (actual-width (ewm-skia-smoke-bounds-width bounds))
+         (actual-height (ewm-skia-smoke-bounds-height bounds)))
+    (unless (and (consp bounds)
+                 (= (nth 2 stats) expected-red)
+                 (= actual-width expected-width)
+                 (= actual-height expected-height)
+                 (= (nth 0 bounds) expected-left)
+                 (<= rect-raw-min (nth 1 bounds))
+                 (<= (nth 3 bounds) rect-raw-max))
+      (ewm-skia-smoke-fail
+       "%s fringe geometry mismatch after %s: rect=%S scale=%d stats=%S expected=(red=%d width=%d height=%d left=%d y-range=%d..%d)"
+       label phase rect scale stats expected-red expected-width
+       expected-height expected-left rect-raw-min rect-raw-max))))
 
 (defun ewm-skia-smoke-check-scaled-transparent-image (phase)
   (unless (image-type-available-p 'xpm)
@@ -1749,7 +1823,7 @@ static char *image[] = {
      #b11111111 #b11111111 #b11111111 #b11111111
      #b11111111 #b11111111 #b11111111 #b11111111
      #b11111111 #b11111111 #b11111111 #b11111111]
-    nil nil 'center)
+    16 8 'center)
   (unless (facep 'ewm-skia-smoke-fringe-face)
     (make-face 'ewm-skia-smoke-fringe-face))
   (set-face-attribute 'ewm-skia-smoke-fringe-face nil
@@ -1757,7 +1831,8 @@ static char *image[] = {
                       :background "#00ff00")
   (let ((source-buffer (current-buffer))
         (buffer (get-buffer-create "*ewm-skia-fringe-smoke*"))
-        (old-fringes (window-fringes)))
+        (old-fringes (window-fringes))
+        scale left-rect right-rect left-stats right-stats)
     (unwind-protect
         (progn
           (set-frame-size nil 44 6)
@@ -1787,12 +1862,19 @@ static char *image[] = {
           (switch-to-buffer buffer)
           (set-window-fringes nil 24 24)
           (ewm-skia-smoke-redraw)
-          (ewm-skia-smoke-check-region-colors
-           phase "left fringe" (ewm-skia-smoke-left-fringe-rect)
-           50 100)
-          (ewm-skia-smoke-check-region-colors
-           phase "right fringe" (ewm-skia-smoke-right-fringe-rect)
-           50 100))
+          (setq scale (nth 6 (ewm-skia-smoke-framebuffer-size))
+                left-rect (ewm-skia-smoke-left-fringe-rect)
+                right-rect (ewm-skia-smoke-right-fringe-rect)
+                left-stats
+                (ewm-skia-smoke-check-region-colors
+                 phase "left fringe" left-rect 50 100)
+                right-stats
+                (ewm-skia-smoke-check-region-colors
+                 phase "right fringe" right-rect 50 100))
+          (ewm-skia-smoke-check-fringe-geometry
+           phase "left" left-rect left-stats scale)
+          (ewm-skia-smoke-check-fringe-geometry
+           phase "right" right-rect right-stats scale))
       (set-window-fringes nil (nth 0 old-fringes)
                           (nth 1 old-fringes)
                           (nth 2 old-fringes)
@@ -1801,6 +1883,9 @@ static char *image[] = {
         (switch-to-buffer source-buffer))
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
+
+(condition-case err
+    (progn
 
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
@@ -2102,8 +2187,12 @@ static char *image[] = {
     (ewm-skia-smoke-check-gl-enabled frame "combined lifecycle")
     (ewm-skia-smoke-check-framebuffer "combined lifecycle" frame t)))
 
+(when (timerp ewm-skia-smoke-watchdog)
+  (cancel-timer ewm-skia-smoke-watchdog))
 (princ "EWM_SKIA_SMOKE_OK\n" #'external-debugging-output)
-(kill-emacs 0)
+(kill-emacs 0))
+  (error
+   (ewm-skia-smoke-report-error err)))
 EOF
 
 set +e
