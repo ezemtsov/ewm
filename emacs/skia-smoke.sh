@@ -1400,11 +1400,13 @@ static char *image[] = {
                         '((default (:foreground "#0000ff"
                                      :background "#00ff00") default)))
             (erase-buffer)
-            (let ((start (point)))
-              (insert (propertize "  "
-                                  'face '(:foreground "#ff0000"
-                                          :background "#00ff00")))
-              (compose-region start (point) "MMMMMMMM")))
+            (dotimes (_ 12)
+              (let ((start (point)))
+                (insert (propertize "  "
+                                    'face '(:foreground "#ff0000"
+                                            :background "#00ff00")))
+                (compose-region start (point) "MMMMMMMM")))
+            (insert "\n"))
           (switch-to-buffer buffer)
           (ewm-skia-smoke-redraw)
           (setq stats (pgtk-skia-test-framebuffer-color-counts
