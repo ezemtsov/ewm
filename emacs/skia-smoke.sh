@@ -22,7 +22,7 @@ if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
     exit 1
 fi
 
-timeout_seconds="${EWM_SKIA_SMOKE_TIMEOUT:-15}"
+timeout_seconds="${EWM_SKIA_SMOKE_TIMEOUT:-30}"
 tmp_dir="$(mktemp -d -t ewm-skia-smoke.XXXXXX)"
 if [[ -n "${EWM_SKIA_SMOKE_KEEP_TMP:-}" ]]; then
     echo "debug: keeping smoke artifacts in $tmp_dir" >&2
@@ -1471,6 +1471,60 @@ static char *image[] = {
     (ewm-skia-smoke-check-red-decoration
      phase (nth 0 case) (nth 1 case) (nth 2 case))))
 
+(defun ewm-skia-smoke-check-relief-polarity (phase)
+  (unless (fboundp 'pgtk-skia-test-draw-relief-polarity)
+    (ewm-skia-smoke-fail "missing Skia relief polarity test hook"))
+  (let* ((source-window (selected-window))
+         rects raised-top raised-bottom sunken-top sunken-bottom
+         raised-top-stats raised-bottom-stats
+         sunken-top-stats sunken-bottom-stats)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 12)
+          (delete-other-windows)
+          (ewm-skia-smoke-redraw)
+          (setq rects (pgtk-skia-test-draw-relief-polarity))
+          (unless (and (consp rects) (= (length rects) 4))
+            (ewm-skia-smoke-fail
+             "relief polarity hook could not draw after %s: rects=%S"
+             phase rects))
+          (setq raised-top (nth 0 rects)
+                raised-bottom (nth 1 rects)
+                sunken-top (nth 2 rects)
+                sunken-bottom (nth 3 rects)
+                raised-top-stats
+                (pgtk-skia-test-framebuffer-color-counts nil raised-top)
+                raised-bottom-stats
+                (pgtk-skia-test-framebuffer-color-counts nil raised-bottom)
+                sunken-top-stats
+                (pgtk-skia-test-framebuffer-color-counts nil sunken-top)
+                sunken-bottom-stats
+                (pgtk-skia-test-framebuffer-color-counts nil sunken-bottom))
+          (unless (and (consp raised-top-stats)
+                       (> (nth 2 raised-top-stats) 100))
+            (ewm-skia-smoke-fail
+             "raised relief top-left edge is not red after %s: rect=%S stats=%S"
+             phase raised-top raised-top-stats))
+          (unless (and (consp raised-bottom-stats)
+                       (> (nth 3 raised-bottom-stats) 100))
+            (ewm-skia-smoke-fail
+             "raised relief bottom-right edge is not green after %s: rect=%S stats=%S"
+             phase raised-bottom raised-bottom-stats))
+          (unless (and (consp sunken-top-stats)
+                       (> (nth 3 sunken-top-stats) 100))
+            (ewm-skia-smoke-fail
+             "sunken relief top-left edge is not green after %s: rect=%S stats=%S"
+             phase sunken-top sunken-top-stats))
+          (unless (and (consp sunken-bottom-stats)
+                       (> (nth 2 sunken-bottom-stats) 100))
+            (ewm-skia-smoke-fail
+             "sunken relief bottom-right edge is not red after %s: rect=%S stats=%S"
+             phase sunken-bottom sunken-bottom-stats)))
+      (when (window-live-p source-window)
+        (select-window source-window))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-glyphless-text (phase)
   (let* ((source-buffer (current-buffer))
          (buffer (get-buffer-create "*ewm-skia-glyphless-smoke*"))
@@ -1845,6 +1899,7 @@ static char *image[] = {
 (ewm-skia-smoke-run-group "text"
   (ewm-skia-smoke-check-horizontal-scroll-text "initial draw")
   (ewm-skia-smoke-check-text-decorations "initial draw")
+  (ewm-skia-smoke-check-relief-polarity "initial draw")
   (ewm-skia-smoke-check-glyphless-text "initial draw")
   (ewm-skia-smoke-check-composite-text "initial draw")
   (ewm-skia-smoke-check-mixed-font-text "initial draw")

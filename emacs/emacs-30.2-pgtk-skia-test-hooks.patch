@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 8a265c4..0dff6d3 100644
+index 8a265c4..3e832ca 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10514,6 +10514,1045 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10514,6 +10514,1089 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -400,6 +400,50 @@ index 8a265c4..0dff6d3 100644
 +		       make_int (draw_width), make_int (row_height)),
 +		list4 (make_int (draw_left), make_int (clips[1].y),
 +		       make_int (draw_width), make_int (bottom_height)));
++}
++
++DEFUN ("pgtk-skia-test-draw-relief-polarity",
++       Fpgtk_skia_test_draw_relief_polarity,
++       Spgtk_skia_test_draw_relief_polarity, 0, 1, 0,
++       doc: /* Draw raised and sunken relief rectangles on FRAME.
++Return (RAISED-TOP-LEFT RAISED-BOTTOM-RIGHT SUNKEN-TOP-LEFT
++SUNKEN-BOTTOM-RIGHT) sample rectangles.  If FRAME is nil, use the selected
++frame.  This is intended for deterministic Skia relief polarity smoke tests.  */)
++  (Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  XRectangle raised_clip = { 44, 44, 180, 90 };
++  XRectangle sunken_clip = { 44, 154, 180, 90 };
++  struct pgtk_output *output = FRAME_X_OUTPUT (f);
++  unsigned long old_white = output->white_relief.xgcv.foreground;
++  unsigned long old_black = output->black_relief.xgcv.foreground;
++  bool old_valid = output->relief_background_valid_p;
++
++  output->white_relief.xgcv.foreground = EMACS_SKIA_COLOR_RGB (255, 0, 0);
++  output->black_relief.xgcv.foreground = EMACS_SKIA_COLOR_RGB (0, 255, 0);
++  output->relief_background_valid_p = true;
++
++  pgtk_fill_rectangle (f, 0x0000ff, 36, 36, 200, 220, false);
++  pgtk_draw_relief_rect (f, 44, 44, 223, 133, 10, 10, true,
++			 true, true, true, true, &raised_clip);
++  pgtk_draw_relief_rect (f, 44, 154, 223, 243, 10, 10, false,
++			 true, true, true, true, &sunken_clip);
++
++  output->white_relief.xgcv.foreground = old_white;
++  output->black_relief.xgcv.foreground = old_black;
++  output->relief_background_valid_p = old_valid;
++
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  return list4 (list4 (make_int (80), make_int (48),
++		       make_int (90), make_int (4)),
++		list4 (make_int (80), make_int (128),
++		       make_int (90), make_int (4)),
++		list4 (make_int (80), make_int (158),
++		       make_int (90), make_int (4)),
++		list4 (make_int (80), make_int (238),
++		       make_int (90), make_int (4)));
 +}
 +
 +DEFUN ("pgtk-skia-test-clear-area",
@@ -1088,7 +1132,7 @@ index 8a265c4..0dff6d3 100644
  #endif
  
  void
-@@ -10608,6 +11647,25 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10608,6 +11691,26 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
@@ -1097,6 +1141,7 @@ index 8a265c4..0dff6d3 100644
 +  defsubr (&Spgtk_skia_test_input_unwind_preserved_p);
 +  defsubr (&Spgtk_skia_test_draw_multirect_clip);
 +  defsubr (&Spgtk_skia_test_draw_glyph_overlap_clip);
++  defsubr (&Spgtk_skia_test_draw_relief_polarity);
 +  defsubr (&Spgtk_skia_test_clear_area);
 +  defsubr (&Spgtk_skia_test_abandon_gl_context);
 +  defsubr (&Spgtk_skia_test_gl_recreate_source_active_p);
