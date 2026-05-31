@@ -334,7 +334,7 @@ index dfe6c5c..46282f6 100644
  
  ** On GNU/Linux, Emacs is now the default application for 'org-protocol'.
 diff --git a/src/Makefile.in b/src/Makefile.in
-index b5d88eb..98b98fd 100644
+index b5d88eb..1877eb6 100644
 --- a/src/Makefile.in
 +++ b/src/Makefile.in
 @@ -393,6 +393,10 @@ HAIKU_CXX_OBJ = @HAIKU_CXX_OBJ@
@@ -397,10 +397,10 @@ index b5d88eb..98b98fd 100644
  
 +## Skia C++ wrapper
 +ifneq ($(SKIA_CXX_OBJ),)
-+skia $(DEPDIR)/skia:
++skia-build-dirs:
 +	$(MKDIR_P) skia $(DEPDIR)/skia
 +
-+skia/emacs_skia.o: $(srcdir)/skia/emacs_skia.cpp $(srcdir)/skia/emacs_skia.h skia $(DEPDIR)/skia $(config_h)
++skia/emacs_skia.o: $(srcdir)/skia/emacs_skia.cpp $(srcdir)/skia/emacs_skia.h $(config_h) | skia-build-dirs
 +	$(AM_V_CXX)$(CXX) -c $(CPPFLAGS) $(ALL_CXX_CFLAGS) $(DEPFLAGS) $(SKIA_CFLAGS) -o $@ $<
 +endif
 +

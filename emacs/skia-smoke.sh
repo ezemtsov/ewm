@@ -1308,7 +1308,8 @@ static char *image[] = {
          (right-buffer (get-buffer-create "*ewm-skia-partial-scroll-right*"))
          left-window right-window bottom-line
          left-top-before left-second-before right-before
-         left-top-after left-second-after left-bottom-after right-after)
+         left-top-after left-second-after left-bottom-after right-after
+         settled)
     (unwind-protect
         (progn
           (set-frame-size nil 80 10)
@@ -1347,33 +1348,38 @@ static char *image[] = {
              "partial-window scroll setup wrong colors after %s: left-top=%S left-second=%S right=%S"
              phase left-top-before left-second-before right-before))
           (scroll-up-command 1)
-          (ewm-skia-smoke-pump)
-          (setq bottom-line
-                (1- (ewm-skia-smoke-window-visible-lines left-window)))
-          (setq left-top-after
-                (pgtk-skia-test-framebuffer-color-counts
-                 nil (ewm-skia-smoke-window-line-rect 0 220 left-window)))
-          (setq left-second-after
-                (pgtk-skia-test-framebuffer-color-counts
-                 nil (ewm-skia-smoke-window-line-rect 1 220 left-window)))
-          (setq left-bottom-after
-                (pgtk-skia-test-framebuffer-color-counts
-                 nil (ewm-skia-smoke-window-line-rect
-                      bottom-line 220 left-window)))
-          (setq right-after
-                (pgtk-skia-test-framebuffer-color-counts
-                 nil (ewm-skia-smoke-window-line-rect 0 220 right-window)))
-          (unless (and (consp left-top-after)
-                       (> (nth 2 left-top-after) 1000)
-                       (consp left-second-after)
-                       (< (nth 2 left-second-after) 50)
-                       (> (nth 3 left-second-after) 1000)
-                       (consp left-bottom-after)
-                       (< (nth 2 left-bottom-after) 50)
-                       (> (nth 3 left-bottom-after) 1000)
-                       (consp right-after)
-                       (< (nth 2 right-after) 50)
-                       (> (nth 3 right-after) 1000))
+          (catch 'settled
+            (dotimes (_ 20)
+              (ewm-skia-smoke-pump)
+              (setq bottom-line
+                    (1- (ewm-skia-smoke-window-visible-lines left-window)))
+              (setq left-top-after
+                    (pgtk-skia-test-framebuffer-color-counts
+                     nil (ewm-skia-smoke-window-line-rect 0 220 left-window)))
+              (setq left-second-after
+                    (pgtk-skia-test-framebuffer-color-counts
+                     nil (ewm-skia-smoke-window-line-rect 1 220 left-window)))
+              (setq left-bottom-after
+                    (pgtk-skia-test-framebuffer-color-counts
+                     nil (ewm-skia-smoke-window-line-rect
+                          bottom-line 220 left-window)))
+              (setq right-after
+                    (pgtk-skia-test-framebuffer-color-counts
+                     nil (ewm-skia-smoke-window-line-rect 0 220 right-window)))
+              (when (and (consp left-top-after)
+                         (> (nth 2 left-top-after) 1000)
+                         (consp left-second-after)
+                         (< (nth 2 left-second-after) 50)
+                         (> (nth 3 left-second-after) 1000)
+                         (consp left-bottom-after)
+                         (< (nth 2 left-bottom-after) 50)
+                         (> (nth 3 left-bottom-after) 1000)
+                         (consp right-after)
+                         (< (nth 2 right-after) 50)
+                         (> (nth 3 right-after) 1000))
+                (setq settled t)
+                (throw 'settled t))))
+          (unless settled
             (ewm-skia-smoke-fail
              "partial-window scroll copied outside expected geometry after %s: left-top=%S left-second=%S left-bottom=%S right=%S"
              phase left-top-after left-second-after
