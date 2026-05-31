@@ -459,10 +459,24 @@ cat >"$payload" <<'EOF'
     ('pdf
      (and (stringp data)
           (> (length data) 5)
-          (equal (substring data 0 5) "%PDF-")))
+          (equal (substring data 0 5) "%PDF-")
+          (string-match-p "%%EOF[ \t\r\n]*\\'" data)
+          (string-match-p
+           (format "/MediaBox[ \t\r\n]*\\[[ \t\r\n]*0[ \t\r\n]+0[ \t\r\n]+%d\\(?:\\.0+\\)?[ \t\r\n]+%d\\(?:\\.0+\\)?[ \t\r\n]*\\]"
+                   (frame-pixel-width) (frame-pixel-height))
+           data)))
     ('svg
      (and (stringp data)
-          (string-match-p "<svg\\b" data)))
+          (string-match-p "<svg\\b" data)
+          (string-match-p "</svg>[ \t\r\n]*\\'" data)
+          (string-match-p
+           (format "\\bwidth=\"%d\\(?:\\.0+\\)?\\(?:px\\)?\""
+                   (frame-pixel-width))
+           data)
+          (string-match-p
+           (format "\\bheight=\"%d\\(?:\\.0+\\)?\\(?:px\\)?\""
+                   (frame-pixel-height))
+           data)))
     (_ nil)))
 
 (defun ewm-skia-smoke-check-optional-export
