@@ -51,6 +51,8 @@ cat >"$payload" <<'EOF'
   (string-to-number (getenv "EWM_SKIA_PROFILE_ITERATIONS")))
 (defconst ewm-skia-profile-frame-count
   (string-to-number (or (getenv "EWM_SKIA_PROFILE_FRAMES") "4")))
+(defconst ewm-skia-profile-churn-cycles
+  (string-to-number (or (getenv "EWM_SKIA_PROFILE_CHURN_CYCLES") "3")))
 (defconst ewm-skia-profile-output
   (getenv "EWM_SKIA_PROFILE_OUTPUT"))
 (defconst ewm-skia-profile-page-size
@@ -314,6 +316,44 @@ cat >"$payload" <<'EOF'
     (ewm-skia-profile-report-rss
      "multi-frame-release" ewm-skia-profile-frame-count before-kb
      (ewm-skia-profile-rss-kb))))
+
+(let ((main-frame (selected-frame))
+      (before-kb (ewm-skia-profile-rss-kb))
+      (start (current-time)))
+  (dotimes (cycle (max 1 ewm-skia-profile-churn-cycles))
+    (let ((frames nil))
+      (unwind-protect
+          (progn
+            (dotimes (index ewm-skia-profile-frame-count)
+              (let ((frame (make-frame `((width . 64)
+                                         (height . 16)
+                                         (minibuffer . nil)
+                                         (visibility . t)))))
+                (push frame frames)
+                (select-frame-set-input-focus frame)
+                (switch-to-buffer "*ewm-skia-profile*")
+                (goto-char (point-min))
+                (forward-line (+ (* cycle 20) (* index 10)))
+                (ewm-skia-profile-redraw)
+                (unless (pgtk-skia-gl-enabled-p frame)
+                  (ewm-skia-profile-fail
+                   "Skia GL acceleration is not active for churn frame"))))
+            (ewm-skia-profile-redraw-frames frames))
+        (dolist (frame frames)
+          (when (frame-live-p frame)
+            (delete-frame frame t)))
+        (when (frame-live-p main-frame)
+          (select-frame-set-input-focus main-frame))
+        (redisplay 'force)
+        (sit-for 0.03)
+        (garbage-collect))
+      (ewm-skia-profile-report-rss
+       "frame-churn-rss" (* (1+ cycle) ewm-skia-profile-frame-count)
+       before-kb (ewm-skia-profile-rss-kb))))
+  (ewm-skia-profile-report
+   "frame-churn" (* (max 1 ewm-skia-profile-churn-cycles)
+                    ewm-skia-profile-frame-count)
+   (ewm-skia-profile-seconds start)))
 
 (when (timerp ewm-skia-profile-watchdog)
   (cancel-timer ewm-skia-profile-watchdog))
