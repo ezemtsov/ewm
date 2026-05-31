@@ -303,6 +303,8 @@ cat >"$payload" <<'EOF'
       (multi-iterations (max 1 (/ ewm-skia-profile-iterations 4))))
   (unwind-protect
       (progn
+        (ewm-skia-profile-report-context-state
+         "main-frame-cache" main-frame 0)
         (dotimes (index ewm-skia-profile-frame-count)
           (let ((frame (make-frame `((width . 72)
                                      (height . 18)
@@ -344,7 +346,9 @@ cat >"$payload" <<'EOF'
     (garbage-collect)
     (ewm-skia-profile-report-rss
      "multi-frame-release" ewm-skia-profile-frame-count before-kb
-     (ewm-skia-profile-rss-kb))))
+     (ewm-skia-profile-rss-kb))
+    (ewm-skia-profile-report-context-state
+     "main-after-release" main-frame 0)))
 
 (let ((main-frame (selected-frame))
       (before-kb (ewm-skia-profile-rss-kb))
@@ -381,7 +385,9 @@ cat >"$payload" <<'EOF'
         (garbage-collect))
       (ewm-skia-profile-report-rss
        "frame-churn-rss" (* (1+ cycle) ewm-skia-profile-frame-count)
-       before-kb (ewm-skia-profile-rss-kb))))
+       before-kb (ewm-skia-profile-rss-kb))
+      (ewm-skia-profile-report-context-state
+       "main-after-churn" main-frame (1+ cycle))))
   (ewm-skia-profile-report
    "frame-churn" (* (max 1 ewm-skia-profile-churn-cycles)
                     ewm-skia-profile-frame-count)
