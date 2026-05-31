@@ -583,6 +583,61 @@ cat >"$payload" <<'EOF'
     (ewm-skia-smoke-check-main-frame-rendering
      main-frame (format "after %s deletion" phase))))
 
+(defun ewm-skia-smoke-check-popup-child-frame (phase)
+  (let ((main-frame (selected-frame))
+        (source-buffer (current-buffer))
+        (popup-buffer (get-buffer-create "*ewm-skia-popup-smoke*"))
+        popup-window popup-frame)
+    (unwind-protect
+        (progn
+          (with-current-buffer popup-buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (setq-local face-remapping-alist
+                        '((default (:foreground "#ff0000"
+                                     :background "#00ff00") default)))
+            (erase-buffer)
+            (dotimes (line 24)
+              (insert (format "popup frame render line %02d\n" line)))
+            (goto-char (point-min)))
+          (setq popup-window
+                (display-buffer-in-child-frame
+                 popup-buffer
+                 `((child-frame-parameters
+                    . ((parent-frame . ,main-frame)
+                       (left . 48)
+                       (top . 48)
+                       (width . 48)
+                       (height . 8)
+                       (minibuffer . nil)
+                       (undecorated . t)
+                       (visibility . t))))))
+          (unless (window-live-p popup-window)
+            (ewm-skia-smoke-fail
+             "display-buffer popup did not return a live window after %s"
+             phase))
+          (setq popup-frame (window-frame popup-window))
+          (unless (and (frame-live-p popup-frame)
+                       (not (eq popup-frame main-frame)))
+            (ewm-skia-smoke-fail
+             "display-buffer popup did not create a child frame after %s"
+             phase))
+          (ewm-skia-smoke-settle-framebuffer
+           popup-frame "display-buffer popup frame" 48 8 160 80)
+          (ewm-skia-smoke-check-gl-enabled
+           popup-frame "display-buffer popup frame")
+          (ewm-skia-smoke-check-framebuffer
+           "display-buffer popup frame" popup-frame t))
+      (when (and popup-frame (frame-live-p popup-frame))
+        (delete-frame popup-frame t))
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (select-frame-set-input-focus main-frame)
+      (redisplay 'force)
+      (sit-for 0.01))
+    (ewm-skia-smoke-check-main-frame-rendering
+     main-frame (format "popup cleanup %s" phase))))
+
 (defun ewm-skia-smoke-xpm (width height rows)
   (concat "/* XPM */
 static char *image[] = {
@@ -2175,7 +2230,8 @@ static char *image[] = {
        (height . 12)
        (minibuffer . nil)
        (visibility . t))
-     56 12 nil t)))
+     56 12 nil t))
+  (ewm-skia-smoke-check-popup-child-frame "initial draw"))
 
 (ewm-skia-smoke-run-group "frames"
   (dotimes (step 3)
