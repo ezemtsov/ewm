@@ -215,6 +215,14 @@ cat >"$payload" <<'EOF'
       (ewm-skia-smoke-fail
        "Skia GL acceleration is not active after %s" phase))))
 
+(defun ewm-skia-smoke-check-main-frame-rendering (frame phase)
+  (select-frame-set-input-focus frame)
+  (switch-to-buffer "*ewm-skia-smoke*")
+  (goto-char (point-min))
+  (ewm-skia-smoke-redraw)
+  (ewm-skia-smoke-check-gl-enabled frame phase)
+  (ewm-skia-smoke-check-framebuffer phase frame t))
+
 (defun ewm-skia-smoke-settle-framebuffer
     (frame phase columns rows min-logical-width min-logical-height)
   (unless (fboundp 'pgtk-skia-test-framebuffer-size)
@@ -415,7 +423,8 @@ cat >"$payload" <<'EOF'
      "Skia input block leaked after %s" phase)))
 
 (defun ewm-skia-smoke-check-tooltip-frame (phase)
-  (let ((old-use-system-tooltips use-system-tooltips)
+  (let ((main-frame (selected-frame))
+        (old-use-system-tooltips use-system-tooltips)
         (old-x-gtk-use-system-tooltips x-gtk-use-system-tooltips)
         (old-tooltip-reuse-hidden-frame tooltip-reuse-hidden-frame)
         tooltip-frame stats ok)
@@ -470,7 +479,9 @@ cat >"$payload" <<'EOF'
       (x-hide-tip)
       (setq use-system-tooltips old-use-system-tooltips
             x-gtk-use-system-tooltips old-x-gtk-use-system-tooltips
-            tooltip-reuse-hidden-frame old-tooltip-reuse-hidden-frame))))
+            tooltip-reuse-hidden-frame old-tooltip-reuse-hidden-frame))
+    (ewm-skia-smoke-check-main-frame-rendering
+     main-frame (format "tooltip cleanup %s" phase))))
 
 (defun ewm-skia-smoke-xpm (width height rows)
   (concat "/* XPM */
@@ -1794,7 +1805,11 @@ static char *image[] = {
           (ewm-skia-smoke-redraw)
           (ewm-skia-smoke-check-region-colors
            phase "block cursor" (ewm-skia-smoke-window-rect 260 120)
-           200 1000)
+           50 1000)
+          (ewm-skia-smoke-check-region-no-red
+           phase "block cursor adjacent cell"
+           (ewm-skia-smoke-cursor-cell-rect 2)
+           5 20)
           (dolist (case '((bar . "bar cursor")
                           ((hbar . 6) . "hbar cursor")
                           (hollow . "hollow cursor")))
@@ -2049,7 +2064,9 @@ static char *image[] = {
         (delete-frame frame t))
       (select-frame-set-input-focus main-frame)
       (redisplay 'force)
-      (sit-for 0.01))))
+      (sit-for 0.01))
+    (ewm-skia-smoke-check-main-frame-rendering
+     main-frame "after child-frame deletion")))
 
 (ewm-skia-smoke-run-group "frames"
   (let ((main-frame (selected-frame)))
@@ -2077,7 +2094,9 @@ static char *image[] = {
             (delete-frame frame t)
             (select-frame-set-input-focus main-frame)
             (redisplay 'force)
-            (sit-for 0.01)))))
+            (sit-for 0.01)))
+        (ewm-skia-smoke-check-main-frame-rendering
+         main-frame (format "after lifecycle frame %d deletion" step))))
     (select-frame-set-input-focus main-frame)
     (raise-frame main-frame)
     (redisplay 'force)
@@ -2124,7 +2143,9 @@ static char *image[] = {
           (sit-for 0.03))
       (when (and bell-frame (frame-live-p bell-frame))
         (delete-frame bell-frame t))
-      (select-frame-set-input-focus main-frame))))
+      (select-frame-set-input-focus main-frame))
+    (ewm-skia-smoke-check-main-frame-rendering
+     main-frame "after visible-bell frame deletion")))
 
 (unless (fboundp 'pgtk-skia-test-abandon-gl-context)
   (ewm-skia-smoke-fail "missing Skia forced-abandon test hook"))
@@ -2156,7 +2177,9 @@ static char *image[] = {
           (select-frame-set-input-focus main-frame))
       (when (and lost-frame (frame-live-p lost-frame))
         (delete-frame lost-frame t))
-      (select-frame-set-input-focus main-frame))))
+      (select-frame-set-input-focus main-frame))
+    (ewm-skia-smoke-check-main-frame-rendering
+     main-frame "after abandoned frame deletion")))
 
 (ewm-skia-smoke-run-group "recovery"
   (let ((frame (selected-frame))
