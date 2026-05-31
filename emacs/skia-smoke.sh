@@ -61,12 +61,19 @@ cat >"$payload" <<'EOF'
     (if (and groups (> (length groups) 0))
         (split-string groups "[,[:space:]]+" t)
       '("all"))))
+(defconst ewm-skia-smoke-lifecycle-groups
+  '("tooltip" "frames" "bell" "recovery"))
+
+(defun ewm-skia-smoke-group-selected-p (group)
+  (or (member group ewm-skia-smoke-selected-groups)
+      (and (member "lifecycle" ewm-skia-smoke-selected-groups)
+           (member group ewm-skia-smoke-lifecycle-groups))))
 
 (defun ewm-skia-smoke-group-enabled-p (&rest groups)
   (or (member "all" ewm-skia-smoke-selected-groups)
       (catch 'found
         (dolist (group groups nil)
-          (when (member group ewm-skia-smoke-selected-groups)
+          (when (ewm-skia-smoke-group-selected-p group)
             (throw 'found t))))))
 
 (defmacro ewm-skia-smoke-run-group (groups &rest body)
@@ -1904,6 +1911,16 @@ static char *image[] = {
       (ewm-skia-smoke-fail
        "Skia GL state did not recover after forced abandon"))
     (ewm-skia-smoke-check-framebuffer "forced abandon recovery" frame)))
+
+(ewm-skia-smoke-run-group "lifecycle"
+  (let ((frame (selected-frame)))
+    (select-frame-set-input-focus frame)
+    (switch-to-buffer "*ewm-skia-smoke*")
+    (goto-char (point-min))
+    (set-frame-size frame 96 32)
+    (ewm-skia-smoke-redraw)
+    (ewm-skia-smoke-check-gl-enabled frame "combined lifecycle")
+    (ewm-skia-smoke-check-framebuffer "combined lifecycle" frame t)))
 
 (princ "EWM_SKIA_SMOKE_OK\n" #'external-debugging-output)
 (kill-emacs 0)
