@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..9287c823f8b
+index 00000000000..2a5646b99bf
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1404 @@
+@@ -0,0 +1,1422 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -399,10 +399,21 @@ index 00000000000..9287c823f8b
 +bool
 +emacs_skia_gl_context_get_diagnostics (
 +  emacs_skia_gl_context_t *ctx, void **direct_context, int *resource_count,
-+  size_t *resource_bytes)
++  size_t *resource_bytes, int *max_resources,
++  size_t *max_resource_bytes, size_t *purgeable_bytes)
 +{
 +  if (direct_context)
 +    *direct_context = nullptr;
++  if (resource_count)
++    *resource_count = 0;
++  if (resource_bytes)
++    *resource_bytes = 0;
++  if (max_resources)
++    *max_resources = 0;
++  if (max_resource_bytes)
++    *max_resource_bytes = 0;
++  if (purgeable_bytes)
++    *purgeable_bytes = 0;
 +
 +  if (!ctx || !ctx->context || ctx->abandoned)
 +    return false;
@@ -410,6 +421,9 @@ index 00000000000..9287c823f8b
 +  if (direct_context)
 +    *direct_context = ctx->context.get ();
 +  ctx->context->getResourceCacheUsage (resource_count, resource_bytes);
++  ctx->context->getResourceCacheLimits (max_resources, max_resource_bytes);
++  if (purgeable_bytes)
++    *purgeable_bytes = ctx->context->getResourceCachePurgeableBytes ();
 +  return true;
 +}
 +#else
@@ -434,13 +448,17 @@ index 00000000000..9287c823f8b
 +bool
 +emacs_skia_gl_context_get_diagnostics (
 +  emacs_skia_gl_context_t *ctx, void **direct_context, int *resource_count,
-+  size_t *resource_bytes)
++  size_t *resource_bytes, int *max_resources,
++  size_t *max_resource_bytes, size_t *purgeable_bytes)
 +{
 +  (void) ctx;
 +  if (direct_context)
 +    *direct_context = nullptr;
 +  (void) resource_count;
 +  (void) resource_bytes;
++  (void) max_resources;
++  (void) max_resource_bytes;
++  (void) purgeable_bytes;
 +  return false;
 +}
 +#endif
@@ -1410,10 +1428,10 @@ index 00000000000..9287c823f8b
 +}
 diff --git a/src/skia/emacs_skia.h b/src/skia/emacs_skia.h
 new file mode 100644
-index 00000000000..68481af966a
+index 00000000000..0c0fde3b603
 --- /dev/null
 +++ b/src/skia/emacs_skia.h
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,388 @@
 +/* Minimal Skia C API for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -1546,7 +1564,9 @@ index 00000000000..68481af966a
 +  /* Return Skia GPU context diagnostics.  */
 +  bool emacs_skia_gl_context_get_diagnostics (
 +    emacs_skia_gl_context_t *ctx, void **direct_context,
-+    int *resource_count, size_t *resource_bytes);
++    int *resource_count, size_t *resource_bytes,
++    int *max_resources, size_t *max_resource_bytes,
++    size_t *purgeable_bytes);
 +
 +  /* ============================================================
 +     Surface

@@ -11534,7 +11534,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..ccb0897 100644
+index 617ed3c..964edf1 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -18147,7 +18147,7 @@ index 617ed3c..ccb0897 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,204 +9384,1295 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,204 +9384,1259 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -18595,48 +18595,18 @@ index 617ed3c..ccb0897 100644
 +   the preserved content back after pgtk_setup_gl_framebuffer has
 +   cleared newly exposed pixels to the frame background.  */
 +static bool
-+pgtk_grow_gl_size (int current, int requested, int *grown)
++pgtk_ensure_resize_scratch_framebuffer (struct frame *f, int width,
++					int height)
  {
 -  Emacs_Color col;
 -  col.pixel = color;
 -  pgtk_query_color (f, &col);
-+  int extra;
- 
--  if (!respects_alpha_background)
-+  if (requested <= 0)
-+    return false;
-+
-+  if (current >= requested)
-     {
--      cairo_set_source_rgb (FRAME_CR_CONTEXT (f), col.red / 65535.0,
--			    col.green / 65535.0, col.blue / 65535.0);
--      cairo_set_operator (FRAME_CR_CONTEXT (f), CAIRO_OPERATOR_OVER);
-+      *grown = current;
-+      return true;
-     }
-+
-+  extra = requested / 8;
-+  if (extra < 64)
-+    extra = 64;
-+  if (requested > INT_MAX - extra)
-+    *grown = requested;
-   else
--    {
--      cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
--			     col.green / 65535.0, col.blue / 65535.0,
-+    *grown = requested + extra;
-+  return true;
-+}
-+
-+static bool
-+pgtk_ensure_resize_scratch_framebuffer (struct frame *f, int width,
-+					int height)
-+{
 +  int alloc_width, alloc_height;
 +  GLint old_texture = 0;
 +  struct pgtk_fbo_bindings saved_fbo;
 +  bool ok = false;
-+
+ 
+-  if (!respects_alpha_background)
 +  if (width <= 0 || height <= 0)
 +    return false;
 +
@@ -18646,24 +18616,23 @@ index 617ed3c..ccb0897 100644
 +  if (!FRAME_GL_RESIZE_FRAMEBUFFER (f))
 +    glGenFramebuffers (1, &FRAME_GL_RESIZE_FRAMEBUFFER (f));
 +  if (!FRAME_GL_RESIZE_TEXTURE (f))
-+    {
+     {
+-      cairo_set_source_rgb (FRAME_CR_CONTEXT (f), col.red / 65535.0,
+-			    col.green / 65535.0, col.blue / 65535.0);
+-      cairo_set_operator (FRAME_CR_CONTEXT (f), CAIRO_OPERATOR_OVER);
 +      glGenTextures (1, &FRAME_GL_RESIZE_TEXTURE (f));
 +      FRAME_GL_RESIZE_TEXTURE_WIDTH (f) = 0;
 +      FRAME_GL_RESIZE_TEXTURE_HEIGHT (f) = 0;
-+    }
+     }
+-  else
 +
-+  alloc_width = FRAME_GL_RESIZE_TEXTURE_WIDTH (f);
-+  alloc_height = FRAME_GL_RESIZE_TEXTURE_HEIGHT (f);
-+  if (alloc_width < width
-+      && !pgtk_grow_gl_size (alloc_width, width, &alloc_width))
-+    goto out;
-+  if (alloc_height < height
-+      && !pgtk_grow_gl_size (alloc_height, height, &alloc_height))
-+    goto out;
++  alloc_width = width;
++  alloc_height = height;
 +
 +  if (alloc_width != FRAME_GL_RESIZE_TEXTURE_WIDTH (f)
 +      || alloc_height != FRAME_GL_RESIZE_TEXTURE_HEIGHT (f))
-+    {
+     {
+-      cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
 +      glBindTexture (GL_TEXTURE_2D, FRAME_GL_RESIZE_TEXTURE (f));
 +      glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, alloc_width,
 +		    alloc_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -18812,14 +18781,8 @@ index 617ed3c..ccb0897 100644
 +  /* Clear any stale GL errors before starting.  */
 +  pgtk_clear_gl_errors ();
 +
-+  alloc_width = FRAME_GL_TEXTURE_WIDTH (f);
-+  alloc_height = FRAME_GL_TEXTURE_HEIGHT (f);
-+  if (alloc_width < width
-+      && !pgtk_grow_gl_size (alloc_width, width, &alloc_width))
-+    return false;
-+  if (alloc_height < height
-+      && !pgtk_grow_gl_size (alloc_height, height, &alloc_height))
-+    return false;
++  alloc_width = width;
++  alloc_height = height;
 +  resize_storage = (alloc_width != FRAME_GL_TEXTURE_WIDTH (f)
 +		    || alloc_height != FRAME_GL_TEXTURE_HEIGHT (f));
 +
@@ -19568,7 +19531,7 @@ index 617ed3c..ccb0897 100644
 +  else
 +    {
 +      cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
-+			     col.green / 65535.0, col.blue / 65535.0,
+ 			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
 -      cairo_set_operator (FRAME_CR_CONTEXT (f), CAIRO_OPERATOR_SOURCE);
 +      cairo_set_operator (FRAME_CR_CONTEXT (f),
@@ -19582,7 +19545,7 @@ index 617ed3c..ccb0897 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10684,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10648,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19592,7 +19555,7 @@ index 617ed3c..ccb0897 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10709,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10673,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19610,7 +19573,7 @@ index 617ed3c..ccb0897 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10730,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10694,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19667,7 +19630,7 @@ index 617ed3c..ccb0897 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10792,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10756,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  

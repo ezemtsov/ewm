@@ -328,7 +328,9 @@ cat >"$payload" <<'EOF'
 
 (defun ewm-skia-profile-report-context-state (name frame index)
   (when (fboundp 'pgtk-skia-test-context-state)
-    (let ((state (pgtk-skia-test-context-state frame t)))
+    (let ((state (pgtk-skia-test-context-state frame t))
+          (framebuffer-size (and (fboundp 'pgtk-skia-test-framebuffer-size)
+                                 (pgtk-skia-test-framebuffer-size frame))))
       (unless (and (consp state)
                    (nth 0 state)
                    (nth 1 state)
@@ -337,16 +339,21 @@ cat >"$payload" <<'EOF'
                    (integerp (nth 4 state))
                    (integerp (nth 5 state))
                    (nth 6 state)
-                   (nth 7 state))
+                   (nth 7 state)
+                   (integerp (nth 9 state))
+                   (integerp (nth 10 state))
+                   (integerp (nth 11 state)))
         (ewm-skia-profile-fail
          "invalid Skia context state for %s frame %d: %S"
          name index state))
       (ewm-skia-profile-report-line
-       (format "%-18s frame=%d gdk-context=%S current-gdk-context=%S gdk-current=%S skia-context=%S cache-resources=%S cache-bytes=%S framebuffer=%S texture=%S gdk-shared-context=%S"
+       (format "%-18s frame=%d gdk-context=%S current-gdk-context=%S gdk-current=%S skia-context=%S cache-resources=%S cache-bytes=%S framebuffer=%S texture=%S framebuffer-size=%S gdk-shared-context=%S cache-max-resources=%S cache-max-bytes=%S cache-purgeable-bytes=%S"
                name index
                (nth 0 state) (nth 1 state) (nth 2 state) (nth 3 state)
                (nth 4 state) (nth 5 state) (nth 6 state) (nth 7 state)
-               (nth 8 state))))))
+               framebuffer-size
+               (nth 8 state) (nth 9 state) (nth 10 state)
+               (nth 11 state))))))
 
 (defun ewm-skia-profile-time (name iterations function)
   (garbage-collect)

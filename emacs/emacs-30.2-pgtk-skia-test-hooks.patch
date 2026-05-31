@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index ccb0897..4a1ef46 100644
+index 964edf1..b48860a 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10482,6 +10482,1204 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10446,6 +10446,1213 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -62,7 +62,8 @@ index ccb0897..4a1ef46 100644
 +The return value is
 +(GDK-CONTEXT CURRENT-GDK-CONTEXT GDK-CURRENT-P SKIA-CONTEXT
 + CACHE-RESOURCE-COUNT CACHE-RESOURCE-BYTES FRAMEBUFFER TEXTURE
-+ SHARED-GDK-CONTEXT).
++ SHARED-GDK-CONTEXT CACHE-MAX-RESOURCES CACHE-MAX-BYTES
++ CACHE-PURGEABLE-BYTES).
 +Pointer values are opaque integers intended only for identity comparison in
 +tests.  */)
 +  (Lisp_Object frame, Lisp_Object make_current)
@@ -72,7 +73,10 @@ index ccb0897..4a1ef46 100644
 +  GdkGLContext *shared_gdk_context;
 +  void *skia_context = NULL;
 +  int cache_resources = 0;
++  int cache_max_resources = 0;
 +  size_t cache_bytes = 0;
++  size_t cache_max_bytes = 0;
++  size_t cache_purgeable_bytes = 0;
 +  bool have_cache = false;
 +
 +  if (!NILP (make_current) && !pgtk_skia_make_gl_context_current (f))
@@ -86,7 +90,8 @@ index ccb0897..4a1ef46 100644
 +  if (FRAME_SKIA_GL_CONTEXT (f))
 +    have_cache = emacs_skia_gl_context_get_diagnostics (
 +      FRAME_SKIA_GL_CONTEXT (f), &skia_context,
-+      &cache_resources, &cache_bytes);
++      &cache_resources, &cache_bytes, &cache_max_resources,
++      &cache_max_bytes, &cache_purgeable_bytes);
 +
 +  return CALLN (Flist,
 +		pgtk_skia_test_pointer_id (FRAME_GDK_GL_CONTEXT (f)),
@@ -101,7 +106,11 @@ index ccb0897..4a1ef46 100644
 +		  ? make_uint ((uintmax_t) FRAME_GL_FRAMEBUFFER (f)) : Qnil,
 +		FRAME_GL_TEXTURE (f)
 +		  ? make_uint ((uintmax_t) FRAME_GL_TEXTURE (f)) : Qnil,
-+		pgtk_skia_test_pointer_id (shared_gdk_context));
++		pgtk_skia_test_pointer_id (shared_gdk_context),
++		have_cache ? make_fixnum (cache_max_resources) : Qnil,
++		have_cache ? make_uint ((uintmax_t) cache_max_bytes) : Qnil,
++		have_cache ? make_uint ((uintmax_t) cache_purgeable_bytes)
++			   : Qnil);
 +}
 +
 +DEFUN ("pgtk-skia-test-texture-shared-p",
@@ -1247,7 +1256,7 @@ index ccb0897..4a1ef46 100644
  #endif
  
  void
-@@ -10576,6 +11774,28 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10540,6 +11747,28 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
