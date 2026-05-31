@@ -384,17 +384,31 @@ cat >"$payload" <<'EOF'
   ;; checking framebuffer pixels again.
   (ewm-skia-smoke-redraw))
 
+(defun ewm-skia-smoke-u32be (data offset)
+  (+ (ash (aref data offset) 24)
+     (ash (aref data (1+ offset)) 16)
+     (ash (aref data (+ offset 2)) 8)
+     (aref data (+ offset 3))))
+
 (defun ewm-skia-smoke-check-png-export (phase)
   (let* ((data (x-export-frames nil 'png))
          (length (if (stringp data) (length data) 0))
          (prefix (and (stringp data)
-                      (substring data 0 (min 8 length)))))
+                      (substring data 0 (min 8 length))))
+         (width (and (stringp data) (>= length 24)
+                     (ewm-skia-smoke-u32be data 16)))
+         (height (and (stringp data) (>= length 24)
+                      (ewm-skia-smoke-u32be data 20))))
     (unless (and (stringp data)
-                 (> length 8)
-                 (equal prefix "\211PNG\r\n\032\n"))
+                 (> length 24)
+                 (equal prefix "\211PNG\r\n\032\n")
+                 (equal (substring data 12 16) "IHDR")
+                 (= width (frame-pixel-width))
+                 (= height (frame-pixel-height)))
       (ewm-skia-smoke-fail
-       "bad PNG export after %s: prefix=%S length=%d"
-       phase prefix length))))
+       "bad PNG export after %s: prefix=%S length=%d size=%S expected=%S"
+       phase prefix length (list width height)
+       (list (frame-pixel-width) (frame-pixel-height))))))
 
 (defun ewm-skia-smoke-check-image-transform-capabilities (phase)
   (let ((capabilities (image-transforms-p)))
