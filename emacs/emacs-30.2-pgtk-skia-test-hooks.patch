@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index ccb0897..4575aa8 100644
+index ccb0897..4a1ef46 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10482,6 +10482,1147 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10482,6 +10482,1204 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -102,6 +102,63 @@ index ccb0897..4575aa8 100644
 +		FRAME_GL_TEXTURE (f)
 +		  ? make_uint ((uintmax_t) FRAME_GL_TEXTURE (f)) : Qnil,
 +		pgtk_skia_test_pointer_id (shared_gdk_context));
++}
++
++DEFUN ("pgtk-skia-test-texture-shared-p",
++       Fpgtk_skia_test_texture_shared_p,
++       Spgtk_skia_test_texture_shared_p, 2, 2, 0,
++       doc: /* Return non-nil if FRAME-A's GL texture is visible in FRAME-B.
++This is intended for fast deterministic Skia backend smoke tests.  It tests
++actual GL object sharing rather than GDK's reported shared-context pointer.  */)
++  (Lisp_Object frame_a, Lisp_Object frame_b)
++{
++  struct frame *fa = decode_window_system_frame (frame_a);
++  struct frame *fb = decode_window_system_frame (frame_b);
++  GLuint texture = 0;
++  GLint old_texture_a = 0;
++  GLint old_texture_b = 0;
++  unsigned char pixel[4] = { 255, 0, 0, 255 };
++  bool shared = false;
++  bool ok = false;
++
++  if (!FRAME_GDK_GL_CONTEXT (fa) || !FRAME_GDK_GL_CONTEXT (fb))
++    return Qnil;
++
++  if (!pgtk_skia_make_gl_context_current (fa))
++    return Qnil;
++
++  glGetIntegerv (GL_TEXTURE_BINDING_2D, &old_texture_a);
++  pgtk_clear_gl_errors ();
++  glGenTextures (1, &texture);
++  if (texture)
++    {
++      glBindTexture (GL_TEXTURE_2D, texture);
++      glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0,
++		    GL_RGBA, GL_UNSIGNED_BYTE, pixel);
++      glBindTexture (GL_TEXTURE_2D, old_texture_a);
++      ok = !pgtk_check_gl_error ("texture sharing source");
++    }
++
++  if (ok && pgtk_skia_make_gl_context_current (fb))
++    {
++      glGetIntegerv (GL_TEXTURE_BINDING_2D, &old_texture_b);
++      pgtk_clear_gl_errors ();
++      shared = glIsTexture (texture) == GL_TRUE;
++      glBindTexture (GL_TEXTURE_2D, old_texture_b);
++      if (pgtk_check_gl_error ("texture sharing target"))
++	shared = false;
++    }
++  else
++    ok = false;
++
++  if (pgtk_skia_make_gl_context_current (fa))
++    {
++      glBindTexture (GL_TEXTURE_2D, old_texture_a);
++      if (texture)
++	glDeleteTextures (1, &texture);
++    }
++
++  return ok && shared ? Qt : Qnil;
 +}
 +
 +DEFUN ("pgtk-skia-test-framebuffer-color-counts",
@@ -1190,11 +1247,12 @@ index ccb0897..4575aa8 100644
  #endif
  
  void
-@@ -10576,6 +11717,27 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10576,6 +11774,28 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
 +  defsubr (&Spgtk_skia_test_context_state);
++  defsubr (&Spgtk_skia_test_texture_shared_p);
 +  defsubr (&Spgtk_skia_test_framebuffer_color_counts);
 +  defsubr (&Spgtk_skia_test_font_ft_size_p);
 +  defsubr (&Spgtk_skia_test_input_unwind_preserved_p);

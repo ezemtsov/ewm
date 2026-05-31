@@ -319,6 +319,26 @@ cat >"$payload" <<'EOF'
             (ewm-skia-smoke-fail
              "Skia direct context is shared across unrelated GDK GL contexts after %s: states=%S"
              phase states))
+          (unless (fboundp 'pgtk-skia-test-texture-shared-p)
+            (ewm-skia-smoke-fail
+             "missing Skia texture-sharing test hook"))
+          (let ((texture-shared
+                 (pgtk-skia-test-texture-shared-p
+                  (car frames) (cadr frames))))
+            (princ (format "EWM_SKIA_SMOKE_GL_TEXTURE_SHARED=%S\n"
+                           texture-shared)
+                   #'external-debugging-output)
+            (when (and (equal (nth 3 (car states)) (nth 3 (cadr states)))
+                       (not texture-shared))
+              (ewm-skia-smoke-fail
+               "shared Skia direct context requires GL object sharing after %s: states=%S"
+               phase states))
+            (when (and (equal (ewm-skia-smoke-context-share-id (car states))
+                              (ewm-skia-smoke-context-share-id (cadr states)))
+                       (not texture-shared))
+              (ewm-skia-smoke-fail
+               "equal GDK GL share identity without GL object sharing after %s: states=%S"
+               phase states)))
           (pcase policy
             ("shared"
              (unless (equal (nth 3 (car states)) (nth 3 (cadr states)))
