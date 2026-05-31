@@ -137,6 +137,27 @@ cat >"$payload" <<'EOF'
     (append-to-file (point-min) (point-max)
                     ewm-skia-profile-output)))
 
+(defun ewm-skia-profile-report-context-state (name frame index)
+  (when (fboundp 'pgtk-skia-test-context-state)
+    (let ((state (pgtk-skia-test-context-state frame t)))
+      (unless (and (consp state)
+                   (nth 0 state)
+                   (nth 1 state)
+                   (eq (nth 2 state) t)
+                   (nth 3 state)
+                   (integerp (nth 4 state))
+                   (integerp (nth 5 state))
+                   (nth 6 state)
+                   (nth 7 state))
+        (ewm-skia-profile-fail
+         "invalid Skia context state for %s frame %d: %S"
+         name index state))
+      (ewm-skia-profile-report-line
+       (format "%-18s frame=%d gdk-context=%S current-gdk-context=%S gdk-current=%S skia-context=%S cache-resources=%S cache-bytes=%S framebuffer=%S texture=%S"
+               name index
+               (nth 0 state) (nth 1 state) (nth 2 state) (nth 3 state)
+               (nth 4 state) (nth 5 state) (nth 6 state) (nth 7 state))))))
+
 (defun ewm-skia-profile-time (name iterations function)
   (garbage-collect)
   (let ((start (current-time)))
@@ -294,13 +315,20 @@ cat >"$payload" <<'EOF'
             (ewm-skia-profile-redraw)
             (ewm-skia-profile-report-rss
              "multi-frame-rss" (1+ index) before-kb
-             (ewm-skia-profile-rss-kb))))
+             (ewm-skia-profile-rss-kb))
+            (ewm-skia-profile-report-context-state
+             "multi-frame-cache" frame (1+ index))))
         (setq frames (nreverse frames))
         (dolist (frame frames)
           (unless (and (pgtk-skia-gl-enabled-p frame)
                        (frame-live-p frame))
             (ewm-skia-profile-fail
              "Skia GL acceleration is not active for profile frame")))
+        (let ((index 0))
+          (dolist (frame frames)
+            (setq index (1+ index))
+            (ewm-skia-profile-report-context-state
+             "multi-frame-ready" frame index)))
         (ewm-skia-profile-time
          "multi-frame-redraw" multi-iterations
          (lambda ()
@@ -337,7 +365,10 @@ cat >"$payload" <<'EOF'
                 (ewm-skia-profile-redraw)
                 (unless (pgtk-skia-gl-enabled-p frame)
                   (ewm-skia-profile-fail
-                   "Skia GL acceleration is not active for churn frame"))))
+                   "Skia GL acceleration is not active for churn frame"))
+                (ewm-skia-profile-report-context-state
+                 "frame-churn-cache"
+                 frame (+ (* cycle ewm-skia-profile-frame-count) index 1))))
             (ewm-skia-profile-redraw-frames frames))
         (dolist (frame frames)
           (when (frame-live-p frame)

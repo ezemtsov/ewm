@@ -251,6 +251,90 @@ cat >"$payload" <<'EOF'
       (ewm-skia-smoke-fail
        "Skia GL acceleration is not active after %s" phase))))
 
+(defun ewm-skia-smoke-context-state (frame phase)
+  (unless (fboundp 'pgtk-skia-test-context-state)
+    (ewm-skia-smoke-fail "missing Skia context-state test hook"))
+  (let ((state (pgtk-skia-test-context-state frame t)))
+    (unless (and (consp state)
+                 (nth 0 state)
+                 (nth 1 state)
+                 (eq (nth 2 state) t)
+                 (nth 3 state)
+                 (integerp (nth 4 state))
+                 (integerp (nth 5 state))
+                 (nth 6 state)
+                 (nth 7 state))
+      (ewm-skia-smoke-fail
+       "invalid Skia context state after %s: state=%S" phase state))
+    state))
+
+(defun ewm-skia-smoke-check-context-ownership (phase)
+  (let ((main-frame (selected-frame))
+        (frames nil)
+        (states nil)
+        (policy (getenv "EWM_SKIA_SMOKE_GR_CONTEXT_POLICY")))
+    (unwind-protect
+        (progn
+          (dotimes (index 2)
+            (let ((frame (make-frame `((width . 64)
+                                       (height . 16)
+                                       (minibuffer . nil)
+                                       (visibility . t)))))
+              (push frame frames)
+              (select-frame-set-input-focus frame)
+              (switch-to-buffer "*ewm-skia-smoke*")
+              (goto-char (point-min))
+              (forward-line (* index 20))
+              (ewm-skia-smoke-settle-framebuffer
+               frame (format "%s frame %d" phase index) 64 16 200 100)
+              (ewm-skia-smoke-check-framebuffer
+               (format "%s frame %d" phase index) frame t)
+              (push (ewm-skia-smoke-context-state
+                     frame (format "%s frame %d" phase index))
+                    states)))
+          (setq frames (nreverse frames)
+                states (nreverse states))
+          (ewm-skia-smoke-context-state
+           (cadr frames) (format "%s force second frame current" phase))
+          (let ((wrong-current
+                 (pgtk-skia-test-context-state (car frames) nil)))
+            (when (eq (nth 2 wrong-current) t)
+              (ewm-skia-smoke-fail
+               "context state did not expose wrong current frame after %s: state=%S"
+               phase wrong-current)))
+          (select-frame-set-input-focus (car frames))
+          (ewm-skia-smoke-check-framebuffer
+           (format "%s return to first frame" phase) (car frames) t)
+          (setq states
+                (list (ewm-skia-smoke-context-state
+                       (car frames) (format "%s return first frame" phase))
+                      (ewm-skia-smoke-context-state
+                       (cadr frames) (format "%s return second frame" phase))))
+          (pcase policy
+            ("shared"
+             (unless (equal (nth 3 (car states)) (nth 3 (cadr states)))
+               (ewm-skia-smoke-fail
+                "expected shared Skia direct context after %s: states=%S"
+                phase states)))
+            ("per-frame"
+             (when (equal (nth 3 (car states)) (nth 3 (cadr states)))
+               (ewm-skia-smoke-fail
+                "expected per-frame Skia direct contexts after %s: states=%S"
+                phase states)))
+            ((and (pred identity)
+                  (pred (lambda (value)
+                          (not (member value '("shared" "per-frame"))))))
+             (ewm-skia-smoke-fail
+              "unknown EWM_SKIA_SMOKE_GR_CONTEXT_POLICY=%S" policy))))
+      (dolist (frame frames)
+        (when (frame-live-p frame)
+          (delete-frame frame t)))
+      (select-frame-set-input-focus main-frame)
+      (redisplay 'force)
+      (sit-for 0.03))
+    (ewm-skia-smoke-check-main-frame-rendering
+     main-frame (format "after %s deletion" phase))))
+
 (defun ewm-skia-smoke-check-main-frame-rendering (frame phase)
   (select-frame-set-input-focus frame)
   (switch-to-buffer "*ewm-skia-smoke*")
@@ -2264,6 +2348,7 @@ static char *image[] = {
        (minibuffer . nil)
        (visibility . t))
      (+ 64 (* step 8)) (+ 18 step) (* step 30)))
+  (ewm-skia-smoke-check-context-ownership "multi-frame context ownership")
   (raise-frame (selected-frame))
   (redisplay 'force)
   (sit-for 0.05))

@@ -39,13 +39,64 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index ccb0897..3b0ad5b 100644
+index ccb0897..a8be294 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10482,6 +10482,1089 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10482,6 +10482,1140 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
++static Lisp_Object
++pgtk_skia_test_pointer_id (void *ptr)
++{
++  return ptr ? make_pointer_integer (ptr) : Qnil;
++}
++
++DEFUN ("pgtk-skia-test-context-state",
++       Fpgtk_skia_test_context_state,
++       Spgtk_skia_test_context_state, 0, 2, 0,
++       doc: /* Return Skia/GDK GL context state for FRAME.
++If MAKE-CURRENT is non-nil, first make FRAME's GL context current.
++If FRAME is nil, use the selected frame.
++
++The return value is
++(GDK-CONTEXT CURRENT-GDK-CONTEXT GDK-CURRENT-P SKIA-CONTEXT
++ CACHE-RESOURCE-COUNT CACHE-RESOURCE-BYTES FRAMEBUFFER TEXTURE).
++Pointer values are opaque integers intended only for identity comparison in
++tests.  */)
++  (Lisp_Object frame, Lisp_Object make_current)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  GdkGLContext *current_gdk_context;
++  void *skia_context = NULL;
++  int cache_resources = 0;
++  size_t cache_bytes = 0;
++  bool have_cache = false;
++
++  if (!NILP (make_current) && !pgtk_skia_make_gl_context_current (f))
++    return Qnil;
++
++  current_gdk_context = gdk_gl_context_get_current ();
++  if (FRAME_SKIA_GL_CONTEXT (f))
++    have_cache = emacs_skia_gl_context_get_diagnostics (
++      FRAME_SKIA_GL_CONTEXT (f), &skia_context,
++      &cache_resources, &cache_bytes);
++
++  return CALLN (Flist,
++		pgtk_skia_test_pointer_id (FRAME_GDK_GL_CONTEXT (f)),
++		pgtk_skia_test_pointer_id (current_gdk_context),
++		(FRAME_GDK_GL_CONTEXT (f)
++		 && FRAME_GDK_GL_CONTEXT (f) == current_gdk_context)
++		  ? Qt : Qnil,
++		pgtk_skia_test_pointer_id (skia_context),
++		have_cache ? make_fixnum (cache_resources) : Qnil,
++		have_cache ? make_uint ((uintmax_t) cache_bytes) : Qnil,
++		FRAME_GL_FRAMEBUFFER (f)
++		  ? make_uint ((uintmax_t) FRAME_GL_FRAMEBUFFER (f)) : Qnil,
++		FRAME_GL_TEXTURE (f)
++		  ? make_uint ((uintmax_t) FRAME_GL_TEXTURE (f)) : Qnil);
++}
++
 +DEFUN ("pgtk-skia-test-framebuffer-color-counts",
 +       Fpgtk_skia_test_framebuffer_color_counts,
 +       Spgtk_skia_test_framebuffer_color_counts, 0, 2, 0,
@@ -1132,10 +1183,11 @@ index ccb0897..3b0ad5b 100644
  #endif
  
  void
-@@ -10576,6 +11659,26 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10576,6 +11710,27 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
++  defsubr (&Spgtk_skia_test_context_state);
 +  defsubr (&Spgtk_skia_test_framebuffer_color_counts);
 +  defsubr (&Spgtk_skia_test_font_ft_size_p);
 +  defsubr (&Spgtk_skia_test_input_unwind_preserved_p);

@@ -39,7 +39,7 @@ cp "$emacs_tree/src/pgtkfns.c" "$tmp_dir/production/src/pgtkfns.c"
 cp "$emacs_tree/src/pgtkfns.c" "$tmp_dir/hooked/src/pgtkfns.c"
 
 perl -0pi -e \
-    's/\nDEFUN \("pgtk-skia-test-framebuffer-color-counts",.*?\n#endif\n\nvoid\nsyms_of_pgtkterm/\n#endif\n\nvoid\nsyms_of_pgtkterm/s' \
+    's/\n(?:static Lisp_Object\npgtk_skia_test_pointer_id \(void \*ptr\)\n\{.*?\}\n\n)?DEFUN \("pgtk-skia-test-(?:context-state|framebuffer-color-counts)",.*?\n#endif\n\nvoid\nsyms_of_pgtkterm/\n#endif\n\nvoid\nsyms_of_pgtkterm/s' \
     "$tmp_dir/production/src/pgtkterm.c"
 perl -ni -e 'print unless /Spgtk_skia_test_/' \
     "$tmp_dir/production/src/pgtkterm.c"
