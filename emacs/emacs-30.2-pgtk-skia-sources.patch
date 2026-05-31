@@ -1,9 +1,9 @@
 diff --git a/src/skia/emacs_skia.cpp b/src/skia/emacs_skia.cpp
 new file mode 100644
-index 00000000000..75bdac35d31
+index 00000000000..cb426810bdf
 --- /dev/null
 +++ b/src/skia/emacs_skia.cpp
-@@ -0,0 +1,1369 @@
+@@ -0,0 +1,1374 @@
 +/* Minimal Skia C API implementation for Emacs
 +   Copyright (C) 2024-2026 Free Software Foundation, Inc.
 +
@@ -346,8 +346,13 @@ index 00000000000..75bdac35d31
 +emacs_skia_gl_context_create_native (void)
 +{
 +#ifdef SK_GL
++  static sk_sp<const GrGLInterface> interface;
++
++  if (!interface)
++    interface = GrGLMakeAssembledInterface (nullptr, get_gl_proc);
++
 +  return make_gl_context (
-+    GrGLMakeAssembledInterface (nullptr, get_gl_proc),
++    interface,
 +    "Skia: Failed to create GL interface (is GL context current?)",
 +    "Skia: Failed to create GrDirectContext (GL version may be too old)");
 +#else
