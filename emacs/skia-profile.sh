@@ -307,7 +307,13 @@ cat >"$payload" <<'EOF'
       (when (frame-live-p frame)
         (delete-frame frame t)))
     (when (frame-live-p main-frame)
-      (select-frame-set-input-focus main-frame))))
+      (select-frame-set-input-focus main-frame))
+    (redisplay 'force)
+    (sit-for 0.05)
+    (garbage-collect)
+    (ewm-skia-profile-report-rss
+     "multi-frame-release" ewm-skia-profile-frame-count before-kb
+     (ewm-skia-profile-rss-kb))))
 
 (when (timerp ewm-skia-profile-watchdog)
   (cancel-timer ewm-skia-profile-watchdog))
