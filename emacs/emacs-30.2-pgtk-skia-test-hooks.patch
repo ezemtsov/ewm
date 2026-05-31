@@ -39,10 +39,10 @@ index 822d946..73d72a0 100644
    defsubr (&Sx_export_frames);
  #if defined USE_CAIRO || defined USE_SKIA
 diff --git production/src/pgtkterm.c hooked/src/pgtkterm.c
-index 672f1e7..fcd1df9 100644
+index 7ff0b87..3056bec 100644
 --- production/src/pgtkterm.c
 +++ hooked/src/pgtkterm.c
-@@ -10551,6 +10551,998 @@ If FRAME is nil, use the selected frame.  */)
+@@ -10525,6 +10525,998 @@ If FRAME is nil, use the selected frame.  */)
    return Qnil;
  }
  
@@ -1041,7 +1041,7 @@ index 672f1e7..fcd1df9 100644
  #endif
  
  void
-@@ -10645,6 +11637,24 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -10619,6 +11611,24 @@ If set to a non-float value, there will be no wait at all.  */);
  
  #ifdef USE_SKIA
    defsubr (&Spgtk_skia_gl_enabled_p);
