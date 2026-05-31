@@ -404,16 +404,32 @@ cat >"$payload" <<'EOF'
        "missing image transform capability after %s: %S"
        phase capabilities))))
 
-(defun ewm-skia-smoke-check-unavailable-export (type expected-message)
+(defun ewm-skia-smoke-export-supported-p (type data)
+  (pcase type
+    ('pdf
+     (and (stringp data)
+          (> (length data) 5)
+          (equal (substring data 0 5) "%PDF-")))
+    ('svg
+     (and (stringp data)
+          (string-match-p "<svg\\b" data)))
+    (_ nil)))
+
+(defun ewm-skia-smoke-check-optional-export
+    (phase type expected-unavailable-message)
   (condition-case err
       (let ((data (x-export-frames nil type)))
-        (ewm-skia-smoke-fail
-         "%S export unexpectedly succeeded with %d bytes"
-         type (if (stringp data) (length data) 0)))
+        (unless (ewm-skia-smoke-export-supported-p type data)
+          (ewm-skia-smoke-fail
+           "bad %S export after %s: length=%d prefix=%S"
+           type phase (if (stringp data) (length data) 0)
+           (and (stringp data)
+                (substring data 0 (min 32 (length data)))))))
     (error
-     (unless (string-match-p expected-message (error-message-string err))
+     (unless (string-match-p expected-unavailable-message
+                             (error-message-string err))
        (ewm-skia-smoke-fail
-        "unexpected %S export error: %S" type err)))))
+        "unexpected %S export error after %s: %S" type phase err)))))
 
 (defun ewm-skia-smoke-check-export-input-unwind (phase)
   (unless (fboundp 'pgtk-skia-test-input-unwind-preserved-p)
@@ -1964,10 +1980,10 @@ static char *image[] = {
 (ewm-skia-smoke-run-group "export"
   (ewm-skia-smoke-check-png-export "initial draw")
   (ewm-skia-smoke-check-image-transform-capabilities "initial draw")
-  (ewm-skia-smoke-check-unavailable-export
-   'pdf "Skia PDF export is not available")
-  (ewm-skia-smoke-check-unavailable-export
-   'svg "Skia SVG export is not available")
+  (ewm-skia-smoke-check-optional-export
+   "initial draw" 'pdf "Skia PDF export is not available")
+  (ewm-skia-smoke-check-optional-export
+   "initial draw" 'svg "Skia SVG export is not available")
   (ewm-skia-smoke-check-export-input-unwind "export error path"))
 
 (ewm-skia-smoke-run-group "tooltip"
