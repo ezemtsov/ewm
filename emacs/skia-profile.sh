@@ -39,7 +39,7 @@ stderr="$tmp_dir/stderr"
 result="$tmp_dir/result"
 
 cat >"$payload" <<'EOF'
-(setq debug-on-error t
+(setq debug-on-error nil
       gc-cons-threshold most-positive-fixnum
       inhibit-startup-screen t
       initial-scratch-message nil
@@ -66,6 +66,43 @@ cat >"$payload" <<'EOF'
                  "\n")
          #'external-debugging-output)
   (kill-emacs 2))
+
+(defun ewm-skia-profile-dump-messages ()
+  (let ((buffer (get-buffer "*Messages*")))
+    (when buffer
+      (princ "EWM_SKIA_PROFILE_MESSAGES_BEGIN\n"
+             #'external-debugging-output)
+      (with-current-buffer buffer
+        (princ
+         (buffer-substring-no-properties
+          (max (point-min) (- (point-max) 6000))
+          (point-max))
+         #'external-debugging-output))
+      (princ "\nEWM_SKIA_PROFILE_MESSAGES_END\n"
+             #'external-debugging-output))))
+
+(defun ewm-skia-profile-report-error (err)
+  (princ (format "EWM_SKIA_PROFILE_ERROR: %S: %s\n"
+                 err (error-message-string err))
+         #'external-debugging-output)
+  (ewm-skia-profile-dump-messages)
+  (kill-emacs 2))
+
+(defun ewm-skia-profile-timeout-seconds ()
+  (max 1
+       (string-to-number
+        (or (getenv "EWM_SKIA_PROFILE_TIMEOUT_SECONDS") "10"))))
+
+(defun ewm-skia-profile-watchdog-timeout ()
+  (princ (format "EWM_SKIA_PROFILE_TIMEOUT: Emacs watchdog fired after %ds\n"
+                 (ewm-skia-profile-timeout-seconds))
+         #'external-debugging-output)
+  (ewm-skia-profile-dump-messages)
+  (kill-emacs 2))
+
+(defvar ewm-skia-profile-watchdog
+  (run-at-time (max 1 (- (ewm-skia-profile-timeout-seconds) 1))
+               nil #'ewm-skia-profile-watchdog-timeout))
 
 (defun ewm-skia-profile-seconds (time)
   (float-time (time-subtract (current-time) time)))
@@ -186,6 +223,9 @@ cat >"$payload" <<'EOF'
         (force-window-update)
         (redraw-frame frame))))
   (redisplay 'force))
+
+(condition-case err
+    (progn
 
 (unless (and (string-match-p "\\bPGTK\\b" system-configuration-features)
              (or (string-match-p "\\bSKIA\\b" system-configuration-features)
@@ -326,12 +366,17 @@ cat >"$payload" <<'EOF'
     (when (frame-live-p main-frame)
       (select-frame-set-input-focus main-frame))))
 
-(kill-emacs 0)
+(when (timerp ewm-skia-profile-watchdog)
+  (cancel-timer ewm-skia-profile-watchdog))
+(kill-emacs 0))
+  (error
+   (ewm-skia-profile-report-error err)))
 EOF
 
 set +e
 timeout --kill-after=1s "$timeout_seconds" \
     env GDK_BACKEND=wayland NO_AT_BRIDGE=1 \
+        EWM_SKIA_PROFILE_TIMEOUT_SECONDS="$timeout_seconds" \
         EWM_SKIA_PROFILE_ITERATIONS="$iterations" \
         EWM_SKIA_PROFILE_OUTPUT="$result" \
         EWM_SKIA_PROFILE_PAGE_SIZE="$page_size" \
