@@ -519,6 +519,34 @@ cat >"$payload" <<'EOF'
     (ewm-skia-smoke-check-main-frame-rendering
      main-frame (format "tooltip cleanup %s" phase))))
 
+(defun ewm-skia-smoke-check-temporary-frame
+    (phase parameters columns rows &optional line check-inherited-buffer)
+  (let ((main-frame (selected-frame))
+        (frame nil))
+    (unwind-protect
+        (progn
+          (setq frame (make-frame parameters))
+          (select-frame-set-input-focus frame)
+          (when check-inherited-buffer
+            (unless (eq (window-buffer (frame-selected-window frame))
+                        (get-buffer "*ewm-skia-smoke*"))
+              (ewm-skia-smoke-fail
+               "%s did not inherit smoke buffer" phase)))
+          (switch-to-buffer "*ewm-skia-smoke*")
+          (goto-char (point-min))
+          (forward-line (or line 0))
+          (ewm-skia-smoke-settle-framebuffer
+           frame phase columns rows 200 100)
+          (ewm-skia-smoke-check-gl-enabled frame phase)
+          (ewm-skia-smoke-check-framebuffer phase frame t))
+      (when (and frame (frame-live-p frame))
+        (delete-frame frame t))
+      (select-frame-set-input-focus main-frame)
+      (redisplay 'force)
+      (sit-for 0.01))
+    (ewm-skia-smoke-check-main-frame-rendering
+     main-frame (format "after %s deletion" phase))))
+
 (defun ewm-skia-smoke-xpm (width height rows)
   (concat "/* XPM */
 static char *image[] = {
@@ -2095,70 +2123,30 @@ static char *image[] = {
     (ewm-skia-smoke-check-setup-state "resize capacity")))
 
 (ewm-skia-smoke-run-group "frames"
-  (let ((main-frame (selected-frame))
-        (frame nil))
-    (unwind-protect
-        (progn
-          (setq frame
-                (make-frame `((parent-frame . ,main-frame)
-                              (left . 24)
-                              (top . 24)
-                              (width . 56)
-                              (height . 12)
-                              (minibuffer . nil)
-                              (visibility . t))))
-          (select-frame-set-input-focus frame)
-          (unless (eq (window-buffer (frame-selected-window frame))
-                      (get-buffer "*ewm-skia-smoke*"))
-            (ewm-skia-smoke-fail
-             "child frame did not inherit smoke buffer"))
-          (goto-char (point-min))
-          (ewm-skia-smoke-settle-framebuffer
-           frame "child lifecycle frame" 56 12 200 100)
-          (ewm-skia-smoke-check-gl-enabled frame "child lifecycle frame")
-          (ewm-skia-smoke-check-framebuffer
-           "child lifecycle frame" frame t))
-      (when (and frame (frame-live-p frame))
-        (delete-frame frame t))
-      (select-frame-set-input-focus main-frame)
-      (redisplay 'force)
-      (sit-for 0.01))
-    (ewm-skia-smoke-check-main-frame-rendering
-     main-frame "after child-frame deletion")))
+  (let ((main-frame (selected-frame)))
+    (ewm-skia-smoke-check-temporary-frame
+     "child lifecycle frame"
+     `((parent-frame . ,main-frame)
+       (left . 24)
+       (top . 24)
+       (width . 56)
+       (height . 12)
+       (minibuffer . nil)
+       (visibility . t))
+     56 12 nil t)))
 
 (ewm-skia-smoke-run-group "frames"
-  (let ((main-frame (selected-frame)))
-    (dotimes (step 3)
-      (let ((frame nil))
-        (unwind-protect
-            (progn
-              (setq frame
-                    (make-frame `((width . ,(+ 64 (* step 8)))
-                                  (height . ,(+ 18 step))
-                                  (minibuffer . nil)
-                                  (visibility . t))))
-              (select-frame-set-input-focus frame)
-              (switch-to-buffer "*ewm-skia-smoke*")
-              (goto-char (point-min))
-              (forward-line (* step 30))
-              (ewm-skia-smoke-settle-framebuffer
-               frame (format "lifecycle frame %d" step)
-               (+ 64 (* step 8)) (+ 18 step) 200 100)
-              (ewm-skia-smoke-check-gl-enabled
-               frame (format "lifecycle frame %d" step))
-              (ewm-skia-smoke-check-framebuffer
-               (format "lifecycle frame %d" step) frame t))
-          (when (and frame (frame-live-p frame))
-            (delete-frame frame t)
-            (select-frame-set-input-focus main-frame)
-            (redisplay 'force)
-            (sit-for 0.01)))
-        (ewm-skia-smoke-check-main-frame-rendering
-         main-frame (format "after lifecycle frame %d deletion" step))))
-    (select-frame-set-input-focus main-frame)
-    (raise-frame main-frame)
-    (redisplay 'force)
-    (sit-for 0.05)))
+  (dotimes (step 3)
+    (ewm-skia-smoke-check-temporary-frame
+     (format "lifecycle frame %d" step)
+     `((width . ,(+ 64 (* step 8)))
+       (height . ,(+ 18 step))
+       (minibuffer . nil)
+       (visibility . t))
+     (+ 64 (* step 8)) (+ 18 step) (* step 30)))
+  (raise-frame (selected-frame))
+  (redisplay 'force)
+  (sit-for 0.05))
 
 (unless (fboundp 'pgtk-skia-test-visible-bell-active-p)
   (ewm-skia-smoke-fail "missing Skia visible-bell test hook"))
@@ -2267,7 +2255,15 @@ static char *image[] = {
     (set-frame-size frame 96 32)
     (ewm-skia-smoke-redraw)
     (ewm-skia-smoke-check-gl-enabled frame "combined lifecycle")
-    (ewm-skia-smoke-check-framebuffer "combined lifecycle" frame t)))
+    (ewm-skia-smoke-check-framebuffer "combined lifecycle" frame t))
+  (ewm-skia-smoke-check-temporary-frame
+   "post-recovery lifecycle frame"
+   '((width . 72)
+     (height . 20)
+     (minibuffer . nil)
+     (visibility . t))
+   72 20 40)
+  (ewm-skia-smoke-check-tooltip-frame "post-recovery lifecycle"))
 
 (when (timerp ewm-skia-smoke-watchdog)
   (cancel-timer ewm-skia-smoke-watchdog))
