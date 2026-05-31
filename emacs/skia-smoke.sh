@@ -195,6 +195,10 @@ cat >"$payload" <<'EOF'
        "framebuffer did not settle after %s: size=%S expected-logical>=(%d %d)"
        phase size min-logical-width min-logical-height))))
 
+(defun ewm-skia-smoke-resize-selected-frame (columns rows phase)
+  (ewm-skia-smoke-settle-framebuffer
+   (selected-frame) phase columns rows 1 1))
+
 (defun ewm-skia-smoke-check-alpha-background (phase)
   (let ((stats (pgtk-skia-test-framebuffer-color-counts)))
     (unless (and (consp stats)
@@ -503,7 +507,6 @@ static char *image[] = {
          image-rect baseline after)
     (unwind-protect
         (progn
-          (set-frame-size nil 40 8)
           (with-current-buffer buffer
             (setq-local cursor-type nil)
             (setq-local mode-line-format nil)
@@ -513,7 +516,8 @@ static char *image[] = {
             (erase-buffer)
             (insert "\n"))
           (switch-to-buffer buffer)
-          (ewm-skia-smoke-redraw)
+          (ewm-skia-smoke-resize-selected-frame
+           40 8 "scaled transparent image baseline")
           (setq image-rect (ewm-skia-smoke-window-rect 520 220))
           (setq baseline (pgtk-skia-test-framebuffer-color-counts
                           nil image-rect))
@@ -551,7 +555,6 @@ static char *image[] = {
          after red-bounds red-width red-height)
     (unwind-protect
         (progn
-          (set-frame-size nil 40 8)
           (with-current-buffer buffer
             (setq-local cursor-type nil)
             (setq-local mode-line-format nil)
@@ -565,7 +568,8 @@ static char *image[] = {
                            :transform-smoothing nil)
              " "))
           (switch-to-buffer buffer)
-          (ewm-skia-smoke-redraw)
+          (ewm-skia-smoke-resize-selected-frame
+           40 8 "rotated transparent image")
           (setq after (pgtk-skia-test-framebuffer-color-counts
                        nil (ewm-skia-smoke-window-rect 180 220)))
           (setq red-bounds (and (consp after) (nth 5 after)))
@@ -598,7 +602,6 @@ static char *image[] = {
          red-slice transparent-slice)
     (unwind-protect
         (progn
-          (set-frame-size nil 40 8)
           (with-current-buffer buffer
             (setq-local cursor-type nil)
             (setq-local mode-line-format nil)
@@ -608,7 +611,8 @@ static char *image[] = {
             (erase-buffer)
             (insert-image image " " nil '(0 0 120 120)))
           (switch-to-buffer buffer)
-          (ewm-skia-smoke-redraw)
+          (ewm-skia-smoke-resize-selected-frame
+           40 8 "sliced scaled image")
           (setq red-slice (pgtk-skia-test-framebuffer-color-counts
                            nil (ewm-skia-smoke-window-rect 160 160)))
           (with-current-buffer buffer
@@ -644,7 +648,6 @@ static char *image[] = {
          red-stats transparent-stats)
     (unwind-protect
         (progn
-          (set-frame-size nil 44 8)
           (with-current-buffer buffer
             (setq-local cursor-type nil)
             (setq-local mode-line-format nil)
@@ -654,7 +657,8 @@ static char *image[] = {
             (erase-buffer)
             (insert-image image " "))
           (switch-to-buffer buffer)
-          (ewm-skia-smoke-redraw)
+          (ewm-skia-smoke-resize-selected-frame
+           44 8 (format "%s transparent image loader" label))
           (setq red-stats
                 (pgtk-skia-test-framebuffer-color-counts
                  nil (ewm-skia-smoke-window-offset-rect 0 0 180 180)))
@@ -690,7 +694,6 @@ static char *image[] = {
          stats)
     (unwind-protect
         (progn
-          (set-frame-size nil 44 8)
           (with-current-buffer buffer
             (setq-local cursor-type nil)
             (setq-local mode-line-format nil)
@@ -700,7 +703,8 @@ static char *image[] = {
             (erase-buffer)
             (insert-image image " "))
           (switch-to-buffer buffer)
-          (ewm-skia-smoke-redraw)
+          (ewm-skia-smoke-resize-selected-frame
+           44 8 (format "%s opaque image loader" label))
           (setq stats
                 (pgtk-skia-test-framebuffer-color-counts
                  nil (ewm-skia-smoke-window-offset-rect 0 0 420 180)))
@@ -750,7 +754,6 @@ static char *image[] = {
          red-stats transparent-stats cursor-stats)
     (unwind-protect
         (progn
-          (set-frame-size nil 44 8)
           (blink-cursor-mode -1)
           (with-current-buffer buffer
             (setq-local cursor-type nil)
@@ -762,7 +765,8 @@ static char *image[] = {
             (insert-image image " "))
           (switch-to-buffer buffer)
           (goto-char (point-min))
-          (ewm-skia-smoke-redraw)
+          (ewm-skia-smoke-resize-selected-frame
+           44 8 "masked image")
           (setq red-stats
                 (pgtk-skia-test-framebuffer-color-counts
                  nil (ewm-skia-smoke-window-offset-rect 0 0 180 180)))

@@ -11530,7 +11530,7 @@ index 1b2324d..822d946 100644
  
    defsubr (&Spgtk_set_monitor_scale_factor);
 diff --git a/src/pgtkterm.c b/src/pgtkterm.c
-index 617ed3c..a215d44 100644
+index 617ed3c..672f1e7 100644
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
 @@ -16,21 +16,30 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -18275,7 +18275,7 @@ index 617ed3c..a215d44 100644
  {
    pgtk_query_colors (f, color, 1);
  }
-@@ -7403,93 +9432,1203 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
+@@ -7403,93 +9432,1201 @@ pgtk_query_color (struct frame *f, Emacs_Color * color)
  void
  pgtk_clear_area (struct frame *f, int x, int y, int width, int height)
  {
@@ -19350,8 +19350,6 @@ index 617ed3c..a215d44 100644
 +static void
 +pgtk_skia_destroy_surface_only (struct frame *f)
 +{
-+  pgtk_destroy_skia_paint (f);
-+
 +  if (!FRAME_SKIA_SURFACE (f))
 +    {
 +      pgtk_clear_skia_surface_refs (f);
@@ -19539,7 +19537,7 @@ index 617ed3c..a215d44 100644
  after making changes which affect the state of the graphical
  interface.  Under some window managers this can take an indefinite
  amount of time, so it is important to limit the wait.
-@@ -7498,16 +10637,23 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -7498,16 +10635,23 @@ If set to a non-float value, there will be no wait at all.  */);
    Vpgtk_wait_for_event_timeout = make_float (0.1);
  
    DEFVAR_LISP ("pgtk-keysym-table", Vpgtk_keysym_table,
@@ -19565,7 +19563,7 @@ index 617ed3c..a215d44 100644
  /* Cairo does not allow resizing a surface/context after it is
     created, so we need to trash the old context, create a new context
     on the next cr_clip_begin with the new dimensions and request a
-@@ -7516,11 +10662,11 @@ If set to a non-float value, there will be no wait at all.  */);
+@@ -7516,11 +10660,11 @@ If set to a non-float value, there will be no wait at all.  */);
     This will leave the active context available to present on screen
     until a redrawn frame is completed.  */
  void
@@ -19580,7 +19578,7 @@ index 617ed3c..a215d44 100644
      {
        pgtk_cr_destroy_frame_context (f);
        FRAME_CR_SURFACE_DESIRED_WIDTH (f) = width;
-@@ -7529,7 +10675,6 @@ pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, boo
+@@ -7529,7 +10673,6 @@ pgtk_cr_update_surface_desired_size (struct frame *f, int width, int height, boo
      }
  }
  
@@ -19588,7 +19586,7 @@ index 617ed3c..a215d44 100644
  cairo_t *
  pgtk_begin_cr_clip (struct frame *f)
  {
-@@ -7537,13 +10682,10 @@ pgtk_begin_cr_clip (struct frame *f)
+@@ -7537,13 +10680,10 @@ pgtk_begin_cr_clip (struct frame *f)
  
    if (!cr)
      {
@@ -19606,7 +19604,7 @@ index 617ed3c..a215d44 100644
  
        cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
        cairo_surface_destroy (surface);
-@@ -7595,12 +10737,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
+@@ -7595,12 +10735,13 @@ pgtk_set_cr_source_with_color (struct frame *f, unsigned long color,
        cairo_set_source_rgba (FRAME_CR_CONTEXT (f), col.red / 65535.0,
  			     col.green / 65535.0, col.blue / 65535.0,
  			     f->alpha_background);
@@ -19622,7 +19620,7 @@ index 617ed3c..a215d44 100644
  {
    cairo_set_source_surface (cr, FRAME_CR_SURFACE (f), 0, 0);
    cairo_paint (cr);
-@@ -7612,7 +10755,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
+@@ -7612,7 +10753,8 @@ pgtk_cr_accumulate_data (void *closure, const unsigned char *data,
  {
    Lisp_Object *acc = (Lisp_Object *) closure;
  
@@ -19632,7 +19630,7 @@ index 617ed3c..a215d44 100644
  
    return CAIRO_STATUS_SUCCESS;
  }
-@@ -7636,13 +10780,15 @@ pgtk_cr_destroy (void *cr)
+@@ -7636,13 +10778,15 @@ pgtk_cr_destroy (void *cr)
  }
  
  Lisp_Object
@@ -19650,7 +19648,7 @@ index 617ed3c..a215d44 100644
    Lisp_Object acc = Qnil;
    specpdl_ref count = SPECPDL_INDEX ();
  
-@@ -7655,35 +10801,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7655,35 +10799,38 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
    height = FRAME_PIXEL_HEIGHT (f);
  
    block_input ();
@@ -19707,7 +19705,7 @@ index 617ed3c..a215d44 100644
      abort ();
  
    cr = cairo_create (surface);
-@@ -7714,16 +10863,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
+@@ -7714,16 +10861,209 @@ pgtk_cr_export_frames (Lisp_Object frames, cairo_surface_type_t surface_type)
        block_input ();
      }
  
