@@ -212,16 +212,16 @@ cat >"$payload" <<'EOF'
             (switch-to-buffer "*ewm-skia-profile*")
             (goto-char (point-min))
             (forward-line (* index 40))
-            (ewm-skia-profile-redraw)))
+            (ewm-skia-profile-redraw)
+            (ewm-skia-profile-report-rss
+             "multi-frame-rss" (1+ index) before-kb
+             (ewm-skia-profile-rss-kb))))
         (setq frames (nreverse frames))
         (dolist (frame frames)
           (unless (and (pgtk-skia-gl-enabled-p frame)
                        (frame-live-p frame))
             (ewm-skia-profile-fail
              "Skia GL acceleration is not active for profile frame")))
-        (ewm-skia-profile-report-rss
-         "multi-frame-rss" (length frames) before-kb
-         (ewm-skia-profile-rss-kb))
         (ewm-skia-profile-time
          "multi-frame-redraw" multi-iterations
          (lambda ()
