@@ -56,6 +56,9 @@ cat >"$payload" <<'EOF'
 (defconst ewm-skia-smoke-min-translucent-green
   (string-to-number
    (or (getenv "EWM_SKIA_SMOKE_MIN_TRANSLUCENT_GREEN") "5000")))
+(defconst ewm-skia-smoke-required-scale
+  (let ((scale (getenv "EWM_SKIA_SMOKE_REQUIRE_SCALE")))
+    (and scale (> (length scale) 0) (string-to-number scale))))
 (defconst ewm-skia-smoke-selected-groups
   (let ((groups (getenv "EWM_SKIA_SMOKE_GROUPS")))
     (if (and groups (> (length groups) 0))
@@ -111,6 +114,11 @@ cat >"$payload" <<'EOF'
                  (= render-height (* logical-height scale)))
       (ewm-skia-smoke-fail
        "invalid framebuffer scale after %s: %S" phase size))
+    (when (and ewm-skia-smoke-required-scale
+               (/= scale ewm-skia-smoke-required-scale))
+      (ewm-skia-smoke-fail
+       "framebuffer scale after %s is %d, expected %d: %S"
+       phase scale ewm-skia-smoke-required-scale size))
     size))
 
 (defun ewm-skia-smoke-check-force-surface-update (phase)
