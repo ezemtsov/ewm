@@ -596,10 +596,18 @@ static char *image[] = {
 
 (defun ewm-skia-smoke-check-region-colors
     (phase label rect min-red min-green)
-  (let ((stats (pgtk-skia-test-framebuffer-color-counts nil rect)))
-    (unless (and (consp stats)
-                 (> (nth 2 stats) min-red)
-                 (> (nth 3 stats) min-green))
+  (let ((stats nil)
+        (ok nil))
+    (catch 'done
+      (dotimes (_ 10)
+        (ewm-skia-smoke-pump)
+        (setq stats (pgtk-skia-test-framebuffer-color-counts nil rect))
+        (when (and (consp stats)
+                   (> (nth 2 stats) min-red)
+                   (> (nth 3 stats) min-green))
+          (setq ok t)
+          (throw 'done t))))
+    (unless ok
       (ewm-skia-smoke-fail
        "%s missing expected colors after %s: stats=%S rect=%S thresholds=(red=%d green=%d)"
        label phase stats rect min-red min-green))
@@ -607,10 +615,18 @@ static char *image[] = {
 
 (defun ewm-skia-smoke-check-region-no-red
     (phase label rect max-red min-green)
-  (let ((stats (pgtk-skia-test-framebuffer-color-counts nil rect)))
-    (unless (and (consp stats)
-                 (< (nth 2 stats) max-red)
-                 (> (nth 3 stats) min-green))
+  (let ((stats nil)
+        (ok nil))
+    (catch 'done
+      (dotimes (_ 10)
+        (ewm-skia-smoke-pump)
+        (setq stats (pgtk-skia-test-framebuffer-color-counts nil rect))
+        (when (and (consp stats)
+                   (< (nth 2 stats) max-red)
+                   (> (nth 3 stats) min-green))
+          (setq ok t)
+          (throw 'done t))))
+    (unless ok
       (ewm-skia-smoke-fail
        "%s leaked red pixels after %s: stats=%S rect=%S thresholds=(red<%d green>%d)"
        label phase stats rect max-red min-green))

@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 emacs_tree="${1:-${EMACS_TREE:-$HOME/git/emacs}}"
 build_dir="${2:-${EWM_SKIA_SANITIZE_BUILD_DIR:-/tmp/ewm-skia-asan-emacs}}"
 jobs="${EWM_SKIA_JOBS:-8}"
-smoke_groups="${EWM_SKIA_SANITIZE_SMOKE_GROUPS:-frames,bell,recovery,images}"
+smoke_groups="${EWM_SKIA_SANITIZE_SMOKE_GROUPS:-frames,bell,recovery,images,text,copy,export}"
 sanitize_flags="${EWM_SKIA_SANITIZE_FLAGS:--O1 -g -fsanitize=address,undefined -fno-sanitize=nonnull-attribute -fno-omit-frame-pointer}"
 # Emacs' conservative stack scanner needs the real stack, not ASan's fake
 # stack used for use-after-return detection.
