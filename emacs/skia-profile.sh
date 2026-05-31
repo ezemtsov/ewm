@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 emacs_path="${1:-${EMACS:-emacs}}"
 iterations="${2:-${EWM_SKIA_PROFILE_ITERATIONS:-80}}"
 
@@ -59,6 +60,8 @@ cat >"$payload" <<'EOF'
 (defconst ewm-skia-profile-require-monitor
   (getenv "EWM_SKIA_PROFILE_REQUIRE_MONITOR"))
 (defvar ewm-skia-profile-target-monitor nil)
+
+(load-file (getenv "EWM_SKIA_HARNESS_MONITOR_EL"))
 
 (defun ewm-skia-profile-fail (format-string &rest args)
   (princ (concat "EWM_SKIA_PROFILE_FAIL: "
@@ -143,69 +146,6 @@ cat >"$payload" <<'EOF'
 (defun ewm-skia-profile-redraw ()
   (redisplay 'force))
 
-(defun ewm-skia-profile-monitor-rect (monitor key)
-  (let ((rect (cdr (assq key monitor))))
-    (and (consp rect) rect)))
-
-(defun ewm-skia-profile-rect-area (rect)
-  (if (and (consp rect)
-           (numberp (nth 2 rect))
-           (numberp (nth 3 rect)))
-      (* (nth 2 rect) (nth 3 rect))
-    0))
-
-(defun ewm-skia-profile-largest-monitor ()
-  (let ((best nil)
-        (best-area -1))
-    (dolist (monitor (display-monitor-attributes-list))
-      (let* ((workarea (ewm-skia-profile-monitor-rect monitor 'workarea))
-             (geometry (ewm-skia-profile-monitor-rect monitor 'geometry))
-             (area (max (ewm-skia-profile-rect-area workarea)
-                        (ewm-skia-profile-rect-area geometry))))
-        (when (> area best-area)
-          (setq best monitor
-                best-area area))))
-    best))
-
-(defun ewm-skia-profile-find-monitor (policy)
-  (cond
-   ((string= policy "largest")
-    (ewm-skia-profile-largest-monitor))
-   ((or (string= policy "current")
-        (string= policy "frame"))
-    (frame-monitor-attributes))
-   (t
-    (catch 'match
-      (dolist (monitor (display-monitor-attributes-list))
-        (let ((name (format "%s" (cdr (assq 'name monitor)))))
-          (when (string-match-p (regexp-quote policy) name)
-            (throw 'match monitor))))
-      (ewm-skia-profile-fail "monitor %S not found" policy)))))
-
-(defun ewm-skia-profile-same-monitor-p (left right)
-  (and (equal (cdr (assq 'name left))
-              (cdr (assq 'name right)))
-       (equal (ewm-skia-profile-monitor-rect left 'geometry)
-              (ewm-skia-profile-monitor-rect right 'geometry))))
-
-(defun ewm-skia-profile-monitor-string (label monitor)
-  (let ((geometry (ewm-skia-profile-monitor-rect monitor 'geometry))
-        (workarea (ewm-skia-profile-monitor-rect monitor 'workarea)))
-    (format
-     "%s name=%S geometry=%S workarea=%S scale=%S source=%S"
-     label
-     (cdr (assq 'name monitor))
-     geometry workarea
-     (cdr (assq 'scale-factor monitor))
-     (cdr (assq 'source monitor)))))
-
-(defun ewm-skia-profile-position-frame-on-monitor (frame monitor)
-  (let ((workarea (ewm-skia-profile-monitor-rect monitor 'workarea)))
-    (when workarea
-      (set-frame-position frame
-                          (+ (nth 0 workarea) 24)
-                          (+ (nth 1 workarea) 24)))))
-
 (defun ewm-skia-profile-rss-kb ()
   (when (file-readable-p "/proc/self/statm")
     (with-temp-buffer
@@ -247,12 +187,15 @@ cat >"$payload" <<'EOF'
                     :height 180)
 (set-frame-parameter nil 'background-color "#00ff00")
 (setq ewm-skia-profile-target-monitor
-      (ewm-skia-profile-find-monitor ewm-skia-profile-monitor-policy))
+      (ewm-skia-harness-find-monitor ewm-skia-profile-monitor-policy))
+(unless ewm-skia-profile-target-monitor
+  (ewm-skia-profile-fail
+   "monitor %S not found" ewm-skia-profile-monitor-policy))
 (when ewm-skia-profile-target-monitor
   (ewm-skia-profile-report-line
-   (ewm-skia-profile-monitor-string "target-monitor"
+   (ewm-skia-harness-monitor-string "target-monitor"
                                     ewm-skia-profile-target-monitor))
-  (ewm-skia-profile-position-frame-on-monitor
+  (ewm-skia-harness-position-frame-on-monitor
    (selected-frame) ewm-skia-profile-target-monitor))
 (set-frame-size nil 96 32)
 
@@ -276,15 +219,15 @@ cat >"$payload" <<'EOF'
 (sit-for 0.02)
 (let ((actual-monitor (frame-monitor-attributes)))
   (ewm-skia-profile-report-line
-   (ewm-skia-profile-monitor-string "actual-monitor" actual-monitor))
+   (ewm-skia-harness-monitor-string "actual-monitor" actual-monitor))
   (when (and ewm-skia-profile-require-monitor
              ewm-skia-profile-target-monitor
-             (not (ewm-skia-profile-same-monitor-p
+             (not (ewm-skia-harness-same-monitor-p
                    ewm-skia-profile-target-monitor actual-monitor)))
     (ewm-skia-profile-fail
      "profile frame landed on %s, target was %s"
-     (ewm-skia-profile-monitor-string "actual-monitor" actual-monitor)
-     (ewm-skia-profile-monitor-string
+     (ewm-skia-harness-monitor-string "actual-monitor" actual-monitor)
+     (ewm-skia-harness-monitor-string
       "target-monitor" ewm-skia-profile-target-monitor))))
 
 (unless (and (fboundp 'pgtk-skia-gl-enabled-p)
@@ -380,6 +323,7 @@ timeout --kill-after=1s "$timeout_seconds" \
         EWM_SKIA_PROFILE_ITERATIONS="$iterations" \
         EWM_SKIA_PROFILE_OUTPUT="$result" \
         EWM_SKIA_PROFILE_PAGE_SIZE="$page_size" \
+        EWM_SKIA_HARNESS_MONITOR_EL="$script_dir/skia-monitor.el" \
     "$emacs_path" -Q --load "$payload" >"$stdout" 2>"$stderr"
 status=$?
 set -e

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 emacs_path="${1:-${EMACS:-emacs}}"
 
 if [[ $# -gt 1 ]]; then
@@ -35,7 +36,8 @@ stdout="$tmp_dir/stdout"
 stderr="$tmp_dir/stderr"
 
 env_args=(GDK_BACKEND=wayland NO_AT_BRIDGE=1
-          EWM_SKIA_SMOKE_TIMEOUT_SECONDS="$timeout_seconds")
+          EWM_SKIA_SMOKE_TIMEOUT_SECONDS="$timeout_seconds"
+          EWM_SKIA_HARNESS_MONITOR_EL="$script_dir/skia-monitor.el")
 
 cat >"$payload" <<'EOF'
 (setq debug-on-error nil
@@ -97,6 +99,11 @@ cat >"$payload" <<'EOF'
 (defconst ewm-skia-smoke-required-scale
   (let ((scale (getenv "EWM_SKIA_SMOKE_REQUIRE_SCALE")))
     (and scale (> (length scale) 0) (string-to-number scale))))
+(defconst ewm-skia-smoke-monitor-policy
+  (let ((monitor (getenv "EWM_SKIA_SMOKE_MONITOR")))
+    (and monitor (> (length monitor) 0) monitor)))
+(defconst ewm-skia-smoke-require-monitor
+  (getenv "EWM_SKIA_SMOKE_REQUIRE_MONITOR"))
 (defconst ewm-skia-smoke-selected-groups
   (let ((groups (getenv "EWM_SKIA_SMOKE_GROUPS")))
     (if (and groups (> (length groups) 0))
@@ -122,6 +129,35 @@ cat >"$payload" <<'EOF'
   `(when (ewm-skia-smoke-group-enabled-p
           ,@(if (listp groups) groups (list groups)))
      ,@body))
+
+(load-file (getenv "EWM_SKIA_HARNESS_MONITOR_EL"))
+
+(defun ewm-skia-smoke-select-monitor ()
+  (when ewm-skia-smoke-monitor-policy
+    (let ((monitor
+           (ewm-skia-harness-find-monitor ewm-skia-smoke-monitor-policy)))
+      (unless monitor
+        (ewm-skia-smoke-fail
+         "monitor %S not found" ewm-skia-smoke-monitor-policy))
+      (princ (concat (ewm-skia-harness-monitor-string
+                      "EWM_SKIA_SMOKE_TARGET_MONITOR" monitor)
+                     "\n")
+             #'external-debugging-output)
+      (ewm-skia-harness-position-frame-on-monitor (selected-frame) monitor)
+      monitor)))
+
+(defun ewm-skia-smoke-check-actual-monitor (target)
+  (when target
+    (let ((actual (frame-monitor-attributes)))
+      (princ (concat (ewm-skia-harness-monitor-string
+                      "EWM_SKIA_SMOKE_ACTUAL_MONITOR" actual)
+                     "\n")
+             #'external-debugging-output)
+      (when (and ewm-skia-smoke-require-monitor
+                 (not (ewm-skia-harness-same-monitor-p target actual)))
+        (ewm-skia-smoke-fail
+         "frame landed on wrong monitor: target=%S actual=%S"
+         target actual)))))
 
 (defun ewm-skia-smoke-framebuffer-size ()
   (unless (fboundp 'pgtk-skia-test-framebuffer-size)
@@ -2009,6 +2045,9 @@ static char *image[] = {
 (set-frame-parameter nil 'background-color "#00ff00")
 (set-frame-parameter nil 'alpha-background 50)
 
+(defvar ewm-skia-smoke-target-monitor
+  (ewm-skia-smoke-select-monitor))
+
 (let ((buffer (get-buffer-create "*ewm-skia-smoke*")))
   (with-current-buffer buffer
     (erase-buffer)
@@ -2021,6 +2060,7 @@ static char *image[] = {
 (set-frame-size nil 96 32)
 (redisplay 'force)
 (sit-for 0.02)
+(ewm-skia-smoke-check-actual-monitor ewm-skia-smoke-target-monitor)
 
 (dotimes (step 4)
   (set-frame-size nil (+ 80 (* step 8)) (+ 24 step))
@@ -2031,6 +2071,8 @@ static char *image[] = {
 
 (ewm-skia-smoke-check-framebuffer "initial draw")
 (ewm-skia-smoke-check-gl-enabled nil "initial draw")
+(when ewm-skia-smoke-required-scale
+  (ewm-skia-smoke-check-framebuffer-capacity "required scale"))
 
 (ewm-skia-smoke-run-group "core"
   (ewm-skia-smoke-check-alpha-background "initial draw")
