@@ -35,9 +35,54 @@ tmp_dir="$(mktemp -d -t ewm-skia-profile.XXXXXX)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 payload="$tmp_dir/profile.el"
+trim_module=""
 stdout="$tmp_dir/stdout"
 stderr="$tmp_dir/stderr"
 result="$tmp_dir/result"
+
+if [[ -n "${EWM_SKIA_PROFILE_MALLOC_TRIM:-}" ]]; then
+    emacs_binary_dir="$(cd "$(dirname "$emacs_path")" && pwd -P)"
+    module_header="$emacs_binary_dir/emacs-module.h"
+    if [[ ! -f "$module_header" ]]; then
+        echo "error: emacs-module.h not found next to $emacs_path" >&2
+        exit 1
+    fi
+
+    trim_module_src="$tmp_dir/malloc-trim-module.c"
+    trim_module="$tmp_dir/malloc-trim-module.so"
+    cat >"$trim_module_src" <<'EOF_MODULE'
+#include <emacs-module.h>
+#include <malloc.h>
+
+int plugin_is_GPL_compatible;
+
+static emacs_value
+Fmalloc_trim (emacs_env *env, ptrdiff_t nargs, emacs_value args[],
+	      void *data)
+{
+  (void) nargs;
+  (void) args;
+  (void) data;
+  return env->make_integer (env, malloc_trim (0));
+}
+
+int
+emacs_module_init (struct emacs_runtime *runtime)
+{
+  emacs_env *env = runtime->get_environment (runtime);
+  emacs_value symbol = env->intern (env, "ewm-skia-profile--malloc-trim");
+  emacs_value function =
+    env->make_function (env, 0, 0, Fmalloc_trim,
+			"Return non-nil if malloc_trim released memory.",
+			NULL);
+  emacs_value args[] = { symbol, function };
+  env->funcall (env, env->intern (env, "defalias"), 2, args);
+  return 0;
+}
+EOF_MODULE
+    "${CC:-cc}" -fPIC -shared -I"$emacs_binary_dir" \
+        -o "$trim_module" "$trim_module_src"
+fi
 
 cat >"$payload" <<'EOF'
 (setq debug-on-error nil
@@ -53,6 +98,16 @@ cat >"$payload" <<'EOF'
   (string-to-number (or (getenv "EWM_SKIA_PROFILE_FRAMES") "4")))
 (defconst ewm-skia-profile-churn-cycles
   (string-to-number (or (getenv "EWM_SKIA_PROFILE_CHURN_CYCLES") "3")))
+(defconst ewm-skia-profile-release-settle-steps
+  (string-to-number
+   (or (getenv "EWM_SKIA_PROFILE_RELEASE_SETTLE_STEPS") "3")))
+(defconst ewm-skia-profile-release-settle-delay
+  (string-to-number
+   (or (getenv "EWM_SKIA_PROFILE_RELEASE_SETTLE_DELAY") "0.10")))
+(defconst ewm-skia-profile-smaps-top-count
+  (string-to-number (or (getenv "EWM_SKIA_PROFILE_SMAPS_TOP") "5")))
+(defconst ewm-skia-profile-malloc-trim-module
+  (getenv "EWM_SKIA_PROFILE_MALLOC_TRIM_MODULE"))
 (defconst ewm-skia-profile-output
   (getenv "EWM_SKIA_PROFILE_OUTPUT"))
 (defconst ewm-skia-profile-page-size
@@ -64,6 +119,9 @@ cat >"$payload" <<'EOF'
 (defvar ewm-skia-profile-target-monitor nil)
 
 (load-file (getenv "EWM_SKIA_HARNESS_MONITOR_EL"))
+(when (and ewm-skia-profile-malloc-trim-module
+           (not (string-empty-p ewm-skia-profile-malloc-trim-module)))
+  (module-load ewm-skia-profile-malloc-trim-module))
 
 (defun ewm-skia-profile-fail (format-string &rest args)
   (princ (concat "EWM_SKIA_PROFILE_FAIL: "
@@ -136,6 +194,137 @@ cat >"$payload" <<'EOF'
     (insert line "\n")
     (append-to-file (point-min) (point-max)
                     ewm-skia-profile-output)))
+
+(defun ewm-skia-profile-read-kb-fields (file keys)
+  (when (file-readable-p file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((values nil))
+        (while (re-search-forward
+                "^\\([^:\n]+\\):[ \t]+\\([0-9]+\\)[ \t]+kB\\b"
+                nil t)
+          (let ((key (match-string 1))
+                (value (string-to-number (match-string 2))))
+            (when (member key keys)
+              (push (cons key value) values))))
+        (mapcar (lambda (key)
+                  (cons key (cdr (assoc key values))))
+                keys)))))
+
+(defun ewm-skia-profile-report-kb-fields (source name fields)
+  (when fields
+    (ewm-skia-profile-report-line
+     (mapconcat
+      #'identity
+      (cons (format "%-18s phase=%s" source name)
+            (mapcar
+             (lambda (field)
+               (format "%s-kb=%S"
+                       (replace-regexp-in-string "_" "-" (car field))
+                       (cdr field)))
+             fields))
+      " "))))
+
+(defun ewm-skia-profile-report-proc-memory (name)
+  (ewm-skia-profile-report-line
+   (format "%-18s phase=%s live-frames=%d"
+           "live-frames" name (length (frame-list))))
+  (ewm-skia-profile-report-kb-fields
+   "status" name
+   (ewm-skia-profile-read-kb-fields
+    "/proc/self/status"
+    '("VmRSS" "RssAnon" "RssFile" "RssShmem" "VmData" "VmLib")))
+  (ewm-skia-profile-report-kb-fields
+   "smaps-rollup" name
+   (ewm-skia-profile-read-kb-fields
+    "/proc/self/smaps_rollup"
+    '("Rss" "Pss" "Shared_Clean" "Shared_Dirty"
+      "Private_Clean" "Private_Dirty" "Anonymous" "LazyFree"
+      "AnonHugePages" "FilePmdMapped" "ShmemPmdMapped"))))
+
+(defun ewm-skia-profile-entry-get (entry key)
+  (cdr (assoc key entry)))
+
+(defun ewm-skia-profile-smaps-top-private-dirty (limit)
+  (when (file-readable-p "/proc/self/smaps")
+    (with-temp-buffer
+      (insert-file-contents "/proc/self/smaps")
+      (let ((entries nil)
+            (entry nil))
+        (goto-char (point-min))
+        (while (not (eobp))
+          (cond
+           ((looking-at
+             "^\\([0-9a-f]+-[0-9a-f]+\\) \\([-rwxps]+\\) [0-9a-f]+ [0-9a-f:]+ [0-9]+[ \t]*\\(.*\\)$")
+            (when entry
+              (push entry entries))
+            (setq entry
+                  (list
+                   (cons 'map (match-string 1))
+                   (cons 'perms (match-string 2))
+                   (cons 'path (let ((path (match-string 3)))
+                                 (if (string-empty-p path)
+                                     "(anonymous)"
+                                   path)))
+                   (cons 'Size 0)
+                   (cons 'Rss 0)
+                   (cons 'Private_Dirty 0)
+                   (cons 'Anonymous 0))))
+           ((and entry
+                 (looking-at
+                  "^\\(Size\\|Rss\\|Private_Dirty\\|Anonymous\\):[ \t]+\\([0-9]+\\)[ \t]+kB\\b"))
+            (setcdr (assoc (intern (match-string 1)) entry)
+                    (string-to-number (match-string 2)))))
+          (forward-line 1))
+        (when entry
+          (push entry entries))
+        (let ((sorted (sort entries
+                            (lambda (left right)
+                              (> (or (ewm-skia-profile-entry-get
+                                      left 'Private_Dirty)
+                                     0)
+                                 (or (ewm-skia-profile-entry-get
+                                      right 'Private_Dirty)
+                                     0)))))
+              (result nil)
+              (count 0))
+          (while (and sorted (< count limit))
+            (let ((entry (pop sorted)))
+              (when (> (or (ewm-skia-profile-entry-get
+                            entry 'Private_Dirty)
+                           0)
+                       0)
+                (push entry result)
+                (setq count (1+ count)))))
+          (nreverse result))))))
+
+(defun ewm-skia-profile-report-smaps-top (name)
+  (let ((rank 0))
+    (dolist (entry (ewm-skia-profile-smaps-top-private-dirty
+                    ewm-skia-profile-smaps-top-count))
+      (setq rank (1+ rank))
+      (ewm-skia-profile-report-line
+       (format "%-18s phase=%s rank=%d map=%s perms=%s size-kb=%S rss-kb=%S private-dirty-kb=%S anonymous-kb=%S path=%S"
+               "smaps-top" name rank
+               (ewm-skia-profile-entry-get entry 'map)
+               (ewm-skia-profile-entry-get entry 'perms)
+               (ewm-skia-profile-entry-get entry 'Size)
+               (ewm-skia-profile-entry-get entry 'Rss)
+               (ewm-skia-profile-entry-get entry 'Private_Dirty)
+               (ewm-skia-profile-entry-get entry 'Anonymous)
+               (ewm-skia-profile-entry-get entry 'path))))))
+
+(defun ewm-skia-profile-report-malloc-trim (name)
+  (when (fboundp 'ewm-skia-profile--malloc-trim)
+    (let ((before-kb (ewm-skia-profile-rss-kb))
+          (result (ewm-skia-profile--malloc-trim)))
+      (ewm-skia-profile-report-rss
+       (format "malloc-trim-%s" name) 0 before-kb
+       (ewm-skia-profile-rss-kb))
+      (ewm-skia-profile-report-line
+       (format "%-18s phase=%s result=%S"
+               "malloc-trim" name result))
+      t)))
 
 (defun ewm-skia-profile-report-context-state (name frame index)
   (when (fboundp 'pgtk-skia-test-context-state)
@@ -305,6 +494,8 @@ cat >"$payload" <<'EOF'
       (progn
         (ewm-skia-profile-report-context-state
          "main-frame-cache" main-frame 0)
+        (ewm-skia-profile-report-proc-memory "before-multi")
+        (ewm-skia-profile-report-smaps-top "before-multi")
         (dotimes (index ewm-skia-profile-frame-count)
           (let ((frame (make-frame `((width . 72)
                                      (height . 18)
@@ -320,7 +511,12 @@ cat >"$payload" <<'EOF'
              "multi-frame-rss" (1+ index) before-kb
              (ewm-skia-profile-rss-kb))
             (ewm-skia-profile-report-context-state
-             "multi-frame-cache" frame (1+ index))))
+             "multi-frame-cache" frame (1+ index))
+            (ewm-skia-profile-report-proc-memory
+             (format "multi-frame-%d" (1+ index)))
+            (when (= (1+ index) ewm-skia-profile-frame-count)
+              (ewm-skia-profile-report-smaps-top
+               (format "multi-frame-%d" (1+ index))))))
         (setq frames (nreverse frames))
         (dolist (frame frames)
           (unless (and (pgtk-skia-gl-enabled-p frame)
@@ -348,7 +544,25 @@ cat >"$payload" <<'EOF'
      "multi-frame-release" ewm-skia-profile-frame-count before-kb
      (ewm-skia-profile-rss-kb))
     (ewm-skia-profile-report-context-state
-     "main-after-release" main-frame 0)))
+     "main-after-release" main-frame 0)
+    (ewm-skia-profile-report-proc-memory "after-release")
+    (ewm-skia-profile-report-smaps-top "after-release")
+    (when (ewm-skia-profile-report-malloc-trim "after-release")
+      (ewm-skia-profile-report-proc-memory "after-release-trim")
+      (ewm-skia-profile-report-smaps-top "after-release-trim"))
+    (dotimes (step ewm-skia-profile-release-settle-steps)
+      (sit-for ewm-skia-profile-release-settle-delay)
+      (redisplay 'force)
+      (garbage-collect)
+      (ewm-skia-profile-report-rss
+       (format "release-settle-%d" (1+ step))
+       ewm-skia-profile-frame-count before-kb
+       (ewm-skia-profile-rss-kb))
+      (ewm-skia-profile-report-proc-memory
+       (format "release-settle-%d" (1+ step)))
+      (when (= (1+ step) ewm-skia-profile-release-settle-steps)
+        (ewm-skia-profile-report-smaps-top
+         (format "release-settle-%d" (1+ step)))))))
 
 (let ((main-frame (selected-frame))
       (before-kb (ewm-skia-profile-rss-kb))
@@ -387,7 +601,9 @@ cat >"$payload" <<'EOF'
        "frame-churn-rss" (* (1+ cycle) ewm-skia-profile-frame-count)
        before-kb (ewm-skia-profile-rss-kb))
       (ewm-skia-profile-report-context-state
-       "main-after-churn" main-frame (1+ cycle))))
+       "main-after-churn" main-frame (1+ cycle))
+      (ewm-skia-profile-report-proc-memory
+       (format "after-churn-%d" (1+ cycle)))))
   (ewm-skia-profile-report
    "frame-churn" (* (max 1 ewm-skia-profile-churn-cycles)
                     ewm-skia-profile-frame-count)
@@ -408,6 +624,7 @@ timeout --kill-after=1s "$timeout_seconds" \
         EWM_SKIA_PROFILE_OUTPUT="$result" \
         EWM_SKIA_PROFILE_PAGE_SIZE="$page_size" \
         EWM_SKIA_HARNESS_MONITOR_EL="$script_dir/skia-monitor.el" \
+        EWM_SKIA_PROFILE_MALLOC_TRIM_MODULE="$trim_module" \
     "$emacs_path" -Q --load "$payload" >"$stdout" 2>"$stderr"
 status=$?
 set -e
