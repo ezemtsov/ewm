@@ -56,6 +56,9 @@ cat >"$payload" <<'EOF'
   (string-to-number (or (getenv "EWM_SKIA_PROFILE_PAGE_SIZE") "4096")))
 (defconst ewm-skia-profile-monitor-policy
   (or (getenv "EWM_SKIA_PROFILE_MONITOR") "largest"))
+(defconst ewm-skia-profile-require-monitor
+  (getenv "EWM_SKIA_PROFILE_REQUIRE_MONITOR"))
+(defvar ewm-skia-profile-target-monitor nil)
 
 (defun ewm-skia-profile-fail (format-string &rest args)
   (princ (concat "EWM_SKIA_PROFILE_FAIL: "
@@ -127,6 +130,27 @@ cat >"$payload" <<'EOF'
                 best-area area))))
     best))
 
+(defun ewm-skia-profile-find-monitor (policy)
+  (cond
+   ((string= policy "largest")
+    (ewm-skia-profile-largest-monitor))
+   ((or (string= policy "current")
+        (string= policy "frame"))
+    (frame-monitor-attributes))
+   (t
+    (catch 'match
+      (dolist (monitor (display-monitor-attributes-list))
+        (let ((name (format "%s" (cdr (assq 'name monitor)))))
+          (when (string-match-p (regexp-quote policy) name)
+            (throw 'match monitor))))
+      (ewm-skia-profile-fail "monitor %S not found" policy)))))
+
+(defun ewm-skia-profile-same-monitor-p (left right)
+  (and (equal (cdr (assq 'name left))
+              (cdr (assq 'name right)))
+       (equal (ewm-skia-profile-monitor-rect left 'geometry)
+              (ewm-skia-profile-monitor-rect right 'geometry))))
+
 (defun ewm-skia-profile-monitor-string (label monitor)
   (let ((geometry (ewm-skia-profile-monitor-rect monitor 'geometry))
         (workarea (ewm-skia-profile-monitor-rect monitor 'workarea)))
@@ -182,15 +206,14 @@ cat >"$payload" <<'EOF'
                     :background "#00ff00"
                     :height 180)
 (set-frame-parameter nil 'background-color "#00ff00")
-(let ((target-monitor
-       (if (string= ewm-skia-profile-monitor-policy "largest")
-           (ewm-skia-profile-largest-monitor)
-         (frame-monitor-attributes))))
-  (when target-monitor
-    (ewm-skia-profile-report-line
-     (ewm-skia-profile-monitor-string "target-monitor" target-monitor))
-    (ewm-skia-profile-position-frame-on-monitor (selected-frame)
-                                                target-monitor)))
+(setq ewm-skia-profile-target-monitor
+      (ewm-skia-profile-find-monitor ewm-skia-profile-monitor-policy))
+(when ewm-skia-profile-target-monitor
+  (ewm-skia-profile-report-line
+   (ewm-skia-profile-monitor-string "target-monitor"
+                                    ewm-skia-profile-target-monitor))
+  (ewm-skia-profile-position-frame-on-monitor
+   (selected-frame) ewm-skia-profile-target-monitor))
 (set-frame-size nil 96 32)
 
 (let ((buffer (get-buffer-create "*ewm-skia-profile*")))
@@ -211,9 +234,18 @@ cat >"$payload" <<'EOF'
 
 (redisplay 'force)
 (sit-for 0.02)
-(ewm-skia-profile-report-line
- (ewm-skia-profile-monitor-string
-  "actual-monitor" (frame-monitor-attributes)))
+(let ((actual-monitor (frame-monitor-attributes)))
+  (ewm-skia-profile-report-line
+   (ewm-skia-profile-monitor-string "actual-monitor" actual-monitor))
+  (when (and ewm-skia-profile-require-monitor
+             ewm-skia-profile-target-monitor
+             (not (ewm-skia-profile-same-monitor-p
+                   ewm-skia-profile-target-monitor actual-monitor)))
+    (ewm-skia-profile-fail
+     "profile frame landed on %s, target was %s"
+     (ewm-skia-profile-monitor-string "actual-monitor" actual-monitor)
+     (ewm-skia-profile-monitor-string
+      "target-monitor" ewm-skia-profile-target-monitor))))
 
 (unless (and (fboundp 'pgtk-skia-gl-enabled-p)
              (pgtk-skia-gl-enabled-p))
