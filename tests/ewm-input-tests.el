@@ -33,7 +33,6 @@
 (ewm-test--stub ewm-keyboard-capture-end-module (_token) t)
 (ewm-test--stub ewm-keyboard-redirect-capture-clear-module () nil)
 (ewm-test--stub ewm-layout--menu-active-p () nil)
-(ewm-test--stub ewm-layout--refresh () nil)
 (provide 'ewm-core)
 
 (add-to-list 'load-path
@@ -62,6 +61,15 @@
                  ((symbol-function 'ewm-layout--menu-active-p)
                   (lambda () ,menu-active)))
          ,@body))))
+
+(defmacro ewm-input-tests--should-not-refresh-layout (&rest body)
+  "Run BODY and fail if it asks the layout layer to refresh."
+  (declare (indent 0))
+  `(let (refreshed)
+     (cl-letf (((symbol-function 'ewm-layout--refresh)
+                (lambda () (setq refreshed t))))
+       ,@body)
+     (should-not refreshed)))
 
 ;;;; ewm--event-to-intercept-spec
 
@@ -222,6 +230,25 @@
       (ewm--handle-intercepted-command '((key . "s-2"))))
     (should synced)))
 
+(ert-deftest ewm-input-tests/intercepted-command-cleanup-does-not-refresh-layout ()
+  "Command dispatch may sync capture, but must not send layout updates."
+  (let ((ewm-mode-map (copy-keymap ewm-mode-map))
+        (ewm--module-mode t)
+        (ewm-input--keyboard-capture-token 42)
+        calls)
+    (define-key ewm-mode-map (kbd "s-3")
+                (lambda () (interactive)))
+    (cl-letf (((symbol-function 'ewm-keyboard-capture-end-module)
+               (lambda (token) (push (list :end token) calls) t))
+              ((symbol-function 'ewm-keyboard-redirect-capture-clear-module)
+               (lambda () (push :clear-redirect calls) t))
+              ((symbol-function 'ewm-layout--menu-active-p)
+               (lambda () nil)))
+      (ewm-input-tests--should-not-refresh-layout
+        (ewm--handle-intercepted-command '((key . "s-3")))))
+    (should (equal calls '(:clear-redirect (:end 42))))
+    (should-not ewm-input--keyboard-capture-token)))
+
 ;;;; keyboard capture sync
 
 (ert-deftest ewm-input-tests/keyboard-capture-sync-inactive-clears-redirect-capture ()
@@ -251,6 +278,23 @@
     (ewm-input--sync-keyboard-capture)
     (should (equal calls '(:clear-redirect (:end 42))))
     (should-not ewm-input--keyboard-capture-token)))
+
+(ert-deftest ewm-input-tests/keyboard-capture-sync-does-not-refresh-layout ()
+  "Keyboard-capture leases are focus overlays, not layout updates.
+Covers inactive cleanup, capture begin, and capture end so broadening any
+capture transition back into a layout send fails here."
+  (ewm-input-tests--with-capture-state (nil 'ignore)
+    (ewm-input-tests--should-not-refresh-layout
+      (ewm-input--sync-keyboard-capture)))
+  (ewm-input-tests--with-capture-state (nil nil)
+    (ewm-input-tests--should-not-refresh-layout
+      (ewm-input--sync-keyboard-capture)))
+  (ewm-input-tests--with-capture-state (nil 'ignore t)
+    (ewm-input-tests--should-not-refresh-layout
+      (ewm-input--sync-keyboard-capture)))
+  (ewm-input-tests--with-capture-state (42 'ignore)
+    (ewm-input-tests--should-not-refresh-layout
+      (ewm-input--sync-keyboard-capture))))
 
 (ert-deftest ewm-input-tests/keyboard-capture-force-disable-clears-redirect-capture ()
   "Forced disable clears compositor-owned keyboard-redirect capture."

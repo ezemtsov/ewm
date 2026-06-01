@@ -83,7 +83,6 @@ Override individual bindings with `use-package':
 (declare-function ewm-keyboard-redirect-capture-clear-module "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-layout--menu-active-p "ewm-layout")
-(declare-function ewm-layout--refresh "ewm-layout")
 (declare-function ewm-warp-pointer "ewm")
 (declare-function ewm--get-output-origin "ewm")
 ;; Defined in ewm.el (loaded after ewm-input.el)
@@ -325,11 +324,8 @@ redirect capture."
 
 (defun ewm-input--sync-keyboard-capture ()
   "Synchronize compositor keyboard capture with current Emacs input state."
-  (let* ((was-capturing ewm-input--keyboard-capture-token)
-         (capture-active (ewm-input--modal-input-active-p)))
-    (ewm-input--set-keyboard-capture capture-active (not capture-active))
-    (when (and was-capturing (not ewm-input--keyboard-capture-token))
-      (ewm-layout--refresh))))
+  (let ((capture-active (ewm-input--modal-input-active-p)))
+    (ewm-input--set-keyboard-capture capture-active (not capture-active))))
 
 (defun ewm-input--keyboard-capture-on ()
   "Enable compositor keyboard capture."
