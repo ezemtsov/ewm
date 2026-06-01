@@ -23,12 +23,11 @@ fi
 # Reset failed state of user units
 systemctl --user reset-failed
 
-# Import the login manager environment to systemd
-systemctl --user import-environment
-
-# Update D-Bus activation environment
+# Import the login manager environment to systemd and D-Bus
 if command -v dbus-update-activation-environment >/dev/null 2>&1; then
-  dbus-update-activation-environment --all
+  dbus-update-activation-environment --systemd --all
+else
+  env | cut -d= -f1 | xargs systemctl --user import-environment
 fi
 
 # Start EWM and wait for it to terminate
