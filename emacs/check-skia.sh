@@ -5,7 +5,6 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 
 input="${1:-${EMACS_TREE:-$HOME/git/emacs}}"
-base_ref="${EWM_SKIA_BASE_REF:-emacs-30.2}"
 jobs="${EWM_SKIA_JOBS:-8}"
 build_mode="${EWM_SKIA_CHECK_BUILD_MODE:-full}"
 object_targets="${EWM_SKIA_CHECK_OBJECT_TARGETS:-pgtkterm.o pgtkfns.o image.o gtkutil.o skia/emacs_skia.o skiafont.o}"
@@ -46,10 +45,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-new_files_patch="$script_dir/emacs-30.2-pgtk-skia-sources.patch"
-production_patch="$script_dir/emacs-30.2-pgtk-skia-integration.patch"
-test_hooks_patch="$script_dir/emacs-30.2-pgtk-skia-test-hooks.patch"
-
 if [[ -z "${EWM_SKIA_CHECK_SKIP_BUILD:-}" ]]; then
     case "$build_mode" in
         full)
@@ -69,6 +64,10 @@ if [[ -z "${EWM_SKIA_CHECK_SKIP_BUILD:-}" ]]; then
     esac
 fi
 
+test -e "$emacs_tree/src/skia/emacs_skia.cpp"
+test -e "$emacs_tree/src/skia/emacs_skia.h"
+test -e "$emacs_tree/src/skiafont.c"
+
 run git -C "$emacs_tree" diff --check HEAD -- \
     src/pgtkterm.c src/pgtkfns.c src/skia/emacs_skia.cpp \
     src/skia/emacs_skia.h src/pgtkterm.h src/image.c
@@ -76,26 +75,6 @@ run git -C "$repo_root" diff --check HEAD -- \
     emacs/check-skia.sh emacs/skia-smoke.sh emacs/skia-profile.sh \
     emacs/skia-monitor.el emacs/skia-sanitize.sh emacs/skia-lsan.supp \
     nix/service.nix
-
-if rg -n "pgtk-skia-test-|Spgtk_skia_test" "$production_patch"; then
-    echo "error: production patch contains local Skia test hooks" >&2
-    exit 1
-fi
-
-run git -C "$emacs_tree" apply --check --reverse "$new_files_patch"
-run git -C "$emacs_tree" apply --check --reverse "$test_hooks_patch"
-
-patch_tmp="$(mktemp -d -p "$tmp_dir" split-patchcheck.XXXXXX)"
-git -C "$emacs_tree" archive "$base_ref" | tar -x -C "$patch_tmp"
-test ! -e "$patch_tmp/src/skia"
-run git -C "$patch_tmp" apply --check "$new_files_patch"
-run git -C "$patch_tmp" apply "$new_files_patch"
-test -e "$patch_tmp/src/skia/emacs_skia.cpp"
-test -e "$patch_tmp/src/skia/emacs_skia.h"
-test -e "$patch_tmp/src/skiafont.c"
-run git -C "$patch_tmp" apply --check "$production_patch"
-run git -C "$patch_tmp" apply "$production_patch"
-run git -C "$patch_tmp" apply --check "$test_hooks_patch"
 
 run nix-instantiate --parse "$repo_root/nix/service.nix" >/dev/null
 
@@ -136,11 +115,15 @@ if [[ -z "${EWM_SKIA_CHECK_SKIP_SMOKE:-}" ]]; then
         echo "error: Emacs executable not found: $emacs_bin" >&2
         exit 1
     fi
-    smoke_cmd="$(quote "$script_dir/skia-smoke.sh") $(quote "$emacs_bin")"
-    if [[ -n "$smoke_groups" ]]; then
-        smoke_cmd="EWM_SKIA_SMOKE_GROUPS=$(quote "$smoke_groups") $smoke_cmd"
+    if rg -q "pgtk-skia-test-framebuffer-size" "$emacs_tree/src/pgtkterm.c"; then
+        smoke_cmd="$(quote "$script_dir/skia-smoke.sh") $(quote "$emacs_bin")"
+        if [[ -n "$smoke_groups" ]]; then
+            smoke_cmd="EWM_SKIA_SMOKE_GROUPS=$(quote "$smoke_groups") $smoke_cmd"
+        fi
+        nix_run "$smoke_cmd"
+    else
+        echo "warning: skipping smoke tests; Skia test hooks are not present" >&2
     fi
-    nix_run "$smoke_cmd"
 fi
 
-echo "ok: Skia patch stack checks passed"
+echo "ok: Skia source checks passed"

@@ -14,21 +14,21 @@ let
   cfg = config.programs.ewm;
 
   applySkia = emacs: emacs.overrideAttrs (o: {
-    patches = (o.patches or []) ++ [
-      ../emacs/emacs-30.2-pgtk-skia-sources.patch
-      ../emacs/emacs-30.2-pgtk-skia-integration.patch
-    ];
-    configureFlags = (o.configureFlags or []) ++ [ "--with-skia" ];
-    buildInputs = (o.buildInputs or []) ++ (with pkgs; [ skia libepoxy ]);
-    nativeBuildInputs = (o.nativeBuildInputs or []) ++ (with pkgs; [ autoconf automake ]);
+    src = pkgs.fetchgit {
+      url = "https://codeberg.org/ezemtsov/emacs.git";
+      rev = "75235f22185e68823b3a4cab3a75adadbb13cb11";
+      hash = "sha256-dcEBYzpcFSVgPPvSTWb6EUBMEQ+0lRxRQdzujA1EouY=";
+    };
+    configureFlags = o.configureFlags ++ [ "--with-skia" ];
+    buildInputs = o.buildInputs ++ (with pkgs; [ skia libepoxy ]);
+    nativeBuildInputs = o.nativeBuildInputs ++ (with pkgs; [ autoconf automake ]);
     preConfigure = (o.preConfigure or "") + ''
       ./autogen.sh
     '';
   });
 
-  # Rewrap a withPackages result so its base emacs is skia-patched; on a
-  # bare emacs, patch it directly. withPackages results carry `emacs` and
-  # `explicitRequires` but no `.override`, so rebuild via overrideScope.
+  # Rebuild emacsWithPackages results around a Skia-overridden base, or
+  # apply the override directly to a bare emacs derivation.
   wrapSkia = pkg:
     if !cfg.withSkia then pkg
     else if pkg ? emacs && pkg ? explicitRequires then
@@ -80,7 +80,7 @@ in
     withSkia = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Enable Skia backend for Emacs.";
+      description = "Rebuild emacsPackage with the Skia rendering backend.";
     };
 
     emacsPackage = lib.mkOption {
