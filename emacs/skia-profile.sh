@@ -98,6 +98,9 @@ cat >"$payload" <<'EOF'
   (string-to-number (or (getenv "EWM_SKIA_PROFILE_FRAMES") "4")))
 (defconst ewm-skia-profile-churn-cycles
   (string-to-number (or (getenv "EWM_SKIA_PROFILE_CHURN_CYCLES") "3")))
+(defconst ewm-skia-profile-animation-iterations
+  (string-to-number
+   (or (getenv "EWM_SKIA_PROFILE_ANIMATION_ITERATIONS") "100")))
 (defconst ewm-skia-profile-release-settle-steps
   (string-to-number
    (or (getenv "EWM_SKIA_PROFILE_RELEASE_SETTLE_STEPS") "3")))
@@ -492,6 +495,58 @@ cat >"$payload" <<'EOF'
        (scroll-down-command 1))
      (setq scroll-direction (- scroll-direction))
      (ewm-skia-profile-redraw))))
+
+(when (and (> ewm-skia-profile-animation-iterations 0)
+           (image-type-available-p 'webp))
+  (let* ((source-buffer (current-buffer))
+         (soak-buffer (get-buffer-create "*ewm-skia-profile-animation*"))
+         (data (base64-decode-string
+                "UklGRoQAAABXRUJQVlA4WAoAAAACAAAAAQAAAQAAQU5JTQYAAAD/////AABBTk1GKAAAAAAAAAAAAAEAAAEAAGQAAAJWUDhMDwAAAC8BQAAABxD9j/4HIqL/AQBBTk1GKAAAAAAAAAAAAAEAAAEAAGQAAABWUDhMDwAAAC8BQAAAB9D/iP4HIqL/AQA="))
+         (image (create-image data 'webp t
+                              :width 400
+                              :height 160
+                              :transform-smoothing nil))
+         (before-kb (ewm-skia-profile-rss-kb))
+         (midpoint-target (/ ewm-skia-profile-animation-iterations 2))
+         midpoint-kb after-kb
+         (frame-index 0)
+         (call-count 0))
+    (unwind-protect
+        (progn
+          (with-current-buffer soak-buffer
+            (setq-local cursor-type nil)
+            (setq-local mode-line-format nil)
+            (erase-buffer)
+            (insert-image image " "))
+          (switch-to-buffer soak-buffer)
+          (plist-put (cdr image) :animate-buffer soak-buffer)
+          (ewm-skia-profile-redraw)
+          (ewm-skia-profile-report-context-state
+           "animation-soak-start" (selected-frame) 0)
+          (ewm-skia-profile-time
+           "animation-soak" ewm-skia-profile-animation-iterations
+           (lambda ()
+             (setq call-count (1+ call-count))
+             (setq frame-index (mod (1+ frame-index) 2))
+             (image-show-frame image frame-index t)
+             (when (and (not midpoint-kb)
+                        (>= call-count midpoint-target))
+               (setq midpoint-kb (ewm-skia-profile-rss-kb)))
+             (ewm-skia-profile-redraw)))
+          (setq after-kb (ewm-skia-profile-rss-kb))
+          (when midpoint-kb
+            (ewm-skia-profile-report-rss
+             "animation-soak-rss-mid" 1 before-kb midpoint-kb))
+          (ewm-skia-profile-report-rss
+           "animation-soak-rss" 1 before-kb after-kb)
+          (ewm-skia-profile-report-context-state
+           "animation-soak-end" (selected-frame) 0))
+      (clear-image-cache nil image)
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (when (buffer-live-p soak-buffer)
+        (kill-buffer soak-buffer))
+      (ewm-skia-profile-redraw))))
 
 (let ((main-frame (selected-frame))
       (frames nil)
