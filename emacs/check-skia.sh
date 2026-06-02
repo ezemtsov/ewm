@@ -9,6 +9,7 @@ jobs="${EWM_SKIA_JOBS:-8}"
 build_mode="${EWM_SKIA_CHECK_BUILD_MODE:-full}"
 object_targets="${EWM_SKIA_CHECK_OBJECT_TARGETS:-pgtkterm.o pgtkfns.o image.o gtkutil.o skia/emacs_skia.o skiafont.o}"
 smoke_groups="${EWM_SKIA_CHECK_SMOKE_GROUPS:-${EWM_SKIA_SMOKE_GROUPS:-}}"
+test_hooks_patch="$script_dir/pgtk-skia-test-hooks.patch"
 
 if [[ -d "$input" ]]; then
     emacs_tree="$(cd "$input" && pwd -P)"
@@ -72,7 +73,8 @@ run git -C "$emacs_tree" diff --check HEAD -- \
     src/pgtkterm.c src/pgtkfns.c src/skia/emacs_skia.cpp \
     src/skia/emacs_skia.h src/pgtkterm.h src/image.c
 run git -C "$repo_root" diff --check HEAD -- \
-    emacs/check-skia.sh emacs/skia-smoke.sh emacs/skia-profile.sh \
+    emacs/check-skia.sh emacs/skia-runtime-smoke.sh emacs/skia-smoke.sh emacs/pgtk-skia-test-hooks.patch \
+    emacs/skia-profile.sh emacs/PGTK_SKIA_BRANCH_STATE.md \
     emacs/skia-monitor.el emacs/skia-sanitize.sh emacs/skia-lsan.supp \
     nix/service.nix
 
@@ -115,6 +117,10 @@ if [[ -z "${EWM_SKIA_CHECK_SKIP_SMOKE:-}" ]]; then
         echo "error: Emacs executable not found: $emacs_bin" >&2
         exit 1
     fi
+    if [[ -z "${EWM_SKIA_CHECK_SKIP_RUNTIME_SMOKE:-}" ]]; then
+        runtime_smoke_cmd="$(quote "$script_dir/skia-runtime-smoke.sh") $(quote "$emacs_bin")"
+        nix_run "$runtime_smoke_cmd"
+    fi
     if rg -q "pgtk-skia-test-framebuffer-size" "$emacs_tree/src/pgtkterm.c"; then
         smoke_cmd="$(quote "$script_dir/skia-smoke.sh") $(quote "$emacs_bin")"
         if [[ -n "$smoke_groups" ]]; then
@@ -122,7 +128,9 @@ if [[ -z "${EWM_SKIA_CHECK_SKIP_SMOKE:-}" ]]; then
         fi
         nix_run "$smoke_cmd"
     else
-        echo "warning: skipping smoke tests; Skia test hooks are not present" >&2
+        run git -C "$emacs_tree" apply --check "$test_hooks_patch"
+        echo "warning: skipping hook-dependent smoke tests; Skia test hooks are not present" >&2
+        echo "warning: apply $test_hooks_patch to a development Emacs tree and rebuild to run emacs/skia-smoke.sh" >&2
     fi
 fi
 

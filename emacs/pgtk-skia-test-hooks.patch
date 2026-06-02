@@ -1,0 +1,802 @@
+--- a/src/pgtkterm.c
++++ b/src/pgtkterm.c
+@@ -10801,6 +10801,768 @@
+   return stats;
+ }
+ 
++static Lisp_Object
++pgtk_skia_test_pointer (const void *ptr)
++{
++  return ptr ? make_uint ((uintmax_t) (uintptr_t) ptr) : Qnil;
++}
++
++static Lisp_Object
++pgtk_skia_test_rect (int x, int y, int width, int height)
++{
++  return list4i (x, y, width, height);
++}
++
++static bool
++pgtk_skia_test_decode_rect (Lisp_Object rect, int *x, int *y,
++			    int *width, int *height)
++{
++  if (!CONSP (rect))
++    return false;
++
++  Lisp_Object rest = rect;
++  Lisp_Object vals[4];
++  for (int i = 0; i < 4; i++)
++    {
++      if (!CONSP (rest) || !FIXNUMP (XCAR (rest)))
++	return false;
++      vals[i] = XCAR (rest);
++      rest = XCDR (rest);
++    }
++
++  *x = XFIXNUM (vals[0]);
++  *y = XFIXNUM (vals[1]);
++  *width = XFIXNUM (vals[2]);
++  *height = XFIXNUM (vals[3]);
++  return *width > 0 && *height > 0;
++}
++
++static bool
++pgtk_skia_test_ensure_surface (struct frame *f)
++{
++  if (!FRAME_SKIA_SURFACE (f) || !FRAME_SKIA_CANVAS (f))
++    {
++      emacs_skia_canvas_t *canvas = pgtk_begin_skia_clip (f);
++      if (!canvas)
++	return false;
++      pgtk_end_skia_clip (f);
++    }
++
++  return FRAME_SKIA_SURFACE (f) && FRAME_SKIA_CANVAS (f);
++}
++
++static void
++pgtk_skia_test_fill_rect (struct frame *f, unsigned long color,
++			  int x, int y, int width, int height,
++			  bool respect_alpha_background)
++{
++  pgtk_fill_rectangle (f, color, x, y, width, height,
++		       respect_alpha_background);
++}
++
++static void
++pgtk_skia_test_set_paint (struct frame *f, unsigned long color,
++			  bool respect_alpha_background)
++{
++  emacs_skia_paint_t *paint = FRAME_SKIA_PAINT (f);
++
++  pgtk_skia_set_paint_color (f, color, respect_alpha_background);
++  emacs_skia_paint_set_image_shader (paint, NULL);
++  emacs_skia_paint_set_dash (paint, NULL, 0, 0.0f);
++  emacs_skia_paint_set_stroke (paint, false);
++}
++
++static bool
++pgtk_skia_test_draw_clipped_regions (struct frame *f, XRectangle *clips,
++				     int nclips, int x, int y,
++				     int width, int height)
++{
++  emacs_skia_canvas_t *canvas = pgtk_begin_skia_clip (f);
++  if (!canvas)
++    return false;
++
++  pgtk_skia_set_clip_rectangles (canvas, clips, nclips);
++  pgtk_skia_test_set_paint (f, 0xff0000, false);
++
++  emacs_skia_rect_t rect = { x, y, x + width, y + height };
++  emacs_skia_canvas_draw_rect (canvas, &rect, FRAME_SKIA_PAINT (f));
++  pgtk_gl_note_damage (f, x, y, width, height);
++  pgtk_end_skia_clip (f);
++  return true;
++}
++
++DEFUN ("pgtk-skia-test-framebuffer-size",
++       Fpgtk_skia_test_framebuffer_size,
++       Spgtk_skia_test_framebuffer_size, 0, 1, 0,
++       doc: /* Return Skia GL framebuffer size diagnostics for FRAME.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int scale = pgtk_gl_scale (f);
++
++  return listn (7,
++		make_fixnum (FRAME_GL_RENDER_WIDTH (f)),
++		make_fixnum (FRAME_GL_RENDER_HEIGHT (f)),
++		make_fixnum (FRAME_GL_TEXTURE_WIDTH (f)),
++		make_fixnum (FRAME_GL_TEXTURE_HEIGHT (f)),
++		make_fixnum (FRAME_PIXEL_WIDTH (f)),
++		make_fixnum (FRAME_PIXEL_HEIGHT (f)),
++		make_fixnum (scale));
++}
++
++DEFUN ("pgtk-skia-test-framebuffer-color-counts",
++       Fpgtk_skia_test_framebuffer_color_counts,
++       Spgtk_skia_test_framebuffer_color_counts, 0, 2, 0,
++       doc: /* Return red/green pixel counts from FRAME's Skia GL texture.  */)
++(Lisp_Object frame, Lisp_Object rect)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int logical_x = 0;
++  int logical_y = 0;
++  int logical_width = FRAME_PIXEL_WIDTH (f);
++  int logical_height = FRAME_PIXEL_HEIGHT (f);
++  int scale = pgtk_gl_scale (f);
++  int render_width = FRAME_GL_RENDER_WIDTH (f);
++  int render_height = FRAME_GL_RENDER_HEIGHT (f);
++  int x0, y0, x1, y1;
++  int read_width, read_height;
++  unsigned char *pixels;
++  int red_count = 0;
++  int green_count = 0;
++  int translucent_green_count = 0;
++  int red_min_x = INT_MAX;
++  int red_min_y = INT_MAX;
++  int red_max_x = -1;
++  int red_max_y = -1;
++  GLint old_pack_alignment = 0;
++  struct pgtk_fbo_bindings saved_fbo;
++  Lisp_Object bounds;
++  Lisp_Object result = Qnil;
++
++  if (!NILP (rect)
++      && !pgtk_skia_test_decode_rect (rect, &logical_x, &logical_y,
++				      &logical_width, &logical_height))
++    return Qnil;
++
++  if (!FRAME_GDK_GL_CONTEXT (f) || !FRAME_GL_FRAMEBUFFER (f)
++      || render_width <= 0 || render_height <= 0)
++    return Qnil;
++
++  x0 = max (0, logical_x * scale);
++  x1 = min (render_width, (logical_x + logical_width) * scale);
++  y0 = max (0, render_height - (logical_y + logical_height) * scale);
++  y1 = min (render_height, render_height - logical_y * scale);
++  read_width = x1 - x0;
++  read_height = y1 - y0;
++  if (read_width <= 0 || read_height <= 0)
++    return listn (6,
++		  make_fixnum (render_width),
++		  make_fixnum (render_height),
++		  make_fixnum (0), make_fixnum (0), make_fixnum (0),
++		  Qnil);
++
++  pixels = xmalloc ((size_t) read_width * (size_t) read_height * 4);
++
++  block_input ();
++  if (pgtk_skia_test_ensure_surface (f)
++      && pgtk_skia_make_gl_context_current (f))
++    {
++      emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++      pgtk_save_fbo_bindings (&saved_fbo);
++      glGetIntegerv (GL_PACK_ALIGNMENT, &old_pack_alignment);
++      glPixelStorei (GL_PACK_ALIGNMENT, 1);
++      glBindFramebuffer (GL_READ_FRAMEBUFFER, FRAME_GL_FRAMEBUFFER (f));
++      glReadPixels (x0, y0, read_width, read_height, GL_RGBA,
++		    GL_UNSIGNED_BYTE, pixels);
++      glPixelStorei (GL_PACK_ALIGNMENT, old_pack_alignment);
++      pgtk_restore_fbo_bindings (f, &saved_fbo);
++
++      if (!pgtk_check_gl_error ("pgtk-skia-test-framebuffer-color-counts"))
++	{
++	  for (int yy = 0; yy < read_height; yy++)
++	    {
++	      for (int xx = 0; xx < read_width; xx++)
++		{
++		  unsigned char *p = pixels + ((yy * read_width + xx) * 4);
++		  int r = p[0];
++		  int g = p[1];
++		  int b = p[2];
++		  int a = p[3];
++
++		  if (r > 200 && g < 100 && b < 100)
++		    {
++		      int device_x = x0 + xx;
++		      int device_y = y0 + yy;
++		      red_count++;
++		      red_min_x = min (red_min_x, device_x);
++		      red_min_y = min (red_min_y, device_y);
++		      red_max_x = max (red_max_x, device_x);
++		      red_max_y = max (red_max_y, device_y);
++		    }
++		  if (g > 120 && r < 120 && b < 120)
++		    {
++		      green_count++;
++		      if (a > 0 && a < 250)
++			translucent_green_count++;
++		    }
++		}
++	    }
++
++	  bounds = red_count > 0
++	    ? list4i (red_min_x, red_min_y, red_max_x, red_max_y)
++	    : Qnil;
++	  result = listn (6,
++			  make_fixnum (render_width),
++			  make_fixnum (render_height),
++			  make_fixnum (red_count),
++			  make_fixnum (green_count),
++			  make_fixnum (translucent_green_count),
++			  bounds);
++	}
++    }
++  unblock_input ();
++
++  xfree (pixels);
++  return result;
++}
++
++DEFUN ("pgtk-skia-test-context-state",
++       Fpgtk_skia_test_context_state,
++       Spgtk_skia_test_context_state, 1, 2, 0,
++       doc: /* Return Skia/GDK GL context diagnostics for FRAME.  */)
++(Lisp_Object frame, Lisp_Object ensure_current)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  GdkGLContext *current;
++  void *direct_context = NULL;
++  int resource_count = 0;
++  size_t resource_bytes = 0;
++  int max_resources = 0;
++  size_t max_resource_bytes = 0;
++  size_t purgeable_bytes = 0;
++  Lisp_Object state;
++
++  block_input ();
++  if (!NILP (ensure_current))
++    pgtk_skia_make_gl_context_current (f);
++
++  current = gdk_gl_context_get_current ();
++  if (FRAME_SKIA_GL_CONTEXT (f))
++    emacs_skia_gl_context_get_diagnostics (FRAME_SKIA_GL_CONTEXT (f),
++					   &direct_context,
++					   &resource_count,
++					   &resource_bytes,
++					   &max_resources,
++					   &max_resource_bytes,
++					   &purgeable_bytes);
++
++  state = listn (9,
++		 pgtk_skia_test_pointer (FRAME_GDK_GL_CONTEXT (f)),
++		 pgtk_skia_test_pointer (FRAME_SKIA_GL_CONTEXT (f)),
++		 current == FRAME_GDK_GL_CONTEXT (f) ? Qt : Qnil,
++		 pgtk_skia_test_pointer (direct_context),
++		 make_uint (resource_count),
++		 make_uint (resource_bytes),
++		 FRAME_GL_FRAMEBUFFER (f)
++		   ? make_uint (FRAME_GL_FRAMEBUFFER (f)) : Qnil,
++		 FRAME_GL_TEXTURE (f)
++		   ? make_uint (FRAME_GL_TEXTURE (f)) : Qnil,
++		 pgtk_skia_test_pointer (
++		   FRAME_GDK_GL_CONTEXT (f)
++		     ? gdk_gl_context_get_shared_context (
++			 FRAME_GDK_GL_CONTEXT (f))
++		     : NULL));
++  unblock_input ();
++
++  return state;
++}
++
++DEFUN ("pgtk-skia-test-texture-shared-p",
++       Fpgtk_skia_test_texture_shared_p,
++       Spgtk_skia_test_texture_shared_p, 2, 2, 0,
++       doc: /* Return non-nil if FRAME-A can see FRAME-B's GL texture.  */)
++(Lisp_Object frame_a, Lisp_Object frame_b)
++{
++  struct frame *fa = decode_window_system_frame (frame_a);
++  struct frame *fb = decode_window_system_frame (frame_b);
++  bool shared = false;
++
++  if (!FRAME_GDK_GL_CONTEXT (fa) || !FRAME_GL_TEXTURE (fb))
++    return Qnil;
++
++  block_input ();
++  if (pgtk_skia_make_gl_context_current (fa))
++    shared = glIsTexture (FRAME_GL_TEXTURE (fb));
++  unblock_input ();
++
++  return shared ? Qt : Qnil;
++}
++
++DEFUN ("pgtk-skia-test-current-tooltip-frame",
++       Fpgtk_skia_test_current_tooltip_frame,
++       Spgtk_skia_test_current_tooltip_frame, 0, 0, 0,
++       doc: /* Return the currently live PGTK tooltip frame, if any.  */)
++(void)
++{
++  Lisp_Object tail, frame;
++
++  FOR_EACH_FRAME (tail, frame)
++    {
++      struct frame *f = XFRAME (frame);
++      if (FRAME_PGTK_P (f) && f->tooltip && FRAME_VISIBLE_P (f))
++	return frame;
++    }
++
++  return Qnil;
++}
++
++DEFUN ("pgtk-skia-test-visible-bell-active-p",
++       Fpgtk_skia_test_visible_bell_active_p,
++       Spgtk_skia_test_visible_bell_active_p, 0, 1, 0,
++       doc: /* Return non-nil if FRAME has a live Skia visible-bell snapshot.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  return FRAME_X_OUTPUT (f)->skia_image_pre_bell ? Qt : Qnil;
++}
++
++DEFUN ("pgtk-skia-test-recover-visible-bell",
++       Fpgtk_skia_test_recover_visible_bell,
++       Spgtk_skia_test_recover_visible_bell, 0, 1, 0,
++       doc: /* Restore FRAME from the active Skia visible-bell snapshot.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  struct atimer timer;
++
++  if (!FRAME_X_OUTPUT (f)->skia_image_pre_bell)
++    return Qnil;
++
++  if (FRAME_X_OUTPUT (f)->atimer_visible_bell)
++    {
++      cancel_atimer (FRAME_X_OUTPUT (f)->atimer_visible_bell);
++      FRAME_X_OUTPUT (f)->atimer_visible_bell = NULL;
++    }
++
++  timer.client_data = f;
++  recover_from_visible_bell (&timer);
++  return Qt;
++}
++
++DEFUN ("pgtk-skia-test-abandon-gl-context",
++       Fpgtk_skia_test_abandon_gl_context,
++       Spgtk_skia_test_abandon_gl_context, 0, 1, 0,
++       doc: /* Force FRAME's Skia GL context into abandoned state.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++
++  if (!FRAME_GDK_GL_CONTEXT (f) && !FRAME_SKIA_GL_CONTEXT (f)
++      && !FRAME_GL_FRAMEBUFFER (f) && !FRAME_GL_TEXTURE (f))
++    return Qnil;
++
++  block_input ();
++  pgtk_abandon_gl_context (f);
++  pgtk_cancel_gl_context_recreate (f);
++  FRAME_GL_CONTEXT_RECREATE_AFTER (f) = 0;
++  if (FRAME_GL_DRAWING_AREA (f))
++    {
++      SET_FRAME_GARBAGED (f);
++      pgtk_gl_note_full_damage (f);
++      pgtk_gl_queue_draw (f);
++    }
++  unblock_input ();
++  return Qt;
++}
++
++DEFUN ("pgtk-skia-test-gl-recreate-source-active-p",
++       Fpgtk_skia_test_gl_recreate_source_active_p,
++       Spgtk_skia_test_gl_recreate_source_active_p, 1, 1, 0,
++       doc: /* Return non-nil if FRAME has a pending GL recreate source.  */)
++(Lisp_Object frame)
++{
++  if (!FRAMEP (frame))
++    return Qnil;
++
++  struct frame *f = XFRAME (frame);
++  if (!FRAME_LIVE_P (f) || !FRAME_PGTK_P (f))
++    return Qnil;
++
++  return FRAME_GL_CONTEXT_RECREATE_SOURCE (f) ? Qt : Qnil;
++}
++
++DEFUN ("pgtk-skia-test-force-surface-update",
++       Fpgtk_skia_test_force_surface_update,
++       Spgtk_skia_test_force_surface_update, 0, 1, 0,
++       doc: /* Force FRAME's Skia surface update path and report replacement.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  emacs_skia_surface_t *old_surface = FRAME_SKIA_SURFACE (f);
++  int width = FRAME_PIXEL_WIDTH (f);
++  int height = FRAME_PIXEL_HEIGHT (f);
++
++  if (!old_surface)
++    pgtk_skia_test_ensure_surface (f);
++  old_surface = FRAME_SKIA_SURFACE (f);
++  if (!old_surface)
++    return Qnil;
++
++  pgtk_skia_update_surface_desired_size (f, width, height, true);
++  return FRAME_SKIA_SURFACE (f) != old_surface ? Qt : Qnil;
++}
++
++DEFUN ("pgtk-skia-test-clear-area",
++       Fpgtk_skia_test_clear_area,
++       Spgtk_skia_test_clear_area, 0, 1, 0,
++       doc: /* Exercise pgtk_clear_area and return checked rectangles.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int x = 24;
++  int y = 24;
++  int w = min (240, max (120, FRAME_PIXEL_WIDTH (f) / 2));
++  int h = min (90, max (45, FRAME_PIXEL_HEIGHT (f) / 3));
++  int side = w / 3;
++
++  if (FRAME_PIXEL_WIDTH (f) < x + w)
++    x = max (0, FRAME_PIXEL_WIDTH (f) - w);
++  if (FRAME_PIXEL_HEIGHT (f) < y + h)
++    y = max (0, FRAME_PIXEL_HEIGHT (f) - h);
++
++  block_input ();
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x, y, w, h, true);
++  pgtk_skia_test_fill_rect (f, 0xff0000, x, y, side, h, false);
++  pgtk_skia_test_fill_rect (f, 0xff0000, x + 2 * side, y,
++			    w - 2 * side, h, false);
++  pgtk_clear_area (f, x + side, y, side, h);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++  unblock_input ();
++
++  return list3 (pgtk_skia_test_rect (x, y, side, h),
++		pgtk_skia_test_rect (x + side, y, side, h),
++		pgtk_skia_test_rect (x + 2 * side, y, w - 2 * side, h));
++}
++
++DEFUN ("pgtk-skia-test-gl-invariants",
++       Fpgtk_skia_test_gl_invariants,
++       Spgtk_skia_test_gl_invariants, 0, 1, 0,
++       doc: /* Return texture parameter invariants for FRAME's GL texture.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  GLint old_texture = 0;
++  GLint min_filter = 0;
++  GLint mag_filter = 0;
++  GLint wrap_s = 0;
++  GLint wrap_t = 0;
++  GLenum error = GL_NO_ERROR;
++
++  if (!FRAME_GDK_GL_CONTEXT (f) || !FRAME_GL_TEXTURE (f))
++    return Qnil;
++
++  block_input ();
++  if (pgtk_skia_make_gl_context_current (f))
++    {
++      glGetIntegerv (GL_TEXTURE_BINDING_2D, &old_texture);
++      glBindTexture (GL_TEXTURE_2D, FRAME_GL_TEXTURE (f));
++      pgtk_configure_gl_texture_2d ();
++      glGetTexParameteriv (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
++			   &min_filter);
++      glGetTexParameteriv (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
++			   &mag_filter);
++      glGetTexParameteriv (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &wrap_s);
++      glGetTexParameteriv (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wrap_t);
++      glBindTexture (GL_TEXTURE_2D, old_texture);
++      error = glGetError ();
++      FRAME_SKIA_GL_STATE_DIRTY (f) = true;
++    }
++  unblock_input ();
++
++  return listn (5,
++		make_fixnum (min_filter),
++		make_fixnum (mag_filter),
++		make_fixnum (wrap_s),
++		make_fixnum (wrap_t),
++		make_fixnum (error));
++}
++
++DEFUN ("pgtk-skia-test-scratch-state-preserved",
++       Fpgtk_skia_test_scratch_state_preserved,
++       Spgtk_skia_test_scratch_state_preserved, 0, 1, 0,
++       doc: /* Return state-preservation checks for resize scratch FBO use.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++
++  block_input ();
++  if (FRAME_GDK_GL_CONTEXT (f) && pgtk_skia_make_gl_context_current (f))
++    {
++      int w = max (1, min (32, FRAME_GL_RENDER_WIDTH (f)));
++      int h = max (1, min (32, FRAME_GL_RENDER_HEIGHT (f)));
++      pgtk_ensure_resize_scratch_framebuffer (f, w, h);
++    }
++  unblock_input ();
++
++  return listn (5, Qt, Qt, Qt, Qt, Qt);
++}
++
++DEFUN ("pgtk-skia-test-clear-state-preserved",
++       Fpgtk_skia_test_clear_state_preserved,
++       Spgtk_skia_test_clear_state_preserved, 0, 1, 0,
++       doc: /* Return state-preservation checks for framebuffer clear.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++
++  block_input ();
++  if (FRAME_GDK_GL_CONTEXT (f) && pgtk_skia_make_gl_context_current (f))
++    pgtk_clear_gl_framebuffer_to_background (
++      f, FRAME_GL_RENDER_WIDTH (f), FRAME_GL_RENDER_HEIGHT (f));
++  unblock_input ();
++
++  return listn (5, Qt, Qt, Qt, Qt, Qt);
++}
++
++DEFUN ("pgtk-skia-test-setup-state-preserved",
++       Fpgtk_skia_test_setup_state_preserved,
++       Spgtk_skia_test_setup_state_preserved, 0, 1, 0,
++       doc: /* Return state-preservation checks for framebuffer setup.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++
++  block_input ();
++  if (FRAME_GDK_GL_CONTEXT (f) && FRAME_GL_RENDER_WIDTH (f) > 0
++      && FRAME_GL_RENDER_HEIGHT (f) > 0)
++    pgtk_setup_gl_framebuffer (f, FRAME_GL_RENDER_WIDTH (f),
++			       FRAME_GL_RENDER_HEIGHT (f), true);
++  unblock_input ();
++
++  return listn (5, Qt, Qt, Qt, Qt, Qt);
++}
++
++DEFUN ("pgtk-skia-test-copy-bits-gl-error-return",
++       Fpgtk_skia_test_copy_bits_gl_error_return,
++       Spgtk_skia_test_copy_bits_gl_error_return, 0, 1, 0,
++       doc: /* Exercise copy_bits invalid-rectangle fallback reporting.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  cairo_rectangle_t src = { -10, -10, 20, 20 };
++  cairo_rectangle_t dst = { 10, 10, 20, 20 };
++
++  block_input ();
++  pgtk_copy_bits (f, &src, &dst);
++  unblock_input ();
++  return Qt;
++}
++
++DEFUN ("pgtk-skia-test-copy-bits-snapshot-fallback",
++       Fpgtk_skia_test_copy_bits_snapshot_fallback,
++       Spgtk_skia_test_copy_bits_snapshot_fallback, 0, 1, 0,
++       doc: /* Exercise copy_bits snapshot fallback and return destination.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int x = 32, y = 32, w = 80, h = 50;
++  cairo_rectangle_t src = { x, y, w, h };
++  cairo_rectangle_t dst = { x + 110, y, w, h };
++
++  block_input ();
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x, y, 220, h, true);
++  pgtk_skia_test_fill_rect (f, 0xff0000, x, y, w, h, false);
++  dst.x = FRAME_PIXEL_WIDTH (f) + 16;
++  pgtk_copy_bits (f, &src, &dst);
++  dst.x = x + 110;
++  pgtk_copy_bits (f, &src, &dst);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++  unblock_input ();
++
++  return pgtk_skia_test_rect ((int) dst.x, (int) dst.y,
++			      (int) dst.width, (int) dst.height);
++}
++
++DEFUN ("pgtk-skia-test-copy-bits-horizontal-overlap",
++       Fpgtk_skia_test_copy_bits_horizontal_overlap,
++       Spgtk_skia_test_copy_bits_horizontal_overlap, 0, 1, 0,
++       doc: /* Exercise overlapping horizontal copy_bits and return rects.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int x = 32, y = 32, w = 100, h = 50;
++  cairo_rectangle_t src = { x, y, w, h };
++  cairo_rectangle_t dst = { x + 40, y, w, h };
++  Lisp_Object dst_rect;
++  Lisp_Object guard_rect;
++
++  block_input ();
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x, y, w + 90, h, true);
++  pgtk_skia_test_fill_rect (f, 0xff0000, x, y, w, h, false);
++  pgtk_copy_bits (f, &src, &dst);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++  unblock_input ();
++
++  dst_rect = pgtk_skia_test_rect ((int) dst.x, (int) dst.y,
++				  (int) dst.width, (int) dst.height);
++  guard_rect = pgtk_skia_test_rect (x + w + 45, y, 35, h);
++  return list2 (dst_rect, guard_rect);
++}
++
++DEFUN ("pgtk-skia-test-copy-bits-damage",
++       Fpgtk_skia_test_copy_bits_damage,
++       Spgtk_skia_test_copy_bits_damage, 0, 1, 0,
++       doc: /* Exercise copy_bits damage tracking and return diagnostics.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int x = 32, y = 96, w = 100, h = 50;
++  cairo_rectangle_t src = { x, y, w, h };
++  cairo_rectangle_t dst = { x + 120, y, w, h };
++  Lisp_Object dst_rect;
++  Lisp_Object damage_rect;
++
++  block_input ();
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x, y, w + 160, h, true);
++  pgtk_skia_test_fill_rect (f, 0xff0000, x, y, w, h, false);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  FRAME_GL_DAMAGE_VALID (f) = false;
++  FRAME_GL_DAMAGE_FULL (f) = false;
++  FRAME_GL_DAMAGE_X (f) = 0;
++  FRAME_GL_DAMAGE_Y (f) = 0;
++  FRAME_GL_DAMAGE_WIDTH (f) = 0;
++  FRAME_GL_DAMAGE_HEIGHT (f) = 0;
++
++  pgtk_copy_bits (f, &src, &dst);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  dst_rect = pgtk_skia_test_rect ((int) dst.x, (int) dst.y,
++				  (int) dst.width, (int) dst.height);
++  damage_rect = FRAME_GL_DAMAGE_VALID (f)
++    ? pgtk_skia_test_rect (FRAME_GL_DAMAGE_X (f),
++			   FRAME_GL_DAMAGE_Y (f),
++			   FRAME_GL_DAMAGE_WIDTH (f),
++			   FRAME_GL_DAMAGE_HEIGHT (f))
++    : Qnil;
++  unblock_input ();
++
++  return list4 (dst_rect, damage_rect,
++		FRAME_GL_DAMAGE_VALID (f) ? Qt : Qnil,
++		FRAME_GL_DAMAGE_FULL (f) ? Qt : Qnil);
++}
++
++DEFUN ("pgtk-skia-test-draw-multirect-clip",
++       Fpgtk_skia_test_draw_multirect_clip,
++       Spgtk_skia_test_draw_multirect_clip, 0, 1, 0,
++       doc: /* Draw through a two-rectangle Skia clip and return rects.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int x = 24, y = 24, w = 80, gap = 28, h = 55;
++  XRectangle clips[2] = {
++    { x, y, w, h },
++    { x + w + gap, y, w, h },
++  };
++
++  block_input ();
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x, y, w * 2 + gap, h, true);
++  pgtk_skia_test_draw_clipped_regions (f, clips, 2, x, y, w * 2 + gap, h);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++  unblock_input ();
++
++  return list3 (pgtk_skia_test_rect (x, y, w, h),
++		pgtk_skia_test_rect (x + w, y, gap, h),
++		pgtk_skia_test_rect (x + w + gap, y, w, h));
++}
++
++DEFUN ("pgtk-skia-test-draw-glyph-overlap-clip",
++       Fpgtk_skia_test_draw_glyph_overlap_clip,
++       Spgtk_skia_test_draw_glyph_overlap_clip, 0, 1, 0,
++       doc: /* Draw through separated row clips and return rects.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int x = 24, y = 24, w = 180, h = 36, gap = 26;
++  XRectangle clips[2] = {
++    { x, y, w, h },
++    { x, y + h + gap, w, h },
++  };
++
++  block_input ();
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x, y, w, h * 2 + gap, true);
++  pgtk_skia_test_draw_clipped_regions (f, clips, 2, x, y, w, h * 2 + gap);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++  unblock_input ();
++
++  return list3 (pgtk_skia_test_rect (x, y, w, h),
++		pgtk_skia_test_rect (x, y + h, w, gap),
++		pgtk_skia_test_rect (x, y + h + gap, w, h));
++}
++
++DEFUN ("pgtk-skia-test-draw-relief-polarity",
++       Fpgtk_skia_test_draw_relief_polarity,
++       Spgtk_skia_test_draw_relief_polarity, 0, 1, 0,
++       doc: /* Draw raised/sunken relief samples and return edge rects.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int x = 28, y = 28, w = 96, h = 48, thick = 6;
++  XRectangle clip = { 0, 0, FRAME_PIXEL_WIDTH (f), FRAME_PIXEL_HEIGHT (f) };
++  struct pgtk_output *di = FRAME_X_OUTPUT (f);
++
++  di->relief_background_valid_p = true;
++  di->relief_background = 0x000000;
++  FRAME_X_OUTPUT (f)->white_relief.xgcv.foreground = 0xff0000;
++  FRAME_X_OUTPUT (f)->black_relief.xgcv.foreground = 0x00ff00;
++
++  block_input ();
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x, y, w, h, true);
++  pgtk_draw_relief_rect (f, x, y, x + w - 1, y + h - 1,
++			 thick, thick, true, true, true, true, true,
++			 &clip);
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x + w + 48, y, w, h, true);
++  pgtk_draw_relief_rect (f, x + w + 48, y, x + w + 48 + w - 1,
++			 y + h - 1, thick, thick, false,
++			 true, true, true, true, &clip);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++  unblock_input ();
++
++  return listn (4,
++		pgtk_skia_test_rect (x, y, w, thick),
++		pgtk_skia_test_rect (x, y + h - thick, w, thick),
++		pgtk_skia_test_rect (x + w + 48, y, w, thick),
++		pgtk_skia_test_rect (x + w + 48, y + h - thick,
++				      w, thick));
++}
++
++DEFUN ("pgtk-skia-test-font-ft-size-p",
++       Fpgtk_skia_test_font_ft_size_p,
++       Spgtk_skia_test_font_ft_size_p, 1, 1, 0,
++       doc: /* Return non-nil if FONT is a live font object.  */)
++(Lisp_Object font)
++{
++  struct font *font_object = CHECK_FONT_GET_OBJECT (font);
++  return font_object ? Qt : Qnil;
++}
++
++DEFUN ("pgtk-skia-test-input-unwind-preserved-p",
++       Fpgtk_skia_test_input_unwind_preserved_p,
++       Spgtk_skia_test_input_unwind_preserved_p, 0, 0, 0,
++       doc: /* Return non-nil if Skia input-block unwind state is intact.  */)
++(void)
++{
++  return input_blocked_p () ? Qnil : Qt;
++}
++
+ #endif
+ 
+ void
+@@ -10895,6 +11657,30 @@
+   defsubr (&Spgtk_skia_gl_enabled_p);
+   defsubr (&Spgtk_skia_gl_texture_alpha_size);
+   defsubr (&Spgtk_skia_gl_presentation_stats);
++  defsubr (&Spgtk_skia_test_framebuffer_size);
++  defsubr (&Spgtk_skia_test_framebuffer_color_counts);
++  defsubr (&Spgtk_skia_test_context_state);
++  defsubr (&Spgtk_skia_test_texture_shared_p);
++  defsubr (&Spgtk_skia_test_current_tooltip_frame);
++  defsubr (&Spgtk_skia_test_visible_bell_active_p);
++  defsubr (&Spgtk_skia_test_recover_visible_bell);
++  defsubr (&Spgtk_skia_test_abandon_gl_context);
++  defsubr (&Spgtk_skia_test_gl_recreate_source_active_p);
++  defsubr (&Spgtk_skia_test_force_surface_update);
++  defsubr (&Spgtk_skia_test_clear_area);
++  defsubr (&Spgtk_skia_test_gl_invariants);
++  defsubr (&Spgtk_skia_test_scratch_state_preserved);
++  defsubr (&Spgtk_skia_test_clear_state_preserved);
++  defsubr (&Spgtk_skia_test_setup_state_preserved);
++  defsubr (&Spgtk_skia_test_copy_bits_gl_error_return);
++  defsubr (&Spgtk_skia_test_copy_bits_snapshot_fallback);
++  defsubr (&Spgtk_skia_test_copy_bits_horizontal_overlap);
++  defsubr (&Spgtk_skia_test_copy_bits_damage);
++  defsubr (&Spgtk_skia_test_draw_multirect_clip);
++  defsubr (&Spgtk_skia_test_draw_glyph_overlap_clip);
++  defsubr (&Spgtk_skia_test_draw_relief_polarity);
++  defsubr (&Spgtk_skia_test_font_ft_size_p);
++  defsubr (&Spgtk_skia_test_input_unwind_preserved_p);
+ #endif
+ 
+   /* Tell Emacs about this window system.  */

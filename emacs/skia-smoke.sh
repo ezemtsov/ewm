@@ -516,6 +516,39 @@ cat >"$payload" <<'EOF'
        phase rects guard-stats)))
   (ewm-skia-smoke-redraw))
 
+(defun ewm-skia-smoke-rect-contains-p (outer inner &optional slack)
+  (let ((slack (or slack 0)))
+    (and (consp outer)
+         (consp inner)
+         (<= (nth 0 outer) (+ (nth 0 inner) slack))
+         (<= (nth 1 outer) (+ (nth 1 inner) slack))
+         (>= (+ (nth 0 outer) (nth 2 outer))
+             (- (+ (nth 0 inner) (nth 2 inner)) slack))
+         (>= (+ (nth 1 outer) (nth 3 outer))
+             (- (+ (nth 1 inner) (nth 3 inner)) slack)))))
+
+(defun ewm-skia-smoke-check-copy-bits-damage (phase)
+  (unless (fboundp 'pgtk-skia-test-copy-bits-damage)
+    (ewm-skia-smoke-fail "missing Skia copy-bits damage test hook"))
+  (let* ((result (pgtk-skia-test-copy-bits-damage))
+         (dst (and (consp result) (nth 0 result)))
+         (damage (and (consp result) (nth 1 result)))
+         (valid (and (consp result) (nth 2 result)))
+         (full (and (consp result) (nth 3 result)))
+         (dst-stats (and (consp dst)
+                         (pgtk-skia-test-framebuffer-color-counts nil dst))))
+    (unless (and (consp dst-stats) (> (nth 2 dst-stats) 1000))
+      (ewm-skia-smoke-fail
+       "copy_bits damage setup did not copy red pixels after %s: result=%S stats=%S"
+       phase result dst-stats))
+    (unless (and valid
+                 (or full
+                     (ewm-skia-smoke-rect-contains-p damage dst 1)))
+      (ewm-skia-smoke-fail
+       "copy_bits did not mark destination damage after %s: result=%S stats=%S"
+       phase result dst-stats)))
+  (ewm-skia-smoke-redraw))
+
 (defun ewm-skia-smoke-check-clear-state (phase)
   (unless (fboundp 'pgtk-skia-test-clear-state-preserved)
     (ewm-skia-smoke-fail "missing Skia clear-state test hook"))
@@ -627,6 +660,16 @@ cat >"$payload" <<'EOF'
   (ewm-skia-smoke-check-copy-bits-fallback phase)
   (ewm-skia-smoke-check-horizontal-copy-bits phase)
   (ewm-skia-smoke-check-png-export phase))
+
+(defun ewm-skia-smoke-wait-visible-bell-release (&optional frame)
+  (let ((released nil))
+    (catch 'done
+      (dotimes (_ 150)
+        (unless (pgtk-skia-test-visible-bell-active-p frame)
+          (setq released t)
+          (throw 'done t))
+        (sit-for 0.02)))
+    released))
 
 (defun ewm-skia-smoke-check-tooltip-frame (phase)
   (let ((main-frame (selected-frame))
@@ -2283,7 +2326,8 @@ static char *image[] = {
 (ewm-skia-smoke-run-group "copy"
   (ewm-skia-smoke-check-copy-bits-gl-error "initial draw")
   (ewm-skia-smoke-check-copy-bits-fallback "initial draw")
-  (ewm-skia-smoke-check-horizontal-copy-bits "initial draw"))
+  (ewm-skia-smoke-check-horizontal-copy-bits "initial draw")
+  (ewm-skia-smoke-check-copy-bits-damage "initial draw"))
 
 (ewm-skia-smoke-run-group "export"
   (ewm-skia-smoke-check-png-export "initial draw")
@@ -2382,6 +2426,9 @@ static char *image[] = {
   (redisplay 'force)
   (sit-for 0.05))
 
+(ewm-skia-smoke-run-group "frames"
+  (ewm-skia-smoke-check-export-input-unwind "frame lifecycle"))
+
 (unless (fboundp 'pgtk-skia-test-visible-bell-active-p)
   (ewm-skia-smoke-fail "missing Skia visible-bell test hook"))
 (unless (fboundp 'pgtk-skia-test-recover-visible-bell)
@@ -2403,10 +2450,7 @@ static char *image[] = {
     (ding)
     (unless (pgtk-skia-test-visible-bell-active-p)
       (ewm-skia-smoke-fail "visible bell timer test created no snapshot"))
-    (dotimes (_ 50)
-      (when (pgtk-skia-test-visible-bell-active-p)
-        (sit-for 0.02)))
-    (when (pgtk-skia-test-visible-bell-active-p)
+    (unless (ewm-skia-smoke-wait-visible-bell-release)
       (ewm-skia-smoke-fail "visible bell timer did not release snapshot"))
     (ewm-skia-smoke-check-framebuffer "visible bell timer restore"))
 
