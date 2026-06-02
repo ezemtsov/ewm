@@ -33,6 +33,8 @@
 (ewm-test--stub ewm-keyboard-capture-end-module (_token) t)
 (ewm-test--stub ewm-keyboard-redirect-capture-clear-module () nil)
 (ewm-test--stub ewm-layout--menu-active-p () nil)
+(ewm-test--stub ewm-get-focused-id () 2)
+(ewm-test--stub ewm-get-focused-frame-id () 2)
 (provide 'ewm-core)
 
 (add-to-list 'load-path
@@ -42,6 +44,9 @@
 
 (defvar ewm--module-mode)
 (defvar ewm-input--keyboard-capture-token)
+(defvar ewm-input--intercepted-command-active)
+(defvar ewm-input-tests--focused-id 2)
+(defvar ewm-input-tests--focused-frame-id 2)
 
 (defmacro ewm-input-tests--with-capture-state (state &rest body)
   "Run BODY with capture module calls recorded in `calls'."
@@ -49,6 +54,7 @@
   (cl-destructuring-bind (token command &optional menu-active) state
     `(let ((ewm--module-mode t)
            (ewm-input--keyboard-capture-token ,token)
+           (ewm-input--intercepted-command-active nil)
            (this-command ,command)
            (prefix-arg nil)
            calls)
@@ -59,7 +65,11 @@
                  ((symbol-function 'ewm-keyboard-redirect-capture-clear-module)
                   (lambda () (push :clear-redirect calls) t))
                  ((symbol-function 'ewm-layout--menu-active-p)
-                  (lambda () ,menu-active)))
+                  (lambda () ,menu-active))
+                 ((symbol-function 'ewm-get-focused-id)
+                  (lambda () ewm-input-tests--focused-id))
+                 ((symbol-function 'ewm-get-focused-frame-id)
+                  (lambda () ewm-input-tests--focused-frame-id)))
          ,@body))))
 
 (defmacro ewm-input-tests--should-not-refresh-layout (&rest body)
@@ -261,14 +271,66 @@
 (ert-deftest ewm-input-tests/keyboard-capture-sync-begins-prefix-token ()
   "A keymap prefix command begins compositor keyboard capture."
   (ewm-input-tests--with-capture-state (nil nil)
-    (ewm-input--sync-keyboard-capture)
+    (cl-letf (((symbol-function 'this-command-keys-vector)
+               (lambda () (kbd "C-x"))))
+      (ewm-input--sync-keyboard-capture))
     (should (equal calls '((:begin "command-loop"))))
     (should (equal ewm-input--keyboard-capture-token 42))))
+
+(ert-deftest ewm-input-tests/keyboard-capture-sync-ends-non-prefix-null-command ()
+  "A completed non-prefix read must not keep command-loop capture alive."
+  (ewm-input-tests--with-capture-state (42 nil)
+    (cl-letf (((symbol-function 'this-command-keys-vector)
+               (lambda () [?g])))
+      (ewm-input--sync-keyboard-capture))
+    (should (equal calls '(:clear-redirect (:end 42))))
+    (should-not ewm-input--keyboard-capture-token)))
 
 (ert-deftest ewm-input-tests/keyboard-capture-sync-begins-modal-token ()
   "Shared modal state begins compositor keyboard capture."
   (ewm-input-tests--with-capture-state (nil 'ignore t)
     (ewm-input--sync-keyboard-capture)
+    (should (equal calls '((:begin "command-loop"))))
+    (should (equal ewm-input--keyboard-capture-token 42))))
+
+(ert-deftest ewm-input-tests/keyboard-capture-sync-denies-background-modal ()
+  "App-focused background modal input must not borrow keyboard focus."
+  (ewm-input-tests--with-capture-state (nil 'ignore t)
+    (let ((ewm-input-tests--focused-id 3)
+          (ewm-input-tests--focused-frame-id 2))
+      (ewm-input--sync-keyboard-capture))
+    (should (equal calls '(:clear-redirect)))
+    (should-not ewm-input--keyboard-capture-token)))
+
+(ert-deftest ewm-input-tests/keyboard-capture-on-denies-background-read ()
+  "read-key advice must not capture app focus without command provenance."
+  (ewm-input-tests--with-capture-state (nil nil)
+    (let ((ewm-input-tests--focused-id 3)
+          (ewm-input-tests--focused-frame-id 2))
+      (cl-letf (((symbol-function 'this-command-keys-vector)
+                 (lambda () [])))
+        (ewm-input--keyboard-capture-on)))
+    (should-not calls)
+    (should-not ewm-input--keyboard-capture-token)))
+
+(ert-deftest ewm-input-tests/keyboard-capture-on-allows-command-key ()
+  "Keyboard-dispatched commands like app-focused M-x may capture immediately."
+  (ewm-input-tests--with-capture-state (nil 'execute-extended-command)
+    (let ((ewm-input-tests--focused-id 3)
+          (ewm-input-tests--focused-frame-id 2))
+      (cl-letf (((symbol-function 'this-command-keys-vector)
+                 (lambda () (kbd "M-x"))))
+        (ewm-input--keyboard-capture-on)))
+    (should (equal calls '((:begin "command-loop"))))
+    (should (equal ewm-input--keyboard-capture-token 42))))
+
+(ert-deftest ewm-input-tests/keyboard-capture-on-allows-intercepted-command ()
+  "An EWM command launched from an app may capture for minibuffer input."
+  (ewm-input-tests--with-capture-state (nil nil)
+    (let ((ewm-input-tests--focused-id 3)
+          (ewm-input-tests--focused-frame-id 2)
+          (ewm-input--intercepted-command-active t))
+      (ewm-input--keyboard-capture-on))
     (should (equal calls '((:begin "command-loop"))))
     (should (equal ewm-input--keyboard-capture-token 42))))
 

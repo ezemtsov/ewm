@@ -81,6 +81,8 @@ Override individual bindings with `use-package':
 (declare-function ewm-keyboard-capture-begin-module "ewm-core" (reason))
 (declare-function ewm-keyboard-capture-end-module "ewm-core" (token))
 (declare-function ewm-keyboard-redirect-capture-clear-module "ewm-core")
+(declare-function ewm-get-focused-id "ewm-core")
+(declare-function ewm-get-focused-frame-id "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-layout--menu-active-p "ewm-layout")
 (declare-function ewm-warp-pointer "ewm")
@@ -292,16 +294,51 @@ warps from packages that temporarily switch windows internally
 ;; command.  Lisp then decides whether the Emacs command loop needs subsequent
 ;; Wayland key events: keymap prefixes, minibuffers, transient maps, universal
 ;; arguments, and explicit read-key/read-event calls capture keyboard focus;
-;; ordinary commands do not.
+;; ordinary commands do not.  Background timers may prompt, but must not start
+;; capture while a client surface has focus.
 
 (defvar ewm-input--keyboard-capture-token nil
   "Current compositor keyboard-capture lease token, or nil.")
+
+(defvar ewm-input--intercepted-command-active nil
+  "Non-nil while running an intercepted command from the compositor.")
+
+(defun ewm-input--prefix-key-active-p ()
+  "Return non-nil when the current command keys are an incomplete prefix."
+  (and (null this-command)
+       (let* ((keys (this-command-keys-vector))
+              (binding (and (> (length keys) 0)
+                            (key-binding keys t))))
+         (keymapp binding))))
 
 (defun ewm-input--modal-input-active-p ()
   "Return non-nil when Emacs is waiting for command-loop keyboard input."
   (or (ewm-layout--menu-active-p)
       prefix-arg
-      (null this-command)))
+      (ewm-input--prefix-key-active-p)))
+
+(defun ewm-input--emacs-frame-focused-p ()
+  "Return non-nil when compositor focus is on the active Emacs frame."
+  (let ((focused-id (ewm-get-focused-id))
+        (frame-id (ewm-get-focused-frame-id)))
+    (and (numberp focused-id)
+         (numberp frame-id)
+         (> frame-id 0)
+         (= focused-id frame-id))))
+
+(defun ewm-input--command-key-active-p ()
+  "Return non-nil when modal input follows a real command key."
+  (and this-command
+       (not (memq this-command '(ignore undefined)))
+       (> (length (this-command-keys-vector)) 0)))
+
+(defun ewm-input--keyboard-capture-start-allowed-p ()
+  "Return non-nil when a new compositor keyboard-capture lease may start."
+  (or ewm-input--intercepted-command-active
+      (not (bound-and-true-p ewm--module-mode))
+      (ewm-input--emacs-frame-focused-p)
+      (ewm-input--command-key-active-p)
+      (ewm-input--prefix-key-active-p)))
 
 (defun ewm-input--set-keyboard-capture (enabled &optional clear-redirect)
   "Synchronize Lisp command-loop capture.
@@ -324,12 +361,17 @@ redirect capture."
 
 (defun ewm-input--sync-keyboard-capture ()
   "Synchronize compositor keyboard capture with current Emacs input state."
-  (let ((capture-active (ewm-input--modal-input-active-p)))
+  (let ((capture-active
+         (and (ewm-input--modal-input-active-p)
+              (or ewm-input--keyboard-capture-token
+                  (ewm-input--keyboard-capture-start-allowed-p)))))
     (ewm-input--set-keyboard-capture capture-active (not capture-active))))
 
 (defun ewm-input--keyboard-capture-on ()
-  "Enable compositor keyboard capture."
-  (ewm-input--set-keyboard-capture t))
+  "Enable compositor keyboard capture for foreground Emacs input."
+  (when (or ewm-input--keyboard-capture-token
+            (ewm-input--keyboard-capture-start-allowed-p))
+    (ewm-input--set-keyboard-capture t)))
 
 (defun ewm-input--with-keyboard-capture (orig-fun &rest args)
   "Run ORIG-FUN while Emacs owns compositor keyboard focus."
@@ -497,7 +539,8 @@ get an :emulate flag for modifier translation on non-Emacs surfaces."
               ((commandp binding)))
     (let ((last-command-event (aref macro (1- (length macro))))
           (last-input-event (aref macro (1- (length macro))))
-          (this-command binding))
+          (this-command binding)
+          (ewm-input--intercepted-command-active t))
       (unwind-protect
           (call-interactively binding nil macro)
         (ewm-input--sync-keyboard-capture)))))
