@@ -233,6 +233,50 @@ fn output_layout_command_refreshes_pointer_focus() {
 }
 
 #[test]
+fn frame_focus_switch_refreshes_stationary_pointer_after_transition() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+
+    let mut client = fixture.new_client().expect("Failed to create client");
+    fixture.roundtrip(&mut client);
+    let first = fixture.open_toplevel(
+        &mut client,
+        "pointer-frame-refresh-first",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+    let first_surface_id = fixture
+        .find_surface_id(&client, &first.surface)
+        .expect("server did not assign first surface id");
+    let second = fixture.open_toplevel(
+        &mut client,
+        "pointer-frame-refresh-second",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+    let second_surface_id = fixture
+        .find_surface_id(&client, &second.surface)
+        .expect("server did not assign second surface id");
+
+    fixture.apply_output_layout_command(
+        "Virtual-1",
+        vec![
+            frame_with_entry(100, nz(1), first_surface_id),
+            frame_with_entry(200, nz(2), second_surface_id),
+        ],
+    );
+    fixture.warp_pointer(10.0, 10.0);
+    assert_eq!(pointer_focus_surface_id(&fixture), Some(first_surface_id));
+
+    fixture.ewm().animations_clock.set_complete_instantly(true);
+    fixture.ewm().set_focus_frame(200, "test", false);
+    assert_eq!(pointer_focus_surface_id(&fixture), Some(first_surface_id));
+
+    fixture.dispatch();
+
+    assert_eq!(fixture.ewm_ref().focused_surface_id(), second_surface_id);
+    assert_eq!(pointer_focus_surface_id(&fixture), Some(second_surface_id));
+}
+
+#[test]
 fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);

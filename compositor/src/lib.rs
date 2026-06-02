@@ -6746,13 +6746,29 @@ impl State {
     }
 
     fn refresh_pointer_after_layout(&mut self) {
+        self.refresh_pointer_after_scene_change(false);
+    }
+
+    fn refresh_pointer_after_scene_change(&mut self, skip_strip_animation: bool) -> bool {
         let (x, y) = self.ewm.pointer_location();
         let pos: Point<f64, Logical> = (x, y).into();
 
-        self.ewm.pointer_view_id = self.ewm.view_id_under(pos);
+        if skip_strip_animation && !self.ewm.is_locked() && self.ewm.is_strip_animating_at(pos) {
+            return false;
+        }
+
+        let next_view_id = self.ewm.view_id_under(pos);
         let under = self.ewm.pointer_target_at(pos);
+        if self.ewm.pointer_view_id == next_view_id && self.ewm.pointer_focus == under {
+            return false;
+        }
+
+        self.ewm.pointer_view_id = next_view_id;
         self.ewm.pointer_focus = under.clone();
         self.send_pointer_motion(pos, under);
+        self.maybe_activate_pointer_constraint();
+        self.ewm.queue_redraw_for_pointer();
+        true
     }
 
     fn send_pointer_motion(&mut self, pos: Point<f64, Logical>, under: Option<SurfaceHit>) {
@@ -6994,6 +7010,8 @@ impl State {
             self.backend.early_import(&surface);
         }
 
+        self.refresh_pointer_after_scene_change(true);
+
         // Render queued outputs, focused first. Between outputs, check for
         // commands that arrived during render. Process them and defer remaining redraws.
         let focused = self.ewm.get_focused_output();
@@ -7007,6 +7025,7 @@ impl State {
             }
 
             self.ewm.redraw(&mut self.backend, &output);
+            self.refresh_pointer_after_scene_change(true);
             if is_focused {
                 rendered_focused = true;
             }
