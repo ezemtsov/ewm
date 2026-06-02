@@ -516,6 +516,19 @@ cat >"$payload" <<'EOF'
        phase rects guard-stats)))
   (ewm-skia-smoke-redraw))
 
+(defun ewm-skia-smoke-check-copy-bits-scissor-isolation (phase)
+  (unless (fboundp 'pgtk-skia-test-copy-bits-scissor-isolation)
+    (ewm-skia-smoke-fail
+     "missing Skia copy-bits scissor-isolation test hook"))
+  (let* ((rect (pgtk-skia-test-copy-bits-scissor-isolation))
+         (stats (and (consp rect)
+                     (pgtk-skia-test-framebuffer-color-counts nil rect))))
+    (unless (and (consp stats) (> (nth 2 stats) 1000))
+      (ewm-skia-smoke-fail
+       "copy_bits inherited stale GL scissor after %s: rect=%S stats=%S"
+       phase rect stats)))
+  (ewm-skia-smoke-redraw))
+
 (defun ewm-skia-smoke-rect-contains-p (outer inner &optional slack)
   (let ((slack (or slack 0)))
     (and (consp outer)
@@ -859,6 +872,23 @@ static char *image[] = {
       (insert (propertize (make-string 72 ?M)
                           'face (if (equal line red-line)
                                     red-face
+                                  green-face))
+              "\n"))))
+
+(defun ewm-skia-smoke-fill-underwave-scroll-buffer ()
+  (let ((red-underwave-face '(:foreground "#ff0000"
+                              :background "#00ff00"
+                              :underline (:color "#ff0000" :style wave)))
+        (green-face '(:foreground "#00ff00" :background "#00ff00")))
+    (setq-local cursor-type nil)
+    (setq-local mode-line-format nil)
+    (setq-local truncate-lines t)
+    (setq-local bidi-display-reordering nil)
+    (erase-buffer)
+    (dotimes (line 40)
+      (insert (propertize (make-string 72 ?M)
+                          'face (if (= line 1)
+                                    red-underwave-face
                                   green-face))
               "\n"))))
 
@@ -1640,6 +1670,53 @@ static char *image[] = {
       (set-frame-size nil 96 32)
       (ewm-skia-smoke-redraw))))
 
+(defun ewm-skia-smoke-check-underwave-scroll-copy (phase)
+  (let* ((source-buffer (current-buffer))
+         (source-window (selected-window))
+         (buffer (get-buffer-create "*ewm-skia-underwave-scroll-smoke*"))
+         top-before second-before top-after)
+    (unwind-protect
+        (progn
+          (set-frame-size nil 44 8)
+          (delete-other-windows)
+          (with-current-buffer buffer
+            (ewm-skia-smoke-fill-underwave-scroll-buffer))
+          (switch-to-buffer buffer)
+          (goto-char (point-min))
+          (ewm-skia-smoke-redraw)
+          (setq top-before
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (setq second-before
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 1 520)))
+          (unless (and (consp top-before)
+                       (< (nth 2 top-before) 50)
+                       (> (nth 3 top-before) 1000)
+                       (consp second-before)
+                       (> (nth 2 second-before) 1000))
+            (ewm-skia-smoke-fail
+             "underwave scroll setup wrong colors after %s: top=%S second=%S"
+             phase top-before second-before))
+          (scroll-up-command 1)
+          (ewm-skia-smoke-pump)
+          (setq top-after
+                (pgtk-skia-test-framebuffer-color-counts
+                 nil (ewm-skia-smoke-window-line-rect 0 520)))
+          (unless (and (consp top-after)
+                       (>= (* (nth 2 top-after) 100)
+                           (* (nth 2 second-before) 80)))
+            (ewm-skia-smoke-fail
+             "underwave scroll copy lost red source pixels after %s: before=%S after=%S"
+             phase second-before top-after)))
+      (delete-other-windows)
+      (when (buffer-live-p source-buffer)
+        (switch-to-buffer source-buffer))
+      (when (window-live-p source-window)
+        (select-window source-window))
+      (set-frame-size nil 96 32)
+      (ewm-skia-smoke-redraw))))
+
 (defun ewm-skia-smoke-check-partial-window-scroll-copy (phase)
   (let* ((source-buffer (current-buffer))
          (source-window (selected-window))
@@ -2327,6 +2404,7 @@ static char *image[] = {
   (ewm-skia-smoke-check-copy-bits-gl-error "initial draw")
   (ewm-skia-smoke-check-copy-bits-fallback "initial draw")
   (ewm-skia-smoke-check-horizontal-copy-bits "initial draw")
+  (ewm-skia-smoke-check-copy-bits-scissor-isolation "initial draw")
   (ewm-skia-smoke-check-copy-bits-damage "initial draw"))
 
 (ewm-skia-smoke-run-group "export"
@@ -2362,6 +2440,7 @@ static char *image[] = {
 
 (ewm-skia-smoke-run-group "copy"
   (ewm-skia-smoke-check-overlap-scroll-copy "initial draw")
+  (ewm-skia-smoke-check-underwave-scroll-copy "initial draw")
   (ewm-skia-smoke-check-partial-window-scroll-copy "initial draw")
   (ewm-skia-smoke-check-large-scroll-copy "initial draw"))
 

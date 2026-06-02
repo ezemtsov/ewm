@@ -1,6 +1,6 @@
 --- a/src/pgtkterm.c
 +++ b/src/pgtkterm.c
-@@ -10801,6 +10801,768 @@
+@@ -10801,6 +10801,803 @@
    return stats;
  }
  
@@ -615,6 +615,41 @@
 +  return list2 (dst_rect, guard_rect);
 +}
 +
++DEFUN ("pgtk-skia-test-copy-bits-scissor-isolation",
++       Fpgtk_skia_test_copy_bits_scissor_isolation,
++       Spgtk_skia_test_copy_bits_scissor_isolation, 0, 1, 0,
++       doc: /* Exercise copy_bits while GL scissor is enabled.  */)
++(Lisp_Object frame)
++{
++  struct frame *f = decode_window_system_frame (frame);
++  int x = 32, y = 32, w = 100, h = 50;
++  cairo_rectangle_t src = { x, y, w, h };
++  cairo_rectangle_t dst = { x + 130, y, w, h };
++  struct pgtk_gl_clear_state saved_clear;
++
++  block_input ();
++  pgtk_skia_test_fill_rect (f, 0x00ff00, x, y, w + 170, h, true);
++  pgtk_skia_test_fill_rect (f, 0xff0000, x, y, w, h, false);
++  if (FRAME_SKIA_SURFACE (f))
++    emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++
++  if (FRAME_GDK_GL_CONTEXT (f) && pgtk_skia_make_gl_context_current (f))
++    {
++      int scale = pgtk_gl_scale (f);
++      pgtk_save_gl_clear_state (&saved_clear);
++      glEnable (GL_SCISSOR_TEST);
++      glScissor (0, 0, max (1, scale), max (1, scale));
++      pgtk_copy_bits (f, &src, &dst);
++      pgtk_restore_gl_clear_state (&saved_clear);
++      if (FRAME_SKIA_SURFACE (f))
++	emacs_skia_surface_flush (FRAME_SKIA_SURFACE (f));
++    }
++  unblock_input ();
++
++  return pgtk_skia_test_rect ((int) dst.x, (int) dst.y,
++			      (int) dst.width, (int) dst.height);
++}
++
 +DEFUN ("pgtk-skia-test-copy-bits-damage",
 +       Fpgtk_skia_test_copy_bits_damage,
 +       Spgtk_skia_test_copy_bits_damage, 0, 1, 0,
@@ -769,7 +804,7 @@
  #endif
  
  void
-@@ -10895,6 +11657,30 @@
+@@ -10895,6 +11692,31 @@
    defsubr (&Spgtk_skia_gl_enabled_p);
    defsubr (&Spgtk_skia_gl_texture_alpha_size);
    defsubr (&Spgtk_skia_gl_presentation_stats);
@@ -791,6 +826,7 @@
 +  defsubr (&Spgtk_skia_test_copy_bits_gl_error_return);
 +  defsubr (&Spgtk_skia_test_copy_bits_snapshot_fallback);
 +  defsubr (&Spgtk_skia_test_copy_bits_horizontal_overlap);
++  defsubr (&Spgtk_skia_test_copy_bits_scissor_isolation);
 +  defsubr (&Spgtk_skia_test_copy_bits_damage);
 +  defsubr (&Spgtk_skia_test_draw_multirect_clip);
 +  defsubr (&Spgtk_skia_test_draw_glyph_overlap_clip);
