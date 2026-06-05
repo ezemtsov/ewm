@@ -2130,9 +2130,11 @@ impl Ewm {
             && pos.y < (rect.loc.y + rect.size.h) as f64
     }
 
-    /// Find the topmost surface-backed layout entry containing `pos`, returning
-    /// the entry and its global rectangle.
-    fn layout_entry_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryHit<'_>> {
+    fn layout_entry_under_matching(
+        &self,
+        pos: Point<f64, Logical>,
+        mut predicate: impl FnMut(&LayoutEntry) -> bool,
+    ) -> Option<LayoutEntryHit<'_>> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
@@ -2140,7 +2142,10 @@ impl Ewm {
         let active_idx = strip.active_idx();
 
         // Fullscreen primary clicks miss in the letterbox; inactive fullscreens render off-screen.
-        for (frame_idx, entry) in strip.surface_entries_with_frame() {
+        for (frame_idx, entry) in strip.entries_with_frame() {
+            if !predicate(entry) {
+                continue;
+            }
             let in_active = frame_idx == active_idx;
             if entry.fullscreen() && !in_active {
                 continue;
@@ -2156,6 +2161,17 @@ impl Ewm {
             }
         }
         None
+    }
+
+    /// Find the topmost layout entry containing `pos`, returning the entry
+    /// and its global rectangle.
+    fn layout_entry_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryHit<'_>> {
+        self.layout_entry_under_matching(pos, |_| true)
+    }
+
+    /// Find the topmost surface-backed layout entry containing `pos`.
+    fn surface_layout_entry_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryHit<'_>> {
+        self.layout_entry_under_matching(pos, |entry| entry.surface_id().is_some())
     }
 
     fn pointer_scale_for_entry(
@@ -2191,7 +2207,7 @@ impl Ewm {
     /// identical to rendering.
     pub fn layout_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         if let Some(surface) = self
-            .layout_entry_under(pos)
+            .surface_layout_entry_under(pos)
             .and_then(|hit| self.surface_under_layout_entry(pos, hit))
         {
             return Some(surface);

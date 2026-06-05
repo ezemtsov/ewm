@@ -61,6 +61,11 @@
 //!       strip has more than one entry with `fullscreen=true`; the
 //!       compositor normalizes multi-fullscreen frames down. Different
 //!       frames in the same strip can each be fullscreen independently.
+//!
+//! F1  - FFM sees plain entries. A pointer move inside an Emacs frame whose
+//!       layout entries have no attached Wayland surfaces still resolves the
+//!       entry view id and focuses that entry, while keyboard routing remains
+//!       on the frame surface.
 
 use std::collections::{HashMap, HashSet};
 
@@ -136,6 +141,10 @@ enum Op {
         n_views: usize,
         fullscreen_mask: u32,
     },
+    ApplyPlainLayout {
+        output: usize,
+        n_entries: usize,
+    },
     WarpPointer {
         x: i32,
         y: i32,
@@ -156,6 +165,9 @@ enum Op {
     SetClientFullscreen {
         on: bool,
     },
+    SetFocusFollowsMouse {
+        on: bool,
+    },
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -169,11 +181,14 @@ fn op_strategy() -> impl Strategy<Value = Op> {
                 fullscreen_mask,
             },
         ),
+        ((0..OUTPUTS.len()), 1usize..=4)
+            .prop_map(|(output, n_entries)| { Op::ApplyPlainLayout { output, n_entries } }),
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::WarpPointer { x, y }),
         any::<bool>().prop_map(|pressed| Op::PointerButton { pressed }),
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreatePopup { ax, ay }),
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreateFramePopup { ax, ay }),
         any::<bool>().prop_map(|on| Op::SetClientFullscreen { on }),
+        any::<bool>().prop_map(|on| Op::SetFocusFollowsMouse { on }),
     ]
 }
 
@@ -193,6 +208,8 @@ struct Harness {
     /// Output names the client believes the toplevel is on, accumulated from
     /// `wl_surface.enter` / `leave` events.
     toplevel_on_outputs: HashSet<String>,
+    pointer_view_id_before_warp: Option<ViewId>,
+    pointer_surface_id_before_warp: Option<u64>,
 }
 
 impl Harness {
@@ -224,6 +241,8 @@ impl Harness {
             frame_popups: Vec::new(),
             last_configure: None,
             toplevel_on_outputs: HashSet::new(),
+            pointer_view_id_before_warp: None,
+            pointer_surface_id_before_warp: None,
         };
         // Drain setup events into the harness so the first op starts clean.
         let setup_events = h.client.drain_events();
@@ -349,6 +368,9 @@ fn apply_op(h: &mut Harness, op: &Op) {
                 .collect();
             h.fix.ewm().apply_output_layout(name, frames);
         }
+        Op::ApplyPlainLayout { output, n_entries } => {
+            apply_plain_entry_layout(h, output, n_entries);
+        }
         Op::SetClientFullscreen { on } => {
             if on {
                 h.toplevel.xdg_toplevel.set_fullscreen(None);
@@ -356,8 +378,21 @@ fn apply_op(h: &mut Harness, op: &Op) {
                 h.toplevel.xdg_toplevel.unset_fullscreen();
             }
         }
+        Op::SetFocusFollowsMouse { on } => {
+            h.fix.ewm().focus_follows_mouse_mode = on;
+        }
         Op::WarpPointer { x, y } => {
-            h.fix.warp_pointer(x as f64, y as f64);
+            let (view_id, surface_id) = {
+                let ewm = h.fix.ewm_ref();
+                let surface_id = ewm
+                    .pointer_focus
+                    .as_ref()
+                    .and_then(|(surface, _)| ewm.surface_id(surface));
+                (ewm.pointer_view_id, surface_id)
+            };
+            h.pointer_view_id_before_warp = view_id;
+            h.pointer_surface_id_before_warp = surface_id;
+            h.fix.pointer_motion_to(x as f64, y as f64);
         }
         Op::PointerButton { pressed } => {
             h.fix.pointer_button(BTN_LEFT, pressed);
@@ -426,6 +461,49 @@ fn apply_multi_entry_layout(
             move_anim: None,
         }],
     );
+}
+
+fn plain_entry_view_id(i: usize) -> ViewId {
+    nz(30_000 + i as u64)
+}
+
+fn plain_entry_left(n_entries: usize, i: usize) -> i32 {
+    (i as i32 * VIEW_W) / n_entries as i32
+}
+
+fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
+    let name = OUTPUTS[output].0;
+    if !h.fix.has_output(name) {
+        return;
+    }
+    let entries = (0..n_entries)
+        .map(|i| {
+            let x = plain_entry_left(n_entries, i);
+            let next_x = plain_entry_left(n_entries, i + 1);
+            let view_id = plain_entry_view_id(i);
+            LayoutEntry::emacs_window(view_id, x, 0, (next_x - x) as u32, VIEW_H as u32)
+        })
+        .collect::<Vec<_>>();
+    h.fix.ewm().apply_output_layout(
+        name,
+        vec![Frame {
+            name: String::new(),
+            surface_id: h.frame_sid,
+            view_id: nz(40_000),
+            width: VIEW_W as f64,
+            entries,
+            selected_view_id: None,
+            move_anim: None,
+        }],
+    );
+    settle_strip_animations(h);
+}
+
+fn settle_strip_animations(h: &mut Harness) {
+    h.fix.ewm().animations_clock.set_complete_instantly(true);
+    for strip in h.fix.ewm().output_strips.values_mut() {
+        strip.advance();
+    }
 }
 
 fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
@@ -564,12 +642,115 @@ fn check_l3(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+fn rect_contains_f64(rect: Rectangle<i32, Logical>, p: Point<f64, Logical>) -> bool {
+    p.x >= rect.loc.x as f64
+        && p.y >= rect.loc.y as f64
+        && p.x < (rect.loc.x + rect.size.w) as f64
+        && p.y < (rect.loc.y + rect.size.h) as f64
+}
+
+fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, ViewId)> {
+    let ewm = h.fix.ewm_ref();
+    for output in ewm.space.outputs() {
+        let Some(output_geo) = ewm.space.output_geometry(output) else {
+            continue;
+        };
+        if !rect_contains_f64(output_geo, p) {
+            continue;
+        }
+
+        let output_name = output.name();
+        let Some(strip) = ewm.output_strips.get(&output_name) else {
+            continue;
+        };
+        let working_area = ewm.get_working_area(output);
+        for (frame_idx, frame) in strip.frames.iter().enumerate() {
+            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+            for entry in &frame.entries {
+                if entry.surface_id().is_some() {
+                    continue;
+                }
+                let rect = Rectangle::new(
+                    Point::from((
+                        output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
+                        output_geo.loc.y + working_area.loc.y + entry.y,
+                    )),
+                    Size::from((entry.w as i32, entry.h as i32)),
+                );
+                if rect_contains_f64(rect, p) {
+                    return Some((frame.surface_id, entry.view_id));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn check_f1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    if !ewm.focus_follows_mouse_mode || ewm.is_strip_animating_at(p) {
+        return Ok(());
+    }
+
+    let Some((frame_surface_id, view_id)) = plain_entry_under(h, p) else {
+        return Ok(());
+    };
+    let pointer_focus_id = ewm
+        .pointer_focus
+        .as_ref()
+        .and_then(|(surface, _)| ewm.surface_id(surface));
+    let entry_changed = h.pointer_view_id_before_warp != Some(view_id);
+    let surface_changed = h.pointer_surface_id_before_warp != Some(frame_surface_id);
+
+    prop_assert_eq!(
+        ewm.view_id_under(p),
+        Some(view_id),
+        "F1: plain entry under {:?} must resolve through view_id_under",
+        p,
+    );
+    prop_assert_eq!(
+        ewm.pointer_view_id,
+        Some(view_id),
+        "F1: pointer_view_id should track the plain entry under {:?}",
+        p,
+    );
+    prop_assert_eq!(
+        pointer_focus_id,
+        Some(frame_surface_id),
+        "F1: pointer focus should remain on the Emacs frame surface",
+    );
+    if !entry_changed && !surface_changed {
+        return Ok(());
+    }
+
+    prop_assert_eq!(
+        ewm.focused_frame_id,
+        frame_surface_id,
+        "F1: focused frame should own the plain entry",
+    );
+    prop_assert_eq!(
+        ewm.focused_view_id,
+        Some(view_id),
+        "F1: FFM should focus the plain entry view id",
+    );
+    prop_assert_eq!(
+        ewm.focused_surface_id(),
+        frame_surface_id,
+        "F1: keyboard routing should stay on the Emacs frame surface",
+    );
+    Ok(())
+}
+
 fn check_p1(
     h: &Harness,
     events: &[ClientEvent],
     p: Point<f64, Logical>,
 ) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
+    if ewm.is_strip_animating_at(p) {
+        return Ok(());
+    }
+
     let expected = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
     let last_enter = events.iter().rev().find_map(|e| match e {
         ClientEvent::PointerEnter { surface, .. } => Some(client_surface_key(&h.client, surface)),
@@ -795,6 +976,7 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
             let p = Point::from((x as f64, y as f64));
             check_l3(h, p)?;
             check_p1(h, &events, p)?;
+            check_f1(h, p)?;
             check_n1(h, p)?;
         }
         Op::PointerButton { pressed } => check_p3(h, &events, pressed)?,
@@ -852,7 +1034,25 @@ proptest! {
     #[test]
     fn pointer_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..10)) {
         let mut h = Harness::new();
-        for op in &ops {
+        let prefix = [
+            Op::AddOutput(0),
+            Op::SetFocusFollowsMouse { on: true },
+            Op::WarpPointer { x: -100, y: -100 },
+            Op::ApplyPlainLayout {
+                output: 0,
+                n_entries: 2,
+            },
+            Op::WarpPointer {
+                x: VIEW_W / 4,
+                y: VIEW_H / 2,
+            },
+            Op::WarpPointer {
+                x: VIEW_W * 3 / 4,
+                y: VIEW_H / 2,
+            },
+        ];
+
+        for op in prefix.iter().chain(ops.iter()) {
             apply_op(&mut h, op);
             h.roundtrip_all();
             assert_invariants(&mut h, op)?;

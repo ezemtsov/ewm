@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
@@ -252,6 +252,28 @@ impl Fixture {
     /// Warp the pointer to an absolute position.
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
         self.state.warp_pointer(x, y);
+    }
+
+    /// Send pointer motion to an absolute position through the compositor's
+    /// normal pointer-focus and focus-follows-mouse bookkeeping.
+    pub fn pointer_motion_to(&mut self, x: f64, y: f64) {
+        use smithay::input::pointer::MotionEvent;
+        use smithay::utils::SERIAL_COUNTER;
+
+        let pos = Point::from((x, y));
+        let (under, _) = self.state.ewm.update_pointer_focus_for_motion(pos);
+        let pointer = self.state.ewm.pointer.clone();
+        pointer.motion(
+            &mut self.state,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: 0,
+            },
+        );
+        pointer.frame(&mut self.state);
+        self.state.ewm.queue_redraw_for_pointer();
     }
 
     /// Apply a layout through the same command path used by Emacs.
