@@ -606,20 +606,27 @@ fn window_properties(window: &Window) -> dbus::WindowProperties {
 
 #[cfg(feature = "screencast")]
 fn layout_entry_window_title(
+    output_name: &str,
     workspace_name: &str,
     entry: &LayoutEntry,
     fallback_title: &str,
 ) -> String {
+    let location_name = match (output_name.is_empty(), workspace_name.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => workspace_name.to_string(),
+        (false, true) => output_name.to_string(),
+        (false, false) => format!("{output_name} | {workspace_name}"),
+    };
     let entry_name = if entry.name.is_empty() {
         fallback_title
     } else {
         entry.name.as_str()
     };
-    match (workspace_name.is_empty(), entry_name.is_empty()) {
+    match (location_name.is_empty(), entry_name.is_empty()) {
         (true, true) => String::new(),
         (true, false) => entry_name.to_string(),
-        (false, true) => workspace_name.to_string(),
-        (false, false) => format!("{workspace_name} -> {entry_name}"),
+        (false, true) => location_name,
+        (false, false) => format!("{location_name} | {entry_name}"),
     }
 }
 
@@ -1768,7 +1775,7 @@ impl Ewm {
     #[cfg(feature = "screencast")]
     pub(crate) fn introspect_windows(&self) -> HashMap<u64, dbus::WindowProperties> {
         let mut windows = HashMap::new();
-        for (_, strip) in self.mapped_output_strips() {
+        for (output_name, strip) in self.mapped_output_strips() {
             for (frame_idx, frame) in strip.frames.iter().enumerate() {
                 let workspace_name = crate::protocols::workspace::frame_display_name(frame_idx);
                 let frame_props = self
@@ -1782,8 +1789,12 @@ impl Ewm {
                         .map(window_properties)
                         .or_else(|| frame_props.clone());
                     if let Some(mut props) = props {
-                        props.title =
-                            layout_entry_window_title(&workspace_name, entry, &props.title);
+                        props.title = layout_entry_window_title(
+                            output_name,
+                            &workspace_name,
+                            entry,
+                            &props.title,
+                        );
                         windows.entry(entry.id.get()).or_insert(props);
                     }
                 }
@@ -7681,14 +7692,14 @@ mod tests {
     fn layout_entry_window_title_uses_workspace_and_entry_name() {
         let named = LayoutEntry::emacs_window(nz(1), "*scratch*".to_string(), 0, 0, 100, 100);
         assert_eq!(
-            layout_entry_window_title("2", &named, "ignored"),
-            "2 -> *scratch*"
+            layout_entry_window_title("eDP-1", "2", &named, "ignored"),
+            "eDP-1 | 2 | *scratch*"
         );
 
         let unnamed = LayoutEntry::emacs_window(nz(2), String::new(), 0, 0, 100, 100);
         assert_eq!(
-            layout_entry_window_title("2", &unnamed, "fallback"),
-            "2 -> fallback"
+            layout_entry_window_title("HDMI-A-1", "1", &unnamed, "fallback"),
+            "HDMI-A-1 | 1 | fallback"
         );
     }
 
