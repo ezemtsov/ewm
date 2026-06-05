@@ -269,8 +269,8 @@ pub struct Frame {
     pub surface_id: u64,
     pub view_id: ViewId,
     pub width: f64,
-    pub surfaces: Vec<LayoutEntry>,
-    /// Selected surface's view id (keyboard focus target when frame is focused).
+    pub entries: Vec<LayoutEntry>,
+    /// Selected entry's view id (keyboard focus target when frame is focused).
     pub selected_view_id: Option<ViewId>,
     #[serde(skip)]
     pub move_anim: Option<ViewAnimation>,
@@ -284,7 +284,7 @@ impl Frame {
             surface_id,
             view_id: frame_view_id_for(surface_id),
             width: 0.0,
-            surfaces: Vec::new(),
+            entries: Vec::new(),
             selected_view_id: None,
             move_anim: None,
         }
@@ -430,14 +430,24 @@ impl Strip {
         })
     }
 
-    /// Flat iterator over all surfaces across all frames, in declared order.
-    pub fn surfaces(&self) -> impl Iterator<Item = &LayoutEntry> {
-        self.frames.iter().flat_map(|f| f.surfaces.iter())
+    /// Flat iterator over all entries across all frames, in declared order.
+    pub fn entries(&self) -> impl Iterator<Item = &LayoutEntry> {
+        self.frames.iter().flat_map(|f| f.entries.iter())
     }
 
-    /// Mutable flat iterator over all surfaces across all frames.
-    pub fn surfaces_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
-        self.frames.iter_mut().flat_map(|f| f.surfaces.iter_mut())
+    /// Mutable flat iterator over all entries across all frames.
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
+        self.frames.iter_mut().flat_map(|f| f.entries.iter_mut())
+    }
+
+    /// Surface-backed entries across all frames.
+    pub fn surface_entries(&self) -> impl Iterator<Item = &LayoutEntry> {
+        self.entries().filter(|entry| entry.surface.is_some())
+    }
+
+    /// Mutable surface-backed entries across all frames.
+    pub fn surface_entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
+        self.entries_mut().filter(|entry| entry.surface.is_some())
     }
 
     pub fn active_frame(&self) -> Option<&Frame> {
@@ -445,18 +455,29 @@ impl Strip {
     }
 
     /// Entries on the active (on-screen at rest) frame only.
-    pub fn active_surfaces(&self) -> impl Iterator<Item = &LayoutEntry> {
+    pub fn active_entries(&self) -> impl Iterator<Item = &LayoutEntry> {
         self.active_frame()
             .into_iter()
-            .flat_map(|f| f.surfaces.iter())
+            .flat_map(|f| f.entries.iter())
     }
 
-    pub fn active_surfaces_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
+    pub fn active_entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
         let idx = self.active_idx;
         self.frames
             .get_mut(idx)
             .into_iter()
-            .flat_map(|f| f.surfaces.iter_mut())
+            .flat_map(|f| f.entries.iter_mut())
+    }
+
+    /// Surface-backed entries on the active frame only.
+    pub fn active_surface_entries(&self) -> impl Iterator<Item = &LayoutEntry> {
+        self.active_entries()
+            .filter(|entry| entry.surface.is_some())
+    }
+
+    pub fn active_surface_entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
+        self.active_entries_mut()
+            .filter(|entry| entry.surface.is_some())
     }
 
     /// Merge a fresh Emacs layout into this strip.
@@ -500,7 +521,7 @@ impl Strip {
 
         for frame in &mut self.frames {
             if !order.contains_key(&frame.surface_id) {
-                frame.surfaces.clear();
+                frame.entries.clear();
                 frame.selected_view_id = None;
             }
         }
@@ -524,11 +545,17 @@ impl Strip {
     }
 
     /// Iterator yielding `(frame_idx, &LayoutEntry)` pairs.
-    pub fn surfaces_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
+    pub fn entries_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
         self.frames
             .iter()
             .enumerate()
-            .flat_map(|(i, f)| f.surfaces.iter().map(move |s| (i, s)))
+            .flat_map(|(i, f)| f.entries.iter().map(move |s| (i, s)))
+    }
+
+    /// Surface-backed entries with their frame indexes.
+    pub fn surface_entries_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
+        self.entries_with_frame()
+            .filter(|(_, entry)| entry.surface.is_some())
     }
 
     /// Seed `move_anim` on neighbours of `frames[idx]` so they slide in to fill the gap.
@@ -661,7 +688,7 @@ mod tests {
                     surface_id: 0,
                     view_id: std::num::NonZeroU64::MIN,
                     width: w,
-                    surfaces: Vec::new(),
+                    entries: Vec::new(),
                     selected_view_id: None,
                     move_anim: None,
                 })

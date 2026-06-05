@@ -6,7 +6,7 @@
 //!
 //! L1  - Surface-index parity. `ewm.surface_outputs` equals the set of
 //!       `(surface_id, output_name)` pairs derived from
-//!       `output_strips[output].surfaces()`.
+//!       `output_strips[output].surface_entries()`.
 //!
 //! L2  - View origin formula. `surface_view_origins(S)` lists exactly one
 //!       origin per layout entry of `S`, computed per-view from each entry's
@@ -266,11 +266,11 @@ impl Harness {
     }
 
     fn toplevel_in_some_strip(&self) -> bool {
-        self.fix
-            .ewm_ref()
-            .output_strips
-            .values()
-            .any(|s| s.surfaces().any(|e| e.surface_id == self.sid))
+        self.fix.ewm_ref().output_strips.values().any(|strip| {
+            strip
+                .surface_entries()
+                .any(|entry| entry.surface_id() == Some(self.sid))
+        })
     }
 
     fn frame_in_some_strip(&self) -> bool {
@@ -334,16 +334,15 @@ fn apply_op(h: &mut Harness, op: &Op) {
                     surface_id: if i == 0 { h.frame_sid } else { 100 + i as u64 },
                     view_id: nz(100 + i as u64),
                     width: VIEW_W as f64,
-                    surfaces: vec![LayoutEntry {
-                        view_id: nz(1 + i as u64),
-                        surface_id: h.sid,
-                        x: 0,
-                        y: 0,
-                        w: VIEW_W as u32,
-                        h: VIEW_H as u32,
-                        primary: true,
-                        fullscreen: (fullscreen_mask >> i) & 1 == 1,
-                    }],
+                    entries: vec![LayoutEntry::surface(
+                        nz(1 + i as u64),
+                        h.sid,
+                        0,
+                        0,
+                        VIEW_W as u32,
+                        VIEW_H as u32,
+                        (fullscreen_mask >> i) & 1 == 1,
+                    )],
                     selected_view_id: Some(nz(1 + i as u64)),
                     move_anim: None,
                 })
@@ -401,19 +400,20 @@ fn apply_multi_entry_layout(
     if !h.fix.has_output(name) {
         return;
     }
-    let surfaces = (0..n_entries)
-        .map(|i| LayoutEntry {
-            view_id: nz(10_000 + i as u64),
-            surface_id: h.sid,
-            x: (i as i32) * 10,
-            y: (i as i32) * 10,
-            w: VIEW_W as u32,
-            h: VIEW_H as u32,
-            primary: true,
-            fullscreen: (fullscreen_mask >> i) & 1 == 1,
+    let entries = (0..n_entries)
+        .map(|i| {
+            LayoutEntry::surface(
+                nz(10_000 + i as u64),
+                h.sid,
+                (i as i32) * 10,
+                (i as i32) * 10,
+                VIEW_W as u32,
+                VIEW_H as u32,
+                (fullscreen_mask >> i) & 1 == 1,
+            )
         })
         .collect::<Vec<_>>();
-    let selected_view_id = surfaces.first().map(|entry| entry.view_id);
+    let selected_view_id = entries.first().map(|entry| entry.view_id);
     h.fix.ewm().apply_output_layout(
         name,
         vec![Frame {
@@ -421,7 +421,7 @@ fn apply_multi_entry_layout(
             surface_id: 10_000,
             view_id: nz(20_000),
             width: VIEW_W as f64,
-            surfaces,
+            entries,
             selected_view_id,
             move_anim: None,
         }],
@@ -432,9 +432,9 @@ fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let mut from_strips: HashMap<u64, HashSet<String>> = HashMap::new();
     for (out_name, strip) in &ewm.output_strips {
-        for entry in strip.surfaces() {
+        for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
             from_strips
-                .entry(entry.surface_id)
+                .entry(surface_id)
                 .or_default()
                 .insert(out_name.clone());
         }
@@ -452,12 +452,16 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
     let primary = ewm
         .output_strips
         .iter()
-        .flat_map(|(name, strip)| strip.active_surfaces().map(move |e| (name.clone(), e)))
-        .find(|(_, e)| e.surface_id == h.sid && e.primary);
+        .flat_map(|(name, strip)| {
+            strip
+                .active_surface_entries()
+                .map(move |e| (name.clone(), e))
+        })
+        .find(|(_, e)| e.surface_id() == Some(h.sid) && e.primary());
     let Some((out_name, entry)) = primary else {
         return Ok(());
     };
-    let expected = if entry.fullscreen {
+    let expected = if entry.fullscreen() {
         ewm.space
             .outputs()
             .find(|o| o.name() == out_name)
@@ -473,7 +477,7 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
             "C1: last toplevel configure was {:?}, expected {:?} (entry fullscreen={})",
             h.last_configure,
             expected,
-            entry.fullscreen,
+            entry.fullscreen(),
         );
     }
     Ok(())
@@ -504,22 +508,22 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
             continue;
         };
         let working_area = ewm.get_working_area(output);
-        for (frame_idx, entry) in strip.surfaces_with_frame() {
-            if entry.surface_id != sid {
+        for (frame_idx, entry) in strip.surface_entries_with_frame() {
+            if entry.surface_id() != Some(sid) {
                 continue;
             }
             // Geometry follows entry.fullscreen alone, with no AND against
             // the client's committed XDG state. Each view computes its origin
             // from its own flag, independent of sibling views.
-            let origin = if entry.fullscreen && entry.primary {
+            let origin = if entry.fullscreen() && entry.primary() {
                 let window_size = ewm
                     .id_windows
-                    .get(&entry.surface_id)
+                    .get(&entry.surface_id().expect("surface-backed entry"))
                     .map(|w| w.geometry().size)
                     .unwrap_or_default();
                 let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
                 Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy))
-            } else if entry.fullscreen {
+            } else if entry.fullscreen() {
                 Point::from((output_geo.loc.x, output_geo.loc.y))
             } else {
                 let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
@@ -650,14 +654,14 @@ fn visible_entry_rect(
     in_active: bool,
     entry: &LayoutEntry,
 ) -> Option<Rectangle<i32, Logical>> {
-    if entry.fullscreen {
+    if entry.fullscreen() {
         if !in_active {
             return None;
         }
-        if entry.primary {
+        if entry.primary() {
             let window_size = ewm
                 .id_windows
-                .get(&entry.surface_id)
+                .get(&entry.surface_id()?)
                 .map(|w| w.geometry().size)
                 .unwrap_or_default();
             let (cx, cy) = fullscreen_center_offset(window_size, output_geo.size);
@@ -701,8 +705,8 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
         };
         let working_area = ewm.get_working_area(output);
         let active_idx = strip.active_idx();
-        for (frame_idx, entry) in strip.surfaces_with_frame() {
-            if entry.surface_id != h.sid {
+        for (frame_idx, entry) in strip.surface_entries_with_frame() {
+            if entry.surface_id() != Some(h.sid) {
                 continue;
             }
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
@@ -726,7 +730,11 @@ fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     for (name, strip) in &ewm.output_strips {
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
-            let count = frame.surfaces.iter().filter(|e| e.fullscreen).count();
+            let count = frame
+                .entries
+                .iter()
+                .filter(|entry| entry.fullscreen())
+                .count();
             prop_assert!(
                 count <= 1,
                 "N4: strip {} frame {} has {} fullscreen entries, expected at most 1",

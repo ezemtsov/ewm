@@ -45,7 +45,6 @@ use_symbols! {
     // since nil is indistinguishable from "argument absent".
     kw_false => ":false"
     // output_layout_module / intercept_keys_module plist keys
-    kw_id          => ":id"
     kw_x           => ":x"
     kw_y           => ":y"
     kw_w           => ":w"
@@ -62,7 +61,7 @@ use_symbols! {
     kw_repeat      => ":repeat"
     kw_name       => ":name"
     kw_width      => ":width"
-    kw_surfaces   => ":surfaces"
+    kw_entries    => ":entries"
     kw_surface_id => ":surface-id"
     kw_view_id    => ":view-id"
     kw_selected_view_id => ":selected-view-id"
@@ -878,9 +877,10 @@ fn socket() -> Result<Option<String>> {
 /// OUTPUT is the output name. FRAMES is a vector of plists describing the
 /// strip of Emacs frames left-to-right. Each frame plist has:
 ///   :name NAME :surface-id ID :view-id N :selected-view-id N|nil
-///   :width FLOAT :surfaces [SURFACE ...]
-/// where each SURFACE is a plist `:id :view-id :x :y :w :h :fullscreen`.
-/// Surface coordinates are relative to the owning frame's working area.
+///   :width FLOAT :entries [ENTRY ...]
+/// where each ENTRY is a plist `:view-id :x :y :w :h` with optional
+/// `:surface-id :fullscreen`.
+/// Entry coordinates are relative to the owning frame's working area.
 #[defun]
 fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
     let frames_len: i64 = env.call(length, (frames,))?.into_rust()?;
@@ -919,17 +919,16 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
                 .unwrap_or(0) as u64,
         );
 
-        let surfaces_val = env.call(plist_get, (frame, kw_surfaces))?;
-        let surfaces_len: i64 = if surfaces_val.is_not_nil() {
-            env.call(length, (surfaces_val,))?.into_rust()?
+        let entries_val = env.call(plist_get, (frame, kw_entries))?;
+        let entries_len: i64 = if entries_val.is_not_nil() {
+            env.call(length, (entries_val,))?.into_rust()?
         } else {
             0
         };
-        let mut surfaces = Vec::with_capacity(surfaces_len as usize);
-        for j in 0..surfaces_len {
-            let entry = env.call(aref, (surfaces_val, j))?;
+        let mut entries = Vec::with_capacity(entries_len as usize);
+        for j in 0..entries_len {
+            let entry = env.call(aref, (entries_val, j))?;
 
-            let id: i64 = env.call(plist_get, (entry, kw_id))?.into_rust()?;
             let view_id = match std::num::NonZeroU64::new(
                 env.call(plist_get, (entry, kw_view_id))?
                     .into_rust::<i64>()
@@ -937,7 +936,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             ) {
                 Some(v) => v,
                 None => {
-                    tracing::warn!("entry {} layout dropped: missing view_id", id);
+                    tracing::warn!("layout entry dropped: missing view_id");
                     continue;
                 }
             };
@@ -945,19 +944,22 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             let y: i64 = env.call(plist_get, (entry, kw_y))?.into_rust()?;
             let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
             let h: i64 = env.call(plist_get, (entry, kw_h))?.into_rust()?;
+            let surface_id_val = env.call(plist_get, (entry, kw_surface_id))?;
+            let surface_id = if surface_id_val.is_not_nil() {
+                surface_id_val.into_rust::<i64>().unwrap_or(0) as u64
+            } else {
+                0
+            };
 
             let fullscreen_val = env.call(plist_get, (entry, kw_fullscreen))?;
             let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
 
-            surfaces.push(LayoutEntry {
-                view_id,
-                surface_id: id as u64,
-                x: x as i32,
-                y: y as i32,
-                w: w as u32,
-                h: h as u32,
-                primary: false,
-                fullscreen,
+            entries.push(if surface_id == 0 {
+                LayoutEntry::emacs_window(view_id, x as i32, y as i32, w as u32, h as u32)
+            } else {
+                LayoutEntry::surface(
+                    view_id, surface_id, x as i32, y as i32, w as u32, h as u32, fullscreen,
+                )
             });
         }
 
@@ -966,7 +968,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             surface_id,
             view_id,
             width,
-            surfaces,
+            entries,
             selected_view_id,
             move_anim: None,
         });

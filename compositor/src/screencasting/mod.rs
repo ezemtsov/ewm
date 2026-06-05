@@ -443,8 +443,8 @@ impl Ewm {
             if let Some(output_geo) = output_geo {
                 if let Some(strip) = self.output_strips.get(&output.name()) {
                     let working_area = self.get_working_area(output);
-                    for entry in strip.surfaces() {
-                        if entry.surface_id != window_id {
+                    for entry in strip.surface_entries() {
+                        if entry.surface_id() != Some(window_id) {
                             continue;
                         }
                         let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;

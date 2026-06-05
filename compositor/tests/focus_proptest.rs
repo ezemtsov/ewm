@@ -151,19 +151,10 @@ fn to_frame(spec: &FrameSpec) -> Frame {
         surface_id: spec.surface_id,
         view_id: spec.frame_view_id,
         width: 1920.0,
-        surfaces: spec
+        entries: spec
             .entries
             .iter()
-            .map(|e| LayoutEntry {
-                view_id: e.view_id,
-                surface_id: e.surface_id,
-                x: 0,
-                y: 0,
-                w: 100,
-                h: 100,
-                primary: false,
-                fullscreen: e.fullscreen,
-            })
+            .map(|e| LayoutEntry::surface(e.view_id, e.surface_id, 0, 0, 100, 100, e.fullscreen))
             .collect(),
         selected_view_id: spec.selected_view_id,
         move_anim: None,
@@ -354,8 +345,8 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 .output_strips
                 .values()
                 .flat_map(|strip| strip.frames.iter())
-                .flat_map(|frame| frame.surfaces.iter())
-                .filter(|entry| entry.surface_id == id)
+                .flat_map(|frame| frame.entries.iter())
+                .filter(|entry| entry.surface_id() == Some(id))
                 .map(|entry| entry.view_id)
                 .collect();
             let refocus = fix.ewm().handle_toplevel_destroyed_by_id(id);
@@ -426,7 +417,7 @@ fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
     fix.ewm_ref()
         .output_strips
         .values()
-        .flat_map(|s| s.surfaces().map(|e| e.surface_id))
+        .flat_map(|strip| strip.surface_entries().filter_map(LayoutEntry::surface_id))
         .collect()
 }
 
@@ -585,7 +576,7 @@ proptest! {
             .unwrap();
         prop_assert_eq!(frame.surface_id, 100);
         prop_assert_eq!(frame.selected_view_id, None);
-        prop_assert!(frame.surfaces.is_empty());
+        prop_assert!(frame.entries.is_empty());
     }
 
     #[test]
@@ -609,7 +600,7 @@ proptest! {
             .get(OUTPUTS[0])
             .and_then(|strip| strip.frames.iter().find(|frame| frame.surface_id == 100))
             .unwrap();
-        prop_assert!(omitted.surfaces.is_empty());
+        prop_assert!(omitted.entries.is_empty());
         prop_assert_eq!(omitted.selected_view_id, None);
         prop_assert!(!fix.ewm_ref().surface_outputs.contains_key(&surface_id));
     }
@@ -635,7 +626,7 @@ fn assert_invariants(fix: &Fixture) {
             .values()
             .flat_map(|s| s.frames.iter())
             .find(|f| f.surface_id == ewm.focused_frame_id)
-            .map(|f| f.surfaces.iter().any(|e| e.view_id == v))
+            .map(|f| f.entries.iter().any(|e| e.view_id == v))
             .unwrap_or(false);
         assert!(
             in_focused_frame,
@@ -691,7 +682,7 @@ fn assert_invariants(fix: &Fixture) {
         for f in &strip.frames {
             if let Some(sel) = f.selected_view_id {
                 assert!(
-                    f.surfaces.iter().any(|e| e.view_id == sel),
+                    f.entries.iter().any(|e| e.view_id == sel),
                     "invariant 6: frame {} selected_view_id={:?} not in its own entries",
                     f.surface_id,
                     sel,
@@ -704,8 +695,8 @@ fn assert_invariants(fix: &Fixture) {
     let mut view_ids = HashMap::new();
     for (output_name, strip) in &ewm.output_strips {
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
-            for entry in &frame.surfaces {
-                let occurrence = (output_name.as_str(), frame_idx, entry.surface_id);
+            for (entry_idx, entry) in frame.entries.iter().enumerate() {
+                let occurrence = (output_name.as_str(), frame_idx, entry_idx);
                 assert!(
                     view_ids.insert(entry.view_id, occurrence).is_none(),
                     "invariant 7: duplicate view_id {:?} at {:?}",

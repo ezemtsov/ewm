@@ -354,23 +354,28 @@ pub fn collect_render_elements_for_output(
             let frame_offset: Point<i32, Physical> =
                 frame_rect.loc.to_physical_precise_round(scale);
             let in_active_frame = frame_idx == active_idx;
-            for entry in &frame.surfaces {
+            for entry in frame
+                .entries
+                .iter()
+                .filter(|entry| entry.surface_id().is_some())
+            {
+                let surface_id = entry.surface_id().expect("surface-backed entry");
                 // Active-frame fullscreen covers the rest.
-                if above_top_layer && !entry.fullscreen && in_active_frame {
+                if above_top_layer && !entry.fullscreen() && in_active_frame {
                     continue;
                 }
-                if let Some(window) = ewm.id_windows.get(&entry.surface_id) {
+                if let Some(window) = ewm.id_windows.get(&surface_id) {
                     // Fullscreen forced opaque so the backdrop doesn't bleed through.
                     let is_focused = ewm.focused_view_id == Some(entry.view_id);
-                    let mut entry_alpha = if entry.fullscreen || is_focused {
+                    let mut entry_alpha = if entry.fullscreen() || is_focused {
                         1.0
                     } else {
                         ewm.unfocused_alpha
                     };
-                    if let Some(a) = ewm.surface_open_anims.get(&entry.surface_id) {
+                    if let Some(a) = ewm.surface_open_anims.get(&surface_id) {
                         entry_alpha *= a.value() as f32;
                     }
-                    if entry.fullscreen {
+                    if entry.fullscreen() {
                         // Fullscreen: surface + backdrop at output origin, bypassing working area.
                         // Elements are front-to-back: surface first, then backdrop behind it.
                         let output_logical_size = ewm
@@ -382,7 +387,7 @@ pub fn collect_render_elements_for_output(
                             output_logical_size.to_physical_precise_round(scale);
                         let constrain = Rectangle::new(frame_offset, output_physical);
 
-                        if entry.primary {
+                        if entry.primary() {
                             // Primary: native size, centered, crop to output bounds.
                             let (offset_x, offset_y) = crate::fullscreen_center_offset(
                                 window.geometry().size,
@@ -468,7 +473,7 @@ pub fn collect_render_elements_for_output(
                     // (e.g. Electron apps with a minimum window size).
                     let constrain = Rectangle::new(loc_physical, entry_size);
 
-                    if entry.primary {
+                    if entry.primary() {
                         // Primary view: render at native size, crop to entry.
                         push_constrained(
                             &mut elements,

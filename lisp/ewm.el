@@ -861,9 +861,10 @@ For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
 FRAMES is a vector of plists describing the Emacs frame strip on the
 output, left-to-right.  Each frame plist has:
   :name NAME :surface-id ID :view-id N :selected-view-id N :width FLOAT
-  :surfaces SURFACES
-where SURFACES is a vector of plists `:id :view-id :x :y :w :h :fullscreen'.
-Surface coordinates are relative to the owning frame's working area."
+  :entries ENTRIES
+where ENTRIES is a vector of plists `:view-id :x :y :w :h :fullscreen'
+with optional `:surface-id'. Entry coordinates are relative to the owning
+frame's working area."
   (ewm-output-layout-module output frames))
 
 (defun ewm-close (id)

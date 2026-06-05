@@ -27,16 +27,9 @@ fn frame_with_entry_at(frame_id: u64, view_id: ViewId, surface_id: u64, x: i32, 
         surface_id: frame_id,
         view_id: nz(frame_id + 1_000),
         width: 1280.0,
-        surfaces: vec![LayoutEntry {
-            view_id,
-            surface_id,
-            x,
-            y,
-            w: 400,
-            h: 300,
-            primary: false,
-            fullscreen: false,
-        }],
+        entries: vec![LayoutEntry::surface(
+            view_id, surface_id, x, y, 400, 300, false,
+        )],
         selected_view_id: Some(view_id),
         move_anim: None,
     }
@@ -389,7 +382,7 @@ fn focusing_view_on_disabled_output_is_ignored() {
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
     let mut disabled_frame = frame_with_entry(100, nz(1), 1);
-    disabled_frame.surfaces[0].fullscreen = true;
+    disabled_frame.entries[0].set_fullscreen(true);
     fixture
         .ewm()
         .apply_output_layout("Virtual-1", vec![disabled_frame]);
@@ -423,8 +416,8 @@ fn disabling_output_reassigns_primary_entry_to_mapped_view() {
 
     let surface_id = 1;
     let mut disabled_frame = frame_with_entry(100, nz(1), surface_id);
-    disabled_frame.surfaces[0].w = 1000;
-    disabled_frame.surfaces[0].h = 1000;
+    disabled_frame.entries[0].w = 1000;
+    disabled_frame.entries[0].h = 1000;
     fixture
         .ewm()
         .apply_output_layout("Virtual-1", vec![disabled_frame]);
@@ -447,8 +440,8 @@ fn disabling_output_reassigns_primary_entry_to_mapped_view() {
         .get("Virtual-2")
         .expect("Virtual-2 strip exists");
     assert!(live_strip
-        .surfaces()
-        .any(|entry| entry.surface_id == surface_id && entry.primary));
+        .surface_entries()
+        .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary()));
 }
 
 #[test]
@@ -459,9 +452,9 @@ fn output_scale_change_reassigns_fullscreen_primary_entry() {
 
     let surface_id = 1;
     let mut first = frame_with_entry(100, nz(1), surface_id);
-    first.surfaces[0].fullscreen = true;
+    first.entries[0].set_fullscreen(true);
     let mut second = frame_with_entry(200, nz(2), surface_id);
-    second.surfaces[0].fullscreen = true;
+    second.entries[0].set_fullscreen(true);
     fixture.ewm().apply_output_layout("Virtual-1", vec![first]);
     fixture.ewm().apply_output_layout("Virtual-2", vec![second]);
 
@@ -480,8 +473,8 @@ fn output_scale_change_reassigns_fullscreen_primary_entry() {
         .iter()
         .find_map(|(name, strip)| {
             strip
-                .surfaces()
-                .any(|entry| entry.surface_id == surface_id && entry.primary)
+                .surface_entries()
+                .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary())
                 .then_some(name.as_str())
         });
     assert_eq!(primary_output, Some("Virtual-2"));

@@ -62,16 +62,9 @@ fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64, fullscreen:
         surface_id: frame_id,
         view_id: nz(frame_id + 1_000),
         width: 1280.0,
-        surfaces: vec![LayoutEntry {
-            view_id,
-            surface_id,
-            x: 0,
-            y: 0,
-            w: 400,
-            h: 300,
-            primary: false,
-            fullscreen,
-        }],
+        entries: vec![LayoutEntry::surface(
+            view_id, surface_id, 0, 0, 400, 300, fullscreen,
+        )],
         selected_view_id: Some(view_id),
         move_anim: None,
     }

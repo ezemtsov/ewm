@@ -454,21 +454,89 @@ pub type ViewId = std::num::NonZeroU64;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LayoutEntry {
-    /// View identity assigned by lisp; one surface in N windows yields N view_ids.
+    /// View identity assigned by lisp; names one Emacs window in a frame.
     pub view_id: ViewId,
-    /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
-    #[serde(rename = "id")]
-    pub surface_id: u64,
     pub x: i32,
     pub y: i32,
     pub w: u32,
     pub h: u32,
+    /// Surface-specific attachment when this Emacs window displays a Wayland surface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<LayoutEntrySurface>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct LayoutEntrySurface {
+    /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
+    pub surface_id: u64,
     /// Largest view per surface, computed by compositor from entry dimensions.
     /// Drives send_configure() size + scale and native-size rendering.
     pub primary: bool,
     /// Fullscreen mode. Surface covers full output, bypassing working area.
     #[serde(default)]
     pub fullscreen: bool,
+}
+
+impl LayoutEntry {
+    pub fn emacs_window(view_id: ViewId, x: i32, y: i32, w: u32, h: u32) -> Self {
+        Self {
+            view_id,
+            x,
+            y,
+            w,
+            h,
+            surface: None,
+        }
+    }
+
+    pub fn surface(
+        view_id: ViewId,
+        surface_id: u64,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        fullscreen: bool,
+    ) -> Self {
+        Self {
+            view_id,
+            x,
+            y,
+            w,
+            h,
+            surface: Some(LayoutEntrySurface {
+                surface_id,
+                primary: false,
+                fullscreen,
+            }),
+        }
+    }
+
+    pub fn surface_id(&self) -> Option<u64> {
+        self.surface.as_ref().map(|surface| surface.surface_id)
+    }
+
+    pub fn primary(&self) -> bool {
+        self.surface.as_ref().is_some_and(|surface| surface.primary)
+    }
+
+    pub fn set_primary(&mut self, primary: bool) {
+        if let Some(surface) = &mut self.surface {
+            surface.primary = primary;
+        }
+    }
+
+    pub fn fullscreen(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| surface.fullscreen)
+    }
+
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        if let Some(surface) = &mut self.surface {
+            surface.fullscreen = fullscreen;
+        }
+    }
 }
 
 struct LayoutEntryHit<'a> {
@@ -787,7 +855,7 @@ pub struct Ewm {
     pending_title_events: HashMap<u64, PendingTitleEvent>,
     title_flush_timer_token: Option<RegistrationToken>,
     last_emacs_keyboard_activity: Instant,
-    /// Per-output strip state from Emacs: surfaces nest inside frames inside the strip.
+    /// Per-output strip state from Emacs: layout entries nest inside frames inside the strip.
     /// This is the single source of truth for what's visible on each output.
     pub output_strips: HashMap<String, strip::Strip>,
     /// Shared "complete instantly" toggle threaded into every `ViewAnimation`
@@ -1027,7 +1095,7 @@ struct ViewLocation {
     output: String,
     frame_idx: usize,
     frame_surface_id: u64,
-    surface_id: u64,
+    surface_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1300,7 +1368,7 @@ impl Ewm {
         self.surface_outputs.remove(&id);
         for strip in self.output_strips.values_mut() {
             for frame in &mut strip.frames {
-                frame.surfaces.retain(|e| e.surface_id != id);
+                frame.entries.retain(|entry| entry.surface_id() != Some(id));
             }
         }
     }
@@ -1312,7 +1380,7 @@ impl Ewm {
         for strip in self.output_strips.values_mut() {
             for frame in &mut strip.frames {
                 if let Some(sel) = frame.selected_view_id {
-                    if !frame.surfaces.iter().any(|e| e.view_id == sel) {
+                    if !frame.entries.iter().any(|entry| entry.view_id == sel) {
                         frame.selected_view_id = None;
                     }
                 }
@@ -1322,7 +1390,7 @@ impl Ewm {
             let in_focused_frame = self
                 .frame_location(self.focused_frame_id)
                 .map(|location| location.frame)
-                .is_some_and(|f| f.surfaces.iter().any(|e| e.view_id == v));
+                .is_some_and(|f| f.entries.iter().any(|entry| entry.view_id == v));
             if !in_focused_frame {
                 self.focused_view_id = None;
             }
@@ -1465,7 +1533,10 @@ impl Ewm {
         // Reconcile before `unmap_output` so the wl_output lookup hits.
         let evicted_active_id = if let Some(old_strip) = self.output_strips.remove(&output_name) {
             let was_active = old_strip.active_frame().map(|f| f.surface_id);
-            let pre: HashSet<u64> = old_strip.surfaces().map(|e| e.surface_id).collect();
+            let pre: HashSet<u64> = old_strip
+                .surface_entries()
+                .filter_map(LayoutEntry::surface_id)
+                .collect();
             self.reconcile_output_entries(&output_name, &pre);
             was_active
         } else {
@@ -1620,16 +1691,16 @@ impl Ewm {
         self.queue_surface_request(surface, |id| Event::UnmaximizeRequest { id });
     }
 
-    /// Resolve an embedded view id to its strip location and owning frame.
+    /// Resolve an Emacs window view id to its strip location and owning frame.
     fn lookup_view(&self, view_id: ViewId) -> Option<ViewLocation> {
         for (output, strip) in self.mapped_output_strips() {
             for (idx, frame) in strip.frames.iter().enumerate() {
-                if let Some(entry) = frame.surfaces.iter().find(|e| e.view_id == view_id) {
+                if let Some(entry) = frame.entries.iter().find(|entry| entry.view_id == view_id) {
                     return Some(ViewLocation {
                         output: output.to_string(),
                         frame_idx: idx,
                         frame_surface_id: frame.surface_id,
-                        surface_id: entry.surface_id,
+                        surface_id: entry.surface_id(),
                     });
                 }
             }
@@ -1684,7 +1755,7 @@ impl Ewm {
     pub fn focused_surface_id(&self) -> u64 {
         if let Some(view_id) = self.focused_view_id {
             self.lookup_view(view_id)
-                .map(|location| location.surface_id)
+                .and_then(|location| location.surface_id)
                 .unwrap_or(self.focused_frame_id)
         } else {
             self.focused_frame_id
@@ -1731,8 +1802,14 @@ impl Ewm {
         source: &str,
         notify_emacs: bool,
     ) {
-        module::record_focus(location.surface_id, source, None);
-        self.flush_pending_title_event(location.surface_id);
+        module::record_focus(
+            location.surface_id.unwrap_or(location.frame_surface_id),
+            source,
+            None,
+        );
+        if let Some(surface_id) = location.surface_id {
+            self.flush_pending_title_event(surface_id);
+        }
         self.set_focus_state(location.frame_surface_id, Some(view_id));
         self.activate_frame(&location.output, location.frame_idx);
         if notify_emacs {
@@ -1744,7 +1821,7 @@ impl Ewm {
         }
     }
 
-    /// Focus an Emacs frame, routing keyboard to its selected surface if one exists.
+    /// Focus an Emacs frame, routing keyboard to its selected entry's surface if one exists.
     pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str, notify_emacs: bool) {
         let Some(location) = self.frame_location(frame_surface_id) else {
             return;
@@ -1756,7 +1833,7 @@ impl Ewm {
         module::record_focus(frame_surface_id, source, None);
         if let Some(surface_id) = selected_view_id.and_then(|view_id| {
             self.lookup_view(view_id)
-                .map(|location| location.surface_id)
+                .and_then(|location| location.surface_id)
         }) {
             self.flush_pending_title_event(surface_id);
         }
@@ -1802,11 +1879,12 @@ impl Ewm {
         if let Some(out) = self.get_focused_output() {
             if let Some(strip) = self.output_strips.get(&out) {
                 let idx = strip.active_idx();
-                if strip
-                    .frames
-                    .get(idx)
-                    .is_some_and(|f| f.surfaces.iter().any(|e| e.surface_id == surface_id))
-                {
+                if strip.frames.get(idx).is_some_and(|frame| {
+                    frame
+                        .entries
+                        .iter()
+                        .any(|entry| entry.surface_id() == Some(surface_id))
+                }) {
                     return Some((out, idx));
                 }
             }
@@ -1816,7 +1894,12 @@ impl Ewm {
             strip
                 .frames
                 .iter()
-                .position(|frame| frame.surfaces.iter().any(|e| e.surface_id == surface_id))
+                .position(|frame| {
+                    frame
+                        .entries
+                        .iter()
+                        .any(|entry| entry.surface_id() == Some(surface_id))
+                })
                 .map(|i| (name.to_string(), i))
         })
     }
@@ -1926,8 +2009,8 @@ impl Ewm {
     ) -> Option<LayoutEntryLocation<'_>> {
         for (output_name, strip) in self.mapped_output_strips() {
             if let Some((frame_idx, entry)) = strip
-                .surfaces_with_frame()
-                .find(|(_, entry)| entry.surface_id == id && predicate(entry))
+                .surface_entries_with_frame()
+                .find(|(_, entry)| entry.surface_id() == Some(id) && predicate(entry))
             {
                 return Some(LayoutEntryLocation {
                     output_name,
@@ -1942,7 +2025,7 @@ impl Ewm {
     /// Layout entry used for positioning a multi-view surface.
     fn preferred_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
         self.focused_entry_for_surface(id)
-            .or_else(|| self.layout_entry_for_surface(id, |entry| entry.primary))
+            .or_else(|| self.layout_entry_for_surface(id, LayoutEntry::primary))
     }
 
     /// Global position of a window: layout entries use the focused-or-primary
@@ -1969,12 +2052,12 @@ impl Ewm {
         frame_idx: usize,
         entry: &LayoutEntry,
     ) -> Rectangle<i32, Logical> {
-        if entry.fullscreen {
-            if entry.primary {
-                let window_size = self
-                    .id_windows
-                    .get(&entry.surface_id)
-                    .map(|w| w.geometry().size)
+        if entry.fullscreen() {
+            if entry.primary() {
+                let window_size = entry
+                    .surface_id()
+                    .and_then(|surface_id| self.id_windows.get(&surface_id))
+                    .map(|window| window.geometry().size)
                     .unwrap_or_default();
                 let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
                 return Rectangle::new(
@@ -2023,8 +2106,8 @@ impl Ewm {
         }
         let mut origins = Vec::new();
         for (output_name, strip) in self.mapped_output_strips() {
-            for (frame_idx, entry) in strip.surfaces_with_frame() {
-                if entry.surface_id != surface_id {
+            for (frame_idx, entry) in strip.surface_entries_with_frame() {
+                if entry.surface_id() != Some(surface_id) {
                     continue;
                 }
                 let location = LayoutEntryLocation {
@@ -2047,8 +2130,8 @@ impl Ewm {
             && pos.y < (rect.loc.y + rect.size.h) as f64
     }
 
-    /// Find the topmost layout entry containing `pos`, returning the entry
-    /// and its global rectangle.
+    /// Find the topmost surface-backed layout entry containing `pos`, returning
+    /// the entry and its global rectangle.
     fn layout_entry_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryHit<'_>> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
@@ -2057,9 +2140,9 @@ impl Ewm {
         let active_idx = strip.active_idx();
 
         // Fullscreen primary clicks miss in the letterbox; inactive fullscreens render off-screen.
-        for (frame_idx, entry) in strip.surfaces_with_frame() {
+        for (frame_idx, entry) in strip.surface_entries_with_frame() {
             let in_active = frame_idx == active_idx;
-            if entry.fullscreen && !in_active {
+            if entry.fullscreen() && !in_active {
                 continue;
             }
 
@@ -2080,8 +2163,8 @@ impl Ewm {
         window_size: Size<i32, Logical>,
         output_size: Size<i32, Logical>,
     ) -> f64 {
-        if entry.fullscreen {
-            if entry.primary {
+        if entry.fullscreen() {
+            if entry.primary() {
                 return 1.0;
             }
 
@@ -2092,7 +2175,7 @@ impl Ewm {
             return 1.0 / uniform;
         }
 
-        if entry.primary || entry.w == 0 || entry.h == 0 {
+        if entry.primary() || entry.w == 0 || entry.h == 0 {
             return 1.0;
         }
 
@@ -2123,7 +2206,7 @@ impl Ewm {
         hit: LayoutEntryHit<'_>,
     ) -> Option<SurfaceHit> {
         let entry = hit.entry;
-        let window = self.id_windows.get(&entry.surface_id)?;
+        let window = self.id_windows.get(&entry.surface_id()?)?;
         let window_geo = window.geometry();
         let pointer_scale = Self::pointer_scale_for_entry(entry, window_geo.size, hit.output_size);
 
@@ -2204,7 +2287,11 @@ impl Ewm {
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
         self.mapped_output_strips()
             .map(|(_, strip)| strip)
-            .any(|strip| strip.surfaces().any(|e| e.surface_id == id && e.fullscreen))
+            .any(|strip| {
+                strip
+                    .surface_entries()
+                    .any(|entry| entry.surface_id() == Some(id) && entry.fullscreen())
+            })
     }
 
     /// True iff the active frame has a fullscreen entry covering the Top layer.
@@ -2212,7 +2299,7 @@ impl Ewm {
         self.output_strips
             .get(&output.name())
             .and_then(|s| s.active_frame())
-            .is_some_and(|f| f.surfaces.iter().any(|e| e.fullscreen))
+            .is_some_and(|frame| frame.entries.iter().any(LayoutEntry::fullscreen))
     }
 
     /// View id of the layout entry under a point.
@@ -2224,7 +2311,12 @@ impl Ewm {
     fn strip_entries(&self, output_name: &str) -> HashSet<u64> {
         self.output_strips
             .get(output_name)
-            .map(|s| s.surfaces().map(|e| e.surface_id).collect())
+            .map(|strip| {
+                strip
+                    .surface_entries()
+                    .filter_map(LayoutEntry::surface_id)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -2474,7 +2566,7 @@ impl Ewm {
         self.focus_any_frame_if_unfocused("auto_focus_on_layout");
 
         debug!(
-            "apply_output_layout: output '{}' with {} surfaces",
+            "apply_output_layout: output '{}' with {} surface entries",
             output_name,
             self.strip_entries(output_name).len(),
         );
@@ -2499,8 +2591,13 @@ impl Ewm {
     fn normalize_fullscreen_entries(&mut self) {
         for strip in self.output_strips.values_mut() {
             for frame in &mut strip.frames {
-                for entry in frame.surfaces.iter_mut().filter(|e| e.fullscreen).skip(1) {
-                    entry.fullscreen = false;
+                for entry in frame
+                    .entries
+                    .iter_mut()
+                    .filter(|entry| entry.fullscreen())
+                    .skip(1)
+                {
+                    entry.set_fullscreen(false);
                 }
             }
         }
@@ -2522,7 +2619,7 @@ impl Ewm {
         output_name: &str,
         entry: &LayoutEntry,
     ) -> u64 {
-        if entry.fullscreen {
+        if entry.fullscreen() {
             let (w, h) = output_sizes
                 .get(output_name)
                 .copied()
@@ -2536,10 +2633,13 @@ impl Ewm {
     fn primary_entry_areas(&self, output_sizes: &HashMap<String, (u64, u64)>) -> HashMap<u64, u64> {
         let mut best_area: HashMap<u64, u64> = HashMap::new();
         for (oname, strip) in self.mapped_output_strips() {
-            for entry in strip.active_surfaces() {
+            for entry in strip.active_surface_entries() {
                 let area = Self::layout_entry_area(output_sizes, oname, entry);
+                let Some(surface_id) = entry.surface_id() else {
+                    continue;
+                };
                 best_area
-                    .entry(entry.surface_id)
+                    .entry(surface_id)
                     .and_modify(|a| *a = (*a).max(area))
                     .or_insert(area);
             }
@@ -2553,8 +2653,8 @@ impl Ewm {
         best_area: &HashMap<u64, u64>,
     ) {
         for strip in self.output_strips.values_mut() {
-            for entry in strip.surfaces_mut() {
-                entry.primary = false;
+            for entry in strip.surface_entries_mut() {
+                entry.set_primary(false);
             }
         }
 
@@ -2562,12 +2662,15 @@ impl Ewm {
         for output in &self.sorted_outputs {
             let oname = output.name();
             if let Some(strip) = self.output_strips.get_mut(&oname) {
-                for entry in strip.active_surfaces_mut() {
-                    let dominated = best_area.get(&entry.surface_id).copied().unwrap_or(0);
+                for entry in strip.active_surface_entries_mut() {
+                    let Some(surface_id) = entry.surface_id() else {
+                        continue;
+                    };
+                    let dominated = best_area.get(&surface_id).copied().unwrap_or(0);
                     if Self::layout_entry_area(output_sizes, &oname, entry) == dominated
-                        && assigned.insert(entry.surface_id)
+                        && assigned.insert(surface_id)
                     {
-                        entry.primary = true;
+                        entry.set_primary(true);
                     }
                 }
             }
@@ -2582,10 +2685,15 @@ impl Ewm {
                 let Some(strip) = self.output_strips.get(&output.name()) else {
                     continue;
                 };
-                for entry in strip.active_surfaces().filter(|e| e.primary) {
-                    self.casting
-                        .mapped_cast_output
-                        .insert(entry.surface_id, output.clone());
+                for entry in strip
+                    .active_surface_entries()
+                    .filter(|entry| entry.primary())
+                {
+                    if let Some(surface_id) = entry.surface_id() {
+                        self.casting
+                            .mapped_cast_output
+                            .insert(surface_id, output.clone());
+                    }
                 }
             }
         }
@@ -2596,14 +2704,20 @@ impl Ewm {
             let Some(strip) = self.output_strips.get(&output.name()) else {
                 continue;
             };
-            for entry in strip.active_surfaces().filter(|e| e.primary) {
+            for entry in strip
+                .active_surface_entries()
+                .filter(|entry| entry.primary())
+            {
                 self.configure_primary(output, entry);
             }
         }
     }
 
     fn configure_primary(&self, output: &Output, entry: &LayoutEntry) {
-        let Some(window) = self.id_windows.get(&entry.surface_id) else {
+        let Some(surface_id) = entry.surface_id() else {
+            return;
+        };
+        let Some(window) = self.id_windows.get(&surface_id) else {
             return;
         };
         window.with_surfaces(|s, data| {
@@ -2617,7 +2731,7 @@ impl Ewm {
         let Some(toplevel) = window.toplevel() else {
             return;
         };
-        let new_size = if entry.fullscreen {
+        let new_size = if entry.fullscreen() {
             let s = crate::utils::output_size(output);
             (s.w as i32, s.h as i32).into()
         } else {
@@ -2626,7 +2740,7 @@ impl Ewm {
         let changed = toplevel.with_pending_state(|state| {
             let changed = state.size != Some(new_size);
             state.size = Some(new_size);
-            if entry.fullscreen {
+            if entry.fullscreen() {
                 state.states.set(XdgToplevelState::Fullscreen);
                 state.states.unset(XdgToplevelState::Maximized);
             } else {
@@ -3304,8 +3418,9 @@ impl Ewm {
         }
         if let Some(strip) = self.output_strips.get(&output.name()) {
             let any_open_fade = strip
-                .surfaces()
-                .any(|e| self.surface_open_anims.contains_key(&e.surface_id))
+                .surface_entries()
+                .filter_map(LayoutEntry::surface_id)
+                .any(|surface_id| self.surface_open_anims.contains_key(&surface_id))
                 || strip
                     .frames
                     .iter()
@@ -4873,8 +4988,8 @@ impl Ewm {
 
         // Notify declared surfaces on this output
         if let Some(strip) = self.output_strips.get(&output.name()) {
-            for entry in strip.surfaces() {
-                if let Some(window) = self.id_windows.get(&entry.surface_id) {
+            for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
+                if let Some(window) = self.id_windows.get(&surface_id) {
                     window.with_surfaces(|surface, data| {
                         crate::utils::send_scale_transform(surface, data, scale, transform);
                     });
@@ -5135,7 +5250,7 @@ impl Ewm {
         let output = self.mapped_output_by_name(location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
 
-        if entry.fullscreen {
+        if entry.fullscreen() {
             return Some(Rectangle::from_size(output_geo.size));
         }
 
@@ -7461,16 +7576,9 @@ mod tests {
         let mut frame = strip::Frame::new(frame_surface_id);
         frame.width = 400.0;
         frame.selected_view_id = Some(view_id);
-        frame.surfaces.push(LayoutEntry {
-            view_id,
-            surface_id,
-            x: 0,
-            y: 0,
-            w: 400,
-            h: 400,
-            primary: false,
-            fullscreen: false,
-        });
+        frame.entries.push(LayoutEntry::surface(
+            view_id, surface_id, 0, 0, 400, 400, false,
+        ));
         frame
     }
 
@@ -7771,7 +7879,9 @@ mod tests {
                         .output_strips
                         .get(*name)
                         .is_some_and(|strip| {
-                            strip.surfaces().any(|entry| entry.surface_id == surface_id && entry.primary)
+                            strip.surface_entries().any(|entry| {
+                                entry.surface_id() == Some(surface_id) && entry.primary()
+                            })
                         })
                 })
                 .collect::<Vec<_>>();

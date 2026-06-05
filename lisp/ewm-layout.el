@@ -52,16 +52,12 @@ The bit-32 range is reserved for frame chrome (see
 `ewm-layout--frame-view-id-marker')."
   (1+ (random (1- (ash 1 32)))))
 
-(defun ewm-layout--ensure-view-id (window surface-id)
-  "Return a stable view id for WINDOW showing SURFACE-ID."
-  (let ((stored (window-parameter window 'ewm-view-id))
-        (cached (window-parameter window 'ewm-view-surface)))
-    (if (and stored (eql cached surface-id))
-        stored
+(defun ewm-layout--ensure-view-id (window)
+  "Return a stable view id for WINDOW."
+  (or (window-parameter window 'ewm-view-id)
       (let ((id (ewm-layout--fresh-view-id)))
         (set-window-parameter window 'ewm-view-id id)
-        (set-window-parameter window 'ewm-view-surface surface-id)
-        id))))
+        id)))
 
 (defun ewm-layout--ensure-frame-view-id (frame)
   "Return FRAME's chrome view id derived from its `ewm-surface-id'.
@@ -90,23 +86,26 @@ This version correctly handles tab-lines on Emacs prior to v31."
   "Plist describing FRAME for `ewm-output-layout'.
 When MENU-ACTIVE is non-nil, `:selected-view-id' is nil so the
 compositor parks keyboard focus on the frame chrome."
-  (let (surfaces)
+  (let (entries)
     (dolist (window (window-list frame 'no-minibuf))
-      (when-let* ((id (ewm-surface-buffer-p (window-buffer window)))
-                  (view-id (ewm-layout--ensure-view-id window id))
+      (when-let* ((view-id (ewm-layout--ensure-view-id window))
                   (view (ewm-layout--make-output-view window)))
-        (push `(:id ,id :view-id ,view-id ,@view) surfaces)))
+        (let ((surface-id (ewm-surface-buffer-p (window-buffer window))))
+          (push `(,@(when surface-id `(:surface-id ,surface-id))
+                  :view-id ,view-id
+                  ,@view)
+                entries))))
     (let ((selected-view-id
            (unless menu-active
-             (when-let* ((sel-win (frame-selected-window frame))
-                         ((ewm-surface-buffer-p (window-buffer sel-win))))
-               (window-parameter sel-win 'ewm-view-id)))))
+             (when-let* ((sel-win (frame-selected-window frame)))
+               (unless (window-minibuffer-p sel-win)
+                 (ewm-layout--ensure-view-id sel-win))))))
       (list :name (or (frame-parameter frame 'name) "")
             :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
             :view-id (ewm-layout--ensure-frame-view-id frame)
             :selected-view-id selected-view-id
             :width (float (frame-pixel-width frame))
-            :surfaces (vconcat (nreverse surfaces))))))
+            :entries (vconcat (nreverse entries))))))
 
 (defun ewm-layout--send-layouts ()
   "Send per-output frame layouts; suppress `:selected-view-id' while modal."

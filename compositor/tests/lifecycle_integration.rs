@@ -18,7 +18,7 @@ fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
     fix.ewm_ref()
         .output_strips
         .values()
-        .flat_map(|s| s.surfaces().map(|e| e.surface_id))
+        .flat_map(|strip| strip.surface_entries().filter_map(LayoutEntry::surface_id))
         .collect()
 }
 
@@ -28,16 +28,9 @@ fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
         surface_id: frame_id,
         view_id: nz(200),
         width: 1920.0,
-        surfaces: vec![LayoutEntry {
-            view_id,
-            surface_id,
-            x: 0,
-            y: 0,
-            w: 400,
-            h: 300,
-            primary: false,
-            fullscreen: false,
-        }],
+        entries: vec![LayoutEntry::surface(
+            view_id, surface_id, 0, 0, 400, 300, false,
+        )],
         selected_view_id: Some(view_id),
         move_anim: None,
     }

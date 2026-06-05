@@ -295,9 +295,9 @@ pub fn handle_keyboard_event(
             .values()
             .flat_map(|s| s.frames.iter())
             .find(|f| f.surface_id == focused_frame_id)
-            .and_then(|f| f.surfaces.iter().find(|e| e.view_id == vid))
-            .filter(|e| e.fullscreen)
-            .map(|e| (e.view_id, e.surface_id))
+            .and_then(|f| f.entries.iter().find(|e| e.view_id == vid))
+            .filter(|e| e.fullscreen())
+            .and_then(|e| e.surface_id().map(|surface_id| (e.view_id, surface_id)))
     });
     let fullscreen_active = fullscreen_view.is_some();
 
