@@ -16,14 +16,15 @@ use zbus::{fdo, interface, ObjectServer};
 
 use super::{current_output_mode, OutputInfo, Start};
 use crate::screencasting::{CastSessionId, CastStreamId};
+use crate::ViewId;
 
 /// Target for a screen cast stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CastTarget {
     /// Cast an entire output/monitor.
     Output { name: String },
-    /// Cast an individual window by its compositor ID.
-    Window { id: u64 },
+    /// Cast an individual Emacs layout entry by its view id.
+    LayoutEntry { view_id: ViewId },
 }
 
 /// Cursor mode requested through org.gnome.Mutter.ScreenCast.
@@ -322,6 +323,11 @@ impl Session {
         properties: RecordWindowProperties,
     ) -> fdo::Result<OwnedObjectPath> {
         let window_id = properties.window_id;
+        let Some(view_id) = ViewId::new(window_id) else {
+            return Err(fdo::Error::InvalidArgs(
+                "window-id must be a non-zero layout entry view id".to_owned(),
+            ));
+        };
         let cursor_mode = properties.cursor_mode.unwrap_or_default();
         info!("RecordWindow: window_id={}", window_id);
 
@@ -330,7 +336,7 @@ impl Session {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let target = StreamTarget::Window { id: window_id };
+        let target = StreamTarget::LayoutEntry { view_id };
         let stream = Stream::new(
             stream_id,
             self.id,
@@ -362,7 +368,7 @@ impl Drop for Session {
 #[derive(Clone, Debug)]
 enum StreamTarget {
     Output(OutputInfo),
-    Window { id: u64 },
+    LayoutEntry { view_id: ViewId },
 }
 
 /// Stream interface
@@ -423,7 +429,7 @@ impl Stream {
             StreamTarget::Output(output) => current_output_mode(output)
                 .map(|mode| (mode.width, mode.height))
                 .unwrap_or((1, 1)),
-            StreamTarget::Window { .. } => (1, 1),
+            StreamTarget::LayoutEntry { .. } => (1, 1),
         };
         StreamParameters {
             position: (0, 0),
@@ -444,7 +450,7 @@ impl StreamTarget {
             StreamTarget::Output(output) => CastTarget::Output {
                 name: output.name.clone(),
             },
-            StreamTarget::Window { id } => CastTarget::Window { id: *id },
+            StreamTarget::LayoutEntry { view_id } => CastTarget::LayoutEntry { view_id: *view_id },
         }
     }
 }

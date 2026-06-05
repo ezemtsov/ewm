@@ -35,7 +35,7 @@ pub enum CompositorToIntrospect {
 }
 
 /// Properties of a window exposed via D-Bus.
-#[derive(Debug, SerializeDict, Type, Value)]
+#[derive(Debug, Clone, SerializeDict, Type, Value)]
 #[zvariant(signature = "dict")]
 pub struct WindowProperties {
     /// Window title.

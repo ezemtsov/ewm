@@ -591,6 +591,12 @@ pub fn window_title_and_app_id(window: &Window) -> (String, String) {
     })
 }
 
+#[cfg(feature = "screencast")]
+fn window_properties(window: &Window) -> dbus::WindowProperties {
+    let (title, app_id) = window_title_and_app_id(window);
+    dbus::WindowProperties { title, app_id }
+}
+
 /// Unconstrain a popup with 8px padding, falling back to no padding if it
 /// doesn't fit.
 fn unconstrain_with_padding(
@@ -1099,10 +1105,10 @@ struct ViewLocation {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct LayoutEntryLocation<'a> {
-    output_name: &'a str,
-    frame_idx: usize,
-    entry: &'a LayoutEntry,
+pub(crate) struct LayoutEntryLocation<'a> {
+    pub(crate) output_name: &'a str,
+    pub(crate) frame_idx: usize,
+    pub(crate) entry: &'a LayoutEntry,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1556,6 +1562,8 @@ impl Ewm {
 
         // Prune dangling focus from the gone strip and hop to a survivor; I5.
         self.prune_dangling_focus();
+        #[cfg(feature = "screencast")]
+        self.refresh_mapped_cast_outputs();
         self.focus_any_frame_if_unfocused("output_removed");
 
         self.recalculate_output_size();
@@ -1693,19 +1701,15 @@ impl Ewm {
 
     /// Resolve an Emacs window view id to its strip location and owning frame.
     fn lookup_view(&self, view_id: ViewId) -> Option<ViewLocation> {
-        for (output, strip) in self.mapped_output_strips() {
-            for (idx, frame) in strip.frames.iter().enumerate() {
-                if let Some(entry) = frame.entries.iter().find(|entry| entry.view_id == view_id) {
-                    return Some(ViewLocation {
-                        output: output.to_string(),
-                        frame_idx: idx,
-                        frame_surface_id: frame.surface_id,
-                        surface_id: entry.surface_id(),
-                    });
-                }
-            }
-        }
-        None
+        let location = self.layout_entry_for_view(view_id)?;
+        let strip = self.output_strips.get(location.output_name)?;
+        let frame = strip.frames.get(location.frame_idx)?;
+        Some(ViewLocation {
+            output: location.output_name.to_string(),
+            frame_idx: location.frame_idx,
+            frame_surface_id: frame.surface_id,
+            surface_id: location.entry.surface_id(),
+        })
     }
 
     fn frame_location(&self, frame_surface_id: u64) -> Option<FrameLocation<'_>> {
@@ -1733,6 +1737,30 @@ impl Ewm {
                 .get_key_value(&output.name())
                 .map(|(name, strip)| (name.as_str(), strip))
         })
+    }
+
+    #[cfg(feature = "screencast")]
+    pub(crate) fn introspect_windows(&self) -> HashMap<u64, dbus::WindowProperties> {
+        let mut windows = HashMap::new();
+        for (_, strip) in self.mapped_output_strips() {
+            for frame in &strip.frames {
+                let frame_props = self
+                    .id_windows
+                    .get(&frame.surface_id)
+                    .map(window_properties);
+                for entry in &frame.entries {
+                    let props = entry
+                        .surface_id()
+                        .and_then(|surface_id| self.id_windows.get(&surface_id))
+                        .map(window_properties)
+                        .or_else(|| frame_props.clone());
+                    if let Some(props) = props {
+                        windows.entry(entry.view_id.get()).or_insert(props);
+                    }
+                }
+            }
+        }
+        windows
     }
 
     pub fn is_emacs_frame(&self, id: u64) -> bool {
@@ -2002,6 +2030,22 @@ impl Ewm {
         self.layout_entry_for_surface(id, |entry| entry.view_id == focused)
     }
 
+    pub(crate) fn layout_entry_for_view(&self, view_id: ViewId) -> Option<LayoutEntryLocation<'_>> {
+        for (output_name, strip) in self.mapped_output_strips() {
+            if let Some((frame_idx, entry)) = strip
+                .entries_with_frame()
+                .find(|(_, entry)| entry.view_id == view_id)
+            {
+                return Some(LayoutEntryLocation {
+                    output_name,
+                    frame_idx,
+                    entry,
+                });
+            }
+        }
+        None
+    }
+
     fn layout_entry_for_surface(
         &self,
         id: u64,
@@ -2044,7 +2088,7 @@ impl Ewm {
 
     /// On-screen rectangle of one layout view. Fullscreen-primary centers on
     /// the toplevel's geometry.
-    fn layout_entry_rect(
+    pub(crate) fn layout_entry_rect(
         &self,
         output_geo: Rectangle<i32, Logical>,
         working_area: Rectangle<i32, Logical>,
@@ -2696,21 +2740,33 @@ impl Ewm {
     fn refresh_mapped_cast_outputs(&mut self) {
         #[cfg(feature = "screencast")]
         {
+            let mut seen = HashSet::new();
             self.casting.mapped_cast_output.clear();
             for output in &self.sorted_outputs {
                 let Some(strip) = self.output_strips.get(&output.name()) else {
                     continue;
                 };
-                for entry in strip
-                    .active_surface_entries()
-                    .filter(|entry| entry.primary())
-                {
-                    if let Some(surface_id) = entry.surface_id() {
-                        self.casting
-                            .mapped_cast_output
-                            .insert(surface_id, output.clone());
-                    }
+                for entry in strip.entries() {
+                    seen.insert(entry.view_id);
+                    self.casting
+                        .mapped_cast_output
+                        .insert(entry.view_id, output.clone());
                 }
+            }
+            let sessions_to_stop: Vec<screencasting::CastSessionId> = self
+                .casting
+                .casts
+                .iter()
+                .filter_map(|cast| match cast.target {
+                    dbus::CastTarget::LayoutEntry { view_id } if !seen.contains(&view_id) => {
+                        Some(cast.session_id)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for session_id in sessions_to_stop {
+                info!(%session_id, "stopping layout-entry cast (view removed)");
+                self.stop_cast(session_id);
             }
         }
     }
@@ -5561,7 +5617,7 @@ impl Ewm {
         );
 
         #[cfg(feature = "screencast")]
-        self.stop_casts_for_window(id);
+        self.refresh_mapped_cast_outputs();
 
         if active_close {
             // Output may be unknown if lisp pruned the frame before destroy fired.
@@ -7852,6 +7908,8 @@ mod tests {
         fn primary_entry_ties_follow_sorted_output_order(
             order_keys in any::<[u8; 4]>(),
             membership in 1u8..16,
+            entry_w in 1u32..800,
+            entry_h in 1u32..800,
         ) {
             let mut fix = testing::Fixture::new().unwrap();
             add_prop_outputs(&mut fix);
@@ -7864,11 +7922,23 @@ mod tests {
                     continue;
                 }
                 let mut strip = strip::Strip::new(strip::AnimationsClock::default());
-                strip.frames.push(frame_with_entry(
+                let surface_view_id = nz(5_000 + idx as u64);
+                let plain_view_id = nz(6_000 + idx as u64);
+                let mut frame = frame_with_entry(
                     4_000 + idx as u64,
-                    nz(5_000 + idx as u64),
+                    surface_view_id,
                     surface_id,
+                );
+                frame.entries[0].w = entry_w;
+                frame.entries[0].h = entry_h;
+                frame.entries.push(LayoutEntry::emacs_window(
+                    plain_view_id,
+                    entry_w as i32,
+                    0,
+                    entry_w,
+                    entry_h,
                 ));
+                strip.frames.push(frame);
                 fix.ewm().output_strips.insert((*name).to_string(), strip);
             }
 
@@ -7907,14 +7977,51 @@ mod tests {
             #[cfg(feature = "screencast")]
             {
                 fix.ewm().refresh_mapped_cast_outputs();
-                prop_assert_eq!(
-                    fix.ewm_ref()
-                        .casting
-                        .mapped_cast_output
-                        .get(&surface_id)
-                        .map(Output::name),
-                    Some(expected.to_string()),
-                );
+                for (idx, name) in PROP_HEADS.iter().enumerate() {
+                    if membership & (1 << idx) == 0 {
+                        continue;
+                    }
+
+                    for view_id in [nz(5_000 + idx as u64), nz(6_000 + idx as u64)] {
+                        prop_assert_eq!(
+                            fix.ewm_ref()
+                                .casting
+                                .mapped_cast_output
+                                .get(&view_id)
+                                .map(Output::name),
+                            Some((*name).to_string()),
+                        );
+                        prop_assert_eq!(
+                            fix.ewm_ref()
+                                .layout_entry_cast_params(view_id)
+                                .map(|(size, _)| size),
+                            Some(Size::from((entry_w as i32, entry_h as i32))),
+                        );
+                    }
+                }
+
+                let removed_idx = order
+                    .iter()
+                    .copied()
+                    .find(|idx| membership & (1 << idx) != 0)
+                    .unwrap();
+                let removed_name = PROP_HEADS[removed_idx];
+                if let Some(strip) = fix.ewm().output_strips.get_mut(removed_name) {
+                    if let Some(frame) = strip.frames.first_mut() {
+                        frame.entries.clear();
+                    }
+                }
+                fix.ewm().refresh_mapped_cast_outputs();
+                prop_assert!(!fix
+                    .ewm_ref()
+                    .casting
+                    .mapped_cast_output
+                    .contains_key(&nz(5_000 + removed_idx as u64)));
+                prop_assert!(!fix
+                    .ewm_ref()
+                    .casting
+                    .mapped_cast_output
+                    .contains_key(&nz(6_000 + removed_idx as u64)));
             }
         }
 

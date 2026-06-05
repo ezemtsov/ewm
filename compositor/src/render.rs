@@ -170,7 +170,7 @@ pub fn render_cursor_elements(
 ///
 /// Shared pipeline for all view rendering: fullscreen primary/non-primary
 /// and normal primary/non-primary.
-fn push_constrained(
+pub(crate) fn push_constrained(
     elements: &mut Vec<EwmRenderElement>,
     view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     loc: Point<i32, Physical>,
@@ -184,6 +184,37 @@ fn push_constrained(
             .map(|e| RescaleRenderElement::from_element(e, loc, element_scale))
             .filter_map(|e| CropRenderElement::from_element(e, output_scale, constrain))
             .map(EwmRenderElement::Constrained),
+    );
+}
+
+pub(crate) fn push_view_elements_fit(
+    elements: &mut Vec<EwmRenderElement>,
+    view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    loc: Point<i32, Physical>,
+    source_size: Size<i32, Physical>,
+    output_scale: Scale<f64>,
+    constrain: Rectangle<i32, Physical>,
+    fill: bool,
+) {
+    let element_scale = if fill {
+        if source_size.w <= 0 || source_size.h <= 0 {
+            return;
+        }
+        Scale::from(f64::max(
+            constrain.size.w as f64 / source_size.w as f64,
+            constrain.size.h as f64 / source_size.h as f64,
+        ))
+    } else {
+        Scale::from(1.0)
+    };
+
+    push_constrained(
+        elements,
+        view_elements,
+        loc,
+        element_scale,
+        output_scale,
+        constrain,
     );
 }
 
@@ -403,13 +434,16 @@ pub fn collect_render_elements_for_output(
                                 scale,
                                 entry_alpha,
                             );
-                            push_constrained(
+                            let source_size: Size<i32, Physical> =
+                                window.geometry().size.to_physical_precise_round(scale);
+                            push_view_elements_fit(
                                 &mut elements,
                                 view_elements,
                                 loc_physical,
-                                Scale::from(1.0),
+                                source_size,
                                 scale,
                                 constrain,
+                                false,
                             );
                         } else {
                             // Non-primary: uniform stretch to fill output, crop overflow.
@@ -421,19 +455,16 @@ pub fn collect_render_elements_for_output(
                                 scale,
                                 entry_alpha,
                             );
-                            let buf_size: Size<i32, Physical> =
+                            let source_size: Size<i32, Physical> =
                                 window.geometry().size.to_physical_precise_round(scale);
-                            let uniform = f64::max(
-                                output_physical.w as f64 / buf_size.w as f64,
-                                output_physical.h as f64 / buf_size.h as f64,
-                            );
-                            push_constrained(
+                            push_view_elements_fit(
                                 &mut elements,
                                 view_elements,
                                 loc_physical,
-                                Scale::from(uniform),
+                                source_size,
                                 scale,
                                 constrain,
+                                true,
                             );
                         }
 
@@ -475,31 +506,31 @@ pub fn collect_render_elements_for_output(
 
                     if entry.primary() {
                         // Primary view: render at native size, crop to entry.
-                        push_constrained(
+                        let source_size: Size<i32, Physical> =
+                            window.geometry().size.to_physical_precise_round(scale);
+                        push_view_elements_fit(
                             &mut elements,
                             view_elements,
                             loc_physical,
-                            Scale::from(1.0),
+                            source_size,
                             scale,
                             constrain,
+                            false,
                         );
                     } else {
                         // Non-primary view: stretch buffer to fill entry bounds, then crop.
                         // Uses uniform scale (fill): pick the larger factor to fully cover
                         // the entry, preserving aspect ratio. The crop trims overflow.
-                        let buf_size: Size<i32, Physical> =
+                        let source_size: Size<i32, Physical> =
                             window.geometry().size.to_physical_precise_round(scale);
-                        let uniform = f64::max(
-                            entry_size.w as f64 / buf_size.w as f64,
-                            entry_size.h as f64 / buf_size.h as f64,
-                        );
-                        push_constrained(
+                        push_view_elements_fit(
                             &mut elements,
                             view_elements,
                             loc_physical,
-                            Scale::from(uniform),
+                            source_size,
                             scale,
                             constrain,
+                            true,
                         );
                     }
                 }

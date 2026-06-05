@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 use crate::cursor::CursorTextureCache;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
 use crate::render::{render_cursor_elements, EwmRenderElement};
-use crate::{Ewm, State};
+use crate::{Ewm, LayoutEntry, State, ViewId};
 
 fn output_cast_cursor_location(
     pointer_location: (f64, f64),
@@ -103,9 +103,9 @@ pub struct Screencasting {
     /// stays registered across reinits after `FatalError`.
     pub pw_to_compositor: Sender<PwToCompositor>,
 
-    /// Cached map: window id -> primary output. Populated in
+    /// Cached map: layout entry view id -> output. Populated in
     /// `apply_output_layout()`.
-    pub mapped_cast_output: HashMap<u64, Output>,
+    pub mapped_cast_output: HashMap<ViewId, Output>,
 
     // Drop PipeWire last, specifically after `casts`, to prevent a
     // double-free: each Cast's StreamRc holds a clone of the core, and
@@ -131,6 +131,74 @@ impl Screencasting {
             mapped_cast_output: HashMap::new(),
             pipewire: None,
         }
+    }
+}
+
+struct LayoutEntryCastGeometry<'a> {
+    output: Output,
+    frame_surface_id: u64,
+    frame_origin: Point<i32, Logical>,
+    entry: &'a LayoutEntry,
+    entry_rect: Rectangle<i32, Logical>,
+}
+
+impl Ewm {
+    fn layout_entry_cast_geometry(&self, view_id: ViewId) -> Option<LayoutEntryCastGeometry<'_>> {
+        let location = self.layout_entry_for_view(view_id)?;
+        let output = self.find_mapped_output(location.output_name)?;
+        let output_geo = self.space.output_geometry(&output)?;
+        let working_area = self.get_working_area(&output);
+        let strip = self.output_strips.get(location.output_name)?;
+        let frame = strip.frames.get(location.frame_idx)?;
+        let frame_dx = strip.screen_x_of_frame(location.frame_idx) as i32;
+        let frame_origin = Point::from((
+            output_geo.loc.x + working_area.loc.x + frame_dx,
+            output_geo.loc.y + working_area.loc.y,
+        ));
+        let entry_rect = self.layout_entry_rect(
+            output_geo,
+            working_area,
+            strip,
+            location.frame_idx,
+            location.entry,
+        );
+        Some(LayoutEntryCastGeometry {
+            output,
+            frame_surface_id: frame.surface_id,
+            frame_origin,
+            entry: location.entry,
+            entry_rect,
+        })
+    }
+
+    pub(crate) fn screen_cast_output_for_target(&self, target: &CastTarget) -> Option<Output> {
+        match target {
+            CastTarget::Output { name } => self.find_mapped_output(name),
+            CastTarget::LayoutEntry { view_id } => self
+                .casting
+                .mapped_cast_output
+                .get(view_id)
+                .cloned()
+                .or_else(|| self.layout_entry_cast_geometry(*view_id).map(|g| g.output)),
+        }
+    }
+
+    pub(crate) fn layout_entry_cast_params(
+        &self,
+        view_id: ViewId,
+    ) -> Option<(Size<i32, Physical>, u32)> {
+        let geometry = self.layout_entry_cast_geometry(view_id)?;
+        let scale = Scale::from(geometry.output.current_scale().fractional_scale());
+        let size = geometry.entry_rect.size.to_physical_precise_round(scale);
+        if size.w <= 0 || size.h <= 0 {
+            return None;
+        }
+        let refresh = geometry
+            .output
+            .current_mode()
+            .map(|m| (m.refresh / 1000) as u32)
+            .unwrap_or(60);
+        Some((size, refresh))
     }
 }
 
@@ -202,12 +270,7 @@ impl State {
                 else {
                     return;
                 };
-                let output = match &cast.target {
-                    CastTarget::Output { name } => self.ewm.find_mapped_output(name),
-                    CastTarget::Window { id } => {
-                        self.ewm.casting.mapped_cast_output.get(id).cloned()
-                    }
-                };
+                let output = self.ewm.screen_cast_output_for_target(&cast.target);
                 let Some(output) = output else { return };
                 self.ewm.queue_redraw(&output);
             }
@@ -227,7 +290,7 @@ impl State {
                     session_id, target, cursor_mode,
                 );
 
-                let alpha = matches!(target, CastTarget::Window { .. });
+                let alpha = matches!(target, CastTarget::LayoutEntry { .. });
 
                 let (gbm, render_formats) = match self.prepare_pw_cast(alpha) {
                     Ok(x) => x,
@@ -249,22 +312,12 @@ impl State {
                             })
                         })
                     }
-                    CastTarget::Window { id } => {
-                        let Some(window) = self.ewm.id_windows.get(id) else {
-                            warn!("StartCast: window {} not found", id);
-                            self.ewm.stop_cast(session_id);
-                            return;
-                        };
-                        let output = self.ewm.casting.mapped_cast_output.get(id);
-                        let scale = output
-                            .map(|o| Scale::from(o.current_scale().fractional_scale()))
-                            .unwrap_or(Scale::from(1.0));
-                        let bbox = window.bbox_with_popups().to_physical_precise_up(scale);
-                        let refresh = output
-                            .and_then(|o| o.current_mode())
-                            .map(|m| (m.refresh / 1000) as u32)
-                            .unwrap_or(60);
-                        Some((bbox.size, refresh))
+                    CastTarget::LayoutEntry { view_id } => {
+                        let params = self.ewm.layout_entry_cast_params(*view_id);
+                        if params.is_none() {
+                            warn!("StartCast: layout entry {} not found", view_id);
+                        }
+                        params
                     }
                 };
 
@@ -337,49 +390,164 @@ impl Ewm {
         }
     }
 
-    /// Stop all screen casts targeting a specific window (called when the
-    /// window closes).
-    pub fn stop_casts_for_window(&mut self, window_id: u64) {
-        let target = CastTarget::Window { id: window_id };
-        let sessions_to_stop: Vec<CastSessionId> = self
+    fn request_stop_cast(&self, session_id: CastSessionId) {
+        let _ = self
             .casting
-            .casts
-            .iter()
-            .filter(|c| c.target == target)
-            .map(|c| c.session_id)
-            .collect();
-        for session_id in sessions_to_stop {
-            info!(%session_id, window_id, "stopping window cast (window closed)");
-            self.stop_cast(session_id);
-        }
+            .pw_to_compositor
+            .send(PwToCompositor::StopCast { session_id });
     }
 
-    /// Render a window into a screencast buffer.
+    fn render_plain_entry_for_screen_cast(
+        &self,
+        renderer: &mut GlesRenderer,
+        geometry: &LayoutEntryCastGeometry<'_>,
+        output_scale: Scale<f64>,
+        entry_size: Size<i32, Physical>,
+    ) -> Vec<EwmRenderElement> {
+        let Some(frame_window) = self.id_windows.get(&geometry.frame_surface_id) else {
+            return Vec::new();
+        };
+        let Some(surface) = frame_window.wl_surface() else {
+            return Vec::new();
+        };
+
+        let render_offset = Point::from((
+            geometry.frame_origin.x - geometry.entry_rect.loc.x,
+            geometry.frame_origin.y - geometry.entry_rect.loc.y,
+        ))
+        .to_physical_precise_round(output_scale);
+        let view_elements = render_elements_from_surface_tree(
+            renderer,
+            &surface,
+            render_offset,
+            output_scale,
+            1.0,
+            Kind::Unspecified,
+        );
+        let mut elements = Vec::new();
+        crate::render::push_constrained(
+            &mut elements,
+            view_elements,
+            Point::default(),
+            Scale::from(1.0),
+            output_scale,
+            Rectangle::from_size(entry_size),
+        );
+        elements
+    }
+
+    fn render_layout_entry_content_for_screen_cast(
+        &self,
+        renderer: &mut GlesRenderer,
+        geometry: &LayoutEntryCastGeometry<'_>,
+        output_scale: Scale<f64>,
+        entry_size: Size<i32, Physical>,
+    ) -> Vec<EwmRenderElement> {
+        if let Some(window) = geometry
+            .entry
+            .surface_id()
+            .and_then(|surface_id| self.id_windows.get(&surface_id))
+        {
+            if let Some(surface) = window.wl_surface() {
+                let view_elements = render_elements_from_surface_tree(
+                    renderer,
+                    &surface,
+                    Point::default(),
+                    output_scale,
+                    1.0,
+                    Kind::Unspecified,
+                );
+                let source_size = window
+                    .geometry()
+                    .size
+                    .to_physical_precise_round(output_scale);
+                let mut elements = Vec::new();
+                crate::render::push_view_elements_fit(
+                    &mut elements,
+                    view_elements,
+                    Point::default(),
+                    source_size,
+                    output_scale,
+                    Rectangle::from_size(entry_size),
+                    !geometry.entry.primary(),
+                );
+                return elements;
+            }
+        }
+
+        self.render_plain_entry_for_screen_cast(renderer, geometry, output_scale, entry_size)
+    }
+
+    fn layout_entry_cursor_for_screen_cast(
+        &self,
+        renderer: &mut GlesRenderer,
+        cursor_texture_cache: &CursorTextureCache,
+        geometry: &LayoutEntryCastGeometry<'_>,
+        output_scale: Scale<f64>,
+        include_cursor: bool,
+    ) -> (Vec<EwmRenderElement>, Point<i32, Physical>) {
+        if !include_cursor {
+            return (Vec::new(), Point::default());
+        }
+
+        let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
+        let mut cursor_location = Point::<i32, Physical>::from((0, 0));
+
+        let (px, py) = self.pointer_location();
+        let rect = geometry.entry_rect;
+        if px >= rect.loc.x as f64
+            && py >= rect.loc.y as f64
+            && px < (rect.loc.x + rect.size.w) as f64
+            && py < (rect.loc.y + rect.size.h) as f64
+        {
+            let pointer_pos = Point::from((px - rect.loc.x as f64, py - rect.loc.y as f64));
+            cursor_location = pointer_pos.to_physical_precise_round(output_scale);
+            cursor_elements.extend(render_cursor_elements(
+                self,
+                renderer,
+                cursor_texture_cache,
+                &geometry.output,
+                output_scale,
+                pointer_pos,
+            ));
+        }
+
+        (cursor_elements, cursor_location)
+    }
+
+    /// Render one layout entry into a screencast buffer.
     ///
     /// Returns true if a frame was rendered. The `cast` is passed
     /// separately because `casting.casts` is detached from `self`
     /// during the render loop.
     #[allow(clippy::too_many_arguments)]
-    pub fn render_window_for_screen_cast(
+    pub fn render_layout_entry_for_screen_cast(
         &self,
         renderer: &mut GlesRenderer,
         cast: &mut Cast,
-        window_id: u64,
+        view_id: ViewId,
         output: &Output,
         cursor_texture_cache: &CursorTextureCache,
         output_scale: Scale<f64>,
         target_frame_time: Duration,
     ) -> bool {
-        let Some(window) = self.id_windows.get(&window_id) else {
+        let Some(geometry) = self.layout_entry_cast_geometry(view_id) else {
+            self.request_stop_cast(cast.session_id);
             return false;
         };
+        if geometry.output.name() != output.name() {
+            return false;
+        }
 
-        // Use bbox_with_popups for accurate size including popups, scaled
-        // to physical pixels via the output's fractional scale.
-        let bbox = window
-            .bbox_with_popups()
-            .to_physical_precise_up(output_scale);
-        let window_size = bbox.size;
+        let entry_size = geometry
+            .entry_rect
+            .size
+            .to_physical_precise_round(output_scale);
+        if entry_size.w <= 0 || entry_size.h <= 0 {
+            warn!(session_id = %cast.session_id, "layout-entry cast has empty size");
+            self.request_stop_cast(cast.session_id);
+            return false;
+        }
 
         let refresh = output
             .current_mode()
@@ -388,25 +556,15 @@ impl Ewm {
 
         if let Err(err) = cast.set_refresh(refresh) {
             warn!(session_id = %cast.session_id, "set_refresh failed: {err:?}");
-            let _ = self
-                .casting
-                .pw_to_compositor
-                .send(PwToCompositor::StopCast {
-                    session_id: cast.session_id,
-                });
+            self.request_stop_cast(cast.session_id);
             return false;
         }
-        match cast.ensure_size(window_size) {
+        match cast.ensure_size(entry_size) {
             Ok(CastSizeChange::Ready) => (),
             Ok(CastSizeChange::Pending) => return false,
             Err(err) => {
                 warn!(session_id = %cast.session_id, "ensure_size failed: {err:?}");
-                let _ = self
-                    .casting
-                    .pw_to_compositor
-                    .send(PwToCompositor::StopCast {
-                        session_id: cast.session_id,
-                    });
+                self.request_stop_cast(cast.session_id);
                 return false;
             }
         }
@@ -415,73 +573,26 @@ impl Ewm {
             return false;
         }
 
-        // bbox.loc is the offset of the bounding box from the window origin;
-        // negate it so popups extending beyond the window are visible.
-        let render_offset = Point::from((-bbox.loc.x, -bbox.loc.y));
-
-        let window_elements: Vec<EwmRenderElement> = if let Some(surface) = window.wl_surface() {
-            let elems: Vec<_> = render_elements_from_surface_tree(
-                renderer,
-                &surface,
-                render_offset,
-                output_scale,
-                1.0,
-                Kind::Unspecified,
-            );
-            elems.into_iter().map(EwmRenderElement::Surface).collect()
-        } else {
-            Vec::new()
-        };
-
-        let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
-        let mut cursor_location = Point::<i32, Physical>::from((0, 0));
-
-        if cast.cursor_mode.includes_cursor() {
-            let (px, py) = self.pointer_location();
-            let output_geo = self.space.output_geometry(output);
-
-            if let Some(output_geo) = output_geo {
-                if let Some(strip) = self.output_strips.get(&output.name()) {
-                    let working_area = self.get_working_area(output);
-                    for entry in strip.surface_entries() {
-                        if entry.surface_id() != Some(window_id) {
-                            continue;
-                        }
-                        let entry_x = output_geo.loc.x + working_area.loc.x + entry.x;
-                        let entry_y = output_geo.loc.y + working_area.loc.y + entry.y;
-
-                        if px >= entry_x as f64
-                            && py >= entry_y as f64
-                            && px < (entry_x + entry.w as i32) as f64
-                            && py < (entry_y + entry.h as i32) as f64
-                        {
-                            let bbox_logical = bbox.loc.to_f64().to_logical(output_scale);
-                            // cursor_location for SPA_META_Cursor (without hotspot offset)
-                            let loc_x = px - entry_x as f64 - bbox_logical.x;
-                            let loc_y = py - entry_y as f64 - bbox_logical.y;
-                            let pointer_pos = Point::from((loc_x, loc_y));
-                            cursor_location = pointer_pos.to_physical_precise_round(output_scale);
-                            cursor_elements.extend(render_cursor_elements(
-                                self,
-                                renderer,
-                                cursor_texture_cache,
-                                output,
-                                output_scale,
-                                pointer_pos,
-                            ));
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        let content_elements = self.render_layout_entry_content_for_screen_cast(
+            renderer,
+            &geometry,
+            output_scale,
+            entry_size,
+        );
+        let (cursor_elements, cursor_location) = self.layout_entry_cursor_for_screen_cast(
+            renderer,
+            cursor_texture_cache,
+            &geometry,
+            output_scale,
+            cast.cursor_mode.includes_cursor(),
+        );
 
         if cast.dequeue_buffer_and_render(
             renderer,
-            &window_elements,
+            &content_elements,
             &cursor_elements,
             cursor_location,
-            window_size,
+            entry_size,
             output_scale,
         ) {
             cast.last_frame_time = target_frame_time;
@@ -589,10 +700,10 @@ impl Ewm {
         self.casting.casts = casts;
     }
 
-    /// Render every window cast whose target window currently lives on
+    /// Render every layout-entry cast whose target entry currently lives on
     /// `output`. Casts that hit an unrecoverable error self-stop via
     /// `PwToCompositor::StopCast`.
-    pub fn render_windows_for_screen_cast(
+    pub fn render_layout_entries_for_screen_cast(
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
@@ -606,17 +717,17 @@ impl Ewm {
             if !cast.is_active() {
                 continue;
             }
-            let CastTarget::Window { id } = cast.target else {
+            let CastTarget::LayoutEntry { view_id } = cast.target else {
                 continue;
             };
-            if self.casting.mapped_cast_output.get(&id) != Some(output) {
+            if self.casting.mapped_cast_output.get(&view_id) != Some(output) {
                 continue;
             }
 
-            self.render_window_for_screen_cast(
+            self.render_layout_entry_for_screen_cast(
                 renderer,
                 cast,
-                id,
+                view_id,
                 output,
                 cursor_texture_cache,
                 output_scale,

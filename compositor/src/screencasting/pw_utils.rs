@@ -261,7 +261,7 @@ pub struct Cast {
     /// Frame sequence counter for SPA_META_Header
     sequence_counter: u64,
     pub cursor_mode: CursorMode,
-    /// Whether the stream uses alpha (BGRA). True for window casts.
+    /// Whether the stream uses alpha (BGRA). True for layout-entry casts.
     alpha: bool,
     /// Render formats (modifier list) for renegotiation on resize
     render_formats: Vec<i64>,
@@ -709,14 +709,8 @@ impl PipeWire {
                             let _ = add_buf_event_loop.insert_source(
                                 Timer::from_duration(Duration::ZERO),
                                 move |_, _, state| {
-                                    let output = match &redraw_target {
-                                        CastTarget::Output { name } => {
-                                            state.ewm.find_mapped_output(name)
-                                        }
-                                        CastTarget::Window { id } => {
-                                            state.ewm.casting.mapped_cast_output.get(id).cloned()
-                                        }
-                                    };
+                                    let output =
+                                        state.ewm.screen_cast_output_for_target(&redraw_target);
                                     if let Some(output) = output {
                                         state.ewm.queue_redraw(&output);
                                     }

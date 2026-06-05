@@ -1454,7 +1454,7 @@ impl DrmBackendState {
                 output_scale,
                 target_frame_time,
             );
-            ewm.render_windows_for_screen_cast(
+            ewm.render_layout_entries_for_screen_cast(
                 renderer,
                 output,
                 cursor_texture_cache,
@@ -2858,9 +2858,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     {
         use smithay::reexports::calloop::channel::Event as ChannelEvent;
 
-        use crate::dbus::{
-            CompositorToIntrospect, DBusServers, IntrospectToCompositor, WindowProperties,
-        };
+        use crate::dbus::{CompositorToIntrospect, DBusServers, IntrospectToCompositor};
 
         let outputs = state.backend.output_infos().shared();
         let (dbus_servers, sc_receiver, introspect_receiver, introspect_reply_tx) =
@@ -2886,11 +2884,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                 if let ChannelEvent::Msg(msg) = event {
                     match msg {
                         IntrospectToCompositor::GetWindows => {
-                            let mut windows = std::collections::HashMap::new();
-                            for (&id, window) in &state.ewm.id_windows {
-                                let (title, app_id) = crate::window_title_and_app_id(window);
-                                windows.insert(id, WindowProperties { title, app_id });
-                            }
+                            let windows = state.ewm.introspect_windows();
                             if let Some(ref tx) = state.ewm.introspect_reply_tx {
                                 let _ = tx.send_blocking(CompositorToIntrospect::Windows(windows));
                             }
