@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 use crate::cursor::CursorTextureCache;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
 use crate::render::{render_cursor_elements, EwmRenderElement};
-use crate::{Ewm, LayoutEntry, State, ViewId};
+use crate::{Ewm, LayoutEntry, LayoutEntryId, State};
 
 fn output_cast_cursor_location(
     pointer_location: (f64, f64),
@@ -103,9 +103,9 @@ pub struct Screencasting {
     /// stays registered across reinits after `FatalError`.
     pub pw_to_compositor: Sender<PwToCompositor>,
 
-    /// Cached map: layout entry view id -> output. Populated in
+    /// Cached map: layout entry id -> output. Populated in
     /// `apply_output_layout()`.
-    pub mapped_cast_output: HashMap<ViewId, Output>,
+    pub mapped_cast_output: HashMap<LayoutEntryId, Output>,
 
     // Drop PipeWire last, specifically after `casts`, to prevent a
     // double-free: each Cast's StreamRc holds a clone of the core, and
@@ -143,8 +143,11 @@ struct LayoutEntryCastGeometry<'a> {
 }
 
 impl Ewm {
-    fn layout_entry_cast_geometry(&self, view_id: ViewId) -> Option<LayoutEntryCastGeometry<'_>> {
-        let location = self.layout_entry_for_view(view_id)?;
+    fn layout_entry_cast_geometry(
+        &self,
+        entry_id: LayoutEntryId,
+    ) -> Option<LayoutEntryCastGeometry<'_>> {
+        let location = self.layout_entry_for_id(entry_id)?;
         let output = self.find_mapped_output(location.output_name)?;
         let output_geo = self.space.output_geometry(&output)?;
         let working_area = self.get_working_area(&output);
@@ -174,20 +177,20 @@ impl Ewm {
     pub(crate) fn screen_cast_output_for_target(&self, target: &CastTarget) -> Option<Output> {
         match target {
             CastTarget::Output { name } => self.find_mapped_output(name),
-            CastTarget::LayoutEntry { view_id } => self
+            CastTarget::LayoutEntry { entry_id } => self
                 .casting
                 .mapped_cast_output
-                .get(view_id)
+                .get(entry_id)
                 .cloned()
-                .or_else(|| self.layout_entry_cast_geometry(*view_id).map(|g| g.output)),
+                .or_else(|| self.layout_entry_cast_geometry(*entry_id).map(|g| g.output)),
         }
     }
 
     pub(crate) fn layout_entry_cast_params(
         &self,
-        view_id: ViewId,
+        entry_id: LayoutEntryId,
     ) -> Option<(Size<i32, Physical>, u32)> {
-        let geometry = self.layout_entry_cast_geometry(view_id)?;
+        let geometry = self.layout_entry_cast_geometry(entry_id)?;
         let scale = Scale::from(geometry.output.current_scale().fractional_scale());
         let size = geometry.entry_rect.size.to_physical_precise_round(scale);
         if size.w <= 0 || size.h <= 0 {
@@ -312,10 +315,10 @@ impl State {
                             })
                         })
                     }
-                    CastTarget::LayoutEntry { view_id } => {
-                        let params = self.ewm.layout_entry_cast_params(*view_id);
+                    CastTarget::LayoutEntry { entry_id } => {
+                        let params = self.ewm.layout_entry_cast_params(*entry_id);
                         if params.is_none() {
-                            warn!("StartCast: layout entry {} not found", view_id);
+                            warn!("StartCast: layout entry {} not found", entry_id);
                         }
                         params
                     }
@@ -525,13 +528,13 @@ impl Ewm {
         &self,
         renderer: &mut GlesRenderer,
         cast: &mut Cast,
-        view_id: ViewId,
+        entry_id: LayoutEntryId,
         output: &Output,
         cursor_texture_cache: &CursorTextureCache,
         output_scale: Scale<f64>,
         target_frame_time: Duration,
     ) -> bool {
-        let Some(geometry) = self.layout_entry_cast_geometry(view_id) else {
+        let Some(geometry) = self.layout_entry_cast_geometry(entry_id) else {
             self.request_stop_cast(cast.session_id);
             return false;
         };
@@ -717,17 +720,17 @@ impl Ewm {
             if !cast.is_active() {
                 continue;
             }
-            let CastTarget::LayoutEntry { view_id } = cast.target else {
+            let CastTarget::LayoutEntry { entry_id } = cast.target else {
                 continue;
             };
-            if self.casting.mapped_cast_output.get(&view_id) != Some(output) {
+            if self.casting.mapped_cast_output.get(&entry_id) != Some(output) {
                 continue;
             }
 
             self.render_layout_entry_for_screen_cast(
                 renderer,
                 cast,
-                view_id,
+                entry_id,
                 output,
                 cursor_texture_cache,
                 output_scale,

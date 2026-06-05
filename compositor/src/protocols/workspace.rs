@@ -285,7 +285,7 @@ impl WorkspaceManagerState {
 }
 
 /// Compute the display name for a frame (1-based index).
-fn frame_display_name(index: usize) -> String {
+pub(crate) fn frame_display_name(index: usize) -> String {
     (index + 1).to_string()
 }
 

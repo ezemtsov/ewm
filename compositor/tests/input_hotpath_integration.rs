@@ -3,7 +3,7 @@
 use ewm_core::input::KeyboardAction;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
-use ewm_core::{EmulatedKey, InterceptDispatch, InterceptedKey, LayoutEntry, ViewId};
+use ewm_core::{EmulatedKey, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId};
 use smithay::input::keyboard::keysyms;
 use smithay::utils::Size;
 
@@ -40,7 +40,7 @@ enum Target {
     Emacs,
 }
 
-fn nz(n: u64) -> ViewId {
+fn nz(n: u64) -> LayoutEntryId {
     std::num::NonZeroU64::new(n).unwrap()
 }
 
@@ -56,16 +56,28 @@ const fn up(keycode: u32) -> KeyEvent {
     (wl_key(keycode), false)
 }
 
-fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64, fullscreen: bool) -> Frame {
+fn frame_with_entry(
+    frame_id: u64,
+    entry_id: LayoutEntryId,
+    surface_id: u64,
+    fullscreen: bool,
+) -> Frame {
     Frame {
         name: String::new(),
         surface_id: frame_id,
-        view_id: nz(frame_id + 1_000),
+        focus_id: nz(frame_id + 1_000),
         width: 1280.0,
         entries: vec![LayoutEntry::surface(
-            view_id, surface_id, 0, 0, 400, 300, fullscreen,
+            entry_id,
+            "entry".to_string(),
+            surface_id,
+            0,
+            0,
+            400,
+            300,
+            fullscreen,
         )],
-        selected_view_id: Some(view_id),
+        selected_entry_id: Some(entry_id),
         move_anim: None,
     }
 }
@@ -126,7 +138,7 @@ struct Harness {
     app: TestClient,
     emacs_id: u64,
     app_id: u64,
-    app_view_id: ViewId,
+    app_entry_id: LayoutEntryId,
 }
 
 impl Harness {
@@ -157,19 +169,19 @@ impl Harness {
             app,
             emacs_id,
             app_id,
-            app_view_id: nz(3001),
+            app_entry_id: nz(3001),
         }
     }
 
     fn focus(&mut self, mode: FocusMode) -> &mut Self {
         let mut frame = frame_with_entry(
             self.emacs_id,
-            self.app_view_id,
+            self.app_entry_id,
             self.app_id,
             matches!(mode, FocusMode::FullscreenApp),
         );
         if matches!(mode, FocusMode::EmacsBuffer) {
-            frame.selected_view_id = None;
+            frame.selected_entry_id = None;
         }
 
         self.fix.apply_output_layout_command(HEAD, vec![frame]);
@@ -177,7 +189,7 @@ impl Harness {
             FocusMode::EmbeddedApp | FocusMode::FullscreenApp => {
                 self.fix
                     .ewm()
-                    .set_focus_view(self.app_view_id, "test", false)
+                    .set_focus_entry(self.app_entry_id, "test", false)
             }
             FocusMode::EmacsBuffer => self.fix.ewm().set_focus_frame(self.emacs_id, "test", false),
         }

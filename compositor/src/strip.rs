@@ -11,7 +11,7 @@ use std::time::Duration;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::utils::get_monotonic_time;
-use crate::{LayoutEntry, ViewId};
+use crate::{FocusId, LayoutEntry, LayoutEntryId};
 
 /// Shared "snap to target" toggle threaded into every `ViewAnimation` and
 /// `Strip`.  Cloning is an `Arc` bump.  When the flag is set, animations
@@ -250,16 +250,16 @@ impl ViewOffset {
     }
 }
 
-/// Frame chrome view ids occupy the high half of the u64 space (bit 32 set),
+/// Frame focus ids occupy the high half of the u64 space (bit 32 set),
 /// derived deterministically from `surface_id` so the compositor and lisp can
 /// construct the same id at `new_toplevel` / layout-build without coordination.
-/// Entry view ids stay in `[1, 2^32 - 1]` with bit 32 unset.
-pub const FRAME_VIEW_ID_MARKER: u64 = 1u64 << 32;
+/// Layout entry ids stay in `[1, 2^32 - 1]` with bit 32 unset.
+pub const FRAME_FOCUS_ID_MARKER: u64 = 1u64 << 32;
 
-/// Derive a frame chrome's view id from its surface id.
-pub fn frame_view_id_for(surface_id: u64) -> ViewId {
-    std::num::NonZeroU64::new(FRAME_VIEW_ID_MARKER | surface_id)
-        .expect("frame view id is non-zero by construction")
+/// Derive a frame chrome's focus id from its surface id.
+pub fn frame_focus_id_for(surface_id: u64) -> FocusId {
+    std::num::NonZeroU64::new(FRAME_FOCUS_ID_MARKER | surface_id)
+        .expect("frame focus id is non-zero by construction")
 }
 
 /// One Emacs frame in the strip.
@@ -267,11 +267,11 @@ pub fn frame_view_id_for(surface_id: u64) -> ViewId {
 pub struct Frame {
     pub name: String,
     pub surface_id: u64,
-    pub view_id: ViewId,
+    pub focus_id: FocusId,
     pub width: f64,
     pub entries: Vec<LayoutEntry>,
-    /// Selected entry's view id (keyboard focus target when frame is focused).
-    pub selected_view_id: Option<ViewId>,
+    /// Selected entry's id (keyboard focus target when frame is focused).
+    pub selected_entry_id: Option<LayoutEntryId>,
     #[serde(skip)]
     pub move_anim: Option<ViewAnimation>,
 }
@@ -282,10 +282,10 @@ impl Frame {
         Self {
             name: String::new(),
             surface_id,
-            view_id: frame_view_id_for(surface_id),
+            focus_id: frame_focus_id_for(surface_id),
             width: 0.0,
             entries: Vec::new(),
-            selected_view_id: None,
+            selected_entry_id: None,
             move_anim: None,
         }
     }
@@ -522,7 +522,7 @@ impl Strip {
         for frame in &mut self.frames {
             if !order.contains_key(&frame.surface_id) {
                 frame.entries.clear();
-                frame.selected_view_id = None;
+                frame.selected_entry_id = None;
             }
         }
 
@@ -686,10 +686,10 @@ mod tests {
                 .map(|w| Frame {
                     name: String::new(),
                     surface_id: 0,
-                    view_id: std::num::NonZeroU64::MIN,
+                    focus_id: std::num::NonZeroU64::MIN,
                     width: w,
                     entries: Vec::new(),
-                    selected_view_id: None,
+                    selected_entry_id: None,
                     move_anim: None,
                 })
                 .collect(),

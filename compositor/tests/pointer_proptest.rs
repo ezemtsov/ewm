@@ -64,7 +64,7 @@
 //!
 //! F1  - FFM sees plain entries. A pointer move inside an Emacs frame whose
 //!       layout entries have no attached Wayland surfaces still resolves the
-//!       entry view id and focuses that entry, while keyboard routing remains
+//!       entry entry id and focuses that entry, while keyboard routing remains
 //!       on the frame surface.
 
 use std::collections::{HashMap, HashSet};
@@ -72,7 +72,7 @@ use std::collections::{HashMap, HashSet};
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel};
-use ewm_core::{fullscreen_center_offset, LayoutEntry, ViewId};
+use ewm_core::{fullscreen_center_offset, LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
 use smithay::desktop::PopupManager;
 use smithay::reexports::wayland_server::backend::ClientId;
@@ -89,7 +89,7 @@ const OUTPUTS: [(&str, i32, i32); 2] = [("HEAD-A", 1920, 1080), ("HEAD-B", 1920,
 const VIEW_W: i32 = 400;
 const VIEW_H: i32 = 400;
 
-fn nz(n: u64) -> ViewId {
+fn nz(n: u64) -> LayoutEntryId {
     std::num::NonZeroU64::new(n).unwrap()
 }
 
@@ -208,7 +208,7 @@ struct Harness {
     /// Output names the client believes the toplevel is on, accumulated from
     /// `wl_surface.enter` / `leave` events.
     toplevel_on_outputs: HashSet<String>,
-    pointer_view_id_before_warp: Option<ViewId>,
+    pointer_entry_id_before_warp: Option<LayoutEntryId>,
     pointer_surface_id_before_warp: Option<u64>,
 }
 
@@ -241,7 +241,7 @@ impl Harness {
             frame_popups: Vec::new(),
             last_configure: None,
             toplevel_on_outputs: HashSet::new(),
-            pointer_view_id_before_warp: None,
+            pointer_entry_id_before_warp: None,
             pointer_surface_id_before_warp: None,
         };
         // Drain setup events into the harness so the first op starts clean.
@@ -351,10 +351,11 @@ fn apply_op(h: &mut Harness, op: &Op) {
                 .map(|i| Frame {
                     name: String::new(),
                     surface_id: if i == 0 { h.frame_sid } else { 100 + i as u64 },
-                    view_id: nz(100 + i as u64),
+                    focus_id: nz(100 + i as u64),
                     width: VIEW_W as f64,
                     entries: vec![LayoutEntry::surface(
                         nz(1 + i as u64),
+                        "entry".to_string(),
                         h.sid,
                         0,
                         0,
@@ -362,7 +363,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
                         VIEW_H as u32,
                         (fullscreen_mask >> i) & 1 == 1,
                     )],
-                    selected_view_id: Some(nz(1 + i as u64)),
+                    selected_entry_id: Some(nz(1 + i as u64)),
                     move_anim: None,
                 })
                 .collect();
@@ -382,15 +383,15 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.fix.ewm().focus_follows_mouse_mode = on;
         }
         Op::WarpPointer { x, y } => {
-            let (view_id, surface_id) = {
+            let (entry_id, surface_id) = {
                 let ewm = h.fix.ewm_ref();
                 let surface_id = ewm
                     .pointer_focus
                     .as_ref()
                     .and_then(|(surface, _)| ewm.surface_id(surface));
-                (ewm.pointer_view_id, surface_id)
+                (ewm.pointer_entry_id, surface_id)
             };
-            h.pointer_view_id_before_warp = view_id;
+            h.pointer_entry_id_before_warp = entry_id;
             h.pointer_surface_id_before_warp = surface_id;
             h.fix.pointer_motion_to(x as f64, y as f64);
         }
@@ -439,6 +440,7 @@ fn apply_multi_entry_layout(
         .map(|i| {
             LayoutEntry::surface(
                 nz(10_000 + i as u64),
+                "entry".to_string(),
                 h.sid,
                 (i as i32) * 10,
                 (i as i32) * 10,
@@ -448,22 +450,22 @@ fn apply_multi_entry_layout(
             )
         })
         .collect::<Vec<_>>();
-    let selected_view_id = entries.first().map(|entry| entry.view_id);
+    let selected_entry_id = entries.first().map(|entry| entry.id);
     h.fix.ewm().apply_output_layout(
         name,
         vec![Frame {
             name: String::new(),
             surface_id: 10_000,
-            view_id: nz(20_000),
+            focus_id: nz(20_000),
             width: VIEW_W as f64,
             entries,
-            selected_view_id,
+            selected_entry_id,
             move_anim: None,
         }],
     );
 }
 
-fn plain_entry_view_id(i: usize) -> ViewId {
+fn plain_entry_entry_id(i: usize) -> LayoutEntryId {
     nz(30_000 + i as u64)
 }
 
@@ -480,8 +482,15 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
         .map(|i| {
             let x = plain_entry_left(n_entries, i);
             let next_x = plain_entry_left(n_entries, i + 1);
-            let view_id = plain_entry_view_id(i);
-            LayoutEntry::emacs_window(view_id, x, 0, (next_x - x) as u32, VIEW_H as u32)
+            let entry_id = plain_entry_entry_id(i);
+            LayoutEntry::emacs_window(
+                entry_id,
+                "entry".to_string(),
+                x,
+                0,
+                (next_x - x) as u32,
+                VIEW_H as u32,
+            )
         })
         .collect::<Vec<_>>();
     h.fix.ewm().apply_output_layout(
@@ -489,10 +498,10 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
         vec![Frame {
             name: String::new(),
             surface_id: h.frame_sid,
-            view_id: nz(40_000),
+            focus_id: nz(40_000),
             width: VIEW_W as f64,
             entries,
-            selected_view_id: None,
+            selected_entry_id: None,
             move_anim: None,
         }],
     );
@@ -649,7 +658,7 @@ fn rect_contains_f64(rect: Rectangle<i32, Logical>, p: Point<f64, Logical>) -> b
         && p.y < (rect.loc.y + rect.size.h) as f64
 }
 
-fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, ViewId)> {
+fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, LayoutEntryId)> {
     let ewm = h.fix.ewm_ref();
     for output in ewm.space.outputs() {
         let Some(output_geo) = ewm.space.output_geometry(output) else {
@@ -678,7 +687,7 @@ fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, ViewId
                     Size::from((entry.w as i32, entry.h as i32)),
                 );
                 if rect_contains_f64(rect, p) {
-                    return Some((frame.surface_id, entry.view_id));
+                    return Some((frame.surface_id, entry.id));
                 }
             }
         }
@@ -692,26 +701,26 @@ fn check_f1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
         return Ok(());
     }
 
-    let Some((frame_surface_id, view_id)) = plain_entry_under(h, p) else {
+    let Some((frame_surface_id, entry_id)) = plain_entry_under(h, p) else {
         return Ok(());
     };
     let pointer_focus_id = ewm
         .pointer_focus
         .as_ref()
         .and_then(|(surface, _)| ewm.surface_id(surface));
-    let entry_changed = h.pointer_view_id_before_warp != Some(view_id);
+    let entry_changed = h.pointer_entry_id_before_warp != Some(entry_id);
     let surface_changed = h.pointer_surface_id_before_warp != Some(frame_surface_id);
 
     prop_assert_eq!(
-        ewm.view_id_under(p),
-        Some(view_id),
-        "F1: plain entry under {:?} must resolve through view_id_under",
+        ewm.layout_entry_id_under(p),
+        Some(entry_id),
+        "F1: plain entry under {:?} must resolve through layout_entry_id_under",
         p,
     );
     prop_assert_eq!(
-        ewm.pointer_view_id,
-        Some(view_id),
-        "F1: pointer_view_id should track the plain entry under {:?}",
+        ewm.pointer_entry_id,
+        Some(entry_id),
+        "F1: pointer_entry_id should track the plain entry under {:?}",
         p,
     );
     prop_assert_eq!(
@@ -729,9 +738,9 @@ fn check_f1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
         "F1: focused frame should own the plain entry",
     );
     prop_assert_eq!(
-        ewm.focused_view_id,
-        Some(view_id),
-        "F1: FFM should focus the plain entry view id",
+        ewm.focused_entry_id,
+        Some(entry_id),
+        "F1: FFM should focus the plain entry entry id",
     );
     prop_assert_eq!(
         ewm.focused_surface_id(),

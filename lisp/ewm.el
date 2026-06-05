@@ -860,11 +860,11 @@ For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
   "Set declarative layout for OUTPUT as a nested frame strip.
 FRAMES is a vector of plists describing the Emacs frame strip on the
 output, left-to-right.  Each frame plist has:
-  :name NAME :surface-id ID :view-id N :selected-view-id N :width FLOAT
+  :name NAME :surface-id ID :focus-id N :selected-entry-id N :width FLOAT
   :entries ENTRIES
-where ENTRIES is a vector of plists `:view-id :x :y :w :h :fullscreen'
-with optional `:surface-id'. Entry coordinates are relative to the owning
-frame's working area."
+where ENTRIES is a vector of plists
+`:entry-id :name :x :y :w :h :fullscreen' with optional `:surface-id'.
+Entry coordinates are relative to the owning frame's working area."
   (ewm-output-layout-module output frames))
 
 (defun ewm-close (id)

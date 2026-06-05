@@ -25,7 +25,7 @@
   `(unless (fboundp ',name) (defun ,name ,args ,@body)))
 
 (ewm-test--stub ewm-output-layout (_output _frames) nil)
-(ewm-test--stub ewm-focus-view-module (_view-id) nil)
+(ewm-test--stub ewm-focus-target-module (_focus-id) nil)
 (ewm-test--stub ewm-prepare-frame-close-module (_surface-id) nil)
 (ewm-test--stub ewm-intercept-keys-module (_keys) nil)
 (ewm-test--stub ewm-configure-input-module (_config) nil)

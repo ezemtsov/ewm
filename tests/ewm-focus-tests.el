@@ -6,7 +6,7 @@
 
 ;; Pins the focus contract between the lisp layer and the compositor:
 ;; whenever Emacs is reading keys for itself, every frame's
-;; `:selected-view-id' shipped to the compositor must be nil so keyboard
+;; `:selected-entry-id' shipped to the compositor must be nil so keyboard
 ;; focus lands on the Emacs frame chrome rather than an embedded
 ;; Wayland surface.  See `docs/focus-design.md' for the full design.
 ;;
@@ -27,8 +27,8 @@
 ;; the module entry points the libs would otherwise pull in.
 (unless (fboundp 'ewm-output-layout)
   (defun ewm-output-layout (_output _frames) nil))
-(unless (fboundp 'ewm-focus-view-module)
-  (defun ewm-focus-view-module (_view-id) nil))
+(unless (fboundp 'ewm-focus-target-module)
+  (defun ewm-focus-target-module (_focus-id) nil))
 (unless (fboundp 'ewm-prepare-frame-close-module)
   (defun ewm-prepare-frame-close-module (_surface-id) nil))
 ;; The dynamic module provides the `ewm-core' feature in production;
@@ -48,7 +48,7 @@
 (defconst ewm-focus-tests--output "TEST-OUT")
 (defconst ewm-focus-tests--frame-surface-id 9999)
 (defconst ewm-focus-tests--surface-id 5)
-(defconst ewm-focus-tests--surface-view-id
+(defconst ewm-focus-tests--surface-entry-id
   (+ 1000 ewm-focus-tests--surface-id))
 
 (defvar ewm-focus-tests--captured nil)
@@ -74,10 +74,10 @@ Returns the captures as an alist of (OUTPUT . FRAMES-VECTOR)."
     buf))
 
 (defun ewm-focus-tests--install-surface-window (window surface-id)
-  "Display a fresh surface buffer in WINDOW with matching view parameters."
+  "Display a fresh surface buffer in WINDOW with matching entry parameters."
   (let ((buf (ewm-focus-tests--make-surface-buffer surface-id)))
     (set-window-buffer window buf)
-    (set-window-parameter window 'ewm-view-id (+ 1000 surface-id))))
+    (set-window-parameter window 'ewm-entry-id (+ 1000 surface-id))))
 
 (defmacro ewm-focus-tests--with-frame (var &rest body)
   "Bind VAR to the batch frame, EWM-configured for the duration of BODY.
@@ -88,7 +88,7 @@ The batch frame is shared; we save and restore the parameters we touch."
           (saved-output (frame-parameter ,var 'ewm-output))
           (saved-window (frame-selected-window ,var))
           (saved-buffer (window-buffer saved-window))
-          (saved-view-id (window-parameter saved-window 'ewm-view-id))
+          (saved-entry-id (window-parameter saved-window 'ewm-entry-id))
           (ewm-focus-tests--scratch-buffers nil))
      (set-frame-parameter ,var 'ewm-surface-id ewm-focus-tests--frame-surface-id)
      (set-frame-parameter ,var 'ewm-output ewm-focus-tests--output)
@@ -100,7 +100,7 @@ The batch frame is shared; we save and restore the parameters we touch."
        (set-frame-parameter ,var 'ewm-output saved-output)
        (when (buffer-live-p saved-buffer)
          (set-window-buffer saved-window saved-buffer))
-       (set-window-parameter saved-window 'ewm-view-id saved-view-id)
+       (set-window-parameter saved-window 'ewm-entry-id saved-entry-id)
        (dolist (b ewm-focus-tests--scratch-buffers)
          (when (buffer-live-p b) (kill-buffer b))))))
 
@@ -109,8 +109,8 @@ The batch frame is shared; we save and restore the parameters we touch."
   (setq ewm--strips `((,ewm-focus-tests--output . (,frame))))
   (setq ewm--module-mode t))
 
-(defun ewm-focus-tests--capture-selected-view-id ()
-  "Set up a single-frame strip and return the layout's `:selected-view-id'."
+(defun ewm-focus-tests--capture-selected-entry-id ()
+  "Set up a single-frame strip and return the layout's `:selected-entry-id'."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
@@ -118,34 +118,34 @@ The batch frame is shared; we save and restore the parameters we touch."
     (let* ((captures (ewm-focus-tests--with-captured-layouts
                        (ewm-layout--send-layouts)))
            (frame (aref (cdr (assoc ewm-focus-tests--output captures)) 0)))
-      (plist-get frame :selected-view-id))))
+      (plist-get frame :selected-entry-id))))
 
 ;;;; Tests
 
 (ert-deftest ewm-focus/baseline-no-menu ()
-  "No menu active: `:selected-view-id' names the embedded surface."
-  (should (eql ewm-focus-tests--surface-view-id
-               (ewm-focus-tests--capture-selected-view-id))))
+  "No menu active: `:selected-entry-id' names the embedded surface."
+  (should (eql ewm-focus-tests--surface-entry-id
+               (ewm-focus-tests--capture-selected-entry-id))))
 
 (ert-deftest ewm-focus/minibuffer-suppresses ()
-  "Active minibuffer suppresses embedded-view focus."
+  "Active minibuffer suppresses embedded entry focus."
   ;; `-batch' can't drive a real minibuffer read, so stub the predicate.
   (cl-letf (((symbol-function 'active-minibuffer-window)
              (lambda () (selected-window))))
-    (should (null (ewm-focus-tests--capture-selected-view-id)))))
+    (should (null (ewm-focus-tests--capture-selected-entry-id)))))
 
 (ert-deftest ewm-focus/overriding-keymap-suppresses ()
-  "Any `overriding-terminal-local-map' suppresses embedded-view focus."
+  "Any `overriding-terminal-local-map' suppresses embedded entry focus."
   (let ((overriding-terminal-local-map (make-sparse-keymap)))
-    (should (null (ewm-focus-tests--capture-selected-view-id)))))
+    (should (null (ewm-focus-tests--capture-selected-entry-id)))))
 
 (ert-deftest ewm-focus/custom-predicate-suppresses ()
   "A user predicate added to `ewm-layout-menu-predicates' suppresses."
   (let ((ewm-layout-menu-predicates (list (lambda () t))))
-    (should (null (ewm-focus-tests--capture-selected-view-id)))))
+    (should (null (ewm-focus-tests--capture-selected-entry-id)))))
 
 (ert-deftest ewm-focus/menu-active-preserves-entries ()
-  "Suppression touches `:selected-view-id' only; `:entries' is unchanged."
+  "Suppression touches `:selected-entry-id' only; `:entries' is unchanged."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
@@ -160,15 +160,15 @@ The batch frame is shared; we save and restore the parameters we touch."
                    (plist-get (aref entries 0) :surface-id))))))
 
 (ert-deftest ewm-focus/build-frame-plist-honors-menu-flag ()
-  "`build-frame-plist' zeros `:selected-view-id' when MENU-ACTIVE is non-nil."
+  "`build-frame-plist' zeros `:selected-entry-id' when MENU-ACTIVE is non-nil."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
-    (should (eql ewm-focus-tests--surface-view-id
+    (should (eql ewm-focus-tests--surface-entry-id
                  (plist-get (ewm-layout--build-frame-plist f nil)
-                            :selected-view-id)))
+                            :selected-entry-id)))
     (should (null (plist-get (ewm-layout--build-frame-plist f t)
-                             :selected-view-id)))))
+                             :selected-entry-id)))))
 
 (ert-deftest ewm-focus/post-command-refreshes-on-transition ()
   "Modal-state transitions trigger exactly one refresh; staying does not."
@@ -187,17 +187,17 @@ The batch frame is shared; we save and restore the parameters we touch."
       (ewm-layout--on-post-command)
       (should (= 2 refresh-count)))))
 
-(ert-deftest ewm-focus/selected-view-id-always-in-entries ()
-  "Lisp-side invariant 6: a non-nil `:selected-view-id' is in `:entries'."
+(ert-deftest ewm-focus/selected-entry-id-always-in-entries ()
+  "Lisp-side invariant 6: a non-nil `:selected-entry-id' is in `:entries'."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
     (let* ((plist (ewm-layout--build-frame-plist f nil))
-           (sel (plist-get plist :selected-view-id))
-           (view-ids (cl-loop for entry across (plist-get plist :entries)
-                              collect (plist-get entry :view-id))))
+           (sel (plist-get plist :selected-entry-id))
+           (entry-ids (cl-loop for entry across (plist-get plist :entries)
+                              collect (plist-get entry :entry-id))))
       (should sel)
-      (should (member sel view-ids)))))
+      (should (member sel entry-ids)))))
 
 (ert-deftest ewm-focus/plain-emacs-windows-are-layout-entries ()
   "Plain Emacs windows publish entries without `:surface-id'."
@@ -214,30 +214,34 @@ The batch frame is shared; we save and restore the parameters we touch."
           (set-window-buffer right right-buf)
           (select-window right)
           (let* ((plist (ewm-layout--build-frame-plist f nil))
-                 (sel (plist-get plist :selected-view-id))
+                 (sel (plist-get plist :selected-entry-id))
                  (entries (plist-get plist :entries))
-                 (view-ids (cl-loop for entry across entries
-                                    collect (plist-get entry :view-id))))
+                 (entry-ids (cl-loop for entry across entries
+                                    collect (plist-get entry :entry-id)))
+                 (entry-names (cl-loop for entry across entries
+                                       collect (plist-get entry :name))))
             (should (= 2 (length entries)))
             (should sel)
-            (should (member sel view-ids))
+            (should (member sel entry-ids))
+            (should (member (buffer-name left-buf) entry-names))
+            (should (member (buffer-name right-buf) entry-names))
             (cl-loop for entry across entries
                      do (should-not (plist-get entry :surface-id)))))))))
 
-(ert-deftest ewm-focus/buffer-rotation-keeps-window-view-id ()
-  "Changing a window's surface attachment keeps the window's view id."
+(ert-deftest ewm-focus/buffer-rotation-keeps-window-entry-id ()
+  "Changing a window's surface attachment keeps the window's entry id."
   (ewm-focus-tests--with-frame f
     (let ((win (frame-selected-window f)))
       (set-window-buffer win (ewm-focus-tests--make-surface-buffer 7))
-      (set-window-parameter win 'ewm-view-id 1005)
+      (set-window-parameter win 'ewm-entry-id 1005)
       (let* ((plist (ewm-layout--build-frame-plist f nil))
-             (sel (plist-get plist :selected-view-id))
+             (sel (plist-get plist :selected-entry-id))
              (entries (plist-get plist :entries)))
         (should sel)
         (should (eql sel 1005))
         (should (= 1 (length entries)))
         (should (eql 7 (plist-get (aref entries 0) :surface-id)))
-        (should (eql sel (plist-get (aref entries 0) :view-id)))))))
+        (should (eql sel (plist-get (aref entries 0) :entry-id)))))))
 
 (ert-deftest ewm-focus/new-surface-publishes-layout-immediately ()
   "New external surfaces must not wait for deferred window hooks to render."
@@ -262,8 +266,8 @@ The batch frame is shared; we save and restore the parameters we touch."
               (should (equal (car (car captures)) ewm-focus-tests--output))
               (should (= 1 (length entries)))
               (should (eql 80 (plist-get entry :surface-id)))
-              (should (eql (plist-get entry :view-id)
-                           (plist-get frame-plist :selected-view-id)))))
+              (should (eql (plist-get entry :entry-id)
+                           (plist-get frame-plist :selected-entry-id)))))
         (when (buffer-live-p created)
           (with-current-buffer created
             (remove-hook 'kill-buffer-query-functions
@@ -276,7 +280,7 @@ The batch frame is shared; we save and restore the parameters we touch."
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
     (let ((initially-selected (selected-window))
-          (event `((view_id . ,ewm-focus-tests--surface-view-id))))
+          (event `((focus_id . ,ewm-focus-tests--surface-entry-id))))
       (cl-letf (((symbol-function 'select-frame)
                  (lambda (&rest _) (error "select-frame called while modal")))
                 ((symbol-function 'select-window)
@@ -482,12 +486,12 @@ pointer."
           (ewm-focus-follows-mouse t)
           (ewm-mouse-follows-focus t)
           (ewm--mff-last-window nil)
-          (frame-view-id (ewm-layout--ensure-frame-view-id f)))
+          (frame-focus-id (ewm-layout--ensure-frame-focus-id f)))
       (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
                  (lambda (_) (cl-incf warps)))
                 ;; Frame-edge: no Emacs window at this point.
                 ((symbol-function 'window-at-x-y) (lambda (&rest _) nil)))
-        (ewm--handle-focus `((view_id . ,frame-view-id) (x . 0) (y . 0)))
+        (ewm--handle-focus `((focus_id . ,frame-focus-id) (x . 0) (y . 0)))
         (ewm-input--on-window-selection-change f)
         (should (= 0 warps))))))
 
@@ -498,10 +502,10 @@ pointer."
           (ewm-focus-follows-mouse t)
           (ewm-mouse-follows-focus t)
           (ewm--mff-last-window nil)
-          (frame-view-id (ewm-layout--ensure-frame-view-id f)))
+          (frame-focus-id (ewm-layout--ensure-frame-focus-id f)))
       (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
                  (lambda (_) (cl-incf warps))))
-        (ewm--handle-focus `((view_id . ,frame-view-id)))
+        (ewm--handle-focus `((focus_id . ,frame-focus-id)))
         (ewm-input--on-window-selection-change f)
         (should (= 1 warps))))))
 

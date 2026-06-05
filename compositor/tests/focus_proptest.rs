@@ -8,13 +8,13 @@ use std::collections::{HashMap, HashSet};
 use ewm_core::event::Event;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{mark_active_frame_close, Fixture};
-use ewm_core::{resolve_keyboard_focus_target, LayoutEntry, OutputConfig, ViewId};
+use ewm_core::{resolve_keyboard_focus_target, LayoutEntry, LayoutEntryId, OutputConfig};
 use proptest::prelude::*;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
 const MAX_FRAMES: usize = 3;
 
-fn nz(n: u64) -> ViewId {
+fn nz(n: u64) -> LayoutEntryId {
     std::num::NonZeroU64::new(n).unwrap()
 }
 
@@ -33,7 +33,7 @@ enum Op {
         output: usize,
         frames: Vec<FrameSpec>,
     },
-    FocusView(ViewId),
+    FocusView(LayoutEntryId),
     FocusFrame(u64),
     RemoveOutput(usize),
     AddOutput(usize),
@@ -44,20 +44,20 @@ enum Op {
 #[derive(Debug, Clone)]
 struct FrameSpec {
     surface_id: u64,
-    frame_view_id: ViewId,
-    selected_view_id: Option<ViewId>,
+    frame_focus_id: LayoutEntryId,
+    selected_entry_id: Option<LayoutEntryId>,
     entries: Vec<EntrySpec>,
 }
 
 #[derive(Debug, Clone)]
 struct EntrySpec {
     surface_id: u64,
-    view_id: ViewId,
+    entry_id: LayoutEntryId,
     fullscreen: bool,
 }
 
-// Frame surface_ids / view_ids live in a disjoint range from entry ids so
-// `set_focus_view(v)` and `set_focus_frame(f)` never collide.
+// Frame surface_ids / entry_ids live in a disjoint range from entry ids so
+// `set_focus_entry(v)` and `set_focus_frame(f)` never collide.
 const ENTRY_SID_RANGE: std::ops::RangeInclusive<u64> = 1..=8;
 const FRAME_SID_RANGE: std::ops::RangeInclusive<u64> = 100..=102;
 const MAX_ENTRIES_PER_LAYOUT: usize = 8;
@@ -68,13 +68,13 @@ struct EntrySeed {
     fullscreen: bool,
 }
 
-fn entry_view_id_for(frame_surface_id: u64, entry_idx: usize) -> ViewId {
+fn entry_entry_id_for(frame_surface_id: u64, entry_idx: usize) -> LayoutEntryId {
     nz(10_000 + frame_surface_id * 100 + entry_idx as u64)
 }
 
-fn entry_view_strategy() -> impl Strategy<Value = ViewId> {
+fn entry_view_strategy() -> impl Strategy<Value = LayoutEntryId> {
     (FRAME_SID_RANGE, 0usize..MAX_ENTRIES_PER_LAYOUT)
-        .prop_map(|(frame_id, entry_idx)| entry_view_id_for(frame_id, entry_idx))
+        .prop_map(|(frame_id, entry_idx)| entry_entry_id_for(frame_id, entry_idx))
 }
 
 fn entry_strategy() -> impl Strategy<Value = EntrySeed> {
@@ -85,9 +85,9 @@ fn entry_strategy() -> impl Strategy<Value = EntrySeed> {
 }
 
 /// Generates layouts satisfying the Emacs side's invariants:
-/// - frame surface_ids and view_ids unique within the layout (assigned by index);
-/// - entry view_ids unique across all frames and retained old frames;
-/// - `selected_view_id` either `None` or one of the frame's own entries.
+/// - frame surface_ids and entry_ids unique within the layout (assigned by index);
+/// - entry entry_ids unique across all frames and retained old frames;
+/// - `selected_entry_id` either `None` or one of the frame's own entries.
 fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
     (
         1usize..=MAX_FRAMES,
@@ -110,19 +110,19 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
                         .enumerate()
                         .map(|(entry_idx, entry)| EntrySpec {
                             surface_id: entry.surface_id,
-                            view_id: entry_view_id_for(frame_surface_id, entry_idx),
+                            entry_id: entry_entry_id_for(frame_surface_id, entry_idx),
                             fullscreen: entry.fullscreen,
                         })
                         .collect();
-                    let selected_view_id = if has_sel_flags[i] {
-                        entries.first().map(|e| e.view_id)
+                    let selected_entry_id = if has_sel_flags[i] {
+                        entries.first().map(|e| e.entry_id)
                     } else {
                         None
                     };
                     FrameSpec {
                         surface_id: frame_surface_id,
-                        frame_view_id: nz(200 + i as u64),
-                        selected_view_id,
+                        frame_focus_id: nz(200 + i as u64),
+                        selected_entry_id,
                         entries,
                     }
                 })
@@ -149,26 +149,37 @@ fn to_frame(spec: &FrameSpec) -> Frame {
     Frame {
         name: String::new(),
         surface_id: spec.surface_id,
-        view_id: spec.frame_view_id,
+        focus_id: spec.frame_focus_id,
         width: 1920.0,
         entries: spec
             .entries
             .iter()
-            .map(|e| LayoutEntry::surface(e.view_id, e.surface_id, 0, 0, 100, 100, e.fullscreen))
+            .map(|e| {
+                LayoutEntry::surface(
+                    e.entry_id,
+                    "entry".to_string(),
+                    e.surface_id,
+                    0,
+                    0,
+                    100,
+                    100,
+                    e.fullscreen,
+                )
+            })
             .collect(),
-        selected_view_id: spec.selected_view_id,
+        selected_entry_id: spec.selected_entry_id,
         move_anim: None,
     }
 }
 
-fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
+fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> Frame {
     to_frame(&FrameSpec {
         surface_id: frame_id,
-        frame_view_id: nz(200),
-        selected_view_id: Some(view_id),
+        frame_focus_id: nz(200),
+        selected_entry_id: Some(entry_id),
         entries: vec![EntrySpec {
             surface_id,
-            view_id,
+            entry_id,
             fullscreen: false,
         }],
     })
@@ -261,7 +272,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             }
         }
         Op::FocusView(v) => {
-            fix.ewm().set_focus_view(v, "proptest", false);
+            fix.ewm().set_focus_entry(v, "proptest", false);
         }
         Op::FocusFrame(f) => {
             fix.ewm().set_focus_frame(f, "proptest", false);
@@ -340,14 +351,14 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             let was_present = layout_surface_ids(fix).contains(&id);
             let was_focused = fix.ewm_ref().focused_surface_id() == id;
             let prev_focused_frame = fix.ewm_ref().focused_frame_id;
-            let destroyed_view_ids: HashSet<ViewId> = fix
+            let destroyed_entry_ids: HashSet<LayoutEntryId> = fix
                 .ewm_ref()
                 .output_strips
                 .values()
                 .flat_map(|strip| strip.frames.iter())
                 .flat_map(|frame| frame.entries.iter())
                 .filter(|entry| entry.surface_id() == Some(id))
-                .map(|entry| entry.view_id)
+                .map(|entry| entry.id)
                 .collect();
             let refocus = fix.ewm().handle_toplevel_destroyed_by_id(id);
             assert_eq!(
@@ -375,12 +386,12 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 for strip in fix.ewm_ref().output_strips.values() {
                     for frame in &strip.frames {
                         assert!(
-                            frame
-                                .selected_view_id
-                                .is_none_or(|view_id| { !destroyed_view_ids.contains(&view_id) }),
-                            "destroy({}) left stale selected_view_id {:?} on frame {}",
+                            frame.selected_entry_id.is_none_or(|entry_id| {
+                                !destroyed_entry_ids.contains(&entry_id)
+                            }),
+                            "destroy({}) left stale selected_entry_id {:?} on frame {}",
                             id,
-                            frame.selected_view_id,
+                            frame.selected_entry_id,
                             frame.surface_id,
                         );
                     }
@@ -393,9 +404,9 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                         id,
                     );
                     assert_eq!(
-                        fix.ewm_ref().focused_view_id,
+                        fix.ewm_ref().focused_entry_id,
                         None,
-                        "destroy({}) left focused_view_id set",
+                        "destroy({}) left focused_entry_id set",
                         id,
                     );
                 }
@@ -548,24 +559,24 @@ proptest! {
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
 
-        let view_id = entry_view_id_for(100, entry_idx);
+        let entry_id = entry_entry_id_for(100, entry_idx);
         fix.ewm()
-            .apply_output_layout(OUTPUTS[0], vec![frame_with_entry(100, view_id, surface_id)]);
+            .apply_output_layout(OUTPUTS[0], vec![frame_with_entry(100, entry_id, surface_id)]);
         prop_assert!(fix
             .ewm_ref()
             .surface_outputs
             .get(&surface_id)
             .is_some_and(|outputs| outputs.contains(OUTPUTS[0])));
-        fix.ewm().set_focus_view(view_id, "proptest", false);
+        fix.ewm().set_focus_entry(entry_id, "proptest", false);
         prop_assert_eq!(fix.ewm_ref().focused_frame_id, 100);
-        prop_assert_eq!(fix.ewm_ref().focused_view_id, Some(view_id));
+        prop_assert_eq!(fix.ewm_ref().focused_entry_id, Some(entry_id));
         prop_assert_eq!(fix.ewm_ref().focused_surface_id(), surface_id);
 
         let refocus = fix.ewm().handle_toplevel_destroyed_by_id(surface_id);
 
         prop_assert_eq!(refocus, None);
         prop_assert_eq!(fix.ewm_ref().focused_frame_id, 100);
-        prop_assert_eq!(fix.ewm_ref().focused_view_id, None);
+        prop_assert_eq!(fix.ewm_ref().focused_entry_id, None);
         prop_assert_eq!(fix.ewm_ref().focused_surface_id(), 100);
         prop_assert!(!fix.ewm_ref().surface_outputs.contains_key(&surface_id));
         let frame = fix
@@ -575,7 +586,7 @@ proptest! {
             .and_then(|strip| strip.frames.first())
             .unwrap();
         prop_assert_eq!(frame.surface_id, 100);
-        prop_assert_eq!(frame.selected_view_id, None);
+        prop_assert_eq!(frame.selected_entry_id, None);
         prop_assert!(frame.entries.is_empty());
     }
 
@@ -587,9 +598,9 @@ proptest! {
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
 
-        let view_id = entry_view_id_for(100, entry_idx);
+        let entry_id = entry_entry_id_for(100, entry_idx);
         fix.ewm()
-            .apply_output_layout(OUTPUTS[0], vec![frame_with_entry(100, view_id, surface_id)]);
+            .apply_output_layout(OUTPUTS[0], vec![frame_with_entry(100, entry_id, surface_id)]);
 
         fix.ewm()
             .apply_output_layout(OUTPUTS[0], vec![Frame::new(101)]);
@@ -601,7 +612,7 @@ proptest! {
             .and_then(|strip| strip.frames.iter().find(|frame| frame.surface_id == 100))
             .unwrap();
         prop_assert!(omitted.entries.is_empty());
-        prop_assert_eq!(omitted.selected_view_id, None);
+        prop_assert_eq!(omitted.selected_entry_id, None);
         prop_assert!(!fix.ewm_ref().surface_outputs.contains_key(&surface_id));
     }
 }
@@ -609,28 +620,28 @@ proptest! {
 fn assert_invariants(fix: &Fixture) {
     let ewm = fix.ewm_ref();
 
-    // Invariant 1: focused_frame_id == 0 ⟹ focused_view_id == None.
+    // Invariant 1: focused_frame_id == 0 ⟹ focused_entry_id == None.
     if ewm.focused_frame_id == 0 {
         assert_eq!(
-            ewm.focused_view_id, None,
-            "invariant 1: focused_view_id={:?} while focused_frame_id is 0",
-            ewm.focused_view_id,
+            ewm.focused_entry_id, None,
+            "invariant 1: focused_entry_id={:?} while focused_frame_id is 0",
+            ewm.focused_entry_id,
         );
     }
 
-    // Invariant 2: focused_view_id == Some(v) ⟹ v is the view_id of some entry
+    // Invariant 2: focused_entry_id == Some(v) ⟹ v is the entry_id of some entry
     // on the focused frame.
-    if let Some(v) = ewm.focused_view_id {
+    if let Some(v) = ewm.focused_entry_id {
         let in_focused_frame = ewm
             .output_strips
             .values()
             .flat_map(|s| s.frames.iter())
             .find(|f| f.surface_id == ewm.focused_frame_id)
-            .map(|f| f.entries.iter().any(|e| e.view_id == v))
+            .map(|f| f.entries.iter().any(|e| e.id == v))
             .unwrap_or(false);
         assert!(
             in_focused_frame,
-            "invariant 2: focused_view_id={:?} not in focused frame {}",
+            "invariant 2: focused_entry_id={:?} not in focused frame {}",
             v, ewm.focused_frame_id,
         );
     }
@@ -677,13 +688,13 @@ fn assert_invariants(fix: &Fixture) {
         ewm.focused_frame_id,
     );
 
-    // Invariant 6: selected_view_id, if set, names one of the frame's own entries.
+    // Invariant 6: selected_entry_id, if set, names one of the frame's own entries.
     for strip in ewm.output_strips.values() {
         for f in &strip.frames {
-            if let Some(sel) = f.selected_view_id {
+            if let Some(sel) = f.selected_entry_id {
                 assert!(
-                    f.entries.iter().any(|e| e.view_id == sel),
-                    "invariant 6: frame {} selected_view_id={:?} not in its own entries",
+                    f.entries.iter().any(|e| e.id == sel),
+                    "invariant 6: frame {} selected_entry_id={:?} not in its own entries",
                     f.surface_id,
                     sel,
                 );
@@ -691,16 +702,16 @@ fn assert_invariants(fix: &Fixture) {
         }
     }
 
-    // Invariant 7: every live entry view_id identifies exactly one layout occurrence.
-    let mut view_ids = HashMap::new();
+    // Invariant 7: every live entry entry_id identifies exactly one layout occurrence.
+    let mut entry_ids = HashMap::new();
     for (output_name, strip) in &ewm.output_strips {
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
             for (entry_idx, entry) in frame.entries.iter().enumerate() {
                 let occurrence = (output_name.as_str(), frame_idx, entry_idx);
                 assert!(
-                    view_ids.insert(entry.view_id, occurrence).is_none(),
-                    "invariant 7: duplicate view_id {:?} at {:?}",
-                    entry.view_id,
+                    entry_ids.insert(entry.id, occurrence).is_none(),
+                    "invariant 7: duplicate entry_id {:?} at {:?}",
+                    entry.id,
                     occurrence,
                 );
             }

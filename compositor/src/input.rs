@@ -284,29 +284,29 @@ pub fn handle_keyboard_event(
         return KeyboardAction::Forward;
     }
 
-    // Look up the focused view's entry on the focused frame; if it's fullscreen,
+    // Look up the focused entry on the focused frame; if it's fullscreen,
     // make sure normal forwarded keys still go to that surface.
     let focused_frame_id = state.ewm.focused_frame_id;
-    let focused_view_id = state.ewm.focused_view_id;
-    let fullscreen_view = focused_view_id.and_then(|vid| {
+    let focused_entry_id = state.ewm.focused_entry_id;
+    let fullscreen_entry = focused_entry_id.and_then(|entry_id| {
         state
             .ewm
             .output_strips
             .values()
             .flat_map(|s| s.frames.iter())
             .find(|f| f.surface_id == focused_frame_id)
-            .and_then(|f| f.entries.iter().find(|e| e.view_id == vid))
+            .and_then(|f| f.entries.iter().find(|e| e.id == entry_id))
             .filter(|e| e.fullscreen())
-            .and_then(|e| e.surface_id().map(|surface_id| (e.view_id, surface_id)))
+            .and_then(|e| e.surface_id().map(|surface_id| (e.id, surface_id)))
     });
-    let fullscreen_active = fullscreen_view.is_some();
+    let fullscreen_active = fullscreen_entry.is_some();
 
     // Undo temporary redirects before forwarding into fullscreen surfaces.
-    if let Some((view_id, surface_id)) = fullscreen_view {
+    if let Some((entry_id, surface_id)) = fullscreen_entry {
         if state.ewm.focused_surface_id() != surface_id {
             state
                 .ewm
-                .set_focus_view(view_id, "fullscreen_focus_redirect", true);
+                .set_focus_entry(entry_id, "fullscreen_focus_redirect", true);
         }
     }
 
@@ -1198,12 +1198,12 @@ fn focus_pointer_target(state: &mut State, source: &str) {
         return;
     }
 
-    let Some((frame_id, view_id)) = state.ewm.focus_under(pos, source) else {
+    let Some((frame_id, entry_id)) = state.ewm.focus_under(pos, source) else {
         return;
     };
-    if let Some(view_id) = view_id.or_else(|| state.ewm.view_id_of_frame(frame_id)) {
+    if let Some(focus_id) = entry_id.or_else(|| state.ewm.focus_id_of_frame(frame_id)) {
         state.ewm.queue_event(crate::Event::Focus {
-            view_id,
+            focus_id,
             x: None,
             y: None,
         });

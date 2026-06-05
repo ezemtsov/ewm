@@ -14,8 +14,8 @@
 
 (require 'cl-lib)
 
-(declare-function ewm-focus-view-module "ewm-core" (view-id))
-(declare-function ewm-layout--ensure-frame-view-id "ewm-layout" (frame))
+(declare-function ewm-focus-target-module "ewm-core" (focus-id))
+(declare-function ewm-layout--ensure-frame-focus-id "ewm-layout" (frame))
 (declare-function ewm-layout--menu-active-p "ewm-layout" ())
 (declare-function ewm--frame-by-surface-id "ewm" (surface-id))
 
@@ -28,40 +28,40 @@
   "Override skipping `x-focus-frame' so xdg_activation can't echo back."
   (select-frame frame norecord)
   (when (bound-and-true-p ewm--module-mode)
-    (ewm-focus-view-module (ewm-layout--ensure-frame-view-id frame)))
+    (ewm-focus-target-module (ewm-layout--ensure-frame-focus-id frame)))
   frame)
 
-(defun ewm--find-window-by-view-id (view-id)
-  "Window whose `ewm-view-id' parameter is VIEW-ID, if any."
+(defun ewm--find-window-by-entry-id (entry-id)
+  "Window whose `ewm-entry-id' parameter is ENTRY-ID, if any."
   (cl-some
    (lambda (frame)
-     (cl-find-if (lambda (w) (eql (window-parameter w 'ewm-view-id) view-id))
+     (cl-find-if (lambda (w) (eql (window-parameter w 'ewm-entry-id) entry-id))
                  (window-list frame 'no-minibuf)))
    (frame-list)))
 
-(defun ewm--find-frame-by-view-id (view-id)
-  "Frame whose chrome view-id matches VIEW-ID, if any.
-Chrome view-ids have `ewm-layout--frame-view-id-marker' set; strip it to
+(defun ewm--find-frame-by-focus-id (focus-id)
+  "Frame whose chrome focus id matches FOCUS-ID, if any.
+Chrome focus ids have `ewm-layout--frame-focus-id-marker' set; strip it to
 recover the surface-id."
-  (when (and view-id
-             (not (zerop (logand view-id ewm-layout--frame-view-id-marker))))
+  (when (and focus-id
+             (not (zerop (logand focus-id ewm-layout--frame-focus-id-marker))))
     (ewm--frame-by-surface-id
-     (logand view-id (1- ewm-layout--frame-view-id-marker)))))
+     (logand focus-id (1- ewm-layout--frame-focus-id-marker)))))
 
 (defun ewm--handle-focus (event)
   "Mirror compositor focus EVENT into Emacs selection."
   (unless (ewm-layout--menu-active-p)
-    (let* ((view-id (alist-get 'view_id event))
+    (let* ((focus-id (alist-get 'focus_id event))
            (x (alist-get 'x event))
            (y (alist-get 'y event))
            (ewm--is-ffm-focus-event (and ewm-focus-follows-mouse x y)))
       (cond
-       ((when-let ((win (ewm--find-window-by-view-id view-id)))
+       ((when-let ((win (ewm--find-window-by-entry-id focus-id)))
           (select-frame (window-frame win))
           (select-window win)
           (setq ewm--mff-last-window win)
           t))
-       ((when-let ((frame (ewm--find-frame-by-view-id view-id)))
+       ((when-let ((frame (ewm--find-frame-by-focus-id focus-id)))
           (select-frame frame)
           (when ewm--is-ffm-focus-event
             (when-let* ((window (window-at-x-y x y frame))

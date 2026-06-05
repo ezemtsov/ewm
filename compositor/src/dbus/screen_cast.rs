@@ -16,15 +16,15 @@ use zbus::{fdo, interface, ObjectServer};
 
 use super::{current_output_mode, OutputInfo, Start};
 use crate::screencasting::{CastSessionId, CastStreamId};
-use crate::ViewId;
+use crate::LayoutEntryId;
 
 /// Target for a screen cast stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CastTarget {
     /// Cast an entire output/monitor.
     Output { name: String },
-    /// Cast an individual Emacs layout entry by its view id.
-    LayoutEntry { view_id: ViewId },
+    /// Cast an individual Emacs layout entry by its entry id.
+    LayoutEntry { entry_id: LayoutEntryId },
 }
 
 /// Cursor mode requested through org.gnome.Mutter.ScreenCast.
@@ -323,9 +323,9 @@ impl Session {
         properties: RecordWindowProperties,
     ) -> fdo::Result<OwnedObjectPath> {
         let window_id = properties.window_id;
-        let Some(view_id) = ViewId::new(window_id) else {
+        let Some(entry_id) = LayoutEntryId::new(window_id) else {
             return Err(fdo::Error::InvalidArgs(
-                "window-id must be a non-zero layout entry view id".to_owned(),
+                "window-id must be a non-zero layout entry id".to_owned(),
             ));
         };
         let cursor_mode = properties.cursor_mode.unwrap_or_default();
@@ -336,7 +336,7 @@ impl Session {
         let path =
             OwnedObjectPath::try_from(path).expect("D-Bus path from format!() is always valid");
 
-        let target = StreamTarget::LayoutEntry { view_id };
+        let target = StreamTarget::LayoutEntry { entry_id };
         let stream = Stream::new(
             stream_id,
             self.id,
@@ -368,7 +368,7 @@ impl Drop for Session {
 #[derive(Clone, Debug)]
 enum StreamTarget {
     Output(OutputInfo),
-    LayoutEntry { view_id: ViewId },
+    LayoutEntry { entry_id: LayoutEntryId },
 }
 
 /// Stream interface
@@ -450,7 +450,9 @@ impl StreamTarget {
             StreamTarget::Output(output) => CastTarget::Output {
                 name: output.name.clone(),
             },
-            StreamTarget::LayoutEntry { view_id } => CastTarget::LayoutEntry { view_id: *view_id },
+            StreamTarget::LayoutEntry { entry_id } => CastTarget::LayoutEntry {
+                entry_id: *entry_id,
+            },
         }
     }
 }

@@ -23,8 +23,8 @@
 
 (unless (fboundp 'ewm-output-layout)
   (defun ewm-output-layout (_output _frames) nil))
-(unless (fboundp 'ewm-focus-view-module)
-  (defun ewm-focus-view-module (_view-id) nil))
+(unless (fboundp 'ewm-focus-target-module)
+  (defun ewm-focus-target-module (_focus-id) nil))
 (provide 'ewm-core)
 
 (add-to-list 'load-path

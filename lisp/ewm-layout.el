@@ -6,7 +6,7 @@
 ;;; Commentary:
 
 ;; Layout management.  Also owns the modal focus contract --
-;; `:selected-view-id' is suppressed while Emacs is reading keys for
+;; `:selected-entry-id' is suppressed while Emacs is reading keys for
 ;; itself; see `ewm-layout-menu-predicates' and `docs/focus-design.md'.
 
 ;;; Code:
@@ -31,7 +31,7 @@
   '(active-minibuffer-window
     ewm-layout--reading-key-p)
   "Predicates that signal Emacs is reading keys for itself.
-If any returns non-nil, the next layout's `:selected-view-id' is
+If any returns non-nil, the next layout's `:selected-entry-id' is
 suppressed for every frame."
   :type '(repeat function)
   :group 'ewm-layout)
@@ -40,31 +40,31 @@ suppressed for every frame."
   "Non-nil if any `ewm-layout-menu-predicates' entry says so."
   (run-hook-with-args-until-success 'ewm-layout-menu-predicates))
 
-(defconst ewm-layout--frame-view-id-marker (ash 1 32)
-  "Bit 32 marker for frame chrome view ids.
-Entry view ids are random in [1, 2^32-1] with bit 32 unset; frame chrome
-view ids are `(logior MARKER SURFACE-ID)' with bit 32 set.  Disjoint ranges
+(defconst ewm-layout--frame-focus-id-marker (ash 1 32)
+  "Bit 32 marker for frame chrome focus ids.
+Entry ids are random in [1, 2^32-1] with bit 32 unset; frame chrome
+focus ids are `(logior MARKER SURFACE-ID)' with bit 32 set.  Disjoint ranges
 let compositor and lisp derive the same id from surface_id without coordination.")
 
-(defun ewm-layout--fresh-view-id ()
-  "Generate a non-zero random view id with bit 32 unset.
+(defun ewm-layout--fresh-entry-id ()
+  "Generate a non-zero random entry id with bit 32 unset.
 The bit-32 range is reserved for frame chrome (see
-`ewm-layout--frame-view-id-marker')."
+`ewm-layout--frame-focus-id-marker')."
   (1+ (random (1- (ash 1 32)))))
 
-(defun ewm-layout--ensure-view-id (window)
-  "Return a stable view id for WINDOW."
-  (or (window-parameter window 'ewm-view-id)
-      (let ((id (ewm-layout--fresh-view-id)))
-        (set-window-parameter window 'ewm-view-id id)
+(defun ewm-layout--ensure-entry-id (window)
+  "Return a stable entry id for WINDOW."
+  (or (window-parameter window 'ewm-entry-id)
+      (let ((id (ewm-layout--fresh-entry-id)))
+        (set-window-parameter window 'ewm-entry-id id)
         id)))
 
-(defun ewm-layout--ensure-frame-view-id (frame)
-  "Return FRAME's chrome view id derived from its `ewm-surface-id'.
+(defun ewm-layout--ensure-frame-focus-id (frame)
+  "Return FRAME's chrome focus id derived from its `ewm-surface-id'.
 Computed deterministically so the compositor can construct the same id at
 `new_toplevel' without coordination."
   (when-let ((sid (frame-parameter frame 'ewm-surface-id)))
-    (logior ewm-layout--frame-view-id-marker sid)))
+    (logior ewm-layout--frame-focus-id-marker sid)))
 
 ;; Compatibility wrapper for window-inside-absolute-pixel-edges
 ;; Fixes tab-line handling for Emacs < 31 (from exwm-core.el)
@@ -84,31 +84,32 @@ This version correctly handles tab-lines on Emacs prior to v31."
 
 (defun ewm-layout--build-frame-plist (frame menu-active)
   "Plist describing FRAME for `ewm-output-layout'.
-When MENU-ACTIVE is non-nil, `:selected-view-id' is nil so the
+When MENU-ACTIVE is non-nil, `:selected-entry-id' is nil so the
 compositor parks keyboard focus on the frame chrome."
   (let (entries)
     (dolist (window (window-list frame 'no-minibuf))
-      (when-let* ((view-id (ewm-layout--ensure-view-id window))
-                  (view (ewm-layout--make-output-view window)))
+      (when-let* ((entry-id (ewm-layout--ensure-entry-id window))
+                  (geometry (ewm-layout--make-output-entry window)))
         (let ((surface-id (ewm-surface-buffer-p (window-buffer window))))
           (push `(,@(when surface-id `(:surface-id ,surface-id))
-                  :view-id ,view-id
-                  ,@view)
+                  :entry-id ,entry-id
+                  :name ,(buffer-name (window-buffer window))
+                  ,@geometry)
                 entries))))
-    (let ((selected-view-id
+    (let ((selected-entry-id
            (unless menu-active
              (when-let* ((sel-win (frame-selected-window frame)))
                (unless (window-minibuffer-p sel-win)
-                 (ewm-layout--ensure-view-id sel-win))))))
+                 (ewm-layout--ensure-entry-id sel-win))))))
       (list :name (or (frame-parameter frame 'name) "")
             :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
-            :view-id (ewm-layout--ensure-frame-view-id frame)
-            :selected-view-id selected-view-id
+            :focus-id (ewm-layout--ensure-frame-focus-id frame)
+            :selected-entry-id selected-entry-id
             :width (float (frame-pixel-width frame))
             :entries (vconcat (nreverse entries))))))
 
 (defun ewm-layout--send-layouts ()
-  "Send per-output frame layouts; suppress `:selected-view-id' while modal."
+  "Send per-output frame layouts; suppress `:selected-entry-id' while modal."
   (let ((menu-active (ewm-layout--menu-active-p)))
     (dolist (strip ewm--strips)
       (let* ((output (car strip))
@@ -121,8 +122,8 @@ compositor parks keyboard focus on the frame chrome."
   (when ewm--module-mode
     (ewm-layout--send-layouts)))
 
-(defun ewm-layout--make-output-view (window)
-  "Create a view plist for WINDOW with frame-relative coordinates.
+(defun ewm-layout--make-output-entry (window)
+  "Create an entry geometry plist for WINDOW with frame-relative coordinates.
 Returns (:x X :y Y :w W :h H :fullscreen FS).  Coordinates are relative
 to the output's working area; compositor adds output geometry + working
 area offset."

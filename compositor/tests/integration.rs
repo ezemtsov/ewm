@@ -6,31 +6,44 @@ use ewm_core::backend::{closest_representable_scale, int_to_transform, transform
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::utils::output_size;
-use ewm_core::{LayoutEntry, OutputConfig, ViewId};
+use ewm_core::{LayoutEntry, LayoutEntryId, OutputConfig};
 use proptest::prelude::*;
 use smithay::utils::{Logical, Point, Size};
 use wayland_client::Proxy as _;
 
 const CASES: u32 = 24;
 
-fn nz(n: u64) -> ViewId {
+fn nz(n: u64) -> LayoutEntryId {
     std::num::NonZeroU64::new(n).unwrap()
 }
 
-fn frame_with_entry(frame_id: u64, view_id: ViewId, surface_id: u64) -> Frame {
-    frame_with_entry_at(frame_id, view_id, surface_id, 0, 0)
+fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> Frame {
+    frame_with_entry_at(frame_id, entry_id, surface_id, 0, 0)
 }
 
-fn frame_with_entry_at(frame_id: u64, view_id: ViewId, surface_id: u64, x: i32, y: i32) -> Frame {
+fn frame_with_entry_at(
+    frame_id: u64,
+    entry_id: LayoutEntryId,
+    surface_id: u64,
+    x: i32,
+    y: i32,
+) -> Frame {
     Frame {
         name: String::new(),
         surface_id: frame_id,
-        view_id: nz(frame_id + 1_000),
+        focus_id: nz(frame_id + 1_000),
         width: 1280.0,
         entries: vec![LayoutEntry::surface(
-            view_id, surface_id, x, y, 400, 300, false,
+            entry_id,
+            "entry".to_string(),
+            surface_id,
+            x,
+            y,
+            400,
+            300,
+            false,
         )],
-        selected_view_id: Some(view_id),
+        selected_entry_id: Some(entry_id),
         move_anim: None,
     }
 }
@@ -205,18 +218,18 @@ fn output_layout_command_refreshes_pointer_focus() {
     let surface_id = fixture
         .find_surface_id(&client, &toplevel.surface)
         .expect("server did not assign a surface id");
-    let view_id = nz(1);
+    let entry_id = nz(1);
 
     fixture.apply_output_layout_command(
         "Virtual-1",
-        vec![frame_with_entry_at(100, view_id, surface_id, 0, 0)],
+        vec![frame_with_entry_at(100, entry_id, surface_id, 0, 0)],
     );
     fixture.warp_pointer(10.0, 10.0);
     assert_eq!(pointer_focus_surface_id(&fixture), Some(surface_id));
 
     fixture.apply_output_layout_command(
         "Virtual-1",
-        vec![frame_with_entry_at(100, view_id, surface_id, 600, 0)],
+        vec![frame_with_entry_at(100, entry_id, surface_id, 600, 0)],
     );
     assert!(fixture
         .ewm_ref()
@@ -377,7 +390,7 @@ fn disabling_focused_output_moves_focus_to_mapped_output() {
 }
 
 #[test]
-fn focusing_view_on_disabled_output_is_ignored() {
+fn focusing_entry_on_disabled_output_is_ignored() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
@@ -401,15 +414,15 @@ fn focusing_view_on_disabled_output_is_ignored() {
     fixture.apply_output_config("Virtual-1");
 
     assert!(!fixture.ewm_ref().is_surface_fullscreen(1));
-    fixture.ewm().set_focus_view(nz(1), "test", false);
+    fixture.ewm().set_focus_entry(nz(1), "test", false);
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), 200);
-    assert_eq!(fixture.ewm_ref().focused_view_id, None);
-    assert_eq!(fixture.ewm_ref().frame_with_view_id(nz(1_100)), None);
+    assert_eq!(fixture.ewm_ref().focused_entry_id, None);
+    assert_eq!(fixture.ewm_ref().frame_with_focus_id(nz(1_100)), None);
 }
 
 #[test]
-fn disabling_output_reassigns_primary_entry_to_mapped_view() {
+fn disabling_output_reassigns_primary_entry_to_mapped_entry() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
@@ -495,11 +508,11 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
     let surface_id = fixture
         .find_surface_id(&client, &toplevel.surface)
         .expect("server did not assign a surface id");
-    let view_id = nz(1);
+    let entry_id = nz(1);
 
     fixture.ewm().apply_output_layout(
         "Virtual-1",
-        vec![frame_with_entry(100, view_id, surface_id)],
+        vec![frame_with_entry(100, entry_id, surface_id)],
     );
     fixture.roundtrip(&mut client);
 

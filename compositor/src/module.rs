@@ -63,8 +63,9 @@ use_symbols! {
     kw_width      => ":width"
     kw_entries    => ":entries"
     kw_surface_id => ":surface-id"
-    kw_view_id    => ":view-id"
-    kw_selected_view_id => ":selected-view-id"
+    kw_entry_id    => ":entry-id"
+    kw_focus_id    => ":focus-id"
+    kw_selected_entry_id => ":selected-entry-id"
     // configure_output_module: marker for "not provided" (distinct from nil)
     kw_unset  => ":unset"
     // configure_input_module plist property names
@@ -467,7 +468,7 @@ pub enum ModuleCommand {
     SetSelection {
         text: String,
     },
-    /// Per-output frame strip.  Pure geometry; focus is shifted only via `FocusView'.
+    /// Per-output frame strip.  Pure geometry; focus is shifted only via `FocusTarget'.
     OutputLayout {
         output: String,
         frames: Vec<Frame>,
@@ -501,8 +502,8 @@ pub enum ModuleCommand {
         dy: i32,
     },
     /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
-    FocusView {
-        view_id: std::num::NonZeroU64,
+    FocusTarget {
+        focus_id: std::num::NonZeroU64,
     },
     /// Set alpha multiplier for unfocused toplevels (1.0 = disabled).
     ConfigureUnfocusedAlpha {
@@ -876,9 +877,9 @@ fn socket() -> Result<Option<String>> {
 ///
 /// OUTPUT is the output name. FRAMES is a vector of plists describing the
 /// strip of Emacs frames left-to-right. Each frame plist has:
-///   :name NAME :surface-id ID :view-id N :selected-view-id N|nil
+///   :name NAME :surface-id ID :focus-id N :selected-entry-id N|nil
 ///   :width FLOAT :entries [ENTRY ...]
-/// where each ENTRY is a plist `:view-id :x :y :w :h` with optional
+/// where each ENTRY is a plist `:entry-id :name :x :y :w :h` with optional
 /// `:surface-id :fullscreen`.
 /// Entry coordinates are relative to the owning frame's working area.
 #[defun]
@@ -899,22 +900,22 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             .into_rust::<i64>()
             .unwrap_or(0) as u64;
 
-        let view_id = match std::num::NonZeroU64::new(
-            env.call(plist_get, (frame, kw_view_id))?
+        let focus_id = match std::num::NonZeroU64::new(
+            env.call(plist_get, (frame, kw_focus_id))?
                 .into_rust::<i64>()
                 .unwrap_or(0) as u64,
         ) {
             Some(v) => v,
             None => {
-                tracing::warn!("frame {} layout dropped: missing view_id", surface_id);
+                tracing::warn!("frame {} layout dropped: missing focus_id", surface_id);
                 continue;
             }
         };
 
         let width = value_as_f64(env.call(plist_get, (frame, kw_width))?).unwrap_or(0.0);
 
-        let selected_view_id = std::num::NonZeroU64::new(
-            env.call(plist_get, (frame, kw_selected_view_id))?
+        let selected_entry_id = std::num::NonZeroU64::new(
+            env.call(plist_get, (frame, kw_selected_entry_id))?
                 .into_rust::<i64>()
                 .unwrap_or(0) as u64,
         );
@@ -929,14 +930,19 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
         for j in 0..entries_len {
             let entry = env.call(aref, (entries_val, j))?;
 
-            let view_id = match std::num::NonZeroU64::new(
-                env.call(plist_get, (entry, kw_view_id))?
+            let name: String = env
+                .call(plist_get, (entry, kw_name))?
+                .into_rust()
+                .unwrap_or_default();
+
+            let entry_id = match std::num::NonZeroU64::new(
+                env.call(plist_get, (entry, kw_entry_id))?
                     .into_rust::<i64>()
                     .unwrap_or(0) as u64,
             ) {
                 Some(v) => v,
                 None => {
-                    tracing::warn!("layout entry dropped: missing view_id");
+                    tracing::warn!("layout entry dropped: missing entry_id");
                     continue;
                 }
             };
@@ -955,10 +961,10 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
 
             entries.push(if surface_id == 0 {
-                LayoutEntry::emacs_window(view_id, x as i32, y as i32, w as u32, h as u32)
+                LayoutEntry::emacs_window(entry_id, name, x as i32, y as i32, w as u32, h as u32)
             } else {
                 LayoutEntry::surface(
-                    view_id, surface_id, x as i32, y as i32, w as u32, h as u32, fullscreen,
+                    entry_id, name, surface_id, x as i32, y as i32, w as u32, h as u32, fullscreen,
                 )
             });
         }
@@ -966,10 +972,10 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
         parsed_frames.push(Frame {
             name,
             surface_id,
-            view_id,
+            focus_id,
             width,
             entries,
-            selected_view_id,
+            selected_entry_id,
             move_anim: None,
         });
     }
@@ -999,14 +1005,14 @@ fn focus_output_direction_module(dx: i64, dy: i64) -> Result<()> {
     Ok(())
 }
 
-/// Sole focus channel from Lisp.  VIEW-ID names a frame or an inner view.
+/// Sole focus channel from Lisp. FOCUS-ID names a frame chrome or layout entry.
 #[defun]
-fn focus_view_module(view_id: i64) -> Result<()> {
-    let Some(view_id) = std::num::NonZeroU64::new(view_id as u64) else {
-        tracing::warn!("focus_view_module: ignored 0 view_id");
+fn focus_target_module(focus_id: i64) -> Result<()> {
+    let Some(focus_id) = std::num::NonZeroU64::new(focus_id as u64) else {
+        tracing::warn!("focus_target_module: ignored 0 focus_id");
         return Ok(());
     };
-    push_command(ModuleCommand::FocusView { view_id });
+    push_command(ModuleCommand::FocusTarget { focus_id });
     Ok(())
 }
 
