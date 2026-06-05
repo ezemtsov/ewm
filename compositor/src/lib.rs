@@ -7394,6 +7394,7 @@ impl State {
     /// connectors when opened.
     pub fn handle_lid_state(&mut self, is_closed: bool) {
         if let Some(drm) = self.backend.as_drm_mut() {
+            drm.lid_supported = true;
             if drm.lid_closed == is_closed {
                 return;
             }

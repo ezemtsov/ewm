@@ -233,6 +233,19 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 "invariant 9: apply_output_layout dropped {:?}",
                 before.difference(&after).collect::<Vec<_>>(),
             );
+            // I14: apply_output_layout never creates frames except those
+            // explicitly named by the submitted layout.
+            let placed_set: HashSet<u64> = placed.iter().copied().collect();
+            let unexpected: Vec<u64> = after
+                .difference(&before)
+                .copied()
+                .filter(|id| !placed_set.contains(id))
+                .collect();
+            assert!(
+                unexpected.is_empty(),
+                "invariant 14: apply_output_layout created unexpected frame(s) {:?}",
+                unexpected,
+            );
             // I11/I13: layout-named frames are present and in layout order.
             if let Some(strip) = fix.ewm_ref().output_strips.get(dest) {
                 for id in &placed {

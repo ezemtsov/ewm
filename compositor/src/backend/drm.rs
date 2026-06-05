@@ -104,6 +104,127 @@ const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
     smithay::backend::allocator::Fourcc::Abgr8888,
 ];
 
+const CLOSED_LID_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LidPolicyReason {
+    Startup,
+    Resume,
+    Hotplug,
+    LidEvent,
+    SettlingTimeout,
+}
+
+impl LidPolicyReason {
+    fn allows_closed_lid_settle(self) -> bool {
+        matches!(self, Self::Startup | Self::Resume)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClosedLidNoExternalAction {
+    StartSettling,
+    KeepSettling,
+    Suspend,
+}
+
+fn closed_lid_no_external_action(
+    reason: LidPolicyReason,
+    settling: bool,
+) -> ClosedLidNoExternalAction {
+    if settling && reason != LidPolicyReason::SettlingTimeout {
+        ClosedLidNoExternalAction::KeepSettling
+    } else if reason.allows_closed_lid_settle() {
+        ClosedLidNoExternalAction::StartSettling
+    } else {
+        ClosedLidNoExternalAction::Suspend
+    }
+}
+
+fn should_suppress_laptop_panels(lid_supported: bool, lid_closed: bool) -> bool {
+    lid_supported && lid_closed
+}
+
+fn parse_acpi_lid_state(contents: &str) -> Option<bool> {
+    let lower = contents.to_ascii_lowercase();
+    if lower.contains("closed") {
+        Some(true)
+    } else if lower.contains("open") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn current_lid_closed_from_acpi() -> Option<bool> {
+    let mut saw_open = false;
+
+    for entry in std::fs::read_dir("/proc/acpi/button/lid").ok()?.flatten() {
+        let state_path = entry.path().join("state");
+        let Ok(contents) = std::fs::read_to_string(&state_path) else {
+            continue;
+        };
+        match parse_acpi_lid_state(&contents) {
+            Some(true) => return Some(true),
+            Some(false) => saw_open = true,
+            None => {}
+        }
+    }
+
+    saw_open.then_some(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        closed_lid_no_external_action, parse_acpi_lid_state, should_suppress_laptop_panels,
+        ClosedLidNoExternalAction, LidPolicyReason,
+    };
+
+    #[test]
+    fn parses_acpi_lid_state() {
+        assert_eq!(parse_acpi_lid_state("state:      closed\n"), Some(true));
+        assert_eq!(parse_acpi_lid_state("state:      open\n"), Some(false));
+        assert_eq!(parse_acpi_lid_state("state:      unknown\n"), None);
+    }
+
+    #[test]
+    fn closed_lid_without_external_only_settles_after_startup_or_resume() {
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::Startup, false),
+            ClosedLidNoExternalAction::StartSettling
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::Resume, false),
+            ClosedLidNoExternalAction::StartSettling
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::Hotplug, false),
+            ClosedLidNoExternalAction::Suspend
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::LidEvent, false),
+            ClosedLidNoExternalAction::Suspend
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::SettlingTimeout, true),
+            ClosedLidNoExternalAction::Suspend
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::Hotplug, true),
+            ClosedLidNoExternalAction::KeepSettling
+        );
+    }
+
+    #[test]
+    fn laptop_panel_suppression_requires_lid_support() {
+        assert!(!should_suppress_laptop_panels(false, false));
+        assert!(!should_suppress_laptop_panels(false, true));
+        assert!(!should_suppress_laptop_panels(true, false));
+        assert!(should_suppress_laptop_panels(true, true));
+    }
+}
+
 /// Find a DRM mode matching the requested resolution and optional refresh rate.
 ///
 /// `refresh_hz`: target refresh rate in Hz (e.g., 60 for 60Hz).
@@ -544,8 +665,12 @@ pub struct DrmBackendState {
     display_handle: Option<DisplayHandle>,
     /// Pending initialization data - Some until DRM is initialized
     pending: Option<DrmPendingInit>,
+    /// Whether this system has a lid device. Desktops bypass clamshell policy.
+    pub(crate) lid_supported: bool,
     /// Whether the laptop lid is currently closed (from libinput switch events)
     pub lid_closed: bool,
+    /// Bounded wait after closed-lid startup/resume for slow USB-C displays.
+    closed_lid_settle_timer: Option<RegistrationToken>,
     /// Logind session: inhibitor fd + D-Bus connection for suspend.
     /// When present, we manage lid-close policy (macOS-like: stay awake with
     /// external monitor, suspend via D-Bus when no display remains).
@@ -580,6 +705,11 @@ impl Drop for DrmBackendState {
         if let (Some(handle), Some(token)) = (&self.loop_handle, self.session_notifier_token.take())
         {
             info!("Removing session notifier from event loop before session drop");
+            handle.remove(token);
+        }
+        if let (Some(handle), Some(token)) =
+            (&self.loop_handle, self.closed_lid_settle_timer.take())
+        {
             handle.remove(token);
         }
         info!("DrmBackendState dropping - session will be released");
@@ -700,6 +830,7 @@ impl DrmBackendState {
     /// Handle session resume (VT switch back)
     pub(crate) fn resume(&mut self, ewm: &mut Ewm) {
         debug!("Resuming DRM session");
+        self.cancel_closed_lid_settle_timer();
 
         if self.libinput.resume().is_err() {
             warn!("Error resuming libinput");
@@ -797,20 +928,22 @@ impl DrmBackendState {
             }
         }
 
-        // Re-scan connectors to detect monitors added/removed during VT switch.
-        // If topology changed, on_device_changed sends OutputsComplete.
-        self.on_device_changed(ewm);
+        // Re-scan connectors to detect monitors added/removed during suspend.
+        let lid_state_changed = self.refresh_lid_state_from_acpi();
+        self.scan_all_device_connectors(ewm);
 
         // Verify output globals survived the session pause/resume cycle
         self.verify_output_globals();
 
+        let lid_policy_handled = self.lid_supported
+            && (self.lid_closed || lid_state_changed)
+            && self.apply_lid_policy(ewm, LidPolicyReason::Resume);
+        if self.closed_lid_settle_timer.is_some() {
+            return;
+        }
+
         // Reactivate monitors in case they were deactivated (e.g., lid closed)
         ewm.activate_monitors();
-
-        // If lid was closed during suspend, ensure laptop panel stays off
-        if self.lid_closed {
-            self.on_lid_state_changed(ewm);
-        }
 
         // Queue redraws for all outputs to resume rendering
         ewm.queue_redraw_all();
@@ -821,7 +954,9 @@ impl DrmBackendState {
 
         // Always notify Emacs so it re-syncs layout and focus after resume,
         // even if no output topology changed.
-        ewm.queue_event(crate::event::Event::OutputsComplete);
+        if !lid_policy_handled {
+            ewm.queue_event(crate::event::Event::OutputsComplete);
+        }
     }
 
     /// Trigger deferred DRM initialization (called when session becomes active)
@@ -1468,20 +1603,32 @@ impl DrmBackendState {
             return;
         }
 
+        let lid_state_changed = self.refresh_lid_state_from_acpi();
+        let changed = self.scan_all_device_connectors(ewm);
+
+        // Signal Emacs that output topology is settled so it can
+        // re-sync layout, focus, and frame-output parity.
+        if self.lid_supported
+            && (lid_state_changed
+                || (changed && self.lid_closed)
+                || self.closed_lid_settle_timer.is_some())
+            && self.apply_lid_policy(ewm, LidPolicyReason::Hotplug)
+        {
+            return;
+        } else if changed {
+            ewm.queue_event(crate::event::Event::OutputsComplete);
+        }
+    }
+
+    fn scan_all_device_connectors(&mut self, ewm: &mut Ewm) -> bool {
         let nodes: Vec<_> = self.devices.keys().copied().collect();
         let mut changed = false;
-
         for node in nodes {
             if self.scan_device_connectors(node, ewm) {
                 changed = true;
             }
         }
-
-        // Signal Emacs that output topology is settled so it can
-        // re-sync layout, focus, and frame-output parity.
-        if changed {
-            ewm.queue_event(crate::event::Event::OutputsComplete);
-        }
+        changed
     }
 
     fn scan_device_connectors(&mut self, node: DrmNode, ewm: &mut Ewm) -> bool {
@@ -1535,12 +1682,11 @@ impl DrmBackendState {
             changed = true;
         }
 
-        self.suspend_if_clamshell_empty(ewm);
-
         let Some(device) = self.devices.get(&node) else {
             return changed;
         };
-        let disable_laptop_panels = self.lid_closed;
+        let disable_laptop_panels =
+            should_suppress_laptop_panels(self.lid_supported, self.lid_closed);
         let added: Vec<_> = added
             .into_iter()
             .filter(|(connector, crtc)| {
@@ -1915,78 +2061,120 @@ impl DrmBackendState {
         }
     }
 
-    /// Handle lid open/close by disconnecting or reconnecting the laptop panel.
-    ///
-    /// When closed with an external monitor: disconnect laptop panel only.
-    /// When closed without external: deactivate all monitors.
-    /// When opened: re-scan connectors to reconnect laptop panel.
+    /// Handle lid open/close by reconciling the current connector topology.
     pub fn on_lid_state_changed(&mut self, ewm: &mut Ewm) {
-        if self.lid_closed {
-            if self.has_external_monitor() {
-                // Disconnect laptop panel outputs, keep external displays.
-                let to_disconnect: Vec<(DrmNode, crtc::Handle)> = self
-                    .devices
-                    .iter()
-                    .flat_map(|(node, device)| {
-                        device
-                            .surfaces
-                            .iter()
-                            .filter(|(_, surface)| crate::is_laptop_panel(&surface.output.name()))
-                            .map(|(crtc, _)| (*node, *crtc))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-                for (node, crtc) in to_disconnect {
-                    self.disconnect_output(node, crtc, ewm);
-                }
-            } else {
-                // No external monitor -- deactivate and suspend
-                ewm.deactivate_monitors();
-                if let Some(logind) = &self.logind {
-                    info!("Lid closed with no external display, suspending");
-                    logind.suspend();
-                }
-            }
+        self.lid_supported = true;
+        self.apply_lid_policy(ewm, LidPolicyReason::LidEvent);
+    }
 
-            // Kill idle child process (e.g., screensaver) on lid close
-            ewm.kill_idle_child();
-
-            self.suspend_if_clamshell_empty(ewm);
-        } else {
-            // Lid opened: reconnect laptop panels that the scanner still knows
-            // about but that we disconnected. on_device_changed() won't help
-            // here because the scanner sees no state change (the connector was
-            // physically connected the whole time).
-            let to_connect: Vec<(DrmNode, connector::Info, crtc::Handle)> = self
-                .devices
-                .iter()
-                .flat_map(|(node, device)| {
-                    device
-                        .drm_scanner
-                        .crtcs()
-                        .filter(|(conn, _)| conn.state() == connector::State::Connected)
-                        .filter(|(_, crtc)| !device.surfaces.contains_key(crtc))
-                        .filter(|(conn, _)| {
-                            let name =
-                                format!("{}-{}", conn.interface().as_str(), conn.interface_id());
-                            crate::is_laptop_panel(&name)
-                        })
-                        .map(|(conn, crtc)| (*node, conn.clone(), crtc))
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-            for (node, connector, crtc) in to_connect {
-                if let Err(err) = self.connect_output(node, connector, crtc, ewm) {
-                    warn!("Failed to reconnect laptop panel: {:?}", err);
-                }
-            }
-            ewm.activate_monitors();
-            ewm.wake_from_idle();
+    fn apply_lid_policy(&mut self, ewm: &mut Ewm, reason: LidPolicyReason) -> bool {
+        if !self.lid_supported {
+            self.cancel_closed_lid_settle_timer();
+            return false;
         }
 
-        ewm.output_management_state.output_heads_changed = true;
+        if self.lid_closed {
+            if self.has_external_monitor() {
+                self.cancel_closed_lid_settle_timer();
+                self.disconnect_laptop_panels(ewm);
+                ewm.kill_idle_child();
+                ewm.activate_monitors();
+                ewm.output_management_state.output_heads_changed = true;
+                ewm.queue_event(crate::event::Event::OutputsComplete);
+                return true;
+            }
 
-        ewm.queue_event(crate::event::Event::OutputsComplete);
+            match closed_lid_no_external_action(reason, self.closed_lid_settle_timer.is_some()) {
+                ClosedLidNoExternalAction::StartSettling => {
+                    self.start_closed_lid_settle_timer(ewm);
+                    true
+                }
+                ClosedLidNoExternalAction::KeepSettling => true,
+                ClosedLidNoExternalAction::Suspend => {
+                    self.cancel_closed_lid_settle_timer();
+                    self.suspend_closed_lid_without_external(ewm, reason);
+                    ewm.output_management_state.output_heads_changed = true;
+                    ewm.queue_event(crate::event::Event::OutputsComplete);
+                    true
+                }
+            }
+        } else {
+            self.cancel_closed_lid_settle_timer();
+            self.reconnect_laptop_panels(ewm);
+            ewm.activate_monitors();
+            ewm.wake_from_idle();
+            ewm.output_management_state.output_heads_changed = true;
+            ewm.queue_event(crate::event::Event::OutputsComplete);
+            true
+        }
+    }
+
+    fn disconnect_laptop_panels(&mut self, ewm: &mut Ewm) -> bool {
+        let to_disconnect: Vec<(DrmNode, crtc::Handle)> = self
+            .devices
+            .iter()
+            .flat_map(|(node, device)| {
+                device
+                    .surfaces
+                    .iter()
+                    .filter(|(_, surface)| crate::is_laptop_panel(&surface.output.name()))
+                    .map(|(crtc, _)| (*node, *crtc))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let changed = !to_disconnect.is_empty();
+        for (node, crtc) in to_disconnect {
+            self.disconnect_output(node, crtc, ewm);
+        }
+        changed
+    }
+
+    fn reconnect_laptop_panels(&mut self, ewm: &mut Ewm) -> bool {
+        // Lid opened: reconnect laptop panels that the scanner still knows
+        // about but that we disconnected. on_device_changed() won't help
+        // here because the scanner sees no state change (the connector was
+        // physically connected the whole time).
+        let to_connect: Vec<(DrmNode, connector::Info, crtc::Handle)> = self
+            .devices
+            .iter()
+            .flat_map(|(node, device)| {
+                device
+                    .drm_scanner
+                    .crtcs()
+                    .filter(|(conn, _)| conn.state() == connector::State::Connected)
+                    .filter(|(_, crtc)| !device.surfaces.contains_key(crtc))
+                    .filter(|(conn, _)| {
+                        let name = format!("{}-{}", conn.interface().as_str(), conn.interface_id());
+                        crate::is_laptop_panel(&name)
+                    })
+                    .map(|(conn, crtc)| (*node, conn.clone(), crtc))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let changed = !to_connect.is_empty();
+        for (node, connector, crtc) in to_connect {
+            if let Err(err) = self.connect_output(node, connector, crtc, ewm) {
+                warn!("Failed to reconnect laptop panel: {:?}", err);
+            }
+        }
+        changed
+    }
+
+    fn refresh_lid_state_from_acpi(&mut self) -> bool {
+        let Some(is_closed) = current_lid_closed_from_acpi() else {
+            return false;
+        };
+        self.lid_supported = true;
+        if self.lid_closed == is_closed {
+            return false;
+        }
+
+        self.lid_closed = is_closed;
+        info!(
+            "Lid {} (ACPI state refresh)",
+            if is_closed { "closed" } else { "opened" }
+        );
+        true
     }
 
     fn has_external_monitor(&self) -> bool {
@@ -1996,16 +2184,62 @@ impl DrmBackendState {
             .any(|o| !crate::is_laptop_panel(&o.name))
     }
 
-    /// If the lid is closed and no outputs remain, deactivate and suspend.
-    /// Called after output disconnections (lid close, hotplug) to handle the
-    /// case where the last display disappears while the lid is shut.
-    fn suspend_if_clamshell_empty(&self, ewm: &mut Ewm) {
-        if self.lid_closed && self.output_infos.count() == 0 {
-            ewm.deactivate_monitors();
-            if let Some(logind) = &self.logind {
-                info!("No display remaining with lid closed, suspending");
-                logind.suspend();
+    fn start_closed_lid_settle_timer(&mut self, ewm: &mut Ewm) {
+        ewm.deactivate_monitors();
+        if self.closed_lid_settle_timer.is_some() {
+            return;
+        }
+
+        info!(
+            "Lid closed with no external display; settling for {:?}",
+            CLOSED_LID_SETTLE_TIMEOUT
+        );
+
+        let Some(handle) = self.loop_handle.clone() else {
+            self.suspend_closed_lid_without_external(ewm, LidPolicyReason::Startup);
+            return;
+        };
+
+        match handle.insert_source(
+            Timer::from_duration(CLOSED_LID_SETTLE_TIMEOUT),
+            move |_, _, state| {
+                if let Some(drm) = state.backend.as_drm_mut() {
+                    drm.closed_lid_settle_timer = None;
+                    drm.on_closed_lid_settle_timeout(&mut state.ewm);
+                }
+                TimeoutAction::Drop
+            },
+        ) {
+            Ok(token) => self.closed_lid_settle_timer = Some(token),
+            Err(err) => {
+                warn!("Failed to start closed-lid settle timer: {:?}", err);
+                self.suspend_closed_lid_without_external(ewm, LidPolicyReason::Startup);
             }
+        }
+    }
+
+    fn cancel_closed_lid_settle_timer(&mut self) {
+        if let Some(token) = self.closed_lid_settle_timer.take() {
+            if let Some(handle) = &self.loop_handle {
+                handle.remove(token);
+            }
+        }
+    }
+
+    fn on_closed_lid_settle_timeout(&mut self, ewm: &mut Ewm) {
+        self.refresh_lid_state_from_acpi();
+        self.scan_all_device_connectors(ewm);
+        self.apply_lid_policy(ewm, LidPolicyReason::SettlingTimeout);
+    }
+
+    fn suspend_closed_lid_without_external(&self, ewm: &mut Ewm, reason: LidPolicyReason) {
+        ewm.deactivate_monitors();
+        if let Some(logind) = &self.logind {
+            info!(
+                "Lid closed with no external display after {:?}, suspending",
+                reason
+            );
+            logind.suspend();
         }
     }
 
@@ -2395,6 +2629,17 @@ fn initialize_drm(
     // Verify all output globals are valid (defensive against silent global loss).
     state.backend.as_drm_mut().unwrap().verify_output_globals();
 
+    let lid_policy_handled = {
+        let drm_backend = state.backend.as_drm_mut().unwrap();
+        drm_backend.lid_supported
+            && drm_backend.lid_closed
+            && drm_backend.apply_lid_policy(&mut state.ewm, LidPolicyReason::Startup)
+    };
+    let closed_lid_settling = state
+        .backend
+        .as_drm()
+        .is_some_and(|drm| drm.closed_lid_settle_timer.is_some());
+
     info!(
         "Total output area: {}x{} ({} outputs)",
         state.ewm.output_size.w,
@@ -2407,7 +2652,9 @@ fn initialize_drm(
     // Place pointer at center of first output instead of (0, 0).
     state.center_pointer_on_first_output();
 
-    state.ewm.queue_event(crate::event::Event::OutputsComplete);
+    if !lid_policy_handled {
+        state.ewm.queue_event(crate::event::Event::OutputsComplete);
+    }
     state.ewm.queue_event(crate::event::Event::Ready);
     info!(
         "Sent {} output_detected events, compositor ready",
@@ -2415,7 +2662,9 @@ fn initialize_drm(
     );
 
     // Trigger initial render via redraw_queued_outputs (all outputs start in Queued state).
-    state.ewm.redraw_queued_outputs(&mut state.backend);
+    if !closed_lid_settling {
+        state.ewm.redraw_queued_outputs(&mut state.backend);
+    }
 
     Ok(())
 }
@@ -2531,6 +2780,8 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     // Create channel for deferred DRM initialization
     let (init_sender, init_receiver) = channel::<DrmMessage>();
 
+    let initial_lid_state = current_lid_closed_from_acpi();
+
     // Create backend state (owned directly, no Rc<RefCell<>>)
     let backend = DrmBackendState {
         session: Some(session),
@@ -2541,7 +2792,9 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
             primary_render_node,
             seat_name: seat_name.clone(),
         }),
-        lid_closed: false,
+        lid_supported: initial_lid_state.is_some(),
+        lid_closed: initial_lid_state.unwrap_or(false),
+        closed_lid_settle_timer: None,
         logind: LogindState::new(),
         session_notifier_token: None, // Set after registering notifier
         init_sender: Some(init_sender),
