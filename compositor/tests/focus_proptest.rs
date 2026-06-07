@@ -41,6 +41,7 @@ enum Op {
     AddOutput(usize),
     DestroyFrame(u64),
     DestroySurface(u64),
+    ActivateSurface(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +141,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
         ENTRY_SID_RANGE.prop_map(Op::DestroySurface),
+        ENTRY_SID_RANGE.prop_map(Op::ActivateSurface),
     ]
 }
 
@@ -276,6 +278,16 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     );
                 }
             }
+            // Only a layout that reaches the compositor drains pending activations.
+            if fix.has_output(OUTPUTS[output]) {
+                for id in fix.ewm_ref().pending_activation_surfaces.clone() {
+                    assert!(
+                        !fix.ewm_ref().focus_target_ready(id),
+                        "layout left activation of {} pending although it can be focused",
+                        id,
+                    );
+                }
+            }
         }
         Op::FocusView(v) => {
             fix.ewm().set_focus_entry(v, "proptest", false);
@@ -363,6 +375,31 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 }
             }
         }
+        Op::ActivateSurface(id) => {
+            let prev = (
+                fix.ewm_ref().focused_frame_id,
+                fix.ewm_ref().focused_entry_id,
+            );
+            fix.ewm().activate_or_defer_surface(id, true, "proptest");
+            let ewm = fix.ewm_ref();
+            let focused = ewm.focused_surface_id() == id;
+            let pending = ewm.pending_activation_surfaces.contains(&id);
+            assert!(
+                focused != pending,
+                "activate({}) must focus the surface or defer it: focused={} pending={}",
+                id,
+                focused,
+                pending,
+            );
+            if pending {
+                assert_eq!(
+                    (ewm.focused_frame_id, ewm.focused_entry_id),
+                    prev,
+                    "activate({}) of a hidden surface moved focus",
+                    id,
+                );
+            }
+        }
         Op::DestroySurface(id) => {
             let was_present = layout_surface_ids(fix).contains(&id);
             let was_focused = fix.ewm_ref().focused_surface_id() == id;
@@ -377,6 +414,11 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             assert_eq!(
                 refocus, None,
                 "destroying embedded surface {} must not request frame refocus",
+                id,
+            );
+            assert!(
+                !fix.ewm_ref().pending_activation_surfaces.contains(&id),
+                "destroy({}) left a pending activation",
                 id,
             );
             if was_present {

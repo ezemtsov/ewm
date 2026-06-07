@@ -879,7 +879,7 @@ pub struct Ewm {
     pub urgent_workspaces: HashSet<u64>,
     /// Valid activation requests that arrived before the surface was attached
     /// to an Emacs frame.  Drained after layout refresh makes them focusable.
-    pending_activation_surfaces: HashSet<u64>,
+    pub pending_activation_surfaces: HashSet<u64>,
 
     // Output
     pub output_size: Size<i32, Logical>,
@@ -5720,16 +5720,20 @@ impl Ewm {
         }
     }
 
-    fn focus_target_ready(&self, id: u64) -> bool {
+    pub fn focus_target_ready(&self, id: u64) -> bool {
         let (frame_id, entry_id) = self.resolve_focus_target(id);
         entry_id.is_some() || (frame_id != 0 && self.is_emacs_frame(frame_id))
     }
 
-    fn activate_or_defer_surface(&mut self, id: u64, notify_emacs: bool, source: &str) {
+    /// Focus the surface, or ask Emacs to show it when no window does.
+    pub fn activate_or_defer_surface(&mut self, id: u64, notify_emacs: bool, source: &str) {
         if self.set_focus(id, notify_emacs, source) {
             self.pending_activation_surfaces.remove(&id);
         } else {
             self.pending_activation_surfaces.insert(id);
+            if notify_emacs {
+                self.queue_event(Event::ActivateSurface { id });
+            }
         }
     }
 
@@ -8461,7 +8465,8 @@ impl ForeignToplevelHandler for State {
 
     fn activate(&mut self, wl_surface: WlSurface) {
         if let Some(id) = self.ewm.surface_id(&wl_surface) {
-            self.ewm.set_focus(id, true, "foreign_toplevel");
+            self.ewm
+                .activate_or_defer_surface(id, true, "foreign_toplevel");
             info!("Foreign toplevel: activated surface {}", id);
         }
     }
@@ -10427,6 +10432,20 @@ mod tests {
                 Some(PROP_HEADS[order[0]].to_string()),
             );
         }
+    }
+
+    #[test]
+    fn hidden_surface_activation_asks_emacs_to_show_it() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.enable_event_capture();
+
+        fix.ewm().activate_or_defer_surface(42, true, "test");
+
+        assert!(fix.ewm_ref().pending_activation_surfaces.contains(&42));
+        assert!(matches!(
+            fix.drain_events().as_slice(),
+            [Event::ActivateSurface { id: 42 }]
+        ));
     }
 
     #[test]

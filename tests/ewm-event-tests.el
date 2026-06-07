@@ -46,6 +46,7 @@
 (ewm-test--stub ewm-im-commit-module (_text _surface-id) nil)
 (ewm-test--stub ewm-text-input-intercept-module (_enabled) nil)
 (ewm-test--stub ewm-get-focused-id () nil)
+(ewm-test--stub ewm-get-focused-frame-id () 0)
 (provide 'ewm-core)
 
 (add-to-list 'load-path
@@ -57,12 +58,28 @@
                         (file-name-directory (or load-file-name buffer-file-name)))
       nil t)
 
+(ert-deftest ewm-event-tests/activation-shows-hidden-surface-buffer ()
+  "Activating a surface no window shows puts its buffer back in the layout."
+  (let ((ewm--surfaces (make-hash-table :test 'eql))
+        (ewm--module-mode nil)
+        (buf (generate-new-buffer " *ewm-test-activation*")))
+    (unwind-protect
+        (save-window-excursion
+          (puthash 42 buf ewm--surfaces)
+          (with-current-buffer buf
+            (ewm-surface-mode)
+            (setq-local ewm-surface-id 42))
+          (ewm--handle-event '(activate_surface (id . 42)))
+          (should (eq (window-buffer (selected-window)) buf)))
+      (kill-buffer buf))))
+
 (ert-deftest ewm-event-tests/every-event-reaches-its-handler ()
   "Every variant the module can hand out dispatches to its handler with its body."
   (let* ((table '((new . ewm--handle-new-surface)
                   (mapped . ewm--handle-mapped-surface)
                   (close . ewm--handle-close-surface)
                   (minimize . ewm--handle-minimize-surface)
+                  (activate_surface . ewm--handle-activate-surface)
                   (title . ewm--handle-title-update)
                   (focus . ewm--handle-focus)
                   (output_detected . ewm--handle-output-detected)

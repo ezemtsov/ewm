@@ -371,6 +371,7 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ('mapped (ewm--handle-mapped-surface body))
       ('close (ewm--handle-close-surface body))
       ('minimize (ewm--handle-minimize-surface body))
+      ('activate_surface (ewm--handle-activate-surface body))
       ('title (ewm--handle-title-update body))
       ('focus (ewm--handle-focus body))
       ('output_detected (ewm--handle-output-detected body))
@@ -465,14 +466,17 @@ matches it is paired, otherwise a surface buffer is created."
                 (height (alist-get 'height event)))
       (with-current-buffer buffer
         (setq-local ewm-surface-size (cons width height))))
-    (let ((args (list buffer
-                      (alist-get 'open_floating event)
-                      (alist-get 'output event)
-                      (alist-get 'frame_surface_id event))))
-      ;; A menu is up: defer so placement neither disrupts nor is dropped by it.
-      (if (ewm-layout--menu-active-p)
-          (push args ewm--pending-placements)
-        (apply #'ewm--place-surface-buffer args)))))
+    (ewm--place-or-defer buffer
+                         (alist-get 'open_floating event)
+                         (alist-get 'output event)
+                         (alist-get 'frame_surface_id event))))
+
+(defun ewm--place-or-defer (buffer floating output host-id)
+  "Place BUFFER now, or once the active menu closes."
+  (let ((args (list buffer floating output host-id)))
+    (if (ewm-layout--menu-active-p)
+        (push args ewm--pending-placements)
+      (apply #'ewm--place-surface-buffer args))))
 
 (defun ewm--flush-pending-placements ()
   "Place surfaces that mapped while a menu was active."
@@ -526,6 +530,13 @@ without lisp asking (e.g. compositor-driven destroy)."
   "Bury the surface buffer for EVENT so the layout hides it."
   (ewm--with-surface-buffer-from-event event
     (bury-buffer)))
+
+(defun ewm--handle-activate-surface (event)
+  "Show the surface named by activation EVENT in the focused frame."
+  (ewm--with-surface-buffer-from-event event
+    (ewm--place-or-defer (current-buffer) nil nil
+                         (frame-parameter (ignore-errors (ewm--focused-frame))
+                                          'ewm-surface-id))))
 
 (defun ewm--handle-maximize-request (_event)
   "Handle maximize request EVENT.

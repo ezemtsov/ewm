@@ -11,6 +11,7 @@
     (mapped (id . 9) (open_floating . t) (output . "eDP-1") (frame_surface_id) (width . 800.0) (height . 600.0))
     (close (id . 7))
     (minimize (id . 7))
+    (activate_surface (id . 7))
     (title (id . 7) (app . "Alacritty") (title . "~"))
     (focus (focus_id . 7) (x . 10.5) (y . 20.0) (pointer . t))
     (focus (focus_id . 1) (x) (y) (pointer))
