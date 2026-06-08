@@ -128,11 +128,20 @@ The batch frame is shared; we save and restore the parameters we touch."
                (ewm-focus-tests--capture-selected-entry-id))))
 
 (ert-deftest ewm-focus/minibuffer-suppresses ()
-  "Active minibuffer suppresses embedded entry focus."
-  ;; `-batch' can't drive a real minibuffer read, so stub the predicate.
+  "A completion minibuffer suppresses embedded entry focus."
+  ;; `-batch' can't drive a real read, so stub the window and the table.
   (cl-letf (((symbol-function 'active-minibuffer-window)
              (lambda () (selected-window))))
-    (should (null (ewm-focus-tests--capture-selected-entry-id)))))
+    (let ((minibuffer-completion-table '("a" "b")))
+      (should (null (ewm-focus-tests--capture-selected-entry-id))))))
+
+(ert-deftest ewm-focus/minibuffer-plain-prompt-does-not-suppress ()
+  "A plain prompt keeps embedded entry focus."
+  (cl-letf (((symbol-function 'active-minibuffer-window)
+             (lambda () (selected-window))))
+    (let ((minibuffer-completion-table nil))
+      (should (eql ewm-focus-tests--surface-entry-id
+                   (ewm-focus-tests--capture-selected-entry-id))))))
 
 (ert-deftest ewm-focus/overriding-keymap-suppresses ()
   "Any `overriding-terminal-local-map' suppresses embedded entry focus."
