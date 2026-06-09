@@ -18,6 +18,8 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
+#[cfg(feature = "testing-layer-shell")]
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 /// Notable events the client received from the server.
 #[derive(Debug, Clone)]
@@ -71,6 +73,8 @@ pub struct ClientState {
     pub seat: Option<wl_seat::WlSeat>,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
+    #[cfg(feature = "testing-layer-shell")]
+    pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
     pub output_names: HashMap<u32, String>,
     pub events: Vec<ClientEvent>,
@@ -87,6 +91,13 @@ pub struct Toplevel {
 pub struct Popup {
     pub surface: wl_surface::WlSurface,
     pub xdg_surface: xdg_surface::XdgSurface,
+}
+
+#[cfg(feature = "testing-layer-shell")]
+#[derive(Clone)]
+pub struct LayerSurface {
+    pub surface: wl_surface::WlSurface,
+    pub layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
 }
 
 impl TestClient {
@@ -143,6 +154,14 @@ impl TestClient {
             .expect("xdg_wm_base not bound; roundtrip the registry first")
     }
 
+    #[cfg(feature = "testing-layer-shell")]
+    fn layer_shell(&self) -> &zwlr_layer_shell_v1::ZwlrLayerShellV1 {
+        self.state
+            .layer_shell
+            .as_ref()
+            .expect("zwlr_layer_shell_v1 not bound; roundtrip the registry first")
+    }
+
     fn shm(&self) -> &wl_shm::WlShm {
         self.state
             .shm
@@ -179,6 +198,33 @@ impl TestClient {
         }
     }
 
+    /// Caller must roundtrip before attaching the first buffer.
+    #[cfg(feature = "testing-layer-shell")]
+    pub fn create_layer_surface(
+        &mut self,
+        namespace: &str,
+        size: Size<i32, Logical>,
+    ) -> LayerSurface {
+        let qh = self.eq.handle();
+        let surface = self.compositor().create_surface(&qh, ());
+        let layer_surface = self.layer_shell().get_layer_surface(
+            &surface,
+            None,
+            zwlr_layer_shell_v1::Layer::Top,
+            namespace.to_string(),
+            &qh,
+            (),
+        );
+        layer_surface.set_size(size.w as u32, size.h as u32);
+        layer_surface
+            .set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
+        surface.commit();
+        LayerSurface {
+            surface,
+            layer_surface,
+        }
+    }
+
     /// Caller must roundtrip before reading server-side state.
     pub fn create_popup(
         &mut self,
@@ -195,6 +241,32 @@ impl TestClient {
         let surface = self.compositor().create_surface(&qh, ());
         let xdg_surface = self.wm_base().get_xdg_surface(&surface, &qh, ());
         let _popup = xdg_surface.get_popup(Some(&parent.xdg_surface), &positioner, &qh, ());
+        positioner.destroy();
+        surface.commit();
+        Popup {
+            surface,
+            xdg_surface,
+        }
+    }
+
+    /// Caller must roundtrip before reading server-side state.
+    #[cfg(feature = "testing-layer-shell")]
+    pub fn create_layer_popup(
+        &mut self,
+        parent: &LayerSurface,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) -> Popup {
+        let qh = self.eq.handle();
+        let positioner = self.wm_base().create_positioner(&qh, ());
+        positioner.set_anchor_rect(anchor.loc.x, anchor.loc.y, anchor.size.w, anchor.size.h);
+        positioner.set_size(size.w, size.h);
+        positioner.set_anchor(xdg_positioner::Anchor::BottomLeft);
+        positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
+        let surface = self.compositor().create_surface(&qh, ());
+        let xdg_surface = self.wm_base().get_xdg_surface(&surface, &qh, ());
+        let xdg_popup = xdg_surface.get_popup(None, &positioner, &qh, ());
+        parent.layer_surface.get_popup(&xdg_popup);
         positioner.destroy();
         surface.commit();
         Popup {
@@ -231,6 +303,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.seat = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_output::WlOutput::interface().name {
             let _: wl_output::WlOutput = registry.bind(name, version, qh, ());
+        }
+        #[cfg(feature = "testing-layer-shell")]
+        if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
+            state.layer_shell = Some(registry.bind(name, version, qh, ()));
         }
     }
 }
@@ -340,6 +416,22 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientState {
     }
 }
 
+#[cfg(feature = "testing-layer-shell")]
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for ClientState {
+    fn event(
+        _: &mut Self,
+        layer_surface: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = event {
+            layer_surface.ack_configure(serial);
+        }
+    }
+}
+
 /// Anonymous file-backed shared memory, zero-filled on `ftruncate`.
 fn create_memfd(size: usize) -> OwnedFd {
     use std::ffi::CStr;
@@ -431,3 +523,5 @@ wayland_client::delegate_noop!(ClientState: ignore xdg_positioner::XdgPositioner
 wayland_client::delegate_noop!(ClientState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
+#[cfg(feature = "testing-layer-shell")]
+wayland_client::delegate_noop!(ClientState: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);

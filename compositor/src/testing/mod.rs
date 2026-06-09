@@ -6,6 +6,8 @@
 mod client;
 mod fixture;
 
+#[cfg(feature = "testing-layer-shell")]
+pub use client::LayerSurface;
 pub use client::{ClientEvent, ClientState as TestClientState, Popup, TestClient, Toplevel};
 pub use fixture::Fixture;
 

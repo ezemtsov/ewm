@@ -1034,6 +1034,57 @@ fn emacs_frame_popup_receives_hits_above_embedded_surface() {
     );
 }
 
+#[cfg(feature = "testing-layer-shell")]
+#[test]
+fn layer_shell_popup_receives_placement_and_hit_testing() {
+    let mut fix = Fixture::new().expect("fixture");
+    fix.add_output(OUTPUTS[0].0, OUTPUTS[0].1, OUTPUTS[0].2);
+    fix.dispatch();
+
+    let mut client = fix.new_client().expect("client");
+    fix.roundtrip(&mut client);
+    let layer = fix.open_layer_surface(&mut client, "ewm-test-layer", Size::from((300, 30)));
+    let popup = fix.open_layer_popup(
+        &mut client,
+        &layer,
+        Rectangle::new(Point::from((20, 20)), Size::from((1, 1))),
+        Size::from((100, 80)),
+    );
+
+    let popup_key = client_surface_key(&client, &popup.surface);
+    let (centre, hit_key, without_layer_popup) = {
+        let ewm = fix.ewm_ref();
+        let output = ewm.sorted_outputs.first().expect("mapped output");
+        let output_geo = ewm.space.output_geometry(output).expect("output geometry");
+
+        let without_layer_popup = collect_popup_placements(ewm, output_geo, None)
+            .iter()
+            .any(|p| server_surface_key(ewm, &p.surface).as_ref() == Some(&popup_key));
+
+        let placement = collect_popup_placements(ewm, output_geo, Some(output))
+            .into_iter()
+            .find(|p| server_surface_key(ewm, &p.surface).as_ref() == Some(&popup_key))
+            .expect("layer popup placement");
+        let centre = Point::from((
+            (placement.location.x + placement.size.w / 2) as f64,
+            (placement.location.y + placement.size.h / 2) as f64,
+        ));
+        let hit = ewm.surface_under_point(centre);
+        let hit_key = server_hit_key(ewm, hit.as_ref().map(|(s, _)| s));
+        (centre, hit_key, without_layer_popup)
+    };
+
+    assert!(
+        !without_layer_popup,
+        "layer popup should be excluded when no layer output is requested",
+    );
+    assert_eq!(
+        hit_key.as_ref(),
+        Some(&popup_key),
+        "layer popup centre {centre:?} should hit the popup surface",
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,

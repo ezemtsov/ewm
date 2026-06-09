@@ -92,6 +92,20 @@ impl Fixture {
         self.roundtrip(client);
     }
 
+    #[cfg(feature = "testing-layer-shell")]
+    fn finish_layer_surface(
+        &mut self,
+        client: &mut TestClient,
+        surface: &wayland_client::protocol::wl_surface::WlSurface,
+        size: Size<i32, Logical>,
+    ) {
+        let buffer = client.create_shm_buffer(size);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, size.w, size.h);
+        surface.commit();
+        self.roundtrip(client);
+    }
+
     /// Drive a full xdg toplevel lifecycle.
     pub fn open_toplevel(
         &mut self,
@@ -114,6 +128,35 @@ impl Fixture {
         size: Size<i32, Logical>,
     ) -> crate::testing::Popup {
         let popup = client.create_popup(parent, anchor, size);
+        self.roundtrip(client);
+        self.finish_xdg(client, &popup.surface, &popup.xdg_surface, size);
+        popup
+    }
+
+    /// Drive a full layer-shell surface lifecycle.
+    #[cfg(feature = "testing-layer-shell")]
+    pub fn open_layer_surface(
+        &mut self,
+        client: &mut TestClient,
+        namespace: &str,
+        size: Size<i32, Logical>,
+    ) -> crate::testing::LayerSurface {
+        let layer = client.create_layer_surface(namespace, size);
+        self.roundtrip(client);
+        self.finish_layer_surface(client, &layer.surface, size);
+        layer
+    }
+
+    /// Drive a full xdg popup lifecycle parented to a layer-shell surface.
+    #[cfg(feature = "testing-layer-shell")]
+    pub fn open_layer_popup(
+        &mut self,
+        client: &mut TestClient,
+        parent: &crate::testing::LayerSurface,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) -> crate::testing::Popup {
+        let popup = client.create_layer_popup(parent, anchor, size);
         self.roundtrip(client);
         self.finish_xdg(client, &popup.surface, &popup.xdg_surface, size);
         popup
