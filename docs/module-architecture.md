@@ -142,17 +142,20 @@ this event instead of using arbitrary sleep delays:
   (ewm-start (ewm--cursor-theme)
              (ewm--cursor-size))    ; Start compositor thread
   (setq ewm--module-mode t)
-  (ewm-mode 1)                      ; Enable BEFORE processing events
+  (ewm--setup)                      ; Install frame/input hooks early
   ;; Wait for ready event
   (let ((timeout 50))
     (while (and (> timeout 0) (not ewm--compositor-ready))
       (accept-process-output ewm--event-process 0.1)
       (cl-decf timeout)))
+  (ewm--publish-mode-state t)       ; Publish ewm-mode after ready
   ...)
 ```
 
-**Critical**: `ewm-mode` must be enabled before the wait loop so that
-`output_detected` events properly register frames as pending.
+**Critical**: Emacs-side setup must run before the wait loop so that
+`output_detected` events properly register frames as pending.  The public
+`ewm-mode` state is published only after the compositor sends `ready`, making
+`ewm-mode-hook` suitable for launching Wayland clients such as panels.
 
 ## API Reference
 

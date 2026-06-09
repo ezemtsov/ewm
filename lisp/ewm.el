@@ -80,6 +80,9 @@ FORMAT-STRING and ARGS are passed to `format'."
 (defvar ewm--compositor-ready nil
   "Non-nil when compositor has signaled it is ready.")
 
+(defvar ewm--mode-command-active nil
+  "Non-nil while the generated `ewm-mode' command owns hook dispatch.")
+
 (defconst ewm--compositor-ready-timeout 30.0
   "Seconds to wait for the compositor to signal readiness on start.")
 
@@ -643,10 +646,13 @@ changing the available area for Emacs frames."
 (defvar ewm--last-selection nil
   "Last selection text received from compositor, to avoid echo.")
 
-(defvar ewm--saved-interprogram-cut-function nil
+(defconst ewm--unset (make-symbol "ewm--unset")
+  "Internal marker for saved values that have not been set.")
+
+(defvar ewm--saved-interprogram-cut-function ewm--unset
   "Saved value of `interprogram-cut-function' before EWM override.")
 
-(defvar ewm--saved-interprogram-paste-function nil
+(defvar ewm--saved-interprogram-paste-function ewm--unset
   "Saved value of `interprogram-paste-function' before EWM override.")
 
 (defun ewm--handle-selection-changed (event)
@@ -1157,12 +1163,11 @@ strip, so the parameter must change between the remove and the insert."
 
 (defun ewm--on-make-frame (frame)
   "Hook for frame creation. Drop frames not assigned to an output."
-  (when ewm-mode
-    (ewm--fixup-display-customs frame)
-    (when (and (ewm--output-managed-p frame)
-               (not (frame-parameter frame 'ewm-output)))
-      (ewm--log "on-make-frame: frame=%s action=schedule-delete" frame)
-      (run-at-time 0 nil (lambda () (ignore-errors (delete-frame frame)))))))
+  (ewm--fixup-display-customs frame)
+  (when (and (ewm--output-managed-p frame)
+             (not (frame-parameter frame 'ewm-output)))
+    (ewm--log "on-make-frame: frame=%s action=schedule-delete" frame)
+    (run-at-time 0 nil (lambda () (ignore-errors (delete-frame frame))))))
 
 (defun ewm--on-delete-frame (frame &rest _)
   "Hook for `delete-frame-functions': drop FRAME from its strip."
@@ -1347,8 +1352,9 @@ The compositor runs as a thread within the Emacs process."
   (interactive)
   (when (and (fboundp 'ewm-running) (ewm-running))
     (user-error "EWM compositor is already running"))
-  (setq ewm--module-mode nil)
-  (setq ewm--compositor-ready nil)
+  (setq ewm--module-mode nil
+        ewm--compositor-ready nil)
+  (ewm--publish-mode-state nil)
   (ewm--apply-cursor-env)
   ;; Pipe channel must exist before the compositor starts, so no early
   ;; events are dropped.
@@ -1356,8 +1362,7 @@ The compositor runs as a thread within the Emacs process."
   (if (ewm-start (ewm--cursor-theme) (ewm--cursor-size))
       (progn
         (setq ewm--module-mode t)
-        (ewm-mode 1)
-        (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css)
+        (ewm--setup)
         ;; Wait for compositor ready event (with timeout)
         (let ((ticks (truncate
                       (/ ewm--compositor-ready-timeout
@@ -1367,9 +1372,11 @@ The compositor runs as a thread within the Emacs process."
                                    ewm--compositor-poll-interval)
             (cl-decf ticks))
           (unless ewm--compositor-ready
+            (ewm--stop-compositor)
             (ewm--destroy-event-channel)
-            (ewm-mode -1)
-            (setq ewm--module-mode nil)
+            (ewm--teardown)
+            (setq ewm--module-mode nil
+                  ewm--compositor-ready nil)
             (error "Compositor failed to become ready")))
         ;; Tell the compositor when init is fully done so it can replay the
         ;; first wl_keyboard.enter (PGTK drops it pre-roundtrip).
@@ -1378,27 +1385,21 @@ The compositor runs as a thread within the Emacs process."
           (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module))
         ;; Re-apply now that graphical frames exist and face-attribute can
         ;; return the real theme background instead of the black fallback.
-        (ewm--apply-gtk-bg-css))
+        (ewm--apply-gtk-bg-css)
+        (ewm--publish-mode-state t))
     (ewm--destroy-event-channel)
     (error "Failed to start compositor")))
 
-(defun ewm-stop-module ()
-  "Stop EWM module mode compositor."
-  (interactive)
-  (when ewm--module-mode
-    (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
-      (ewm-stop)
-      (let ((ticks (truncate
-                    (/ ewm--compositor-stop-timeout
-                       ewm--compositor-poll-interval))))
-        (while (and (> ticks 0) (ewm-running))
-          (sleep-for ewm--compositor-poll-interval)
-          (cl-decf ticks))))
-    (ewm--destroy-event-channel)
-    (setq ewm--module-mode nil)
-    (setq ewm--compositor-ready nil)
-    (setq ewm--output-info nil)
-    (ewm-mode -1)))
+(defun ewm--stop-compositor ()
+  "Request graceful compositor shutdown."
+  (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
+    (ewm-stop)
+    (let ((ticks (truncate
+                  (/ ewm--compositor-stop-timeout
+                     ewm--compositor-poll-interval))))
+      (while (and (> ticks 0) (ewm-running))
+        (sleep-for ewm--compositor-poll-interval)
+        (cl-decf ticks)))))
 
 (declare-function ewm-gtk-set-style "ewm-core")
 
@@ -1415,8 +1416,7 @@ The compositor runs as a thread within the Emacs process."
 (defun ewm--kill-emacs-hook ()
   "Stop compositor gracefully before Emacs exits.
 Ensures the compositor thread is cleanly shut down when Emacs terminates."
-  (when ewm--module-mode
-    (ewm-stop-module)))
+  (ewm--stop-compositor))
 
 ;;; Process spawning with activation tokens
 
@@ -1444,7 +1444,8 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
 (defun ewm--enable-process-advice ()
   "Enable automatic activation token injection for spawned processes."
   (dolist (fn ewm--process-functions)
-    (advice-add fn :around #'ewm--inject-activation-token)))
+    (unless (advice-member-p #'ewm--inject-activation-token fn)
+      (advice-add fn :around #'ewm--inject-activation-token))))
 
 (defun ewm--disable-process-advice ()
   "Disable automatic activation token injection."
@@ -1492,12 +1493,28 @@ now that a graphical FRAME exists."
 
 ;;; Global minor mode
 
-(defun ewm--mode-enable ()
-  "Enable EWM integration."
+(defun ewm--publish-mode-state (enabled)
+  "Set public `ewm-mode' state to ENABLED.
+This helper is used when startup happens through `ewm-start-module'
+instead of the generated minor-mode command."
+  (let ((changed (not (eq (default-value 'ewm-mode) enabled))))
+    (setq-default ewm-mode enabled)
+    (when (boundp 'global-minor-modes)
+      (if enabled
+          (add-to-list 'global-minor-modes 'ewm-mode)
+        (setq global-minor-modes (delq 'ewm-mode global-minor-modes))))
+    (force-mode-line-update)
+    (when (and enabled changed (not ewm--mode-command-active))
+      (run-hooks 'ewm-mode-hook))))
+
+(defun ewm--setup ()
+  "Install Emacs-side state before compositor startup events run."
   (ewm--disable-csd)
   (ewm--enable-layout-sync)
-  (advice-add 'select-frame-set-input-focus :override
-              #'ewm--select-frame-set-input-focus)
+  (unless (advice-member-p #'ewm--select-frame-set-input-focus
+                           'select-frame-set-input-focus)
+    (advice-add 'select-frame-set-input-focus :override
+                #'ewm--select-frame-set-input-focus))
   (ewm-input--enable)
   (if after-init-time
       (ewm--send-intercept-keys)
@@ -1512,46 +1529,63 @@ now that a graphical FRAME exists."
     (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode-enable)
   (ewm--enable-process-advice)
-  (setq ewm--saved-interprogram-cut-function interprogram-cut-function)
+  (when (eq ewm--saved-interprogram-cut-function ewm--unset)
+    (setq ewm--saved-interprogram-cut-function interprogram-cut-function))
   (setq interprogram-cut-function #'ewm--interprogram-cut-function)
-  (setq ewm--saved-interprogram-paste-function interprogram-paste-function)
+  (when (eq ewm--saved-interprogram-paste-function ewm--unset)
+    (setq ewm--saved-interprogram-paste-function interprogram-paste-function))
   (setq interprogram-paste-function nil)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (add-hook 'delete-frame-functions #'ewm--on-delete-frame)
-  (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion)
+  (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css)
+  (unless (advice-member-p #'ewm--prevent-frame-deletion 'delete-frame)
+    (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion))
   (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
 
-(defun ewm--mode-disable ()
-  "Disable EWM integration."
+(defun ewm--teardown ()
+  "Remove Emacs-side state installed by `ewm--setup'."
   (ewm--disable-layout-sync)
   (advice-remove 'select-frame-set-input-focus
                  #'ewm--select-frame-set-input-focus)
-  (ewm-input--disable)
-  (ewm-text-input-auto-mode-disable)
+  (when (memq #'ewm-input--sync-keyboard-capture post-command-hook)
+    (ewm-input--disable))
+  (when (or (memq #'ewm-text-input--auto-enable ewm-text-input-activated-hook)
+            (memq #'ewm-text-input--auto-disable ewm-text-input-deactivated-hook))
+    (ewm-text-input-auto-mode-disable))
   (ewm--disable-process-advice)
-  (setq interprogram-cut-function ewm--saved-interprogram-cut-function)
-  (setq interprogram-paste-function ewm--saved-interprogram-paste-function)
+  (unless (eq ewm--saved-interprogram-cut-function ewm--unset)
+    (when (eq interprogram-cut-function #'ewm--interprogram-cut-function)
+      (setq interprogram-cut-function ewm--saved-interprogram-cut-function))
+    (setq ewm--saved-interprogram-cut-function ewm--unset))
+  (unless (eq ewm--saved-interprogram-paste-function ewm--unset)
+    (when (null interprogram-paste-function)
+      (setq interprogram-paste-function ewm--saved-interprogram-paste-function))
+    (setq ewm--saved-interprogram-paste-function ewm--unset))
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (remove-hook 'delete-frame-functions #'ewm--on-delete-frame)
+  (remove-hook 'after-init-hook #'ewm--send-intercept-keys)
+  (remove-hook 'emacs-startup-hook #'ewm-notify-initialized-module)
+  (remove-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css)
   (advice-remove 'delete-frame #'ewm--prevent-frame-deletion)
-  (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook)
-  ;; Stop module mode if active
-  (when ewm--module-mode
-    (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
-      (ewm-stop))
-    (ewm--destroy-event-channel)
-    (setq ewm--module-mode nil)))
+  (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
 
 ;;;###autoload
 (define-minor-mode ewm-mode
-  "Global minor mode for EWM compositor integration."
+  "Global minor mode for a ready EWM compositor session."
   :global t
   :lighter " ewm"
   :keymap ewm-mode-map
   :group 'ewm
-  (if ewm-mode
-      (ewm--mode-enable)
-    (ewm--mode-disable)))
+  (let ((ewm--mode-command-active t))
+    (if ewm-mode
+        (unless ewm--module-mode
+          ;; `define-minor-mode' sets the mode variable before startup;
+          ;; keep the public state false until startup publishes readiness.
+          (ewm--publish-mode-state nil)
+          (ewm-start-module))
+      (when ewm--module-mode
+        (ewm--publish-mode-state t)
+        (user-error "EWM cannot be disabled; exit Emacs to end the session")))))
 
 (provide 'ewm)
 ;;; ewm.el ends here
