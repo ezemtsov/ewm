@@ -2376,7 +2376,7 @@ impl Ewm {
     fn popup_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
-        for placement in crate::render::collect_popup_placements(self, output_geo) {
+        for placement in crate::render::collect_popup_placements(self, output_geo, Some(output)) {
             let Some((surface, surface_offset)) = under_from_surface_tree(
                 &placement.surface,
                 pos,

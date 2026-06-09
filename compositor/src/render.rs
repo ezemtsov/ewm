@@ -578,36 +578,7 @@ pub fn collect_render_elements_for_output(
 
     let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
 
-    // Popups from layer surfaces (e.g. Waybar tooltips and menus).
-    // The layer_map RefMut from the tight scope above is already dropped here.
-    if include_layers {
-        let layer_map = layer_map_for_output(output);
-        for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
-            for surface in layer_map.layers_on(layer) {
-                if let Some(geo) = layer_map.layer_geometry(surface) {
-                    for (popup, popup_offset) in
-                        PopupManager::popups_for_surface(surface.wl_surface())
-                    {
-                        // geo is already output-local; no output_pos subtraction needed.
-                        let popup_loc = geo.loc + popup_offset - popup.geometry().loc;
-                        let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                            render_elements_from_surface_tree(
-                                renderer,
-                                popup.wl_surface(),
-                                popup_loc.to_physical_precise_round(scale),
-                                scale,
-                                1.0,
-                                Kind::Unspecified,
-                            );
-                        popup_elements
-                            .extend(render_elements.into_iter().map(EwmRenderElement::Surface));
-                    }
-                }
-            }
-        }
-    }
-
-    for placement in collect_popup_placements(ewm, output_rect) {
+    for placement in collect_popup_placements(ewm, output_rect, include_layers.then_some(output)) {
         let render_loc = Point::from((
             placement.location.x - output_pos.x,
             placement.location.y - output_pos.y,
@@ -643,6 +614,7 @@ pub struct PopupPlacement {
 pub fn collect_popup_placements(
     ewm: &Ewm,
     output_rect: Rectangle<i32, smithay::utils::Logical>,
+    layer_popup_output: Option<&Output>,
 ) -> Vec<PopupPlacement> {
     use smithay::wayland::seat::WaylandFocus;
     let mut placements = Vec::new();
@@ -672,6 +644,33 @@ pub fn collect_popup_placements(
             });
         }
     }
+
+    if let Some(output) = layer_popup_output {
+        let layer_map = layer_map_for_output(output);
+        for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
+            for surface in layer_map.layers_on(layer).rev() {
+                let Some(geo) = layer_map.layer_geometry(surface) else {
+                    continue;
+                };
+
+                for (popup, popup_offset) in PopupManager::popups_for_surface(surface.wl_surface())
+                {
+                    let popup_loc = output_rect.loc + geo.loc + popup_offset - popup.geometry().loc;
+                    let popup_rect: Rectangle<i32, smithay::utils::Logical> =
+                        Rectangle::new(popup_loc, popup.geometry().size);
+                    if !output_rect.overlaps(popup_rect) {
+                        continue;
+                    }
+                    placements.push(PopupPlacement {
+                        surface: popup.wl_surface().clone(),
+                        location: popup_loc,
+                        size: popup.geometry().size,
+                    });
+                }
+            }
+        }
+    }
+
     placements
 }
 

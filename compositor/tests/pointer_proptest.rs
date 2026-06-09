@@ -783,7 +783,7 @@ fn check_p1(
 
 fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    let placements = collect_popup_placements(ewm, world_rect());
+    let placements = collect_popup_placements(ewm, world_rect(), None);
     let popup_ids = h.popup_surface_keys();
     for p in &placements {
         let centre = Point::from((
@@ -948,7 +948,7 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
             continue;
         }
         let has_anchor = ewm.window_global_position(window).is_some();
-        let placements = collect_popup_placements(ewm, world_rect());
+        let placements = collect_popup_placements(ewm, world_rect(), None);
         for (popup, _) in &popups {
             let popup_key = server_surface_key(ewm, popup.wl_surface());
             let matching = placements
@@ -1015,7 +1015,7 @@ fn emacs_frame_popup_receives_hits_above_embedded_surface() {
     let popup_key = client_surface_key(&h.frame_client, &popup.surface);
     let (centre, hit_key) = {
         let ewm = h.fix.ewm_ref();
-        let placement = collect_popup_placements(ewm, world_rect())
+        let placement = collect_popup_placements(ewm, world_rect(), None)
             .into_iter()
             .find(|p| server_surface_key(ewm, &p.surface).as_ref() == Some(&popup_key))
             .expect("frame popup placement");
