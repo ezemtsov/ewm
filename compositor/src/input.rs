@@ -1463,7 +1463,9 @@ pub fn handle_touch_down<B: InputBackend>(state: &mut State, event: B::TouchDown
     let output_size = state.ewm.output_size;
     let pos = event.position_transformed(output_size);
     let serial = SERIAL_COUNTER.next_serial();
-    let touch = state.ewm.touch.clone();
+    let Some(touch) = state.ewm.touch.clone() else {
+        return;
+    };
 
     let focus = if state.ewm.is_locked() {
         state
@@ -1492,7 +1494,9 @@ pub fn handle_touch_motion<B: InputBackend>(state: &mut State, event: B::TouchMo
     use smithay::backend::input::{Event, TouchEvent};
     let output_size = state.ewm.output_size;
     let pos = event.position_transformed(output_size);
-    let touch = state.ewm.touch.clone();
+    let Some(touch) = state.ewm.touch.clone() else {
+        return;
+    };
 
     let focus = if state.ewm.is_locked() {
         state
@@ -1519,7 +1523,9 @@ pub fn handle_touch_motion<B: InputBackend>(state: &mut State, event: B::TouchMo
 pub fn handle_touch_up<B: InputBackend>(state: &mut State, event: B::TouchUpEvent) {
     use smithay::backend::input::{Event, TouchEvent};
     let serial = SERIAL_COUNTER.next_serial();
-    let touch = state.ewm.touch.clone();
+    let Some(touch) = state.ewm.touch.clone() else {
+        return;
+    };
 
     touch.up(
         state,
@@ -1534,10 +1540,16 @@ pub fn handle_touch_up<B: InputBackend>(state: &mut State, event: B::TouchUpEven
 
 /// Handle a touch-cancel event: the touch sequence was interrupted.
 pub fn handle_touch_cancel<B: InputBackend>(state: &mut State, _event: B::TouchCancelEvent) {
-    state.ewm.touch.clone().cancel(state);
+    let Some(touch) = state.ewm.touch.clone() else {
+        return;
+    };
+    touch.cancel(state);
 }
 
 /// Handle a touch-frame event: end of a logical group of touch events.
 pub fn handle_touch_frame<B: InputBackend>(state: &mut State, _event: B::TouchFrameEvent) {
-    state.ewm.touch.clone().frame(state);
+    let Some(touch) = state.ewm.touch.clone() else {
+        return;
+    };
+    touch.frame(state);
 }

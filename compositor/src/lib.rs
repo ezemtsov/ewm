@@ -886,8 +886,8 @@ pub struct Ewm {
     pub pointer: PointerHandle<State>,
     /// Cached keyboard handle (avoids repeated get_keyboard().unwrap() on hot paths)
     pub keyboard: KeyboardHandle<State>,
-    /// Cached touch handle for touch screen support
-    pub touch: TouchHandle<State>,
+    /// Cached touch handle, present only while a touch-capable device exists.
+    pub touch: Option<TouchHandle<State>>,
 
     // Surface tracking
     next_surface_id: u64,
@@ -1192,7 +1192,6 @@ impl Ewm {
             )
             .expect("Failed to add keyboard to seat");
         let pointer = seat.add_pointer();
-        let touch = seat.add_touch();
 
         // Initialize screencopy state before moving display_handle
         let screencopy_state = ScreencopyManagerState::new::<State, _>(&display_handle, |_| true);
@@ -1298,7 +1297,7 @@ impl Ewm {
             seat,
             pointer,
             keyboard,
-            touch,
+            touch: None,
             next_surface_id: 1,
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),

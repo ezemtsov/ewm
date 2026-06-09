@@ -3013,6 +3013,11 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
         move |mut event, _, state| match event {
             InputEvent::DeviceAdded { ref mut device } => {
                 apply_libinput_settings(device, &state.ewm.input_configs);
+                if device.has_capability(smithay::reexports::input::DeviceCapability::Touch)
+                    && state.ewm.touch.is_none()
+                {
+                    state.ewm.touch = Some(state.ewm.seat.add_touch());
+                }
                 if let Backend::Drm(drm) = &mut state.backend {
                     drm.libinput_devices.insert(device.clone());
                 }
@@ -3078,8 +3083,19 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                 }
             }
             InputEvent::DeviceRemoved { ref device } => {
+                let was_touch =
+                    device.has_capability(smithay::reexports::input::DeviceCapability::Touch);
                 if let Backend::Drm(drm) = &mut state.backend {
                     drm.libinput_devices.remove(device);
+                    if was_touch
+                        && !drm.libinput_devices.iter().any(|device| {
+                            device
+                                .has_capability(smithay::reexports::input::DeviceCapability::Touch)
+                        })
+                    {
+                        state.ewm.seat.remove_touch();
+                        state.ewm.touch = None;
+                    }
                 }
             }
             _ => {}
