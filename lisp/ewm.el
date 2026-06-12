@@ -371,7 +371,8 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ("idle_state_changed" (ewm--handle-idle-state-changed event))
       ("environment" (ewm--handle-environment event))
       ("frame_shown" (ewm--handle-frame-shown event))
-      ("frame_hidden" (ewm--handle-frame-hidden event)))))
+      ("frame_hidden" (ewm--handle-frame-hidden event))
+      ("frame_moved" (ewm--handle-frame-moved event)))))
 
 ;;; Event handlers
 
@@ -540,13 +541,9 @@ The current buffer is the surface buffer when this runs."
       (run-hooks 'ewm-update-title-hook))))
 
 (defun ewm--handle-output-detected (event)
-  "Pull back frames whose `ewm-home-output' matches the detected output."
+  "Record a newly detected output."
   (let ((name (alist-get 'name event)))
     (setf (alist-get name ewm--output-info nil nil #'string=) event)
-    (dolist (f (apply #'append (mapcar #'cdr ewm--strips)))
-      (when (and (equal (frame-parameter f 'ewm-home-output) name)
-                 (not (equal (frame-parameter f 'ewm-output) name)))
-        (ewm--move-frame-to-output f name)))
     (ewm-layout--refresh)))
 
 (defun ewm--handle-output-config-changed (event)
@@ -568,8 +565,8 @@ Patches `ewm--output-info' with the new values, then runs
           (setf (alist-get 'current m)
                 (and (= (alist-get 'width m) new-w)
                      (= (alist-get 'height m) new-h)
-                     (= (alist-get 'refresh m) new-r)))))))
-  (run-hook-with-args 'ewm-output-config-changed-hook event))
+                     (= (alist-get 'refresh m) new-r))))))
+    (run-hook-with-args 'ewm-output-config-changed-hook event)))
 
 (defvar ewm-output-config-changed-hook nil
   "Hook run when output configuration is applied.
@@ -577,16 +574,11 @@ Each function receives the event alist with symbol keys:
   name, width, height, refresh, x, y, scale, transform.")
 
 (defun ewm--handle-output-disconnected (event)
-  "Migrate frames off the disconnected output to the first remaining one.
-Frames keep `ewm-home-output' so they return on reconnect."
+  "Record that an output disconnected.
+Frame migration is compositor-owned and arrives as `frame_moved' events."
   (let ((name (alist-get 'name event)))
     (setq ewm--output-info
           (assoc-delete-all name ewm--output-info #'string=))
-    (when-let* ((fallback (caar ewm--output-info)))
-      (dolist (f (ewm--strip-frames name))
-        (unless (frame-parameter f 'ewm-home-output)
-          (set-frame-parameter f 'ewm-home-output name))
-        (ewm--move-frame-to-output f fallback)))
     (ewm-layout--refresh)))
 
 (defun ewm--rename-buffer ()
@@ -612,10 +604,11 @@ Similar to `exwm-workspace-rename-buffer'."
   ;; CSS goes in before any frame is created so the GTK widget bg is set
   ;; on the first wl_surface commit.
   (ewm--apply-gtk-bg-css)
-  (dolist (output (ewm-get-active-outputs))
-    (unless (ewm--frame-for-output output)
-      (ewm--create-frame-for-output output)))
-  (ewm--enforce-frame-output-parity)
+  (let ((active-outputs (ewm-get-active-outputs)))
+    (dolist (output active-outputs)
+      (unless (ewm--frame-for-output output)
+        (ewm--create-frame-for-output output)))
+    (ewm--enforce-frame-output-parity active-outputs))
   (ewm-layout--refresh))
 
 (defun ewm--handle-environment (event)
@@ -734,6 +727,19 @@ Select the Nth Emacs frame on the requested output (1-based index)."
               (frame (ewm--frame-by-surface-id id))
               (wid (ewm--frame-window-id frame)))
     (ignore-errors (ewm-gtk-freeze-frame-updates wid))))
+
+(defun ewm--handle-frame-moved (event)
+  "Mirror the compositor-authoritative output for an Emacs frame."
+  (let* ((id (alist-get 'id event))
+         (output (alist-get 'output event))
+         (home-output (alist-get 'home_output event))
+         (frame (ewm--frame-by-surface-id id)))
+    (when (and frame output)
+      (unless (equal (frame-parameter frame 'ewm-output) output)
+        (ewm--move-frame-to-output frame output))
+      (when home-output
+        (set-frame-parameter frame 'ewm-home-output home-output))
+      (ewm-layout--refresh))))
 
 ;;; Idle timeout
 
@@ -1317,22 +1323,20 @@ Returns the neighbor on success, nil at the strip edge."
   (unless (ignore-errors (windmove-down))
     (ewm-focus-output-direction-module 0 1)))
 
-(defun ewm--enforce-frame-output-parity ()
-  "Delete orphan/stale frames but keep N frames per output.
+(defun ewm--enforce-frame-output-parity (&optional active-outputs)
+  "Delete orphan frames.
 Frames may live on a strip multiple-deep; the duplicate-frame rule
 that one-output-one-frame implied is gone -- the user explicitly
 manages the strip via `ewm-frame-new'/`ewm-frame-close'."
-  (let ((active-outputs (ewm-get-active-outputs)))
-    (dolist (frame (frame-list))
-      (let ((output (frame-parameter frame 'ewm-output)))
-        (cond
-         ((not (ewm--output-managed-p frame))
-          nil)
-         ((ewm--frame-in-flight-p frame) nil)
-         ((null output)
-          (ignore-errors (delete-frame frame)))
-         ((not (member output active-outputs))
-          (ignore-errors (delete-frame frame))))))))
+  (ignore active-outputs)
+  (dolist (frame (frame-list))
+    (let ((output (frame-parameter frame 'ewm-output)))
+      (cond
+       ((not (ewm--output-managed-p frame))
+        nil)
+       ((ewm--frame-in-flight-p frame) nil)
+       ((null output)
+        (ignore-errors (delete-frame frame)))))))
 
 ;;; Public API
 

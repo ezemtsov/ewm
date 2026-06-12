@@ -291,7 +291,8 @@ pub fn handle_keyboard_event(
     let fullscreen_entry = focused_entry_id.and_then(|entry_id| {
         state
             .ewm
-            .output_strips
+            .frame_set
+            .mapped_strips()
             .values()
             .flat_map(|s| s.frames.iter())
             .find(|f| f.surface_id == focused_frame_id)
@@ -1323,7 +1324,7 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
             state.ewm.gesture.cumulative = None;
             if cx.abs() > cy.abs() {
                 if let Some(out) = state.ewm.active_output() {
-                    if let Some(strip) = state.ewm.output_strips.get_mut(&out) {
+                    if let Some(strip) = state.ewm.frame_set.mapped_strip_mut(&out) {
                         strip.gesture_begin();
                     }
                     state.ewm.gesture.active_output = Some(out);
@@ -1335,7 +1336,7 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
 
     if let Some(out) = state.ewm.gesture.active_output.clone() {
         let w = working_area_width(state, &out);
-        if let Some(strip) = state.ewm.output_strips.get_mut(&out) {
+        if let Some(strip) = state.ewm.frame_set.mapped_strip_mut(&out) {
             strip.gesture_update(dx, timestamp, w);
         }
         if let Some(o) = state.ewm.find_mapped_output(&out) {
@@ -1365,11 +1366,11 @@ pub fn handle_gesture_swipe_end<B: InputBackend>(
         let w = working_area_width(state, &out);
         let prev_active_id = state
             .ewm
-            .output_strips
-            .get(&out)
+            .frame_set
+            .mapped_strip(&out)
             .and_then(|s| s.active_frame())
             .map(|f| f.surface_id);
-        let target = state.ewm.output_strips.get_mut(&out).and_then(|s| {
+        let target = state.ewm.frame_set.mapped_strip_mut(&out).and_then(|s| {
             s.gesture_end(w);
             s.frames.get(s.active_idx()).map(|f| f.surface_id)
         });

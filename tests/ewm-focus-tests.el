@@ -364,38 +364,34 @@ The batch frame is shared; we save and restore the parameters we touch."
       (set-frame-parameter frame 'ewm-output old-output)
       (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
 
-(ert-deftest ewm-focus/clamshell-hotplug-reuses-migrated-frame ()
-  "After lid-closed hotplug migration, `outputs_complete' must not create a frame."
+(ert-deftest ewm-focus/frame-moved-event-updates-local-strip-and-home ()
+  "Elisp mirrors compositor-owned frame topology."
   (let* ((frame (selected-frame))
          (old-output (frame-parameter frame 'ewm-output))
          (old-home-output (frame-parameter frame 'ewm-home-output))
-         (ewm--strips `(("eDP-1" . (,frame))))
-         (ewm--output-info
-          '(("eDP-1" . ((event . "output_detected")
-                        (name . "eDP-1"))))))
+         (old-surface-id (frame-parameter frame 'ewm-surface-id))
+         (refresh-count 0)
+         (ewm--strips `(("eDP-1" . (,frame)))))
     (unwind-protect
         (progn
           (set-frame-parameter frame 'ewm-output "eDP-1")
           (set-frame-parameter frame 'ewm-home-output nil)
-          (cl-letf (((symbol-function 'ewm-get-active-outputs)
-                     (lambda () '("DP-2")))
-                    ((symbol-function 'ewm--create-frame-for-output)
-                     (lambda (&rest _)
-                       (error "unexpected frame creation")))
-                    ((symbol-function 'ewm--apply-output-config) #'ignore)
-                    ((symbol-function 'ewm--apply-gtk-bg-css) #'ignore)
-                    ((symbol-function 'ewm-layout--refresh) #'ignore))
-            (ewm--handle-output-detected
-             '((event . "output_detected") (name . "DP-2")))
-            (ewm--handle-output-disconnected
-             '((event . "output_disconnected") (name . "eDP-1")))
-            (ewm--handle-outputs-complete))
+          (set-frame-parameter frame 'ewm-surface-id 42)
+          (cl-letf (((symbol-function 'ewm-layout--refresh)
+                     (lambda () (cl-incf refresh-count))))
+            (ewm--handle-frame-moved
+             '((event . "frame_moved")
+               (id . 42)
+               (output . "DP-2")
+               (home_output . "eDP-1"))))
+          (should (= refresh-count 1))
           (should (equal (frame-parameter frame 'ewm-output) "DP-2"))
           (should (equal (frame-parameter frame 'ewm-home-output) "eDP-1"))
           (should (equal (ewm--strip-frames "DP-2") (list frame)))
           (should-not (ewm--strip-frames "eDP-1")))
       (set-frame-parameter frame 'ewm-output old-output)
-      (set-frame-parameter frame 'ewm-home-output old-home-output))))
+      (set-frame-parameter frame 'ewm-home-output old-home-output)
+      (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
 
 (ert-deftest ewm-focus/with-surface-buffer-skips-unknown-id ()
   "Event for an unregistered surface id is a no-op."

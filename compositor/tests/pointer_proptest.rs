@@ -285,20 +285,30 @@ impl Harness {
     }
 
     fn toplevel_in_some_strip(&self) -> bool {
-        self.fix.ewm_ref().output_strips.values().any(|strip| {
-            strip
-                .surface_entries()
-                .any(|entry| entry.surface_id() == Some(self.sid))
-        })
+        self.fix
+            .ewm_ref()
+            .frame_set
+            .mapped_strips()
+            .values()
+            .any(|strip| {
+                strip
+                    .surface_entries()
+                    .any(|entry| entry.surface_id() == Some(self.sid))
+            })
     }
 
     fn frame_in_some_strip(&self) -> bool {
-        self.fix.ewm_ref().output_strips.values().any(|strip| {
-            strip
-                .frames
-                .iter()
-                .any(|frame| frame.surface_id == self.frame_sid)
-        })
+        self.fix
+            .ewm_ref()
+            .frame_set
+            .mapped_strips()
+            .values()
+            .any(|strip| {
+                strip
+                    .frames
+                    .iter()
+                    .any(|frame| frame.surface_id == self.frame_sid)
+            })
     }
 
     /// Surfaces the app client owns (toplevel + app popups).
@@ -510,15 +520,25 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
 
 fn settle_strip_animations(h: &mut Harness) {
     h.fix.ewm().animations_clock.set_complete_instantly(true);
-    for strip in h.fix.ewm().output_strips.values_mut() {
-        strip.advance();
+    let outputs = h
+        .fix
+        .ewm_ref()
+        .frame_set
+        .mapped_strips()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for output in outputs {
+        if let Some(strip) = h.fix.ewm().frame_set.mapped_strip_mut(&output) {
+            strip.advance();
+        }
     }
 }
 
 fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let mut from_strips: HashMap<u64, HashSet<String>> = HashMap::new();
-    for (out_name, strip) in &ewm.output_strips {
+    for (out_name, strip) in ewm.frame_set.mapped_strips() {
         for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
             from_strips
                 .entry(surface_id)
@@ -537,7 +557,8 @@ fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
 fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let primary = ewm
-        .output_strips
+        .frame_set
+        .mapped_strips()
         .iter()
         .flat_map(|(name, strip)| {
             strip
@@ -587,7 +608,7 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let sid = h.sid;
     let mut expected: Vec<Point<i32, Logical>> = Vec::new();
-    for (out_name, strip) in &ewm.output_strips {
+    for (out_name, strip) in ewm.frame_set.mapped_strips() {
         let Some(output) = ewm.space.outputs().find(|o| o.name() == *out_name) else {
             continue;
         };
@@ -669,7 +690,7 @@ fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, Layout
         }
 
         let output_name = output.name();
-        let Some(strip) = ewm.output_strips.get(&output_name) else {
+        let Some(strip) = ewm.frame_set.mapped_strip(&output_name) else {
             continue;
         };
         let working_area = ewm.get_working_area(output);
@@ -886,7 +907,7 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
         return Ok(());
     }
     let p_int = Point::from((p.x as i32, p.y as i32));
-    for (out_name, strip) in &ewm.output_strips {
+    for (out_name, strip) in ewm.frame_set.mapped_strips() {
         let Some(output) = ewm.space.outputs().find(|o| o.name() == *out_name) else {
             continue;
         };
@@ -918,7 +939,7 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
 
 fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    for (name, strip) in &ewm.output_strips {
+    for (name, strip) in ewm.frame_set.mapped_strips() {
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
             let count = frame
                 .entries

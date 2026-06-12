@@ -16,7 +16,8 @@ fn nz(n: u64) -> LayoutEntryId {
 
 fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
     fix.ewm_ref()
-        .output_strips
+        .frame_set
+        .mapped_strips()
         .values()
         .flat_map(|strip| strip.surface_entries().filter_map(LayoutEntry::surface_id))
         .collect()

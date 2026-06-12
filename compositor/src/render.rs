@@ -378,7 +378,7 @@ pub fn collect_render_elements_for_output(
     let working_area = ewm.get_working_area(output);
     let view_size =
         Size::<f64, Logical>::from((working_area.size.w as f64, working_area.size.h as f64));
-    let strip = ewm.output_strips.get(&output.name());
+    let strip = ewm.frame_set.mapped_strip(&output.name());
     if let Some(strip) = strip {
         let active_idx = strip.active_idx();
         for (frame_idx, frame, frame_rect) in strip.frames_with_render_geo(view_size) {

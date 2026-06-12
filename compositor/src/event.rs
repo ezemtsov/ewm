@@ -176,4 +176,11 @@ pub enum Event {
     /// Emacs frame left the active strip slot.
     #[serde(rename = "frame_hidden")]
     FrameHidden { id: u64 },
+    /// Emacs frame was moved to another compositor output.
+    #[serde(rename = "frame_moved")]
+    FrameMoved {
+        id: u64,
+        output: String,
+        home_output: String,
+    },
 }

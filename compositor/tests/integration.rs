@@ -364,7 +364,7 @@ fn headless_output_respects_initial_disabled_config() {
 }
 
 #[test]
-fn disabling_focused_output_moves_focus_to_mapped_output() {
+fn disabling_focused_output_migrates_focused_frame_to_mapped_output() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
@@ -385,12 +385,12 @@ fn disabling_focused_output_moves_focus_to_mapped_output() {
     );
     fixture.apply_output_config("Virtual-1");
 
-    assert_eq!(fixture.ewm_ref().focused_surface_id(), 200);
-    assert_eq!(fixture.ewm_ref().emacs_frame_output(200), Some("Virtual-2"));
+    assert_eq!(fixture.ewm_ref().focused_surface_id(), 100);
+    assert_eq!(fixture.ewm_ref().emacs_frame_output(100), Some("Virtual-2"));
 }
 
 #[test]
-fn focusing_entry_on_disabled_output_is_ignored() {
+fn disabling_output_migrates_entries_to_mapped_output() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
@@ -413,12 +413,13 @@ fn focusing_entry_on_disabled_output_is_ignored() {
     );
     fixture.apply_output_config("Virtual-1");
 
-    assert!(!fixture.ewm_ref().is_surface_fullscreen(1));
+    assert!(fixture.ewm_ref().is_surface_fullscreen(1));
     fixture.ewm().set_focus_entry(nz(1), "test", false);
 
-    assert_eq!(fixture.ewm_ref().focused_surface_id(), 200);
-    assert_eq!(fixture.ewm_ref().focused_entry_id, None);
-    assert_eq!(fixture.ewm_ref().frame_with_focus_id(nz(1_100)), None);
+    assert_eq!(fixture.ewm_ref().focused_surface_id(), 1);
+    assert_eq!(fixture.ewm_ref().focused_entry_id, Some(nz(1)));
+    assert_eq!(fixture.ewm_ref().frame_with_focus_id(nz(1_100)), Some(100));
+    assert_eq!(fixture.ewm_ref().emacs_frame_output(100), Some("Virtual-2"));
 }
 
 #[test]
@@ -449,8 +450,8 @@ fn disabling_output_reassigns_primary_entry_to_mapped_entry() {
 
     let live_strip = fixture
         .ewm_ref()
-        .output_strips
-        .get("Virtual-2")
+        .frame_set
+        .mapped_strip("Virtual-2")
         .expect("Virtual-2 strip exists");
     assert!(live_strip
         .surface_entries()
@@ -480,16 +481,18 @@ fn output_scale_change_reassigns_fullscreen_primary_entry() {
     );
     fixture.apply_output_config("Virtual-1");
 
-    let primary_output = fixture
-        .ewm_ref()
-        .output_strips
-        .iter()
-        .find_map(|(name, strip)| {
-            strip
-                .surface_entries()
-                .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary())
-                .then_some(name.as_str())
-        });
+    let primary_output =
+        fixture
+            .ewm_ref()
+            .frame_set
+            .mapped_strips()
+            .iter()
+            .find_map(|(name, strip)| {
+                strip
+                    .surface_entries()
+                    .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary())
+                    .then_some(name.as_str())
+            });
     assert_eq!(primary_output, Some("Virtual-2"));
 }
 

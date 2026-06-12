@@ -204,7 +204,9 @@ pub(crate) fn apply_enabled_output_config(
         output.set_preferred(mode);
     }
 
+    let was_mapped = ewm.space.output_geometry(output).is_some();
     map_output_for_config(ewm, output, config.position);
+    let became_mapped = !was_mapped && ewm.space.output_geometry(output).is_some();
     output_infos.update_from_output(
         output,
         ewm.space
@@ -212,7 +214,7 @@ pub(crate) fn apply_enabled_output_config(
             .map(|geo| geo.loc)
             .unwrap_or_default(),
     );
-    ewm.output_config_changed(output);
+    ewm.output_config_changed(output, became_mapped);
 }
 
 /// Result of a backend render operation.

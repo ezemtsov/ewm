@@ -4,7 +4,7 @@
 //! Each output maps to a workspace group, each frame maps to a workspace.
 //!
 //! Uses a pull/refresh model: `refresh()` runs every event-loop iteration,
-//! reads the full layout from `Ewm.output_strips`, diffs against protocol
+//! reads the full layout from `Ewm.frame_set`, diffs against protocol
 //! mirrors, and sends only changes. Clients always get current state because
 //! `refresh()` runs after bind.
 
