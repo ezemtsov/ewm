@@ -87,6 +87,30 @@ fn has_surface_leave(
     })
 }
 
+fn surface_preferred_scale(fixture: &Fixture, surface_id: u64) -> Option<f64> {
+    use smithay::wayland::compositor::with_states;
+    use smithay::wayland::fractional_scale::with_fractional_scale;
+    use smithay::wayland::seat::WaylandFocus as _;
+
+    let surface = fixture
+        .ewm_ref()
+        .id_windows
+        .get(&surface_id)?
+        .wl_surface()?
+        .into_owned();
+    with_states(&surface, |data| {
+        with_fractional_scale(data, |scale| scale.preferred_scale())
+    })
+}
+
+fn assert_preferred_scale(fixture: &Fixture, surface_id: u64, expected: f64) {
+    let actual = surface_preferred_scale(fixture, surface_id).expect("surface has preferred scale");
+    assert!(
+        (actual - expected).abs() < 1e-10,
+        "surface {surface_id} preferred scale: expected {expected}, got {actual}"
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: CASES,
@@ -494,6 +518,67 @@ fn output_scale_change_reassigns_fullscreen_primary_entry() {
                     .then_some(name.as_str())
             });
     assert_eq!(primary_output, Some("Virtual-2"));
+}
+
+#[test]
+fn migrated_layout_surfaces_receive_destination_preferred_scale() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.ewm().output_config.insert(
+        "Virtual-2".to_string(),
+        OutputConfig {
+            position: Some((1280, 0)),
+            scale: Some(2.0),
+            ..Default::default()
+        },
+    );
+    fixture.add_output("Virtual-2", 1280, 720);
+
+    let mut client = fixture.new_client().expect("Failed to create client");
+    fixture.roundtrip(&mut client);
+    let frame = fixture.open_toplevel(
+        &mut client,
+        "migrated-frame",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+    let entry = fixture.open_toplevel(
+        &mut client,
+        "migrated-entry",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+
+    let frame_id = fixture
+        .find_surface_id(&client, &frame.surface)
+        .expect("server did not assign a frame surface id");
+    let entry_surface_id = fixture
+        .find_surface_id(&client, &entry.surface)
+        .expect("server did not assign an entry surface id");
+    let entry_id = nz(100);
+
+    fixture.ewm().apply_output_layout(
+        "Virtual-1",
+        vec![frame_with_entry(frame_id, entry_id, entry_surface_id)],
+    );
+    assert_preferred_scale(&fixture, frame_id, 1.0);
+    assert_preferred_scale(&fixture, entry_surface_id, 1.0);
+
+    fixture.ewm().apply_output_layout(
+        "Virtual-2",
+        vec![frame_with_entry(frame_id, entry_id, entry_surface_id)],
+    );
+    assert_preferred_scale(&fixture, frame_id, 2.0);
+    assert_preferred_scale(&fixture, entry_surface_id, 2.0);
+
+    fixture.ewm().output_config.insert(
+        "Virtual-2".to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-2");
+    assert_preferred_scale(&fixture, frame_id, 1.0);
+    assert_preferred_scale(&fixture, entry_surface_id, 1.0);
 }
 
 #[test]

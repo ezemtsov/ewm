@@ -1679,6 +1679,7 @@ impl Ewm {
 
         let pre = self.surface_outputs_for(output_name);
         self.reconcile_output_membership(output_name, Some(output), &pre, &HashSet::new());
+        self.leave_emacs_frames_on_output(output);
         if was_mapped {
             if let Some(id) = active_id {
                 self.queue_event(Event::FrameHidden { id });
@@ -2602,6 +2603,45 @@ impl Ewm {
             .collect()
     }
 
+    fn set_preferred_scale_transform(&self, window: &Window, output: &Output) {
+        let scale = output.current_scale();
+        let transform = output.current_transform();
+        window.with_surfaces(|surface, data| {
+            crate::utils::send_scale_transform(surface, data, scale, transform);
+        });
+    }
+
+    fn enter_output_for_window(&self, window: &Window, output: &Output) {
+        self.set_preferred_scale_transform(window, output);
+        if let Some(surface) = window.wl_surface() {
+            output.enter(&surface);
+        }
+    }
+
+    fn leave_output_for_window(&self, window: &Window, output: &Output) {
+        if let Some(surface) = window.wl_surface() {
+            output.leave(&surface);
+        }
+    }
+
+    fn enter_emacs_frames_on_output(&self, output: &Output) {
+        let output_name = output.name();
+        for id in self.emacs_frames_on(&output_name) {
+            if let Some(window) = self.id_windows.get(&id) {
+                self.enter_output_for_window(window, output);
+            }
+        }
+    }
+
+    fn leave_emacs_frames_on_output(&self, output: &Output) {
+        let output_name = output.name();
+        for id in self.emacs_frames_on(&output_name) {
+            if let Some(window) = self.id_windows.get(&id) {
+                self.leave_output_for_window(window, output);
+            }
+        }
+    }
+
     fn reconcile_output_membership(
         &mut self,
         output_name: &str,
@@ -2611,9 +2651,7 @@ impl Ewm {
     ) {
         for &id in pre.difference(&post) {
             if let (Some(out), Some(window)) = (output, self.id_windows.get(&id)) {
-                if let Some(surface) = window.wl_surface() {
-                    out.leave(&surface);
-                }
+                self.leave_output_for_window(window, out);
             }
             if let Some(outputs) = self.surface_outputs.get_mut(&id) {
                 outputs.remove(output_name);
@@ -2627,8 +2665,8 @@ impl Ewm {
                 warn!("reconcile_output_entries: surface {} not in id_windows", id);
                 continue;
             };
-            if let (Some(out), Some(surface)) = (output, window.wl_surface()) {
-                out.enter(&surface);
+            if let Some(out) = output {
+                self.enter_output_for_window(window, out);
             }
         }
         for &id in post {
@@ -2758,15 +2796,12 @@ impl Ewm {
             let Some(window) = self.id_windows.get(&migration.id) else {
                 continue;
             };
-            let Some(surface) = window.wl_surface() else {
-                continue;
-            };
             if let Some(prev_name) = migration.prev_output.as_deref() {
                 if let Some(prev_output) = self.mapped_output_by_name(prev_name) {
-                    prev_output.leave(&surface);
+                    self.leave_output_for_window(window, prev_output);
                 }
             }
-            target_output.enter(&surface);
+            self.enter_output_for_window(window, target_output);
         }
     }
 
@@ -2774,18 +2809,14 @@ impl Ewm {
         let src_output = self.mapped_output_by_name(src_name);
         let dst_output = self.mapped_output_by_name(dst_name);
         for id in frame_ids {
-            let Some(surface) = self
-                .id_windows
-                .get(id)
-                .and_then(|window| window.wl_surface())
-            else {
+            let Some(window) = self.id_windows.get(id) else {
                 continue;
             };
             if let Some(output) = src_output.as_ref() {
-                output.leave(&surface);
+                self.leave_output_for_window(window, output);
             }
             if let Some(output) = dst_output.as_ref() {
-                output.enter(&surface);
+                self.enter_output_for_window(window, output);
             }
         }
     }
@@ -5374,6 +5405,7 @@ impl Ewm {
             let attached = self.frame_set.attach_detached_strip(&output_name);
             if attached {
                 self.reconcile_mapped_output_entries(output);
+                self.enter_emacs_frames_on_output(output);
                 self.refresh_primary_assignments();
                 self.update_frames_for_working_area(output);
                 self.queue_active_frame_shown_for_output(&output_name);
@@ -5456,6 +5488,7 @@ impl Ewm {
             let attached = self.frame_set.attach_detached_strip(&output_name);
             if attached {
                 self.reconcile_mapped_output_entries(output);
+                self.enter_emacs_frames_on_output(output);
                 self.refresh_primary_assignments();
                 self.update_frames_for_working_area(output);
                 self.queue_active_frame_shown_for_output(&output_name);
@@ -5483,22 +5516,12 @@ impl Ewm {
         self.output_management_state.output_heads_changed = true;
     }
 
-    /// Notify all surfaces on an output about a scale/transform change.
-    ///
-    /// Iterates windows and layer surfaces on the given output,
-    /// sending both integer and fractional scale via `send_scale_transform`.
-    /// Called from `apply_output_config` after changing an output's scale or transform.
-    pub fn send_scale_transform_to_output_surfaces(&self, output: &Output) {
-        let scale = output.current_scale();
-        let transform = output.current_transform();
-
+    fn refresh_output_scale_transform_for_layout(&self, output: &Output) {
         // Notify declared surfaces on this output
         if let Some(strip) = self.frame_set.mapped_strip(&output.name()) {
             for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
                 if let Some(window) = self.id_windows.get(&surface_id) {
-                    window.with_surfaces(|surface, data| {
-                        crate::utils::send_scale_transform(surface, data, scale, transform);
-                    });
+                    self.set_preferred_scale_transform(window, output);
                 }
             }
         }
@@ -5507,11 +5530,21 @@ impl Ewm {
         let output_name = output.name();
         for id in self.emacs_frames_on(&output_name) {
             if let Some(window) = self.id_windows.get(&id) {
-                window.with_surfaces(|surface, data| {
-                    crate::utils::send_scale_transform(surface, data, scale, transform);
-                });
+                self.set_preferred_scale_transform(window, output);
             }
         }
+    }
+
+    /// Notify all surfaces on an output about a scale/transform change.
+    ///
+    /// Iterates windows and layer surfaces on the given output, sending both
+    /// integer and fractional scale via `send_scale_transform`. Layout
+    /// migration uses `enter_output_for_window`, which sets scale before enter.
+    pub fn send_scale_transform_to_output_surfaces(&self, output: &Output) {
+        let scale = output.current_scale();
+        let transform = output.current_transform();
+
+        self.refresh_output_scale_transform_for_layout(output);
 
         // Notify layer surfaces on this output
         let layer_map = layer_map_for_output(output);
@@ -5919,16 +5952,9 @@ impl Ewm {
             .or_else(|| self.first_output())
             .cloned();
         if let Some(output) = scale_output {
-            let scale = output.current_scale();
-            let transform = output.current_transform();
-            window.with_surfaces(|surface, data| {
-                crate::utils::send_scale_transform(surface, data, scale, transform);
-            });
             // Direct output enter, bypassing SpaceElement::output_enter which would
             // trigger output_update -> leave for uncommitted surfaces.
-            if let Some(surface) = window.wl_surface() {
-                output.enter(&surface);
-            }
+            self.enter_output_for_window(&window, &output);
         }
 
         // Resize Emacs frames to fill their working area
