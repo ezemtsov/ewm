@@ -520,18 +520,8 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
 
 fn settle_strip_animations(h: &mut Harness) {
     h.fix.ewm().animations_clock.set_complete_instantly(true);
-    let outputs = h
-        .fix
-        .ewm_ref()
-        .frame_set
-        .mapped_strips()
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    for output in outputs {
-        if let Some(strip) = h.fix.ewm().frame_set.mapped_strip_mut(&output) {
-            strip.advance();
-        }
+    for strip in h.fix.ewm().frame_set.mapped_strips_mut() {
+        strip.advance();
     }
 }
 

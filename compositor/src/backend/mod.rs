@@ -139,7 +139,12 @@ fn sync_output_info_mode(modes: &mut Vec<OutputMode>, current_mode: Mode) {
 
 /// Map a configured output. If it was disabled and has no explicit
 /// position, append it after the currently mapped output bounds.
-pub(crate) fn map_output_for_config(ewm: &mut Ewm, output: &Output, position: Option<(i32, i32)>) {
+/// Returns whether the output went from unmapped to mapped.
+pub(crate) fn map_output_for_config(
+    ewm: &mut Ewm,
+    output: &Output,
+    position: Option<(i32, i32)>,
+) -> bool {
     let was_mapped = ewm.space.output_geometry(output).is_some();
     let position = position
         .map(Point::from)
@@ -150,6 +155,7 @@ pub(crate) fn map_output_for_config(ewm: &mut Ewm, output: &Output, position: Op
         output.change_current_state(None, None, None, Some(position));
         ewm.reconcile_mapped_output_entries(output);
     }
+    !was_mapped && ewm.space.output_geometry(output).is_some()
 }
 
 pub(crate) fn apply_initial_output_config(
@@ -204,9 +210,7 @@ pub(crate) fn apply_enabled_output_config(
         output.set_preferred(mode);
     }
 
-    let was_mapped = ewm.space.output_geometry(output).is_some();
-    map_output_for_config(ewm, output, config.position);
-    let became_mapped = !was_mapped && ewm.space.output_geometry(output).is_some();
+    let became_mapped = map_output_for_config(ewm, output, config.position);
     output_infos.update_from_output(
         output,
         ewm.space

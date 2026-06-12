@@ -232,11 +232,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 .map(|f| f.surface_id)
                 .filter(|&id| id != 0)
                 .collect();
-            let output_mapped = fix
-                .ewm_ref()
-                .space
-                .outputs()
-                .any(|output| output.name() == dest);
+            let output_mapped = is_output_mapped(fix, dest);
             fix.ewm().apply_output_layout(dest, real);
             // I9: apply_output_layout never drops frames.
             let after = strip_frame_ids(fix);
@@ -375,12 +371,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             let was_present = layout_surface_ids(fix).contains(&id);
             let was_focused = fix.ewm_ref().focused_surface_id() == id;
             let prev_focused_frame = fix.ewm_ref().focused_frame_id;
-            let destroyed_entry_ids: HashSet<LayoutEntryId> = fix
-                .ewm_ref()
-                .frame_set
-                .mapped_strips()
-                .values()
-                .chain(fix.ewm_ref().frame_set.detached_strips().values())
+            let destroyed_entry_ids: HashSet<LayoutEntryId> = all_strips(fix)
                 .flat_map(|strip| strip.frames.iter())
                 .flat_map(|frame| frame.entries.iter())
                 .filter(|entry| entry.surface_id() == Some(id))
@@ -455,20 +446,7 @@ fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
 }
 
 fn all_strips(fix: &Fixture) -> impl Iterator<Item = &ewm_core::strip::Strip> {
-    fix.ewm_ref()
-        .frame_set
-        .mapped_strips()
-        .values()
-        .chain(fix.ewm_ref().frame_set.detached_strips().values())
-}
-
-fn all_named_strips(fix: &Fixture) -> impl Iterator<Item = (&str, &ewm_core::strip::Strip)> {
-    fix.ewm_ref()
-        .frame_set
-        .mapped_strips()
-        .iter()
-        .chain(fix.ewm_ref().frame_set.detached_strips().iter())
-        .map(|(name, strip)| (name.as_str(), strip))
+    fix.ewm_ref().frame_set.all_strips().map(|(_, strip)| strip)
 }
 
 fn mapped_output_names(fix: &Fixture) -> HashSet<String> {
@@ -500,13 +478,9 @@ fn set_output_enabled(fix: &mut Fixture, output_name: &str, enabled: bool) {
 }
 
 fn expected_surface_outputs(fix: &Fixture) -> HashMap<u64, HashSet<String>> {
-    let mapped_outputs = mapped_output_names(fix);
     let mut expected: HashMap<u64, HashSet<String>> = HashMap::new();
 
     for (output_name, strip) in fix.ewm_ref().frame_set.mapped_strips() {
-        if !mapped_outputs.contains(output_name) {
-            continue;
-        }
         for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
             expected
                 .entry(surface_id)
@@ -802,7 +776,7 @@ fn assert_invariants(fix: &Fixture) {
 
     // Invariant 7: every live entry entry_id identifies exactly one layout occurrence.
     let mut entry_ids = HashMap::new();
-    for (output_name, strip) in all_named_strips(fix) {
+    for (output_name, strip) in fix.ewm_ref().frame_set.all_strips() {
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
             for (entry_idx, entry) in frame.entries.iter().enumerate() {
                 let occurrence = (output_name, frame_idx, entry_idx);
@@ -908,7 +882,7 @@ proptest! {
                 }
             }
 
-            for (out_name, strip) in all_named_strips(&fix) {
+            for (out_name, strip) in fix.ewm_ref().frame_set.all_strips() {
                 let active = strip.active_frame().map(|f| f.surface_id);
                 for frame in &strip.frames {
                     let id = frame.surface_id;

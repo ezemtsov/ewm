@@ -604,11 +604,10 @@ Similar to `exwm-workspace-rename-buffer'."
   ;; CSS goes in before any frame is created so the GTK widget bg is set
   ;; on the first wl_surface commit.
   (ewm--apply-gtk-bg-css)
-  (let ((active-outputs (ewm-get-active-outputs)))
-    (dolist (output active-outputs)
-      (unless (ewm--frame-for-output output)
-        (ewm--create-frame-for-output output)))
-    (ewm--enforce-frame-output-parity active-outputs))
+  (dolist (output (ewm-get-active-outputs))
+    (unless (ewm--frame-for-output output)
+      (ewm--create-frame-for-output output)))
+  (ewm--enforce-frame-output-parity)
   (ewm-layout--refresh))
 
 (defun ewm--handle-environment (event)
@@ -730,16 +729,13 @@ Select the Nth Emacs frame on the requested output (1-based index)."
 
 (defun ewm--handle-frame-moved (event)
   "Mirror the compositor-authoritative output for an Emacs frame."
-  (let* ((id (alist-get 'id event))
-         (output (alist-get 'output event))
-         (home-output (alist-get 'home_output event))
-         (frame (ewm--frame-by-surface-id id)))
-    (when (and frame output)
+  (let ((output (alist-get 'output event))
+        (frame (ewm--frame-by-surface-id (alist-get 'id event))))
+    (when frame
+      (set-frame-parameter frame 'ewm-home-output (alist-get 'home_output event))
       (unless (equal (frame-parameter frame 'ewm-output) output)
-        (ewm--move-frame-to-output frame output))
-      (when home-output
-        (set-frame-parameter frame 'ewm-home-output home-output))
-      (ewm-layout--refresh))))
+        (ewm--move-frame-to-output frame output)
+        (ewm-layout--refresh)))))
 
 ;;; Idle timeout
 
@@ -1323,12 +1319,11 @@ Returns the neighbor on success, nil at the strip edge."
   (unless (ignore-errors (windmove-down))
     (ewm-focus-output-direction-module 0 1)))
 
-(defun ewm--enforce-frame-output-parity (&optional active-outputs)
+(defun ewm--enforce-frame-output-parity ()
   "Delete orphan frames.
 Frames may live on a strip multiple-deep; the duplicate-frame rule
 that one-output-one-frame implied is gone -- the user explicitly
 manages the strip via `ewm-frame-new'/`ewm-frame-close'."
-  (ignore active-outputs)
   (dolist (frame (frame-list))
     (let ((output (frame-parameter frame 'ewm-output)))
       (cond
