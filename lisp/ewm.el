@@ -1325,13 +1325,10 @@ Frames may live on a strip multiple-deep; the duplicate-frame rule
 that one-output-one-frame implied is gone -- the user explicitly
 manages the strip via `ewm-frame-new'/`ewm-frame-close'."
   (dolist (frame (frame-list))
-    (let ((output (frame-parameter frame 'ewm-output)))
-      (cond
-       ((not (ewm--output-managed-p frame))
-        nil)
-       ((ewm--frame-in-flight-p frame) nil)
-       ((null output)
-        (ignore-errors (delete-frame frame)))))))
+    (when (and (ewm--output-managed-p frame)
+               (not (ewm--frame-in-flight-p frame))
+               (null (frame-parameter frame 'ewm-output)))
+      (ignore-errors (delete-frame frame)))))
 
 ;;; Public API
 

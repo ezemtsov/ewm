@@ -6,3 +6,6 @@
 # everyone who runs the test benefits from these saved cases.
 cc 84291b3a2f69bb2e232008a606a1341d9dfbe8236ce2167fb435bfd10d8a85e6 # shrinks to ops = [AddOutput(0), ApplyLayout { output: 0, n_views: 1 }, RemoveOutput(0)]
 cc ac6108f8ac6dd824b8520c6ef4cbf7b6a9d99ef54ab7f0be3c2e355d7e033ca5 # shrinks to ops = [AddOutput(0), ApplyLayout { output: 0, n_views: 1 }, CreatePopup { ax: 190, ay: 84 }, CreatePopup { ax: 141, ay: 50 }]
+cc 2c6abf65d565a4b7ff512497529ec3d0fb573a12f24945fbd7a4b970aba3cc69 # shrinks to ops = [ApplyLayout { output: 0, n_views: 1, fullscreen_mask: 248572340 }, PointerButton { pressed: true }, ApplyLayout { output: 0, n_views: 0, fullscreen_mask: 3158454 }, PointerButton { pressed: false }]
+cc a69a5aec62023aebaaebfc8bbff6965548e1ff1765715555130f6cafc508ffbb # shrinks to ops = [RemoveOutput(0), AddOutput(1), ApplyPlainLayout { output: 1, n_entries: 4 }, CreateFramePopup { ax: 206, ay: 132 }, ApplyLayout { output: 1, n_views: 2, fullscreen_mask: 1489761963 }, SetFocusFollowsMouse { on: false }, AddOutput(0)]
+cc 9a8b1552f1a192fb0368e293c31276a26fff826c129c91af7de7a7d0089c7552 # shrinks to ops = [ApplyLayout { output: 0, n_views: 4, fullscreen_mask: 2228042227 }, WarpPointer { x: 800, y: 0 }]

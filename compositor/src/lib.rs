@@ -1267,10 +1267,10 @@ impl FrameSet {
         }
     }
 
-    fn remember_frame_homes(&mut self, output_name: &str, frames: &[strip::Frame]) {
-        for frame in frames {
-            if frame.surface_id != 0 {
-                self.remember_home_if_missing(frame.surface_id, output_name);
+    fn remember_frame_homes(&mut self, output_name: &str, frame_ids: impl IntoIterator<Item = u64>) {
+        for id in frame_ids {
+            if id != 0 {
+                self.remember_home_if_missing(id, output_name);
             }
         }
     }
@@ -1623,11 +1623,9 @@ impl Ewm {
             return;
         };
         let pre_entries = self.strip_entries(&out);
-        let prev_active_id = self
-            .frame_set
-            .strip(&out)
-            .and_then(|strip| strip.active_frame().map(|f| f.surface_id));
+        let mut prev_active_id = None;
         if let Some(strip) = self.frame_set.strip_mut(&out) {
+            prev_active_id = strip.active_frame().map(|f| f.surface_id);
             if active_close {
                 strip.remove_active_frame_at(idx);
             } else {
@@ -2832,7 +2830,6 @@ impl Ewm {
         let clock = self.animations_clock.clone();
         let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock);
         let insert_at = dst_strip.frames.len();
-        let dst_was_empty = dst_strip.frames.is_empty();
         dst_strip.frames.append(&mut moved);
         if let Some(focused_idx) = moved_ids
             .iter()
@@ -2840,13 +2837,14 @@ impl Ewm {
             .map(|idx| insert_at + idx)
         {
             dst_strip.set_active(focused_idx);
-        } else if dst_was_empty {
+        } else if insert_at == 0 {
             dst_strip.set_active(0);
         }
 
         self.reconcile_output_entries(src_name, &pre_src);
         self.reconcile_output_entries(dst_name, &pre_dst);
-        if let Some(dst_output) = self.mapped_output_by_name(dst_name) {
+        let dst_output = self.find_mapped_output(dst_name);
+        if let Some(dst_output) = &dst_output {
             let migrations: Vec<FrameMigration> = moved_ids
                 .iter()
                 .map(|&id| FrameMigration {
@@ -2858,8 +2856,8 @@ impl Ewm {
         }
 
         self.refresh_primary_assignments();
-        if let Some(output) = self.find_mapped_output(dst_name) {
-            self.update_frames_for_working_area(&output);
+        if let Some(dst_output) = &dst_output {
+            self.update_frames_for_working_area(dst_output);
         }
         self.prune_dangling_focus();
         self.focus_any_frame_if_unfocused("frame_set_move");
@@ -2894,9 +2892,8 @@ impl Ewm {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        for id in &frame_ids {
-            self.frame_set.remember_home_if_missing(*id, output_name);
-        }
+        self.frame_set
+            .remember_frame_homes(output_name, frame_ids.iter().copied());
         let fallback = self
             .sorted_outputs
             .iter()
@@ -2936,7 +2933,7 @@ impl Ewm {
 
     /// Reattach the detached strip and pull homed frames back onto an
     /// output that just became mapped.
-    fn attach_frames_for_mapped_output(&mut self, output: &Output) {
+    fn attach_frames_for_mapped_output(&mut self, output: &Output, focus_reason: &'static str) {
         let output_name = output.name();
         let attached = self.frame_set.attach_detached_strip(&output_name);
         if attached {
@@ -2950,6 +2947,7 @@ impl Ewm {
             self.reconcile_mapped_output_entries(output);
             self.reconcile_active_for_output(&output_name, None);
         }
+        self.focus_any_frame_if_unfocused(focus_reason);
     }
 
     fn sync_focus_after_layout_merge(&mut self, output_name: &str) {
@@ -2996,7 +2994,8 @@ impl Ewm {
             }
         };
 
-        self.frame_set.remember_frame_homes(output_name, &frames);
+        self.frame_set
+            .remember_frame_homes(output_name, frames.iter().map(|f| f.surface_id));
         let migrations = self.collect_frame_migrations(output_name, &frames);
         // Capture affected outputs before the swap; reconciliation runs after
         // the merge against the post-merge strips so kept frames don't leak
@@ -5133,6 +5132,11 @@ impl Ewm {
         &mut self,
         pos: Point<f64, Logical>,
     ) -> (Option<SurfaceHit>, bool) {
+        // An active grab (click drag, DnD) pins delivery to the grab surface;
+        // keep `pointer_focus` pinned with it.
+        if self.pointer.is_grabbed() {
+            return (self.pointer_focus.clone(), false);
+        }
         let under = self.pointer_target_at(pos);
         let focus_changed =
             Self::pointer_focus_surface(&self.pointer_focus) != Self::pointer_focus_surface(&under);
@@ -5362,9 +5366,8 @@ impl Ewm {
         });
 
         if self.space.output_geometry(output).is_some() {
-            self.attach_frames_for_mapped_output(output);
+            self.attach_frames_for_mapped_output(output, "output_added");
         }
-        self.focus_any_frame_if_unfocused("output_added");
         self.output_management_state.output_heads_changed = true;
     }
 
@@ -5434,8 +5437,7 @@ impl Ewm {
         self.refresh_primary_assignments();
         self.queue_redraw_all();
         if became_mapped {
-            self.attach_frames_for_mapped_output(output);
-            self.focus_any_frame_if_unfocused("output_enabled");
+            self.attach_frames_for_mapped_output(output, "output_enabled");
         } else {
             self.restore_home_output_frames(&output_name);
         }
@@ -7305,8 +7307,10 @@ impl State {
     /// during layout changes should not trap the pointer).
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
         let pos = Point::from((x, y));
-        let under = self.ewm.surface_under_point(pos);
-        self.ewm.pointer_focus = under.clone();
+        if !self.ewm.pointer.is_grabbed() {
+            self.ewm.pointer_focus = self.ewm.surface_under_point(pos);
+        }
+        let under = self.ewm.pointer_focus.clone();
         self.send_pointer_motion(pos, under);
         self.ewm.queue_redraw_for_pointer();
     }
@@ -7315,6 +7319,9 @@ impl State {
     /// a motion event so Smithay's internal pointer focus is up to date.
     /// Called before constraint activation to ensure focus is synced.
     fn refresh_pointer_focus(&mut self) {
+        if self.ewm.pointer.is_grabbed() {
+            return;
+        }
         let (x, y) = self.ewm.pointer_location();
         let pos: Point<f64, Logical> = (x, y).into();
 
@@ -7333,6 +7340,9 @@ impl State {
     }
 
     fn refresh_pointer_after_scene_change(&mut self, skip_strip_animation: bool) -> bool {
+        if self.ewm.pointer.is_grabbed() {
+            return false;
+        }
         let (x, y) = self.ewm.pointer_location();
         let pos: Point<f64, Logical> = (x, y).into();
 
