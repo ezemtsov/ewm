@@ -83,8 +83,12 @@ taken via `mem::take` to avoid borrow conflicts with element collection.
 
 **`screen_cast.rs`**: `org.gnome.Mutter.ScreenCast` (version 4):
 - `ScreenCast`: main interface with `CreateSession()`
-- `Session`: per-session with `Start()`, `Stop()`, `RecordMonitor()`
+- `Session`: per-session with `Start()`, `Stop()`, `RecordMonitor()`, `RecordWindow()`
 - `Stream`: per-stream with `parameters` property, `PipeWireStreamAdded` signal
+
+**`introspect.rs`**: `org.gnome.Shell.Introspect`:
+- `GetWindows()` for the xdg-desktop-portal-gnome window picker; entries are
+  tiled layout entries (see Native Emacs Buffer / Window Capture below)
 
 **`display_config.rs`**: `org.gnome.Mutter.DisplayConfig`:
 - Required by xdg-desktop-portal-gnome for monitor enumeration
@@ -163,6 +167,25 @@ the output:
 3. Render to PipeWire DMA-BUF buffer via `dequeue_buffer_and_render()`
 4. Non-blocking queue via `queue_after_sync()`
 5. Update `last_frame_time`
+
+### Native Emacs Buffer / Window Capture
+
+OBS window capture uses the portal's window picker. Since native Emacs buffers
+are only subregions of an Emacs frame surface, EWM exposes each Emacs window as
+a virtual window via `org.gnome.Shell.Introspect`:
+
+1. Lisp sends each visible Emacs window as a `LayoutEntry` with `entry-id`,
+   buffer name, and frame-relative geometry (`lisp/ewm-layout.el`).
+2. `Ewm::introspect_windows()` reports those entries to the portal as windows;
+   the reported ID is the layout entry ID.
+3. When OBS selects one, `RecordWindow(window-id)` maps that ID back to
+   `CastTarget::LayoutEntry`.
+4. For entries displaying Wayland clients, EWM renders that client surface.
+   For native Emacs entries, EWM renders the containing Emacs frame surface
+   cropped to the entry rectangle.
+
+This means OBS can capture an Emacs buffer/window through the normal
+"Window Capture (PipeWire)" path without a separate OBS plugin.
 
 ## DMA-BUF Feedback
 
@@ -283,6 +306,13 @@ firefox https://meet.jit.si/test
 
 # OBS capture (PipeWire)
 obs  # Add source -> Screen Capture (PipeWire)
+
+# Window picker entries, including native Emacs layout entries
+busctl --user call \
+  org.gnome.Shell.Introspect \
+  /org/gnome/Shell/Introspect \
+  org.gnome.Shell.Introspect \
+  GetWindows
 
 # Verify D-Bus interface
 busctl --user introspect org.gnome.Mutter.ScreenCast /org/gnome/Mutter/ScreenCast
