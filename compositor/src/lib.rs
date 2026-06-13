@@ -580,34 +580,12 @@ pub fn fullscreen_center_offset(
     )
 }
 
-/// Extract (title, app_id) from a Window via its XDG toplevel state.
-/// Used by the Introspect D-Bus interface to list windows for the portal picker.
 #[cfg(feature = "screencast")]
-pub fn window_title_and_app_id(window: &Window) -> (String, String) {
-    use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
-
-    let Some(surface) = window.wl_surface() else {
-        return (String::new(), String::new());
-    };
-    smithay::wayland::compositor::with_states(&surface, |states| {
-        states
-            .data_map
-            .get::<XdgToplevelSurfaceData>()
-            .map(|d| {
-                let data = d.lock().unwrap();
-                (
-                    data.title.clone().unwrap_or_default(),
-                    data.app_id.clone().unwrap_or_default(),
-                )
-            })
-            .unwrap_or_default()
-    })
-}
-
-#[cfg(feature = "screencast")]
-fn window_properties(window: &Window) -> dbus::WindowProperties {
-    let (title, app_id) = window_title_and_app_id(window);
-    dbus::WindowProperties { title, app_id }
+fn window_properties(info: &SurfaceInfo) -> dbus::WindowProperties {
+    dbus::WindowProperties {
+        title: info.title.clone(),
+        app_id: info.app_id.clone(),
+    }
 }
 
 #[cfg(feature = "screencast")]
@@ -915,6 +893,8 @@ pub struct Ewm {
     pub(crate) im_repeat: InterceptRepeatState,
     /// Output geometry or working areas changed; shared active_outputs need recomputation.
     pub active_outputs_dirty: bool,
+    /// Introspected window list changed; announce it next tick.
+    pub introspect_windows_dirty: bool,
     /// Focus follows mouse
     pub focus_follows_mouse_mode: bool,
     /// Alpha multiplier for inactive layout entries; 1.0 disables.
@@ -1510,6 +1490,7 @@ impl Ewm {
                 input::DEFAULT_KEYBOARD_REPEAT_DELAY,
             ),
             active_outputs_dirty: true,
+            introspect_windows_dirty: false,
             focus_follows_mouse_mode: false,
             unfocused_alpha: 1.0,
             pointer_entry_id: None,
@@ -2037,13 +2018,13 @@ impl Ewm {
                 let workspace_name =
                     crate::protocols::workspace::frame_workspace_name(frame, frame_idx);
                 let frame_props = self
-                    .id_windows
+                    .surface_info
                     .get(&frame.surface_id)
                     .map(window_properties);
                 for entry in &frame.entries {
                     let props = entry
                         .surface_id()
-                        .and_then(|surface_id| self.id_windows.get(&surface_id))
+                        .and_then(|surface_id| self.surface_info.get(&surface_id))
                         .map(window_properties)
                         .or_else(|| frame_props.clone());
                     if let Some(mut props) = props {
@@ -2059,6 +2040,19 @@ impl Ewm {
             }
         }
         windows
+    }
+
+    /// Tell portal pickers the introspected window list changed.
+    fn flush_introspect_windows(&mut self) {
+        #[cfg(feature = "screencast")]
+        {
+            if !std::mem::take(&mut self.introspect_windows_dirty) {
+                return;
+            }
+            if let Some(dbus) = &self.dbus_servers {
+                dbus.emit_windows_changed();
+            }
+        }
     }
 
     pub fn is_emacs_frame(&self, id: u64) -> bool {
@@ -2347,6 +2341,7 @@ impl Ewm {
             return false;
         }
         frame.workspace_name = name;
+        self.introspect_windows_dirty = true;
         true
     }
 
@@ -4127,6 +4122,7 @@ impl Ewm {
     fn refresh_mapped_cast_outputs(&mut self) {
         #[cfg(feature = "screencast")]
         {
+            self.introspect_windows_dirty = true;
             let mut seen = HashSet::new();
             self.casting.mapped_cast_output.clear();
             for output in &self.sorted_outputs {
@@ -6558,6 +6554,7 @@ impl Ewm {
 
         if self.space.output_geometry(output).is_some() {
             self.attach_frames_for_mapped_output(output, "output_added");
+            self.introspect_windows_dirty = true;
         }
         self.output_management_state.output_heads_changed = true;
     }
@@ -7421,6 +7418,7 @@ impl Ewm {
                     title: title.clone(),
                 },
             );
+            self.introspect_windows_dirty = true;
             self.queue_title_update(id, app_id, title, first_title, app_changed);
         }
     }
@@ -9203,6 +9201,7 @@ impl State {
 
         // Update shared state snapshot for Emacs to read synchronously
         self.update_shared_state();
+        self.ewm.flush_introspect_windows();
 
         // Flush Wayland clients
         if let Err(e) = self.ewm.display_handle.flush_clients() {

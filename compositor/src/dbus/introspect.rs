@@ -12,9 +12,12 @@ use tracing::warn;
 use zbus::fdo::{self, RequestNameFlags};
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{SerializeDict, Type, Value};
+use zbus::zvariant::{ObjectPath, SerializeDict, Type, Value};
 
 use super::Start;
+
+pub const PATH: ObjectPath<'static> =
+    ObjectPath::from_static_str_unchecked("/org/gnome/Shell/Introspect");
 
 /// D-Bus object implementing org.gnome.Shell.Introspect.
 pub struct Introspect {
@@ -86,8 +89,7 @@ impl Start for Introspect {
             | RequestNameFlags::ReplaceExisting
             | RequestNameFlags::DoNotQueue;
 
-        conn.object_server()
-            .at("/org/gnome/Shell/Introspect", self)?;
+        conn.object_server().at(PATH, self)?;
         conn.request_name_with_flags("org.gnome.Shell.Introspect", flags)?;
 
         Ok(conn)

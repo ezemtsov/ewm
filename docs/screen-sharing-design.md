@@ -89,6 +89,8 @@ taken via `mem::take` to avoid borrow conflicts with element collection.
 **`introspect.rs`**: `org.gnome.Shell.Introspect`:
 - `GetWindows()` for the xdg-desktop-portal-gnome window picker; entries are
   tiled layout entries (see Native Emacs Buffer / Window Capture below)
+- `WindowsChanged` when layout entries, workspace names, outputs or window
+  titles change, so open pickers refresh
 
 **`display_config.rs`**: `org.gnome.Mutter.DisplayConfig`:
 - Required by xdg-desktop-portal-gnome for monitor enumeration

@@ -6,6 +6,7 @@
 //! - org.gnome.Mutter.ScreenCast for screen sharing
 //! - org.gnome.Mutter.DisplayConfig for monitor enumeration
 //! - org.gnome.Mutter.ServiceChannel for portal client connections
+//! - org.gnome.Shell.Introspect for the portal window picker
 //!
 //! Each interface gets its own blocking connection to avoid deadlocks.
 //! Names are registered with `AllowReplacement | ReplaceExisting` so the
@@ -22,7 +23,7 @@ use smithay::reexports::calloop::channel::{self, Channel};
 use smithay::reexports::wayland_server::DisplayHandle;
 use tracing::{info, warn};
 use zbus::blocking::Connection;
-use zbus::object_server::Interface;
+use zbus::object_server::{Interface, SignalEmitter};
 
 /// Output information shared with D-Bus interfaces.
 pub type OutputInfo = crate::OutputInfo;
@@ -91,6 +92,17 @@ impl DBusServers {
         info!("D-Bus servers started");
 
         (dbus, sc_receiver, introspect_receiver, reply_sender)
+    }
+
+    /// Tell Introspect clients the window list changed.
+    pub fn emit_windows_changed(&self) {
+        let Some(conn) = &self.conn_introspect else {
+            return;
+        };
+        let emitter = SignalEmitter::from_parts(conn.inner().clone(), introspect::PATH);
+        if let Err(err) = async_io::block_on(Introspect::windows_changed(&emitter)) {
+            warn!("failed to emit Introspect WindowsChanged: {err:?}");
+        }
     }
 }
 
