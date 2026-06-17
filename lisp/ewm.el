@@ -44,6 +44,7 @@
 (declare-function ewm-configure-output-module "ewm-core")
 (declare-function ewm-prepare-frame-module "ewm-core")
 (declare-function ewm-prepare-frame-close-module "ewm-core")
+(declare-function ewm-workspace-rename-module "ewm-core")
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-configure-cursor-module "ewm-core")
@@ -874,6 +875,15 @@ where ENTRIES is a vector of plists
 `:entry-id :name :x :y :w :h :fullscreen' with optional `:surface-id'.
 Entry coordinates are relative to the owning frame's working area."
   (ewm-output-layout-module output frames))
+
+(defun ewm-workspace-rename (name &optional frame)
+  "Rename FRAME's workspace to NAME.
+When FRAME is nil, use the selected frame.  An empty NAME clears
+the workspace name."
+  (interactive (list (read-string "Workspace name: ")))
+  (let* ((frame (or frame (selected-frame)))
+         (frame-id (frame-parameter frame 'ewm-surface-id)))
+    (ewm-workspace-rename-module name frame-id)))
 
 (defun ewm-close (id)
   "Request surface ID to close gracefully."
