@@ -602,8 +602,8 @@ Similar to `exwm-workspace-rename-buffer'."
 (defun ewm--handle-outputs-complete ()
   "Apply output config, then create any missing per-output frames."
   (ewm--apply-output-config)
-  ;; CSS goes in before any frame is created so the GTK widget bg is set
-  ;; on the first wl_surface commit.
+  ;; For pgtk, CSS goes in before any frame is created so the GTK widget
+  ;; background is set on the first wl_surface commit.
   (ewm--apply-gtk-bg-css)
   (dolist (output (ewm-get-active-outputs))
     (unless (ewm--frame-for-output output)
@@ -717,16 +717,18 @@ Select the Nth Emacs frame on the requested output (1-based index)."
   (and (frame-live-p frame) (frame-parameter frame 'window-id)))
 
 (defun ewm--handle-frame-shown (event)
-  (when-let* ((id (alist-get 'id event))
-              (frame (ewm--frame-by-surface-id id))
-              (wid (ewm--frame-window-id frame)))
-    (ignore-errors (ewm-gtk-thaw-frame-updates wid))))
+  (when (ewm--gtk-backed-p)
+    (when-let* ((id (alist-get 'id event))
+                (frame (ewm--frame-by-surface-id id))
+                (wid (ewm--frame-window-id frame)))
+      (ignore-errors (ewm-gtk-thaw-frame-updates wid)))))
 
 (defun ewm--handle-frame-hidden (event)
-  (when-let* ((id (alist-get 'id event))
-              (frame (ewm--frame-by-surface-id id))
-              (wid (ewm--frame-window-id frame)))
-    (ignore-errors (ewm-gtk-freeze-frame-updates wid))))
+  (when (ewm--gtk-backed-p)
+    (when-let* ((id (alist-get 'id event))
+                (frame (ewm--frame-by-surface-id id))
+                (wid (ewm--frame-window-id frame)))
+      (ignore-errors (ewm-gtk-freeze-frame-updates wid)))))
 
 (defun ewm--handle-frame-moved (event)
   "Mirror the compositor-authoritative output for an Emacs frame."
@@ -1103,11 +1105,28 @@ via `ewm--find-connector-for-config' before sending to the compositor."
 
 ;;; Frame management
 
+(defconst ewm--managed-window-systems '(pgtk wayland)
+  "GUI window systems whose frames EWM binds to outputs.
+EWM can host either a pgtk or a native-Wayland (+ Skia) Emacs build.")
+
+(defun ewm--gtk-backed-p ()
+  "Non-nil when EWM's host Emacs frames are backed by GTK.
+The native Wayland backend has no GTK widgets or style context to mutate."
+  (eq (ignore-errors (ewm--window-system)) 'pgtk))
+
+(defun ewm--window-system ()
+  "Return the window system to create EWM output frames with.
+Picks whichever GUI backend this Emacs was built with (pgtk or the
+native Wayland backend)."
+  (cond ((featurep 'pgtk) 'pgtk)
+        ((featurep 'wayland) 'wayland)
+        (t (error "EWM requires a pgtk or native-Wayland Emacs build"))))
+
 (defun ewm--output-managed-p (frame)
   "Return non-nil if FRAME is bound to a compositor output.
 Only output-bound frames participate in frame-output parity.
 Excludes TTY frames and (in the future) floating frames."
-  (eq (framep-on-display frame) 'pgtk))
+  (memq (framep-on-display frame) ewm--managed-window-systems))
 
 (defun ewm--frame-for-output (output-name)
   "Return the first frame in OUTPUT-NAME's strip, or nil."
@@ -1166,7 +1185,8 @@ strip, so the parameter must change between the remove and the insert."
   "Create a frame on OUTPUT-NAME inserted after AFTER-FRAME (or appended)."
   (ewm-prepare-frame output-name)
   (let* ((seq (cl-incf ewm--frame-seq))
-         (frame (make-frame `((visibility . t) (window-system . pgtk)
+         (frame (make-frame `((visibility . t)
+                              (window-system . ,(ewm--window-system))
                               (ewm-output . ,output-name)
                               (ewm-frame-seq . ,seq)
                               ,@extra-params))))
@@ -1389,8 +1409,9 @@ The compositor runs as a thread within the Emacs process."
         (if after-init-time
             (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)
           (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module))
-        ;; Re-apply now that graphical frames exist and face-attribute can
-        ;; return the real theme background instead of the black fallback.
+        ;; For pgtk, re-apply now that graphical frames exist and
+        ;; face-attribute can return the real theme background instead of
+        ;; the black fallback.
         (ewm--apply-gtk-bg-css)
         (ewm--publish-mode-state t))
     (ewm--destroy-event-channel)
@@ -1411,13 +1432,14 @@ The compositor runs as a thread within the Emacs process."
 
 (defun ewm--apply-gtk-bg-css (&rest _)
   "Push the default face background to GTK; falls back to black pre-graphical (bug#53232)."
-  (let* ((live (face-attribute 'default :background))
-         (bg (if (and (stringp live) (not (string-prefix-p "unspecified" live)))
-                 live
-               "#000000")))
-    (condition-case err
-        (ewm-gtk-set-style (format "window { background-color: %s; }" bg))
-      (error (message "EWM: ewm-gtk-set-style failed: %s" err)))))
+  (when (ewm--gtk-backed-p)
+    (let* ((live (face-attribute 'default :background))
+           (bg (if (and (stringp live) (not (string-prefix-p "unspecified" live)))
+                   live
+                 "#000000")))
+      (condition-case err
+          (ewm-gtk-set-style (format "window { background-color: %s; }" bg))
+        (error (message "EWM: ewm-gtk-set-style failed: %s" err))))))
 
 (defun ewm--kill-emacs-hook ()
   "Stop compositor gracefully before Emacs exits.
@@ -1543,7 +1565,8 @@ instead of the generated minor-mode command."
   (setq interprogram-paste-function nil)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (add-hook 'delete-frame-functions #'ewm--on-delete-frame)
-  (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css)
+  (when (ewm--gtk-backed-p)
+    (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css))
   (unless (advice-member-p #'ewm--prevent-frame-deletion 'delete-frame)
     (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion))
   (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
