@@ -26,6 +26,7 @@ fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
 fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> Frame {
     Frame {
         name: String::new(),
+        workspace_name: None,
         surface_id: frame_id,
         focus_id: nz(200),
         width: 1920.0,

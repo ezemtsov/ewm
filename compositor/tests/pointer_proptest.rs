@@ -368,6 +368,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
             let frames: Vec<Frame> = (0..n_views)
                 .map(|i| Frame {
                     name: String::new(),
+                    workspace_name: None,
                     surface_id: if i == 0 { h.frame_sid } else { 100 + i as u64 },
                     focus_id: nz(100 + i as u64),
                     width: VIEW_W as f64,
@@ -479,6 +480,7 @@ fn apply_multi_entry_layout(
         name,
         vec![Frame {
             name: String::new(),
+            workspace_name: None,
             surface_id: 10_000,
             focus_id: nz(20_000),
             width: VIEW_W as f64,
@@ -521,6 +523,7 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
         name,
         vec![Frame {
             name: String::new(),
+            workspace_name: None,
             surface_id: h.frame_sid,
             focus_id: nz(40_000),
             width: VIEW_W as f64,

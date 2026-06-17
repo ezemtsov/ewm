@@ -152,6 +152,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
 fn to_frame(spec: &FrameSpec) -> Frame {
     Frame {
         name: String::new(),
+        workspace_name: None,
         surface_id: spec.surface_id,
         focus_id: spec.frame_focus_id,
         width: 1920.0,

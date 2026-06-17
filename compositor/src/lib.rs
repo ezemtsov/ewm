@@ -912,6 +912,14 @@ pub struct Ewm {
     /// seeding `surface_open_anims`: drained on the unmapped->mapped
     /// transition so the fade starts exactly once per surface lifetime.
     pub unmapped_surfaces: HashSet<u64>,
+    /// App surfaces that requested attention.
+    ///
+    /// ext-workspace urgency is derived from this set and the frame layout.
+    /// Focus clears the bit, matching the per-window urgency model.
+    pub urgent_surfaces: HashSet<u64>,
+    /// Valid activation requests that arrived before the surface was attached
+    /// to an Emacs frame.  Drained after layout refresh makes them focusable.
+    pending_activation_surfaces: HashSet<u64>,
 
     // Output
     pub output_size: Size<i32, Logical>,
@@ -1123,6 +1131,7 @@ pub struct Ewm {
 struct FrameMigration {
     id: u64,
     prev_output: Option<String>,
+    workspace_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1224,6 +1233,12 @@ impl FrameSet {
 
     fn all_strips_mut(&mut self) -> impl Iterator<Item = &mut strip::Strip> {
         self.mapped.values_mut().chain(self.detached.values_mut())
+    }
+
+    fn frame_mut(&mut self, frame_surface_id: u64) -> Option<&mut strip::Frame> {
+        self.all_strips_mut()
+            .flat_map(|strip| strip.frames.iter_mut())
+            .find(|frame| frame.surface_id == frame_surface_id)
     }
 
     fn attach_detached_strip(&mut self, output_name: &str) -> bool {
@@ -1445,6 +1460,8 @@ impl Ewm {
             surface_outputs: HashMap::new(),
             surface_open_anims: HashMap::new(),
             unmapped_surfaces: HashSet::new(),
+            urgent_surfaces: HashSet::new(),
+            pending_activation_surfaces: HashSet::new(),
             output_size: Size::from((0, 0)),
             sorted_outputs: Vec::new(),
             output_config: HashMap::new(),
@@ -1924,7 +1941,10 @@ impl Ewm {
         let mut windows = HashMap::new();
         for (output_name, strip) in self.mapped_output_strips() {
             for (frame_idx, frame) in strip.frames.iter().enumerate() {
-                let workspace_name = crate::protocols::workspace::frame_display_name(frame_idx);
+                let workspace_name = crate::protocols::workspace::frame_workspace_name(
+                    frame,
+                    frame_idx,
+                );
                 let frame_props = self
                     .id_windows
                     .get(&frame.surface_id)
@@ -1977,6 +1997,28 @@ impl Ewm {
         }
     }
 
+    pub fn set_surface_urgent(&mut self, surface_id: u64, urgent: bool) -> bool {
+        if surface_id == 0 || (urgent && self.is_emacs_frame(surface_id)) {
+            return false;
+        }
+        if urgent && self.focused_surface_id() == surface_id {
+            return false;
+        }
+
+        if urgent {
+            self.urgent_surfaces.insert(surface_id)
+        } else {
+            self.urgent_surfaces.remove(&surface_id)
+        }
+    }
+
+    fn clear_focused_surface_urgency(&mut self) {
+        let focused = self.focused_surface_id();
+        if focused != 0 {
+            self.set_surface_urgent(focused, false);
+        }
+    }
+
     fn set_focus_state(&mut self, frame_id: u64, entry_id: Option<LayoutEntryId>) {
         self.focused_frame_id = frame_id;
         self.focused_entry_id = entry_id;
@@ -2026,6 +2068,7 @@ impl Ewm {
             self.flush_pending_title_event(surface_id);
         }
         self.set_focus_state(location.frame_surface_id, Some(entry_id));
+        self.clear_focused_surface_urgency();
         self.activate_frame(&location.output, location.frame_idx);
         if notify_emacs {
             self.queue_event(Event::Focus {
@@ -2056,6 +2099,7 @@ impl Ewm {
             self.flush_pending_title_event(surface_id);
         }
         self.set_focus_state(frame_surface_id, selected_entry_id);
+        self.clear_focused_surface_urgency();
         self.activate_frame(&output, idx);
         if notify_emacs {
             self.queue_event(Event::Focus {
@@ -2126,6 +2170,58 @@ impl Ewm {
     pub fn active_frame_surface_id(&self, output_name: &str) -> Option<u64> {
         let strip = self.frame_set.mapped_strip(output_name)?;
         strip.active_frame().map(|f| f.surface_id)
+    }
+
+    fn workspace_name_from_rename(name: String) -> Option<String> {
+        let name = name.trim().to_string();
+        (!name.is_empty()).then_some(name)
+    }
+
+    fn workspace_name_taken(&self, name: &str, except_frame: u64) -> bool {
+        let name = name.to_lowercase();
+        self.frame_set
+            .all_strips()
+            .flat_map(|(_, strip)| strip.frames.iter())
+            .any(|frame| {
+                frame.surface_id != except_frame
+                    && frame
+                        .workspace_name
+                        .as_deref()
+                        .is_some_and(|existing| existing.to_lowercase() == name)
+            })
+    }
+
+    /// Rename a workspace. Empty names clear the name. If `frame_surface_id`
+    /// is absent, the currently focused frame is renamed.
+    pub fn rename_workspace(&mut self, frame_surface_id: Option<u64>, name: String) -> bool {
+        let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id);
+        if frame_surface_id == 0 {
+            return false;
+        }
+
+        let name = Self::workspace_name_from_rename(name);
+        if let Some(name) = &name {
+            if self.workspace_name_taken(name, frame_surface_id) {
+                warn!(
+                    "rename_workspace: workspace name {:?} already exists",
+                    name,
+                );
+                return false;
+            }
+        }
+
+        let Some(frame) = self.frame_set.frame_mut(frame_surface_id) else {
+            warn!(
+                "rename_workspace: frame surface {} not found",
+                frame_surface_id,
+            );
+            return false;
+        };
+        if frame.workspace_name == name {
+            return false;
+        }
+        frame.workspace_name = name;
+        true
     }
 
     fn first_active_frame_surface_id(&self) -> Option<u64> {
@@ -2684,13 +2780,37 @@ impl Ewm {
                 if id == 0 {
                     return None;
                 }
-                let prev_output = self.emacs_frame_output(id).map(String::from);
+                let previous = self.frame_location(id);
+                let prev_output = previous.map(|location| location.output_name.to_string());
                 if prev_output.as_deref() == Some(output_name) {
                     return None;
                 }
-                Some(FrameMigration { id, prev_output })
+                Some(FrameMigration {
+                    id,
+                    prev_output,
+                    workspace_name: previous
+                        .and_then(|location| location.frame.workspace_name.clone()),
+                })
             })
             .collect()
+    }
+
+    fn preserve_migrated_workspace_names(
+        frames: &mut [strip::Frame],
+        migrations: &[FrameMigration],
+    ) {
+        for frame in frames {
+            if frame.workspace_name.is_some() {
+                continue;
+            }
+            if let Some(name) = migrations
+                .iter()
+                .find(|migration| migration.id == frame.surface_id)
+                .and_then(|migration| migration.workspace_name.clone())
+            {
+                frame.workspace_name = Some(name);
+            }
+        }
     }
 
     fn output_layout_snapshot(&self, output_name: String) -> OutputLayoutSnapshot {
@@ -2850,6 +2970,7 @@ impl Ewm {
                 .map(|&id| FrameMigration {
                     id,
                     prev_output: Some(src_name.to_string()),
+                    workspace_name: None,
                 })
                 .collect();
             self.send_frame_migration_output_events(dst_output, &migrations);
@@ -2975,6 +3096,7 @@ impl Ewm {
 
         if let Some(new_entry) = focus_entry_update {
             self.set_focus_state(frame_id, new_entry);
+            self.clear_focused_surface_urgency();
             module::record_focus(self.focused_surface_id(), "layout_selected", None);
         }
     }
@@ -2984,7 +3106,7 @@ impl Ewm {
     /// Replaces the previous layout for the given output. Surfaces removed from
     /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
     /// and scale notification.
-    pub fn apply_output_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
+    pub fn apply_output_layout(&mut self, output_name: &str, mut frames: Vec<strip::Frame>) {
         // 1. Find the output
         let output = match self.find_mapped_output(output_name) {
             Some(o) => o,
@@ -2997,6 +3119,7 @@ impl Ewm {
         self.frame_set
             .remember_frame_homes(output_name, frames.iter().map(|f| f.surface_id));
         let migrations = self.collect_frame_migrations(output_name, &frames);
+        Self::preserve_migrated_workspace_names(&mut frames, &migrations);
         // Capture affected outputs before the swap; reconciliation runs after
         // the merge against the post-merge strips so kept frames don't leak
         // `surface_outputs`, and active-frame event balance has a stable base.
@@ -3019,6 +3142,7 @@ impl Ewm {
         // Covers the race where `apply_output_layout` runs before
         // `new_toplevel`'s auto-focus.
         self.focus_any_frame_if_unfocused("auto_focus_on_layout");
+        self.focus_pending_activation_surfaces();
 
         debug!(
             "apply_output_layout: output '{}' with {} surface entries",
@@ -4582,12 +4706,20 @@ impl Ewm {
     /// Focus a surface by id; resolves to either a layout entry or an Emacs frame and
     /// delegates to the canonical mutator (`set_focus_entry` / `set_focus_frame`).
     /// Callers with a known kind should call those directly.
-    pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str) {
+    pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str) -> bool {
         let (frame_id, entry_id) = self.resolve_focus_target(id);
         if let Some(entry_id) = entry_id {
             self.set_focus_entry(entry_id, source, notify_emacs);
+            true
         } else if frame_id != 0 {
-            self.set_focus_frame(frame_id, source, notify_emacs);
+            if self.is_emacs_frame(frame_id) {
+                self.set_focus_frame(frame_id, source, notify_emacs);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
         }
     }
 
@@ -4599,6 +4731,34 @@ impl Ewm {
             (frame_id, Some(entry_id))
         } else {
             (id, None)
+        }
+    }
+
+    fn focus_target_ready(&self, id: u64) -> bool {
+        let (frame_id, entry_id) = self.resolve_focus_target(id);
+        entry_id.is_some() || (frame_id != 0 && self.is_emacs_frame(frame_id))
+    }
+
+    fn activate_or_defer_surface(&mut self, id: u64, notify_emacs: bool, source: &str) {
+        if self.set_focus(id, notify_emacs, source) {
+            self.pending_activation_surfaces.remove(&id);
+        } else {
+            self.pending_activation_surfaces.insert(id);
+        }
+    }
+
+    fn focus_pending_activation_surfaces(&mut self) {
+        let mut ready: Vec<_> = self
+            .pending_activation_surfaces
+            .iter()
+            .copied()
+            .filter(|&id| self.focus_target_ready(id))
+            .collect();
+        ready.sort_unstable();
+
+        for id in ready {
+            self.pending_activation_surfaces.remove(&id);
+            self.set_focus(id, true, "xdg_activation_pending");
         }
     }
 
@@ -5621,6 +5781,8 @@ impl Ewm {
     pub fn debug_state(&self, output_infos: &[OutputInfo]) -> serde_json::Value {
         let mut id_window_keys: Vec<u64> = self.id_windows.keys().copied().collect();
         id_window_keys.sort_unstable();
+        let mut urgent_surfaces: Vec<u64> = self.urgent_surfaces.iter().copied().collect();
+        urgent_surfaces.sort_unstable();
         let emacs_surfaces: HashMap<u64, String> = self
             .frame_set
             .all_strips()
@@ -5656,6 +5818,7 @@ impl Ewm {
             "focused_frame_id": self.focused_frame_id,
             "focused_entry_id": self.focused_entry_id,
             "id_windows": id_window_keys,
+            "urgent_surfaces": urgent_surfaces,
             "outputs": output_infos,
             "working_areas": self.get_working_areas_info(),
             "layer_surfaces": self.get_layer_surfaces_info(),
@@ -6002,6 +6165,8 @@ impl Ewm {
         if let Some(window) = self.id_windows.remove(&id) {
             self.window_ids.remove(&window);
         }
+        self.urgent_surfaces.remove(&id);
+        self.pending_activation_surfaces.remove(&id);
         self.flush_pending_title_event(id);
         self.surface_info.remove(&id);
         let was_emacs = self.is_emacs_frame(id);
@@ -6782,21 +6947,24 @@ impl WlrLayerShellHandler for State {
 }
 delegate_layer_shell!(State);
 
-// XDG Activation protocol (allows apps to request focus)
+struct UrgentOnlyMarker;
+
+// XDG Activation protocol (allows apps to request focus or attention)
 impl XdgActivationHandler for State {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.ewm.activation_state
     }
 
     fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
-        // Only accept tokens created while the requesting app had keyboard focus.
-        // This prevents apps from stealing focus via xdg_activation.
-        // Handle XDG activation token
+        // Tokens without a serial are urgency-only. This mirrors common client
+        // behavior for background clients and avoids letting them
+        // steal focus through xdg_activation.
         let app_id = data.app_id.as_deref().unwrap_or("unknown");
 
         let Some((serial, seat)) = data.serial else {
-            debug!("xdg_activation: token rejected for {app_id} - no serial provided");
-            return false;
+            data.user_data.insert_if_missing(|| UrgentOnlyMarker);
+            debug!("xdg_activation: token accepted for {app_id} as urgency-only");
+            return true;
         };
         let Some(seat) = Seat::<Self>::from_resource(&seat) else {
             debug!("xdg_activation: token rejected for {app_id} - invalid seat");
@@ -6804,16 +6972,22 @@ impl XdgActivationHandler for State {
         };
 
         let keyboard = seat.get_keyboard().unwrap();
-        let valid = keyboard
+        let keyboard_valid = keyboard
             .last_enter()
             .map(|last_enter| serial.is_no_older_than(&last_enter))
             .unwrap_or(false);
+        let pointer_valid = seat
+            .get_pointer()
+            .and_then(|pointer| pointer.last_enter())
+            .map(|last_enter| serial.is_no_older_than(&last_enter))
+            .unwrap_or(false);
+        let valid = keyboard_valid || pointer_valid;
 
         if valid {
             debug!("xdg_activation: token accepted for {app_id}");
         } else {
             debug!(
-                "xdg_activation: token rejected for {app_id} - serial not from app's focus entry"
+                "xdg_activation: token rejected for {app_id} - serial not from keyboard or pointer focus"
             );
         }
         valid
@@ -6838,10 +7012,17 @@ impl XdgActivationHandler for State {
                 // Lisp owns Emacs frame focus via select-frame-set-input-focus;
                 // honoring GTK's echo activation here would loop with our own
                 // ewm-focus calls.
-                if self.ewm.is_emacs_frame(id) {
+                if token_data.user_data.get::<UrgentOnlyMarker>().is_some() {
+                    if self.ewm.set_surface_urgent(id, true) {
+                        info!("xdg_activation: marked surface {} urgent", id);
+                    } else {
+                        debug!("xdg_activation: urgency ignored for surface {}", id);
+                    }
+                } else if self.ewm.is_emacs_frame(id) {
                     debug!("xdg_activation: ignored for Emacs frame {}", id);
                 } else {
-                    self.ewm.set_focus(id, true, "xdg_activation");
+                    self.ewm
+                        .activate_or_defer_surface(id, true, "xdg_activation");
                     info!("xdg_activation: granted for surface {}", id);
                 }
             } else {
@@ -7594,6 +7775,7 @@ impl State {
         crate::protocols::workspace::refresh::<State>(
             &mut self.ewm.workspace_state,
             self.ewm.frame_set.mapped_strips(),
+            &self.ewm.urgent_surfaces,
             &self.ewm.sorted_outputs,
         );
 
@@ -7674,6 +7856,12 @@ impl State {
             }
             ModuleCommand::FocusOutputDirection { dx, dy } => {
                 self.ewm.focus_output_direction(dx, dy);
+            }
+            ModuleCommand::RenameWorkspace {
+                frame_surface_id,
+                name,
+            } => {
+                self.ewm.rename_workspace(frame_surface_id, name);
             }
             ModuleCommand::FocusTarget { focus_id } => {
                 if self.ewm.lookup_entry(focus_id).is_some() {

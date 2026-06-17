@@ -30,6 +30,7 @@ fn frame_with_entry_at(
 ) -> Frame {
     Frame {
         name: String::new(),
+        workspace_name: None,
         surface_id: frame_id,
         focus_id: nz(frame_id + 1_000),
         width: 1280.0,

@@ -266,6 +266,8 @@ pub fn frame_focus_id_for(surface_id: u64) -> FocusId {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Frame {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
     pub surface_id: u64,
     pub focus_id: FocusId,
     pub width: f64,
@@ -281,6 +283,7 @@ impl Frame {
     pub fn new(surface_id: u64) -> Self {
         Self {
             name: String::new(),
+            workspace_name: None,
             surface_id,
             focus_id: frame_focus_id_for(surface_id),
             width: 0.0,
@@ -512,7 +515,11 @@ impl Strip {
                 .find(|frame| frame.surface_id == new_frame.surface_id)
             {
                 let preserved_anim = existing.move_anim.clone();
+                let preserved_workspace_name = existing.workspace_name.clone();
                 *existing = new_frame;
+                if existing.workspace_name.is_none() {
+                    existing.workspace_name = preserved_workspace_name;
+                }
                 existing.move_anim = preserved_anim;
             } else {
                 self.frames.push(new_frame);
@@ -685,6 +692,7 @@ mod tests {
                 .into_iter()
                 .map(|w| Frame {
                     name: String::new(),
+                    workspace_name: None,
                     surface_id: 0,
                     focus_id: std::num::NonZeroU64::MIN,
                     width: w,

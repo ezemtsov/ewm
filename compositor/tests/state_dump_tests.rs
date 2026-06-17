@@ -1,10 +1,12 @@
 //! Tests for the JSON shown by `ewm-show-state`.
 
 use std::collections::HashSet;
+use std::num::NonZeroU64;
 
 use ewm_core::cursor::CursorConfig;
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
+use ewm_core::LayoutEntry;
 use serde_json::{json, Value};
 
 const HEAD_A: &str = "HEAD-A";
@@ -13,6 +15,27 @@ const HEAD_B: &str = "HEAD-B";
 fn frame(surface_id: u64) -> Frame {
     let mut frame = Frame::new(surface_id);
     frame.width = 800.0;
+    frame
+}
+
+fn nz(value: u64) -> NonZeroU64 {
+    NonZeroU64::new(value).unwrap()
+}
+
+fn frame_with_surface_entry(frame_id: u64, entry_id: u64, surface_id: u64) -> Frame {
+    let mut frame = frame(frame_id);
+    let entry_id = nz(entry_id);
+    frame.entries.push(LayoutEntry::surface(
+        entry_id,
+        format!("surface-{surface_id}"),
+        surface_id,
+        0,
+        0,
+        800,
+        600,
+        false,
+    ));
+    frame.selected_entry_id = Some(entry_id);
     frame
 }
 
@@ -70,10 +93,21 @@ fn assert_workspace_protocol_matches_strips(state: &Value) {
 
             let workspace = workspace_for_surface(state, surface_id);
             assert_eq!(workspace["output"], output.as_str());
-            assert_eq!(workspace["id"], surface_id.to_string());
-            assert_eq!(workspace["name"], (idx + 1).to_string());
+            let expected_name = frame
+                .get("workspace_name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| (idx + 1).to_string());
+            let expected_id = frame
+                .get("workspace_name")
+                .and_then(Value::as_str)
+                .map(Value::from)
+                .unwrap_or(Value::Null);
+            assert_eq!(workspace["id"], expected_id);
+            assert_eq!(workspace["name"], json!(expected_name));
             assert_eq!(workspace["coordinates"], json!([0, idx as u32]));
             assert_eq!(workspace["active"], idx == active_idx);
+            assert_eq!(workspace["urgent"], false);
         }
     }
 }
@@ -104,6 +138,90 @@ fn ewm_state_reports_workspace_protocol_from_frame_strips() {
     assert_eq!(moved["output"], HEAD_B);
     assert_eq!(moved["coordinates"], json!([0, 0]));
     assert_eq!(moved["active"], true);
+}
+
+#[test]
+fn workspace_protocol_reports_renamed_workspace_and_preserves_name_across_layouts() {
+    let mut fix = Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+    fix.add_output(HEAD_B, 1600, 900);
+
+    fix.ewm()
+        .apply_output_layout(HEAD_A, vec![frame(100), frame(101)]);
+    assert!(fix
+        .ewm()
+        .rename_workspace(Some(101), "code".to_string()));
+    fix.dispatch();
+
+    let state = fix.debug_state();
+    let unnamed = workspace_for_surface(&state, 100);
+    let named = workspace_for_surface(&state, 101);
+    assert_eq!(unnamed["id"], Value::Null);
+    assert_eq!(unnamed["name"], "1");
+    assert_eq!(named["id"], "code");
+    assert_eq!(named["name"], "code");
+
+    assert!(!fix
+        .ewm()
+        .rename_workspace(Some(100), "CODE".to_string()));
+
+    fix.ewm()
+        .apply_output_layout(HEAD_A, vec![frame(100), frame(101)]);
+    fix.dispatch();
+
+    let state = fix.debug_state();
+    let named = workspace_for_surface(&state, 101);
+    assert_eq!(named["id"], "code");
+    assert_eq!(named["name"], "code");
+
+    fix.ewm().apply_output_layout(HEAD_B, vec![frame(101)]);
+    fix.dispatch();
+
+    let state = fix.debug_state();
+    let moved = workspace_for_surface(&state, 101);
+    assert_eq!(moved["output"], HEAD_B);
+    assert_eq!(moved["id"], "code");
+    assert_eq!(moved["name"], "code");
+
+    assert!(fix.ewm().rename_workspace(Some(101), "   ".to_string()));
+    fix.dispatch();
+
+    let state = fix.debug_state();
+    let cleared = workspace_for_surface(&state, 101);
+    assert_eq!(cleared["id"], Value::Null);
+    assert_eq!(cleared["name"], "1");
+}
+
+#[test]
+fn workspace_protocol_reports_urgent_workspace_from_surface_attention() {
+    let mut fix = Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+
+    fix.ewm().apply_output_layout(
+        HEAD_A,
+        vec![
+            frame_with_surface_entry(100, 1001, 200),
+            frame_with_surface_entry(101, 1002, 201),
+        ],
+    );
+    fix.ewm().set_focus_entry(nz(1002), "test", false);
+    fix.ewm().set_surface_urgent(200, true);
+    fix.dispatch();
+
+    let state = fix.debug_state();
+    let urgent = workspace_for_surface(&state, 100);
+    let inactive = workspace_for_surface(&state, 101);
+    assert_eq!(state["urgent_surfaces"], json!([200]));
+    assert_eq!(urgent["urgent"], true);
+    assert_eq!(inactive["urgent"], false);
+
+    fix.ewm().set_focus_entry(nz(1001), "test", false);
+    fix.dispatch();
+
+    let state = fix.debug_state();
+    let urgent = workspace_for_surface(&state, 100);
+    assert_eq!(state["urgent_surfaces"], json!([]));
+    assert_eq!(urgent["urgent"], false);
 }
 
 #[test]

@@ -4,13 +4,13 @@
 //! Each output maps to a workspace group, each frame maps to a workspace.
 //!
 //! Uses a pull/refresh model: `refresh()` runs every event-loop iteration,
-//! reads the full layout from `Ewm.frame_set`, diffs against protocol
-//! mirrors, and sends only changes. Clients always get current state because
-//! `refresh()` runs after bind.
+//! reads the full layout and urgent surface set from `Ewm`, diffs against
+//! protocol mirrors, and sends only changes. Clients always get current state
+//! because `refresh()` runs after bind.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::strip::Strip;
+use crate::strip::{Frame, Strip};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
@@ -27,7 +27,9 @@ const VERSION: u32 = 1;
 
 /// Workspace identity is the Emacs frame's xdg_toplevel surface id -- stable
 /// across reorders and cross-output moves, so external clients can track a
-/// workspace through its lifetime regardless of position.
+/// workspace through its lifetime regardless of position. The protocol id is
+/// separate: named workspaces use their name as id, unnamed workspaces do not
+/// send an id.
 type WorkspaceKey = u64;
 
 pub trait WorkspaceHandler {
@@ -87,8 +89,8 @@ struct WorkspaceData {
     /// cross-output move can be detected as a leave-from-old/enter-new on
     /// the same workspace handle.
     output: String,
-    /// Stable id sent in the protocol's `id` event (decimal surface_id).
-    id: String,
+    /// Protocol `id`: workspace name when named, unset for unnamed workspaces.
+    id: Option<String>,
     name: String,
     coordinates: [u32; 2],
     state: ext_workspace_handle_v1::State,
@@ -97,13 +99,20 @@ struct WorkspaceData {
 }
 
 impl WorkspaceData {
-    fn new(output: String, id: String, name: String, coordinates: [u32; 2], active: bool) -> Self {
+    fn new(
+        output: String,
+        id: Option<String>,
+        name: String,
+        coordinates: [u32; 2],
+        active: bool,
+        urgent: bool,
+    ) -> Self {
         Self {
             output,
             id,
             name,
             coordinates,
-            state: workspace_handle_state(active),
+            state: workspace_handle_state(active, urgent),
             instances: Vec::new(),
         }
     }
@@ -115,6 +124,7 @@ impl WorkspaceData {
             desired.name.clone(),
             desired.coordinates,
             desired.active,
+            desired.urgent,
         )
     }
 
@@ -138,7 +148,7 @@ impl WorkspaceData {
             changed = true;
         }
 
-        let desired_state = workspace_handle_state(desired.active);
+        let desired_state = workspace_handle_state(desired.active, desired.urgent);
         if self.state != desired_state {
             self.state = desired_state;
             for inst in &self.instances {
@@ -170,7 +180,9 @@ impl WorkspaceData {
         manager.workspace(&handle);
 
         handle.name(self.name.clone());
-        handle.id(self.id.clone());
+        if let Some(id) = &self.id {
+            handle.id(id.clone());
+        }
         handle.coordinates(coordinates_bytes(self.coordinates));
         handle.state(self.state);
         handle.capabilities(ext_workspace_handle_v1::WorkspaceCapabilities::Activate);
@@ -204,19 +216,21 @@ pub(crate) struct WorkspaceDebugState {
 struct WorkspaceDebugWorkspace {
     surface_id: u64,
     output: String,
-    id: String,
+    id: Option<String>,
     name: String,
     coordinates: [u32; 2],
     active: bool,
+    urgent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesiredWorkspace {
     output: String,
-    id: String,
+    id: Option<String>,
     name: String,
     coordinates: [u32; 2],
     active: bool,
+    urgent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +274,7 @@ impl WorkspaceManagerState {
                 name: ws.name.clone(),
                 coordinates: ws.coordinates,
                 active: ws.state.contains(ext_workspace_handle_v1::State::Active),
+                urgent: ws.state.contains(ext_workspace_handle_v1::State::Urgent),
             })
             .collect();
         workspaces.sort_by(|a, b| {
@@ -289,12 +304,22 @@ pub(crate) fn frame_display_name(index: usize) -> String {
     (index + 1).to_string()
 }
 
-fn workspace_handle_state(active: bool) -> ext_workspace_handle_v1::State {
+pub(crate) fn frame_workspace_name(frame: &Frame, index: usize) -> String {
+    frame
+        .workspace_name
+        .clone()
+        .unwrap_or_else(|| frame_display_name(index))
+}
+
+fn workspace_handle_state(active: bool, urgent: bool) -> ext_workspace_handle_v1::State {
+    let mut state = ext_workspace_handle_v1::State::empty();
     if active {
-        ext_workspace_handle_v1::State::Active
-    } else {
-        ext_workspace_handle_v1::State::empty()
+        state |= ext_workspace_handle_v1::State::Active;
     }
+    if urgent {
+        state |= ext_workspace_handle_v1::State::Urgent;
+    }
+    state
 }
 
 fn coordinates_bytes(coordinates: [u32; 2]) -> Vec<u8> {
@@ -303,6 +328,7 @@ fn coordinates_bytes(coordinates: [u32; 2]) -> Vec<u8> {
 
 fn desired_workspace_snapshot(
     output_strips: &HashMap<String, Strip>,
+    urgent_surfaces: &HashSet<u64>,
     sorted_outputs: &[Output],
 ) -> DesiredWorkspaceSnapshot {
     let mut groups = Vec::new();
@@ -317,15 +343,18 @@ fn desired_workspace_snapshot(
 
         for (idx, frame) in strip.frames.iter().enumerate() {
             let key = frame.surface_id;
+            let name = frame_workspace_name(frame, idx);
+            let id = frame.workspace_name.clone();
             if workspaces
                 .insert(
                     key,
                     DesiredWorkspace {
                         output: output_name.clone(),
-                        id: key.to_string(),
-                        name: frame_display_name(idx),
+                        id,
+                        name,
                         coordinates: [0, idx as u32],
                         active: idx == strip.active_idx(),
+                        urgent: frame_is_urgent(frame, urgent_surfaces),
                     },
                 )
                 .is_none()
@@ -342,6 +371,14 @@ fn desired_workspace_snapshot(
     }
 }
 
+fn frame_is_urgent(frame: &Frame, urgent_surfaces: &HashSet<u64>) -> bool {
+    frame
+        .entries
+        .iter()
+        .filter_map(|entry| entry.surface_id())
+        .any(|surface_id| urgent_surfaces.contains(&surface_id))
+}
+
 fn remove_stale_workspaces(
     workspace_state: &mut WorkspaceManagerState,
     desired: &DesiredWorkspaceSnapshot,
@@ -355,19 +392,22 @@ fn remove_stale_workspaces(
 
     let mut changed = false;
     for key in dead_ws_keys {
-        let Some(ws) = workspace_state.workspaces.remove(&key) else {
-            continue;
-        };
-        if let Some(group) = workspace_state.groups.get(&ws.output) {
-            send_workspace_leave(&group.instances, &ws.instances);
-        }
-        for inst in &ws.instances {
-            inst.removed();
-        }
-        changed = true;
+        changed |= remove_workspace(workspace_state, key);
     }
-
     changed
+}
+
+fn remove_workspace(workspace_state: &mut WorkspaceManagerState, key: WorkspaceKey) -> bool {
+    let Some(ws) = workspace_state.workspaces.remove(&key) else {
+        return false;
+    };
+    if let Some(group) = workspace_state.groups.get(&ws.output) {
+        send_workspace_leave(&group.instances, &ws.instances);
+    }
+    for inst in &ws.instances {
+        inst.removed();
+    }
+    true
 }
 
 fn remove_stale_groups(
@@ -528,6 +568,17 @@ where
     let mut changed = false;
 
     for (key, desired_workspace) in desired_workspaces_in_protocol_order(desired) {
+        if workspace_state
+            .workspaces
+            .get(&key)
+            .is_some_and(|workspace| workspace.id.as_deref() != desired_workspace.id.as_deref())
+        {
+            remove_workspace(workspace_state, key);
+            insert_workspace::<D>(workspace_state, key, desired_workspace);
+            changed = true;
+            continue;
+        }
+
         if let Some(workspace_changed) = sync_existing_workspace(
             &workspace_state.groups,
             &mut workspace_state.workspaces,
@@ -559,12 +610,13 @@ fn notify_managers_done(workspace_state: &WorkspaceManagerState) {
 pub fn refresh<D>(
     workspace_state: &mut WorkspaceManagerState,
     output_strips: &HashMap<String, Strip>,
+    urgent_surfaces: &HashSet<u64>,
     sorted_outputs: &[Output],
 ) where
     D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
     D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
 {
-    let desired = desired_workspace_snapshot(output_strips, sorted_outputs);
+    let desired = desired_workspace_snapshot(output_strips, urgent_surfaces, sorted_outputs);
 
     let mut changed = remove_stale_workspaces(workspace_state, &desired);
     changed |= remove_stale_groups(workspace_state, &desired);
@@ -909,7 +961,8 @@ mod tests {
                 outputs.reverse();
             }
 
-            let snapshot = desired_workspace_snapshot(&strips, &outputs);
+            let urgent_surfaces = HashSet::new();
+            let snapshot = desired_workspace_snapshot(&strips, &urgent_surfaces, &outputs);
             let expected_groups = outputs
                 .iter()
                 .map(Output::name)
@@ -949,7 +1002,7 @@ mod tests {
                     }
                     let ws = snapshot.workspaces.get(&key).expect("workspace exists");
                     prop_assert_eq!(ws.output.as_str(), output);
-                    prop_assert_eq!(ws.id.as_str(), key.to_string());
+                    prop_assert_eq!(ws.id.as_deref(), None);
                     prop_assert_eq!(ws.name.as_str(), (idx + 1).to_string());
                     prop_assert_eq!(ws.coordinates, [0, idx as u32]);
                     prop_assert_eq!(ws.active, idx == raw_active % len);

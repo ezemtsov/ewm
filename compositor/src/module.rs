@@ -501,6 +501,12 @@ pub enum ModuleCommand {
         dx: i32,
         dy: i32,
     },
+    /// Rename a workspace. If `frame_surface_id` is absent, the compositor's
+    /// currently focused frame is renamed.
+    RenameWorkspace {
+        frame_surface_id: Option<u64>,
+        name: String,
+    },
     /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
     FocusTarget {
         focus_id: std::num::NonZeroU64,
@@ -971,6 +977,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
 
         parsed_frames.push(Frame {
             name,
+            workspace_name: None,
             surface_id,
             focus_id,
             width,
@@ -1001,6 +1008,18 @@ fn focus_output_direction_module(dx: i64, dy: i64) -> Result<()> {
     push_command(ModuleCommand::FocusOutputDirection {
         dx: dx as i32,
         dy: dy as i32,
+    });
+    Ok(())
+}
+
+/// Rename FRAME-SURFACE-ID's workspace, or the focused workspace when nil.
+/// Empty names clear the workspace name.
+#[defun]
+fn workspace_rename_module(name: String, frame_surface_id: Option<i64>) -> Result<()> {
+    let frame_surface_id = frame_surface_id.and_then(|id| (id > 0).then_some(id as u64));
+    push_command(ModuleCommand::RenameWorkspace {
+        frame_surface_id,
+        name,
     });
     Ok(())
 }
