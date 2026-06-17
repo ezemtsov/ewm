@@ -272,10 +272,18 @@ pub struct Frame {
     pub focus_id: FocusId,
     pub width: f64,
     pub entries: Vec<LayoutEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fullscreen: Option<FullscreenEntry>,
     /// Selected entry's id (keyboard focus target when frame is focused).
     pub selected_entry_id: Option<LayoutEntryId>,
     #[serde(skip)]
     pub move_anim: Option<ViewAnimation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct FullscreenEntry {
+    pub entry_id: LayoutEntryId,
+    pub surface_id: u64,
 }
 
 impl Frame {
@@ -288,6 +296,7 @@ impl Frame {
             focus_id: frame_focus_id_for(surface_id),
             width: 0.0,
             entries: Vec::new(),
+            fullscreen: None,
             selected_entry_id: None,
             move_anim: None,
         }
@@ -295,6 +304,88 @@ impl Frame {
 
     pub fn move_offset(&self) -> f64 {
         self.move_anim.as_ref().map_or(0.0, ViewAnimation::value)
+    }
+
+    pub fn entry_surface_id(&self, entry_id: LayoutEntryId) -> Option<u64> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == entry_id)
+            .and_then(LayoutEntry::surface_id)
+    }
+
+    pub fn entry_fullscreen(&self, entry_id: LayoutEntryId) -> bool {
+        self.fullscreen
+            .is_some_and(|fullscreen| fullscreen.entry_id == entry_id)
+    }
+
+    pub fn surface_fullscreen(&self, surface_id: u64) -> bool {
+        self.fullscreen
+            .is_some_and(|fullscreen| fullscreen.surface_id == surface_id)
+    }
+
+    pub fn set_fullscreen_entry(
+        &mut self,
+        entry_id: LayoutEntryId,
+    ) -> Option<(Option<FullscreenEntry>, FullscreenEntry)> {
+        let surface_id = self.entry_surface_id(entry_id)?;
+        let next = FullscreenEntry {
+            entry_id,
+            surface_id,
+        };
+        if self.fullscreen == Some(next) {
+            return Some((None, next));
+        }
+        let previous = self.fullscreen.replace(next);
+        Some((previous, next))
+    }
+
+    pub fn clear_fullscreen(&mut self) -> Option<FullscreenEntry> {
+        self.fullscreen.take()
+    }
+
+    pub fn clear_fullscreen_entry(&mut self, entry_id: LayoutEntryId) -> Option<FullscreenEntry> {
+        if self.entry_fullscreen(entry_id) {
+            self.fullscreen.take()
+        } else {
+            None
+        }
+    }
+
+    pub fn clear_fullscreen_for_surface(&mut self, surface_id: u64) -> Option<FullscreenEntry> {
+        if self.surface_fullscreen(surface_id) {
+            self.fullscreen.take()
+        } else {
+            None
+        }
+    }
+
+    pub fn validate_fullscreen(&mut self) -> Option<FullscreenEntry> {
+        let fullscreen = self.fullscreen?;
+        if self.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id) {
+            None
+        } else {
+            self.fullscreen.take()
+        }
+    }
+
+    pub fn preserve_compositor_view_state_from(&mut self, previous: &Frame) {
+        self.fullscreen = previous.fullscreen.filter(|fullscreen| {
+            self.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id)
+        });
+    }
+
+    pub fn clear_compositor_view_state(&mut self) {
+        self.fullscreen = None;
+    }
+
+    pub fn retain_entries(&mut self, mut keep: impl FnMut(&LayoutEntry) -> bool) {
+        self.entries.retain(|entry| keep(entry));
+        self.validate_fullscreen();
+        if let Some(selected) = self.selected_entry_id {
+            if !self.entries.iter().any(|entry| entry.id == selected) {
+                self.selected_entry_id = None;
+            }
+        }
     }
 }
 
@@ -508,7 +599,7 @@ impl Strip {
             .map(|(idx, frame)| (frame.surface_id, idx))
             .collect();
 
-        for new_frame in frames {
+        for mut new_frame in frames {
             if let Some(existing) = self
                 .frames
                 .iter_mut()
@@ -516,6 +607,8 @@ impl Strip {
             {
                 let preserved_anim = existing.move_anim.clone();
                 let preserved_workspace_name = existing.workspace_name.clone();
+                new_frame.clear_compositor_view_state();
+                new_frame.preserve_compositor_view_state_from(existing);
                 *existing = new_frame;
                 if existing.workspace_name.is_none() {
                     existing.workspace_name = preserved_workspace_name;
@@ -530,6 +623,7 @@ impl Strip {
             if !order.contains_key(&frame.surface_id) {
                 frame.entries.clear();
                 frame.selected_entry_id = None;
+                frame.clear_compositor_view_state();
             }
         }
 
@@ -697,6 +791,7 @@ mod tests {
                     focus_id: std::num::NonZeroU64::MIN,
                     width: w,
                     entries: Vec::new(),
+                    fullscreen: None,
                     selected_entry_id: None,
                     move_anim: None,
                 })

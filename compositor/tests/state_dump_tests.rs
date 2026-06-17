@@ -33,7 +33,6 @@ fn frame_with_surface_entry(frame_id: u64, entry_id: u64, surface_id: u64) -> Fr
         0,
         800,
         600,
-        false,
     ));
     frame.selected_entry_id = Some(entry_id);
     frame

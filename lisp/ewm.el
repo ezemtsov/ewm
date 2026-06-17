@@ -45,6 +45,7 @@
 (declare-function ewm-prepare-frame-module "ewm-core")
 (declare-function ewm-prepare-frame-close-module "ewm-core")
 (declare-function ewm-workspace-rename-module "ewm-core")
+(declare-function ewm-toggle-fullscreen-module "ewm-core")
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-configure-cursor-module "ewm-core")
@@ -365,8 +366,6 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ("working_area" (ewm--handle-working-area event))
       ("selection-changed" (ewm--handle-selection-changed event))
       ("activate_workspace" (ewm--handle-activate-workspace event))
-      ("fullscreen_request" (ewm--handle-fullscreen-request event))
-      ("unfullscreen_request" (ewm--handle-unfullscreen-request event))
       ("maximize_request" (ewm--handle-maximize-request event))
       ("unmaximize_request" (ewm--handle-unmaximize-request event))
       ("idle_state_changed" (ewm--handle-idle-state-changed event))
@@ -675,35 +674,6 @@ Select the Nth Emacs frame on the requested output (1-based index)."
       (when target
         (select-frame-set-input-focus target)))))
 
-(defun ewm--set-fullscreen-windows (buf value)
-  "Set fullscreen window parameter to VALUE on all windows showing BUF."
-  (dolist (win (get-buffer-window-list buf nil t))
-    (set-window-parameter win 'ewm-fullscreen value)))
-
-(defun ewm--clear-other-fullscreens (keep-buffer)
-  "Clear `ewm-fullscreen' on other-buffer windows in frames that show KEEP-BUFFER."
-  (let ((frames (mapcar #'window-frame
-                        (get-buffer-window-list keep-buffer nil t))))
-    (dolist (win (window-list-1 nil 'nomini t))
-      (unless (eq (window-buffer win) keep-buffer)
-        (when (memq (window-frame win) frames)
-          (set-window-parameter win 'ewm-fullscreen nil))))))
-
-(defun ewm--handle-fullscreen-request (event)
-  "Mark EVENT's surface fullscreen and unfullscreen siblings in the same frame."
-  (ewm--with-surface-buffer-from-event event
-    (when (get-buffer-window (current-buffer) t)
-      (ewm--clear-other-fullscreens (current-buffer))
-      (ewm--set-fullscreen-windows (current-buffer) t)
-      (ewm-layout--refresh))))
-
-(defun ewm--handle-unfullscreen-request (event)
-  "Clear fullscreen flag on every window showing EVENT's surface and refresh."
-  (ewm--with-surface-buffer-from-event event
-    (when (get-buffer-window (current-buffer) t)
-      (ewm--set-fullscreen-windows (current-buffer) nil)
-      (ewm-layout--refresh))))
-
 ;;; Strip-visibility freeze/thaw
 ;;
 ;; The compositor emits frame_shown/frame_hidden when an emacs frame's
@@ -836,12 +806,10 @@ of inactivity.  Useful for video playback or presentations."
   (ewm--cycle-surface-buffer -1))
 
 (defun ewm-toggle-fullscreen ()
-  "Toggle fullscreen for the surface in the current window."
+  "Toggle fullscreen for the current layout view."
   (interactive)
-  (when ewm-surface-id
-    (set-window-parameter nil 'ewm-fullscreen
-                          (not (window-parameter nil 'ewm-fullscreen)))
-    (ewm-layout--refresh)))
+  (when-let* ((entry-id (window-parameter nil 'ewm-entry-id)))
+    (ewm-toggle-fullscreen-module entry-id)))
 
 (defun ewm-get-window-info (&optional id)
   "Return window info alist (id app title pid) for surface ID.
@@ -874,7 +842,7 @@ output, left-to-right.  Each frame plist has:
   :name NAME :surface-id ID :focus-id N :selected-entry-id N :width FLOAT
   :entries ENTRIES
 where ENTRIES is a vector of plists
-`:entry-id :name :x :y :w :h :fullscreen' with optional `:surface-id'.
+`:entry-id :name :x :y :w :h' with optional `:surface-id'.
 Entry coordinates are relative to the owning frame's working area."
   (ewm-output-layout-module output frames))
 

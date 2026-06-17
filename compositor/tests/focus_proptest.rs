@@ -55,7 +55,6 @@ struct FrameSpec {
 struct EntrySpec {
     surface_id: u64,
     entry_id: LayoutEntryId,
-    fullscreen: bool,
 }
 
 // Frame surface_ids / entry_ids live in a disjoint range from entry ids so
@@ -67,7 +66,6 @@ const MAX_ENTRIES_PER_LAYOUT: usize = 8;
 #[derive(Debug, Clone)]
 struct EntrySeed {
     surface_id: u64,
-    fullscreen: bool,
 }
 
 fn entry_entry_id_for(frame_surface_id: u64, entry_idx: usize) -> LayoutEntryId {
@@ -80,10 +78,7 @@ fn entry_view_strategy() -> impl Strategy<Value = LayoutEntryId> {
 }
 
 fn entry_strategy() -> impl Strategy<Value = EntrySeed> {
-    (ENTRY_SID_RANGE, any::<bool>()).prop_map(|(surface_id, fullscreen)| EntrySeed {
-        surface_id,
-        fullscreen,
-    })
+    ENTRY_SID_RANGE.prop_map(|surface_id| EntrySeed { surface_id })
 }
 
 /// Generates layouts satisfying the Emacs side's invariants:
@@ -113,7 +108,6 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
                         .map(|(entry_idx, entry)| EntrySpec {
                             surface_id: entry.surface_id,
                             entry_id: entry_entry_id_for(frame_surface_id, entry_idx),
-                            fullscreen: entry.fullscreen,
                         })
                         .collect();
                     let selected_entry_id = if has_sel_flags[i] {
@@ -168,10 +162,10 @@ fn to_frame(spec: &FrameSpec) -> Frame {
                     0,
                     100,
                     100,
-                    e.fullscreen,
                 )
             })
             .collect(),
+        fullscreen: None,
         selected_entry_id: spec.selected_entry_id,
         move_anim: None,
     }
@@ -185,7 +179,6 @@ fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> 
         entries: vec![EntrySpec {
             surface_id,
             entry_id,
-            fullscreen: false,
         }],
     })
 }

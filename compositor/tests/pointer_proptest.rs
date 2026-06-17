@@ -9,11 +9,11 @@
 //!       `output_strips[output].surface_entries()`.
 //!
 //! L2  - View origin formula. `surface_view_origins(S)` lists exactly one
-//!       origin per layout entry of `S`, computed per-view from each entry's
-//!       own `fullscreen` flag: effective-fullscreen primary entries land at
-//!       the output origin offset by `fullscreen_center_offset`, effective-
-//!       fullscreen non-primaries pin to `output_geo.loc`, and non-fullscreen
-//!       entries use `output_geo.loc + working_area.loc + frame_dx + entry.{x,y}`.
+//!       origin per layout entry of `S`, computed from the frame-owned
+//!       fullscreen selection: fullscreen primary entries land at the output
+//!       origin offset by `fullscreen_center_offset`, fullscreen non-primaries
+//!       pin to `output_geo.loc`, and non-fullscreen entries use
+//!       `output_geo.loc + working_area.loc + frame_dx + entry.{x,y}`.
 //!
 //! L3  - Pointer focus matches hit-test. After every `WarpPointer(p)` op
 //!       outside a pointer grab, `ewm.pointer_focus.map(|(s, _)| s)` equals
@@ -47,7 +47,7 @@
 //! C1  - Configure tracks primary. If the toplevel has a primary entry,
 //!       the most recent `xdg_toplevel.configure` the client received
 //!       carries `(width, height)` equal to that entry's output size when
-//!       the entry is `fullscreen=true`, else `(entry.w, entry.h)`.
+//!       its frame selects it fullscreen, else `(entry.w, entry.h)`.
 //!
 //! C2  - Output-membership parity. The set of output names the client
 //!       believes the toplevel is on (running `wl_surface.enter` minus
@@ -61,10 +61,9 @@
 //!       the frame's screen position. Inactive-frame fullscreens render
 //!       off-screen so they don't capture hits.
 //!
-//! N4  - One fullscreen per frame. After every layout, no frame within a
-//!       strip has more than one entry with `fullscreen=true`; the
-//!       compositor normalizes multi-fullscreen frames down. Different
-//!       frames in the same strip can each be fullscreen independently.
+//! N4  - One fullscreen per frame. After every layout, a frame has at most
+//!       one fullscreen selection, and that selection points to a live
+//!       `(entry_id, surface_id)` view in the same frame.
 //!
 //! F1  - FFM sees plain entries. A pointer move inside an Emacs frame whose
 //!       layout entries have no attached Wayland surfaces still resolves the
@@ -138,8 +137,7 @@ fn server_hit_key(ewm: &ewm_core::Ewm, hit: Option<&ServerWlSurface>) -> Option<
 enum Op {
     AddOutput(usize),
     RemoveOutput(usize),
-    /// Each bit `i` of `fullscreen_mask` corresponds to view `i`; the strategy
-    /// can flag any subset across frames.
+    /// Each set bit requests compositor-owned fullscreen for the corresponding view.
     ApplyLayout {
         output: usize,
         n_views: usize,
@@ -380,13 +378,20 @@ fn apply_op(h: &mut Harness, op: &Op) {
                         0,
                         VIEW_W as u32,
                         VIEW_H as u32,
-                        (fullscreen_mask >> i) & 1 == 1,
                     )],
+                    fullscreen: None,
                     selected_entry_id: Some(nz(1 + i as u64)),
                     move_anim: None,
                 })
                 .collect();
             h.fix.ewm().apply_output_layout(name, frames);
+            for i in 0..n_views {
+                if fullscreen_mask & (1 << i) != 0 {
+                    h.fix
+                        .ewm()
+                        .set_layout_entry_fullscreen(nz(1 + i as u64), true);
+                }
+            }
         }
         Op::ApplyPlainLayout { output, n_entries } => {
             apply_plain_entry_layout(h, output, n_entries);
@@ -471,7 +476,6 @@ fn apply_multi_entry_layout(
                 (i as i32) * 10,
                 VIEW_W as u32,
                 VIEW_H as u32,
-                (fullscreen_mask >> i) & 1 == 1,
             )
         })
         .collect::<Vec<_>>();
@@ -485,10 +489,18 @@ fn apply_multi_entry_layout(
             focus_id: nz(20_000),
             width: VIEW_W as f64,
             entries,
+            fullscreen: None,
             selected_entry_id,
             move_anim: None,
         }],
     );
+    for i in 0..n_entries {
+        if fullscreen_mask & (1 << i) != 0 {
+            h.fix
+                .ewm()
+                .set_layout_entry_fullscreen(nz(10_000 + i as u64), true);
+        }
+    }
 }
 
 fn plain_entry_entry_id(i: usize) -> LayoutEntryId {
@@ -528,6 +540,7 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
             focus_id: nz(40_000),
             width: VIEW_W as f64,
             entries,
+            fullscreen: None,
             selected_entry_id: None,
             move_anim: None,
         }],
@@ -568,15 +581,25 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
         .mapped_strips()
         .iter()
         .flat_map(|(name, strip)| {
+            let active_idx = strip.active_idx();
             strip
-                .active_surface_entries()
-                .map(move |e| (name.clone(), e))
+                .frames
+                .get(active_idx)
+                .into_iter()
+                .flat_map(move |frame| {
+                    frame
+                        .entries
+                        .iter()
+                        .filter(|entry| entry.surface.is_some())
+                        .map(move |entry| (name.clone(), frame, entry))
+                })
         })
-        .find(|(_, e)| e.surface_id() == Some(h.sid) && e.primary());
-    let Some((out_name, entry)) = primary else {
+        .find(|(_, _, e)| e.surface_id() == Some(h.sid) && e.primary());
+    let Some((out_name, frame, entry)) = primary else {
         return Ok(());
     };
-    let expected = if entry.fullscreen() {
+    let entry_fullscreen = frame.entry_fullscreen(entry.id);
+    let expected = if entry_fullscreen {
         ewm.space
             .outputs()
             .find(|o| o.name() == out_name)
@@ -592,7 +615,7 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
             "C1: last toplevel configure was {:?}, expected {:?} (entry fullscreen={})",
             h.last_configure,
             expected,
-            entry.fullscreen(),
+            entry_fullscreen,
         );
     }
     Ok(())
@@ -628,10 +651,13 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
             if entry.surface_id() != Some(sid) {
                 continue;
             }
-            // Geometry follows entry.fullscreen alone, with no AND against
-            // the client's committed XDG state. Each view computes its origin
-            // from its own flag, independent of sibling views.
-            let origin = if entry.fullscreen() && entry.primary() {
+            let entry_fullscreen = strip
+                .frames
+                .get(frame_idx)
+                .is_some_and(|frame| frame.entry_fullscreen(entry.id));
+            // Geometry follows the frame-owned fullscreen selection, with no
+            // AND against the client's committed XDG state.
+            let origin = if entry_fullscreen && entry.primary() {
                 let window_size = ewm
                     .id_windows
                     .get(&entry.surface_id().expect("surface-backed entry"))
@@ -639,7 +665,7 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
                     .unwrap_or_default();
                 let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
                 Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy))
-            } else if entry.fullscreen() {
+            } else if entry_fullscreen {
                 Point::from((output_geo.loc.x, output_geo.loc.y))
             } else {
                 let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
@@ -877,9 +903,10 @@ fn visible_entry_rect(
     working_area: Rectangle<i32, Logical>,
     frame_dx: i32,
     in_active: bool,
+    fullscreen: bool,
     entry: &LayoutEntry,
 ) -> Option<Rectangle<i32, Logical>> {
-    if entry.fullscreen() {
+    if fullscreen {
         if !in_active {
             return None;
         }
@@ -936,9 +963,19 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
             }
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
             let in_active = frame_idx == active_idx;
-            let Some(rect) =
-                visible_entry_rect(ewm, output_geo, working_area, frame_dx, in_active, entry)
-            else {
+            let fullscreen = strip
+                .frames
+                .get(frame_idx)
+                .is_some_and(|frame| frame.entry_fullscreen(entry.id));
+            let Some(rect) = visible_entry_rect(
+                ewm,
+                output_geo,
+                working_area,
+                frame_dx,
+                in_active,
+                fullscreen,
+                entry,
+            ) else {
                 continue;
             };
             if rect.contains(p_int) {
@@ -955,11 +992,7 @@ fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     for (name, strip) in ewm.frame_set.mapped_strips() {
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
-            let count = frame
-                .entries
-                .iter()
-                .filter(|entry| entry.fullscreen())
-                .count();
+            let count = usize::from(frame.fullscreen.is_some());
             prop_assert!(
                 count <= 1,
                 "N4: strip {} frame {} has {} fullscreen entries, expected at most 1",
@@ -967,6 +1000,15 @@ fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
                 frame_idx,
                 count,
             );
+            if let Some(fullscreen) = frame.fullscreen {
+                prop_assert_eq!(
+                    frame.entry_surface_id(fullscreen.entry_id),
+                    Some(fullscreen.surface_id),
+                    "N4: strip {} frame {} fullscreen entry must identify a live surface view",
+                    name,
+                    frame_idx,
+                );
+            }
         }
     }
     Ok(())

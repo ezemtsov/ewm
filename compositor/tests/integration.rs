@@ -42,8 +42,8 @@ fn frame_with_entry_at(
             y,
             400,
             300,
-            false,
         )],
+        fullscreen: None,
         selected_entry_id: Some(entry_id),
         move_anim: None,
     }
@@ -54,6 +54,17 @@ fn pointer_focus_surface_id(fixture: &Fixture) -> Option<u64> {
     ewm.pointer_focus
         .as_ref()
         .and_then(|(surface, _)| ewm.surface_id(surface))
+}
+
+fn entry_fullscreen(fixture: &Fixture, output: &str, entry_id: LayoutEntryId) -> Option<bool> {
+    fixture
+        .ewm_ref()
+        .frame_set
+        .mapped_strip(output)?
+        .frames
+        .iter()
+        .find(|frame| frame.entries.iter().any(|entry| entry.id == entry_id))
+        .map(|frame| frame.entry_fullscreen(entry_id))
 }
 
 fn has_surface_enter(
@@ -419,11 +430,11 @@ fn disabling_output_migrates_entries_to_mapped_output() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
-    let mut disabled_frame = frame_with_entry(100, nz(1), 1);
-    disabled_frame.entries[0].set_fullscreen(true);
+    let disabled_frame = frame_with_entry(100, nz(1), 1);
     fixture
         .ewm()
         .apply_output_layout("Virtual-1", vec![disabled_frame]);
+    fixture.ewm().set_surface_fullscreen(1, true);
     fixture
         .ewm()
         .apply_output_layout("Virtual-2", vec![Frame::new(200)]);
@@ -484,18 +495,104 @@ fn disabling_output_reassigns_primary_entry_to_mapped_entry() {
 }
 
 #[test]
+fn layout_merge_preserves_fullscreen_for_same_surface_view() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+
+    let surface_id = 1;
+    let entry_id = nz(1);
+
+    fixture.ewm().apply_output_layout(
+        "Virtual-1",
+        vec![frame_with_entry(100, entry_id, surface_id)],
+    );
+    fixture.ewm().set_layout_entry_fullscreen(entry_id, true);
+    assert_eq!(
+        entry_fullscreen(&fixture, "Virtual-1", entry_id),
+        Some(true)
+    );
+
+    fixture.ewm().apply_output_layout(
+        "Virtual-1",
+        vec![frame_with_entry(100, entry_id, surface_id)],
+    );
+    assert_eq!(
+        entry_fullscreen(&fixture, "Virtual-1", entry_id),
+        Some(true)
+    );
+    assert!(fixture.ewm_ref().is_surface_fullscreen(surface_id));
+
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-1", vec![frame_with_entry(100, entry_id, 2)]);
+    assert_eq!(
+        entry_fullscreen(&fixture, "Virtual-1", entry_id),
+        Some(false)
+    );
+    assert!(!fixture.ewm_ref().is_surface_fullscreen(surface_id));
+}
+
+#[test]
+fn migrated_frame_preserves_fullscreen_for_same_surface_view() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.add_output("Virtual-2", 1280, 720);
+
+    let surface_id = 1;
+    let entry_id = nz(1);
+
+    fixture.ewm().apply_output_layout(
+        "Virtual-1",
+        vec![frame_with_entry(100, entry_id, surface_id)],
+    );
+    fixture.ewm().set_layout_entry_fullscreen(entry_id, true);
+    fixture.ewm().apply_output_layout(
+        "Virtual-2",
+        vec![frame_with_entry(100, entry_id, surface_id)],
+    );
+
+    assert_eq!(
+        entry_fullscreen(&fixture, "Virtual-2", entry_id),
+        Some(true)
+    );
+    assert!(fixture.ewm_ref().is_surface_fullscreen(surface_id));
+}
+
+#[test]
+fn surface_fullscreen_request_prefers_requested_output_view() {
+    let mut fixture = Fixture::new().expect("Failed to create fixture");
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.add_output("Virtual-2", 1280, 720);
+
+    let surface_id = 1;
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-1", vec![frame_with_entry(100, nz(1), surface_id)]);
+    fixture
+        .ewm()
+        .apply_output_layout("Virtual-2", vec![frame_with_entry(200, nz(2), surface_id)]);
+
+    fixture
+        .ewm()
+        .set_surface_fullscreen_on_output(surface_id, Some("Virtual-2"), true);
+
+    assert_eq!(entry_fullscreen(&fixture, "Virtual-1", nz(1)), Some(false));
+    assert_eq!(entry_fullscreen(&fixture, "Virtual-2", nz(2)), Some(true));
+}
+
+#[test]
 fn output_scale_change_reassigns_fullscreen_primary_entry() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1000, 1000);
     fixture.add_output("Virtual-2", 1000, 1000);
 
     let surface_id = 1;
-    let mut first = frame_with_entry(100, nz(1), surface_id);
-    first.entries[0].set_fullscreen(true);
-    let mut second = frame_with_entry(200, nz(2), surface_id);
-    second.entries[0].set_fullscreen(true);
+    let first = frame_with_entry(100, nz(1), surface_id);
+    let second = frame_with_entry(200, nz(2), surface_id);
     fixture.ewm().apply_output_layout("Virtual-1", vec![first]);
     fixture.ewm().apply_output_layout("Virtual-2", vec![second]);
+    fixture.ewm().set_layout_entry_fullscreen(nz(1), true);
+    fixture.ewm().set_layout_entry_fullscreen(nz(2), true);
 
     fixture.ewm().output_config.insert(
         "Virtual-1".to_string(),

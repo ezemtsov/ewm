@@ -473,6 +473,10 @@ pub enum ModuleCommand {
         output: String,
         frames: Vec<Frame>,
     },
+    /// Toggle compositor-owned fullscreen for a layout view.
+    ToggleFullscreen {
+        entry_id: crate::LayoutEntryId,
+    },
     /// Configure input devices (unified)
     ConfigureInput {
         configs: Vec<crate::input::InputConfigEntry>,
@@ -886,7 +890,7 @@ fn socket() -> Result<Option<String>> {
 ///   :name NAME :surface-id ID :focus-id N :selected-entry-id N|nil
 ///   :width FLOAT :entries [ENTRY ...]
 /// where each ENTRY is a plist `:entry-id :name :x :y :w :h` with optional
-/// `:surface-id :fullscreen`.
+/// `:surface-id`.
 /// Entry coordinates are relative to the owning frame's working area.
 #[defun]
 fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
@@ -963,14 +967,11 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
                 0
             };
 
-            let fullscreen_val = env.call(plist_get, (entry, kw_fullscreen))?;
-            let fullscreen = fullscreen_val.is_not_nil() && fullscreen_val != *kw_false;
-
             entries.push(if surface_id == 0 {
                 LayoutEntry::emacs_window(entry_id, name, x as i32, y as i32, w as u32, h as u32)
             } else {
                 LayoutEntry::surface(
-                    entry_id, name, surface_id, x as i32, y as i32, w as u32, h as u32, fullscreen,
+                    entry_id, name, surface_id, x as i32, y as i32, w as u32, h as u32,
                 )
             });
         }
@@ -982,6 +983,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             focus_id,
             width,
             entries,
+            fullscreen: None,
             selected_entry_id,
             move_anim: None,
         });
@@ -998,6 +1000,15 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
 #[defun]
 fn close_module(id: i64) -> Result<()> {
     push_command(ModuleCommand::Close { id: id as u64 });
+    Ok(())
+}
+
+/// Toggle compositor-owned fullscreen for ENTRY-ID.
+#[defun]
+fn toggle_fullscreen_module(entry_id: i64) -> Result<()> {
+    if let Some(entry_id) = std::num::NonZeroU64::new(entry_id.max(0) as u64) {
+        push_command(ModuleCommand::ToggleFullscreen { entry_id });
+    }
     Ok(())
 }
 

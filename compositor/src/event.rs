@@ -148,16 +148,6 @@ pub enum Event {
     /// Workspace activation requested (e.g. waybar click)
     #[serde(rename = "activate_workspace")]
     ActivateWorkspace { output: String, frame_index: usize },
-    /// Surface requests fullscreen mode
-    #[serde(rename = "fullscreen_request")]
-    FullscreenRequest {
-        id: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        output: Option<String>,
-    },
-    /// Surface requests to leave fullscreen mode
-    #[serde(rename = "unfullscreen_request")]
-    UnfullscreenRequest { id: u64 },
     /// Surface requests maximized mode
     #[serde(rename = "maximize_request")]
     MaximizeRequest { id: u64 },

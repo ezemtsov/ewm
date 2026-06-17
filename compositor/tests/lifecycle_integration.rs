@@ -38,8 +38,8 @@ fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> 
             0,
             400,
             300,
-            false,
         )],
+        fullscreen: None,
         selected_entry_id: Some(entry_id),
         move_anim: None,
     }

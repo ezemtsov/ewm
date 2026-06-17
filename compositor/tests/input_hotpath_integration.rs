@@ -60,7 +60,7 @@ fn frame_with_entry(
     frame_id: u64,
     entry_id: LayoutEntryId,
     surface_id: u64,
-    fullscreen: bool,
+    _fullscreen: bool,
 ) -> Frame {
     Frame {
         name: String::new(),
@@ -76,8 +76,8 @@ fn frame_with_entry(
             0,
             400,
             300,
-            fullscreen,
         )],
+        fullscreen: None,
         selected_entry_id: Some(entry_id),
         move_anim: None,
     }
@@ -186,6 +186,9 @@ impl Harness {
         }
 
         self.fix.apply_output_layout_command(HEAD, vec![frame]);
+        self.fix
+            .ewm()
+            .set_surface_fullscreen(self.app_id, matches!(mode, FocusMode::FullscreenApp));
         match mode {
             FocusMode::EmbeddedApp | FocusMode::FullscreenApp => {
                 self.fix

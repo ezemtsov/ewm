@@ -129,17 +129,14 @@ compositor parks keyboard focus on the frame chrome."
 
 (defun ewm-layout--make-output-entry (window)
   "Create an entry geometry plist for WINDOW with frame-relative coordinates.
-Returns (:x X :y Y :w W :h H :fullscreen FS).  Coordinates are relative
-to the output's working area; compositor adds output geometry + working
-area offset."
+Returns (:x X :y Y :w W :h H).  Coordinates are relative to the output's
+working area; compositor adds output geometry + working area offset."
   (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
          (x (pop edges))
          (y (pop edges))
          (width (- (pop edges) x))
-         (height (- (pop edges) y))
-         (fullscreen (window-parameter window 'ewm-fullscreen)))
-    `(:x ,x :y ,y :w ,width :h ,height
-         :fullscreen ,(if fullscreen t :false))))
+         (height (- (pop edges) y)))
+    `(:x ,x :y ,y :w ,width :h ,height)))
 
 (defun ewm--window-config-change ()
   "Hook called when window configuration changes."
