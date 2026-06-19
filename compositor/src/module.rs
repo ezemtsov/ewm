@@ -106,6 +106,7 @@ define_errors! {
 }
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
@@ -124,6 +125,18 @@ use crate::{EmulatedKey, InterceptDispatch, InterceptedKey, LayoutEntry};
 fn value_as_f64(val: Value<'_>) -> Result<f64> {
     val.into_rust::<f64>()
         .or_else(|_| val.into_rust::<i64>().map(|i| i as f64))
+}
+
+fn nonzero_u64_from_i64(id: i64) -> Option<NonZeroU64> {
+    u64::try_from(id).ok().and_then(NonZeroU64::new)
+}
+
+fn optional_nonzero_u64(val: Value<'_>) -> Result<Option<NonZeroU64>> {
+    if val.is_not_nil() {
+        Ok(nonzero_u64_from_i64(val.into_rust::<i64>()?))
+    } else {
+        Ok(None)
+    }
 }
 
 fn parse_optional_input_enum<T>(
@@ -910,11 +923,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             .into_rust::<i64>()
             .unwrap_or(0) as u64;
 
-        let focus_id = match std::num::NonZeroU64::new(
-            env.call(plist_get, (frame, kw_focus_id))?
-                .into_rust::<i64>()
-                .unwrap_or(0) as u64,
-        ) {
+        let focus_id = match optional_nonzero_u64(env.call(plist_get, (frame, kw_focus_id))?)? {
             Some(v) => v,
             None => {
                 tracing::warn!("frame {} layout dropped: missing focus_id", surface_id);
@@ -924,11 +933,8 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
 
         let width = value_as_f64(env.call(plist_get, (frame, kw_width))?).unwrap_or(0.0);
 
-        let selected_entry_id = std::num::NonZeroU64::new(
-            env.call(plist_get, (frame, kw_selected_entry_id))?
-                .into_rust::<i64>()
-                .unwrap_or(0) as u64,
-        );
+        let selected_entry_id =
+            optional_nonzero_u64(env.call(plist_get, (frame, kw_selected_entry_id))?)?;
 
         let entries_val = env.call(plist_get, (frame, kw_entries))?;
         let entries_len: i64 = if entries_val.is_not_nil() {
@@ -945,11 +951,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
                 .into_rust()
                 .unwrap_or_default();
 
-            let entry_id = match std::num::NonZeroU64::new(
-                env.call(plist_get, (entry, kw_entry_id))?
-                    .into_rust::<i64>()
-                    .unwrap_or(0) as u64,
-            ) {
+            let entry_id = match optional_nonzero_u64(env.call(plist_get, (entry, kw_entry_id))?)? {
                 Some(v) => v,
                 None => {
                     tracing::warn!("layout entry dropped: missing entry_id");
@@ -1660,7 +1662,14 @@ fn list_xdg_apps<'a>(env: &'a Env) -> Result<Value<'a>> {
 
 #[cfg(test)]
 mod tests {
-    use super::KeyboardCaptureState;
+    use super::{nonzero_u64_from_i64, KeyboardCaptureState};
+
+    #[test]
+    fn nonzero_u64_from_i64_rejects_zero_and_negative_values() {
+        assert_eq!(nonzero_u64_from_i64(-1), None);
+        assert_eq!(nonzero_u64_from_i64(0), None);
+        assert_eq!(nonzero_u64_from_i64(42).map(|id| id.get()), Some(42));
+    }
 
     #[test]
     fn stale_keyboard_capture_end_keeps_newer_lease() {
