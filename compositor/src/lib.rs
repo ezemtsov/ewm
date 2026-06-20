@@ -901,6 +901,11 @@ pub struct Ewm {
     /// ext-workspace urgency is derived from this set and the frame layout.
     /// Focus clears the bit, matching the per-window urgency model.
     pub urgent_surfaces: HashSet<u64>,
+    /// Emacs frame workspaces explicitly marked as requiring attention.
+    ///
+    /// This covers terminal/editor activity inside an Emacs frame, where no
+    /// child Wayland surface exists for `urgent_surfaces` to track.
+    pub urgent_workspaces: HashSet<u64>,
     /// Valid activation requests that arrived before the surface was attached
     /// to an Emacs frame.  Drained after layout refresh makes them focusable.
     pending_activation_surfaces: HashSet<u64>,
@@ -1445,6 +1450,7 @@ impl Ewm {
             surface_open_anims: HashMap::new(),
             unmapped_surfaces: HashSet::new(),
             urgent_surfaces: HashSet::new(),
+            urgent_workspaces: HashSet::new(),
             pending_activation_surfaces: HashSet::new(),
             output_size: Size::from((0, 0)),
             sorted_outputs: Vec::new(),
@@ -1989,11 +1995,26 @@ impl Ewm {
         }
     }
 
-    fn clear_focused_surface_urgency(&mut self) {
+    fn clear_focused_urgency(&mut self) {
         let focused = self.focused_surface_id();
         if focused != 0 {
             self.set_surface_urgent(focused, false);
         }
+        if self.focused_frame_id != 0 {
+            self.urgent_workspaces.remove(&self.focused_frame_id);
+        }
+    }
+
+    pub fn mark_workspace_urgent(&mut self, frame_surface_id: Option<u64>) -> bool {
+        let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id);
+        if frame_surface_id == 0 || !self.is_emacs_frame(frame_surface_id) {
+            return false;
+        }
+        if self.focused_frame_id == frame_surface_id {
+            return false;
+        }
+
+        self.urgent_workspaces.insert(frame_surface_id)
     }
 
     fn set_focus_state(&mut self, frame_id: u64, entry_id: Option<LayoutEntryId>) {
@@ -2045,7 +2066,7 @@ impl Ewm {
             self.flush_pending_title_event(surface_id);
         }
         self.set_focus_state(location.frame_surface_id, Some(entry_id));
-        self.clear_focused_surface_urgency();
+        self.clear_focused_urgency();
         self.activate_frame(&location.output, location.frame_idx);
         if notify_emacs {
             self.queue_event(Event::Focus {
@@ -2076,7 +2097,7 @@ impl Ewm {
             self.flush_pending_title_event(surface_id);
         }
         self.set_focus_state(frame_surface_id, selected_entry_id);
-        self.clear_focused_surface_urgency();
+        self.clear_focused_urgency();
         self.activate_frame(&output, idx);
         if notify_emacs {
             self.queue_event(Event::Focus {
@@ -3246,7 +3267,7 @@ impl Ewm {
 
         if let Some(new_entry) = focus_entry_update {
             self.set_focus_state(frame_id, new_entry);
-            self.clear_focused_surface_urgency();
+            self.clear_focused_urgency();
             module::record_focus(self.focused_surface_id(), "layout_selected", None);
         }
     }
@@ -5940,6 +5961,8 @@ impl Ewm {
         id_window_keys.sort_unstable();
         let mut urgent_surfaces: Vec<u64> = self.urgent_surfaces.iter().copied().collect();
         urgent_surfaces.sort_unstable();
+        let mut urgent_workspaces: Vec<u64> = self.urgent_workspaces.iter().copied().collect();
+        urgent_workspaces.sort_unstable();
         let emacs_surfaces: HashMap<u64, String> = self
             .frame_set
             .all_strips()
@@ -5976,6 +5999,7 @@ impl Ewm {
             "focused_entry_id": self.focused_entry_id,
             "id_windows": id_window_keys,
             "urgent_surfaces": urgent_surfaces,
+            "urgent_workspaces": urgent_workspaces,
             "outputs": output_infos,
             "working_areas": self.get_working_areas_info(),
             "layer_surfaces": self.get_layer_surfaces_info(),
@@ -6323,6 +6347,7 @@ impl Ewm {
             self.window_ids.remove(&window);
         }
         self.urgent_surfaces.remove(&id);
+        self.urgent_workspaces.remove(&id);
         self.pending_activation_surfaces.remove(&id);
         self.flush_pending_title_event(id);
         self.surface_info.remove(&id);
@@ -7938,6 +7963,7 @@ impl State {
             &mut self.ewm.workspace_state,
             self.ewm.frame_set.mapped_strips(),
             &self.ewm.urgent_surfaces,
+            &self.ewm.urgent_workspaces,
             &self.ewm.sorted_outputs,
         );
 
@@ -8024,6 +8050,9 @@ impl State {
                 name,
             } => {
                 self.ewm.rename_workspace(frame_surface_id, name);
+            }
+            ModuleCommand::MarkWorkspaceUrgent { frame_surface_id } => {
+                self.ewm.mark_workspace_urgent(frame_surface_id);
             }
             ModuleCommand::FocusTarget { focus_id } => {
                 if self.ewm.lookup_entry(focus_id).is_some() {

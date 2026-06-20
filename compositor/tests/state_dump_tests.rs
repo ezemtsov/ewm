@@ -224,6 +224,34 @@ fn workspace_protocol_reports_urgent_workspace_from_surface_attention() {
 }
 
 #[test]
+fn workspace_protocol_reports_urgent_workspace_from_explicit_mark() {
+    let mut fix = Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+
+    fix.ewm()
+        .apply_output_layout(HEAD_A, vec![frame(100), frame(101)]);
+    fix.ewm().set_focus_frame(100, "test", false);
+    assert!(fix.ewm().mark_workspace_urgent(Some(101)));
+    assert!(!fix.ewm().mark_workspace_urgent(Some(100)));
+    fix.dispatch();
+
+    let state = fix.debug_state();
+    let focused = workspace_for_surface(&state, 100);
+    let urgent = workspace_for_surface(&state, 101);
+    assert_eq!(state["urgent_workspaces"], json!([101]));
+    assert_eq!(focused["urgent"], false);
+    assert_eq!(urgent["urgent"], true);
+
+    fix.ewm().set_focus_frame(101, "test", false);
+    fix.dispatch();
+
+    let state = fix.debug_state();
+    let urgent = workspace_for_surface(&state, 101);
+    assert_eq!(state["urgent_workspaces"], json!([]));
+    assert_eq!(urgent["urgent"], false);
+}
+
+#[test]
 fn ewm_state_reports_explicit_cursor_config() {
     let fix =
         Fixture::new_with_cursor_config(CursorConfig::new("ConfiguredCursorTheme", 37)).unwrap();

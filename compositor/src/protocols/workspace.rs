@@ -4,7 +4,7 @@
 //! Each output maps to a workspace group, each frame maps to a workspace.
 //!
 //! Uses a pull/refresh model: `refresh()` runs every event-loop iteration,
-//! reads the full layout and urgent surface set from `Ewm`, diffs against
+//! reads the full layout and urgent state from `Ewm`, diffs against
 //! protocol mirrors, and sends only changes. Clients always get current state
 //! because `refresh()` runs after bind.
 
@@ -329,6 +329,7 @@ fn coordinates_bytes(coordinates: [u32; 2]) -> Vec<u8> {
 fn desired_workspace_snapshot(
     output_strips: &HashMap<String, Strip>,
     urgent_surfaces: &HashSet<u64>,
+    urgent_workspaces: &HashSet<u64>,
     sorted_outputs: &[Output],
 ) -> DesiredWorkspaceSnapshot {
     let mut groups = Vec::new();
@@ -354,7 +355,7 @@ fn desired_workspace_snapshot(
                         name,
                         coordinates: [0, idx as u32],
                         active: idx == strip.active_idx(),
-                        urgent: frame_is_urgent(frame, urgent_surfaces),
+                        urgent: frame_is_urgent(frame, urgent_surfaces, urgent_workspaces),
                     },
                 )
                 .is_none()
@@ -371,12 +372,17 @@ fn desired_workspace_snapshot(
     }
 }
 
-fn frame_is_urgent(frame: &Frame, urgent_surfaces: &HashSet<u64>) -> bool {
-    frame
-        .entries
-        .iter()
-        .filter_map(|entry| entry.surface_id())
-        .any(|surface_id| urgent_surfaces.contains(&surface_id))
+fn frame_is_urgent(
+    frame: &Frame,
+    urgent_surfaces: &HashSet<u64>,
+    urgent_workspaces: &HashSet<u64>,
+) -> bool {
+    urgent_workspaces.contains(&frame.surface_id)
+        || frame
+            .entries
+            .iter()
+            .filter_map(|entry| entry.surface_id())
+            .any(|surface_id| urgent_surfaces.contains(&surface_id))
 }
 
 fn remove_stale_workspaces(
@@ -611,12 +617,18 @@ pub fn refresh<D>(
     workspace_state: &mut WorkspaceManagerState,
     output_strips: &HashMap<String, Strip>,
     urgent_surfaces: &HashSet<u64>,
+    urgent_workspaces: &HashSet<u64>,
     sorted_outputs: &[Output],
 ) where
     D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
     D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
 {
-    let desired = desired_workspace_snapshot(output_strips, urgent_surfaces, sorted_outputs);
+    let desired = desired_workspace_snapshot(
+        output_strips,
+        urgent_surfaces,
+        urgent_workspaces,
+        sorted_outputs,
+    );
 
     let mut changed = remove_stale_workspaces(workspace_state, &desired);
     changed |= remove_stale_groups(workspace_state, &desired);
@@ -935,6 +947,22 @@ mod tests {
         )
     }
 
+    #[test]
+    fn desired_snapshot_marks_explicit_workspace_urgent() {
+        let mut strips = HashMap::new();
+        strips.insert(HEAD_A.to_string(), strip_with_ids(100, 3, 0));
+
+        let outputs = vec![output(HEAD_A)];
+        let urgent_surfaces = HashSet::new();
+        let urgent_workspaces = HashSet::from([101]);
+        let snapshot =
+            desired_workspace_snapshot(&strips, &urgent_surfaces, &urgent_workspaces, &outputs);
+
+        assert!(!snapshot.workspaces.get(&100).unwrap().urgent);
+        assert!(snapshot.workspaces.get(&101).unwrap().urgent);
+        assert!(!snapshot.workspaces.get(&102).unwrap().urgent);
+    }
+
     proptest! {
         #[test]
         fn desired_snapshot_mirrors_sorted_live_outputs(
@@ -962,7 +990,9 @@ mod tests {
             }
 
             let urgent_surfaces = HashSet::new();
-            let snapshot = desired_workspace_snapshot(&strips, &urgent_surfaces, &outputs);
+            let urgent_workspaces = HashSet::new();
+            let snapshot =
+                desired_workspace_snapshot(&strips, &urgent_surfaces, &urgent_workspaces, &outputs);
             let expected_groups = outputs
                 .iter()
                 .map(Output::name)

@@ -524,6 +524,11 @@ pub enum ModuleCommand {
         frame_surface_id: Option<u64>,
         name: String,
     },
+    /// Mark a workspace as requiring attention. If `frame_surface_id` is absent,
+    /// the compositor's currently focused frame is used.
+    MarkWorkspaceUrgent {
+        frame_surface_id: Option<u64>,
+    },
     /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
     FocusTarget {
         focus_id: std::num::NonZeroU64,
@@ -1034,6 +1039,14 @@ fn workspace_rename_module(name: String, frame_surface_id: Option<i64>) -> Resul
         frame_surface_id,
         name,
     });
+    Ok(())
+}
+
+/// Mark FRAME-SURFACE-ID's workspace as urgent, or the focused workspace when nil.
+#[defun]
+fn workspace_mark_urgent_module(frame_surface_id: Option<i64>) -> Result<()> {
+    let frame_surface_id = frame_surface_id.and_then(|id| (id > 0).then_some(id as u64));
+    push_command(ModuleCommand::MarkWorkspaceUrgent { frame_surface_id });
     Ok(())
 }
 

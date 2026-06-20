@@ -45,6 +45,7 @@
 (declare-function ewm-prepare-frame-module "ewm-core")
 (declare-function ewm-prepare-frame-close-module "ewm-core")
 (declare-function ewm-workspace-rename-module "ewm-core")
+(declare-function ewm-workspace-mark-urgent-module "ewm-core")
 (declare-function ewm-toggle-fullscreen-module "ewm-core")
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
@@ -854,6 +855,17 @@ the workspace name."
   (let* ((frame (or frame (selected-frame)))
          (frame-id (frame-parameter frame 'ewm-surface-id)))
     (ewm-workspace-rename-module name frame-id)))
+
+(defun ewm-workspace-mark-urgent (&optional frame)
+  "Mark FRAME's workspace as urgent.
+When FRAME is nil, use the selected frame.  The compositor ignores
+the request when the workspace is already focused."
+  (interactive)
+  (let* ((frame (or frame (selected-frame)))
+         (frame-id (frame-parameter frame 'ewm-surface-id)))
+    (unless frame-id
+      (user-error "Frame has no EWM surface id"))
+    (ewm-workspace-mark-urgent-module frame-id)))
 
 (defun ewm-close (id)
   "Request surface ID to close gracefully."
