@@ -4720,6 +4720,7 @@ impl Ewm {
                 let output = self.find_surface_output(id);
                 let is_fullscreen = self.is_surface_fullscreen(id);
                 Some(WindowInfo {
+                    id,
                     surface,
                     title: if info.title.is_empty() {
                         None

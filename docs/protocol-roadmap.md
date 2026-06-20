@@ -16,7 +16,8 @@ This document outlines Wayland protocols to implement for broader application co
 | `linux-dmabuf` | Efficient buffer sharing |
 | `xdg-output` | Multi-monitor info |
 | `xdg-activation-v1` | Focus requests from apps |
-| `wlr-foreign-toplevel-v1` | Exposes windows to external tools |
+| `wlr-foreign-toplevel-manager-v1` | Allows external tools to manage windows |
+| `ext-foreign-toplevel-list-v1` | Allows external tools to list windows |
 | `ext-session-lock-v1` | Secure screen locking (swaylock) |
 | `ext-idle-notify-v1` | Idle detection (swayidle) |
 | `zwp-idle-inhibit-v1` | Idle inhibition (video players, games) |
@@ -162,7 +163,8 @@ session, position toplevel at pointer during drag, handle drop/cancel
 
 | Protocol | Test With | Status |
 |----------|-----------|--------|
-| foreign-toplevel | `wlrctl`, DankMaterialShell | Done |
+| wlr-foreign-toplevel-manager | `wlrctl`, DankMaterialShell | Done |
+| ext-foreign-toplevel-list | `lswt` | Done |
 | idle-notify | `swayidle` | Done |
 | session-lock | `swaylock` | Done |
 | activation | Launch apps from terminal | Done |
