@@ -15,10 +15,10 @@
 //!       pin to `output_geo.loc`, and non-fullscreen entries use
 //!       `output_geo.loc + working_area.loc + frame_dx + entry.{x,y}`.
 //!
-//! L3  - Pointer focus matches hit-test. After every `WarpPointer(p)` op
-//!       outside a pointer grab, `ewm.pointer_focus.map(|(s, _)| s)` equals
-//!       `ewm.surface_under_point(p).map(|(s, _)| s)`. During a grab,
-//!       `pointer_focus` stays pinned to the grab surface.
+//! L3  - Pointer focus matches hit-test. Outside a pointer grab,
+//!       `ewm.pointer_focus.map(|(s, _)| s)` equals
+//!       `ewm.surface_under_point(pointer_location).map(|(s, _)| s)`.
+//!       During a grab, `pointer_focus` stays pinned to the grab surface.
 //!
 //! P1  - Enter target. After every `WarpPointer(p)` op followed by a
 //!       roundtrip, the client's most recent enter/leave transition matches
@@ -43,6 +43,10 @@
 //!       `pressed` value iff `ewm.pointer_focus` at button time was on a
 //!       surface owned by this client. A release ending a grab may retarget
 //!       focus afterwards; delivery follows the focus at button time.
+//!
+//! P5  - Button release ending a grab refreshes immediately. Before the next
+//!       dispatch/roundtrip, if the button op leaves no active grab,
+//!       `pointer_focus` already matches the current hit-test target.
 //!
 //! C1  - Configure tracks primary. If the toplevel has a primary entry,
 //!       the most recent `xdg_toplevel.configure` the client received
@@ -147,7 +151,14 @@ enum Op {
         output: usize,
         n_entries: usize,
     },
+    ApplySplitClientLayout {
+        output: usize,
+    },
     WarpPointer {
+        x: i32,
+        y: i32,
+    },
+    ProgrammaticWarpPointer {
         x: i32,
         y: i32,
     },
@@ -185,7 +196,9 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         ),
         ((0..OUTPUTS.len()), 1usize..=4)
             .prop_map(|(output, n_entries)| { Op::ApplyPlainLayout { output, n_entries } }),
+        (0..OUTPUTS.len()).prop_map(|output| Op::ApplySplitClientLayout { output }),
         (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::WarpPointer { x, y }),
+        (-200i32..2200, -200i32..1300).prop_map(|(x, y)| Op::ProgrammaticWarpPointer { x, y }),
         any::<bool>().prop_map(|pressed| Op::PointerButton { pressed }),
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreatePopup { ax, ay }),
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreateFramePopup { ax, ay }),
@@ -215,6 +228,9 @@ struct Harness {
     /// `pointer_focus` when the last button was sent: the delivery target,
     /// even when the grab ends and focus retargets within the same op.
     pointer_focus_at_button: Option<SurfaceKey>,
+    pointer_focus_after_button: Option<SurfaceKey>,
+    pointer_hit_after_button: Option<SurfaceKey>,
+    pointer_grabbed_after_button: bool,
 }
 
 impl Harness {
@@ -249,6 +265,9 @@ impl Harness {
             pointer_entry_id_before_warp: None,
             pointer_surface_id_before_warp: None,
             pointer_focus_at_button: None,
+            pointer_focus_after_button: None,
+            pointer_hit_after_button: None,
+            pointer_grabbed_after_button: false,
         };
         // Drain setup events into the harness so the first op starts clean.
         let setup_events = h.client.drain_events();
@@ -396,6 +415,9 @@ fn apply_op(h: &mut Harness, op: &Op) {
         Op::ApplyPlainLayout { output, n_entries } => {
             apply_plain_entry_layout(h, output, n_entries);
         }
+        Op::ApplySplitClientLayout { output } => {
+            apply_split_client_layout(h, output);
+        }
         Op::SetClientFullscreen { on } => {
             if on {
                 h.toplevel.xdg_toplevel.set_fullscreen(None);
@@ -419,6 +441,19 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.pointer_surface_id_before_warp = surface_id;
             h.fix.pointer_motion_to(x as f64, y as f64);
         }
+        Op::ProgrammaticWarpPointer { x, y } => {
+            let (entry_id, surface_id) = {
+                let ewm = h.fix.ewm_ref();
+                let surface_id = ewm
+                    .pointer_focus
+                    .as_ref()
+                    .and_then(|(surface, _)| ewm.surface_id(surface));
+                (ewm.pointer_entry_id, surface_id)
+            };
+            h.pointer_entry_id_before_warp = entry_id;
+            h.pointer_surface_id_before_warp = surface_id;
+            h.fix.warp_pointer(x as f64, y as f64);
+        }
         Op::PointerButton { pressed } => {
             h.pointer_focus_at_button = {
                 let ewm = h.fix.ewm_ref();
@@ -427,6 +462,19 @@ fn apply_op(h: &mut Harness, op: &Op) {
                     .and_then(|(s, _)| server_surface_key(ewm, s))
             };
             h.fix.pointer_button(BTN_LEFT, pressed);
+            let (focus, hit, grabbed) = {
+                let ewm = h.fix.ewm_ref();
+                let p = Point::from(ewm.pointer_location());
+                let focus = ewm
+                    .pointer_focus
+                    .as_ref()
+                    .and_then(|(s, _)| server_surface_key(ewm, s));
+                let hit = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
+                (focus, hit, ewm.pointer.is_grabbed())
+            };
+            h.pointer_focus_after_button = focus;
+            h.pointer_hit_after_button = hit;
+            h.pointer_grabbed_after_button = grabbed;
         }
         Op::CreatePopup { ax, ay } => {
             // Skip when the parent isn't placed; unconstrain would zero-clamp.
@@ -546,6 +594,38 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
         }],
     );
     settle_strip_animations(h);
+}
+
+fn apply_split_client_layout(h: &mut Harness, output: usize) {
+    let name = OUTPUTS[output].0;
+    if !h.fix.has_output(name) {
+        return;
+    }
+    h.fix.ewm().apply_output_layout(
+        name,
+        vec![Frame {
+            name: String::new(),
+            workspace_name: None,
+            surface_id: h.frame_sid,
+            focus_id: nz(50_000),
+            width: (VIEW_W * 2) as f64,
+            entries: vec![
+                LayoutEntry::surface(nz(50_001), "first".to_string(), h.sid, 0, 0, 400, 400),
+                LayoutEntry::surface(
+                    nz(50_002),
+                    "second".to_string(),
+                    h.frame_sid,
+                    500,
+                    0,
+                    400,
+                    400,
+                ),
+            ],
+            fullscreen: None,
+            selected_entry_id: Some(nz(50_001)),
+            move_anim: None,
+        }],
+    );
 }
 
 fn settle_strip_animations(h: &mut Harness) {
@@ -710,6 +790,11 @@ fn check_l3(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+fn check_l3_current(h: &Harness) -> Result<(), TestCaseError> {
+    let p = Point::from(h.fix.ewm_ref().pointer_location());
+    check_l3(h, p)
+}
+
 fn rect_contains_f64(rect: Rectangle<i32, Logical>, p: Point<f64, Logical>) -> bool {
     p.x >= rect.loc.x as f64
         && p.y >= rect.loc.y as f64
@@ -819,7 +904,9 @@ fn check_p1(
         return Ok(());
     }
 
-    let expected = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
+    let hit = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
+    let ours = h.our_surface_keys();
+    let expected = hit.filter(|id| ours.contains(id));
     // The net focus target is the most recent Enter/Leave transition. A warp
     // under focus-follows-mouse can deliver motion to the pre-FFM layout
     // (Enter), then retarget the active frame so the point hits nothing
@@ -890,6 +977,20 @@ fn check_p3(h: &Harness, events: &[ClientEvent], pressed: bool) -> Result<(), Te
             pressed,
         );
     }
+    Ok(())
+}
+
+fn check_p5(h: &Harness, pressed: bool) -> Result<(), TestCaseError> {
+    if pressed || h.pointer_grabbed_after_button {
+        return Ok(());
+    }
+    prop_assert_eq!(
+        h.pointer_focus_after_button.as_ref(),
+        h.pointer_hit_after_button.as_ref(),
+        "P5: release ended grab with stale pointer_focus {:?}, hit-test {:?}",
+        h.pointer_focus_after_button,
+        h.pointer_hit_after_button,
+    );
     Ok(())
 }
 
@@ -1065,7 +1166,17 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
             check_f1(h, p)?;
             check_n1(h, p)?;
         }
-        Op::PointerButton { pressed } => check_p3(h, &events, pressed)?,
+        Op::ProgrammaticWarpPointer { x, y } => {
+            let p = Point::from((x as f64, y as f64));
+            check_l3(h, p)?;
+            check_p1(h, &events, p)?;
+            check_n1(h, p)?;
+        }
+        Op::PointerButton { pressed } => {
+            check_p3(h, &events, pressed)?;
+            check_p5(h, pressed)?;
+            check_l3_current(h)?;
+        }
         _ => {}
     }
     Ok(())
@@ -1195,18 +1306,15 @@ fn drag_off_surface_keeps_grab_delivery() {
     let mut h = Harness::new();
     let ops = [
         Op::AddOutput(0),
-        Op::ApplyLayout {
-            output: 0,
-            n_views: 1,
-            fullscreen_mask: 0,
-        },
-        Op::WarpPointer {
+        Op::ApplySplitClientLayout { output: 0 },
+        Op::ProgrammaticWarpPointer {
             x: VIEW_W / 2,
             y: VIEW_H / 2,
         },
         Op::PointerButton { pressed: true },
-        Op::WarpPointer { x: 1800, y: 900 },
+        Op::ProgrammaticWarpPointer { x: 575, y: 75 },
         Op::PointerButton { pressed: false },
+        Op::PointerButton { pressed: true },
     ];
     for op in &ops {
         apply_op(&mut h, op);

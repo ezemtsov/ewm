@@ -1219,10 +1219,17 @@ fn focus_pointer_target(state: &mut State, source: &str) {
 /// Handle pointer button press/release with click-to-focus
 pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::PointerButtonEvent) {
     tracy_span!("handle_pointer_button");
+    handle_pointer_button_state(state, event.state(), event.button_code(), event.time_msec());
+}
+
+pub(crate) fn handle_pointer_button_state(
+    state: &mut State,
+    button_state: ButtonState,
+    button_code: u32,
+    time_msec: u32,
+) {
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
-
-    let button_state = event.state();
 
     // When locked, skip click-to-focus and just forward to lock surface
     if !state.ewm.is_locked() {
@@ -1239,13 +1246,17 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
     pointer.button(
         state,
         &ButtonEvent {
-            button: event.button_code(),
+            button: button_code,
             state: button_state,
             serial,
-            time: event.time_msec(),
+            time: time_msec,
         },
     );
     pointer.frame(state);
+
+    if button_state == ButtonState::Released {
+        state.refresh_pointer_after_scene_change(false);
+    }
 
     // Notify idle notifier of user activity
     notify_pointer_activity(state);

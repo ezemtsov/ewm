@@ -7,6 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
 
+use smithay::backend::input::ButtonState;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::{Logical, Point, Rectangle, Size};
@@ -366,27 +367,14 @@ impl Fixture {
     }
 
     /// Send a pointer button event at the seat's current pointer focus.
-    /// Mirrors the production `button` path: pointer.button + pointer.frame.
+    /// Mirrors the production `button` path.
     pub fn pointer_button(&mut self, button: u32, pressed: bool) {
-        use smithay::backend::input::ButtonState;
-        use smithay::input::pointer::ButtonEvent;
-        use smithay::utils::SERIAL_COUNTER;
-        let pointer = self.state.ewm.pointer.clone();
         let state = if pressed {
             ButtonState::Pressed
         } else {
             ButtonState::Released
         };
-        pointer.button(
-            &mut self.state,
-            &ButtonEvent {
-                button,
-                state,
-                serial: SERIAL_COUNTER.next_serial(),
-                time: 0,
-            },
-        );
-        pointer.frame(&mut self.state);
+        crate::input::handle_pointer_button_state(&mut self.state, state, button, 0);
     }
 
     /// Start mirroring `queue_event` into a per-Ewm buffer.
