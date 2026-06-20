@@ -143,6 +143,27 @@
     (should (eq (plist-get repeatable :repeat) t))
     (should (eq (plist-get one-shot :repeat) :false))))
 
+(ert-deftest ewm-input-tests/xf86-aliases-follow-gdk-style-bindings ()
+  "CamelCase hardware bindings get xkbcommon XF86 aliases."
+  (let ((function-key-map (make-sparse-keymap))
+        (ewm-mode-map (make-sparse-keymap)))
+    (define-key ewm-mode-map (kbd "<AudioRaiseVolume>") #'ignore)
+    (define-key ewm-mode-map (kbd "<left>") #'ignore)
+    (ewm-input--install-xf86-key-aliases)
+    (should (equal (lookup-key function-key-map [XF86AudioRaiseVolume])
+                   [AudioRaiseVolume]))
+    (should-not (lookup-key function-key-map [XF86left]))))
+
+(ert-deftest ewm-input-tests/xf86-aliases-preserve-existing-translations ()
+  "Existing function-key translations are not overwritten."
+  (let ((function-key-map (make-sparse-keymap))
+        (ewm-mode-map (make-sparse-keymap)))
+    (define-key function-key-map [XF86AudioRaiseVolume] [custom-audio-up])
+    (define-key ewm-mode-map (kbd "<AudioRaiseVolume>") #'ignore)
+    (ewm-input--install-xf86-key-aliases)
+    (should (equal (lookup-key function-key-map [XF86AudioRaiseVolume])
+                   [custom-audio-up]))))
+
 (ert-deftest ewm-input-tests/send-intercept-keys-has-runtime-dispatch-contract ()
   "The actual module payload keeps M-x keyboard-routed and media command-routed."
   (let ((ewm-intercept-prefixes

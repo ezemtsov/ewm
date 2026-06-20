@@ -30,6 +30,7 @@
 (defvar ewm-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<XF86WakeUp>") #'ignore)
+    (define-key map (kbd "C-M-<XF86WakeUp>") #'ignore)
     ;; Media/hardware keys
     (define-key map (kbd "<AudioRaiseVolume>")  (ewm--cmd "wpctl" "set-volume" "-l" "1.0" "@DEFAULT_AUDIO_SINK@" "5%+"))
     (define-key map (kbd "<AudioLowerVolume>")  (ewm--cmd "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%-"))
@@ -243,6 +244,25 @@ has focus, the original binding from `ewm-mode-map' is used."
   '("<AudioRaiseVolume>" "<AudioLowerVolume>" "<AudioMute>" "<AudioMicMute>"
     "<MonBrightnessUp>" "<MonBrightnessDown>")
   "Special key descriptions that should repeat despite anonymous bindings.")
+
+(defun ewm-input--gdk-style-xf86-key-p (event)
+  "Return non-nil when EVENT is a GDK-style XF86 key name."
+  (let ((name (and (symbolp event) (symbol-name event))))
+    (and name
+         (> (length name) 0)
+         (not (string-prefix-p "XF86" name))
+         (<= ?A (aref name 0) ?Z))))
+
+(defun ewm-input--install-xf86-key-aliases ()
+  "Translate xkbcommon XF86 key names to GDK-compatible EWM names."
+  (map-keymap
+   (lambda (event _binding)
+     (when (ewm-input--gdk-style-xf86-key-p event)
+       (let* ((name (symbol-name event))
+              (from (vector (intern (concat "XF86" name)))))
+         (unless (lookup-key function-key-map from)
+           (define-key function-key-map from (vector event))))))
+   ewm-mode-map))
 
 ;;; Mouse-follows-focus
 
@@ -497,6 +517,7 @@ Returns (event . fullscreen-p) or nil."
 Scans `ewm-intercept-prefixes' first (so :fullscreen flags win),
 then `ewm-mode-map' bindings.  Keys in `ewm-surface-emulate-keys'
 get an :emulate flag for modifier translation on non-Emacs surfaces."
+  (ewm-input--install-xf86-key-aliases)
   (let ((specs nil)
         (fullscreen-events nil))
     (cl-flet ((put-spec (event spec)
