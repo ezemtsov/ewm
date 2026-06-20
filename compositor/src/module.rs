@@ -443,9 +443,6 @@ pub enum ModuleCommand {
         x: f64,
         y: f64,
     },
-    Screenshot {
-        path: Option<String>,
-    },
     ConfigureOutput {
         name: String,
         x: Option<i32>,
@@ -1075,13 +1072,6 @@ fn warp_pointer_module(x: Value<'_>, y: Value<'_>) -> Result<()> {
         x: value_as_f64(x)?,
         y: value_as_f64(y)?,
     });
-    Ok(())
-}
-
-/// Take a screenshot (module mode).
-#[defun]
-fn screenshot_module(path: Option<String>) -> Result<()> {
-    push_command(ModuleCommand::Screenshot { path });
     Ok(())
 }
 

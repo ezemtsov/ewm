@@ -946,9 +946,6 @@ pub struct Ewm {
     /// In-flight 3-finger swipe gesture for strip scrolling.
     pub gesture: input::GestureState,
 
-    // Screenshot request
-    pub pending_screenshot: Option<String>,
-
     // Per-output state (redraw state machine)
     pub output_state: HashMap<Output, OutputState>,
 
@@ -1471,7 +1468,6 @@ impl Ewm {
             input_configs: Vec::new(),
             emacs_pid: None,
             gesture: input::GestureState::default(),
-            pending_screenshot: None,
             output_state: HashMap::new(),
             monitors_active: true,
             pending_early_imports: Vec::new(),
@@ -8063,11 +8059,6 @@ impl State {
             }
             ModuleCommand::WarpPointer { x, y } => {
                 self.warp_pointer(x, y);
-            }
-            ModuleCommand::Screenshot { path } => {
-                let target = path.unwrap_or_else(|| "/tmp/ewm-screenshot.png".to_string());
-                info!("Screenshot requested: {}", target);
-                self.ewm.pending_screenshot = Some(target);
             }
             ModuleCommand::ConfigureOutput {
                 name,

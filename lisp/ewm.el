@@ -38,7 +38,6 @@
 (declare-function ewm-output-layout-module "ewm-core")
 (declare-function ewm-close-module "ewm-core")
 (declare-function ewm-warp-pointer-module "ewm-core")
-(declare-function ewm-screenshot-module "ewm-core")
 (declare-function ewm-get-debug-state-module "ewm-core")
 (declare-function ewm-debug-mode-module "ewm-core")
 (declare-function ewm-configure-output-module "ewm-core")
@@ -874,11 +873,6 @@ the request when the workspace is already focused."
 (defun ewm-warp-pointer (x y)
   "Warp pointer to absolute position X, Y."
   (ewm-warp-pointer-module x y))
-
-(defun ewm-screenshot (&optional path)
-  "Take a screenshot of the compositor."
-  (interactive)
-  (ewm-screenshot-module (or path "/tmp/ewm-screenshot.png")))
 
 (defun ewm-show-state ()
   "Display the compositor state dump in *ewm-state*."
