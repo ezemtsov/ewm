@@ -6139,6 +6139,9 @@ impl Ewm {
                 .unwrap_or_else(|| Rectangle::from_size(self.output_size));
 
             let mut target = Rectangle::from_size(output_geo.size);
+            if matches!(layer.layer(), Layer::Background | Layer::Bottom) {
+                target = map.non_exclusive_zone();
+            }
             target.loc -= layer_geo.loc;
             target.loc -= get_popup_toplevel_coords(&popup_kind);
 
@@ -6146,6 +6149,37 @@ impl Ewm {
                 state.geometry = state.positioner.get_unconstrained_geometry(target);
             });
         }
+    }
+
+    /// Handle commit for tracked popups. Returns true if this was a popup.
+    pub fn handle_popup_commit(&mut self, surface: &WlSurface) -> bool {
+        self.popups.commit(surface);
+
+        let Some(popup) = self.popups.find_popup(surface) else {
+            return false;
+        };
+
+        let output = self.output_for_popup(&popup);
+        if let PopupKind::Xdg(ref xdg_popup) = popup {
+            if !xdg_popup.is_initial_configure_sent() {
+                if let Some(output) = output.as_ref() {
+                    let scale = output.current_scale();
+                    let transform = output.current_transform();
+                    smithay::wayland::compositor::with_states(surface, |data| {
+                        crate::utils::send_scale_transform(surface, data, scale, transform);
+                    });
+                }
+                xdg_popup
+                    .send_configure()
+                    .expect("initial configure failed");
+            }
+        }
+
+        if let Some(output) = output {
+            self.queue_redraw(&output);
+        }
+
+        true
     }
 
     /// Handle new toplevel surface from XdgShellHandler.
@@ -6641,22 +6675,8 @@ impl CompositorHandler for State {
         }
 
         // 2. Handle popup commits
-        self.ewm.popups.commit(surface);
-        if let Some(popup) = self.ewm.popups.find_popup(surface) {
-            if let PopupKind::Xdg(ref xdg_popup) = popup {
-                if !xdg_popup.is_initial_configure_sent() {
-                    if let Some(output) = self.ewm.output_for_popup(&popup) {
-                        let scale = output.current_scale();
-                        let transform = output.current_transform();
-                        smithay::wayland::compositor::with_states(surface, |data| {
-                            crate::utils::send_scale_transform(surface, data, scale, transform);
-                        });
-                    }
-                    xdg_popup
-                        .send_configure()
-                        .expect("initial configure failed");
-                }
-            }
+        if self.ewm.handle_popup_commit(surface) {
+            return;
         }
 
         // Early return for sync subsurfaces - parent commit will handle them
@@ -7015,9 +7035,10 @@ impl XdgShellHandler for State {
             .queue_unmaximize_request_for_surface(surface.wl_surface());
     }
 
-    fn popup_destroyed(&mut self, _surface: PopupSurface) {
-        // Queue redraw to clear the popup from screen
-        self.ewm.queue_redraw_all();
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
+        if let Some(output) = self.ewm.output_for_popup(&PopupKind::Xdg(surface)) {
+            self.ewm.queue_redraw(&output);
+        }
     }
 }
 delegate_xdg_shell!(State);
