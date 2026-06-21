@@ -94,7 +94,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::os::unix::io::OwnedFd;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
@@ -132,7 +132,9 @@ use smithay::reexports::calloop::{
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
-use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::backend::{
+    ClientData, ClientId, Credentials, DisconnectReason,
+};
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource};
@@ -6423,12 +6425,30 @@ impl Ewm {
 
         event_loop
             .insert_source(socket, |client, _, state| {
-                if let Err(e) = state
+                let client_state = Arc::new(ClientState::default());
+                match state
                     .ewm
                     .display_handle
-                    .insert_client(client, Arc::new(ClientState::default()))
+                    .insert_client(client, client_state.clone())
                 {
-                    warn!("Failed to insert client: {}", e);
+                    Ok(client) => {
+                        let client_id = client.id();
+                        match state
+                            .ewm
+                            .display_handle
+                            .backend_handle()
+                            .get_client_credentials(client_id.clone())
+                        {
+                            Ok(credentials) => client_state.set_credentials(credentials),
+                            Err(e) => {
+                                debug!(
+                                    "Failed to get credentials for client {:?}: {}",
+                                    client_id, e
+                                )
+                            }
+                        }
+                    }
+                    Err(e) => warn!("Failed to insert client: {}", e),
                 }
             })
             .expect("Failed to init wayland socket source");
@@ -6560,16 +6580,69 @@ impl Ewm {
 }
 
 // Client tracking
+#[derive(Clone, Debug)]
+struct ClientIdentity {
+    credentials: Credentials,
+    comm: Option<String>,
+}
+
+impl ClientIdentity {
+    fn from_credentials(credentials: Credentials) -> Self {
+        Self {
+            credentials,
+            comm: client_process_name(credentials),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "pid={} uid={} gid={} comm={}",
+            self.credentials.pid,
+            self.credentials.uid,
+            self.credentials.gid,
+            self.comm.as_deref().unwrap_or("<unknown>")
+        )
+    }
+}
+
+fn client_process_name(credentials: Credentials) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{}/comm", credentials.pid))
+        .ok()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
 #[derive(Default)]
 pub struct ClientState {
     pub compositor: CompositorClientState,
+    identity: OnceLock<ClientIdentity>,
+}
+
+impl ClientState {
+    fn set_credentials(&self, credentials: Credentials) {
+        let _ = self
+            .identity
+            .set(ClientIdentity::from_credentials(credentials));
+    }
+
+    fn identity_description(&self) -> String {
+        self.identity
+            .get()
+            .map(|identity| identity.describe())
+            .unwrap_or_else(|| "pid=<unknown> uid=<unknown> gid=<unknown> comm=<unknown>".into())
+    }
 }
 impl ClientData for ClientState {
     fn initialized(&self, client_id: ClientId) {
         info!("Client connected: {:?}", client_id);
     }
     fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
-        info!("Client disconnected: {:?}, reason: {:?}", client_id, reason);
+        info!(
+            "Client disconnected: {:?}, reason: {:?}, {}",
+            client_id,
+            reason,
+            self.identity_description()
+        );
     }
 }
 
