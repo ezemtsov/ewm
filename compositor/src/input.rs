@@ -67,8 +67,15 @@ pub enum KeyAction {
     KeyboardRedirect(u32),
     /// Execute an Emacs command binding without moving Wayland keyboard focus.
     Command { key: String, repeat: bool },
-    /// Text input intercept: printable key for Emacs IM processing
-    TextInput(u32, Option<String>),
+    /// Text input intercept: key plus original modifier snapshot for Emacs IM processing.
+    TextInput {
+        keysym: u32,
+        utf8: Option<String>,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        logo: bool,
+    },
     /// VT switch (Ctrl+Alt+F1-F12)
     VtSwitch(i32),
 }
@@ -106,6 +113,7 @@ pub fn classify_key(
     modified_raw: u32,
     modified: Keysym,
     mods: &ModifiersState,
+    key_changes_modifiers: bool,
 ) -> KeyAction {
     if !is_press {
         return KeyAction::Forward;
@@ -134,11 +142,17 @@ pub fn classify_key(
         return KeyAction::Forward;
     }
 
-    if text_input_intercept && !focus_on_emacs && !mods.ctrl && !mods.alt && !mods.logo {
+    if text_input_intercept && !focus_on_emacs && !key_changes_modifiers {
         let utf8 = xkb::keysym_to_utf8(modified);
-        if !utf8.is_empty() && !utf8.chars().all(|c| c.is_control()) {
-            return KeyAction::TextInput(keysym_raw, Some(utf8));
-        }
+        let utf8 = (!utf8.is_empty() && !utf8.chars().all(char::is_control)).then_some(utf8);
+        return KeyAction::TextInput {
+            keysym: keysym_raw,
+            utf8,
+            ctrl: mods.ctrl,
+            alt: mods.alt,
+            shift: mods.shift,
+            logo: mods.logo,
+        };
     }
 
     KeyAction::Forward
@@ -350,6 +364,7 @@ pub fn handle_keyboard_event(
 
     // Use input_intercept + explicit input_forward so we can handle
     // emulation (modifier translation) between the two steps.
+    let mods_before = keyboard.modifier_state();
     let (action, mods_changed) =
         keyboard.input_intercept(state, keycode.into(), key_state, |_, mods, handle| {
             let modified = handle.modified_sym();
@@ -368,6 +383,7 @@ pub fn handle_keyboard_event(
                 modified.raw(),
                 modified,
                 mods,
+                mods_before != *mods,
             )
         });
     if let Some(saved) = prefix_saved_layout {
@@ -410,16 +426,36 @@ pub fn handle_keyboard_event(
             return KeyboardAction::Emulated;
         }
 
-        KeyAction::TextInput(keysym, ref utf8) => {
+        KeyAction::TextInput {
+            keysym,
+            ref utf8,
+            ctrl,
+            alt,
+            shift,
+            logo,
+        } => {
             state.ewm.begin_key_hold(keycode, HeldKeyOwner::TextInput);
             if key_repeats(state, keycode) {
-                state
-                    .ewm
-                    .start_text_input_repeat(keycode, keysym, utf8.clone());
+                state.ewm.start_text_input_repeat(
+                    keycode,
+                    keysym,
+                    utf8.clone(),
+                    focused_surface_id,
+                    ctrl,
+                    alt,
+                    shift,
+                    logo,
+                );
             }
             state.ewm.queue_event(crate::Event::Key {
+                keycode,
                 keysym,
                 utf8: utf8.clone(),
+                surface_id: focused_surface_id,
+                ctrl,
+                alt,
+                shift,
+                logo,
             });
             notify_activity(state);
             return KeyboardAction::TextInputIntercepted;

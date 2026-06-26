@@ -111,12 +111,18 @@ pub enum Event {
     /// Text input deactivated
     #[serde(rename = "text-input-deactivated")]
     TextInputDeactivated,
-    /// Key event (for intercepted keys)
+    /// Intercepted key; `keycode`/`surface_id` let Lisp forward it back to the client.
     #[serde(rename = "key")]
     Key {
+        keycode: u32,
         keysym: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         utf8: Option<String>,
+        surface_id: u64,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        logo: bool,
     },
     /// Intercepted Emacs command key. Lisp replays this through its keymaps.
     #[serde(rename = "intercepted-command")]

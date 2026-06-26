@@ -4833,9 +4833,23 @@ impl Ewm {
         keycode: u32,
         keysym: u32,
         utf8: Option<String>,
+        surface_id: u64,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        logo: bool,
     ) {
-        self.im_repeat
-            .start_text_input_repeat(&self.loop_handle, keycode, keysym, utf8);
+        self.im_repeat.start_text_input_repeat(
+            &self.loop_handle,
+            keycode,
+            keysym,
+            utf8,
+            surface_id,
+            ctrl,
+            alt,
+            shift,
+            logo,
+        );
     }
 
     pub(crate) fn start_command_repeat(&mut self, keycode: u32, key: String) {
@@ -7992,6 +8006,43 @@ impl State {
         }
     }
 
+    /// Forward back to the client a key Emacs declined to translate.
+    fn forward_text_input_key(
+        &mut self,
+        surface_id: u64,
+        keycode: u32,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        logo: bool,
+    ) {
+        if self.ewm.active_text_input_surface_id() != Some(surface_id) {
+            return;
+        }
+        let keyboard = self.ewm.keyboard.clone();
+        let saved_mods = keyboard.modifier_state();
+        let mut replay_mods = saved_mods;
+        replay_mods.ctrl = ctrl;
+        replay_mods.alt = alt;
+        replay_mods.shift = shift;
+        replay_mods.logo = logo;
+        self.sync_keyboard_focus();
+        keyboard.set_modifier_state(replay_mods);
+        keyboard.advertise_modifier_state(self);
+        for key_state in [KeyState::Pressed, KeyState::Released] {
+            keyboard.input_forward(
+                self,
+                keycode.into(),
+                key_state,
+                SERIAL_COUNTER.next_serial(),
+                0,
+                false,
+            );
+        }
+        keyboard.set_modifier_state(saved_mods);
+        keyboard.advertise_modifier_state(self);
+    }
+
     pub(crate) fn on_intercept_repeat_timer(&mut self, keycode: u32) {
         let Some(repeat) = self.ewm.take_intercept_repeat_for_timer(keycode) else {
             return;
@@ -8004,8 +8055,26 @@ impl State {
         self.ewm.reset_idle_timer();
 
         match repeat {
-            InterceptRepeat::TextInput { keysym, utf8, .. } => {
-                self.ewm.queue_event(Event::Key { keysym, utf8 });
+            InterceptRepeat::TextInput {
+                keycode,
+                keysym,
+                utf8,
+                surface_id,
+                ctrl,
+                alt,
+                shift,
+                logo,
+            } => {
+                self.ewm.queue_event(Event::Key {
+                    keycode,
+                    keysym,
+                    utf8,
+                    surface_id,
+                    ctrl,
+                    alt,
+                    shift,
+                    logo,
+                });
             }
             InterceptRepeat::Command { key, .. } => {
                 if module::get_keyboard_capture() {
@@ -8219,6 +8288,16 @@ impl State {
                         debug!("ImCommit: dropped stale commit (surface_id={surface_id})");
                     }
                 }
+            }
+            ModuleCommand::TextInputForwardKey {
+                surface_id,
+                keycode,
+                ctrl,
+                alt,
+                shift,
+                logo,
+            } => {
+                self.forward_text_input_key(surface_id, keycode, ctrl, alt, shift, logo);
             }
             ModuleCommand::TextInputIntercept { enabled } => {
                 if self.ewm.text_input_intercept != enabled {

@@ -127,12 +127,15 @@ mod tests {
                     keycode,
                     keysym,
                     utf8,
+                    surface_id,
+                    ..
                 }),
                 Some(RepeatModel::TextInput(k)),
             ) => {
                 assert_eq!(keycode, k);
                 assert_eq!(keysym, &(100 + k));
                 assert_eq!(utf8, &Some(format!("u{k}")));
+                assert_eq!(surface_id, &(1000 + u64::from(*k)));
                 assert_eq!(held.get(k), Some(&HeldKeyOwner::TextInput));
             }
             (actual, expected) => {
@@ -174,7 +177,13 @@ mod tests {
                         }
                     }
                     Op::StartTextRepeat(key) if held.get(&key) == Some(&HeldKeyOwner::TextInput) => {
-                        state.start_text_input_repeat(&handle, key, 100 + key, Some(format!("u{key}")));
+                        state.start_text_input_repeat(
+                            &handle,
+                            key,
+                            100 + key,
+                            Some(format!("u{key}")),
+                            1000 + u64::from(key),
+                        );
                         if repeat_enabled {
                             repeat = Some(RepeatModel::TextInput(key));
                         }
@@ -210,6 +219,11 @@ pub(crate) enum InterceptRepeat {
         keycode: u32,
         keysym: u32,
         utf8: Option<String>,
+        surface_id: u64,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        logo: bool,
     },
     Command {
         keycode: u32,
@@ -300,6 +314,11 @@ impl InterceptRepeatState {
         keycode: u32,
         keysym: u32,
         utf8: Option<String>,
+        surface_id: u64,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        logo: bool,
     ) {
         self.start_repeat(
             loop_handle,
@@ -307,6 +326,11 @@ impl InterceptRepeatState {
                 keycode,
                 keysym,
                 utf8,
+                surface_id,
+                ctrl,
+                alt,
+                shift,
+                logo,
             },
         );
     }

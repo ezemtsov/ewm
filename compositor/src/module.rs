@@ -458,6 +458,14 @@ pub enum ModuleCommand {
         text: String,
         surface_id: u64,
     },
+    TextInputForwardKey {
+        surface_id: u64,
+        keycode: u32,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        logo: bool,
+    },
     TextInputIntercept {
         enabled: bool,
     },
@@ -1331,6 +1339,30 @@ fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
     push_command(ModuleCommand::ImCommit {
         text,
         surface_id: surface_id as u64,
+    });
+    Ok(())
+}
+
+/// Forward a key that Emacs declined to translate back to SURFACE-ID.
+#[defun]
+fn text_input_forward_key_module(
+    surface_id: i64,
+    keycode: i64,
+    ctrl: Value<'_>,
+    alt: Value<'_>,
+    shift: Value<'_>,
+    logo: Value<'_>,
+) -> Result<()> {
+    if surface_id <= 0 || keycode <= 0 {
+        return Ok(());
+    }
+    push_command(ModuleCommand::TextInputForwardKey {
+        surface_id: surface_id as u64,
+        keycode: keycode as u32,
+        ctrl: ctrl.is_not_nil(),
+        alt: alt.is_not_nil(),
+        shift: shift.is_not_nil(),
+        logo: logo.is_not_nil(),
     });
     Ok(())
 }

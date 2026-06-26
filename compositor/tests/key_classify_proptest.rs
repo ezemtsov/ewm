@@ -21,6 +21,21 @@ use ewm_core::{EmulatedKey, InterceptDispatch, InterceptedKey};
 use proptest::prelude::*;
 use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
 
+fn text_input_action(
+    keysym: u32,
+    utf8: Option<String>,
+    mods: &ModifiersState,
+) -> KeyAction {
+    KeyAction::TextInput {
+        keysym,
+        utf8,
+        ctrl: mods.ctrl,
+        alt: mods.alt,
+        shift: mods.shift,
+        logo: mods.logo,
+    }
+}
+
 fn ik(keysym: u32, allow_fullscreen: bool) -> InterceptedKey {
     ik_with_dispatch_and_repeat(keysym, allow_fullscreen, InterceptDispatch::Keyboard, false)
 }
@@ -103,6 +118,7 @@ fn classify_with(
         keysym,
         Keysym::from(keysym),
         &ModifiersState::default(),
+        false,
     )
 }
 
@@ -224,29 +240,62 @@ proptest! {
     }
 
     #[test]
-    fn text_input_intercepts_printable_unmodified_keys(
+    fn text_input_intercepts_printable_keys_with_utf8(
         letter in 0u32..26,
     ) {
         let keysym = keysyms::KEY_a + letter;
         let action = classify_with(&[], &[], true, false, false, true, keysym);
         let expected = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
 
-        prop_assert_eq!(action, KeyAction::TextInput(keysym, Some(expected)));
+        prop_assert_eq!(
+            action,
+            text_input_action(keysym, Some(expected), &ModifiersState::default())
+        );
     }
 
+    /// The intercept decision ignores held modifiers: only whether the key is
+    /// itself a modifier matters. A letter under Ctrl/Alt/Logo still intercepts.
     #[test]
-    fn text_input_defers_to_emacs_focus_or_control_modifiers(
-        keysym in keysym_strategy(),
-        focus_on_emacs in any::<bool>(),
+    fn text_input_intercepts_printable_keys_regardless_of_held_modifiers(
+        letter in 0u32..26,
         ctrl in any::<bool>(),
         alt in any::<bool>(),
+        shift in any::<bool>(),
         logo in any::<bool>(),
     ) {
-        prop_assume!(focus_on_emacs || ctrl || alt || logo);
         let mut mods = ModifiersState::default();
         mods.ctrl = ctrl;
         mods.alt = alt;
+        mods.shift = shift;
         mods.logo = logo;
+        let keysym = keysyms::KEY_a + letter;
+        let action = classify_key(
+            &[], &[], true, false, false, true,
+            keysym, keysym, Keysym::from(keysym), &mods, false,
+        );
+        let expected = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
+
+        prop_assert_eq!(action, text_input_action(keysym, Some(expected), &mods));
+    }
+
+    #[test]
+    fn text_input_intercepts_non_printable_keys_without_utf8(_ in Just(())) {
+        let keysym = keysyms::KEY_Return;
+        let action = classify_with(&[], &[], true, false, false, true, keysym);
+
+        prop_assert_eq!(
+            action,
+            text_input_action(keysym, None, &ModifiersState::default())
+        );
+    }
+
+    #[test]
+    fn text_input_defers_to_emacs_focus_or_modifier_keys(
+        keysym in keysym_strategy(),
+        focus_on_emacs in any::<bool>(),
+        key_changes_modifiers in any::<bool>(),
+    ) {
+        prop_assume!(focus_on_emacs || key_changes_modifiers);
         let action = classify_key(
             &[],
             &[],
@@ -257,7 +306,8 @@ proptest! {
             keysym,
             keysym,
             Keysym::from(keysym),
-            &mods,
+            &ModifiersState::default(),
+            key_changes_modifiers,
         );
 
         prop_assert_eq!(action, KeyAction::Forward);
