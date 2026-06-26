@@ -178,5 +178,19 @@
       (should-not ewm-text-input-mode)
       (should (equal ewm-text-input-tests--intercepts '(nil nil t nil))))))
 
+(ert-deftest ewm-text-input-tests/auto-mode-ignores-ambient-input-method ()
+  "Interception tracks the focused surface's input method, not an ambient one."
+  (ewm-text-input-tests--with-state
+    (ewm-text-input-tests--with-buffers (surface)
+      (puthash 10 surface ewm--surfaces)
+      (setq ewm-text-input-tests--focused-id 10)
+      (ewm-text-input-auto-mode-enable)
+      ;; Surface has no input method, but the buffer we activate from does.
+      (with-temp-buffer
+        (setq-local current-input-method "ambient-im")
+        (ewm--handle-text-input-activated))
+      (should-not ewm-text-input-mode)
+      (should (equal ewm-text-input-tests--intercepts '(nil))))))
+
 (provide 'ewm-text-input-tests)
 ;;; ewm-text-input-tests.el ends here

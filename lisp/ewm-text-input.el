@@ -75,12 +75,11 @@ For quail-based input methods, looks up the translation directly."
 
 (defun ewm-text-input--active-input-method ()
   "Return the input method of the focused text-input surface, if any."
-  (or (when-let* ((focused-id (ewm-get-focused-id))
-                  ((numberp focused-id))
-                  (surface-buf (gethash focused-id ewm--surfaces))
-                  ((buffer-live-p surface-buf)))
-        (buffer-local-value 'current-input-method surface-buf))
-      current-input-method))
+  (when-let* ((focused-id (ewm-get-focused-id))
+              ((numberp focused-id))
+              (surface-buf (gethash focused-id ewm--surfaces))
+              ((buffer-live-p surface-buf)))
+    (buffer-local-value 'current-input-method surface-buf)))
 
 (defun ewm-text-input--refresh-auto-state ()
   "Intercept keys only while a client field is active and an IM is set."
