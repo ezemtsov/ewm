@@ -36,6 +36,7 @@ pub mod frame_clock;
 pub mod gtk;
 pub mod im;
 pub mod input;
+pub mod output_mode;
 mod module;
 pub mod protocols;
 pub mod render;
@@ -339,7 +340,9 @@ pub struct CursorHideState {
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
     /// Desired video mode (None = use preferred/auto)
-    pub mode: Option<(i32, i32, Option<i32>)>, // (width, height, refresh_mhz)
+    pub mode: Option<output_mode::Mode>,
+    /// Explicit DRM modeline; takes precedence over `mode` when set
+    pub modeline: Option<output_mode::Modeline>,
     /// Desired position (None = auto horizontal layout)
     pub position: Option<(i32, i32)>,
     /// Desired scale (None = 1.0)
@@ -354,6 +357,7 @@ impl Default for OutputConfig {
     fn default() -> Self {
         Self {
             mode: None,
+            modeline: None,
             position: None,
             scale: None,
             transform: None,
@@ -8191,6 +8195,8 @@ impl State {
                 width,
                 height,
                 refresh,
+                custom,
+                modeline,
                 scale,
                 transform,
                 enabled,
@@ -8213,7 +8219,17 @@ impl State {
                         .unwrap_or_else(|| current_mode.map(|mode| mode.size.w).unwrap_or(1920));
                     let h = height
                         .unwrap_or_else(|| current_mode.map(|mode| mode.size.h).unwrap_or(1080));
-                    config.mode = Some((w, h, refresh));
+                    config.mode = Some(output_mode::Mode {
+                        custom,
+                        mode: output_mode::ConfiguredMode {
+                            width: w as u16,
+                            height: h as u16,
+                            refresh,
+                        },
+                    });
+                }
+                if modeline.is_some() {
+                    config.modeline = modeline;
                 }
                 if x.is_some() || y.is_some() {
                     config.position =

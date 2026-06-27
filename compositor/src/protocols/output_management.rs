@@ -23,6 +23,7 @@ use zwlr_output_head_v1::{AdaptiveSyncState, ZwlrOutputHeadV1};
 use zwlr_output_manager_v1::ZwlrOutputManagerV1;
 use zwlr_output_mode_v1::ZwlrOutputModeV1;
 
+use crate::output_mode::{ConfiguredMode, Mode};
 use crate::OutputConfig;
 
 const VERSION: u32 = 4;
@@ -792,15 +793,14 @@ where
                     return;
                 };
 
-                new_config.mode = Some((
-                    mode.width,
-                    mode.height,
-                    if mode.refresh > 0 {
-                        Some(mode.refresh)
-                    } else {
-                        None
+                new_config.mode = Some(Mode {
+                    custom: false,
+                    mode: ConfiguredMode {
+                        width: mode.width as u16,
+                        height: mode.height as u16,
+                        refresh: refresh_hz(mode.refresh),
                     },
-                ));
+                });
             }
             zwlr_output_configuration_head_v1::Request::SetCustomMode {
                 width,
@@ -1082,11 +1082,23 @@ fn requested_scale(scale: f64) -> Option<f64> {
     }
 }
 
-fn requested_custom_mode(width: i32, height: i32, refresh: i32) -> Option<(i32, i32, Option<i32>)> {
+/// Convert a wl_output refresh rate in mHz to Hz, treating 0 as unspecified.
+fn refresh_hz(millihertz: i32) -> Option<f64> {
+    (millihertz > 0).then_some(millihertz as f64 / 1000.0)
+}
+
+fn requested_custom_mode(width: i32, height: i32, refresh: i32) -> Option<Mode> {
     if width <= 0 || height <= 0 || refresh < 0 {
         None
     } else {
-        Some((width, height, (refresh > 0).then_some(refresh)))
+        Some(Mode {
+            custom: true,
+            mode: ConfiguredMode {
+                width: width as u16,
+                height: height as u16,
+                refresh: refresh_hz(refresh),
+            },
+        })
     }
 }
 
@@ -1100,17 +1112,19 @@ fn is_known_adaptive_sync_state(state: WEnum<AdaptiveSyncState>) -> bool {
 /// Build an OutputConfig from the current head state (used when enabling a head).
 fn output_config_from_head(head: &OutputHeadState) -> OutputConfig {
     let mode = head.current_mode.and_then(|idx| {
-        head.modes.get(idx).map(|m| {
-            (
-                m.width,
-                m.height,
-                if m.refresh > 0 { Some(m.refresh) } else { None },
-            )
+        head.modes.get(idx).map(|m| Mode {
+            custom: false,
+            mode: ConfiguredMode {
+                width: m.width as u16,
+                height: m.height as u16,
+                refresh: refresh_hz(m.refresh),
+            },
         })
     });
 
     OutputConfig {
         mode,
+        modeline: None,
         position: head.position,
         scale: head.scale,
         transform: head.transform,
@@ -1327,7 +1341,17 @@ mod tests {
 
         let stored = &configs["HEAD-A"];
         assert!(stored.enabled);
-        assert_eq!(stored.mode, Some((1920, 1080, Some(60_000))));
+        assert_eq!(
+            stored.mode,
+            Some(Mode {
+                custom: false,
+                mode: ConfiguredMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh: Some(60.0),
+                },
+            })
+        );
         assert_eq!(stored.position, Some((0, 0)));
         assert_eq!(stored.scale, Some(1.0));
         assert_eq!(stored.transform, Some(Transform::Normal));
@@ -1359,11 +1383,25 @@ mod tests {
     fn requested_custom_mode_accepts_unspecified_refresh_only() {
         assert_eq!(
             requested_custom_mode(1920, 1080, 60_000),
-            Some((1920, 1080, Some(60_000)))
+            Some(Mode {
+                custom: true,
+                mode: ConfiguredMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh: Some(60.0),
+                },
+            })
         );
         assert_eq!(
             requested_custom_mode(1920, 1080, 0),
-            Some((1920, 1080, None))
+            Some(Mode {
+                custom: true,
+                mode: ConfiguredMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh: None,
+                },
+            })
         );
         assert_eq!(requested_custom_mode(0, 1080, 60_000), None);
         assert_eq!(requested_custom_mode(1920, 0, 60_000), None);

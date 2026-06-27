@@ -26,8 +26,10 @@ use std::iter::zip;
 use std::num::NonZeroU64;
 use std::os::fd::AsFd;
 
+use crate::output_mode::{HSyncPolarity, Modeline, VSyncPolarity};
 use crate::tracy_span;
 use anyhow::{ensure, Context as _};
+use drm_ffi::drm_mode_modeinfo;
 use bytemuck::cast_slice_mut;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -177,9 +179,67 @@ fn current_lid_closed_from_acpi() -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        closed_lid_no_external_action, parse_acpi_lid_state, should_suppress_laptop_panels,
-        ClosedLidNoExternalAction, LidPolicyReason,
+        calculate_drm_mode_from_modeline, calculate_mode_cvt, closed_lid_no_external_action,
+        parse_acpi_lid_state, should_suppress_laptop_panels, ClosedLidNoExternalAction,
+        LidPolicyReason, ModeTypeFlags,
     };
+    use crate::output_mode::{HSyncPolarity, Modeline, VSyncPolarity};
+
+    // Expected values cross-checked against niri's snapshots and the `cvt` utility.
+    #[test]
+    fn cvt_mode_matches_reference() {
+        let m = calculate_mode_cvt(1920, 1080, 60.0);
+        assert_eq!(m.size(), (1920, 1080));
+        assert_eq!(m.clock(), 173000);
+        assert_eq!(m.hsync(), (2048, 2248, 2576));
+        assert_eq!(m.vsync(), (1083, 1088, 1120));
+        assert_eq!(m.vrefresh(), 60);
+        assert!(m.mode_type().contains(ModeTypeFlags::USERDEF));
+
+        let m = calculate_mode_cvt(1920, 1080, 144.0);
+        assert_eq!(m.clock(), 452500);
+        assert_eq!(m.hsync(), (2088, 2296, 2672));
+        assert_eq!(m.vsync(), (1083, 1088, 1177));
+        assert_eq!(m.vrefresh(), 144);
+    }
+
+    #[test]
+    fn modeline_mode_matches_reference() {
+        let modeline = Modeline {
+            clock: 173.0,
+            hdisplay: 1920,
+            hsync_start: 2048,
+            hsync_end: 2248,
+            htotal: 2576,
+            vdisplay: 1080,
+            vsync_start: 1083,
+            vsync_end: 1088,
+            vtotal: 1120,
+            hsync_polarity: HSyncPolarity::NHSync,
+            vsync_polarity: VSyncPolarity::PVSync,
+        };
+        let m = calculate_drm_mode_from_modeline(&modeline).unwrap();
+        assert_eq!(m.size(), (1920, 1080));
+        assert_eq!(m.clock(), 173000);
+        assert_eq!(m.hsync(), (2048, 2248, 2576));
+        assert_eq!(m.vsync(), (1083, 1088, 1120));
+        assert_eq!(m.vrefresh(), 60);
+        assert!(m.mode_type().contains(ModeTypeFlags::USERDEF));
+    }
+
+    #[test]
+    fn modeline_parses_x11_form() {
+        let m: Modeline = "173.0 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync"
+            .parse()
+            .unwrap();
+        assert_eq!(m.clock, 173.0);
+        assert_eq!(m.hdisplay, 1920);
+        assert_eq!(m.htotal, 2576);
+        assert_eq!(m.vtotal, 1120);
+        assert_eq!(m.hsync_polarity, HSyncPolarity::NHSync);
+        assert_eq!(m.vsync_polarity, VSyncPolarity::PVSync);
+        assert!("173.0 1920".parse::<Modeline>().is_err());
+    }
 
     #[test]
     fn parses_acpi_lid_state() {
@@ -225,32 +285,246 @@ mod tests {
     }
 }
 
-/// Find a DRM mode matching the requested resolution and optional refresh rate.
-///
-/// `refresh_hz`: target refresh rate in Hz (e.g., 60 for 60Hz).
-/// When specified, picks the mode whose refresh is closest (within 1Hz).
-/// When omitted, picks the highest available refresh rate.
-fn resolve_drm_mode(
-    modes: &[DrmMode],
-    width: i32,
-    height: i32,
-    refresh_hz: Option<i32>,
-) -> Option<DrmMode> {
-    let matching = modes
-        .iter()
-        .filter(|m| m.size().0 as i32 == width && m.size().1 as i32 == height);
+pub fn calculate_drm_mode_from_modeline(modeline: &Modeline) -> anyhow::Result<DrmMode> {
+    ensure!(
+        modeline.hdisplay < modeline.hsync_start,
+        "hdisplay {} must be < hsync_start {}",
+        modeline.hdisplay,
+        modeline.hsync_start
+    );
+    ensure!(
+        modeline.hsync_start < modeline.hsync_end,
+        "hsync_start {} must be < hsync_end {}",
+        modeline.hsync_start,
+        modeline.hsync_end
+    );
+    ensure!(
+        modeline.hsync_end < modeline.htotal,
+        "hsync_end {} must be < htotal {}",
+        modeline.hsync_end,
+        modeline.htotal
+    );
+    ensure!(
+        modeline.vdisplay < modeline.vsync_start,
+        "vdisplay {} must be < vsync_start {}",
+        modeline.vdisplay,
+        modeline.vsync_start
+    );
+    ensure!(
+        modeline.vsync_start < modeline.vsync_end,
+        "vsync_start {} must be < vsync_end {}",
+        modeline.vsync_start,
+        modeline.vsync_end
+    );
+    ensure!(
+        modeline.vsync_end < modeline.vtotal,
+        "vsync_end {} must be < vtotal {}",
+        modeline.vsync_end,
+        modeline.vtotal
+    );
 
-    if let Some(target_hz) = refresh_hz {
-        let target_mhz = target_hz * 1000;
-        // Pick mode closest to target, within 1Hz tolerance
-        matching
-            .filter(|m| (Mode::from(**m).refresh - target_mhz).abs() < 1000)
-            .min_by_key(|m| (Mode::from(**m).refresh - target_mhz).abs())
-            .copied()
-    } else {
-        // No refresh specified; pick highest available
-        matching.max_by_key(|m| Mode::from(**m).refresh).copied()
+    let pixel_clock_kilo_hertz = modeline.clock * 1000.0;
+    // Calculated as documented in the CVT 1.2 standard:
+    // https://app.box.com/s/vcocw3z73ta09txiskj7cnk6289j356b/file/93518784646
+    let vrefresh_hertz = (pixel_clock_kilo_hertz * 1000.0)
+        / (modeline.htotal as u64 * modeline.vtotal as u64) as f64;
+    ensure!(
+        vrefresh_hertz.is_finite(),
+        "calculated refresh rate is not finite"
+    );
+    let vrefresh_rounded = vrefresh_hertz.round() as u32;
+
+    let flags = match modeline.hsync_polarity {
+        HSyncPolarity::PHSync => ModeFlags::PHSYNC,
+        HSyncPolarity::NHSync => ModeFlags::NHSYNC,
+    } | match modeline.vsync_polarity {
+        VSyncPolarity::PVSync => ModeFlags::PVSYNC,
+        VSyncPolarity::NVSync => ModeFlags::NVSYNC,
+    };
+
+    let mode_name = format!(
+        "{}x{}@{:.2}",
+        modeline.hdisplay, modeline.vdisplay, vrefresh_hertz
+    );
+    let name = modeinfo_name_slice_from_string(&mode_name);
+
+    // https://www.kernel.org/doc/html/v6.17/gpu/drm-uapi.html#c.drm_mode_modeinfo
+    Ok(DrmMode::from(drm_mode_modeinfo {
+        clock: pixel_clock_kilo_hertz.round() as u32,
+        hdisplay: modeline.hdisplay,
+        hsync_start: modeline.hsync_start,
+        hsync_end: modeline.hsync_end,
+        htotal: modeline.htotal,
+        vdisplay: modeline.vdisplay,
+        vsync_start: modeline.vsync_start,
+        vsync_end: modeline.vsync_end,
+        vtotal: modeline.vtotal,
+        vrefresh: vrefresh_rounded,
+        flags: flags.bits(),
+        name,
+        // Defaults
+        type_: drm_ffi::DRM_MODE_TYPE_USERDEF,
+        hskew: 0,
+        vscan: 0,
+    }))
+}
+
+pub fn calculate_mode_cvt(width: u16, height: u16, refresh: f64) -> DrmMode {
+    // Cross-checked with sway's implementation:
+    // https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/22528542970687720556035790212df8d9bb30bb/backend/drm/util.c#L251
+
+    let options = libdisplay_info::cvt::Options {
+        red_blank_ver: libdisplay_info::cvt::ReducedBlankingVersion::None,
+        h_pixels: width as i32,
+        v_lines: height as i32,
+        ip_freq_rqd: refresh,
+
+        // Defaults
+        video_opt: false,
+        vblank: 0f64,
+        additional_hblank: 0,
+        early_vsync_rqd: false,
+        int_rqd: false,
+        margins_rqd: false,
+    };
+    let cvt_timing = libdisplay_info::cvt::Timing::compute(options);
+
+    let hsync_start = width + cvt_timing.h_front_porch as u16;
+    let vsync_start = (cvt_timing.v_lines_rnd + cvt_timing.v_front_porch) as u16;
+    let hsync_end = hsync_start + cvt_timing.h_sync as u16;
+    let vsync_end = vsync_start + cvt_timing.v_sync as u16;
+
+    let htotal = hsync_end + cvt_timing.h_back_porch as u16;
+    let vtotal = vsync_end + cvt_timing.v_back_porch as u16;
+
+    let clock = f64::round(cvt_timing.act_pixel_freq * 1000f64) as u32;
+    let vrefresh = f64::round(cvt_timing.act_frame_rate) as u32;
+
+    let flags = drm_ffi::DRM_MODE_FLAG_NHSYNC | drm_ffi::DRM_MODE_FLAG_PVSYNC;
+
+    let mode_name = format!("{width}x{height}@{:.2}", cvt_timing.act_frame_rate);
+    let name = modeinfo_name_slice_from_string(&mode_name);
+
+    let drm_ffi_mode = drm_mode_modeinfo {
+        clock,
+
+        hdisplay: width,
+        hsync_start,
+        hsync_end,
+        htotal,
+
+        vdisplay: height,
+        vsync_start,
+        vsync_end,
+        vtotal,
+
+        vrefresh,
+
+        flags,
+        type_: drm_ffi::DRM_MODE_TYPE_USERDEF,
+        name,
+
+        // Defaults
+        hskew: 0,
+        vscan: 0,
+    };
+
+    DrmMode::from(drm_ffi_mode)
+}
+
+// Returns a c-string of maximally 31 Rust string chars + null terminator. Excess characters are
+// dropped.
+fn modeinfo_name_slice_from_string(mode_name: &str) -> [core::ffi::c_char; 32] {
+    let mut name: [core::ffi::c_char; 32] = [0; 32];
+
+    for (a, b) in zip(&mut name[..31], mode_name.as_bytes()) {
+        // Can be u8 on aarch64 and i8 on x86_64.
+        *a = *b as _;
     }
+
+    name
+}
+
+/// Pick a DRM mode for `connector` matching `target`, or fall back to preferred.
+///
+/// A custom target is CVT-generated and bypasses the advertised mode list. The
+/// returned bool is true when the requested mode was not found and a preferred
+/// mode was substituted.
+fn pick_mode(
+    connector: &connector::Info,
+    target: Option<crate::output_mode::Mode>,
+) -> Option<(DrmMode, bool)> {
+    let mut mode = None;
+    let mut fallback = false;
+
+    if let Some(target) = target {
+        let target_mode = target.mode;
+
+        if target.custom {
+            if let Some(refresh) = target_mode.refresh {
+                let custom_mode =
+                    calculate_mode_cvt(target_mode.width, target_mode.height, refresh);
+                return Some((custom_mode, false));
+            } else {
+                warn!("ignoring custom mode without refresh rate");
+            }
+        }
+
+        let refresh = target_mode.refresh.map(|r| (r * 1000.).round() as i32);
+        for m in connector.modes() {
+            if m.size() != (target_mode.width, target_mode.height) {
+                continue;
+            }
+
+            // Interlaced modes don't appear to work.
+            if m.flags().contains(ModeFlags::INTERLACE) {
+                continue;
+            }
+
+            if let Some(refresh) = refresh {
+                // If refresh is set, only pick modes with matching refresh.
+                let wl_mode = Mode::from(*m);
+                if wl_mode.refresh == refresh {
+                    mode = Some(m);
+                }
+            } else if let Some(curr) = mode {
+                // If refresh isn't set, pick the mode with the highest refresh.
+                if curr.vrefresh() < m.vrefresh() {
+                    mode = Some(m);
+                }
+            } else {
+                mode = Some(m);
+            }
+        }
+
+        if mode.is_none() {
+            fallback = true;
+        }
+    }
+
+    if mode.is_none() {
+        // Pick a preferred mode.
+        for m in connector.modes() {
+            if !m.mode_type().contains(ModeTypeFlags::PREFERRED) {
+                continue;
+            }
+
+            if let Some(curr) = mode {
+                if curr.vrefresh() < m.vrefresh() {
+                    mode = Some(m);
+                }
+            } else {
+                mode = Some(m);
+            }
+        }
+    }
+
+    if mode.is_none() {
+        // Last attempt.
+        mode = connector.modes().first();
+    }
+
+    mode.map(|m| (*m, fallback))
 }
 
 /// Compute precise refresh interval from DRM mode timing parameters.
@@ -352,15 +626,6 @@ fn build_surface_dmabuf_feedback(
     };
 
     Ok(SurfaceDmabufFeedback { render, scanout })
-}
-
-/// Find the preferred DRM mode, falling back to the first available.
-fn preferred_drm_mode(modes: &[DrmMode]) -> Option<DrmMode> {
-    modes
-        .iter()
-        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-        .or_else(|| modes.first())
-        .copied()
 }
 
 /// Data passed through `queue_frame()` -> `frame_submitted()` for presentation feedback.
@@ -1094,8 +1359,9 @@ impl DrmBackendState {
             return;
         };
 
-        // Resolve and apply DRM mode
-        let new_drm_mode = if let Some((w, h, refresh)) = config.mode {
+        // Resolve and apply DRM mode. A modeline takes precedence over `mode`;
+        // when neither is configured, keep the current mode (scale-only change).
+        let new_drm_mode = if config.mode.is_some() || config.modeline.is_some() {
             let connector_info = match device.drm.get_connector(surface.connector, false) {
                 Ok(info) => info,
                 Err(e) => {
@@ -1103,14 +1369,31 @@ impl DrmBackendState {
                     return;
                 }
             };
-            let resolved = resolve_drm_mode(connector_info.modes(), w, h, refresh);
-            if resolved.is_none() {
-                warn!(
-                    "Configured mode {}x{} not found for {}, keeping current",
-                    w, h, output_name
-                );
+            let mut mode = None;
+            if let Some(modeline) = &config.modeline {
+                match calculate_drm_mode_from_modeline(modeline) {
+                    Ok(x) => mode = Some(x),
+                    Err(err) => warn!(
+                        "invalid custom modeline for {}; falling back to advertised modes: {:?}",
+                        output_name, err
+                    ),
+                }
             }
-            resolved
+            if let Some(x) = mode {
+                Some(x)
+            } else if let Some((m, fallback)) = pick_mode(&connector_info, config.mode) {
+                if fallback {
+                    let t = config.mode.unwrap();
+                    warn!(
+                        "configured mode {}x{} not found for {}, falling back to preferred",
+                        t.mode.width, t.mode.height, output_name
+                    );
+                }
+                Some(m)
+            } else {
+                warn!("no mode available for {}, keeping current", output_name);
+                None
+            }
         } else {
             None
         };
@@ -1746,18 +2029,30 @@ impl DrmBackendState {
         );
         let config = ewm.output_config.get(&connector_name).cloned();
 
-        // Select mode: use configured mode if available, otherwise preferred
-        let mode = if let Some((w, h, refresh)) = config.as_ref().and_then(|c| c.mode) {
-            resolve_drm_mode(connector.modes(), w, h, refresh).unwrap_or_else(|| {
-                warn!(
-                    "Configured mode {}x{} not found for {}, using preferred",
-                    w, h, connector_name
-                );
-                preferred_drm_mode(connector.modes()).unwrap()
-            })
-        } else {
-            preferred_drm_mode(connector.modes()).ok_or("No mode available")?
+        // Select mode: modeline takes precedence, then the configured mode, then
+        // the connector's preferred mode (handled inside pick_mode).
+        let mut mode = None;
+        if let Some(modeline) = config.as_ref().and_then(|c| c.modeline.as_ref()) {
+            match calculate_drm_mode_from_modeline(modeline) {
+                Ok(x) => mode = Some(x),
+                Err(err) => warn!(
+                    "invalid custom modeline for {}; falling back to advertised modes: {:?}",
+                    connector_name, err
+                ),
+            }
+        }
+        let (mode, fallback) = match mode {
+            Some(x) => (x, false),
+            None => pick_mode(&connector, config.as_ref().and_then(|c| c.mode))
+                .ok_or("No mode available")?,
         };
+        if fallback {
+            let t = config.as_ref().and_then(|c| c.mode).unwrap();
+            warn!(
+                "configured mode {}x{} not found for {}, using preferred",
+                t.mode.width, t.mode.height, connector_name
+            );
+        }
 
         info!(
             "Connecting display: {} {}x{}@{}Hz",

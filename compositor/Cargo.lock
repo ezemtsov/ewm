@@ -667,6 +667,7 @@ dependencies = [
  "gio",
  "insta",
  "libc",
+ "libdisplay-info",
  "pipewire",
  "proptest",
  "sd-notify",

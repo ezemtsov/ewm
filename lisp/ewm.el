@@ -224,6 +224,13 @@ Each entry is (OUTPUT-NAME . PLIST) where PLIST can contain:
   :width     - desired width in pixels
   :height    - desired height in pixels
   :refresh   - desired refresh rate in Hz (optional)
+  :custom    - when non-nil, generate a CVT mode for :width/:height/:refresh
+               instead of matching an advertised mode.  Use this for
+               resolutions the monitor does not advertise (e.g. a lower
+               resolution on a HiDPI panel for games).  :refresh is required.
+  :modeline  - explicit X11 modeline string, takes precedence over the mode
+               fields when set:
+               \"CLOCK HDISP HSS HSE HTOTAL VDISP VSS VSE VTOTAL +hsync +vsync\"
   :x         - horizontal position (optional)
   :y         - vertical position (optional)
   :scale     - fractional scale, e.g. 1.5 (optional)
@@ -231,6 +238,9 @@ Each entry is (OUTPUT-NAME . PLIST) where PLIST can contain:
                0=Normal 1=90 2=180 3=270
                4=Flipped 5=Flipped90 6=Flipped180 7=Flipped270
   :enabled   - whether output is enabled (default t)
+
+Custom modes are not guaranteed to work: the compositor asks the display to
+run a mode its manufacturer did not advertise, and the kernel may reject it.
 
 OUTPUT-NAME can be either a connector name (e.g. \"DP-1\") or a
 Make-Model-Serial string (e.g. \"Dell U2722D ABC123\").  The MMS form is
@@ -243,7 +253,8 @@ reconnect (hot-plug), so values persist across connect/disconnect cycles.
 
 Example:
   \\='((\"Dell U2722D ABC123\" :width 2560 :height 1440 :scale 1.5)
-    (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0 :transform 0))"
+    (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0 :transform 0)
+    (\"eDP-1\" :width 1024 :height 640 :refresh 60 :custom t))"
   :type '(alist :key-type string :value-type plist)
   :set (lambda (sym val)
          (set-default sym val)
@@ -985,6 +996,10 @@ Check `journalctl --user -t ewm -f' to see debug output."
 ARGS is a plist with optional keys:
   :x :y       - position in global coordinate space
   :width :height :refresh - video mode
+  :custom     - when non-nil, generate a CVT mode for :width/:height/:refresh
+                instead of matching an advertised mode (:refresh required)
+  :modeline   - X11 modeline string, takes precedence over the mode fields:
+                \"CLOCK HDISP HSS HSE HTOTAL VDISP VSS VSE VTOTAL +hsync +vsync\"
   :scale      - fractional scale (e.g. 1.5)
   :transform  - transform integer (0=Normal, 1=90, 2=180, 3=270, ...)
   :enabled    - t or nil to enable/disable the output"
@@ -995,6 +1010,8 @@ ARGS is a plist with optional keys:
    (plist-get args :width)
    (plist-get args :height)
    (plist-get args :refresh)
+   (plist-get args :custom)
+   (plist-get args :modeline)
    (plist-get args :scale)
    (plist-get args :transform)
    (if (plist-member args :enabled)
@@ -1059,18 +1076,22 @@ via `ewm--find-connector-for-config' before sending to the compositor."
            (width     (plist-get props :width))
            (height    (plist-get props :height))
            (refresh   (plist-get props :refresh))
+           (custom    (plist-get props :custom))
+           (modeline  (plist-get props :modeline))
            (x         (plist-get props :x))
            (y         (plist-get props :y))
            (scale     (plist-get props :scale))
            (transform (plist-get props :transform)))
       (let ((has-enabled (plist-member props :enabled))
             (enabled     (plist-get props :enabled)))
-        (when (or width height refresh scale transform x y has-enabled)
+        (when (or width height refresh modeline scale transform x y has-enabled)
           (apply #'ewm-configure-output connector
                  (append
                   (when width     (list :width width))
                   (when height    (list :height height))
                   (when refresh   (list :refresh refresh))
+                  (when custom    (list :custom custom))
+                  (when modeline  (list :modeline modeline))
                   (when x         (list :x x))
                   (when y         (list :y y))
                   (when scale     (list :scale scale))

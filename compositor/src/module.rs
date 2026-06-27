@@ -432,7 +432,9 @@ pub enum ModuleCommand {
         y: Option<i32>,
         width: Option<i32>,
         height: Option<i32>,
-        refresh: Option<i32>,
+        refresh: Option<f64>,
+        custom: bool,
+        modeline: Option<crate::output_mode::Modeline>,
         scale: Option<f64>,
         transform: Option<i32>,
         enabled: Option<bool>,
@@ -1094,6 +1096,9 @@ fn prepare_frame_close_module(id: i64) -> Result<()> {
 /// ENABLED should be t, nil, or omitted.
 /// SCALE is a float (e.g. 1.5). TRANSFORM is an integer (0=Normal, 1=90, 2=180, 3=270, 4=Flipped,
 /// 5=Flipped90, 6=Flipped180, 7=Flipped270).
+/// CUSTOM, when non-nil, generates a CVT mode for WIDTH/HEIGHT/REFRESH instead of
+/// matching an advertised mode; REFRESH is then required.
+/// MODELINE is an X11 modeline string and takes precedence over the mode fields.
 #[defun]
 #[allow(clippy::too_many_arguments)]
 fn configure_output_module(
@@ -1102,11 +1107,22 @@ fn configure_output_module(
     y: Option<i64>,
     width: Option<i64>,
     height: Option<i64>,
-    refresh: Option<i64>,
+    refresh: Value<'_>,
+    custom: Value<'_>,
+    modeline: Option<String>,
     scale: Value<'_>,
     transform: Option<i64>,
     enabled: Value<'_>,
 ) -> Result<()> {
+    let refresh = if refresh.is_not_nil() {
+        Some(value_as_f64(refresh)?)
+    } else {
+        None
+    };
+    let modeline = modeline
+        .map(|s| s.parse::<crate::output_mode::Modeline>())
+        .transpose()
+        .map_err(|e| anyhow::anyhow!(e))?;
     let scale = if scale.is_not_nil() {
         Some(value_as_f64(scale)?)
     } else {
@@ -1131,7 +1147,9 @@ fn configure_output_module(
         y: y.map(|v| v as i32),
         width: width.map(|v| v as i32),
         height: height.map(|v| v as i32),
-        refresh: refresh.map(|v| v as i32),
+        refresh,
+        custom: custom.is_not_nil(),
+        modeline,
         scale,
         transform: transform.map(|v| v as i32),
         enabled: enabled_opt,
