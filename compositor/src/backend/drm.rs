@@ -2304,9 +2304,10 @@ impl DrmBackendState {
                 .ok_or("Display handle not available")?;
             let mut renderer = gpu_manager.single_renderer(&render_node)?;
             if let Err(err) = renderer.bind_wl_display(display_handle) {
-                warn!("Error binding wl-display in EGL: {:?}", err);
+                // wl_drm is on its way out so this is expected on most modern distros.
+                trace!("error binding legacy EGL to wl_display: {err:?}");
             } else {
-                info!("Renderer bound to Wayland display");
+                debug!("bound legacy EGL to wl_display");
             }
 
             let dmabuf_formats = renderer.dmabuf_formats().clone();
