@@ -95,7 +95,7 @@
     (should (equal (plist-get spec :description) "a"))
     (should (equal (plist-get spec :dispatch) "command"))
     (should (eq (plist-get spec :repeat) :false))
-    (should-not (plist-get spec :emulate))))
+    (should-not (plist-get spec :translate))))
 
 (ert-deftest ewm-input-tests/spec-fullscreen-flag ()
   "`fullscreen=t' lifts :fullscreen in the plist."
@@ -116,10 +116,13 @@
   (let ((spec (ewm--event-to-intercept-spec 'XF86AudioMute)))
     (should (equal (plist-get spec :key) "XF86AudioMute"))))
 
-(ert-deftest ewm-input-tests/spec-emulate-appended ()
-  "`emulate' arg appears as a trailing :emulate entry."
-  (let ((spec (ewm--event-to-intercept-spec ?c nil "ctrl")))
-    (should (equal (plist-get spec :emulate) "ctrl"))))
+(ert-deftest ewm-input-tests/spec-translate-appended ()
+  "`translate' arg appears as a trailing :translate key spec."
+  (let* ((spec (ewm--event-to-intercept-spec ?\s-c nil "C-c"))
+         (target (plist-get spec :translate)))
+    (should (equal (plist-get target :key) ?c))
+    (should (eq (plist-get target :ctrl) t))
+    (should (eq (plist-get target :super) :false))))
 
 (ert-deftest ewm-input-tests/spec-keymap-prefix-dispatch ()
   "Keymap prefixes request keyboard dispatch."
@@ -196,6 +199,21 @@
         (should (equal (plist-get spec :dispatch) "command"))
         (should (eq (plist-get spec :fullscreen) t))
         (should (eq (plist-get spec :repeat) t))))))
+
+(ert-deftest ewm-input-tests/translate-key-not-in-mode-map-still-sent ()
+  "A `ewm-surface-emulate-keys' entry absent from `ewm-mode-map' is emitted."
+  (let ((ewm-intercept-prefixes nil)
+        (ewm-mode-map (make-sparse-keymap))
+        (ewm-surface-emulate-keys '((?\C-j . "<down>")))
+        captured)
+    (cl-letf (((symbol-function 'ewm-intercept-keys-module)
+               (lambda (keys) (setq captured keys))))
+      (ewm--send-intercept-keys))
+    (let* ((spec (car (append captured nil)))
+           (target (plist-get spec :translate)))
+      (should (equal (plist-get spec :key) ?j))
+      (should (eq (plist-get spec :ctrl) t))
+      (should (equal (plist-get target :key) "down")))))
 
 ;;;; ewm--parse-intercept-entry
 

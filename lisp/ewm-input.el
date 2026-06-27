@@ -214,15 +214,16 @@ Set with `setopt' (or `:custom' in `use-package'):
   :group 'ewm-input)
 
 (defcustom ewm-surface-emulate-keys
-  '((?\s-c . "ctrl")
-    (?\s-v . "ctrl"))
-  "Super+KEY bindings that translate to Ctrl+KEY for non-Emacs surfaces.
-Each entry is (KEY-EVENT . TARGET-MOD) where TARGET-MOD is \"ctrl\",
-\"alt\", or \"shift\".
+  '((?\s-c . "C-c")
+    (?\s-v . "C-v"))
+  "Key bindings translated to a different key for non-Emacs surfaces.
+Each entry is (KEY-EVENT . TARGET) where TARGET is a key description
+\(e.g. \"C-c\", \"<down>\", \"M-S-c\").
 
-When a non-Emacs Wayland surface has focus, these keys are translated
-\(e.g., s-c becomes C-c for clipboard copy in Firefox).  When Emacs
-has focus, the original binding from `ewm-mode-map' is used."
+When a non-Emacs Wayland surface has focus, the matched key is delivered
+to it as TARGET instead of going to Emacs (e.g. s-c becomes C-c for
+clipboard copy in Firefox, or C-j becomes <down>).  When Emacs has focus,
+the original binding from `ewm-mode-map' is used."
   :type '(alist :key-type character :value-type string)
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
@@ -479,11 +480,9 @@ runtime."
               ewm-input--repeatable-key-descriptions)
       (memq (ewm--event-mode-binding event) ewm-repeatable-commands)))
 
-(defun ewm--event-to-intercept-spec (event &optional fullscreen emulate dispatch)
-  "Convert EVENT to an intercept specification for the compositor.
-Returns a plist with :key, modifier flags, :fullscreen, :dispatch, and
-optionally :emulate.  EMULATE is a target modifier string (e.g. \"ctrl\")
-for key emulation."
+(defun ewm--event-key-spec (event)
+  "Return a (:key VALUE modifier-flags) plist for EVENT, or nil.
+VALUE is the ASCII code or special-key name; flags are t or :false."
   (let* ((mods (event-modifiers event))
          (base (event-basic-type event))
          ;; base is either an integer (ASCII) or a symbol (special key)
@@ -492,16 +491,28 @@ for key emulation."
                      ((symbolp base) (symbol-name base))
                      (t nil))))
     (when key-value
-      `(:key ,key-value
+      (list :key key-value
+            :ctrl (if (memq 'control mods) t :false)
+            :alt (if (memq 'meta mods) t :false)
+            :shift (if (memq 'shift mods) t :false)
+            :super (if (memq 'super mods) t :false)))))
+
+(defun ewm--event-to-intercept-spec (event &optional fullscreen translate dispatch)
+  "Convert EVENT to an intercept specification for the compositor.
+Returns a plist with :key, modifier flags, :fullscreen, :dispatch, and
+optionally :translate.  TRANSLATE is a target key description (e.g. \"C-c\"
+or \"<down>\"); when set, the matched key is delivered to non-Emacs surfaces
+as that key instead of going to Emacs."
+  (let ((key-spec (ewm--event-key-spec event)))
+    (when key-spec
+      `(,@key-spec
         :description ,(key-description (vector event))
-        :ctrl ,(if (memq 'control mods) t :false)
-        :alt ,(if (memq 'meta mods) t :false)
-        :shift ,(if (memq 'shift mods) t :false)
-        :super ,(if (memq 'super mods) t :false)
         :fullscreen ,(if fullscreen t :false)
         :dispatch ,(or dispatch (ewm--event-dispatch event))
         :repeat ,(if (ewm--event-repeat-p event) t :false)
-        ,@(when emulate (list :emulate emulate))))))
+        ,@(when translate
+            (list :translate (ewm--event-key-spec
+                              (aref (key-parse translate) 0))))))))
 
 (defun ewm--parse-intercept-entry (entry)
   "Parse ENTRY from `ewm-intercept-prefixes'.
@@ -516,7 +527,7 @@ Returns (event . fullscreen-p) or nil."
   "Send intercepted keys configuration to compositor.
 Scans `ewm-intercept-prefixes' first (so :fullscreen flags win),
 then `ewm-mode-map' bindings.  Keys in `ewm-surface-emulate-keys'
-get an :emulate flag for modifier translation on non-Emacs surfaces."
+get a :translate target delivered to non-Emacs surfaces."
   (ewm-input--install-xf86-key-aliases)
   (let ((specs nil)
         (fullscreen-events nil))
@@ -534,7 +545,7 @@ get an :emulate flag for modifier translation on non-Emacs surfaces."
                                nil
                                (ewm--event-dispatch event t))))
               (put-spec event spec)))))
-      ;; Keymap bindings: fullscreen flag and emulate looked up.
+      ;; Keymap bindings: fullscreen flag and translate target looked up.
       (map-keymap
        (lambda (event binding)
          (when (ewm--live-binding-p binding)
@@ -545,6 +556,14 @@ get an :emulate flag for modifier translation on non-Emacs surfaces."
                               (ewm--event-dispatch event))))
              (put-spec event spec))))
        ewm-mode-map)
+      ;; Translate keys not bound in `ewm-mode-map' still need a spec so the
+      ;; surface receives the target; on Emacs focus the key passes through.
+      (dolist (entry ewm-surface-emulate-keys)
+        (let ((event (car entry)))
+          (unless (alist-get event specs nil nil #'eql)
+            (when-let* ((spec (ewm--event-to-intercept-spec
+                               event (memq event fullscreen-events) (cdr entry))))
+              (put-spec event spec)))))
       (ewm-intercept-keys-module
        (vconcat (mapcar #'cdr (nreverse specs)))))))
 

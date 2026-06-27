@@ -738,6 +738,8 @@ impl InterceptedKey {
 pub enum InterceptDispatch {
     Keyboard,
     Command,
+    /// Translate to a different key delivered to a non-Emacs surface.
+    Translate(TranslateTarget),
 }
 
 impl Default for InterceptDispatch {
@@ -774,13 +776,14 @@ fn key_binding_matches(
     false
 }
 
-/// Emulated key: a key combo that is translated to different modifiers
-/// when forwarded to non-Emacs surfaces.
+/// Target key delivered to a non-Emacs surface in place of a matched key:
+/// a keysym plus the modifiers the surface should see.
 ///
-/// Example: Super+c -> Ctrl+c (universal clipboard copy for Wayland clients).
-/// When Emacs has focus, the original key works normally via `ewm-mode-map`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct EmulatedKey {
+/// Example: Super+c is matched and Ctrl+c (clipboard copy) is delivered; or
+/// Ctrl+j delivers Down. When Emacs has focus the matched key works normally
+/// via `ewm-mode-map`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub struct TranslateTarget {
     pub keysym: u32,
     #[serde(default)]
     pub ctrl: bool,
@@ -790,48 +793,6 @@ pub struct EmulatedKey {
     pub shift: bool,
     #[serde(rename = "super", default)]
     pub logo: bool,
-    /// Target modifier to substitute (e.g. "ctrl" replaces the source Super)
-    pub target_mod: String,
-}
-
-impl EmulatedKey {
-    /// Check if this emulated key matches the given keysym and modifiers.
-    /// Uses the same matching logic as `InterceptedKey::matches`.
-    pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
-        key_binding_matches(
-            self.keysym,
-            self.ctrl,
-            self.alt,
-            self.shift,
-            self.logo,
-            raw_keysym,
-            modified_keysym,
-            mods,
-        )
-    }
-
-    /// Build the target ModifiersState: source modifiers with logo replaced by target_mod.
-    pub(crate) fn target_modifiers_for(
-        current: &ModifiersState,
-        target_mod: &str,
-    ) -> ModifiersState {
-        let mut mods = *current;
-        // Remove logo (the source modifier being replaced)
-        mods.logo = false;
-        // Add target modifier
-        match target_mod {
-            "ctrl" => mods.ctrl = true,
-            "alt" => mods.alt = true,
-            "shift" => mods.shift = true,
-            "super" => mods.logo = true,
-            _ => {}
-        }
-        mods
-    }
-
-    pub fn target_modifiers(&self, current: &ModifiersState) -> ModifiersState {
-        Self::target_modifiers_for(current, &self.target_mod)
-    }
 }
 
 /// DnD icon surface attached to the pointer during a drag operation.
@@ -6022,7 +5983,6 @@ impl Ewm {
                 "image": self.cursor_manager.debug_state(cursor_scale),
             },
             "intercepted_keys": module::get_intercepted_keys(),
-            "emulated_keys": module::get_emulated_keys(),
             "emacs_pid": self.emacs_pid,
             "text_input_intercept": self.text_input_intercept,
             "text_input_active": self.im_text_input.is_active(),

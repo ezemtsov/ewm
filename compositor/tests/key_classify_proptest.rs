@@ -17,7 +17,7 @@
 //!       and of fullscreen.
 
 use ewm_core::input::{classify_key, KeyAction};
-use ewm_core::{EmulatedKey, InterceptDispatch, InterceptedKey};
+use ewm_core::{InterceptDispatch, InterceptedKey, TranslateTarget};
 use proptest::prelude::*;
 use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
 
@@ -59,14 +59,25 @@ fn ik_with_dispatch_and_repeat(
     }
 }
 
-fn ek(keysym: u32, target_mod: &str) -> EmulatedKey {
-    EmulatedKey {
+fn ik_translate(keysym: u32, target: TranslateTarget) -> InterceptedKey {
+    InterceptedKey {
         keysym,
+        key: format!("key-{keysym}"),
         ctrl: false,
         alt: false,
         shift: false,
         logo: false,
-        target_mod: target_mod.to_string(),
+        allow_fullscreen: false,
+        dispatch: InterceptDispatch::Translate(target),
+        repeat: false,
+    }
+}
+
+fn ctrl_target(keysym: u32) -> TranslateTarget {
+    TranslateTarget {
+        keysym,
+        ctrl: true,
+        ..Default::default()
     }
 }
 
@@ -80,27 +91,7 @@ fn keysym_strategy() -> impl Strategy<Value = u32> {
 /// Thin call-site helper so each proptest doesn't restate the 10-arg
 /// `classify_key` signature with `keysym, keysym, Keysym::from(keysym)`.
 fn classify(
-    keys: &[InterceptedKey],
-    text_input: bool,
-    focus_on_emacs: bool,
-    fullscreen_active: bool,
-    is_press: bool,
-    keysym: u32,
-) -> KeyAction {
-    classify_with(
-        keys,
-        &[],
-        text_input,
-        focus_on_emacs,
-        fullscreen_active,
-        is_press,
-        keysym,
-    )
-}
-
-fn classify_with(
     intercepted_keys: &[InterceptedKey],
-    emulated_keys: &[EmulatedKey],
     text_input: bool,
     focus_on_emacs: bool,
     fullscreen_active: bool,
@@ -109,7 +100,6 @@ fn classify_with(
 ) -> KeyAction {
     classify_key(
         intercepted_keys,
-        emulated_keys,
         text_input,
         focus_on_emacs,
         fullscreen_active,
@@ -199,9 +189,8 @@ proptest! {
         fullscreen_active in any::<bool>(),
     ) {
         let keysym = keysyms::KEY_XF86Switch_VT_1 + vt - 1;
-        let action = classify_with(
-            &[ik(keysym, true)],
-            &[ek(keysym, "ctrl")],
+        let action = classify(
+            &[ik_translate(keysym, ctrl_target(keysym))],
             text_input,
             focus_on_emacs,
             fullscreen_active,
@@ -212,24 +201,23 @@ proptest! {
     }
 
     #[test]
-    fn emulation_precedes_intercept_when_focus_is_outside_emacs(keysym in keysym_strategy()) {
-        let action = classify_with(
-            &[ik(keysym, true)],
-            &[ek(keysym, "ctrl")],
+    fn translate_applies_when_focus_is_outside_emacs(keysym in keysym_strategy()) {
+        let target = ctrl_target(keysym);
+        let action = classify(
+            &[ik_translate(keysym, target)],
             false,
             false,
             false,
             true,
             keysym,
         );
-        prop_assert_eq!(action, KeyAction::Emulate("ctrl".to_string()));
+        prop_assert_eq!(action, KeyAction::Translate(target));
     }
 
     #[test]
-    fn emulation_defers_when_emacs_already_has_focus(keysym in keysym_strategy()) {
-        let action = classify_with(
-            &[],
-            &[ek(keysym, "ctrl")],
+    fn translate_defers_when_emacs_already_has_focus(keysym in keysym_strategy()) {
+        let action = classify(
+            &[ik_translate(keysym, ctrl_target(keysym))],
             false,
             true,
             false,
@@ -244,7 +232,7 @@ proptest! {
         letter in 0u32..26,
     ) {
         let keysym = keysyms::KEY_a + letter;
-        let action = classify_with(&[], &[], true, false, false, true, keysym);
+        let action = classify(&[], true, false, false, true, keysym);
         let expected = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
 
         prop_assert_eq!(
@@ -270,7 +258,7 @@ proptest! {
         mods.logo = logo;
         let keysym = keysyms::KEY_a + letter;
         let action = classify_key(
-            &[], &[], true, false, false, true,
+            &[], true, false, false, true,
             keysym, keysym, Keysym::from(keysym), &mods, false,
         );
         let expected = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
@@ -281,7 +269,7 @@ proptest! {
     #[test]
     fn text_input_intercepts_non_printable_keys_without_utf8(_ in Just(())) {
         let keysym = keysyms::KEY_Return;
-        let action = classify_with(&[], &[], true, false, false, true, keysym);
+        let action = classify(&[], true, false, false, true, keysym);
 
         prop_assert_eq!(
             action,
@@ -297,7 +285,6 @@ proptest! {
     ) {
         prop_assume!(focus_on_emacs || key_changes_modifiers);
         let action = classify_key(
-            &[],
             &[],
             true,
             focus_on_emacs,

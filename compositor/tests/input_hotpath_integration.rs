@@ -3,7 +3,9 @@
 use ewm_core::input::KeyboardAction;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
-use ewm_core::{EmulatedKey, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId};
+use ewm_core::{
+    InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, TranslateTarget,
+};
 use smithay::input::keyboard::keysyms;
 use smithay::utils::Size;
 
@@ -97,14 +99,28 @@ fn intercepted((key, keysym, ctrl, alt, allow_fullscreen): Binding) -> Intercept
     }
 }
 
-fn emulated((keysym, target_mod): (u32, &str)) -> EmulatedKey {
-    EmulatedKey {
+fn translated((keysym, target_mod): (u32, &str)) -> InterceptedKey {
+    let mut target = TranslateTarget {
         keysym,
+        ..Default::default()
+    };
+    match target_mod {
+        "ctrl" => target.ctrl = true,
+        "alt" => target.alt = true,
+        "shift" => target.shift = true,
+        "super" => target.logo = true,
+        _ => {}
+    }
+    InterceptedKey {
+        keysym,
+        key: String::new(),
         ctrl: false,
         alt: false,
         shift: false,
         logo: false,
-        target_mod: target_mod.to_string(),
+        allow_fullscreen: false,
+        dispatch: InterceptDispatch::Translate(target),
+        repeat: false,
     }
 }
 
@@ -147,7 +163,6 @@ impl Harness {
         let mut fix = Fixture::new().unwrap();
         fix.clear_keyboard_capture();
         fix.set_intercepted_keys(Vec::new());
-        fix.set_emulated_keys(Vec::new());
 
         let mut emacs = fix.new_client().unwrap();
         let mut app = fix.new_client().unwrap();
@@ -215,7 +230,7 @@ impl Harness {
 
     fn emulations(&mut self, emulations: &[(u32, &str)]) -> &mut Self {
         self.fix
-            .set_emulated_keys(emulations.iter().copied().map(emulated).collect());
+            .set_intercepted_keys(emulations.iter().copied().map(translated).collect());
         self
     }
 
@@ -252,9 +267,9 @@ impl Harness {
 
     fn hold_emulated(&mut self, key: u32) -> &mut Self {
         self.expect_keyboard_focus(Target::App);
-        assert_eq!(self.fix.keyboard_key(key, true), KeyboardAction::Emulated);
-        assert_eq!(self.fix.keyboard_key(key, true), KeyboardAction::Emulated);
-        assert_eq!(self.fix.keyboard_key(key, false), KeyboardAction::Emulated);
+        assert_eq!(self.fix.keyboard_key(key, true), KeyboardAction::Translated);
+        assert_eq!(self.fix.keyboard_key(key, true), KeyboardAction::Translated);
+        assert_eq!(self.fix.keyboard_key(key, false), KeyboardAction::Translated);
         self.expect_keyboard_focus(Target::App)
     }
 

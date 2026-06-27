@@ -25,14 +25,14 @@
 
 use smithay::backend::input::KeyState;
 use smithay::input::keyboard::{
-    keysyms, xkb, FilterResult, KeyboardHandle, Keysym, ModifiersState,
+    keysyms, xkb, FilterResult, Keycode, KeyboardHandle, Keysym, ModifiersState,
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
 
 use crate::im::repeat::HeldKeyOwner;
 use crate::{
-    module, tracy_span, EmulatedKey, InterceptDispatch, InterceptedKey, State, SurfaceHit,
+    module, tracy_span, InterceptDispatch, InterceptedKey, State, SurfaceHit, TranslateTarget,
 };
 
 fn notify_activity(state: &mut State) {
@@ -61,8 +61,8 @@ fn key_repeats(state: &mut State, keycode: u32) -> bool {
 pub enum KeyAction {
     /// Forward to focused client as-is
     Forward,
-    /// Emulate: translate modifiers and forward to client
-    Emulate(String),
+    /// Translate to a different key and forward it to the focused client.
+    Translate(TranslateTarget),
     /// Redirect to Emacs through Wayland keyboard focus.
     KeyboardRedirect(u32),
     /// Execute an Emacs command binding without moving Wayland keyboard focus.
@@ -96,6 +96,7 @@ fn intercepted_key_action(ik: &InterceptedKey, keysym_raw: u32) -> KeyAction {
             key: ik.key.clone(),
             repeat: ik.repeat,
         },
+        InterceptDispatch::Translate(target) => KeyAction::Translate(target),
     }
 }
 
@@ -104,7 +105,6 @@ fn intercepted_key_action(ik: &InterceptedKey, keysym_raw: u32) -> KeyAction {
 /// applies side effects downstream. Releases always Forward.
 pub fn classify_key(
     intercepted_keys: &[InterceptedKey],
-    emulated_keys: &[EmulatedKey],
     text_input_intercept: bool,
     focus_on_emacs: bool,
     fullscreen_active: bool,
@@ -123,21 +123,18 @@ pub fn classify_key(
         return KeyAction::VtSwitch(vt);
     }
 
-    if !focus_on_emacs {
-        if let Some(ek) = emulated_keys
-            .iter()
-            .find(|ek| ek.matches(keysym_raw, modified_raw, mods))
-        {
-            return KeyAction::Emulate(ek.target_mod.clone());
-        }
-    }
-
     if let Some(ik) = intercepted_keys
         .iter()
         .find(|ik| ik.matches(keysym_raw, modified_raw, mods))
     {
-        if !focus_on_emacs && (!fullscreen_active || ik.allow_fullscreen) {
-            return intercepted_key_action(ik, keysym_raw);
+        if focus_on_emacs {
+            return KeyAction::Forward;
+        }
+        let action = intercepted_key_action(ik, keysym_raw);
+        // Translation always applies to surfaces (like clipboard emulation);
+        // keyboard/command redirects respect fullscreen.
+        if matches!(action, KeyAction::Translate(_)) || !fullscreen_active || ik.allow_fullscreen {
+            return action;
         }
         return KeyAction::Forward;
     }
@@ -171,8 +168,8 @@ pub enum KeyboardAction {
     TextInputIntercepted,
     /// VT switch requested (Ctrl+Alt+F1-F12)
     ChangeVt(i32),
-    /// Key was emulated (modifier translated and forwarded to client)
-    Emulated,
+    /// Key was translated to a different key and forwarded to the client.
+    Translated,
 }
 
 fn handle_held_intercept(
@@ -189,7 +186,7 @@ fn handle_held_intercept(
     if release
         || matches!(
             owner,
-            HeldKeyOwner::KeyboardRedirect | HeldKeyOwner::Emulated { .. }
+            HeldKeyOwner::KeyboardRedirect | HeldKeyOwner::Translate { .. }
         )
     {
         let (_, mods_changed) =
@@ -198,9 +195,15 @@ fn handle_held_intercept(
             HeldKeyOwner::KeyboardRedirect => {
                 state.send_intercept_key_to_emacs(keycode, key_state, time, mods_changed);
             }
-            HeldKeyOwner::Emulated { target_mod } => {
-                forward_emulated_key(
-                    state, keyboard, keycode, key_state, serial, time, target_mod,
+            HeldKeyOwner::Translate { keycode, target } => {
+                forward_translate(
+                    state,
+                    keyboard,
+                    Keycode::new(*keycode),
+                    key_state,
+                    serial,
+                    time,
+                    target,
                 );
             }
             _ => {}
@@ -217,24 +220,51 @@ fn handle_held_intercept(
         HeldKeyOwner::KeyboardRedirect => KeyboardAction::RedirectToEmacs,
         HeldKeyOwner::Command => KeyboardAction::CommandIntercepted,
         HeldKeyOwner::TextInput => KeyboardAction::TextInputIntercepted,
-        HeldKeyOwner::Emulated { .. } => KeyboardAction::Emulated,
+        HeldKeyOwner::Translate { .. } => KeyboardAction::Translated,
     })
 }
 
-fn forward_emulated_key(
+/// Find a keycode that produces `keysym` in the active layout, or None.
+fn resolve_keycode(
     state: &mut State,
     keyboard: &KeyboardHandle<State>,
-    keycode: u32,
+    keysym: u32,
+) -> Option<Keycode> {
+    keyboard.with_xkb_state(state, |context| {
+        let xkb = context.xkb().lock().unwrap();
+        let layout = xkb.active_layout();
+        // The borrowed keymap is used only inside Smithay's XKB callback.
+        let keymap = unsafe { xkb.keymap() };
+        (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
+            .map(Keycode::new)
+            .find(|&kc| {
+                xkb.raw_syms_for_key_in_layout(kc, layout)
+                    .iter()
+                    .any(|sym| sym.raw() == keysym)
+            })
+    })
+}
+
+/// Forward `keycode` to the focused surface with the target's modifiers, then
+/// restore the live modifier state.
+fn forward_translate(
+    state: &mut State,
+    keyboard: &KeyboardHandle<State>,
+    keycode: Keycode,
     key_state: KeyState,
     serial: smithay::utils::Serial,
     time: u32,
-    target_mod: &str,
+    target: &TranslateTarget,
 ) {
     let saved_mods = keyboard.modifier_state();
-    let target_mods = EmulatedKey::target_modifiers_for(&saved_mods, target_mod);
+    let mut target_mods = saved_mods;
+    target_mods.ctrl = target.ctrl;
+    target_mods.alt = target.alt;
+    target_mods.shift = target.shift;
+    target_mods.logo = target.logo;
     keyboard.set_modifier_state(target_mods);
     keyboard.advertise_modifier_state(state);
-    keyboard.input_forward(state, keycode.into(), key_state, serial, time, false);
+    keyboard.input_forward(state, keycode, key_state, serial, time, false);
     keyboard.set_modifier_state(saved_mods);
 }
 
@@ -356,14 +386,13 @@ pub fn handle_keyboard_event(
         };
 
     let intercepted_keys = crate::module::get_intercepted_keys();
-    let emulated_keys = crate::module::get_emulated_keys();
     let focused_surface_id = state.ewm.focused_surface_id();
     let text_input_intercept = state.ewm.text_input_intercept
         && state.ewm.im_text_input.is_active()
         && state.ewm.active_text_input_surface_id() == Some(focused_surface_id);
 
-    // Use input_intercept + explicit input_forward so we can handle
-    // emulation (modifier translation) between the two steps.
+    // Use input_intercept + explicit input_forward so we can translate keys
+    // (resolve a different keycode/modifiers) between the two steps.
     let mods_before = keyboard.modifier_state();
     let (action, mods_changed) =
         keyboard.input_intercept(state, keycode.into(), key_state, |_, mods, handle| {
@@ -374,7 +403,6 @@ pub fn handle_keyboard_event(
                 .raw();
             classify_key(
                 &intercepted_keys,
-                &emulated_keys,
                 text_input_intercept,
                 focus_on_emacs,
                 fullscreen_active,
@@ -405,25 +433,29 @@ pub fn handle_keyboard_event(
             }
         }
 
-        KeyAction::Emulate(ref target_mod) => {
-            state.ewm.begin_key_hold(
-                keycode,
-                HeldKeyOwner::Emulated {
-                    target_mod: target_mod.clone(),
-                },
-            );
-            forward_emulated_key(
-                state, &keyboard, keycode, key_state, serial, time, target_mod,
-            );
-
-            tracing::debug!(
-                "emulate: keycode={} target_mod={} surface={}",
-                keycode,
-                target_mod,
-                state.ewm.focused_surface_id()
-            );
+        KeyAction::Translate(target) => {
+            // Resolve the target keycode once; the hold reuses it for repeats
+            // and release rather than rescanning the keymap each event.
+            if let Some(target_keycode) = resolve_keycode(state, &keyboard, target.keysym) {
+                state.ewm.begin_key_hold(
+                    keycode,
+                    HeldKeyOwner::Translate {
+                        keycode: target_keycode.raw(),
+                        target,
+                    },
+                );
+                forward_translate(state, &keyboard, target_keycode, key_state, serial, time, &target);
+                tracing::debug!(
+                    "translate: keycode={} -> keysym=0x{:x} surface={}",
+                    keycode,
+                    target.keysym,
+                    state.ewm.focused_surface_id()
+                );
+            } else {
+                tracing::warn!("translate: no keycode for keysym 0x{:x}", target.keysym);
+            }
             notify_activity(state);
-            return KeyboardAction::Emulated;
+            return KeyboardAction::Translated;
         }
 
         KeyAction::TextInput {

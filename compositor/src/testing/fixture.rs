@@ -338,10 +338,6 @@ impl Fixture {
         crate::module::set_intercepted_keys_for_test(keys);
     }
 
-    pub fn set_emulated_keys(&mut self, keys: Vec<crate::EmulatedKey>) {
-        crate::module::set_emulated_keys_for_test(keys);
-    }
-
     pub fn clear_keyboard_capture(&mut self) {
         crate::module::clear_keyboard_capture_holders();
         self.state.sync_keyboard_focus();

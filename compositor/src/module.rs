@@ -56,7 +56,7 @@ use_symbols! {
     kw_alt         => ":alt"
     kw_shift       => ":shift"
     kw_super       => ":super"
-    kw_emulate     => ":emulate"
+    kw_translate   => ":translate"
     kw_dispatch    => ":dispatch"
     kw_repeat      => ":repeat"
     kw_name       => ":name"
@@ -119,7 +119,7 @@ use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{reply_channel, ReplyError};
-use crate::{EmulatedKey, InterceptDispatch, InterceptedKey, LayoutEntry};
+use crate::{InterceptDispatch, InterceptedKey, LayoutEntry, TranslateTarget};
 
 /// Extract a number from a Lisp value as f64, accepting both int and float.
 fn value_as_f64(val: Value<'_>) -> Result<f64> {
@@ -253,23 +253,6 @@ pub fn get_intercepted_keys() -> Vec<InterceptedKey> {
 #[doc(hidden)]
 pub fn set_intercepted_keys_for_test(keys: Vec<InterceptedKey>) {
     *intercepted_keys().write().unwrap() = keys;
-}
-
-/// Emulated keys (synchronous, like intercepted keys)
-static EMULATED_KEYS: OnceLock<RwLock<Vec<EmulatedKey>>> = OnceLock::new();
-
-fn emulated_keys() -> &'static RwLock<Vec<EmulatedKey>> {
-    EMULATED_KEYS.get_or_init(|| RwLock::new(Vec::new()))
-}
-
-/// Get emulated keys (called by compositor during input handling).
-pub fn get_emulated_keys() -> Vec<EmulatedKey> {
-    emulated_keys().read().unwrap().clone()
-}
-
-#[doc(hidden)]
-pub fn set_emulated_keys_for_test(keys: Vec<EmulatedKey>) {
-    *emulated_keys().write().unwrap() = keys;
 }
 
 /// Emacs currently needs Wayland keyboard focus for command-loop input.
@@ -1222,14 +1205,31 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
     no_symbol
 }
 
-/// Set intercepted and emulated keys (module mode).
+/// Resolve a plist :key value (Unicode codepoint integer or key name string)
+/// to an XKB keysym, or None when it is neither. The keysym may be NoSymbol.
+fn keysym_from_value(key_val: Value<'_>) -> Option<xkb::Keysym> {
+    if let Ok(codepoint) = key_val.into_rust::<i64>() {
+        Some(xkb::utf32_to_keysym(codepoint as u32))
+    } else if let Ok(name) = key_val.into_rust::<String>() {
+        Some(resolve_keysym_from_name(&name))
+    } else {
+        None
+    }
+}
+
+/// Truthy plist value: present and not the `:false` sentinel.
+fn value_is_true(v: Value<'_>) -> bool {
+    v.is_not_nil() && v != *kw_false
+}
+
+/// Set intercepted keys (module mode).
 /// KEYS is a vector of plists with :key :description :ctrl :alt :shift
 /// :super :fullscreen :dispatch keys.
-/// Keys with :emulate "ctrl" (etc.) go into the emulated set; the rest are intercepted.
+/// A key with a :translate (:key ... modifiers) plist is delivered to non-Emacs
+/// surfaces as that target key instead of being sent to Emacs.
 #[defun]
 fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
     let mut parsed_keys = Vec::new();
-    let mut parsed_emulated = Vec::new();
 
     let len: i64 = env.call(length, (keys,))?.into_rust()?;
 
@@ -1251,11 +1251,7 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         } else {
             String::new()
         };
-        let keysym = if let Ok(codepoint) = key_val.into_rust::<i64>() {
-            xkb::utf32_to_keysym(codepoint as u32)
-        } else if let Ok(name) = key_val.into_rust::<String>() {
-            resolve_keysym_from_name(&name)
-        } else {
+        let Some(keysym) = keysym_from_value(key_val) else {
             continue; // Skip invalid keys
         };
 
@@ -1271,9 +1267,6 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
             continue;
         }
 
-        // Helper to check if a value is truthy (not nil and not :false)
-        let is_true = |v: Value| -> bool { v.is_not_nil() && v != *kw_false };
-
         // Extract modifier flags
         let ctrl_val = env.call(plist_get, (key_spec, kw_ctrl))?;
         let alt_val = env.call(plist_get, (key_spec, kw_alt))?;
@@ -1282,7 +1275,16 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
         let allow_fullscreen_val = env.call(plist_get, (key_spec, kw_fullscreen))?;
         let dispatch_val = env.call(plist_get, (key_spec, kw_dispatch))?;
         let repeat_val = env.call(plist_get, (key_spec, kw_repeat))?;
-        let dispatch = if let Ok(dispatch) = dispatch_val.into_rust::<String>() {
+
+        // A :translate target overrides dispatch: the matched key is delivered
+        // to non-Emacs surfaces as the target key instead of going to Emacs.
+        let translate_val = env.call(plist_get, (key_spec, kw_translate))?;
+        let dispatch = if translate_val.is_not_nil() {
+            match parse_translate_target(env, translate_val)? {
+                Some(target) => InterceptDispatch::Translate(target),
+                None => continue,
+            }
+        } else if let Ok(dispatch) = dispatch_val.into_rust::<String>() {
             match dispatch.as_str() {
                 "command" => InterceptDispatch::Command,
                 "keyboard" => InterceptDispatch::Keyboard,
@@ -1295,40 +1297,43 @@ fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
             InterceptDispatch::Keyboard
         };
 
-        // Check :emulate flag: keys with this go to emulated set
-        let emulate_val = env.call(plist_get, (key_spec, kw_emulate))?;
-        if let Ok(target_mod) = emulate_val.into_rust::<String>() {
-            parsed_emulated.push(EmulatedKey {
-                keysym: keysym.raw(),
-                ctrl: is_true(ctrl_val),
-                alt: is_true(alt_val),
-                shift: is_true(shift_val),
-                logo: is_true(super_val),
-                target_mod,
-            });
-        } else {
-            parsed_keys.push(InterceptedKey {
-                keysym: keysym.raw(),
-                key: key_description,
-                ctrl: is_true(ctrl_val),
-                alt: is_true(alt_val),
-                shift: is_true(shift_val),
-                logo: is_true(super_val),
-                allow_fullscreen: is_true(allow_fullscreen_val),
-                dispatch,
-                repeat: is_true(repeat_val),
-            });
-        }
+        parsed_keys.push(InterceptedKey {
+            keysym: keysym.raw(),
+            key: key_description,
+            ctrl: value_is_true(ctrl_val),
+            alt: value_is_true(alt_val),
+            shift: value_is_true(shift_val),
+            logo: value_is_true(super_val),
+            allow_fullscreen: value_is_true(allow_fullscreen_val),
+            dispatch,
+            repeat: value_is_true(repeat_val),
+        });
     }
 
+    let count = parsed_keys.len();
     *intercepted_keys().write().unwrap() = parsed_keys;
-    *emulated_keys().write().unwrap() = parsed_emulated;
-    tracing::info!(
-        "Intercepted keys set ({} intercept, {} emulate)",
-        intercepted_keys().read().unwrap().len(),
-        emulated_keys().read().unwrap().len(),
-    );
+    tracing::info!("Intercepted keys set ({count} keys)");
     Ok(())
+}
+
+/// Parse a :translate target plist (:key plus :ctrl/:alt/:shift/:super flags)
+/// into a `TranslateTarget`, resolving the keysym from the key name or codepoint.
+fn parse_translate_target(env: &Env, spec: Value<'_>) -> Result<Option<TranslateTarget>> {
+    let key_val = env.call(plist_get, (spec, kw_key))?;
+    let Some(keysym) = keysym_from_value(key_val) else {
+        return Ok(None);
+    };
+    if keysym == keysyms::KEY_NoSymbol.into() {
+        tracing::warn!("Could not resolve :translate target keysym, skipping binding");
+        return Ok(None);
+    }
+    Ok(Some(TranslateTarget {
+        keysym: keysym.raw(),
+        ctrl: value_is_true(env.call(plist_get, (spec, kw_ctrl))?),
+        alt: value_is_true(env.call(plist_get, (spec, kw_alt))?),
+        shift: value_is_true(env.call(plist_get, (spec, kw_shift))?),
+        logo: value_is_true(env.call(plist_get, (spec, kw_super))?),
+    }))
 }
 
 /// Commit text to a client text field.

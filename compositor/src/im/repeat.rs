@@ -20,7 +20,7 @@ pub(crate) enum HeldKeyOwner {
     KeyboardRedirect,
     Command,
     TextInput,
-    Emulated { target_mod: String },
+    Translate { keycode: u32, target: crate::TranslateTarget },
 }
 
 impl HeldKeyOwner {
@@ -29,7 +29,7 @@ impl HeldKeyOwner {
             Self::KeyboardRedirect => "keyboard_redirect",
             Self::Command => "command",
             Self::TextInput => "text_input",
-            Self::Emulated { .. } => "emulated",
+            Self::Translate { .. } => "translate",
         }
     }
 }
@@ -48,7 +48,7 @@ mod tests {
         KeyboardRedirect,
         Command,
         TextInput,
-        Emulated,
+        Translate,
     }
 
     impl OwnerSeed {
@@ -57,8 +57,9 @@ mod tests {
                 Self::KeyboardRedirect => HeldKeyOwner::KeyboardRedirect,
                 Self::Command => HeldKeyOwner::Command,
                 Self::TextInput => HeldKeyOwner::TextInput,
-                Self::Emulated => HeldKeyOwner::Emulated {
-                    target_mod: "ctrl".to_string(),
+                Self::Translate => HeldKeyOwner::Translate {
+                    keycode: 0,
+                    target: crate::TranslateTarget::default(),
                 },
             }
         }
@@ -90,7 +91,7 @@ mod tests {
             Just(OwnerSeed::KeyboardRedirect),
             Just(OwnerSeed::Command),
             Just(OwnerSeed::TextInput),
-            Just(OwnerSeed::Emulated),
+            Just(OwnerSeed::Translate),
         ]
     }
 
@@ -183,6 +184,10 @@ mod tests {
                             100 + key,
                             Some(format!("u{key}")),
                             1000 + u64::from(key),
+                            false,
+                            false,
+                            false,
+                            false,
                         );
                         if repeat_enabled {
                             repeat = Some(RepeatModel::TextInput(key));
