@@ -147,9 +147,7 @@ fn workspace_protocol_reports_renamed_workspace_and_preserves_name_across_layout
 
     fix.ewm()
         .apply_output_layout(HEAD_A, vec![frame(100), frame(101)]);
-    assert!(fix
-        .ewm()
-        .rename_workspace(Some(101), "code".to_string()));
+    assert!(fix.ewm().rename_workspace(Some(101), "code".to_string()));
     fix.dispatch();
 
     let state = fix.debug_state();
@@ -160,9 +158,7 @@ fn workspace_protocol_reports_renamed_workspace_and_preserves_name_across_layout
     assert_eq!(named["id"], "code");
     assert_eq!(named["name"], "code");
 
-    assert!(!fix
-        .ewm()
-        .rename_workspace(Some(100), "CODE".to_string()));
+    assert!(!fix.ewm().rename_workspace(Some(100), "CODE".to_string()));
 
     fix.ewm()
         .apply_output_layout(HEAD_A, vec![frame(100), frame(101)]);

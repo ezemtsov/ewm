@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::floating::SizeFracPoint;
 use crate::utils::get_monotonic_time;
 use crate::{FocusId, LayoutEntry, LayoutEntryId};
 
@@ -271,6 +272,7 @@ pub struct Frame {
     pub surface_id: u64,
     pub focus_id: FocusId,
     pub width: f64,
+    pub height: f64,
     pub entries: Vec<LayoutEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fullscreen: Option<FullscreenEntry>,
@@ -278,6 +280,8 @@ pub struct Frame {
     pub selected_entry_id: Option<LayoutEntryId>,
     #[serde(skip)]
     pub move_anim: Option<ViewAnimation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floating_pos: Option<SizeFracPoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -295,10 +299,12 @@ impl Frame {
             surface_id,
             focus_id: frame_focus_id_for(surface_id),
             width: 0.0,
+            height: 0.0,
             entries: Vec::new(),
             fullscreen: None,
             selected_entry_id: None,
             move_anim: None,
+            floating_pos: None,
         }
     }
 
@@ -790,10 +796,12 @@ mod tests {
                     surface_id: 0,
                     focus_id: std::num::NonZeroU64::MIN,
                     width: w,
+                    height: 0.0,
                     entries: Vec::new(),
                     fullscreen: None,
                     selected_entry_id: None,
                     move_anim: None,
+                    floating_pos: None,
                 })
                 .collect(),
             gap,

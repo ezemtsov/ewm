@@ -314,6 +314,22 @@ The batch frame is shared; we save and restore the parameters we touch."
   (cl-letf (((symbol-function 'ewm--current-frame) #'ignore))
     (should (eq (selected-frame) (ewm--focused-frame)))))
 
+(ert-deftest ewm-focus/surface-target-prefers-focused-floating-frame ()
+  "New-surface fallback may target the focused floating frame."
+  (ewm-focus-tests--with-frame f
+    (let ((ewm--strips nil)
+          (ewm--floating-frames `((,ewm-focus-tests--output . (,f)))))
+      (cl-letf (((symbol-function 'ewm--current-frame) (lambda () f)))
+        (should (eq f (ewm--surface-target-frame-for-output
+                       ewm-focus-tests--output)))))))
+
+(ert-deftest ewm-focus/floating-public-command-is-toggle ()
+  "Floating exposes one interactive command: `ewm-floating-toggle'."
+  (should (commandp #'ewm-floating-toggle))
+  (should-not (fboundp 'ewm-frame-new-floating))
+  (should-not (fboundp 'ewm-floating-frame-move-left))
+  (should-not (fboundp 'ewm-floating-frame-widen)))
+
 (ert-deftest ewm-focus/delete-frame-advice-passes-captured-frame ()
   "Interactive nil FRAME must resolve once, before close handling can alter selection."
   (let* ((frame (selected-frame))
@@ -496,7 +512,30 @@ pointer."
                  (lambda (_) (cl-incf warps)))
                 ;; Frame-edge: no Emacs window at this point.
                 ((symbol-function 'window-at-x-y) (lambda (&rest _) nil)))
-        (ewm--handle-focus `((focus_id . ,frame-focus-id) (x . 0) (y . 0)))
+        (ewm--handle-focus `((focus_id . ,frame-focus-id)
+                              (x . 0)
+                              (y . 0)
+                              (pointer . t)))
+        (ewm-input--on-window-selection-change f)
+        (should (= 0 warps))))))
+
+(ert-deftest ewm-focus/pointer-frame-focus-anchors-mff-with-ffm-off ()
+  "Pointer focus on frame chrome suppresses MFF warp even when hover FFM is off."
+  (ewm-focus-tests--with-frame f
+    (let ((warps 0)
+          (ewm-focus-follows-mouse nil)
+          (ewm-mouse-follows-focus t)
+          (ewm--mff-last-window nil)
+          (frame-focus-id (ewm-layout--ensure-frame-focus-id f)))
+      (cl-letf (((symbol-function 'ewm-input--warp-pointer-to-window)
+                 (lambda (_) (cl-incf warps)))
+                ((symbol-function 'window-at-x-y)
+                 (lambda (&rest _)
+                   (error "FFM window selection should be disabled"))))
+        (ewm--handle-focus `((focus_id . ,frame-focus-id)
+                              (x . 0)
+                              (y . 0)
+                              (pointer . t)))
         (ewm-input--on-window-selection-change f)
         (should (= 0 warps))))))
 
@@ -513,6 +552,23 @@ pointer."
         (ewm--handle-focus `((focus_id . ,frame-focus-id)))
         (ewm-input--on-window-selection-change f)
         (should (= 1 warps))))))
+
+(ert-deftest ewm-focus/mff-warp-uses-frame-origin ()
+  "MFF window warps use compositor frame origin, not output origin."
+  (ewm-focus-tests--with-frame f
+    (let (warped)
+      (cl-letf (((symbol-function 'ewm--get-frame-origin)
+                 (lambda (_) '(200 . 300)))
+                ((symbol-function 'ewm-get-pointer-location)
+                 (lambda () '(0.0 . 0.0)))
+                ((symbol-function 'window-pixel-edges)
+                 (lambda (&optional _) '(0 0 100 100)))
+                ((symbol-function 'window-inside-pixel-edges)
+                 (lambda (&optional _) '(10 20 110 120)))
+                ((symbol-function 'ewm-warp-pointer)
+                 (lambda (x y) (setq warped (cons x y)))))
+        (ewm-input--warp-pointer-to-window (frame-selected-window f))
+        (should (equal warped '(260.0 . 370.0)))))))
 
 (provide 'ewm-focus-tests)
 ;;; ewm-focus-tests.el ends here

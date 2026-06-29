@@ -150,6 +150,7 @@ fn to_frame(spec: &FrameSpec) -> Frame {
         surface_id: spec.surface_id,
         focus_id: spec.frame_focus_id,
         width: 1920.0,
+        height: 0.0,
         entries: spec
             .entries
             .iter()
@@ -168,6 +169,7 @@ fn to_frame(spec: &FrameSpec) -> Frame {
         fullscreen: None,
         selected_entry_id: spec.selected_entry_id,
         move_anim: None,
+        floating_pos: None,
     }
 }
 

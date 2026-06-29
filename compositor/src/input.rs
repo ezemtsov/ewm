@@ -601,7 +601,10 @@ use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, PointerAxisEvent,
     PointerButtonEvent, PointerMotionEvent,
 };
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::input::pointer::{
+    AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus as PointerFocus,
+    GrabStartData as PointerGrabStartData, MotionEvent, RelativeMotionEvent,
+};
 use smithay::input::touch::{
     DownEvent as TouchDown, MotionEvent as TouchMotion, UpEvent as TouchUp,
 };
@@ -610,6 +613,9 @@ use smithay::reexports::input as libinput;
 use smithay::utils::{Logical, Point};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
+
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccelProfile {
@@ -1278,10 +1284,16 @@ fn focus_pointer_target(state: &mut State, source: &str) {
         return;
     };
     if let Some(focus_id) = entry_id.or_else(|| state.ewm.focus_id_of_frame(frame_id)) {
+        let (x, y) = state
+            .ewm
+            .pointer_target_at(pos)
+            .map(|(_, origin)| (Some(px - origin.x), Some(py - origin.y)))
+            .unwrap_or((None, None));
         state.ewm.queue_event(crate::Event::Focus {
             focus_id,
-            x: None,
-            y: None,
+            x,
+            y,
+            pointer: x.is_some() && y.is_some(),
         });
     }
 }
@@ -1292,6 +1304,76 @@ pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::Point
     handle_pointer_button_state(state, event.state(), event.button_code(), event.time_msec());
 }
 
+fn try_start_floating_mod_mouse_grab(
+    state: &mut State,
+    button_code: u32,
+    serial: smithay::utils::Serial,
+) -> bool {
+    if state.ewm.is_locked() || state.ewm.pointer.is_grabbed() {
+        return false;
+    }
+
+    let mods = state.ewm.keyboard.modifier_state();
+    if !mods.logo {
+        return false;
+    }
+
+    let pointer = state.ewm.pointer.clone();
+    let location = pointer.current_location();
+
+    // Check if we need to start an interactive move.
+    if button_code == BTN_LEFT {
+        let Some((_, frame_id)) = state.ewm.floating_frame_under(location) else {
+            return false;
+        };
+
+        focus_pointer_target(state, "floating_move_grab");
+
+        if state.ewm.interactive_move_floating_frame_begin(frame_id) {
+            let start_data = PointerGrabStartData {
+                focus: None,
+                button: button_code,
+                location,
+            };
+            let grab = crate::floating_move_grab::MoveGrab::new(start_data, frame_id);
+            pointer.set_grab(state, grab, serial, PointerFocus::Clear);
+            state
+                .ewm
+                .cursor_manager
+                .set_cursor_image(CursorImageStatus::Named(CursorIcon::Grabbing));
+            return true;
+        }
+    }
+    // Check if we need to start an interactive resize.
+    else if button_code == BTN_RIGHT {
+        let Some((_, frame_id, edges)) = state.ewm.floating_resize_edges_under(location) else {
+            return false;
+        };
+
+        focus_pointer_target(state, "floating_resize_grab");
+
+        if state
+            .ewm
+            .interactive_resize_floating_frame_begin(frame_id, edges)
+        {
+            let start_data = PointerGrabStartData {
+                focus: None,
+                button: button_code,
+                location,
+            };
+            let grab = crate::floating_resize_grab::ResizeGrab::new(start_data, frame_id);
+            pointer.set_grab(state, grab, serial, PointerFocus::Clear);
+            state
+                .ewm
+                .cursor_manager
+                .set_cursor_image(CursorImageStatus::Named(edges.cursor_icon()));
+            return true;
+        }
+    }
+
+    false
+}
+
 pub(crate) fn handle_pointer_button_state(
     state: &mut State,
     button_state: ButtonState,
@@ -1300,6 +1382,14 @@ pub(crate) fn handle_pointer_button_state(
 ) {
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
+
+    if button_state == ButtonState::Pressed
+        && try_start_floating_mod_mouse_grab(state, button_code, serial)
+    {
+        state.sync_keyboard_focus();
+        notify_pointer_activity(state);
+        return;
+    }
 
     // When locked, skip click-to-focus and just forward to lock surface
     if !state.ewm.is_locked() {

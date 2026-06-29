@@ -32,14 +32,20 @@ pub mod cursor;
 pub mod dbus;
 pub mod dbus_screensaver;
 pub mod event;
+pub mod floating;
+mod floating_move_grab;
+mod floating_resize_grab;
+mod floating_shadow;
 pub mod frame_clock;
 pub mod gtk;
 pub mod im;
 pub mod input;
-pub mod output_mode;
 mod module;
+mod shadow_style;
+pub mod output_mode;
 pub mod protocols;
 pub mod render;
+mod render_helpers;
 #[cfg(feature = "screencast")]
 pub mod screencasting;
 pub mod strip;
@@ -851,6 +857,8 @@ pub struct Ewm {
     /// Compositor-owned Emacs frame set. Mapped strips are currently visible;
     /// homeless frames wait for any output when none is mapped.
     pub frame_set: FrameSet,
+    /// Per-output floating Emacs frame spaces, attached to the output's strip/workspace.
+    pub floating_spaces: HashMap<String, floating::FloatingSpace>,
     /// Shared "complete instantly" toggle threaded into every `ViewAnimation`
     /// constructed under this `Ewm`.  Flipped by `ConfigureAnimations`.
     pub animations_clock: strip::AnimationsClock,
@@ -1095,6 +1103,7 @@ struct OutputLayoutSnapshot {
 struct EntryLocation {
     output: String,
     frame_idx: usize,
+    floating: bool,
     frame_surface_id: u64,
     surface_id: Option<u64>,
 }
@@ -1103,6 +1112,7 @@ struct EntryLocation {
 pub(crate) struct LayoutEntryLocation<'a> {
     pub(crate) output_name: &'a str,
     pub(crate) frame_idx: usize,
+    pub(crate) floating: bool,
     pub(crate) entry: &'a LayoutEntry,
 }
 
@@ -1110,7 +1120,7 @@ pub(crate) struct LayoutEntryLocation<'a> {
 struct FrameLocation<'a> {
     output_name: &'a str,
     frame_idx: usize,
-    strip: &'a strip::Strip,
+    strip: Option<&'a strip::Strip>,
     frame: &'a strip::Frame,
 }
 
@@ -1402,6 +1412,7 @@ impl Ewm {
             title_flush_timer_token: None,
             last_emacs_keyboard_activity: Instant::now(),
             frame_set: FrameSet::default(),
+            floating_spaces: HashMap::new(),
             animations_clock: strip::AnimationsClock::default(),
             surface_outputs: HashMap::new(),
             surface_open_anims: HashMap::new(),
@@ -1516,6 +1527,11 @@ impl Ewm {
         for frame in self.frame_set.all_frames_mut() {
             frame.retain_entries(|entry| entry.surface_id() != Some(id));
         }
+        for space in self.floating_spaces.values_mut() {
+            for frame in &mut space.frames {
+                frame.retain_entries(|entry| entry.surface_id() != Some(id));
+            }
+        }
     }
 
     /// Restore the focus invariants after a layout swap or surface destruction:
@@ -1527,6 +1543,16 @@ impl Ewm {
             if let Some(sel) = frame.selected_entry_id {
                 if !frame.entries.iter().any(|entry| entry.id == sel) {
                     frame.selected_entry_id = None;
+                }
+            }
+        }
+        for space in self.floating_spaces.values_mut() {
+            for frame in &mut space.frames {
+                frame.validate_fullscreen();
+                if let Some(sel) = frame.selected_entry_id {
+                    if !frame.entries.iter().any(|entry| entry.id == sel) {
+                        frame.selected_entry_id = None;
+                    }
                 }
             }
         }
@@ -1593,6 +1619,17 @@ impl Ewm {
             return;
         };
         let pre_entries = self.strip_entries(&out);
+        let removed_floating = self
+            .floating_spaces
+            .get_mut(&out)
+            .and_then(|space| space.remove_frame(id).map(|_| space.frames.is_empty()));
+        if let Some(empty) = removed_floating {
+            if empty {
+                self.floating_spaces.remove(&out);
+            }
+            self.reconcile_output_entries(&out, &pre_entries);
+            return;
+        }
         let mut prev_active_id = None;
         if let Some(strip) = self.frame_set.mapped_strip_mut(&out) {
             prev_active_id = strip.active_frame().map(|f| f.surface_id);
@@ -1844,11 +1881,21 @@ impl Ewm {
     /// Resolve an Emacs window entry id to its strip location and owning frame.
     fn lookup_entry(&self, entry_id: LayoutEntryId) -> Option<EntryLocation> {
         let location = self.layout_entry_for_id(entry_id)?;
-        let strip = self.frame_set.mapped_strip(location.output_name)?;
-        let frame = strip.frames.get(location.frame_idx)?;
+        let frame = if location.floating {
+            self.floating_spaces
+                .get(location.output_name)?
+                .frames
+                .get(location.frame_idx)?
+        } else {
+            self.frame_set
+                .mapped_strip(location.output_name)?
+                .frames
+                .get(location.frame_idx)?
+        };
         Some(EntryLocation {
             output: location.output_name.to_string(),
             frame_idx: location.frame_idx,
+            floating: location.floating,
             frame_surface_id: frame.surface_id,
             surface_id: location.entry.surface_id(),
         })
@@ -1865,7 +1912,22 @@ impl Ewm {
                 return Some(FrameLocation {
                     output_name,
                     frame_idx,
-                    strip,
+                    strip: Some(strip),
+                    frame,
+                });
+            }
+        }
+        for (output_name, space) in &self.floating_spaces {
+            if let Some((frame_idx, frame)) = space
+                .frames
+                .iter()
+                .enumerate()
+                .find(|(_, frame)| frame.surface_id == frame_surface_id)
+            {
+                return Some(FrameLocation {
+                    output_name,
+                    frame_idx,
+                    strip: None,
                     frame,
                 });
             }
@@ -1887,10 +1949,8 @@ impl Ewm {
         let mut windows = HashMap::new();
         for (output_name, strip) in self.mapped_output_strips() {
             for (frame_idx, frame) in strip.frames.iter().enumerate() {
-                let workspace_name = crate::protocols::workspace::frame_workspace_name(
-                    frame,
-                    frame_idx,
-                );
+                let workspace_name =
+                    crate::protocols::workspace::frame_workspace_name(frame, frame_idx);
                 let frame_props = self
                     .id_windows
                     .get(&frame.surface_id)
@@ -1995,6 +2055,11 @@ impl Ewm {
     pub fn frame_with_focus_id(&self, focus_id: FocusId) -> Option<u64> {
         self.mapped_output_strips()
             .flat_map(|(_, strip)| strip.frames.iter())
+            .chain(
+                self.floating_spaces
+                    .values()
+                    .flat_map(|space| space.frames.iter()),
+            )
             .find(|f| f.focus_id == focus_id)
             .map(|f| f.surface_id)
     }
@@ -2030,12 +2095,17 @@ impl Ewm {
         }
         self.set_focus_state(location.frame_surface_id, Some(entry_id));
         self.clear_focused_urgency();
-        self.activate_frame(&location.output, location.frame_idx);
+        if location.floating {
+            self.activate_floating_frame(&location.output, location.frame_surface_id);
+        } else {
+            self.activate_frame(&location.output, location.frame_idx);
+        }
         if notify_emacs {
             self.queue_event(Event::Focus {
                 focus_id: entry_id,
                 x: None,
                 y: None,
+                pointer: false,
             });
         }
     }
@@ -2052,6 +2122,7 @@ impl Ewm {
             return;
         }
         let idx = location.frame_idx;
+        let is_tiled = location.strip.is_some();
         let frame_focus_id = location.frame.focus_id;
         let selected_entry_id = location.frame.selected_entry_id;
         module::record_focus(frame_surface_id, source, None);
@@ -2063,12 +2134,17 @@ impl Ewm {
         }
         self.set_focus_state(frame_surface_id, selected_entry_id);
         self.clear_focused_urgency();
-        self.activate_frame(&output, idx);
+        if is_tiled {
+            self.activate_frame(&output, idx);
+        } else {
+            self.activate_floating_frame(&output, frame_surface_id);
+        }
         if notify_emacs {
             self.queue_event(Event::Focus {
                 focus_id: frame_focus_id,
                 x: None,
                 y: None,
+                pointer: false,
             });
         }
     }
@@ -2084,11 +2160,17 @@ impl Ewm {
         let location = self
             .focused_entry_for_surface(surface_id)
             .or_else(|| self.layout_entry_for_surface(surface_id, |_| true))?;
-        let frame = self
-            .frame_set
-            .mapped_strip(location.output_name)?
-            .frames
-            .get(location.frame_idx)?;
+        let frame = if location.floating {
+            self.floating_spaces
+                .get(location.output_name)?
+                .frames
+                .get(location.frame_idx)?
+        } else {
+            self.frame_set
+                .mapped_strip(location.output_name)?
+                .frames
+                .get(location.frame_idx)?
+        };
         Some((frame.surface_id, location.entry.id))
     }
 
@@ -2115,18 +2197,33 @@ impl Ewm {
             }
         }
         // Fall back to visible frames in canonical output order.
-        self.mapped_output_strips().find_map(|(name, strip)| {
-            strip
-                .frames
-                .iter()
-                .position(|frame| {
-                    frame
-                        .entries
+        self.mapped_output_strips()
+            .find_map(|(name, strip)| {
+                strip
+                    .frames
+                    .iter()
+                    .position(|frame| {
+                        frame
+                            .entries
+                            .iter()
+                            .any(|entry| entry.surface_id() == Some(surface_id))
+                    })
+                    .map(|i| (name.to_string(), i))
+            })
+            .or_else(|| {
+                self.floating_spaces.iter().find_map(|(name, space)| {
+                    space
+                        .frames
                         .iter()
-                        .any(|entry| entry.surface_id() == Some(surface_id))
+                        .position(|frame| {
+                            frame
+                                .entries
+                                .iter()
+                                .any(|entry| entry.surface_id() == Some(surface_id))
+                        })
+                        .map(|i| (name.to_string(), i))
                 })
-                .map(|i| (name.to_string(), i))
-        })
+            })
     }
 
     /// Surface id of the active Emacs frame on `output_name`.
@@ -2162,10 +2259,7 @@ impl Ewm {
         let name = Self::workspace_name_from_rename(name);
         if let Some(name) = &name {
             if self.workspace_name_taken(name, frame_surface_id) {
-                warn!(
-                    "rename_workspace: workspace name {:?} already exists",
-                    name,
-                );
+                warn!("rename_workspace: workspace name {:?} already exists", name,);
                 return false;
             }
         }
@@ -2191,6 +2285,15 @@ impl Ewm {
     }
 
     /// Mark `new_idx` as active on `output_name`.
+    fn activate_floating_frame(&mut self, output_name: &str, frame_surface_id: u64) {
+        if let Some(space) = self.floating_spaces.get_mut(output_name) {
+            space.activate_frame(frame_surface_id);
+            if let Some(output) = self.find_mapped_output(output_name) {
+                self.queue_redraw(&output);
+            }
+        }
+    }
+
     pub fn activate_frame(&mut self, output_name: &str, new_idx: usize) {
         let Some(strip) = self.frame_set.mapped_strip_mut(output_name) else {
             return;
@@ -2238,11 +2341,23 @@ impl Ewm {
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
 
+        if location.strip.is_none() {
+            let (_, data) = self
+                .floating_spaces
+                .get(location.output_name)?
+                .frame_with_data(surface_id)?;
+            let loc = data.logical_pos();
+            return Some(Point::from((
+                output_geo.loc.x + loc.x as i32,
+                output_geo.loc.y + loc.y as i32,
+            )));
+        }
+
         Some(
             Self::frame_rect(
                 output_geo,
                 working_area,
-                location.strip,
+                location.strip?,
                 location.frame_idx,
                 location.frame,
             )
@@ -2288,6 +2403,20 @@ impl Ewm {
                 return Some(LayoutEntryLocation {
                     output_name,
                     frame_idx,
+                    floating: false,
+                    entry,
+                });
+            }
+        }
+        for (output_name, space) in &self.floating_spaces {
+            if let Some((frame_idx, entry)) = space
+                .entries_with_frame()
+                .find(|(_, entry)| entry.id == entry_id)
+            {
+                return Some(LayoutEntryLocation {
+                    output_name,
+                    frame_idx,
+                    floating: true,
                     entry,
                 });
             }
@@ -2308,6 +2437,20 @@ impl Ewm {
                 return Some(LayoutEntryLocation {
                     output_name,
                     frame_idx,
+                    floating: false,
+                    entry,
+                });
+            }
+        }
+        for (output_name, space) in &self.floating_spaces {
+            if let Some((frame_idx, entry)) = space
+                .surface_entries_with_frame()
+                .find(|(_, entry)| entry.surface_id() == Some(id) && predicate(entry))
+            {
+                return Some(LayoutEntryLocation {
+                    output_name,
+                    frame_idx,
+                    floating: true,
                     entry,
                 });
             }
@@ -2390,6 +2533,16 @@ impl Ewm {
     fn entry_origin(&self, location: LayoutEntryLocation<'_>) -> Option<Point<i32, Logical>> {
         let output = self.mapped_output_by_name(location.output_name)?;
         let output_geo = self.space.output_geometry(output)?;
+        if location.floating {
+            let space = self.floating_spaces.get(location.output_name)?;
+            let frame = space.frames.get(location.frame_idx)?;
+            let (_, data) = space.frame_with_data(frame.surface_id)?;
+            let loc = data.logical_pos();
+            return Some(Point::from((
+                output_geo.loc.x + loc.x as i32 + location.entry.x,
+                output_geo.loc.y + loc.y as i32 + location.entry.y,
+            )));
+        }
         let working_area = self.get_working_area(output);
         let strip = self.frame_set.mapped_strip(location.output_name)?;
         Some(
@@ -2405,6 +2558,13 @@ impl Ewm {
     }
 
     fn layout_entry_location_fullscreen(&self, location: LayoutEntryLocation<'_>) -> bool {
+        if location.floating {
+            return self
+                .floating_spaces
+                .get(location.output_name)
+                .and_then(|space| space.frames.get(location.frame_idx))
+                .is_some_and(|frame| frame.entry_fullscreen(location.entry.id));
+        }
         self.frame_set
             .mapped_strip(location.output_name)
             .is_some_and(|strip| {
@@ -2426,6 +2586,23 @@ impl Ewm {
                 let location = LayoutEntryLocation {
                     output_name,
                     frame_idx,
+                    floating: false,
+                    entry,
+                };
+                if let Some(p) = self.entry_origin(location) {
+                    origins.push(p);
+                }
+            }
+        }
+        for (output_name, space) in &self.floating_spaces {
+            for (frame_idx, entry) in space.surface_entries_with_frame() {
+                if entry.surface_id() != Some(surface_id) {
+                    continue;
+                }
+                let location = LayoutEntryLocation {
+                    output_name,
+                    frame_idx,
+                    floating: true,
                     entry,
                 };
                 if let Some(p) = self.entry_origin(location) {
@@ -2443,6 +2620,35 @@ impl Ewm {
             && pos.y < (rect.loc.y + rect.size.h) as f64
     }
 
+    /// Resolve the floating space under `pos`, returning its output name, the
+    /// space, and `pos` translated into output-local coordinates.
+    fn floating_space_at(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(String, &floating::FloatingSpace, Point<f64, Logical>)> {
+        let output = self.output_at(pos)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let output_name = output.name();
+        let pos_within_output = pos - output_geo.loc.to_f64();
+        let space = self.floating_spaces.get(&output_name)?;
+        Some((output_name, space, pos_within_output))
+    }
+
+    pub(crate) fn floating_frame_under(&self, pos: Point<f64, Logical>) -> Option<(String, u64)> {
+        let (output_name, space, pos_within_output) = self.floating_space_at(pos)?;
+        let (frame_id, _) = space.frame_under(pos_within_output)?;
+        Some((output_name, frame_id))
+    }
+
+    pub(crate) fn floating_resize_edges_under(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(String, u64, floating::ResizeEdge)> {
+        let (output_name, space, pos_within_output) = self.floating_space_at(pos)?;
+        let (frame_id, edges) = space.resize_edges_under(pos_within_output)?;
+        Some((output_name, frame_id, edges))
+    }
+
     fn layout_entry_under_matching(
         &self,
         pos: Point<f64, Logical>,
@@ -2451,6 +2657,31 @@ impl Ewm {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
+        if let Some(space) = self.floating_spaces.get(&output.name()) {
+            for (frame, frame_rect) in space.frames_with_render_geo() {
+                for entry in frame.entries.iter() {
+                    if !predicate(entry) {
+                        continue;
+                    }
+                    let fullscreen = frame.entry_fullscreen(entry.id);
+                    let rect = Rectangle::new(
+                        Point::from((
+                            output_geo.loc.x + frame_rect.loc.x as i32 + entry.x,
+                            output_geo.loc.y + frame_rect.loc.y as i32 + entry.y,
+                        )),
+                        Size::from((entry.w as i32, entry.h as i32)),
+                    );
+                    if Self::rect_contains_f64(rect, pos) {
+                        return Some(LayoutEntryHit {
+                            entry,
+                            fullscreen,
+                            rect,
+                            output_size: output_geo.size,
+                        });
+                    }
+                }
+            }
+        }
         let strip = self.frame_set.mapped_strip(&output.name())?;
         let active_idx = strip.active_idx();
 
@@ -2558,6 +2789,31 @@ impl Ewm {
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
+        if let Some(space) = self.floating_spaces.get(&output.name()) {
+            for (frame, frame_rect) in space.frames_with_render_geo() {
+                let rect = Rectangle::new(
+                    Point::from((
+                        output_geo.loc.x + frame_rect.loc.x as i32,
+                        output_geo.loc.y + frame_rect.loc.y as i32,
+                    )),
+                    Size::from((frame_rect.size.w as i32, frame_rect.size.h as i32)),
+                );
+                if !Self::rect_contains_f64(rect, pos) {
+                    continue;
+                }
+                let Some(window) = self.id_windows.get(&frame.surface_id) else {
+                    continue;
+                };
+                let window_origin: Point<f64, Logical> =
+                    Point::from((rect.loc.x as f64, rect.loc.y as f64));
+                let pos_in_window = Point::from((pos.x - window_origin.x, pos.y - window_origin.y));
+                if let Some(hit) =
+                    Self::surface_under_non_popup_window(window, pos_in_window, window_origin)
+                {
+                    return Some(hit);
+                }
+            }
+        }
         let strip = self.frame_set.mapped_strip(&output.name())?;
 
         for (frame_idx, frame) in strip.frames.iter().enumerate() {
@@ -2626,6 +2882,12 @@ impl Ewm {
                     .iter()
                     .any(|frame| frame.surface_fullscreen(id))
             })
+            || self.floating_spaces.values().any(|space| {
+                space
+                    .frames
+                    .iter()
+                    .any(|frame| frame.surface_fullscreen(id))
+            })
     }
 
     fn surface_has_primary_entry(&self, id: u64) -> bool {
@@ -2634,6 +2896,11 @@ impl Ewm {
             .any(|strip| {
                 strip
                     .active_surface_entries()
+                    .any(|entry| entry.surface_id() == Some(id) && entry.primary())
+            })
+            || self.floating_spaces.values().any(|space| {
+                space
+                    .surface_entries()
                     .any(|entry| entry.surface_id() == Some(id) && entry.primary())
             })
     }
@@ -2680,6 +2947,16 @@ impl Ewm {
                     .find(|(_, entry)| entry.surface_id() == Some(id))
                     .map(|(_, entry)| entry.id)
             })
+            .or_else(|| {
+                output_name
+                    .and_then(|name| self.floating_spaces.get(name))
+                    .and_then(|space| {
+                        space
+                            .surface_entries_with_frame()
+                            .find(|(_, entry)| entry.surface_id() == Some(id))
+                            .map(|(_, entry)| entry.id)
+                    })
+            })
             .or_else(|| self.fullscreen_entry_id_for_surface(id))
     }
 
@@ -2708,6 +2985,29 @@ impl Ewm {
                 );
             }
             break;
+        }
+        if target_surface.is_none() {
+            'found_floating: for space in self.floating_spaces.values_mut() {
+                for frame in &mut space.frames {
+                    target_surface = frame.entry_surface_id(entry_id);
+                    if target_surface.is_none() {
+                        continue;
+                    }
+                    if fullscreen {
+                        if let Some((previous, _next)) = frame.set_fullscreen_entry(entry_id) {
+                            cleared_surfaces
+                                .extend(previous.map(|fullscreen| fullscreen.surface_id));
+                        }
+                    } else {
+                        cleared_surfaces.extend(
+                            frame
+                                .clear_fullscreen_entry(entry_id)
+                                .map(|fullscreen| fullscreen.surface_id),
+                        );
+                    }
+                    break 'found_floating;
+                }
+            }
         }
 
         let target_surface = target_surface?;
@@ -2767,6 +3067,11 @@ impl Ewm {
         for frame in self.frame_set.all_frames_mut() {
             cleared |= frame.clear_fullscreen_for_surface(id).is_some();
         }
+        for space in self.floating_spaces.values_mut() {
+            for frame in &mut space.frames {
+                cleared |= frame.clear_fullscreen_for_surface(id).is_some();
+            }
+        }
         if cleared {
             self.refresh_primary_assignments();
         }
@@ -2790,7 +3095,8 @@ impl Ewm {
 
     /// Entry surface ids on `output_name`'s strip; empty if the strip is gone.
     fn strip_entries(&self, output_name: &str) -> HashSet<u64> {
-        self.frame_set
+        let mut entries: HashSet<u64> = self
+            .frame_set
             .mapped_strip(output_name)
             .map(|strip| {
                 strip
@@ -2798,7 +3104,11 @@ impl Ewm {
                     .filter_map(LayoutEntry::surface_id)
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(space) = self.floating_spaces.get(output_name) {
+            entries.extend(space.surface_entries().filter_map(LayoutEntry::surface_id));
+        }
+        entries
     }
 
     fn surface_outputs_for(&self, output_name: &str) -> HashSet<u64> {
@@ -3108,7 +3418,11 @@ impl Ewm {
         self.reconcile_active_for_output(src_name, prev_src_active);
         self.reconcile_active_for_output(dst_name, prev_dst_active);
         for id in moved_ids {
-            let home_output = self.frame_set.home_output(id).unwrap_or(dst_name).to_string();
+            let home_output = self
+                .frame_set
+                .home_output(id)
+                .unwrap_or(dst_name)
+                .to_string();
             self.queue_event(Event::FrameMoved {
                 id,
                 output: dst_name.to_string(),
@@ -3320,6 +3634,33 @@ impl Ewm {
         }
     }
 
+    fn sync_focus_after_floating_layout_merge(&mut self, output_name: &str) {
+        let frame_id = self.focused_frame_id;
+        let focused_entry_id = self.focused_entry_id;
+        let mut focus_entry_update: Option<Option<LayoutEntryId>> = None;
+
+        let Some(space) = self.floating_spaces.get_mut(output_name) else {
+            return;
+        };
+        if let Some(idx) = space
+            .frames
+            .iter()
+            .position(|frame| frame.surface_id == frame_id)
+        {
+            let new_entry = space.frames[idx].selected_entry_id;
+            if new_entry != focused_entry_id {
+                focus_entry_update = Some(new_entry);
+            }
+            space.activate_frame(frame_id);
+        }
+
+        if let Some(new_entry) = focus_entry_update {
+            self.set_focus_state(frame_id, new_entry);
+            self.clear_focused_urgency();
+            module::record_focus(self.focused_surface_id(), "floating_layout_selected", None);
+        }
+    }
+
     /// Apply a declarative per-output layout.
     ///
     /// Replaces the previous layout for the given output. Surfaces removed from
@@ -3385,6 +3726,145 @@ impl Ewm {
         }
     }
 
+    /// Apply declarative contents for floating Emacs frames on an output.
+    ///
+    /// Unlike `apply_output_layout`, Rust preserves floating positions and
+    /// stacking order. Lisp only declares the frame contents and current size.
+    pub fn apply_floating_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
+        let pre = self.strip_entries(output_name);
+        let Some(space) = self.ensure_floating_space_for_output(output_name) else {
+            warn!("apply_floating_layout: output '{}' not found", output_name);
+            return;
+        };
+        space.merge_layout_frames(frames);
+        self.sync_focus_after_floating_layout_merge(output_name);
+        let post = self.strip_entries(output_name);
+        let output = self.find_mapped_output(output_name);
+        self.reconcile_output_membership(output_name, output.as_ref(), &pre, &post);
+        self.refresh_primary_assignments();
+        self.prune_dangling_focus();
+        self.focus_pending_activation_surfaces();
+        if let Some(output) = output {
+            self.queue_redraw(&output);
+        }
+    }
+
+    /// Run `f` against the floating space owning `id`, queueing a redraw when it
+    /// reports a change.  Returns false if `id` has no floating space.
+    fn with_floating_space(
+        &mut self,
+        id: u64,
+        f: impl FnOnce(&mut floating::FloatingSpace) -> bool,
+    ) -> bool {
+        let Some(output_name) = self.emacs_frame_output(id).map(str::to_string) else {
+            return false;
+        };
+        let Some(space) = self.floating_spaces.get_mut(&output_name) else {
+            return false;
+        };
+        let changed = f(space);
+        if changed {
+            if let Some(output) = self.find_mapped_output(&output_name) {
+                self.queue_redraw(&output);
+            }
+        }
+        changed
+    }
+
+    pub fn move_floating_frame(&mut self, id: u64, dx: f64, dy: f64) -> bool {
+        self.with_floating_space(id, |space| space.move_frame_by(id, Point::from((dx, dy))))
+    }
+
+    /// Like `with_floating_space`, but for ops that return a new toplevel size:
+    /// configures the toplevel and queues a redraw when `f` yields one.
+    fn with_floating_resize(
+        &mut self,
+        id: u64,
+        f: impl FnOnce(&mut floating::FloatingSpace) -> Option<Size<i32, Logical>>,
+    ) -> bool {
+        let Some(output_name) = self.emacs_frame_output(id).map(str::to_string) else {
+            return false;
+        };
+        let Some(space) = self.floating_spaces.get_mut(&output_name) else {
+            return false;
+        };
+        let Some(size) = f(space) else {
+            return false;
+        };
+        self.configure_floating_frame_size(id, size);
+        if let Some(output) = self.find_mapped_output(&output_name) {
+            self.queue_redraw(&output);
+        }
+        true
+    }
+
+    pub fn resize_floating_frame(&mut self, id: u64, dw: f64, dh: f64) -> bool {
+        self.with_floating_resize(id, |space| space.resize_frame_by(id, Size::from((dw, dh))))
+    }
+
+    fn configure_floating_frame_size(&self, id: u64, size: Size<i32, Logical>) {
+        let Some(window) = self.id_windows.get(&id) else {
+            return;
+        };
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        let changed = toplevel.with_pending_state(|state| {
+            let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
+            let was_maximized = state.states.contains(XdgToplevelState::Maximized);
+            let changed = state.size != Some(size) || was_fullscreen || was_maximized;
+            state.size = Some(size);
+            state.states.unset(XdgToplevelState::Fullscreen);
+            state.states.unset(XdgToplevelState::Maximized);
+            changed
+        });
+        if changed {
+            toplevel.send_configure();
+        }
+    }
+
+    pub fn interactive_move_floating_frame_begin(&mut self, id: u64) -> bool {
+        self.with_floating_space(id, |space| space.interactive_move_begin(id))
+    }
+
+    pub fn interactive_move_floating_frame_update(
+        &mut self,
+        id: u64,
+        delta: Point<f64, Logical>,
+    ) -> bool {
+        self.with_floating_space(id, |space| space.interactive_move_update(id, delta))
+    }
+
+    pub fn interactive_move_floating_frame_end(&mut self, id: u64) {
+        self.with_floating_space(id, |space| {
+            space.interactive_move_end(Some(id));
+            true
+        });
+    }
+
+    pub fn interactive_resize_floating_frame_begin(
+        &mut self,
+        id: u64,
+        edges: floating::ResizeEdge,
+    ) -> bool {
+        self.with_floating_space(id, |space| space.interactive_resize_begin(id, edges))
+    }
+
+    pub fn interactive_resize_floating_frame_update(
+        &mut self,
+        id: u64,
+        delta: Point<f64, Logical>,
+    ) -> bool {
+        self.with_floating_resize(id, |space| space.interactive_resize_update(id, delta))
+    }
+
+    pub fn interactive_resize_floating_frame_end(&mut self, id: u64) {
+        self.with_floating_space(id, |space| {
+            space.interactive_resize_end(Some(id));
+            true
+        });
+    }
+
     /// Pick each surface's primary entry (largest active-frame slot) and
     /// configure its toplevel.  Off-screen frames don't bid.
     fn refresh_primary_assignments(&mut self) {
@@ -3442,6 +3922,21 @@ impl Ewm {
                     .or_insert(area);
             }
         }
+        for (oname, space) in &self.floating_spaces {
+            for frame in &space.frames {
+                for entry in frame.entries.iter().filter(|entry| entry.surface.is_some()) {
+                    let fullscreen = frame.entry_fullscreen(entry.id);
+                    let area = Self::layout_entry_area(output_sizes, oname, entry, fullscreen);
+                    let Some(surface_id) = entry.surface_id() else {
+                        continue;
+                    };
+                    best_area
+                        .entry(surface_id)
+                        .and_modify(|a| *a = (*a).max(area))
+                        .or_insert(area);
+                }
+            }
+        }
         best_area
     }
 
@@ -3452,6 +3947,11 @@ impl Ewm {
     ) {
         for frame in self.frame_set.all_frames_mut() {
             for entry in frame.entries.iter_mut().filter(|entry| entry.surface.is_some()) {
+                entry.set_primary(false);
+            }
+        }
+        for space in self.floating_spaces.values_mut() {
+            for entry in space.surface_entries_mut() {
                 entry.set_primary(false);
             }
         }
@@ -3479,6 +3979,29 @@ impl Ewm {
                         && assigned.insert(surface_id)
                     {
                         entry.set_primary(true);
+                    }
+                }
+            }
+            if let Some(space) = self.floating_spaces.get_mut(&oname) {
+                for frame in &mut space.frames {
+                    let fullscreen_entry_id =
+                        frame.fullscreen.map(|fullscreen| fullscreen.entry_id);
+                    for entry in frame
+                        .entries
+                        .iter_mut()
+                        .filter(|entry| entry.surface.is_some())
+                    {
+                        let Some(surface_id) = entry.surface_id() else {
+                            continue;
+                        };
+                        let dominated = best_area.get(&surface_id).copied().unwrap_or(0);
+                        let fullscreen = fullscreen_entry_id == Some(entry.id);
+                        if Self::layout_entry_area(output_sizes, &oname, entry, fullscreen)
+                            == dominated
+                            && assigned.insert(surface_id)
+                        {
+                            entry.set_primary(true);
+                        }
                     }
                 }
             }
@@ -3530,6 +4053,17 @@ impl Ewm {
             };
             for entry in frame.entries.iter().filter(|entry| entry.primary()) {
                 self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
+            }
+        }
+        for output in &self.sorted_outputs {
+            let oname = output.name();
+            let Some(space) = self.floating_spaces.get(&oname) else {
+                continue;
+            };
+            for frame in &space.frames {
+                for entry in frame.entries.iter().filter(|entry| entry.primary()) {
+                    self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
+                }
             }
         }
     }
@@ -4182,6 +4716,9 @@ impl Ewm {
         if let Some(strip) = self.frame_set.mapped_strip_mut(&output.name()) {
             strip.advance();
         }
+        if let Some(space) = self.floating_spaces.get_mut(&output.name()) {
+            space.advance();
+        }
         let id_windows = &self.id_windows;
         self.surface_open_anims
             .retain(|id, a| !a.is_done() && id_windows.contains_key(id));
@@ -4261,6 +4798,21 @@ impl Ewm {
                     .iter()
                     .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
             if strip.animations_ongoing() || any_open_fade {
+                if let Some(state) = self.output_state.get_mut(output) {
+                    state.unfinished_animations_remain = true;
+                }
+            }
+        }
+        if let Some(space) = self.floating_spaces.get(&output.name()) {
+            let any_open_fade = space
+                .surface_entries()
+                .filter_map(LayoutEntry::surface_id)
+                .any(|surface_id| self.surface_open_anims.contains_key(&surface_id))
+                || space
+                    .frames
+                    .iter()
+                    .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
+            if space.animations_ongoing() || any_open_fade {
                 if let Some(state) = self.output_state.get_mut(output) {
                     state.unfinished_animations_remain = true;
                 }
@@ -4680,10 +5232,20 @@ impl Ewm {
         let visible: HashSet<u64> = self
             .mapped_output_strips()
             .filter_map(|(_, strip)| strip.active_frame().map(|frame| frame.surface_id))
+            .chain(
+                self.floating_spaces
+                    .values()
+                    .flat_map(|space| space.frames.iter().map(|frame| frame.surface_id)),
+            )
             .collect();
         self.frame_set
             .all_frames()
             .map(|frame| frame.surface_id)
+            .chain(
+                self.floating_spaces
+                    .values()
+                    .flat_map(|space| space.frames.iter().map(|frame| frame.surface_id)),
+            )
             .filter(|id| !visible.contains(id))
             .collect()
     }
@@ -5061,6 +5623,7 @@ impl Ewm {
                 focus_id,
                 x: Some(pos.x - origin.x),
                 y: Some(pos.y - origin.y),
+                pointer: true,
             });
         }
     }
@@ -5730,6 +6293,57 @@ impl Ewm {
             .collect()
     }
 
+    fn frame_origins_snapshot(&self) -> Vec<module::FrameOrigin> {
+        let mut origins = Vec::new();
+
+        // Tiled frames: resolve each output's geometry once, then place frames.
+        for (name, strip) in self.mapped_output_strips() {
+            let Some(output) = self.mapped_output_by_name(name) else {
+                continue;
+            };
+            let Some(output_geo) = self.space.output_geometry(output) else {
+                continue;
+            };
+            let working_area = self.get_working_area(output);
+            for (frame_idx, frame) in strip.frames.iter().enumerate() {
+                if frame.surface_id == 0 {
+                    continue;
+                }
+                let loc =
+                    Self::frame_rect(output_geo, working_area, strip, frame_idx, frame).loc;
+                origins.push(module::FrameOrigin {
+                    surface_id: frame.surface_id,
+                    origin: (loc.x, loc.y),
+                });
+            }
+        }
+
+        // Floating frames carry their own logical position.
+        for (name, space) in &self.floating_spaces {
+            let Some(output) = self.mapped_output_by_name(name) else {
+                continue;
+            };
+            let Some(output_geo) = self.space.output_geometry(output) else {
+                continue;
+            };
+            for frame in &space.frames {
+                if frame.surface_id == 0 {
+                    continue;
+                }
+                let Some((_, data)) = space.frame_with_data(frame.surface_id) else {
+                    continue;
+                };
+                let loc = data.logical_pos();
+                origins.push(module::FrameOrigin {
+                    surface_id: frame.surface_id,
+                    origin: (output_geo.loc.x + loc.x as i32, output_geo.loc.y + loc.y as i32),
+                });
+            }
+        }
+
+        origins
+    }
+
     /// Immediately sync active_outputs into shared state so that Emacs sees
     /// up-to-date output lists when it handles events queued after this call.
     pub fn flush_active_outputs(&mut self) {
@@ -5927,6 +6541,25 @@ impl Ewm {
         map.non_exclusive_zone()
     }
 
+    fn working_area_f64(&self, output: &Output) -> Rectangle<f64, smithay::utils::Logical> {
+        self.get_working_area(output).to_f64()
+    }
+
+    fn ensure_floating_space_for_output(
+        &mut self,
+        output_name: &str,
+    ) -> Option<&mut floating::FloatingSpace> {
+        let output = self.mapped_output_by_name(output_name)?.clone();
+        let working_area = self.working_area_f64(&output);
+        let clock = self.animations_clock.clone();
+        let space = self
+            .floating_spaces
+            .entry(output_name.to_string())
+            .or_insert_with(|| floating::FloatingSpace::new(working_area, clock));
+        space.update_config(working_area);
+        Some(space)
+    }
+
     /// Update Emacs frames to fit within the working area of an output.
     /// Called when layer surface exclusive zones change.
     pub fn update_frames_for_working_area(&mut self, output: &Output) {
@@ -5948,6 +6581,10 @@ impl Ewm {
                     toplevel.send_configure();
                 }
             }
+        }
+
+        if let Some(space) = self.floating_spaces.get_mut(&output_name) {
+            space.update_config(working_area.to_f64());
         }
 
         self.queue_redraw(output);
@@ -6063,6 +6700,12 @@ impl Ewm {
                     .iter()
                     .map(move |f| (f.surface_id, out.to_string()))
             })
+            .chain(self.floating_spaces.iter().flat_map(|(out, space)| {
+                space
+                    .frames
+                    .iter()
+                    .map(move |f| (f.surface_id, out.to_string()))
+            }))
             .collect();
         let pointer_pos: Point<f64, Logical> = self.pointer_location().into();
         let pointer_output = self.output_at(pointer_pos);
@@ -6085,6 +6728,7 @@ impl Ewm {
             "emacs_surfaces": emacs_surfaces,
             "output_strips": &self.frame_set.mapped_strips(),
             "homeless_frames": &self.frame_set.homeless_frames(),
+            "floating_spaces": &self.floating_spaces,
             "surface_outputs": &self.surface_outputs,
             "focused_surface_id": self.focused_surface_id(),
             "focused_frame_id": self.focused_frame_id,
@@ -6315,9 +6959,22 @@ impl Ewm {
         // below to place dialogs in the same Emacs frame as their owner.
         let parent_id = surface.parent().and_then(|wl| self.surface_id(&wl));
 
+        // Determine target output before the initial configure so floating
+        // Emacs frames don't get the normal maximized/working-area configure.
+        let pending_frame = module::take_pending_frame();
+        let frame_output = pending_frame.as_ref().map(|pending| pending.output.clone());
+        let frame_is_floating = pending_frame
+            .as_ref()
+            .is_some_and(|pending| pending.floating);
+        let target_output = frame_output.clone().or_else(|| self.active_output());
+
         surface.with_pending_state(|state| {
-            state.size = Some(self.output_size);
-            state.states.set(XdgToplevelState::Maximized);
+            if is_emacs && frame_is_floating {
+                state.size = Some(Size::from((640, 480)));
+            } else {
+                state.size = Some(self.output_size);
+                state.states.set(XdgToplevelState::Maximized);
+            }
             state.states.set(XdgToplevelState::Activated);
         });
         surface.send_configure();
@@ -6326,13 +6983,9 @@ impl Ewm {
         self.window_ids.insert(window.clone(), id);
         self.id_windows.insert(id, window.clone());
 
-        // Determine target output
-        let frame_output = module::take_pending_frame_output();
-        let target_output = frame_output.clone().or_else(|| self.active_output());
-
         debug!(
-            "new_toplevel id={} is_emacs={} pending_output={:?} target_output={:?} pending_queue_after_take={:?}",
-            id, is_emacs, frame_output, target_output, module::peek_pending_frame_outputs()
+            "new_toplevel id={} is_emacs={} pending_output={:?} floating={} target_output={:?} pending_queue_after_take={:?}",
+            id, is_emacs, frame_output, frame_is_floating, target_output, module::peek_pending_frame_outputs()
         );
 
         if is_emacs {
@@ -6341,9 +6994,18 @@ impl Ewm {
             // first layout-refresh arrives.  Layout-refresh later updates fields
             // (name, width, surfaces, selected_entry_id) via MERGE semantics.
             if let Some(output_name) = target_output.as_deref() {
-                let clock = self.animations_clock.clone();
-                let strip = self.frame_set.ensure_mapped_strip(output_name, clock);
-                strip.frames.push(crate::strip::Frame::new(id));
+                if frame_is_floating {
+                    if let Some(space) = self.ensure_floating_space_for_output(output_name) {
+                        let mut frame = crate::strip::Frame::new(id);
+                        frame.width = floating::DEFAULT_FRAME_WIDTH;
+                        frame.height = floating::DEFAULT_FRAME_HEIGHT;
+                        space.add_frame(frame);
+                    }
+                } else {
+                    let clock = self.animations_clock.clone();
+                    let strip = self.frame_set.ensure_mapped_strip(output_name, clock);
+                    strip.frames.push(crate::strip::Frame::new(id));
+                }
             }
         }
 
@@ -6363,7 +7025,7 @@ impl Ewm {
         }
 
         // Resize Emacs frames to fill their working area
-        if let Some(ref output_name) = frame_output {
+        if let Some(ref output_name) = frame_output.filter(|_| !frame_is_floating) {
             if let Some(working_area) = self
                 .mapped_output_by_name(output_name)
                 .map(|o| self.get_working_area(o))
@@ -6403,6 +7065,13 @@ impl Ewm {
             parent_id
                 .and_then(|pid| self.frame_for_surface(pid))
                 .or_else(|| {
+                    target_output.as_deref().and_then(|o| {
+                        (self.focused_frame_id != 0
+                            && self.emacs_frame_output(self.focused_frame_id) == Some(o))
+                        .then_some(self.focused_frame_id)
+                    })
+                })
+                .or_else(|| {
                     target_output
                         .as_deref()
                         .and_then(|o| self.active_frame_surface_id(o))
@@ -6424,7 +7093,7 @@ impl Ewm {
                 .as_deref()
                 .and_then(|o| self.active_frame_surface_id(o))
                 == Some(id);
-            self.queue_event(if is_active {
+            self.queue_event(if frame_is_floating || is_active {
                 Event::FrameShown { id }
             } else {
                 Event::FrameHidden { id }
@@ -6439,6 +7108,7 @@ impl Ewm {
                     focus_id,
                     x: None,
                     y: None,
+                    pointer: false,
                 });
             }
         }
@@ -8278,6 +8948,7 @@ impl State {
         shared.focused_surface_id = self.ewm.focused_surface_id();
         shared.focused_frame_id = self.ewm.focused_frame_id;
         shared.pointer_location = self.ewm.pointer_location();
+        shared.frame_origins = self.ewm.frame_origins_snapshot();
     }
 
     /// Handle a module command (from Emacs via dynamic module).
@@ -8500,6 +9171,18 @@ impl State {
             }
             ModuleCommand::OutputLayout { output, frames } => {
                 self.ewm.apply_output_layout(&output, frames);
+                self.refresh_pointer_after_layout();
+            }
+            ModuleCommand::FloatingLayout { output, frames } => {
+                self.ewm.apply_floating_layout(&output, frames);
+                self.refresh_pointer_after_layout();
+            }
+            ModuleCommand::MoveFloatingFrame { id, dx, dy } => {
+                self.ewm.move_floating_frame(id, dx, dy);
+                self.refresh_pointer_after_layout();
+            }
+            ModuleCommand::ResizeFloatingFrame { id, dw, dh } => {
+                self.ewm.resize_floating_frame(id, dw, dh);
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::ToggleFullscreen { entry_id } => {
@@ -8786,6 +9469,48 @@ mod tests {
         let mut frame = strip::Frame::new(surface_id);
         frame.width = width;
         frame
+    }
+
+    #[test]
+    fn focused_floating_entry_receives_new_toplevel_placement() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+
+        fix.ewm()
+            .apply_output_layout(HEAD_A, vec![frame_with_width(100, 800.0)]);
+
+        let floating_entry_id = nz(3001);
+        let floating_entry_surface_id = 9000;
+        fix.ewm().apply_floating_layout(
+            HEAD_A,
+            vec![frame_with_entry(
+                200,
+                floating_entry_id,
+                floating_entry_surface_id,
+            )],
+        );
+        fix.ewm()
+            .set_focus_entry(floating_entry_id, "test_floating_entry", false);
+
+        assert_eq!(fix.ewm_ref().focused_frame_id, 200);
+        assert_eq!(fix.ewm_ref().focused_entry_id, Some(floating_entry_id));
+        assert_eq!(fix.ewm_ref().focused_surface_id(), floating_entry_surface_id);
+
+        fix.enable_event_capture();
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
+        let toplevel = fix.open_toplevel(&mut client, "app", Size::from((240, 160)));
+        let app_surface_id = fix.find_surface_id(&client, &toplevel.surface).unwrap();
+        let placement = fix.drain_events().into_iter().find_map(|event| match event {
+            Event::New {
+                id,
+                frame_surface_id,
+                ..
+            } if id == app_surface_id => frame_surface_id,
+            _ => None,
+        });
+
+        assert_eq!(placement, Some(200));
     }
 
     fn output_names(outputs: &[OutputInfo]) -> Vec<String> {
@@ -9389,6 +10114,19 @@ mod tests {
         assert_eq!(
             fix.ewm_ref().emacs_frame_origin(100),
             Some(Point::from((-400, 0))),
+        );
+    }
+
+    #[test]
+    fn emacs_frame_origin_uses_floating_position() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.ewm()
+            .apply_floating_layout(HEAD_A, vec![frame_with_width(200, 640.0)]);
+
+        assert_eq!(
+            fix.ewm_ref().emacs_frame_origin(200),
+            Some(Point::from((480, 140))),
         );
     }
 }

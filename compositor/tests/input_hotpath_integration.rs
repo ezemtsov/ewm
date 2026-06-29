@@ -3,9 +3,7 @@
 use ewm_core::input::KeyboardAction;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
-use ewm_core::{
-    InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, TranslateTarget,
-};
+use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, TranslateTarget};
 use smithay::input::keyboard::keysyms;
 use smithay::utils::Size;
 
@@ -70,6 +68,7 @@ fn frame_with_entry(
         surface_id: frame_id,
         focus_id: nz(frame_id + 1_000),
         width: 1280.0,
+        height: 0.0,
         entries: vec![LayoutEntry::surface(
             entry_id,
             "entry".to_string(),
@@ -82,6 +81,7 @@ fn frame_with_entry(
         fullscreen: None,
         selected_entry_id: Some(entry_id),
         move_anim: None,
+        floating_pos: None,
     }
 }
 
@@ -269,7 +269,10 @@ impl Harness {
         self.expect_keyboard_focus(Target::App);
         assert_eq!(self.fix.keyboard_key(key, true), KeyboardAction::Translated);
         assert_eq!(self.fix.keyboard_key(key, true), KeyboardAction::Translated);
-        assert_eq!(self.fix.keyboard_key(key, false), KeyboardAction::Translated);
+        assert_eq!(
+            self.fix.keyboard_key(key, false),
+            KeyboardAction::Translated
+        );
         self.expect_keyboard_focus(Target::App)
     }
 

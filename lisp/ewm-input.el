@@ -53,6 +53,8 @@
     (define-key map (kbd "s-d") #'ewm-launch-app)
     ;; Fullscreen toggle
     (define-key map (kbd "s-f") #'ewm-toggle-fullscreen)
+    ;; Floating detach/attach toggle
+    (define-key map (kbd "s-S-SPC") #'ewm-floating-toggle)
     ;; Lock session
     (define-key map (kbd "s-l") #'ewm-lock-session)
     ;; Edit the focused text field
@@ -89,10 +91,11 @@ Override individual bindings with `use-package':
 (declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-layout--menu-active-p "ewm-layout")
 (declare-function ewm-warp-pointer "ewm")
-(declare-function ewm--get-output-origin "ewm")
+(declare-function ewm--get-frame-origin "ewm")
 ;; Defined in ewm.el (loaded after ewm-input.el)
 (declare-function ewm-launch-app "ewm")
 (declare-function ewm-toggle-fullscreen "ewm")
+(declare-function ewm-floating-toggle "ewm")
 (declare-function ewm-lock-session "ewm")
 (declare-function ewm-edit "ewm-text-input")
 (declare-function ewm-frame-new "ewm")
@@ -275,13 +278,12 @@ the original binding from `ewm-mode-map' is used."
   "Return non-nil if pointer is inside WINDOW.
 Coordinates are in compositor space."
   (let* ((frame (window-frame window))
-         (output (frame-parameter frame 'ewm-output))
-         (output-origin (ewm--get-output-origin output))
+         (frame-origin (ewm--get-frame-origin frame))
          (edges (window-pixel-edges window))
-         (left (+ (car output-origin) (nth 0 edges)))
-         (top (+ (cdr output-origin) (nth 1 edges)))
-         (right (+ (car output-origin) (nth 2 edges)))
-         (bottom (+ (cdr output-origin) (nth 3 edges)))
+         (left (+ (car frame-origin) (nth 0 edges)))
+         (top (+ (cdr frame-origin) (nth 1 edges)))
+         (right (+ (car frame-origin) (nth 2 edges)))
+         (bottom (+ (cdr frame-origin) (nth 3 edges)))
          (pointer (ewm-get-pointer-location))
          (px (car pointer))
          (py (cdr pointer)))
@@ -294,11 +296,10 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
   (unless (or (minibufferp (window-buffer window))
               (ewm-input--pointer-in-window-p window))
     (when-let* ((frame (window-frame window))
-                (output (frame-parameter frame 'ewm-output))
-                (output-origin (ewm--get-output-origin output)))
+                (frame-origin (ewm--get-frame-origin frame)))
       (let* ((edges (window-inside-pixel-edges window))
-             (x (+ (car output-origin) (/ (+ (nth 0 edges) (nth 2 edges)) 2)))
-             (y (+ (cdr output-origin) (/ (+ (nth 1 edges) (nth 3 edges)) 2))))
+             (x (+ (car frame-origin) (/ (+ (nth 0 edges) (nth 2 edges)) 2)))
+             (y (+ (cdr frame-origin) (/ (+ (nth 1 edges) (nth 3 edges)) 2))))
         (ewm-warp-pointer (float x) (float y))))))
 
 (defun ewm-input--on-window-selection-change (_frame)

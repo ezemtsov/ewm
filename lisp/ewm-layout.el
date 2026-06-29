@@ -15,8 +15,10 @@
 (require 'ewm-surface)
 
 (declare-function ewm-output-layout "ewm")
+(declare-function ewm-floating-layout "ewm")
 
 (defvar ewm--module-mode)
+(defvar ewm--floating-frames)
 
 (defgroup ewm-layout nil
   "EWM layout and modal focus contract."
@@ -111,16 +113,20 @@ compositor parks keyboard focus on the frame chrome."
             :focus-id (ewm-layout--ensure-frame-focus-id frame)
             :selected-entry-id selected-entry-id
             :width (float (frame-pixel-width frame))
+            :height (float (frame-pixel-height frame))
             :entries (vconcat (nreverse entries))))))
 
 (defun ewm-layout--send-layouts ()
   "Send per-output frame layouts; suppress `:selected-entry-id' while modal."
   (let ((menu-active (ewm-layout--menu-active-p)))
-    (dolist (strip ewm--strips)
-      (let* ((output (car strip))
-             (plists (mapcar (lambda (f) (ewm-layout--build-frame-plist f menu-active))
-                             (cdr strip))))
-        (ewm-output-layout output (vconcat plists))))))
+    (cl-flet ((send (alist fn)
+                (dolist (e alist)
+                  (funcall fn (car e)
+                           (vconcat (mapcar (lambda (f)
+                                              (ewm-layout--build-frame-plist f menu-active))
+                                            (cdr e)))))))
+      (send ewm--strips #'ewm-output-layout)
+      (send ewm--floating-frames #'ewm-floating-layout))))
 
 (defun ewm-layout--refresh ()
   "Send current window layouts to the compositor."

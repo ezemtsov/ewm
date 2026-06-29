@@ -81,6 +81,13 @@
        ,@body)
      (should-not refreshed)))
 
+;;;; Keymap bindings
+
+(ert-deftest ewm-input-tests/super-shift-space-binds-floating-toggle ()
+  "Super-Shift-space is the floating detach/attach toggle."
+  (should (eq (lookup-key ewm-mode-map (kbd "s-S-SPC"))
+              #'ewm-floating-toggle)))
+
 ;;;; ewm--event-to-intercept-spec
 
 (ert-deftest ewm-input-tests/spec-plain-key ()

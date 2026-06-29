@@ -21,11 +21,7 @@ use ewm_core::{InterceptDispatch, InterceptedKey, TranslateTarget};
 use proptest::prelude::*;
 use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
 
-fn text_input_action(
-    keysym: u32,
-    utf8: Option<String>,
-    mods: &ModifiersState,
-) -> KeyAction {
+fn text_input_action(keysym: u32, utf8: Option<String>, mods: &ModifiersState) -> KeyAction {
     KeyAction::TextInput {
         keysym,
         utf8,

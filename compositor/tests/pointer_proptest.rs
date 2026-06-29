@@ -389,6 +389,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
                     surface_id: if i == 0 { h.frame_sid } else { 100 + i as u64 },
                     focus_id: nz(100 + i as u64),
                     width: VIEW_W as f64,
+                    height: 0.0,
                     entries: vec![LayoutEntry::surface(
                         nz(1 + i as u64),
                         "entry".to_string(),
@@ -401,6 +402,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
                     fullscreen: None,
                     selected_entry_id: Some(nz(1 + i as u64)),
                     move_anim: None,
+                    floating_pos: None,
                 })
                 .collect();
             h.fix.ewm().apply_output_layout(name, frames);
@@ -536,10 +538,12 @@ fn apply_multi_entry_layout(
             surface_id: 10_000,
             focus_id: nz(20_000),
             width: VIEW_W as f64,
+            height: 0.0,
             entries,
             fullscreen: None,
             selected_entry_id,
             move_anim: None,
+            floating_pos: None,
         }],
     );
     for i in 0..n_entries {
@@ -587,10 +591,12 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
             surface_id: h.frame_sid,
             focus_id: nz(40_000),
             width: VIEW_W as f64,
+            height: 0.0,
             entries,
             fullscreen: None,
             selected_entry_id: None,
             move_anim: None,
+            floating_pos: None,
         }],
     );
     settle_strip_animations(h);
@@ -609,6 +615,7 @@ fn apply_split_client_layout(h: &mut Harness, output: usize) {
             surface_id: h.frame_sid,
             focus_id: nz(50_000),
             width: (VIEW_W * 2) as f64,
+            height: 0.0,
             entries: vec![
                 LayoutEntry::surface(nz(50_001), "first".to_string(), h.sid, 0, 0, 400, 400),
                 LayoutEntry::surface(
@@ -624,6 +631,7 @@ fn apply_split_client_layout(h: &mut Harness, output: usize) {
             fullscreen: None,
             selected_entry_id: Some(nz(50_001)),
             move_anim: None,
+            floating_pos: None,
         }],
     );
 }

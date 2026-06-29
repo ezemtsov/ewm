@@ -8,6 +8,10 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Output mode information
 #[derive(Serialize, Clone, Debug)]
 pub struct OutputMode {
@@ -58,8 +62,9 @@ pub enum Event {
     ///
     /// `frame_surface_id` is the xdg_toplevel id of the Emacs frame the
     /// surface should be placed in.  Resolution order: parent toplevel's
-    /// frame -> active frame on the active output.  When unset, the lisp
-    /// side falls back to first-match on `output`.
+    /// frame -> focused frame on the target output -> active strip frame on
+    /// the target output.  When unset, the lisp side falls back to first-match
+    /// on `output`.
     #[serde(rename = "new")]
     New {
         id: u64,
@@ -86,6 +91,8 @@ pub enum Event {
         x: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         y: Option<f64>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        pointer: bool,
     },
     /// Output connected
     #[serde(rename = "output_detected")]

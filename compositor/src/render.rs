@@ -83,6 +83,7 @@ render_elements! {
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     SolidColor=SolidColorRenderElement,
     Texture=crate::texture::TextureRenderElement<GlesTexture>,
+    Shadow=crate::render_helpers::shadow::ShadowRenderElement,
 }
 
 /// Render layer surfaces on a specific layer to element list.
@@ -248,7 +249,7 @@ pub(crate) fn push_view_elements_fit(
 ///   live layer surfaces.
 #[allow(clippy::too_many_arguments)]
 pub fn collect_render_elements_for_output(
-    ewm: &Ewm,
+    ewm: &mut Ewm,
     renderer: &mut GlesRenderer,
     scale: Scale<f64>,
     cursor_texture_cache: &CursorTextureCache,
@@ -259,6 +260,7 @@ pub fn collect_render_elements_for_output(
     output: &Output,
 ) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
     tracy_span!("collect_render_elements");
+    crate::render_helpers::init(renderer);
 
     use smithay::utils::Logical;
 
@@ -378,6 +380,84 @@ pub fn collect_render_elements_for_output(
     let working_area = ewm.get_working_area(output);
     let view_size =
         Size::<f64, Logical>::from((working_area.size.w as f64, working_area.size.h as f64));
+    if let Some(space) = ewm.floating_spaces.get_mut(&output.name()) {
+        let id_windows = &ewm.id_windows;
+        let focused_entry_id = ewm.focused_entry_id;
+        let focused_frame_id = ewm.focused_frame_id;
+        let unfocused_alpha = ewm.unfocused_alpha;
+        let surface_open_anims = &ewm.surface_open_anims;
+
+        for (frame, data, frame_rect) in space.frames_with_render_geo_mut() {
+            for entry in frame
+                .entries
+                .iter()
+                .filter(|entry| entry.surface_id().is_some())
+            {
+                let surface_id = entry.surface_id().expect("surface-backed entry");
+                if let Some(window) = id_windows.get(&surface_id) {
+                    let is_focused = focused_entry_id == Some(entry.id);
+                    let mut entry_alpha = if is_focused { 1.0 } else { unfocused_alpha };
+                    if let Some(a) = surface_open_anims.get(&surface_id) {
+                        entry_alpha *= a.value() as f32;
+                    }
+                    let location = Point::from((
+                        frame_rect.loc.x + entry.x as f64,
+                        frame_rect.loc.y + entry.y as f64,
+                    ));
+                    let loc_physical: Point<i32, Physical> =
+                        location.to_physical_precise_round(scale);
+                    let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                        render_window_without_popups(
+                            window,
+                            renderer,
+                            loc_physical,
+                            scale,
+                            entry_alpha,
+                        );
+                    let entry_size: Size<i32, Physical> =
+                        Size::from((entry.w as i32, entry.h as i32))
+                            .to_physical_precise_round(scale);
+                    let constrain = Rectangle::new(loc_physical, entry_size);
+                    let source_size: Size<i32, Physical> =
+                        window.geometry().size.to_physical_precise_round(scale);
+                    push_view_elements_fit(
+                        &mut elements,
+                        view_elements,
+                        loc_physical,
+                        source_size,
+                        scale,
+                        constrain,
+                        !entry.primary(),
+                    );
+                }
+            }
+
+            let Some(window) = id_windows.get(&frame.surface_id) else {
+                continue;
+            };
+            let frame_alpha = surface_open_anims
+                .get(&frame.surface_id)
+                .map(|a| a.value() as f32)
+                .unwrap_or(1.0);
+            let frame_offset: Point<i32, Physical> =
+                frame_rect.loc.to_physical_precise_round(scale);
+            let view_elements =
+                render_window_without_popups(window, renderer, frame_offset, scale, frame_alpha);
+            elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
+
+            let shadow = data.shadow_mut();
+            shadow.update_render_elements(
+                frame_rect.size,
+                focused_frame_id == frame.surface_id,
+                crate::shadow_style::CornerRadius::default(),
+                scale.x,
+                frame_alpha,
+            );
+            shadow.render(renderer, frame_rect.loc, &mut |shadow| {
+                elements.push(EwmRenderElement::Shadow(shadow));
+            });
+        }
+    }
     let strip = ewm.frame_set.mapped_strip(&output.name());
     if let Some(strip) = strip {
         let active_idx = strip.active_idx();
@@ -799,7 +879,7 @@ fn render_elements_impl(
 }
 
 fn collect_screencopy_elements_for_output(
-    ewm: &Ewm,
+    ewm: &mut Ewm,
     renderer: &mut GlesRenderer,
     output: &Output,
     cursor_texture_cache: &CursorTextureCache,
@@ -1089,7 +1169,7 @@ pub fn render_screencopy_immediate(
 /// composed over the live layer surfaces during a workspace transition
 /// without doubling up panels like DankMaterialShell.
 pub fn capture_output_to_texture(
-    ewm: &Ewm,
+    ewm: &mut Ewm,
     renderer: &mut GlesRenderer,
     cursor_texture_cache: &CursorTextureCache,
     output: &Output,

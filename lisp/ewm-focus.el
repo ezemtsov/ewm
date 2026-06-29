@@ -22,6 +22,7 @@
 (defvar ewm--module-mode)
 (defvar ewm-focus-follows-mouse)
 (defvar ewm--is-ffm-focus-event)
+(defvar ewm--is-pointer-focus-event)
 (defvar ewm--mff-last-window)
 
 (defun ewm--select-frame-set-input-focus (frame &optional norecord)
@@ -54,7 +55,10 @@ recover the surface-id."
     (let* ((focus-id (alist-get 'focus_id event))
            (x (alist-get 'x event))
            (y (alist-get 'y event))
-           (ewm--is-ffm-focus-event (and ewm-focus-follows-mouse x y)))
+           (pointer (alist-get 'pointer event))
+           (ewm--is-pointer-focus-event (and pointer x y))
+           (ewm--is-ffm-focus-event
+            (and ewm-focus-follows-mouse ewm--is-pointer-focus-event)))
       (cond
        ((when-let ((win (ewm--find-window-by-entry-id focus-id)))
           (select-frame (window-frame win))
@@ -66,8 +70,9 @@ recover the surface-id."
           (when ewm--is-ffm-focus-event
             (when-let* ((window (window-at-x-y x y frame))
                         ((not (minibufferp (window-buffer window)))))
-              (select-window window))
-            ;; Anchor only on FFM; keyboard events must leave it stale so MFF warps.
+              (select-window window)))
+          ;; Anchor only on pointer focus; keyboard events must leave it stale so MFF warps.
+          (when ewm--is-pointer-focus-event
             (setq ewm--mff-last-window (selected-window)))
           t))))))
 

@@ -61,6 +61,7 @@ use_symbols! {
     kw_repeat      => ":repeat"
     kw_name       => ":name"
     kw_width      => ":width"
+    kw_height     => ":height"
     kw_entries    => ":entries"
     kw_surface_id => ":surface-id"
     kw_entry_id    => ":entry-id"
@@ -170,11 +171,18 @@ pub struct ActiveOutput {
 }
 
 #[derive(Default)]
+pub struct FrameOrigin {
+    pub surface_id: u64,
+    pub origin: (i32, i32),
+}
+
+#[derive(Default)]
 pub struct SharedState {
     pub focused_surface_id: u64,
     pub focused_frame_id: u64,
     pub pointer_location: (f64, f64),
     pub active_outputs: Vec<ActiveOutput>,
+    pub frame_origins: Vec<FrameOrigin>,
 }
 
 static SHARED_STATE: OnceLock<Mutex<SharedState>> = OnceLock::new();
@@ -203,24 +211,36 @@ pub fn set_text_input_surrounding(snapshot: Option<SurroundingSnapshot>) {
 }
 
 /// Pending frame-to-output assignments (synchronous to avoid race with surface creation)
-static PENDING_FRAME_OUTPUTS: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+#[derive(Debug, Clone)]
+pub struct PendingFrame {
+    pub output: String,
+    pub floating: bool,
+}
 
-fn pending_frame_outputs() -> &'static Mutex<VecDeque<String>> {
-    PENDING_FRAME_OUTPUTS.get_or_init(|| Mutex::new(VecDeque::new()))
+static PENDING_FRAMES: OnceLock<Mutex<VecDeque<PendingFrame>>> = OnceLock::new();
+
+fn pending_frames() -> &'static Mutex<VecDeque<PendingFrame>> {
+    PENDING_FRAMES.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 /// Take the next pending frame output (called by compositor when creating surfaces).
-pub fn take_pending_frame_output() -> Option<String> {
-    pending_frame_outputs().lock().unwrap().pop_front()
+pub fn take_pending_frame() -> Option<PendingFrame> {
+    pending_frames().lock().unwrap().pop_front()
 }
 
 /// Get pending frame outputs for state dump.
 pub fn peek_pending_frame_outputs() -> Vec<String> {
-    pending_frame_outputs()
+    pending_frames()
         .lock()
         .unwrap()
         .iter()
-        .cloned()
+        .map(|pending| {
+            if pending.floating {
+                format!("{}:floating", pending.output)
+            } else {
+                pending.output.clone()
+            }
+        })
         .collect()
 }
 
@@ -425,6 +445,24 @@ fn get_output_origin<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
     }
 }
 
+/// Query Emacs frame origin (called by Emacs for mouse-follows-focus pointer warping).
+/// Returns (x . y) cons cell, or nil if the frame is not visible.
+#[defun]
+fn get_frame_origin<'a>(env: &'a Env, surface_id: i64) -> Result<Value<'a>> {
+    let Ok(surface_id) = u64::try_from(surface_id) else {
+        return ().into_lisp(env);
+    };
+    let state = shared_state().lock().unwrap();
+    match state
+        .frame_origins
+        .iter()
+        .find(|frame| frame.surface_id == surface_id)
+    {
+        Some(frame) => env.cons(frame.origin.0 as i64, frame.origin.1 as i64),
+        None => ().into_lisp(env),
+    }
+}
+
 /// Query pointer location (called by Emacs for mouse-follows-focus).
 /// Returns (x . y) cons cell in compositor coordinates.
 #[defun]
@@ -498,6 +536,23 @@ pub enum ModuleCommand {
     OutputLayout {
         output: String,
         frames: Vec<Frame>,
+    },
+    /// Per-output floating Emacs frames. Rust owns placement and stacking.
+    FloatingLayout {
+        output: String,
+        frames: Vec<Frame>,
+    },
+    /// Move a floating Emacs frame by a logical-pixel delta.
+    MoveFloatingFrame {
+        id: u64,
+        dx: f64,
+        dy: f64,
+    },
+    /// Resize a floating Emacs frame by a logical-pixel delta.
+    ResizeFloatingFrame {
+        id: u64,
+        dw: f64,
+        dh: f64,
     },
     /// Toggle compositor-owned fullscreen for a layout view.
     ToggleFullscreen {
@@ -914,17 +969,9 @@ fn socket() -> Result<Option<String>> {
 
 // Module Command Functions (direct Emacs -> Compositor)
 
-/// Set declarative layout for an output (module mode).
-///
-/// OUTPUT is the output name. FRAMES is a vector of plists describing the
-/// strip of Emacs frames left-to-right. Each frame plist has:
-///   :name NAME :surface-id ID :focus-id N :selected-entry-id N|nil
-///   :width FLOAT :entries [ENTRY ...]
-/// where each ENTRY is a plist `:entry-id :name :x :y :w :h` with optional
-/// `:surface-id`.
-/// Entry coordinates are relative to the owning frame's working area.
-#[defun]
-fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
+/// Parse a vector of frame plists from Emacs into `Frame`s, dropping any frame
+/// or entry missing its id.
+fn parse_layout_frames(env: &Env, frames: Value<'_>) -> Result<Vec<Frame>> {
     let frames_len: i64 = env.call(length, (frames,))?.into_rust()?;
     let mut parsed_frames = Vec::with_capacity(frames_len as usize);
 
@@ -950,6 +997,7 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
         };
 
         let width = value_as_f64(env.call(plist_get, (frame, kw_width))?).unwrap_or(0.0);
+        let height = value_as_f64(env.call(plist_get, (frame, kw_height))?).unwrap_or(0.0);
 
         let selected_entry_id =
             optional_nonzero_u64(env.call(plist_get, (frame, kw_selected_entry_id))?)?;
@@ -1002,16 +1050,74 @@ fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<
             surface_id,
             focus_id,
             width,
+            height,
             entries,
             fullscreen: None,
             selected_entry_id,
             move_anim: None,
+            floating_pos: None,
         });
     }
 
+    Ok(parsed_frames)
+}
+
+/// Set declarative layout for an output (module mode).
+///
+/// OUTPUT is the output name. FRAMES is a vector of plists describing the
+/// strip of Emacs frames left-to-right. Each frame plist has:
+///   :name NAME :surface-id ID :focus-id N :selected-entry-id N|nil
+///   :width FLOAT :entries [ENTRY ...]
+/// where each ENTRY is a plist `:entry-id :name :x :y :w :h` with optional
+/// `:surface-id`.
+/// Entry coordinates are relative to the owning frame's working area.
+#[defun]
+fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::OutputLayout {
         output,
-        frames: parsed_frames,
+        frames: parse_layout_frames(env, frames)?,
+    });
+    Ok(())
+}
+
+/// Set declarative floating-frame contents for OUTPUT.
+///
+/// Rust preserves compositor-owned floating positions and stacking order.
+#[defun]
+fn floating_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
+    push_command(ModuleCommand::FloatingLayout {
+        output,
+        frames: parse_layout_frames(env, frames)?,
+    });
+    Ok(())
+}
+
+/// Move floating frame ID by DX/DY logical pixels.
+#[defun]
+fn move_floating_frame_module(id: i64, dx: Value<'_>, dy: Value<'_>) -> Result<()> {
+    if id <= 0 {
+        tracing::warn!("move_floating_frame_module: ignored invalid id {id}");
+        return Ok(());
+    }
+    push_command(ModuleCommand::MoveFloatingFrame {
+        id: id as u64,
+        dx: value_as_f64(dx)?,
+        dy: value_as_f64(dy)?,
+    });
+    Ok(())
+}
+
+/// Resize floating frame ID by DW/DH logical pixels.
+#[defun]
+fn resize_floating_frame_module(id: i64, dw: Value<'_>, dh: Value<'_>) -> Result<()> {
+    if id <= 0 {
+        tracing::warn!("resize_floating_frame_module: ignored invalid id {id}");
+        return Ok(());
+    }
+    push_command(ModuleCommand::ResizeFloatingFrame {
+        id: id as u64,
+        dw: value_as_f64(dw)?,
+        dh: value_as_f64(dh)?,
     });
     Ok(())
 }
@@ -1094,11 +1200,22 @@ fn warp_pointer_module(x: Value<'_>, y: Value<'_>) -> Result<()> {
 /// Prepare next frame for output (synchronous to avoid race with surface creation).
 #[defun]
 fn prepare_frame_module(output: String) -> Result<()> {
-    pending_frame_outputs()
-        .lock()
-        .unwrap()
-        .push_back(output.clone());
+    pending_frames().lock().unwrap().push_back(PendingFrame {
+        output: output.clone(),
+        floating: false,
+    });
     tracing::info!("Prepared frame for output {}", output);
+    Ok(())
+}
+
+/// Prepare next frame as a floating frame on OUTPUT.
+#[defun]
+fn prepare_floating_frame_module(output: String) -> Result<()> {
+    pending_frames().lock().unwrap().push_back(PendingFrame {
+        output: output.clone(),
+        floating: true,
+    });
+    tracing::info!("Prepared floating frame for output {}", output);
     Ok(())
 }
 

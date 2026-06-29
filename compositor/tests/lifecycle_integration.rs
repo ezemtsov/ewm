@@ -30,6 +30,7 @@ fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> 
         surface_id: frame_id,
         focus_id: nz(200),
         width: 1920.0,
+        height: 0.0,
         entries: vec![LayoutEntry::surface(
             entry_id,
             "entry".to_string(),
@@ -42,6 +43,7 @@ fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> 
         fullscreen: None,
         selected_entry_id: Some(entry_id),
         move_anim: None,
+        floating_pos: None,
     }
 }
 
