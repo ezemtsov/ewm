@@ -26,7 +26,7 @@ use std::iter::zip;
 use std::num::NonZeroU64;
 use std::os::fd::AsFd;
 
-use crate::output_mode::{HSyncPolarity, Modeline, VSyncPolarity};
+use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
 use crate::tracy_span;
 use anyhow::{ensure, Context as _};
 use drm_ffi::drm_mode_modeinfo;
@@ -107,6 +107,7 @@ const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
 ];
 
 const CLOSED_LID_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+const MODE_REFRESH_TOLERANCE_MILLIHERTZ: u32 = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LidPolicyReason {
@@ -180,10 +181,40 @@ fn current_lid_closed_from_acpi() -> Option<bool> {
 mod tests {
     use super::{
         calculate_drm_mode_from_modeline, calculate_mode_cvt, closed_lid_no_external_action,
-        parse_acpi_lid_state, should_suppress_laptop_panels, ClosedLidNoExternalAction,
-        LidPolicyReason, ModeTypeFlags,
+        drm_mode_modeinfo, mode_refresh_millihertz, parse_acpi_lid_state, pick_advertised_mode,
+        should_suppress_laptop_panels, ClosedLidNoExternalAction, LidPolicyReason, ModeFlags,
+        ModeTypeFlags,
     };
-    use crate::output_mode::{HSyncPolarity, Modeline, VSyncPolarity};
+    use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
+
+    fn test_mode(width: u16, height: u16, refresh_millihertz: i32) -> super::DrmMode {
+        test_mode_with_flags(width, height, refresh_millihertz, ModeFlags::empty())
+    }
+
+    fn test_mode_with_flags(
+        width: u16,
+        height: u16,
+        refresh_millihertz: i32,
+        flags: ModeFlags,
+    ) -> super::DrmMode {
+        super::DrmMode::from(drm_mode_modeinfo {
+            clock: refresh_millihertz as u32,
+            hdisplay: width,
+            hsync_start: 900,
+            hsync_end: 950,
+            htotal: 1000,
+            vdisplay: height,
+            vsync_start: 700,
+            vsync_end: 750,
+            vtotal: 1000,
+            vrefresh: (refresh_millihertz as f64 / 1000.0).round() as u32,
+            flags: flags.bits(),
+            type_: 0,
+            name: [0; 32],
+            hskew: 0,
+            vscan: 0,
+        })
+    }
 
     // Expected values cross-checked against niri's snapshots and the `cvt` utility.
     #[test]
@@ -239,6 +270,75 @@ mod tests {
         assert_eq!(m.hsync_polarity, HSyncPolarity::NHSync);
         assert_eq!(m.vsync_polarity, VSyncPolarity::PVSync);
         assert!("173.0 1920".parse::<Modeline>().is_err());
+    }
+
+    #[test]
+    fn advertised_mode_with_refresh_picks_closest_precise_refresh() {
+        let modes = [test_mode(800, 600, 60_000), test_mode(800, 600, 59_940)];
+        let selected = pick_advertised_mode(
+            &modes,
+            ConfiguredMode {
+                width: 800,
+                height: 600,
+                refresh: Some(60.0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(mode_refresh_millihertz(selected), 60_000);
+    }
+
+    #[test]
+    fn advertised_mode_with_refresh_accepts_precise_timing_delta() {
+        let modes = [calculate_mode_cvt(1920, 1080, 60.0)];
+        assert_ne!(mode_refresh_millihertz(modes[0]), 60_000);
+
+        let selected = pick_advertised_mode(
+            &modes,
+            ConfiguredMode {
+                width: 1920,
+                height: 1080,
+                refresh: Some(60.0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(selected.size(), (1920, 1080));
+    }
+
+    #[test]
+    fn advertised_mode_without_refresh_picks_highest_precise_refresh() {
+        let modes = [test_mode(800, 600, 59_940), test_mode(800, 600, 60_000)];
+        let selected = pick_advertised_mode(
+            &modes,
+            ConfiguredMode {
+                width: 800,
+                height: 600,
+                refresh: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(mode_refresh_millihertz(selected), 60_000);
+    }
+
+    #[test]
+    fn advertised_mode_ignores_interlaced_modes() {
+        let modes = [
+            test_mode_with_flags(800, 600, 30_000, ModeFlags::INTERLACE),
+            test_mode(800, 600, 59_940),
+        ];
+        let selected = pick_advertised_mode(
+            &modes,
+            ConfiguredMode {
+                width: 800,
+                height: 600,
+                refresh: Some(60.0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(mode_refresh_millihertz(selected), 59_940);
     }
 
     #[test]
@@ -445,6 +545,40 @@ fn modeinfo_name_slice_from_string(mode_name: &str) -> [core::ffi::c_char; 32] {
     name
 }
 
+fn refresh_hz_to_millihertz(refresh_hz: f64) -> i32 {
+    (refresh_hz * 1000.).round() as i32
+}
+
+fn mode_refresh_millihertz(mode: DrmMode) -> i32 {
+    Mode::from(mode).refresh
+}
+
+fn highest_refresh_mode<I>(modes: I) -> Option<DrmMode>
+where
+    I: Iterator<Item = DrmMode>,
+{
+    modes.max_by_key(|mode| mode_refresh_millihertz(*mode))
+}
+
+fn pick_advertised_mode(modes: &[DrmMode], target: ConfiguredMode) -> Option<DrmMode> {
+    let candidates = modes.iter().copied().filter(|mode| {
+        mode.size() == (target.width, target.height) && !mode.flags().contains(ModeFlags::INTERLACE)
+    });
+
+    if let Some(refresh_hz) = target.refresh {
+        let target_millihertz = refresh_hz_to_millihertz(refresh_hz);
+        candidates
+            .filter_map(|mode| {
+                let delta = mode_refresh_millihertz(mode).abs_diff(target_millihertz);
+                (delta < MODE_REFRESH_TOLERANCE_MILLIHERTZ).then_some((delta, mode))
+            })
+            .min_by_key(|(delta, _)| *delta)
+            .map(|(_, mode)| mode)
+    } else {
+        highest_refresh_mode(candidates)
+    }
+}
+
 /// Pick a DRM mode for `connector` matching `target`, or fall back to preferred.
 ///
 /// A custom target is CVT-generated and bypasses the advertised mode list. The
@@ -470,32 +604,7 @@ fn pick_mode(
             }
         }
 
-        let refresh = target_mode.refresh.map(|r| (r * 1000.).round() as i32);
-        for m in connector.modes() {
-            if m.size() != (target_mode.width, target_mode.height) {
-                continue;
-            }
-
-            // Interlaced modes don't appear to work.
-            if m.flags().contains(ModeFlags::INTERLACE) {
-                continue;
-            }
-
-            if let Some(refresh) = refresh {
-                // If refresh is set, only pick modes with matching refresh.
-                let wl_mode = Mode::from(*m);
-                if wl_mode.refresh == refresh {
-                    mode = Some(m);
-                }
-            } else if let Some(curr) = mode {
-                // If refresh isn't set, pick the mode with the highest refresh.
-                if curr.vrefresh() < m.vrefresh() {
-                    mode = Some(m);
-                }
-            } else {
-                mode = Some(m);
-            }
-        }
+        mode = pick_advertised_mode(connector.modes(), target_mode);
 
         if mode.is_none() {
             fallback = true;
@@ -504,27 +613,21 @@ fn pick_mode(
 
     if mode.is_none() {
         // Pick a preferred mode.
-        for m in connector.modes() {
-            if !m.mode_type().contains(ModeTypeFlags::PREFERRED) {
-                continue;
-            }
-
-            if let Some(curr) = mode {
-                if curr.vrefresh() < m.vrefresh() {
-                    mode = Some(m);
-                }
-            } else {
-                mode = Some(m);
-            }
-        }
+        mode = highest_refresh_mode(
+            connector
+                .modes()
+                .iter()
+                .copied()
+                .filter(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED)),
+        );
     }
 
     if mode.is_none() {
         // Last attempt.
-        mode = connector.modes().first();
+        mode = connector.modes().first().copied();
     }
 
-    mode.map(|m| (*m, fallback))
+    mode.map(|m| (m, fallback))
 }
 
 /// Compute precise refresh interval from DRM mode timing parameters.
