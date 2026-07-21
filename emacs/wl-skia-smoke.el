@@ -1,7 +1,7 @@
 ;;; wl-skia-smoke.el --- fractional-scaling smoke test for the Wayland+Skia backend  -*- lexical-binding: t; -*-
 
 ;; Minimal counterpart to skia-smoke.sh for the native Wayland backend.
-;; It uses the wl-skia-test-* framebuffer readback hooks to assert
+;; It uses the pwayl-skia-test-* framebuffer readback hooks to assert
 ;; rendering and fractional-scaling correctness on the live frame.
 ;;
 ;; Usage:
@@ -42,7 +42,7 @@
         (remaining (or attempts 20)))
     (while (and (> remaining 0)
                 (progn
-                  (setq state (wl-surface-test-state frame))
+                  (setq state (pwayl-surface-test-state frame))
                   (not (wl-skia-smoke--plist state :monitor))))
       (setq remaining (1- remaining))
       (wl-skia-smoke--settle 1))
@@ -61,12 +61,12 @@ Return a report string."
                                     (if ok "PASS" "FAIL") name detail)))
       ;; --- 1. framebuffer size / scale invariant -------------------------
       (wl-skia-smoke--settle)
-      (let* ((s (wl-skia-test-framebuffer-size f))
+      (let* ((s (pwayl-skia-test-framebuffer-size f))
              (rw (nth 0 s)) (rh (nth 1 s))
              (tw (nth 2 s)) (th (nth 3 s))
              (lw (nth 4 s)) (lh (nth 5 s))
              (scale (nth 6 s))
-             ;; Match the backend's wl_physical_size rounding (half-up,
+             ;; Match the backend's pwayl_physical_size rounding (half-up,
              ;; (int)(x + 0.5)), not Elisp `round' (half-to-even), so the
              ;; check is exact at .5 boundaries.
              (ew (floor (+ (* lw scale) 0.5)))
@@ -78,7 +78,7 @@ Return a report string."
                        rw rh lw lh scale ew eh)))
       ;; --- 2. red text on green background -------------------------------
       (set-face-attribute 'default f :background "#00ff00" :foreground "#ff0000")
-      (let ((buf (get-buffer-create "*wl-smoke*")))
+      (let ((buf (get-buffer-create "*pwayl-smoke*")))
         (select-frame f)
         (select-window (frame-root-window f))
         (delete-other-windows (frame-root-window f))
@@ -91,7 +91,7 @@ Return a report string."
           (insert (make-string 4000 ?H))
           (goto-char (point-min))))
       (wl-skia-smoke--settle)
-      (let* ((c (wl-skia-test-framebuffer-color-counts f))
+      (let* ((c (pwayl-skia-test-framebuffer-color-counts f))
              (rw (nth 0 c)) (rh (nth 1 c))
              (red (nth 2 c)) (green (nth 3 c)))
         (check "red text present" (> red 1000)
@@ -104,10 +104,10 @@ Return a report string."
       ;; (or a failure to repaint) lowers the ratio.  fg red so stray glyphs
       ;; show up as red, not green.
       (set-face-attribute 'default f :background "#00ff00" :foreground "#ff0000")
-      (with-current-buffer (get-buffer-create "*wl-smoke*") (erase-buffer))
+      (with-current-buffer (get-buffer-create "*pwayl-smoke*") (erase-buffer))
       (check "solid-green buffer is empty"
-             (= (buffer-size (get-buffer "*wl-smoke*")) 0)
-             (format "size=%d" (buffer-size (get-buffer "*wl-smoke*"))))
+             (= (buffer-size (get-buffer "*pwayl-smoke*")) 0)
+             (format "size=%d" (buffer-size (get-buffer "*pwayl-smoke*"))))
       (redraw-frame f)
       (wl-skia-smoke--settle 4)
       (let* ((lw (frame-pixel-width f))
@@ -115,46 +115,46 @@ Return a report string."
              ;; sample a generous interior rect, away from edges/cursor
              (rx (/ lw 8)) (ry (/ lh 8))
              (rwd (/ lw 2)) (rht (/ lh 2))
-             (c (wl-skia-test-framebuffer-color-counts f (list rx ry rwd rht)))
+             (c (pwayl-skia-test-framebuffer-color-counts f (list rx ry rwd rht)))
              (red (nth 2 c)) (green (nth 3 c))
              (bounds (nth 5 c))
              ;; device-pixel area of the sampled rect
-             (s (wl-skia-test-framebuffer-size f))
+             (s (pwayl-skia-test-framebuffer-size f))
              (scale (nth 6 s))
              (dw (round (* rwd scale))) (dh (round (* rht scale)))
              (total (* dw dh))
              (ratio (wl-skia-smoke--ratio green dw dh)))
         (when (and (< ratio 0.999)
-                   (fboundp 'wl-skia-test-dump-png))
-          (wl-skia-test-dump-png "/tmp/wl-smoke-solid-fail.png" f))
+                   (fboundp 'pwayl-skia-test-dump-png))
+          (pwayl-skia-test-dump-png "/tmp/pwayl-smoke-solid-fail.png" f))
         (check "solid-green interior uniform (>=0.999)" (>= ratio 0.999)
                (format "green=%d red=%d other=%d of %d device px = %.4f (logical rect %d,%d %dx%d red-bounds=%S)"
                        green red (- total green red) total ratio rx ry rwd rht bounds)))
       ;; --- 4. alpha-background uses an ARGB render target ---------------
       (check "surface state hook present for alpha"
-             (fboundp 'wl-surface-test-state)
-             "wl-surface-test-state")
-      (when (fboundp 'wl-surface-test-state)
+             (fboundp 'pwayl-surface-test-state)
+             "pwayl-surface-test-state")
+      (when (fboundp 'pwayl-surface-test-state)
         (unwind-protect
             (progn
               (modify-frame-parameters f '((alpha-background . 50)))
               (set-face-attribute 'default f
                                   :background "#00ff00"
                                   :foreground "#ff0000")
-              (with-current-buffer (get-buffer-create "*wl-smoke*")
+              (with-current-buffer (get-buffer-create "*pwayl-smoke*")
                 (erase-buffer))
               (redraw-frame f)
               (wl-skia-smoke--settle 4)
-              (let* ((state (wl-surface-test-state f))
+              (let* ((state (pwayl-surface-test-state f))
                      (lw (frame-pixel-width f))
                      (lh (frame-pixel-height f))
                      (rx (/ lw 8)) (ry (/ lh 8))
                      (rwd (/ lw 2)) (rht (/ lh 2))
-                     (c (wl-skia-test-framebuffer-color-counts
+                     (c (pwayl-skia-test-framebuffer-color-counts
                          f (list rx ry rwd rht)))
                      (green (nth 3 c))
                      (translucent (nth 4 c))
-                     (s (wl-skia-test-framebuffer-size f))
+                     (s (pwayl-skia-test-framebuffer-size f))
                      (scale (nth 6 s))
                      (dw (round (* rwd scale)))
                      (dh (round (* rht scale)))
@@ -174,11 +174,11 @@ Return a report string."
                (lh (frame-pixel-height f))
                (rx (/ lw 8)) (ry (/ lh 8))
                (rwd (/ lw 2)) (rht (/ lh 2))
-               (c (wl-skia-test-framebuffer-color-counts
+               (c (pwayl-skia-test-framebuffer-color-counts
                    f (list rx ry rwd rht)))
                (green (nth 3 c))
                (translucent (nth 4 c))
-               (state (wl-surface-test-state f)))
+               (state (pwayl-surface-test-state f)))
           (check "alpha-background reset restores opaque pixels"
                  (and (> green 0) (= translucent 0))
                  (format "green=%d translucent=%d" green translucent))
@@ -187,12 +187,12 @@ Return a report string."
                  (format "%S" state))))
       ;; --- 6. Presentation counters -------------------------------------
       (check "presentation stats hook present"
-             (fboundp 'wl-skia-test-presentation-stats)
-             "wl-skia-test-presentation-stats")
-      (when (fboundp 'wl-skia-test-presentation-stats)
-        (wl-skia-test-presentation-stats f t)
+             (fboundp 'pwayl-skia-test-presentation-stats)
+             "pwayl-skia-test-presentation-stats")
+      (when (fboundp 'pwayl-skia-test-presentation-stats)
+        (pwayl-skia-test-presentation-stats f t)
         (wl-skia-smoke--settle 4)
-        (let* ((stats (wl-skia-test-presentation-stats f))
+        (let* ((stats (pwayl-skia-test-presentation-stats f))
                (queued (wl-skia-smoke--stat stats 'queue-area-count))
                (queued-full (wl-skia-smoke--stat stats 'queue-full-count))
                (drawn (wl-skia-smoke--stat stats 'draw-count))
@@ -246,20 +246,20 @@ Return a report string."
                  (format "%S" stats)))
         ;; Partial present is opt-in: a Lisp variable on current builds,
         ;; the WL_SKIA_PARTIAL_PRESENT env var on older ones.
-        (when (boundp 'wayland-partial-present)
-          (setq wayland-partial-present t))
-        (wl-skia-test-presentation-stats f t)
-        (with-current-buffer (get-buffer-create "*wl-smoke*")
+        (when (boundp 'pwayl-partial-present)
+          (setq pwayl-partial-present t))
+        (pwayl-skia-test-presentation-stats f t)
+        (with-current-buffer (get-buffer-create "*pwayl-smoke*")
           (goto-char (point-max))
           (dotimes (i 6)
             (insert (char-to-string (+ ?a i)))
             (redisplay t)
             (sit-for 0.05)))
-        (let* ((stats (wl-skia-test-presentation-stats f))
+        (let* ((stats (pwayl-skia-test-presentation-stats f))
                (queued (wl-skia-smoke--stat stats 'queue-area-count))
                (queued-full (wl-skia-smoke--stat stats 'queue-full-count))
                (last-rect (wl-skia-smoke--stat stats 'present-last-rect))
-               (s (wl-skia-test-framebuffer-size f))
+               (s (pwayl-skia-test-framebuffer-size f))
                (rw (nth 0 s))
                (rh (nth 1 s)))
           ;; Frame-callback timeouts (compositor withholding callbacks
@@ -279,25 +279,25 @@ Return a report string."
                           (< (* (nth 2 last-rect) (nth 3 last-rect))
                              (* rw rh))))
                  (format "%S" stats)))
-        (when (boundp 'wayland-partial-present)
-          (setq wayland-partial-present nil)))
+        (when (boundp 'pwayl-partial-present)
+          (setq pwayl-partial-present nil)))
       (check "flush-frame test hook present"
-             (fboundp 'wl-skia-test-flush-frame)
-             "wl-skia-test-flush-frame")
-      (when (and (fboundp 'wl-skia-test-presentation-stats)
-                 (fboundp 'wl-skia-test-flush-frame)
-                 (fboundp 'wl-surface-test-state))
+             (fboundp 'pwayl-skia-test-flush-frame)
+             "pwayl-skia-test-flush-frame")
+      (when (and (fboundp 'pwayl-skia-test-presentation-stats)
+                 (fboundp 'pwayl-skia-test-flush-frame)
+                 (fboundp 'pwayl-surface-test-state))
         (unwind-protect
             (progn
-              (wl-skia-test-presentation-stats f t)
+              (pwayl-skia-test-presentation-stats f t)
               (redraw-frame f)
-              (let ((state (wl-surface-test-state f)))
+              (let ((state (pwayl-surface-test-state f)))
                 (check "redraw-frame marks render target dirty"
                        (wl-skia-smoke--plist state :render-dirty)
                        (format "%S" state)))
-              (wl-skia-test-flush-frame f)
-              (let* ((state (wl-surface-test-state f))
-                     (stats (wl-skia-test-presentation-stats f))
+              (pwayl-skia-test-flush-frame f)
+              (let* ((state (pwayl-surface-test-state f))
+                     (stats (pwayl-skia-test-presentation-stats f))
                      (presented (wl-skia-smoke--stat stats 'present-count)))
                 (check "flush-frame presents dirty render target"
                        (and (not (wl-skia-smoke--plist state :render-dirty))
@@ -307,10 +307,10 @@ Return a report string."
           (redraw-display)
           (wl-skia-smoke--settle 4)))
       ;; --- 5. M4 selection and DnD state ---------------------------------
-      (check "selection state hook present" (fboundp 'wl-selection-test-state)
-             "wl-selection-test-state")
-      (when (fboundp 'wl-selection-test-state)
-        (let ((state (wl-selection-test-state)))
+      (check "selection state hook present" (fboundp 'pwayl-selection-test-state)
+             "pwayl-selection-test-state")
+      (when (fboundp 'pwayl-selection-test-state)
+        (let ((state (pwayl-selection-test-state)))
           (check "clipboard data device present"
                  (wl-skia-smoke--plist state :clipboard-device)
                  (format "%S" state))
@@ -320,8 +320,8 @@ Return a report string."
           (check "dnd state tracked"
                  (integerp (wl-skia-smoke--plist state :dnd-drop-count))
                  (format "%S" state))))
-      (let ((value "wl-smoke-clipboard")
-            (primary "wl-smoke-primary"))
+      (let ((value "pwayl-smoke-clipboard")
+            (primary "pwayl-smoke-primary"))
         (gui-backend-set-selection 'CLIPBOARD value)
         (wl-skia-smoke--settle 1)
         (check "clipboard owner"
@@ -340,7 +340,7 @@ Return a report string."
                (equal (gui-backend-get-selection 'PRIMARY 'UTF8_STRING)
                       primary)
                primary))
-      (let ((buf (get-buffer-create "*wl-smoke-select-all*")))
+      (let ((buf (get-buffer-create "*pwayl-smoke-select-all*")))
         (with-current-buffer buf
           (erase-buffer)
           (dotimes (i 200)
@@ -372,56 +372,56 @@ Return a report string."
                                          ""))
                        (buffer-size))))
       ;; --- 6. M4 pointer cursor shapes -----------------------------------
-      (check "cursor state hook present" (fboundp 'wl-skia-test-cursor-state)
-             "wl-skia-test-cursor-state")
-      (check "cursor setter hook present" (fboundp 'wl-skia-test-set-cursor)
-             "wl-skia-test-set-cursor")
-      (when (and (fboundp 'wl-skia-test-cursor-state)
-                 (fboundp 'wl-skia-test-set-cursor))
-        (let ((state (wl-skia-test-cursor-state f)))
+      (check "cursor state hook present" (fboundp 'pwayl-skia-test-cursor-state)
+             "pwayl-skia-test-cursor-state")
+      (check "cursor setter hook present" (fboundp 'pwayl-skia-test-set-cursor)
+             "pwayl-skia-test-set-cursor")
+      (when (and (fboundp 'pwayl-skia-test-cursor-state)
+                 (fboundp 'pwayl-skia-test-set-cursor))
+        (let ((state (pwayl-skia-test-cursor-state f)))
           (check "cursor theme loaded"
                  (wl-skia-smoke--plist state :theme)
                  (format "%S" state))
           (check "default cursor named"
                  (stringp (wl-skia-smoke--plist state :default))
                  (format "%S" state))
-          (setq state (wl-skia-test-set-cursor f 'text))
+          (setq state (pwayl-skia-test-set-cursor f 'text))
           (check "text cursor selected"
                  (equal (wl-skia-smoke--plist state :current)
                         (wl-skia-smoke--plist state :text))
                  (format "%S" state))
-          (setq state (wl-skia-test-set-cursor f 'default))
+          (setq state (pwayl-skia-test-set-cursor f 'default))
           (check "default cursor selected"
                  (equal (wl-skia-smoke--plist state :current)
                         (wl-skia-smoke--plist state :default))
                  (format "%S" state))
-          (setq state (wl-skia-test-set-cursor f 'hourglass))
+          (setq state (pwayl-skia-test-set-cursor f 'hourglass))
           (check "hourglass cursor active"
                  (wl-skia-smoke--plist state :hourglass-visible)
                  (format "%S" state))
-          (setq state (wl-skia-test-set-cursor f 'hide-hourglass))
+          (setq state (pwayl-skia-test-set-cursor f 'hide-hourglass))
           (check "hourglass cursor hidden"
                  (not (wl-skia-smoke--plist state :hourglass-visible))
                  (format "%S" state))
-          (setq state (wl-skia-test-set-cursor f 'visible))
+          (setq state (pwayl-skia-test-set-cursor f 'visible))
           (check "pointer invisible hook visible baseline"
                  (not (wl-skia-smoke--plist state :pointer-invisible))
                  (format "%S" state))
-          (setq state (wl-skia-test-set-cursor f 'invisible))
+          (setq state (pwayl-skia-test-set-cursor f 'invisible))
           (check "pointer invisible hook hides cursor"
                  (wl-skia-smoke--plist state :pointer-invisible)
                  (format "%S" state))
-          (setq state (wl-skia-test-set-cursor f 'visible))
+          (setq state (pwayl-skia-test-set-cursor f 'visible))
           (check "pointer invisible hook restores cursor"
                  (not (wl-skia-smoke--plist state :pointer-invisible))
                  (format "%S" state))))
       ;; --- 7. M5 text-input-v3 IME state --------------------------------
-      (check "text-input state hook present" (fboundp 'wl-text-input-test-state)
-             "wl-text-input-test-state")
-      (check "text-input commit hook present" (fboundp 'wl-text-input-test-commit)
-             "wl-text-input-test-commit")
-      (when (fboundp 'wl-text-input-test-state)
-        (let ((state (wl-text-input-test-state f)))
+      (check "text-input state hook present" (fboundp 'pwayl-text-input-test-state)
+             "pwayl-text-input-test-state")
+      (check "text-input commit hook present" (fboundp 'pwayl-text-input-test-commit)
+             "pwayl-text-input-test-commit")
+      (when (fboundp 'pwayl-text-input-test-state)
+        (let ((state (pwayl-text-input-test-state f)))
           (check "text-input manager present"
                  (wl-skia-smoke--plist state :manager)
                  (format "%S" state))
@@ -434,9 +434,9 @@ Return a report string."
                       (integerp (wl-skia-smoke--plist state :enter-count))
                       (integerp (wl-skia-smoke--plist state :commit-count)))
                  (format "%S" state))))
-      (when (fboundp 'wl-text-input-test-commit)
+      (when (fboundp 'pwayl-text-input-test-commit)
         (let ((before (buffer-string))
-              (events (wl-text-input-test-commit "az" f)))
+              (events (pwayl-text-input-test-commit "az" f)))
           (check "text-input commit queues character input"
                  (equal events (list ?a ?z))
                  (format "%S" events))
@@ -444,9 +444,9 @@ Return a report string."
                  (equal (buffer-string) before)
                  (format "before %S after %S" before (buffer-string)))))
       ;; --- 8. M5 child frames use subsurfaces ---------------------------
-      (check "surface role hook present" (fboundp 'wl-surface-test-state)
-             "wl-surface-test-state")
-      (when (fboundp 'wl-surface-test-state)
+      (check "surface role hook present" (fboundp 'pwayl-surface-test-state)
+             "pwayl-surface-test-state")
+      (when (fboundp 'pwayl-surface-test-state)
         (let ((state (wl-skia-smoke--wait-for-monitor f)))
           (check "top-level surface role"
                  (and (wl-skia-smoke--plist state :toplevel)
@@ -457,20 +457,20 @@ Return a report string."
           (check "surface entered monitor"
                  (wl-skia-smoke--plist state :monitor)
                  (format "%S" state))
-          (modify-frame-parameters f '((title . "wl-smoke-title")))
+          (modify-frame-parameters f '((title . "pwayl-smoke-title")))
           (wl-skia-smoke--settle 1)
-          (setq state (wl-surface-test-state f))
+          (setq state (pwayl-surface-test-state f))
           (check "toplevel title parameter reaches Wayland state"
                  (equal (wl-skia-smoke--plist state :title)
-                        "wl-smoke-title")
+                        "pwayl-smoke-title")
                  (format "%S" state))
           (modify-frame-parameters f '((title . nil)
-                                       (name . "wl-smoke-name")))
+                                       (name . "pwayl-smoke-name")))
           (wl-skia-smoke--settle 1)
-          (setq state (wl-surface-test-state f))
+          (setq state (pwayl-surface-test-state f))
           (check "toplevel name parameter reaches Wayland title"
                  (equal (wl-skia-smoke--plist state :title)
-                        "wl-smoke-name")
+                        "pwayl-smoke-name")
                  (format "%S" state))
           (let ((old-lines (frame-parameter f 'tab-bar-lines)))
             (unwind-protect
@@ -561,7 +561,7 @@ Return a report string."
                            (wl-skia-smoke--plist state
                                                  :monitor-logical-height))))
                  (format "state=%S monitors=%S" state monitors)))
-        (let ((state (wl-surface-test-state f)))
+        (let ((state (pwayl-surface-test-state f)))
           (check "decoration manager present"
                  (wl-skia-smoke--plist state :decoration-manager)
                  (format "%S" state))
@@ -576,7 +576,7 @@ Return a report string."
           (check "server-side decoration negotiated"
                  (wl-skia-smoke--plist state :decoration-server-side)
                  (format "%S" state)))
-        (let* ((state (wl-surface-test-state f))
+        (let* ((state (pwayl-surface-test-state f))
                (request-before
                 (wl-skia-smoke--plist state :activation-request-count))
                (done-before
@@ -588,7 +588,7 @@ Return a report string."
                  (format "%S" state))
           (x-focus-frame f)
           (wl-skia-smoke--settle 4)
-          (setq state (wl-surface-test-state f))
+          (setq state (pwayl-surface-test-state f))
           (check "activation request issued"
                  (> (wl-skia-smoke--plist state :activation-request-count)
                     request-before)
@@ -605,7 +605,7 @@ Return a report string."
                  (= (wl-skia-smoke--plist state :activation-pending-count) 0)
                  (format "%S" state)))
         (let ((parent-scale (wl-skia-smoke--plist
-                             (wl-surface-test-state f) :scale))
+                             (pwayl-surface-test-state f) :scale))
               child)
           (condition-case err
               (unwind-protect
@@ -620,7 +620,7 @@ Return a report string."
                                         (undecorated . t)
                                         (visibility . t))))
                     (wl-skia-smoke--settle 2)
-                    (let ((state (wl-surface-test-state child)))
+                    (let ((state (pwayl-surface-test-state child)))
                       (check "child frame created"
                              (frame-live-p child)
                              (format "%S" state))
@@ -643,7 +643,7 @@ Return a report string."
                              (format "%S" state)))
                     (set-frame-position child 48 56)
                     (wl-skia-smoke--settle 2)
-                    (let ((state (wl-surface-test-state child)))
+                    (let ((state (pwayl-surface-test-state child)))
                       (check "child frame moves subsurface"
                              (and (= (wl-skia-smoke--plist state :x) 48)
                                   (= (wl-skia-smoke--plist state :y) 56))
@@ -654,7 +654,7 @@ Return a report string."
              (check "child frame subsurface create" nil
                     (error-message-string err)))))
         (let ((parent-scale (wl-skia-smoke--plist
-                             (wl-surface-test-state f) :scale))
+                             (pwayl-surface-test-state f) :scale))
               popup)
           (condition-case err
               (unwind-protect
@@ -670,7 +670,7 @@ Return a report string."
                                         (undecorated . t)
                                         (visibility . t))))
                     (wl-skia-smoke--settle 2)
-                    (let ((state (wl-surface-test-state popup)))
+                    (let ((state (pwayl-surface-test-state popup)))
                       (check "popup frame created"
                              (frame-live-p popup)
                              (format "%S" state))
@@ -703,7 +703,7 @@ Return a report string."
       (check "tooltip hide hook present" (fboundp 'x-hide-tip)
              "x-hide-tip")
       (when (and (fboundp 'x-show-tip) (fboundp 'x-hide-tip)
-                 (fboundp 'wl-surface-test-state))
+                 (fboundp 'pwayl-surface-test-state))
         (condition-case err
             (progn
               (x-show-tip "Wayland tooltip smoke" f
@@ -713,12 +713,12 @@ Return a report string."
                             (foreground-color . "black"))
                           1000 5 20)
               (wl-skia-smoke--settle 2)
-              (let ((tip wayland-tip-frame))
+              (let ((tip pwayl-tip-frame))
                 (check "tooltip frame created"
                        (and (framep tip) (frame-live-p tip))
                        (format "%S" tip))
                 (when (and (framep tip) (frame-live-p tip))
-                  (let ((state (wl-surface-test-state tip)))
+                  (let ((state (pwayl-surface-test-state tip)))
                     (check "tooltip frame is xdg-popup"
                            (and (wl-skia-smoke--plist state :parent)
                                 (wl-skia-smoke--plist state :popup)
@@ -731,26 +731,26 @@ Return a report string."
                            (format "frame-list=%S" (frame-list))))))
               (check "tooltip frame hidden" (x-hide-tip) "x-hide-tip")
               (check "tooltip frame deleted"
-                     (not (and (framep wayland-tip-frame)
-                               (frame-live-p wayland-tip-frame)))
-                     (format "%S" wayland-tip-frame)))
+                     (not (and (framep pwayl-tip-frame)
+                               (frame-live-p pwayl-tip-frame)))
+                     (format "%S" pwayl-tip-frame)))
           (error
            (ignore-errors (x-hide-tip))
            (check "tooltip frame xdg-popup create" nil
                   (error-message-string err)))))
       ;; --- 10. M5 popup menu model/render helpers ----------------------
-      (check "menu renderer hook present" (fboundp 'wayland--menu-show)
-             "wayland--menu-show")
-      (check "menu row builder present" (fboundp 'wayland--menu-build-rows)
-             "wayland--menu-build-rows")
+      (check "menu renderer hook present" (fboundp 'pwayl--menu-show)
+             "pwayl--menu-show")
+      (check "menu row builder present" (fboundp 'pwayl--menu-build-rows)
+             "pwayl--menu-build-rows")
       (check "menu renderer active predicate present"
              (fboundp 'menu-or-popup-active-p)
              "menu-or-popup-active-p")
-      (when (and (fboundp 'wayland--menu-build-rows)
-                 (fboundp 'wayland--menu-first-enabled)
-                 (fboundp 'wayland--menu-row-id)
-                 (fboundp 'wayland--menu-render))
-        (let* ((menu (wayland--menu-build-rows
+      (when (and (fboundp 'pwayl--menu-build-rows)
+                 (fboundp 'pwayl--menu-first-enabled)
+                 (fboundp 'pwayl--menu-row-id)
+                 (fboundp 'pwayl--menu-render))
+        (let* ((menu (pwayl--menu-build-rows
                       "Smoke"
                       '((:kind pane :label "Pane")
                         (:kind item :id 7 :label "Open" :enabled t
@@ -761,8 +761,8 @@ Return a report string."
                          :selected t :button toggle :indent 1))))
                (rows (car menu))
                (width (cadr menu))
-               (selected (wayland--menu-first-enabled rows))
-               (buf (generate-new-buffer " *wl-menu-smoke*")))
+               (selected (pwayl--menu-first-enabled rows))
+               (buf (generate-new-buffer " *pwayl-menu-smoke*")))
           (unwind-protect
               (progn
                 (check "menu rows built"
@@ -770,27 +770,27 @@ Return a report string."
                             (integerp width) (> width 0))
                        (format "rows=%S width=%S" rows width))
                 (check "menu first enabled row selected"
-                       (equal (wayland--menu-row-id rows selected) 7)
+                       (equal (pwayl--menu-row-id rows selected) 7)
                        (format "selected=%S rows=%S" selected rows))
-                (wayland--menu-render buf rows width selected)
+                (pwayl--menu-render buf rows width selected)
                 (with-current-buffer buf
                   (goto-char (point-min))
                   (forward-line selected)
                   (check "menu render annotates selected row"
                          (and (equal (get-text-property (point)
-                                                       'wayland-menu-id)
+                                                       'pwayl-menu-id)
                                      7)
                               (eq (get-text-property (point) 'face)
                                   'highlight))
                          (buffer-string))))
             (when (buffer-live-p buf)
               (kill-buffer buf)))))
-      (when (boundp 'wayland--menu-active)
-        (let ((wayland--menu-active t))
+      (when (boundp 'pwayl--menu-active)
+        (let ((pwayl--menu-active t))
           (check "menu active predicate tracks active menu"
                  (and (fboundp 'menu-or-popup-active-p)
                       (menu-or-popup-active-p))
-                 "wayland--menu-active")))
+                 "pwayl--menu-active")))
       (when (fboundp 'x-popup-menu)
         (condition-case err
             (let* ((gc-cons-threshold 0)
@@ -809,13 +809,13 @@ Return a report string."
            (check "x-popup-menu selects first item under GC pressure"
                   nil
                   (error-message-string err)))))
-      (when (fboundp 'wl-skia-test-cursor-state)
+      (when (fboundp 'pwayl-skia-test-cursor-state)
         (unwind-protect
             (progn
               (modify-frame-parameters f '((cursor-color . "#ff0000")
                                            (cursor-type . (bar . 5))))
               (wl-skia-smoke--settle 2)
-              (let ((state (wl-skia-test-cursor-state f)))
+              (let ((state (pwayl-skia-test-cursor-state f)))
                 (check "text cursor color parameter reaches backend"
                        (let ((color (wl-skia-smoke--plist
                                      state :text-cursor-color)))
@@ -833,12 +833,12 @@ Return a report string."
           (modify-frame-parameters f '((cursor-color . "black")
                                        (cursor-type . box)))
           (wl-skia-smoke--settle 2)))
-      (when (fboundp 'wl-surface-test-state)
+      (when (fboundp 'pwayl-surface-test-state)
         (unwind-protect
             (progn
               (modify-frame-parameters f '((alpha . 50)))
               (wl-skia-smoke--settle 4)
-              (let* ((state (wl-surface-test-state f))
+              (let* ((state (pwayl-surface-test-state f))
                      (alpha (wl-skia-smoke--plist state :frame-alpha)))
                 (check "alpha frame parameter state"
                        (and (floatp alpha) (< (abs (- alpha 0.5)) 0.01))
