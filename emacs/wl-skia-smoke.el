@@ -118,10 +118,14 @@ Return a report string."
              (c (pwayl-skia-test-framebuffer-color-counts f (list rx ry rwd rht)))
              (red (nth 2 c)) (green (nth 3 c))
              (bounds (nth 5 c))
-             ;; device-pixel area of the sampled rect
+             ;; device-pixel area of the sampled rect, matching the
+             ;; hook's per-edge round-half-up mapping exactly
              (s (pwayl-skia-test-framebuffer-size f))
              (scale (nth 6 s))
-             (dw (round (* rwd scale))) (dh (round (* rht scale)))
+             (dw (- (floor (+ (* (+ rx rwd) scale) 0.5))
+                    (floor (+ (* rx scale) 0.5))))
+             (dh (- (floor (+ (* (+ ry rht) scale) 0.5))
+                    (floor (+ (* ry scale) 0.5))))
              (total (* dw dh))
              (ratio (wl-skia-smoke--ratio green dw dh)))
         (when (and (< ratio 0.999)
@@ -156,8 +160,10 @@ Return a report string."
                      (translucent (nth 4 c))
                      (s (pwayl-skia-test-framebuffer-size f))
                      (scale (nth 6 s))
-                     (dw (round (* rwd scale)))
-                     (dh (round (* rht scale)))
+                     (dw (- (floor (+ (* (+ rx rwd) scale) 0.5))
+                            (floor (+ (* rx scale) 0.5))))
+                     (dh (- (floor (+ (* (+ ry rht) scale) 0.5))
+                            (floor (+ (* ry scale) 0.5))))
                      (total (* dw dh))
                      (ratio (wl-skia-smoke--ratio translucent dw dh)))
                 (check "alpha-background switches render target to RGBA"
