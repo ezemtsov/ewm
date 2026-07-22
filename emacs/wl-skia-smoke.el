@@ -71,7 +71,10 @@ Return a report string."
              ;; check is exact at .5 boundaries.
              (ew (floor (+ (* lw scale) 0.5)))
              (eh (floor (+ (* lh scale) 0.5))))
-        (check "texture==render" (and (= rw tw) (= rh th))
+        ;; The color attachment is allocated at grow-only capacity (256px
+        ;; steps, kept across shrinks), so it must contain the render
+        ;; size, not equal it.
+        (check "texture>=render" (and (>= tw rw) (>= th rh))
                (format "render=%dx%d texture=%dx%d" rw rh tw th))
         (check "render==round(logical*scale)" (and (= rw ew) (= rh eh))
                (format "render=%dx%d logical=%dx%d scale=%s expected=%dx%d"
