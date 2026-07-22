@@ -279,11 +279,17 @@ Return a report string."
                       (integerp queued-full)
                       (> queued queued-full))
                  (format "%S" stats))
+          ;; A frame-callback timeout forces a full present (buffer age
+          ;; lost), so tolerate a full last rect when the watchdog fired.
           (check "presentation last damage is partial"
                  (or (not (and (wl-skia-smoke--stat
                                 stats 'egl-buffer-age-supported)
                                (wl-skia-smoke--stat
                                 stats 'egl-swap-damage-supported)))
+                     (> (or (wl-skia-smoke--stat
+                             stats 'frame-callback-timeout-count)
+                            0)
+                        0)
                      (and (consp last-rect)
                           (< (* (nth 2 last-rect) (nth 3 last-rect))
                              (* rw rh))))
