@@ -1053,7 +1053,8 @@ pub struct Ewm {
     // for text_input_v3. Commits bypass the relay (direct TextInputHandle).
     pub im_relay: Option<im::relay::ImRelay>,
 
-    // Event loop handle (for idle timer registration)
+    // Event loop handle. Resource destructors must not send events (aborts
+    // on a dying client); defer event-sending cleanup via insert_idle.
     pub loop_handle: LoopHandle<'static, State>,
 
     /// Worker-thread sender that routes events back into the main loop.
@@ -2043,10 +2044,12 @@ impl Ewm {
     /// Focus an Emacs frame, routing keyboard to its selected entry's surface if one exists.
     pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str, notify_emacs: bool) {
         let Some(location) = self.frame_location(frame_surface_id) else {
+            debug!("set_focus_frame({source}): unknown frame {frame_surface_id}");
             return;
         };
         let output = location.output_name.to_string();
         if self.mapped_output_by_name(&output).is_none() {
+            debug!("set_focus_frame({source}): output {output} not mapped");
             return;
         }
         let idx = location.frame_idx;
@@ -6338,11 +6341,11 @@ impl Ewm {
 
     /// Handle toplevel destroyed from XdgShellHandler.
     pub fn handle_toplevel_destroyed(&mut self, surface: ToplevelSurface) -> Option<u64> {
-        let id = self
-            .id_windows
-            .iter()
-            .find(|(_, w)| w.toplevel().map(|t| t == &surface).unwrap_or(false))
-            .map(|(&id, _)| id)?;
+        let Some(id) = self.surface_id(surface.wl_surface()) else {
+            // Every toplevel gets an id in handle_new_toplevel.
+            warn!("destroyed toplevel missing from id_windows");
+            return None;
+        };
         self.handle_toplevel_destroyed_by_id(id)
     }
 
@@ -7012,11 +7015,13 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        if let Some(refocus_id) = self.ewm.handle_toplevel_destroyed(surface) {
-            self.ewm
-                .set_focus_frame(refocus_id, "toplevel_destroyed", true);
-            self.sync_keyboard_focus();
-        }
+        // Defer: event sends from resource destructors abort on a dying client.
+        self.ewm.loop_handle.insert_idle(move |state| {
+            let ewm = &mut state.ewm;
+            if let Some(refocus_id) = ewm.handle_toplevel_destroyed(surface) {
+                ewm.set_focus_frame(refocus_id, "toplevel_destroyed", true);
+            }
+        });
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -7164,13 +7169,18 @@ impl WlrLayerShellHandler for State {
     }
 
     fn layer_destroyed(&mut self, surface: smithay::wayland::shell::wlr_layer::LayerSurface) {
-        let wl_surface = surface.wl_surface();
-        self.ewm.unmapped_layer_surfaces.remove(wl_surface);
+        // Defer: event sends from resource destructors abort on a dying client.
+        self.ewm.loop_handle.insert_idle(move |state| {
+            let ewm = &mut state.ewm;
+            let wl_surface = surface.wl_surface();
+            ewm.unmapped_layer_surfaces.remove(wl_surface);
 
-        if let Some((output, layer)) = self.ewm.layer_for_root(wl_surface) {
+            let Some((output, layer)) = ewm.layer_for_root(wl_surface) else {
+                return;
+            };
             // Clear on-demand focus if it was this layer surface
-            if self.ewm.layer_shell_on_demand_focus.as_ref() == Some(&layer) {
-                self.ewm.layer_shell_on_demand_focus = None;
+            if ewm.layer_shell_on_demand_focus.as_ref() == Some(&layer) {
+                ewm.layer_shell_on_demand_focus = None;
             }
 
             let mut map = layer_map_for_output(&output);
@@ -7180,11 +7190,11 @@ impl WlrLayerShellHandler for State {
             drop(map);
 
             // Check for working area expansion (panel removed)
-            self.ewm.check_working_area_change(&output);
+            ewm.check_working_area_change(&output);
 
-            self.ewm.queue_redraw(&output);
+            ewm.queue_redraw(&output);
             info!("Layer surface destroyed");
-        }
+        });
     }
 
     fn new_popup(
@@ -7889,6 +7899,8 @@ impl State {
     /// input handlers. Derives the correct focus from layer shell
     /// interactivity and focused_surface_id. Only calls keyboard.set_focus()
     /// when the resolved focus differs from current.
+    ///
+    /// Never call from resource destructors: sends abort on a dying client.
     pub fn sync_keyboard_focus(&mut self) {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
