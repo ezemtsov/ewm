@@ -3116,6 +3116,9 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     let display: Display<State> = Display::new()?;
     let display_handle = display.handle();
 
+    // Increase the buffer size so that it's harder to crash a frozen client.
+    display_handle.set_default_max_buffer_size(1024 * 1024);
+
     // Initialize Wayland socket - display is moved into event loop source
     let socket_name = Ewm::init_wayland_listener(display, &event_loop.handle())?;
     let socket_name_str = socket_name.to_string_lossy().to_string();
