@@ -196,8 +196,7 @@ fn to_frame(spec: &FrameSpec) -> Frame {
 fn all_fullscreen_selections(fix: &Fixture) -> HashSet<ViewKey> {
     fix.ewm_ref()
         .frame_set
-        .all_strips()
-        .flat_map(|(_, strip)| strip.frames.iter())
+        .all_frames()
         .filter_map(|frame| {
             frame.fullscreen.map(|fullscreen| ViewKey {
                 frame_id: frame.surface_id,
@@ -211,8 +210,7 @@ fn all_fullscreen_selections(fix: &Fixture) -> HashSet<ViewKey> {
 fn live_views(fix: &Fixture) -> HashSet<ViewKey> {
     fix.ewm_ref()
         .frame_set
-        .all_strips()
-        .flat_map(|(_, strip)| strip.frames.iter())
+        .all_frames()
         .flat_map(|frame| {
             frame.entries.iter().filter_map(|entry| {
                 entry.surface_id().map(|surface_id| ViewKey {

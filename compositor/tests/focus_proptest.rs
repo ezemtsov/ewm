@@ -365,8 +365,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             let was_present = layout_surface_ids(fix).contains(&id);
             let was_focused = fix.ewm_ref().focused_surface_id() == id;
             let prev_focused_frame = fix.ewm_ref().focused_frame_id;
-            let destroyed_entry_ids: HashSet<LayoutEntryId> = all_strips(fix)
-                .flat_map(|strip| strip.frames.iter())
+            let destroyed_entry_ids: HashSet<LayoutEntryId> = all_frames(fix)
                 .flat_map(|frame| frame.entries.iter())
                 .filter(|entry| entry.surface_id() == Some(id))
                 .map(|entry| entry.id)
@@ -394,18 +393,16 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     "destroy({}) left keyboard focus on the dead surface",
                     id,
                 );
-                for strip in all_strips(fix) {
-                    for frame in &strip.frames {
-                        assert!(
-                            frame.selected_entry_id.is_none_or(|entry_id| {
-                                !destroyed_entry_ids.contains(&entry_id)
-                            }),
-                            "destroy({}) left stale selected_entry_id {:?} on frame {}",
-                            id,
-                            frame.selected_entry_id,
-                            frame.surface_id,
-                        );
-                    }
+                for frame in all_frames(fix) {
+                    assert!(
+                        frame
+                            .selected_entry_id
+                            .is_none_or(|entry_id| !destroyed_entry_ids.contains(&entry_id)),
+                        "destroy({}) left stale selected_entry_id {:?} on frame {}",
+                        id,
+                        frame.selected_entry_id,
+                        frame.surface_id,
+                    );
                 }
                 if was_focused {
                     assert_eq!(
@@ -427,20 +424,20 @@ fn apply_op(fix: &mut Fixture, op: Op) {
 }
 
 fn strip_frame_ids(fix: &Fixture) -> HashSet<u64> {
-    all_strips(fix)
-        .flat_map(|s| s.frames.iter().map(|f| f.surface_id))
+    all_frames(fix)
+        .map(|f| f.surface_id)
         .filter(|&id| id != 0)
         .collect()
 }
 
 fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
-    all_strips(fix)
-        .flat_map(|strip| strip.surface_entries().filter_map(LayoutEntry::surface_id))
+    all_frames(fix)
+        .flat_map(|frame| frame.entries.iter().filter_map(LayoutEntry::surface_id))
         .collect()
 }
 
-fn all_strips(fix: &Fixture) -> impl Iterator<Item = &ewm_core::strip::Strip> {
-    fix.ewm_ref().frame_set.all_strips().map(|(_, strip)| strip)
+fn all_frames(fix: &Fixture) -> impl Iterator<Item = &ewm_core::strip::Frame> {
+    fix.ewm_ref().frame_set.all_frames()
 }
 
 fn mapped_output_names(fix: &Fixture) -> HashSet<String> {
@@ -680,8 +677,7 @@ fn assert_invariants(fix: &Fixture) {
     // Invariant 2: focused_entry_id == Some(v) ⟹ v is the entry_id of some entry
     // on the focused frame.
     if let Some(v) = ewm.focused_entry_id {
-        let in_focused_frame = all_strips(fix)
-            .flat_map(|s| s.frames.iter())
+        let in_focused_frame = all_frames(fix)
             .find(|f| f.surface_id == ewm.focused_frame_id)
             .map(|f| f.entries.iter().any(|e| e.id == v))
             .unwrap_or(false);
@@ -692,22 +688,22 @@ fn assert_invariants(fix: &Fixture) {
         );
     }
 
-    // Invariant 3: a frame's surface_id appears in at most one strip.  Cross-output
-    // migration in `apply_output_layout` is supposed to enforce this.
+    // Invariant 3: a frame's surface_id appears in at most one strip or the
+    // homeless pool.  Cross-output migration in `apply_output_layout` is
+    // supposed to enforce this.
     let mut seen: HashSet<u64> = HashSet::new();
-    for strip in all_strips(fix) {
-        for f in &strip.frames {
-            assert!(
-                seen.insert(f.surface_id),
-                "invariant 3: frame {} appears in multiple strips",
-                f.surface_id,
-            );
-        }
+    for f in all_frames(fix) {
+        assert!(
+            seen.insert(f.surface_id),
+            "invariant 3: frame {} appears in multiple strips",
+            f.surface_id,
+        );
     }
 
-    // Invariant 4: the focused frame is the active frame of its own strip.
+    // Invariant 4: the focused frame is the active frame of its own strip,
+    // and never a homeless frame.
     if ewm.focused_frame_id != 0 {
-        for strip in all_strips(fix) {
+        for strip in ewm.frame_set.mapped_strips().values() {
             let active_id = strip.frames.get(strip.active_idx()).map(|f| f.surface_id);
             if active_id == Some(ewm.focused_frame_id) {
                 continue;
@@ -721,11 +717,19 @@ fn assert_invariants(fix: &Fixture) {
                 ewm.focused_frame_id,
             );
         }
+        assert!(
+            !ewm.frame_set
+                .homeless_frames()
+                .iter()
+                .any(|f| f.surface_id == ewm.focused_frame_id),
+            "invariant 4: focused frame {} is homeless",
+            ewm.focused_frame_id,
+        );
     }
 
     // Invariant 5: at least one mapped frame exists ⟺ focused_frame_id is
-    // non-zero. Frames may be parked on disabled or disconnected outputs
-    // without being keyboard-focusable.
+    // non-zero. Frames may be parked in the homeless pool only while no
+    // output is mapped.
     let mapped_outputs = mapped_output_names(fix);
     for name in ewm.frame_set.mapped_strips().keys() {
         assert!(
@@ -734,13 +738,10 @@ fn assert_invariants(fix: &Fixture) {
             name,
         );
     }
-    for name in ewm.frame_set.detached_strips().keys() {
-        assert!(
-            !mapped_outputs.contains(name),
-            "invariant 5: detached_output_strips contains mapped output {}",
-            name,
-        );
-    }
+    assert!(
+        mapped_outputs.is_empty() || ewm.frame_set.homeless_frames().is_empty(),
+        "invariant 5: homeless frames exist while an output is mapped",
+    );
     let any_frame = ewm
         .frame_set
         .mapped_strips()
@@ -755,38 +756,34 @@ fn assert_invariants(fix: &Fixture) {
     );
 
     // Invariant 6: selected_entry_id, if set, names one of the frame's own entries.
-    for strip in all_strips(fix) {
-        for f in &strip.frames {
-            if let Some(sel) = f.selected_entry_id {
-                assert!(
-                    f.entries.iter().any(|e| e.id == sel),
-                    "invariant 6: frame {} selected_entry_id={:?} not in its own entries",
-                    f.surface_id,
-                    sel,
-                );
-            }
+    for f in all_frames(fix) {
+        if let Some(sel) = f.selected_entry_id {
+            assert!(
+                f.entries.iter().any(|e| e.id == sel),
+                "invariant 6: frame {} selected_entry_id={:?} not in its own entries",
+                f.surface_id,
+                sel,
+            );
         }
     }
 
     // Invariant 7: every live entry entry_id identifies exactly one layout occurrence.
     let mut entry_ids = HashMap::new();
-    for (output_name, strip) in fix.ewm_ref().frame_set.all_strips() {
-        for (frame_idx, frame) in strip.frames.iter().enumerate() {
-            for (entry_idx, entry) in frame.entries.iter().enumerate() {
-                let occurrence = (output_name, frame_idx, entry_idx);
-                assert!(
-                    entry_ids.insert(entry.id, occurrence).is_none(),
-                    "invariant 7: duplicate entry_id {:?} at {:?}",
-                    entry.id,
-                    occurrence,
-                );
-            }
+    for (frame_idx, frame) in all_frames(fix).enumerate() {
+        for (entry_idx, entry) in frame.entries.iter().enumerate() {
+            let occurrence = (frame.surface_id, frame_idx, entry_idx);
+            assert!(
+                entry_ids.insert(entry.id, occurrence).is_none(),
+                "invariant 7: duplicate entry_id {:?} at {:?}",
+                entry.id,
+                occurrence,
+            );
         }
     }
 
     // Invariant 8: output membership is exactly the set of mapped strips that
-    // currently contain each embedded surface. Parked strips on disabled or
-    // disconnected heads must not keep stale wl_surface output membership.
+    // currently contain each embedded surface. Homeless frames must not keep
+    // stale wl_surface output membership.
     assert_eq!(
         ewm.surface_outputs,
         expected_surface_outputs(fix),
@@ -876,11 +873,13 @@ proptest! {
                 }
             }
 
-            for (out_name, strip) in fix.ewm_ref().frame_set.all_strips() {
+            for (out_name, strip) in fix.ewm_ref().frame_set.mapped_strips() {
                 let active = strip.active_frame().map(|f| f.surface_id);
                 for frame in &strip.frames {
                     let id = frame.surface_id;
-                    let expected: i32 = if mapped_outputs.contains(out_name) && active == Some(id) {
+                    let expected: i32 = if mapped_outputs.contains(out_name.as_str())
+                        && active == Some(id)
+                    {
                         1
                     } else {
                         0
@@ -896,6 +895,17 @@ proptest! {
                         expected,
                     );
                 }
+            }
+            for frame in fix.ewm_ref().frame_set.homeless_frames() {
+                let id = frame.surface_id;
+                let actual = net.get(&id).copied().unwrap_or(0);
+                prop_assert_eq!(
+                    actual,
+                    0,
+                    "homeless frame {}: net shown-hidden = {} but expected 0",
+                    id,
+                    actual,
+                );
             }
         }
     }
