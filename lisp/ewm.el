@@ -1100,7 +1100,7 @@ via `ewm--find-connector-for-config' before sending to the compositor."
 
 ;;; Frame management
 
-(defconst ewm--managed-window-systems '(pgtk wayland)
+(defconst ewm--managed-window-systems '(pgtk pwayl)
   "GUI window systems whose frames EWM binds to outputs.
 EWM can host either a pgtk or a native-Wayland (+ Skia) Emacs build.")
 
@@ -1114,7 +1114,7 @@ The native Wayland backend has no GTK widgets or style context to mutate."
 Picks whichever GUI backend this Emacs was built with (pgtk or the
 native Wayland backend)."
   (cond ((featurep 'pgtk) 'pgtk)
-        ((featurep 'wayland) 'wayland)
+        ((featurep 'pwayl) 'pwayl)
         (t (error "EWM requires a pgtk or native-Wayland Emacs build"))))
 
 (defun ewm--output-managed-p (frame)
