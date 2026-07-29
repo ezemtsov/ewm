@@ -189,6 +189,7 @@ Example:
 
 (defcustom ewm-intercept-prefixes
   '(?\C-x ?\C-u ?\C-h ?\M-x (?\s-f :fullscreen)
+          ("s-S-<left>" :fullscreen) ("s-S-<right>" :fullscreen)
           ("<MonBrightnessUp>" :fullscreen) ("<MonBrightnessDown>" :fullscreen)
           ("<AudioRaiseVolume>" :fullscreen) ("<AudioLowerVolume>" :fullscreen)
           ("<AudioMute>" :fullscreen) ("<AudioMicMute>" :fullscreen)
