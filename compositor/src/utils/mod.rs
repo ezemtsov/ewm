@@ -55,6 +55,24 @@ pub fn output_size(output: &Output) -> Size<f64, Logical> {
     transform.transform_size(mode.size.to_f64().to_logical(scale))
 }
 
+/// Stable identity for an output, surviving connector renumbering across a
+/// replug. Prefers EDID make/model/serial and only falls back to the connector
+/// name when the display advertises none of them.
+pub fn output_identity(output: &Output) -> String {
+    let props = output.physical_properties();
+    let present = |s: &str| !s.is_empty() && s != "Unknown";
+    if !present(&props.make) && !present(&props.model) && !present(&props.serial_number) {
+        return output.name();
+    }
+    let field = |s: String| if present(&s) { s } else { "Unknown".to_string() };
+    format!(
+        "{} {} {}",
+        field(props.make),
+        field(props.model),
+        field(props.serial_number),
+    )
+}
+
 pub fn is_mapped(surface: &WlSurface) -> bool {
     with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
 }

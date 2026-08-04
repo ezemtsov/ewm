@@ -494,6 +494,155 @@ fn disabling_output_reassigns_primary_entry_to_mapped_entry() {
         .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary()));
 }
 
+// A physical display, identified by a stable EDID serial. Its connector name
+// is re-minted on every (re)connect to model DRM re-enumerating the panel on a
+// different port after a replug -- the case the connector-name-keyed home logic
+// used to mishandle.
+struct Display {
+    serial: String,
+    frames: Vec<u64>,
+    connector: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum HotplugOp {
+    Connect(usize),
+    Disconnect(usize),
+}
+
+fn strip_ids(fixture: &Fixture, output: &str) -> Vec<u64> {
+    fixture
+        .ewm_ref()
+        .frame_set
+        .mapped_strip(output)
+        .map(|strip| strip.frames.iter().map(|f| f.surface_id).collect())
+        .unwrap_or_default()
+}
+
+fn frame_is_homeless(fixture: &Fixture, id: u64) -> bool {
+    fixture
+        .ewm_ref()
+        .frame_set
+        .homeless_frames()
+        .iter()
+        .any(|f| f.surface_id == id)
+}
+
+/// Invariants that must hold after every hotplug op:
+/// - conservation: each frame appears exactly once across all strips + pool;
+/// - home-return: a connected display holds all of its own frames, in their canonical relative
+///   order, regardless of the connector it came back on;
+/// - no-loss: a disconnected display's frames sit on some mapped strip (the fallback) when any
+///   output is mapped, else in the homeless pool.
+fn assert_hotplug_invariants(fixture: &Fixture, displays: &[Display]) {
+    let any_mapped = fixture.ewm_ref().space.outputs().next().is_some();
+    let all_frames: Vec<u64> = fixture
+        .ewm_ref()
+        .frame_set
+        .all_frames()
+        .map(|f| f.surface_id)
+        .collect();
+
+    for display in displays {
+        for &id in &display.frames {
+            let count = all_frames.iter().filter(|&&f| f == id).count();
+            assert_eq!(count, 1, "frame {id} present {count} times, want exactly 1");
+        }
+        match &display.connector {
+            Some(connector) => {
+                let own: Vec<u64> = strip_ids(fixture, connector)
+                    .into_iter()
+                    .filter(|id| display.frames.contains(id))
+                    .collect();
+                assert_eq!(
+                    own, display.frames,
+                    "display {} on {connector} must hold its frames {:?} in order, got {own:?}",
+                    display.serial, display.frames,
+                );
+            }
+            None => {
+                for &id in &display.frames {
+                    if any_mapped {
+                        assert!(
+                            fixture.ewm_ref().emacs_frame_output(id).is_some(),
+                            "frame {id} of disconnected display {} was lost",
+                            display.serial,
+                        );
+                    } else {
+                        assert!(
+                            frame_is_homeless(fixture, id),
+                            "frame {id} must be homeless when no output is mapped",
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+    /// Workspaces return to their home display across any sequence of output
+    /// disconnects/reconnects, even though every reconnect re-enumerates the
+    /// panel on a fresh connector. Pins home-return over the whole hotplug state
+    /// space; the old connector-name home stranded frames (and let Emacs spawn a
+    /// spurious workspace) as soon as a connector renamed.
+    #[test]
+    fn frames_return_to_home_display_across_hotplug(
+        ops in prop::collection::vec(
+            prop_oneof![
+                (0usize..3).prop_map(HotplugOp::Connect),
+                (0usize..3).prop_map(HotplugOp::Disconnect),
+            ],
+            1..24,
+        ),
+    ) {
+        let mut fixture = Fixture::new().unwrap();
+        let mut connector_seq = 0u32;
+        let mut mint = |serial: &str| {
+            connector_seq += 1;
+            format!("conn-{serial}-{connector_seq}")
+        };
+
+        // Three displays, each with two frames whose home is set by the initial
+        // layout while every display is connected.
+        let mut displays: Vec<Display> = (0..3)
+            .map(|i| {
+                let serial = format!("SER{i}");
+                let frames = vec![(i as u64 + 1) * 10, (i as u64 + 1) * 10 + 1];
+                let connector = mint(&serial);
+                fixture.add_output_with_identity(&connector, 1280, 720, "Acme", "Panel", &serial);
+                fixture
+                    .ewm()
+                    .apply_output_layout(&connector, frames.iter().copied().map(Frame::new).collect());
+                Display { serial, frames, connector: Some(connector) }
+            })
+            .collect();
+        assert_hotplug_invariants(&fixture, &displays);
+
+        for op in ops {
+            match op {
+                HotplugOp::Connect(i) => {
+                    if displays[i].connector.is_none() {
+                        let connector = mint(&displays[i].serial);
+                        fixture.add_output_with_identity(
+                            &connector, 1280, 720, "Acme", "Panel", &displays[i].serial,
+                        );
+                        displays[i].connector = Some(connector);
+                    }
+                }
+                HotplugOp::Disconnect(i) => {
+                    if let Some(connector) = displays[i].connector.take() {
+                        fixture.remove_output(&connector);
+                    }
+                }
+            }
+            assert_hotplug_invariants(&fixture, &displays);
+        }
+    }
+}
+
 #[test]
 fn layout_merge_preserves_fullscreen_for_same_surface_view() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");

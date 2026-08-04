@@ -221,6 +221,33 @@ impl Fixture {
         headless.add_output(name, width, height, &mut self.state.ewm);
     }
 
+    /// Add an output with an explicit EDID identity. Reuse the same
+    /// make/model/serial under a different `name` to model one physical display
+    /// re-enumerating on a different connector after a replug.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_output_with_identity(
+        &mut self,
+        name: &str,
+        width: i32,
+        height: i32,
+        make: &str,
+        model: &str,
+        serial: &str,
+    ) {
+        let Backend::Headless(headless) = &mut self.state.backend else {
+            unreachable!("test fixture always uses the headless backend");
+        };
+        headless.add_output_with_identity(
+            name,
+            width,
+            height,
+            make,
+            model,
+            serial,
+            &mut self.state.ewm,
+        );
+    }
+
     /// Remove a virtual output by name
     pub fn remove_output(&mut self, name: &str) {
         let Backend::Headless(headless) = &mut self.state.backend else {

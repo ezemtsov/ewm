@@ -1123,8 +1123,13 @@ pub struct FrameSet {
     mapped: HashMap<String, strip::Strip>,
     /// Frames with no mapped output; the next output to map adopts them all.
     homeless: Vec<strip::Frame>,
+    /// Frame surface id -> home output identity (`output_identity`, not the
+    /// connector name), so a frame returns to its origin even when the display
+    /// re-enumerates on a different connector after a replug.
     home_outputs: HashMap<u64, String>,
-    /// Last active frame per output name, restored when the output maps again.
+    /// Last active frame per output identity (`output_identity`, matching
+    /// `home_outputs`), restored when the display maps again -- across a
+    /// connector rename, not just the same connector.
     last_active: HashMap<String, u64>,
 }
 
@@ -1212,37 +1217,33 @@ impl FrameSet {
         self.homeless.append(&mut strip.frames);
     }
 
-    fn remember_last_active(&mut self, output_name: &str, frame_id: Option<u64>) {
+    fn remember_last_active(&mut self, identity: &str, frame_id: Option<u64>) {
         match frame_id {
             Some(id) => {
-                self.last_active.insert(output_name.to_string(), id);
+                self.last_active.insert(identity.to_string(), id);
             }
             None => {
-                self.last_active.remove(output_name);
+                self.last_active.remove(identity);
             }
         }
     }
 
-    fn take_last_active(&mut self, output_name: &str) -> Option<u64> {
-        self.last_active.remove(output_name)
+    fn take_last_active(&mut self, identity: &str) -> Option<u64> {
+        self.last_active.remove(identity)
     }
 
-    fn remember_frame_homes(
-        &mut self,
-        output_name: &str,
-        frame_ids: impl IntoIterator<Item = u64>,
-    ) {
+    fn remember_frame_homes(&mut self, home: &str, frame_ids: impl IntoIterator<Item = u64>) {
         for id in frame_ids {
             if id != 0 {
-                self.remember_home_if_missing(id, output_name);
+                self.remember_home_if_missing(id, home);
             }
         }
     }
 
-    fn remember_home_if_missing(&mut self, frame_id: u64, output_name: &str) {
+    fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
         self.home_outputs
             .entry(frame_id)
-            .or_insert_with(|| output_name.to_string());
+            .or_insert_with(|| home.to_string());
     }
 
     fn forget_frame_home(&mut self, frame_id: u64) {
@@ -1622,9 +1623,10 @@ impl Ewm {
 
     fn migrate_or_pool_output_frames(&mut self, output_name: &str, output: &Output) {
         let active_id = self.active_frame_surface_id(output_name);
-        self.frame_set.remember_last_active(output_name, active_id);
+        let home_identity = crate::utils::output_identity(output);
+        self.frame_set.remember_last_active(&home_identity, active_id);
 
-        if !self.migrate_output_frames_to_fallback(output_name) {
+        if !self.migrate_output_frames_to_fallback(output_name, &home_identity) {
             let pre = self.surface_outputs_for(output_name);
             self.reconcile_output_membership(output_name, Some(output), &pre, &HashSet::new());
             self.leave_emacs_frames_on_output(output);
@@ -3115,7 +3117,11 @@ impl Ewm {
         true
     }
 
-    fn migrate_output_frames_to_fallback(&mut self, output_name: &str) -> bool {
+    fn migrate_output_frames_to_fallback(
+        &mut self,
+        output_name: &str,
+        home_identity: &str,
+    ) -> bool {
         let frame_ids = self
             .frame_set
             .mapped_strip(output_name)
@@ -3128,7 +3134,7 @@ impl Ewm {
             })
             .unwrap_or_default();
         self.frame_set
-            .remember_frame_homes(output_name, frame_ids.iter().copied());
+            .remember_frame_homes(home_identity, frame_ids.iter().copied());
         let fallback = self
             .sorted_outputs
             .iter()
@@ -3140,6 +3146,15 @@ impl Ewm {
     }
 
     fn restore_home_output_frames(&mut self, output_name: &str) -> bool {
+        // Match frames by the reconnecting output's stable identity, not its
+        // connector name, so a display that re-enumerated on a different
+        // connector still reclaims its frames.
+        let Some(home_identity) = self
+            .mapped_output_by_name(output_name)
+            .map(crate::utils::output_identity)
+        else {
+            return false;
+        };
         let source_moves = self
             .frame_set
             .mapped_strips()
@@ -3152,7 +3167,7 @@ impl Ewm {
                     .filter(|frame| {
                         self.frame_set
                             .home_output(frame.surface_id)
-                            .is_some_and(|home| home == output_name)
+                            .is_some_and(|home| home == home_identity)
                     })
                     .map(|frame| frame.surface_id)
                     .collect::<Vec<_>>();
@@ -3221,7 +3236,13 @@ impl Ewm {
 
     /// Activate the output's remembered active frame if it is present again.
     fn restore_last_active_frame(&mut self, output_name: &str) {
-        let Some(frame_id) = self.frame_set.take_last_active(output_name) else {
+        let Some(identity) = self
+            .mapped_output_by_name(output_name)
+            .map(crate::utils::output_identity)
+        else {
+            return;
+        };
+        let Some(frame_id) = self.frame_set.take_last_active(&identity) else {
             return;
         };
         let prev_active_id = self.active_frame_surface_id(output_name);
@@ -3312,8 +3333,16 @@ impl Ewm {
             }
         };
 
-        self.frame_set
-            .remember_frame_homes(output_name, frames.iter().map(|f| f.surface_id));
+        // Only frames seeing their first home need the identity string; skip
+        // building it in the steady state where every frame already has one.
+        if frames
+            .iter()
+            .any(|f| f.surface_id != 0 && self.frame_set.home_output(f.surface_id).is_none())
+        {
+            let home_identity = crate::utils::output_identity(&output);
+            self.frame_set
+                .remember_frame_homes(&home_identity, frames.iter().map(|f| f.surface_id));
+        }
         let migrations = self.collect_frame_migrations(output_name, &frames);
         for frame in &mut frames {
             frame.clear_compositor_view_state();

@@ -63,16 +63,34 @@ impl HeadlessBackend {
         self.output_infos.clone()
     }
 
-    /// Add a virtual output with the given name and size
+    /// Add a virtual output with the given name and size. The serial defaults
+    /// to the connector name so each virtual output has a unique identity.
     pub fn add_output(&mut self, name: &str, width: i32, height: i32, ewm: &mut Ewm) {
+        self.add_output_with_identity(name, width, height, "EWM", "Virtual", name, ewm);
+    }
+
+    /// Add a virtual output with an explicit EDID identity. Two outputs sharing
+    /// make/model/serial but differing in connector name model the same physical
+    /// display re-enumerating on a different connector after a replug.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_output_with_identity(
+        &mut self,
+        name: &str,
+        width: i32,
+        height: i32,
+        make: &str,
+        model: &str,
+        serial: &str,
+        ewm: &mut Ewm,
+    ) {
         let output = Output::new(
             name.to_string(),
             PhysicalProperties {
                 size: (width, height).into(),
                 subpixel: Subpixel::Unknown,
-                make: "EWM".into(),
-                model: "Virtual".into(),
-                serial_number: String::new(),
+                make: make.into(),
+                model: model.into(),
+                serial_number: serial.into(),
             },
         );
 
@@ -104,9 +122,9 @@ impl HeadlessBackend {
 
         let output_info = crate::OutputInfo {
             name: name.to_string(),
-            make: "EWM".to_string(),
-            model: "Virtual".to_string(),
-            serial: String::new(),
+            make: make.to_string(),
+            model: model.to_string(),
+            serial: serial.to_string(),
             width_mm: width,
             height_mm: height,
             x: position.x,

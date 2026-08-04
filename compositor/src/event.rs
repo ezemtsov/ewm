@@ -173,6 +173,10 @@ pub enum Event {
     #[serde(rename = "frame_hidden")]
     FrameHidden { id: u64 },
     /// Emacs frame was moved to another compositor output.
+    ///
+    /// `output` is the frame's current connector; `home_output` is its stable
+    /// home identity (make/model/serial, or connector when unavailable), the
+    /// output it returns to on reconnect.
     #[serde(rename = "frame_moved")]
     FrameMoved {
         id: u64,
