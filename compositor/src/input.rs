@@ -387,8 +387,10 @@ pub fn handle_keyboard_event(
 
     let intercepted_keys = crate::module::get_intercepted_keys();
     let focused_surface_id = state.ewm.focused_surface_id();
+    // Gate on smithay's synchronous active-text-input state, not the relay's
+    // lagging `is_active()` echo, so the relay stays off the per-key hot path
+    // and the first key after activation isn't forwarded raw.
     let text_input_intercept = state.ewm.text_input_intercept
-        && state.ewm.im_text_input.is_active()
         && state.ewm.active_text_input_surface_id() == Some(focused_surface_id);
 
     // Use input_intercept + explicit input_forward so we can translate keys

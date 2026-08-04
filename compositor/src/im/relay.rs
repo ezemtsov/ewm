@@ -2,15 +2,16 @@
 //!
 //! Smithay's text_input_v3 requires an input_method_v2 instance (`has_instance()`).
 //! This relay satisfies that by connecting to our own compositor as a Wayland client.
-//! It forwards Activate/Deactivate events to the compositor thread; text commits
-//! go directly through TextInputHandle to avoid cross-thread serial races.
+//! It forwards Activate/Deactivate events over a calloop channel so activation
+//! is processed before the next key, not one dispatch late; text commits go
+//! directly through TextInputHandle to avoid cross-thread serial races.
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
+use smithay::reexports::calloop::channel::{channel, Channel, Sender};
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle};
@@ -23,32 +24,21 @@ pub enum ImEvent {
     Deactivated,
 }
 
-/// Must stay alive for the compositor lifetime. Dropping destroys the
-/// input_method_v2 instance and disables text_input_v3.
-pub struct ImRelay {
-    _handle: thread::JoinHandle<()>,
-    pub event_rx: Receiver<ImEvent>,
-}
+/// Spawn the relay thread and return the calloop channel carrying its
+/// activate/deactivate events. The detached thread owns the Wayland connection
+/// backing the input_method_v2 instance for the process lifetime.
+pub fn connect(socket_path: &std::path::Path) -> Channel<ImEvent> {
+    let path = socket_path.to_path_buf();
+    let (event_tx, event_rx) = channel();
 
-impl ImRelay {
-    /// Spawn the relay thread. The actual Wayland connection happens
-    /// asynchronously; failures are logged by the thread.
-    pub fn connect(socket_path: &std::path::Path) -> Self {
-        let path = socket_path.to_path_buf();
-        let (event_tx, event_rx) = mpsc::channel();
-
-        let handle = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(100));
-            if let Err(e) = run_relay(path, event_tx) {
-                tracing::warn!("IM relay error: {}", e);
-            }
-        });
-
-        ImRelay {
-            _handle: handle,
-            event_rx,
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(100));
+        if let Err(e) = run_relay(path, event_tx) {
+            tracing::warn!("IM relay error: {}", e);
         }
-    }
+    });
+
+    event_rx
 }
 
 fn run_relay(

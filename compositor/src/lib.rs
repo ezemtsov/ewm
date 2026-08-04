@@ -1049,10 +1049,6 @@ pub struct Ewm {
     pub xkb_layout_names: Vec<String>,
     pub xkb_current_layout: usize,
 
-    // IM relay keepalive. Smithay requires an input_method_v2 instance
-    // for text_input_v3. Commits bypass the relay (direct TextInputHandle).
-    pub im_relay: Option<im::relay::ImRelay>,
-
     // Event loop handle. Resource destructors must not send events (aborts
     // on a dying client); defer event-sending cleanup via insert_idle.
     pub loop_handle: LoopHandle<'static, State>,
@@ -1478,7 +1474,6 @@ impl Ewm {
             introspect_reply_tx: None,
             xkb_layout_names: vec!["us".to_string()],
             xkb_current_layout: 0,
-            im_relay: None,
             loop_handle: loop_handle_clone,
             satellite: None,
             idle_timeout: IdleTimeoutState {
@@ -1505,7 +1500,14 @@ impl Ewm {
 
     /// Connect the input method relay after socket is ready.
     pub fn connect_im_relay(&mut self, socket_path: &std::path::Path) {
-        self.im_relay = Some(im::relay::ImRelay::connect(socket_path));
+        let channel = im::relay::connect(socket_path);
+        self.loop_handle
+            .insert_source(channel, |event, _, state| {
+                if let smithay::reexports::calloop::channel::Event::Msg(event) = event {
+                    state.handle_im_event(event);
+                }
+            })
+            .expect("failed to register IM relay event source");
     }
 
     /// Remove a surface from all output strips and the reverse index.
@@ -8219,9 +8221,6 @@ impl State {
             }
         }
 
-        // Process IM relay events and send to Emacs
-        self.process_im_events();
-
         // Clean up dead elements from space.
         // Output enter/leave is managed explicitly in handle_new_toplevel and
         // the Layout command, not via automatic spatial overlap detection.
@@ -8621,37 +8620,30 @@ impl State {
         }
     }
 
-    /// Poll IM relay for activate/deactivate events.
-    pub fn process_im_events(&mut self) {
-        let events: Vec<_> = self
-            .ewm
-            .im_relay
-            .as_ref()
-            .map(|relay| relay.event_rx.try_iter().collect())
-            .unwrap_or_default();
-
-        for event in events {
-            match event {
-                im::relay::ImEvent::Activated => {
-                    if self.ewm.im_text_input.activate() {
-                        self.ewm.queue_event(Event::TextInputActivated);
-                    }
-
-                    // Drain commits queued during the disable->enable gap.
-                    let active_surface_id = self.ewm.active_text_input_surface_id();
-                    if let Some(text) = self
-                        .ewm
-                        .im_text_input
-                        .drain_pending_for_active_surface(active_surface_id)
-                    {
-                        debug!("ImCommit: draining queued commit(s)");
-                        self.ewm.commit_active_text_input(text);
-                    }
+    /// Handle one IM relay activate/deactivate event. Delivered by the calloop
+    /// channel so `is_active()` and the Emacs intercept round-trip land before
+    /// the next key, not one dispatch late.
+    pub fn handle_im_event(&mut self, event: im::relay::ImEvent) {
+        match event {
+            im::relay::ImEvent::Activated => {
+                if self.ewm.im_text_input.activate() {
+                    self.ewm.queue_event(Event::TextInputActivated);
                 }
-                im::relay::ImEvent::Deactivated => {
-                    if self.ewm.im_text_input.deactivate() {
-                        self.ewm.queue_event(Event::TextInputDeactivated);
-                    }
+
+                // Drain commits queued during the disable->enable gap.
+                let active_surface_id = self.ewm.active_text_input_surface_id();
+                if let Some(text) = self
+                    .ewm
+                    .im_text_input
+                    .drain_pending_for_active_surface(active_surface_id)
+                {
+                    debug!("ImCommit: draining queued commit(s)");
+                    self.ewm.commit_active_text_input(text);
+                }
+            }
+            im::relay::ImEvent::Deactivated => {
+                if self.ewm.im_text_input.deactivate() {
+                    self.ewm.queue_event(Event::TextInputDeactivated);
                 }
             }
         }
