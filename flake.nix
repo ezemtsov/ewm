@@ -25,9 +25,7 @@
         }
       );
 
-      overlays.default = final: _prev: {
-        ewm = final.callPackage ./nix/default.nix { };
-      };
+      overlays.default = import ./nix/overlay.nix;
 
       nixosModules.default = import ./nix/service.nix;
 

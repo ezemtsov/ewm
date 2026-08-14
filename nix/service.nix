@@ -13,29 +13,8 @@
 let
   cfg = config.programs.ewm;
 
-  applySkia = emacs: emacs.overrideAttrs (o: {
-    src = pkgs.fetchgit {
-      url = "https://codeberg.org/ezemtsov/emacs.git";
-      rev = "75235f22185e68823b3a4cab3a75adadbb13cb11";
-      hash = "sha256-dcEBYzpcFSVgPPvSTWb6EUBMEQ+0lRxRQdzujA1EouY=";
-    };
-    configureFlags = o.configureFlags ++ [ "--with-skia" ];
-    buildInputs = o.buildInputs ++ (with pkgs; [ skia libepoxy ]);
-    nativeBuildInputs = o.nativeBuildInputs ++ (with pkgs; [ autoconf automake ]);
-    preConfigure = (o.preConfigure or "") + ''
-      ./autogen.sh
-    '';
-  });
-
-  # Rebuild emacsWithPackages results around a Skia-overridden base, or
-  # apply the override directly to a bare emacs derivation.
-  wrapSkia = pkg:
-    if !cfg.withSkia then pkg
-    else if pkg ? emacs && pkg ? explicitRequires then
-      ((pkgs.emacsPackagesFor pkg.emacs).overrideScope (_: _: {
-        emacs = applySkia pkg.emacs;
-      })).emacsWithPackages (_: pkg.explicitRequires)
-    else applySkia pkg;
+  # Emacs 31 with the native Wayland + Skia backend that EWM renders through.
+  emacs31-pwayl = pkgs.callPackage ./emacs.nix { };
 
   ewmPackage = pkgs.callPackage ./default.nix {
     withScreencastSupport = cfg.screencast.enable;
@@ -80,15 +59,17 @@ in
     withSkia = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Rebuild emacsPackage with the Skia rendering backend.";
+      description = "Use the native Wayland + Skia Emacs (emacs31-pwayl) instead of the default pgtk build. Needs emacs-git from emacs-overlay.";
     };
 
     emacsPackage = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.emacs-pgtk.pkgs.withPackages (_: [ ewmPackage ]);
-      description = "Emacs package to use. Must be a pgtk build with the EWM package available.";
-      example = "pkgs.emacs30-pgtk";
-      apply = wrapSkia;
+      default =
+        if cfg.withSkia
+        then emacs31-pwayl.pkgs.withPackages (_: [ ewmPackage ])
+        else pkgs.emacs-pgtk.pkgs.withPackages (_: [ ewmPackage ]);
+      description = "Emacs package to use. Defaults to a pgtk build, or emacs31-pwayl when withSkia is set. Must carry the EWM package.";
+      example = "pkgs.emacs31-pwayl";
     };
 
     ewmPackage = lib.mkOption {
