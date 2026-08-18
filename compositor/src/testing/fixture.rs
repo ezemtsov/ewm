@@ -300,6 +300,10 @@ impl Fixture {
         self.state.ewm.focused_surface_id()
     }
 
+    pub fn active_text_input_surface_id(&self) -> Option<u64> {
+        self.state.ewm.active_text_input_surface_id()
+    }
+
     pub fn keyboard_focus_surface_id(&self) -> Option<u64> {
         self.state
             .ewm

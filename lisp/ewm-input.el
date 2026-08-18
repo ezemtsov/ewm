@@ -426,6 +426,22 @@ redirect capture."
 ;; `focus-in'/`focus-out'), where they're consumed without entering the
 ;; command loop.  EWM owns frame selection via `ewm--handle-focus'.
 
+;;; Input method follows the selected window
+;;
+;; `ewm--handle-focus' selects windows from the async event filter, where
+;; `current-buffer' reverts on return though `select-window' sticks. So the
+;; first key after a focus change is read against the previous buffer's input
+;; method. Apply the selected window's instead, at both `read-char' entry
+;; points: the global default and an :around advice on `quail-input-method'.
+
+(defun ewm-input--in-selected-window (orig key)
+  "Translate KEY through the selected window's input method, else ORIG."
+  (let ((buf (window-buffer (selected-window))))
+    (if (eq buf (current-buffer))
+        (funcall orig key)
+      (with-current-buffer buf
+        (if current-input-method (funcall input-method-function key) (list key))))))
+
 (defun ewm-input--enable ()
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
@@ -434,7 +450,10 @@ redirect capture."
   (add-hook 'minibuffer-exit-hook #'ewm-input--sync-keyboard-capture)
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (ewm-input--set-read-function-capture t)
-  (define-key special-event-map [switch-frame] #'ignore))
+  (define-key special-event-map [switch-frame] #'ignore)
+  (setq-default input-method-function
+                (apply-partially #'ewm-input--in-selected-window #'list))
+  (advice-add 'quail-input-method :around #'ewm-input--in-selected-window))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
@@ -445,7 +464,9 @@ redirect capture."
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (ewm-input--set-read-function-capture nil)
   (ewm-input--set-keyboard-capture nil t)
-  (define-key special-event-map [switch-frame] nil))
+  (define-key special-event-map [switch-frame] nil)
+  (setq-default input-method-function #'list)
+  (advice-remove 'quail-input-method #'ewm-input--in-selected-window))
 
 ;;; Key scanning and interception
 

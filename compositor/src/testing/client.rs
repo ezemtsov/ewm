@@ -15,8 +15,12 @@ use wayland_client::protocol::{
     wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
+use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, zwp_text_input_v3};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+};
+use wayland_protocols_misc::zwp_input_method_v2::client::{
+    zwp_input_method_manager_v2, zwp_input_method_v2,
 };
 #[cfg(feature = "testing-layer-shell")]
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -73,6 +77,8 @@ pub struct ClientState {
     pub seat: Option<wl_seat::WlSeat>,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub text_input_manager: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3>,
+    pub input_method_manager: Option<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>,
     #[cfg(feature = "testing-layer-shell")]
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
@@ -198,6 +204,27 @@ impl TestClient {
         }
     }
 
+    pub fn create_text_input(&mut self) -> zwp_text_input_v3::ZwpTextInputV3 {
+        let qh = self.eq.handle();
+        let seat = self.state.seat.clone().expect("wl_seat not bound");
+        self.state
+            .text_input_manager
+            .as_ref()
+            .expect("zwp_text_input_manager_v3 not bound")
+            .get_text_input(&seat, &qh, ())
+    }
+
+    /// A running IME; smithay discards text-input requests without one.
+    pub fn create_input_method(&mut self) -> zwp_input_method_v2::ZwpInputMethodV2 {
+        let qh = self.eq.handle();
+        let seat = self.state.seat.clone().expect("wl_seat not bound");
+        self.state
+            .input_method_manager
+            .as_ref()
+            .expect("zwp_input_method_manager_v2 not bound")
+            .get_input_method(&seat, &qh, ())
+    }
+
     /// Caller must roundtrip before attaching the first buffer.
     #[cfg(feature = "testing-layer-shell")]
     pub fn create_layer_surface(
@@ -303,6 +330,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.seat = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_output::WlOutput::interface().name {
             let _: wl_output::WlOutput = registry.bind(name, version, qh, ());
+        } else if interface == zwp_text_input_manager_v3::ZwpTextInputManagerV3::interface().name {
+            state.text_input_manager = Some(registry.bind(name, version, qh, ()));
+        } else if interface
+            == zwp_input_method_manager_v2::ZwpInputMethodManagerV2::interface().name
+        {
+            state.input_method_manager = Some(registry.bind(name, version, qh, ()));
         }
         #[cfg(feature = "testing-layer-shell")]
         if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
@@ -523,5 +556,9 @@ wayland_client::delegate_noop!(ClientState: ignore xdg_positioner::XdgPositioner
 wayland_client::delegate_noop!(ClientState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
+wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
+wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_v3::ZwpTextInputV3);
+wayland_client::delegate_noop!(ClientState: ignore zwp_input_method_manager_v2::ZwpInputMethodManagerV2);
+wayland_client::delegate_noop!(ClientState: ignore zwp_input_method_v2::ZwpInputMethodV2);
 #[cfg(feature = "testing-layer-shell")]
 wayland_client::delegate_noop!(ClientState: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
