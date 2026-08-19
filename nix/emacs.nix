@@ -1,11 +1,10 @@
 # Emacs with the native Wayland (pwayl) + Skia rendering backend.
 #
-# Built from the ezemtsov/emacs `wayland-31` branch: upstream master plus the
-# pwayl window system and Skia renderer. Needs emacs-git from emacs-overlay,
-# since the fork tracks master rather than the release nixpkgs ships.
+# Built from the ezemtsov/emacs `wayland-31` branch: Emacs 31 plus the pwayl
+# window system and Skia renderer, on top of nixpkgs' emacs31 build.
 {
   lib,
-  emacs-git,
+  emacs31,
   fetchgit,
   autoconf,
   automake,
@@ -24,7 +23,7 @@
   libxkbcommon,
 }:
 
-(emacs-git.override {
+(emacs31.override {
   withX = false;
   withCairo = false;
   withGTK3 = false;
@@ -33,7 +32,6 @@
   withToolkitScrollBars = false;
 }).overrideAttrs (old: {
   pname = "emacs31-pwayl";
-  name = "emacs31-pwayl-${old.version}";
 
   src = fetchgit {
     url = "https://codeberg.org/ezemtsov/emacs.git";

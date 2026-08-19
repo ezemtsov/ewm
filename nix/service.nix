@@ -59,7 +59,7 @@ in
     withSkia = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Use the native Wayland + Skia Emacs (emacs31-pwayl) instead of the default pgtk build. Needs emacs-git from emacs-overlay.";
+      description = "Use the native Wayland + Skia Emacs (emacs31-pwayl) instead of the default pgtk build.";
     };
 
     emacsPackage = lib.mkOption {
