@@ -32,6 +32,7 @@
   withToolkitScrollBars = false;
 }).overrideAttrs (old: {
   pname = "emacs31-pwayl";
+  version = "31.0.90";
 
   src = fetchgit {
     url = "https://codeberg.org/ezemtsov/emacs.git";
