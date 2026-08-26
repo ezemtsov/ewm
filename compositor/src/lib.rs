@@ -1261,6 +1261,52 @@ impl FrameSet {
     }
 }
 
+/// Whether a toplevel opens floating: a dialog (has a parent) or fixed-height.
+fn compute_open_floating(toplevel: &ToplevelSurface) -> bool {
+    use smithay::wayland::compositor::with_states;
+    use smithay::wayland::shell::xdg::SurfaceCachedState;
+
+    // Windows with a parent (usually dialogs) open as floating by default.
+    if toplevel.parent().is_some() {
+        return true;
+    }
+
+    let (min_size, max_size) = with_states(toplevel.wl_surface(), |state| {
+        let mut guard = state.cached_state.get::<SurfaceCachedState>();
+        let current = guard.current();
+        (current.min_size, current.max_size)
+    });
+
+    // We open fixed-height windows as floating.
+    min_size.h > 0 && min_size.h == max_size.h
+}
+
+fn ensure_min_max_size(x: i32, min: i32, max: i32) -> i32 {
+    let x = if max > 0 { x.min(max) } else { x };
+    if min > 0 {
+        x.max(min)
+    } else {
+        x
+    }
+}
+
+/// A floating window's geometry clamped to its min/max size hints.
+fn floating_open_size(window: &Window) -> Option<Size<i32, Logical>> {
+    use smithay::wayland::compositor::with_states;
+    use smithay::wayland::shell::xdg::SurfaceCachedState;
+
+    let toplevel = window.toplevel()?;
+    let geo = window.geometry().size;
+    let (min, max) = with_states(toplevel.wl_surface(), |state| {
+        let mut guard = state.cached_state.get::<SurfaceCachedState>();
+        let current = guard.current();
+        (current.min_size, current.max_size)
+    });
+    let w = ensure_min_max_size(geo.w, min.w, max.w);
+    let h = ensure_min_max_size(geo.h, min.h, max.h);
+    (w > 0 && h > 0).then(|| Size::from((w, h)))
+}
+
 impl Ewm {
     pub fn new(
         display_handle: DisplayHandle,
@@ -1879,19 +1925,23 @@ impl Ewm {
     }
 
     /// Resolve an Emacs window entry id to its strip location and owning frame.
-    fn lookup_entry(&self, entry_id: LayoutEntryId) -> Option<EntryLocation> {
-        let location = self.layout_entry_for_id(entry_id)?;
-        let frame = if location.floating {
+    fn frame_at_location(&self, location: &LayoutEntryLocation) -> Option<&strip::Frame> {
+        if location.floating {
             self.floating_spaces
                 .get(location.output_name)?
                 .frames
-                .get(location.frame_idx)?
+                .get(location.frame_idx)
         } else {
             self.frame_set
                 .mapped_strip(location.output_name)?
                 .frames
-                .get(location.frame_idx)?
-        };
+                .get(location.frame_idx)
+        }
+    }
+
+    fn lookup_entry(&self, entry_id: LayoutEntryId) -> Option<EntryLocation> {
+        let location = self.layout_entry_for_id(entry_id)?;
+        let frame = self.frame_at_location(&location)?;
         Some(EntryLocation {
             output: location.output_name.to_string(),
             frame_idx: location.frame_idx,
@@ -2095,11 +2145,12 @@ impl Ewm {
         }
         self.set_focus_state(location.frame_surface_id, Some(entry_id));
         self.clear_focused_urgency();
-        if location.floating {
-            self.activate_floating_frame(&location.output, location.frame_surface_id);
-        } else {
-            self.activate_frame(&location.output, location.frame_idx);
-        }
+        self.activate_frame_at(
+            &location.output,
+            location.floating,
+            location.frame_surface_id,
+            location.frame_idx,
+        );
         if notify_emacs {
             self.queue_event(Event::Focus {
                 focus_id: entry_id,
@@ -2134,11 +2185,7 @@ impl Ewm {
         }
         self.set_focus_state(frame_surface_id, selected_entry_id);
         self.clear_focused_urgency();
-        if is_tiled {
-            self.activate_frame(&output, idx);
-        } else {
-            self.activate_floating_frame(&output, frame_surface_id);
-        }
+        self.activate_frame_at(&output, !is_tiled, frame_surface_id, idx);
         if notify_emacs {
             self.queue_event(Event::Focus {
                 focus_id: frame_focus_id,
@@ -2160,17 +2207,7 @@ impl Ewm {
         let location = self
             .focused_entry_for_surface(surface_id)
             .or_else(|| self.layout_entry_for_surface(surface_id, |_| true))?;
-        let frame = if location.floating {
-            self.floating_spaces
-                .get(location.output_name)?
-                .frames
-                .get(location.frame_idx)?
-        } else {
-            self.frame_set
-                .mapped_strip(location.output_name)?
-                .frames
-                .get(location.frame_idx)?
-        };
+        let frame = self.frame_at_location(&location)?;
         Some((frame.surface_id, location.entry.id))
     }
 
@@ -2282,6 +2319,15 @@ impl Ewm {
         self.sorted_outputs
             .iter()
             .find_map(|output| self.active_frame_surface_id(&output.name()))
+    }
+
+    /// Activate a frame on OUTPUT, dispatching by placement kind.
+    fn activate_frame_at(&mut self, output: &str, floating: bool, frame_surface_id: u64, frame_idx: usize) {
+        if floating {
+            self.activate_floating_frame(output, frame_surface_id);
+        } else {
+            self.activate_frame(output, frame_idx);
+        }
     }
 
     /// Mark `new_idx` as active on `output_name`.
@@ -2620,8 +2666,7 @@ impl Ewm {
             && pos.y < (rect.loc.y + rect.size.h) as f64
     }
 
-    /// Resolve the floating space under `pos`, returning its output name, the
-    /// space, and `pos` translated into output-local coordinates.
+    /// Floating space under `pos`: its output name, the space, and output-local `pos`.
     fn floating_space_at(
         &self,
         pos: Point<f64, Logical>,
@@ -2683,19 +2728,28 @@ impl Ewm {
             }
         }
         let strip = self.frame_set.mapped_strip(&output.name())?;
-        let active_idx = strip.active_idx();
+        self.tiled_entry_under_matching(strip, output_geo, working_area, pos, predicate)
+    }
 
+    /// Hit-test `pos` against a tiled strip's entries only (no floating overlay).
+    fn tiled_entry_under_matching<'a>(
+        &self,
+        strip: &'a strip::Strip,
+        output_geo: Rectangle<i32, Logical>,
+        working_area: Rectangle<i32, Logical>,
+        pos: Point<f64, Logical>,
+        mut predicate: impl FnMut(&LayoutEntry) -> bool,
+    ) -> Option<LayoutEntryHit<'a>> {
+        let active_idx = strip.active_idx();
         // Fullscreen primary clicks miss in the letterbox; inactive fullscreens render off-screen.
         for (frame_idx, entry) in strip.entries_with_frame() {
             if !predicate(entry) {
                 continue;
             }
-            let in_active = frame_idx == active_idx;
             let fullscreen = Self::layout_entry_is_fullscreen(strip, frame_idx, entry);
-            if fullscreen && !in_active {
+            if fullscreen && frame_idx != active_idx {
                 continue;
             }
-
             let rect = self.layout_entry_rect(output_geo, working_area, strip, frame_idx, entry);
             if Self::rect_contains_f64(rect, pos) {
                 return Some(LayoutEntryHit {
@@ -2718,6 +2772,26 @@ impl Ewm {
     /// Find the topmost surface-backed layout entry containing `pos`.
     fn surface_layout_entry_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryHit<'_>> {
         self.layout_entry_under_matching(pos, |entry| entry.surface_id().is_some())
+    }
+
+    /// The tiled entry whose rect contains a floating frame's center, for spatial reattach.
+    pub fn tiled_entry_under_floating_center(&self, floating_frame_id: u64) -> Option<LayoutEntryId> {
+        let (output_name, center) = self.floating_spaces.iter().find_map(|(name, space)| {
+            space.frames_with_render_geo().find_map(|(frame, rect)| {
+                (frame.surface_id == floating_frame_id).then(|| {
+                    let c: Point<f64, Logical> =
+                        Point::from((rect.loc.x + rect.size.w / 2.0, rect.loc.y + rect.size.h / 2.0));
+                    (name.clone(), c)
+                })
+            })
+        })?;
+        let output = self.mapped_output_by_name(&output_name)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let working_area = self.get_working_area(output);
+        let center = Point::from((output_geo.loc.x as f64 + center.x, output_geo.loc.y as f64 + center.y));
+        let strip = self.frame_set.mapped_strip(&output_name)?;
+        self.tiled_entry_under_matching(strip, output_geo, working_area, center, |_| true)
+            .map(|hit| hit.entry.id)
     }
 
     fn pointer_scale_for_entry(
@@ -3726,10 +3800,7 @@ impl Ewm {
         }
     }
 
-    /// Apply declarative contents for floating Emacs frames on an output.
-    ///
-    /// Unlike `apply_output_layout`, Rust preserves floating positions and
-    /// stacking order. Lisp only declares the frame contents and current size.
+    /// Apply floating frame contents for an output; Rust keeps positions and stacking.
     pub fn apply_floating_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
         let pre = self.strip_entries(output_name);
         let Some(space) = self.ensure_floating_space_for_output(output_name) else {
@@ -3749,8 +3820,7 @@ impl Ewm {
         }
     }
 
-    /// Run `f` against the floating space owning `id`, queueing a redraw when it
-    /// reports a change.  Returns false if `id` has no floating space.
+    /// Run `f` on the floating space owning `id`, redrawing on change; false if none.
     fn with_floating_space(
         &mut self,
         id: u64,
@@ -3775,8 +3845,7 @@ impl Ewm {
         self.with_floating_space(id, |space| space.move_frame_by(id, Point::from((dx, dy))))
     }
 
-    /// Like `with_floating_space`, but for ops that return a new toplevel size:
-    /// configures the toplevel and queues a redraw when `f` yields one.
+    /// Like `with_floating_space`, but configures the toplevel to the size `f` returns.
     fn with_floating_resize(
         &mut self,
         id: u64,
@@ -6921,6 +6990,26 @@ impl Ewm {
         true
     }
 
+    fn is_floating_frame(&self, id: u64) -> bool {
+        self.floating_spaces.values().any(|space| space.has_frame(id))
+    }
+
+    /// Tiled host for an app surface: parent's frame, else focused, else active; never floating.
+    fn resolve_app_host_frame(&self, parent_id: Option<u64>, output: Option<&str>) -> Option<u64> {
+        parent_id
+            .and_then(|pid| self.frame_for_surface(pid))
+            .filter(|&id| !self.is_floating_frame(id))
+            .or_else(|| {
+                output.and_then(|o| {
+                    (self.focused_frame_id != 0
+                        && !self.is_floating_frame(self.focused_frame_id)
+                        && self.emacs_frame_output(self.focused_frame_id) == Some(o))
+                    .then_some(self.focused_frame_id)
+                })
+            })
+            .or_else(|| output.and_then(|o| self.active_frame_surface_id(o)))
+    }
+
     /// Handle new toplevel surface from XdgShellHandler.
     pub fn handle_new_toplevel(&mut self, surface: ToplevelSurface) {
         let id = self.next_surface_id;
@@ -6955,10 +7044,6 @@ impl Ewm {
             .map(|creds| creds.pid)
             .unwrap_or(0);
 
-        // Extract parent's surface id before consuming `surface` -- used
-        // below to place dialogs in the same Emacs frame as their owner.
-        let parent_id = surface.parent().and_then(|wl| self.surface_id(&wl));
-
         // Determine target output before the initial configure so floating
         // Emacs frames don't get the normal maximized/working-area configure.
         let pending_frame = module::take_pending_frame();
@@ -6966,11 +7051,13 @@ impl Ewm {
         let frame_is_floating = pending_frame
             .as_ref()
             .is_some_and(|pending| pending.floating);
+        let frame_pos = pending_frame.as_ref().and_then(|pending| pending.pos);
         let target_output = frame_output.clone().or_else(|| self.active_output());
 
         surface.with_pending_state(|state| {
             if is_emacs && frame_is_floating {
-                state.size = Some(Size::from((640, 480)));
+                // Let Emacs drive the size; the frame fits itself to its content.
+                state.size = None;
             } else {
                 state.size = Some(self.output_size);
                 state.states.set(XdgToplevelState::Maximized);
@@ -6999,6 +7086,12 @@ impl Ewm {
                         let mut frame = crate::strip::Frame::new(id);
                         frame.width = floating::DEFAULT_FRAME_WIDTH;
                         frame.height = floating::DEFAULT_FRAME_HEIGHT;
+                        frame.floating_pos = frame_pos.map(|(x, y)| {
+                            floating::Data::logical_to_size_frac_in_working_area(
+                                space.working_area(),
+                                Point::from((x, y)),
+                            )
+                        });
                         space.add_frame(frame);
                     }
                 } else {
@@ -7055,34 +7148,11 @@ impl Ewm {
             self.set_focus_frame(id, "initial_surface", false);
         }
 
-        // Resolve which Emacs frame should host this surface.  Emacs
-        // frame xdg_toplevels are themselves frames, so they skip this.
-        // For app surfaces, parent-frame wins so dialogs stick with their
-        // owner; otherwise land on the active frame of the target output.
-        let frame_surface_id = if is_emacs {
-            None
-        } else {
-            parent_id
-                .and_then(|pid| self.frame_for_surface(pid))
-                .or_else(|| {
-                    target_output.as_deref().and_then(|o| {
-                        (self.focused_frame_id != 0
-                            && self.emacs_frame_output(self.focused_frame_id) == Some(o))
-                        .then_some(self.focused_frame_id)
-                    })
-                })
-                .or_else(|| {
-                    target_output
-                        .as_deref()
-                        .and_then(|o| self.active_frame_surface_id(o))
-                })
-        };
-
+        // App surfaces resolve their host frame at map; `New` only creates the buffer.
         self.queue_event(Event::New {
             id,
             app: app.clone(),
             output: target_output.clone(),
-            frame_surface_id,
             pid: client_pid,
         });
         // Eager-inserted new emacs frames land at the strip's end and aren't
@@ -7542,6 +7612,41 @@ impl CompositorHandler for State {
                         strip::OPEN_ANIM_DURATION,
                     ),
                 );
+
+                // Placement is final at map: min/max hints are known, so decide once.
+                let (open_floating, parent) = self
+                    .ewm
+                    .id_windows
+                    .get(&id)
+                    .and_then(|window| window.toplevel())
+                    .map(|toplevel| (compute_open_floating(toplevel), toplevel.parent()))
+                    .unwrap_or((false, None));
+                let parent_id = parent.and_then(|wl| self.ewm.surface_id(&wl));
+                let output = self.ewm.active_output();
+                let frame_surface_id =
+                    self.ewm.resolve_app_host_frame(parent_id, output.as_deref());
+                // Floating frames fit the client's natural size; tiled clients fill their frame.
+                // A size that fills the working area is dropped so the client picks its own.
+                let (width, height) = open_floating
+                    .then(|| self.ewm.id_windows.get(&id).and_then(floating_open_size))
+                    .flatten()
+                    .filter(|s| {
+                        output
+                            .as_deref()
+                            .and_then(|name| self.ewm.mapped_output_by_name(name))
+                            .map(|o| self.ewm.get_working_area(o))
+                            .map_or(true, |wa| s.w < wa.size.w && s.h < wa.size.h)
+                    })
+                    .map(|s| (s.w as f64, s.h as f64))
+                    .unzip();
+                self.ewm.queue_event(Event::Mapped {
+                    id,
+                    open_floating,
+                    output,
+                    frame_surface_id,
+                    width,
+                    height,
+                });
             }
 
             self.ewm.queue_redraw_for_surface(id);
@@ -9145,6 +9250,16 @@ impl State {
                     .unwrap_or_default();
                 let _ = reply.send(json);
             }
+            ModuleCommand::EntryUnderFloatingCenter {
+                floating_frame_id,
+                reply,
+            } => {
+                let id = self
+                    .ewm
+                    .tiled_entry_under_floating_center(floating_frame_id)
+                    .map_or(0, |entry| entry.get());
+                let _ = reply.send(id.to_string());
+            }
             ModuleCommand::CreateActivationToken(reply) => {
                 let (token_ref, _) = self.ewm.activation_state.create_external_token(None);
                 let token = token_ref.clone();
@@ -9472,7 +9587,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_floating_entry_receives_new_toplevel_placement() {
+    fn new_toplevel_skips_focused_floating_frame_for_tiled_host() {
         let mut fix = testing::Fixture::new().unwrap();
         fix.add_output(HEAD_A, 1600, 900);
 
@@ -9502,7 +9617,7 @@ mod tests {
         let toplevel = fix.open_toplevel(&mut client, "app", Size::from((240, 160)));
         let app_surface_id = fix.find_surface_id(&client, &toplevel.surface).unwrap();
         let placement = fix.drain_events().into_iter().find_map(|event| match event {
-            Event::New {
+            Event::Mapped {
                 id,
                 frame_surface_id,
                 ..
@@ -9510,7 +9625,33 @@ mod tests {
             _ => None,
         });
 
-        assert_eq!(placement, Some(200));
+        // Frame 200 is floating and focused, but a new surface must land on the
+        // tiled frame (100), not clobber the floating overlay.
+        assert_eq!(placement, Some(100));
+    }
+
+    #[test]
+    fn tiled_entry_under_floating_center_hits_active_window() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        // Tiled frame whose single entry spans the whole working area.
+        let mut tiled = strip::Frame::new(100);
+        tiled.width = 1600.0;
+        tiled.selected_entry_id = Some(nz(1));
+        tiled
+            .entries
+            .push(LayoutEntry::surface(nz(1), "app".to_string(), 5000, 0, 0, 1600, 900));
+        fix.ewm().apply_output_layout(HEAD_A, vec![tiled]);
+        fix.ewm()
+            .apply_floating_layout(HEAD_A, vec![frame_with_entry(200, nz(3001), 9000)]);
+
+        // The floating frame (200) sits over the tiled entry -> that entry wins.
+        assert_eq!(
+            fix.ewm_ref().tiled_entry_under_floating_center(200),
+            Some(nz(1))
+        );
+        // Unknown floating id -> nothing.
+        assert_eq!(fix.ewm_ref().tiled_entry_under_floating_center(4242), None);
     }
 
     fn output_names(outputs: &[OutputInfo]) -> Vec<String> {

@@ -167,6 +167,9 @@ filters like telega."
 (defvar ewm-layout--last-menu-active nil
   "Cached previous `ewm-layout--menu-active-p' for edge detection.")
 
+(defvar ewm-layout-menu-deactivated-hook nil
+  "Edge-triggered when a menu/minibuffer stops being active.")
+
 (defun ewm-layout--on-post-command ()
   "Refresh layout on a modal-state transition."
   ;; Coerce to t: the predicates return a window or a keymap, not t, and
@@ -174,6 +177,7 @@ filters like telega."
   (let ((now (and (ewm-layout--menu-active-p) t)))
     (unless (eq now ewm-layout--last-menu-active)
       (setq ewm-layout--last-menu-active now)
+      (unless now (run-hooks 'ewm-layout-menu-deactivated-hook))
       (ewm-layout--refresh))))
 
 (defun ewm--enable-layout-sync ()

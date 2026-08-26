@@ -252,8 +252,11 @@ The batch frame is shared; we save and restore the parameters we touch."
         (should (eql 7 (plist-get (aref entries 0) :surface-id)))
         (should (eql sel (plist-get (aref entries 0) :entry-id)))))))
 
-(ert-deftest ewm-focus/new-surface-publishes-layout-immediately ()
-  "New external surfaces must not wait for deferred window hooks to render."
+(ert-deftest ewm-focus/mapped-surface-publishes-layout-immediately ()
+  "A surface publishes its layout synchronously when it maps, not via deferred
+window hooks -- otherwise it never renders while Emacs is blocked in a
+subprocess wait (for example EPA waiting for pinentry).  `new' only creates the
+buffer; `mapped' displays and publishes it."
   (ewm-focus-tests--with-frame f
     (let ((captures nil)
           (created nil)
@@ -264,9 +267,13 @@ The batch frame is shared; we save and restore the parameters we touch."
           (cl-letf (((symbol-function 'ewm-output-layout)
                      (lambda (output frames)
                        (push (cons output frames) captures))))
-            (ewm--create-surface-buffer 80 "pinentry" ewm-focus-tests--output nil 1234)
+            (ewm--create-surface-buffer 80 "pinentry" 1234)
             (setq created (gethash 80 ewm--surfaces))
             (should created)
+            ;; New alone must not publish: placement waits for the map event.
+            (should-not captures)
+            (ewm--handle-mapped-surface
+             `((id . 80) (open_floating . nil) (output . ,ewm-focus-tests--output)))
             (should captures)
             (let* ((frames (cdr (car captures)))
                    (frame-plist (aref frames 0))
@@ -282,6 +289,58 @@ The batch frame is shared; we save and restore the parameters we touch."
             (remove-hook 'kill-buffer-query-functions
                          #'ewm--kill-buffer-query-function t))
           (kill-buffer created))))))
+
+(ert-deftest ewm-focus/mapped-surface-places-synchronously-without-menu ()
+  "With no menu active a mapped surface is placed immediately, not queued."
+  (let ((ewm--surfaces (make-hash-table :test 'eql))
+        (ewm--pending-placements nil)
+        (placed nil)
+        (buf (generate-new-buffer " *ewm-test-map*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ewm--place-surface-buffer)
+                   (lambda (&rest args) (push args placed)))
+                  ((symbol-function 'ewm-layout--menu-active-p) #'ignore))
+          (puthash 42 buf ewm--surfaces)
+          (ewm--handle-mapped-surface
+           '((id . 42) (open_floating . t) (output . "HEAD-A") (frame_surface_id . 7)
+             (width . 480.0) (height . 160.0)))
+          (should (null ewm--pending-placements))
+          (should (equal (list buf t "HEAD-A" 7 480.0 160.0) (car placed))))
+      (kill-buffer buf))))
+
+(ert-deftest ewm-focus/mapped-surface-defers-while-menu-active ()
+  "A surface mapping while a menu is active is queued, then placed once on close."
+  (let ((ewm--surfaces (make-hash-table :test 'eql))
+        (ewm--pending-placements nil)
+        (placed nil)
+        (buf (generate-new-buffer " *ewm-test-map*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ewm--place-surface-buffer)
+                   (lambda (&rest args) (push args placed))))
+          (puthash 42 buf ewm--surfaces)
+          (cl-letf (((symbol-function 'ewm-layout--menu-active-p) (lambda () t)))
+            (ewm--handle-mapped-surface
+             '((id . 42) (open_floating . nil) (output . "HEAD-A") (frame_surface_id . 7))))
+          (should (null placed))
+          (should (= 1 (length ewm--pending-placements)))
+          (ewm--flush-pending-placements)
+          (should (equal (list buf nil "HEAD-A" 7 nil nil) (car placed)))
+          (should (= 1 (length placed)))
+          (should (null ewm--pending-placements)))
+      (kill-buffer buf))))
+
+(ert-deftest ewm-focus/floating-frames-showing-filters-by-param ()
+  "`ewm--floating-frames-showing' returns a frame only while it is floating."
+  (ewm-focus-tests--with-frame f
+    (let ((buf (ewm-focus-tests--make-surface-buffer 99)))
+      (set-window-buffer (frame-selected-window f) buf)
+      (unwind-protect
+          (progn
+            (set-frame-parameter f 'ewm-floating nil)
+            (should-not (ewm--floating-frames-showing buf))
+            (set-frame-parameter f 'ewm-floating t)
+            (should (memq f (ewm--floating-frames-showing buf))))
+        (set-frame-parameter f 'ewm-floating nil)))))
 
 (ert-deftest ewm-focus/handle-focus-skips-while-modal ()
   "Incoming focus events must not change selection during modal input."

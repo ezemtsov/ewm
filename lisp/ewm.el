@@ -53,6 +53,8 @@
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-get-frame-origin "ewm-core")
+(declare-function ewm-entry-under-floating-center-module "ewm-core")
+(declare-function ewm--find-window-by-entry-id "ewm-focus")
 (declare-function ewm-configure-cursor-module "ewm-core")
 (declare-function ewm-start "ewm-core" (cursor-theme cursor-size))
 (declare-function ewm-list-xdg-apps "ewm-core")
@@ -208,9 +210,7 @@ and layer surfaces (panels, lock screen) are never dimmed."
 Let-bound in `ewm--handle-focus' to gate the Emacs-window hover branch.")
 
 (defvar ewm--is-pointer-focus-event nil
-  "Whether the current focus event was caused by pointer interaction.
-Let-bound in `ewm--handle-focus' so mouse-follows-focus can avoid
-warping immediately after pointer-originated focus changes.")
+  "Whether the current focus event came from pointer interaction.")
 
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to buffer.")
@@ -220,8 +220,7 @@ warping immediately after pointer-originated focus changes.")
 Single source of truth for frame ordering on each output's strip.")
 
 (defvar ewm--floating-frames nil
-  "Alist of (OUTPUT-NAME . FRAMES) for floating Emacs frames.
-Floating frames are sticky overlays attached to an output strip/workspace.")
+  "Alist of (OUTPUT-NAME . FRAMES) for floating Emacs frames.")
 
 (defvar ewm--frame-seq 0
   "Monotonic counter advanced for each EWM-managed frame creation.
@@ -378,6 +377,7 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
   (let ((type (alist-get 'event event)))
     (pcase type
       ("new" (ewm--handle-new-surface event))
+      ("mapped" (ewm--handle-mapped-surface event))
       ("close" (ewm--handle-close-surface event))
       ("minimize" (ewm--handle-minimize-surface event))
       ("title" (ewm--handle-title-update event))
@@ -437,27 +437,15 @@ order, which `ewm-frame-new' may have reordered in the strip."
        (cl-find surface-id (frame-list)
                 :key (lambda (f) (frame-parameter f 'ewm-surface-id)))))
 
-(defun ewm--create-surface-buffer (id app output frame-surface-id pid)
-  "Create buffer for surface ID (APP on OUTPUT, PID) and display it.
-FRAME-SURFACE-ID, when non-nil, is the Emacs frame the compositor
-chose to host this surface (parent's frame, or the active frame on
-the surface's output).  Falls back to first match on OUTPUT."
+(defun ewm--create-surface-buffer (id app pid)
+  "Create the buffer for surface ID (APP, client PID); placed later on map."
   (let ((buf (generate-new-buffer (format "*ewm:%s:%d*" app id))))
     (puthash id buf ewm--surfaces)
     (with-current-buffer buf
       (ewm-surface-mode)
       (setq-local ewm-surface-id id)
       (setq-local ewm-surface-app app)
-      (setq-local ewm-surface-pid pid))
-    (unless (ewm-layout--menu-active-p)
-      (when-let* ((target-frame (or (ewm--frame-by-surface-id frame-surface-id)
-                                    (ewm--surface-target-frame-for-output output))))
-        (select-frame target-frame))
-      (pop-to-buffer-same-window buf)
-      ;; Process filters can display surfaces while Emacs is waiting on a
-      ;; subprocess (for example EPA waiting for pinentry).  Window hooks may
-      ;; not publish the layout until that wait is over, so send it now.
-      (ewm-layout--refresh))))
+      (setq-local ewm-surface-pid pid))))
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
@@ -466,13 +454,57 @@ Otherwise, creates a buffer for external surface."
   (let ((id (alist-get 'id event))
         (app (alist-get 'app event))
         (output (alist-get 'output event))
-        (frame-surface-id (alist-get 'frame_surface_id event))
         (pid (alist-get 'pid event)))
     (let ((frame (and output (ewm--assign-surface-to-frame id output))))
       (ewm--log "handle-new-surface: id=%s app=%s output=%s frame=%s"
                 id app output (or frame "no-match"))
       (unless frame
-        (ewm--create-surface-buffer id app output frame-surface-id pid)))))
+        (ewm--create-surface-buffer id app pid)))))
+
+(defvar ewm--pending-placements nil
+  "Deferred `ewm--place-surface-buffer' arg lists, flushed when menus close.")
+
+(defun ewm--handle-mapped-surface (event)
+  "Display the surface buffer for EVENT now that it has mapped."
+  (when-let* ((id (alist-get 'id event))
+              (buffer (gethash id ewm--surfaces))
+              ((buffer-live-p buffer)))
+    (let ((args (list buffer
+                      (alist-get 'open_floating event)
+                      (alist-get 'output event)
+                      (alist-get 'frame_surface_id event)
+                      (alist-get 'width event)
+                      (alist-get 'height event))))
+      ;; A menu is up: defer so placement neither disrupts nor is dropped by it.
+      (if (ewm-layout--menu-active-p)
+          (push args ewm--pending-placements)
+        (apply #'ewm--place-surface-buffer args)))))
+
+(defun ewm--flush-pending-placements ()
+  "Place surfaces that mapped while a menu was active."
+  (let ((pending (nreverse ewm--pending-placements)))
+    (setq ewm--pending-placements nil)
+    (dolist (args pending)
+      (when (buffer-live-p (car args))
+        (apply #'ewm--place-surface-buffer args)))))
+
+(defun ewm--place-surface-buffer (buffer floating output host-id &optional width height)
+  "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID."
+  (if floating
+      (ewm--float-buffer-into-frame buffer nil output host-id width height)
+    (when-let* ((target (or (ewm--frame-by-surface-id host-id)
+                            (ewm--surface-target-frame-for-output output))))
+      (select-frame target)
+      (pop-to-buffer-same-window buffer)
+      (ewm-layout--refresh))))
+
+(defun ewm--floating-frames-showing (buffer)
+  "Return the floating frames currently displaying BUFFER."
+  (seq-uniq
+   (seq-keep (lambda (win)
+               (let ((frame (window-frame win)))
+                 (and (frame-parameter frame 'ewm-floating) frame)))
+             (get-buffer-window-list buffer nil t))))
 
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.
@@ -485,12 +517,16 @@ without lisp asking (e.g. compositor-driven destroy)."
               (cond (buf "buffer") (frame "frame-orphan") (t "unknown")))
     (cond
      (buf
-      (when (buffer-live-p buf)
-        (with-current-buffer buf
-          (remove-hook 'kill-buffer-query-functions
-                       #'ewm--kill-buffer-query-function t))
-        (kill-buffer buf))
-      (remhash id ewm--surfaces))
+      ;; A floating frame hosts a single surface; delete it once that dies.
+      (let ((hosts (ewm--floating-frames-showing buf)))
+        (when (buffer-live-p buf)
+          (with-current-buffer buf
+            (remove-hook 'kill-buffer-query-functions
+                         #'ewm--kill-buffer-query-function t))
+          (kill-buffer buf))
+        (remhash id ewm--surfaces)
+        (dolist (host hosts)
+          (when (frame-live-p host) (delete-frame host t)))))
      (frame
       (ignore-errors (delete-frame frame t))))))
 
@@ -727,10 +763,18 @@ Select the Nth Emacs frame on the requested output (1-based index)."
 (defun ewm--frame-window-id (frame)
   (and (frame-live-p frame) (frame-parameter frame 'window-id)))
 
+(defvar ewm--output-active-frame nil
+  "Alist of OUTPUT -> the strip frame the compositor last marked active there.
+Lets strip navigation find its anchor when a floating frame holds focus.")
+
 (defun ewm--handle-frame-shown (event)
-  (when (ewm--gtk-backed-p)
-    (when-let* ((id (alist-get 'id event))
-                (frame (ewm--frame-by-surface-id id))
+  (when-let* ((id (alist-get 'id event))
+              (frame (ewm--frame-by-surface-id id)))
+    ;; `frame_shown' always names a tiled strip frame (never a float).
+    (setf (alist-get (frame-parameter frame 'ewm-output)
+                     ewm--output-active-frame nil nil #'equal)
+          frame)
+    (when-let* (((ewm--gtk-backed-p))
                 (wid (ewm--frame-window-id frame)))
       (ignore-errors (ewm-gtk-thaw-frame-updates wid)))))
 
@@ -888,9 +932,7 @@ Entry coordinates are relative to the owning frame's working area."
   (ewm-output-layout-module output frames))
 
 (defun ewm-floating-layout (output frames)
-  "Set declarative contents for OUTPUT's floating Emacs frames.
-FRAMES uses the same plist shape as `ewm-output-layout'.  The compositor
-owns floating positions and stacking order."
+  "Set declarative contents for OUTPUT's floating Emacs frames."
   (ewm-floating-layout-module output frames))
 
 (defun ewm-workspace-rename (name &optional frame)
@@ -1058,9 +1100,9 @@ ARGS is a plist with optional keys:
   "Tell compositor to assign next frame to OUTPUT."
   (ewm-prepare-frame-module output))
 
-(defun ewm-prepare-floating-frame (output)
-  "Tell compositor to assign next frame as floating on OUTPUT."
-  (ewm-prepare-floating-frame-module output))
+(defun ewm-prepare-floating-frame (output &optional x y)
+  "Tell compositor to assign next frame as floating on OUTPUT at top-left X/Y."
+  (ewm-prepare-floating-frame-module output x y))
 
 (defun ewm--get-output-origin (output-name)
   "Return (x . y) origin for OUTPUT-NAME, or (0 . 0) if not found."
@@ -1165,8 +1207,7 @@ native Wayland backend)."
         (t (error "EWM requires a pgtk or native-Wayland Emacs build"))))
 
 (defun ewm--output-managed-p (frame)
-  "Return non-nil if FRAME is bound to a compositor output.
-Excludes TTY frames and non-EWM GUI frames."
+  "Return non-nil if FRAME is bound to a compositor output."
   (memq (framep-on-display frame) ewm--managed-window-systems))
 
 (defun ewm--frame-for-output (output-name)
@@ -1174,12 +1215,12 @@ Excludes TTY frames and non-EWM GUI frames."
   (car (ewm--strip-frames output-name)))
 
 (defun ewm--surface-target-frame-for-output (output-name)
-  "Return the best fallback frame for a new surface on OUTPUT-NAME."
+  "Return the best tiled fallback frame for a new surface on OUTPUT-NAME."
   (or (let ((frame (ignore-errors (ewm--focused-frame))))
         (and frame
+             (not (frame-parameter frame 'ewm-floating))
              (equal (frame-parameter frame 'ewm-output) output-name)
              frame))
-      (car (ewm--floating-frames output-name))
       (ewm--frame-for-output output-name)))
 
 (defun ewm--frame-in-flight-p (frame)
@@ -1254,30 +1295,28 @@ strip, so the parameter must change between the remove and the insert."
       (ewm--floating-insert frame output)
     (ewm--strip-insert frame output)))
 
+(defun ewm--make-output-frame (output-name extra-params)
+  "Make a managed frame on OUTPUT-NAME carrying EXTRA-PARAMS.
+EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
+  (make-frame `(,@extra-params
+                (visibility . t)
+                (window-system . ,(ewm--window-system))
+                (ewm-output . ,output-name)
+                (ewm-frame-seq . ,(cl-incf ewm--frame-seq)))))
+
 (defun ewm--create-frame-for-output (output-name &optional after-frame extra-params)
   "Create a frame on OUTPUT-NAME inserted after AFTER-FRAME (or appended)."
   (ewm-prepare-frame output-name)
-  (let* ((seq (cl-incf ewm--frame-seq))
-         (frame (make-frame `((visibility . t)
-                              (window-system . ,(ewm--window-system))
-                              (ewm-output . ,output-name)
-                              (ewm-frame-seq . ,seq)
-                              ,@extra-params))))
+  (let ((frame (ewm--make-output-frame output-name extra-params)))
     (ewm--strip-insert frame output-name after-frame)
     frame))
 
-(defun ewm--create-floating-frame-for-output (output-name &optional extra-params)
-  "Create a floating frame on OUTPUT-NAME."
-  (ewm-prepare-floating-frame output-name)
-  (let* ((seq (cl-incf ewm--frame-seq))
-         (frame (make-frame `((visibility . t)
-                              (window-system . ,(ewm--window-system))
-                              (ewm-output . ,output-name)
-                              (ewm-floating . t)
-                              (ewm-frame-seq . ,seq)
-                              (width . 80)
-                              (height . 24)
-                              ,@extra-params))))
+(defun ewm--create-floating-frame-for-output (output-name &optional extra-params pos)
+  "Create a floating frame on OUTPUT-NAME, optionally at POS (X . Y) pixels."
+  (ewm-prepare-floating-frame output-name (car pos) (cdr pos))
+  (let ((frame (ewm--make-output-frame
+                output-name
+                `((ewm-floating . t) (width . 80) (height . 24) ,@extra-params))))
     (ewm--floating-insert frame output-name)
     frame))
 
@@ -1334,8 +1373,55 @@ selected frame\", which can change during pgtk's internal close handling."
         origin)
       (ewm--frame-for-output (frame-parameter floating-frame 'ewm-output))))
 
+(defun ewm--window-body-pixel-rect (window)
+  "Return WINDOW's inner text area as an (X Y WIDTH HEIGHT) pixel list."
+  (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
+         (x (nth 0 edges))
+         (y (nth 1 edges)))
+    (list x y (- (nth 2 edges) x) (- (nth 3 edges) y))))
+
+(defun ewm--fit-floating-frame (frame width height)
+  "Size FRAME so its client window body is WIDTH×HEIGHT logical pixels."
+  (let ((rect (ewm--window-body-pixel-rect (frame-selected-window frame)))
+        (area (frame-monitor-workarea frame)))
+    (cl-flet ((axis (want limit text body)
+                (round (+ (min want limit) (- text body)))))
+      (set-frame-size frame
+                      (axis width (nth 2 area) (frame-text-width frame) (nth 2 rect))
+                      (axis height (nth 3 area) (frame-text-height frame) (nth 3 rect))
+                      t))))
+
+(defun ewm--float-buffer-into-frame (buffer source-window output origin-id
+                                            &optional width height pos)
+  "Host BUFFER in a new floating frame on OUTPUT, closing SOURCE-WINDOW."
+  (let ((floating (ewm--create-floating-frame-for-output
+                   output
+                   ;; Stay hidden until fitted so only the final size is ever rendered.
+                   `((visibility . nil)
+                     (ewm-focus-on-create . t)
+                     ,@(when origin-id
+                         `((ewm-floating-origin-frame-id . ,origin-id))))
+                   pos)))
+    (set-window-buffer (frame-selected-window floating) buffer)
+    (when (and width height)
+      (ewm--fit-floating-frame floating width height))
+    (make-frame-visible floating)
+    (when (window-live-p source-window)
+      ;; Reclaim the space: drop the window, or bury if it is the frame's only one.
+      (if (eq t (window-deletable-p source-window))
+          (delete-window source-window)
+        (quit-window nil source-window)))
+    (if (frame-parameter floating 'ewm-surface-id)
+        (select-frame-set-input-focus floating)
+      (select-frame floating))
+    (ewm-layout--refresh)
+    floating))
+
+(defvar ewm-floating-popout-scale 0.9
+  "Fraction of the source window a popped-out floating frame occupies.")
+
 (defun ewm--floating-detach-selected-buffer (frame)
-  "Detach FRAME's selected buffer into a new floating frame."
+  "Detach FRAME's selected buffer into a floating frame centered over its tile."
   (let* ((output (frame-parameter frame 'ewm-output))
          (origin-id (frame-parameter frame 'ewm-surface-id))
          (source-window (frame-selected-window frame))
@@ -1344,34 +1430,32 @@ selected frame\", which can change during pgtk's internal close handling."
       (user-error "Current frame has no ewm-output"))
     (when (window-minibuffer-p source-window)
       (user-error "Cannot detach minibuffer window"))
-    (let ((floating (ewm--create-floating-frame-for-output
-                     output
-                     `((ewm-focus-on-create . t)
-                       ,@(when origin-id
-                           `((ewm-floating-origin-frame-id . ,origin-id)))))))
-      (with-selected-frame floating
-        (set-window-buffer (frame-selected-window floating) buffer))
-      (when (window-live-p source-window)
-        (quit-window nil source-window))
-      (if (frame-parameter floating 'ewm-surface-id)
-          (select-frame-set-input-focus floating)
-        (select-frame floating))
-      (ewm-layout--refresh)
-      floating)))
+    (let* ((rect (ewm--window-body-pixel-rect source-window))
+           (w (nth 2 rect))
+           (h (nth 3 rect))
+           (fw (round (* w ewm-floating-popout-scale)))
+           (fh (round (* h ewm-floating-popout-scale))))
+      (ewm--float-buffer-into-frame buffer source-window output origin-id fw fh
+                                    (cons (+ (nth 0 rect) (/ (- w fw) 2))
+                                          (+ (nth 1 rect) (/ (- h fh) 2)))))))
 
 (defun ewm--floating-attach-selected-buffer (floating-frame)
-  "Move FLOATING-FRAME's selected buffer back into its tiled frame."
+  "Absorb FLOATING-FRAME's buffer into the tiled window under its center."
   (let* ((buffer (window-buffer (frame-selected-window floating-frame)))
-         (target (ewm--floating-return-frame floating-frame)))
-    (unless target
+         (sid (frame-parameter floating-frame 'ewm-surface-id))
+         (entry-id (and sid (ewm-entry-under-floating-center-module sid)))
+         (window (and entry-id (ewm--find-window-by-entry-id entry-id)))
+         (fallback (unless window (ewm--floating-return-frame floating-frame))))
+    (unless (or window fallback)
       (user-error "No tiled frame on output %s"
                   (frame-parameter floating-frame 'ewm-output)))
     (delete-frame floating-frame t)
-    (select-frame-set-input-focus target)
-    (with-selected-frame target
-      (pop-to-buffer buffer))
-    (ewm-layout--refresh)
-    target))
+    ;; pop-to-buffer lets Emacs reuse or split the target window on its own.
+    (if (window-live-p window)
+        (select-window window)
+      (select-frame-set-input-focus fallback))
+    (pop-to-buffer buffer)
+    (ewm-layout--refresh)))
 
 (defun ewm-floating-toggle ()
   "Toggle the selected buffer between tiled and floating frame placement."
@@ -1381,11 +1465,15 @@ selected frame\", which can change during pgtk's internal close handling."
         (ewm--floating-attach-selected-buffer frame)
       (ewm--floating-detach-selected-buffer frame))))
 
+
 (defun ewm-frame-close ()
-  "Close the selected frame; the compositor refocuses to a same-output
-neighbour and the strip slides it into the deleted frame's slot."
+  "Close the focused frame; the compositor refocuses a same-output neighbour."
   (interactive)
-  (delete-frame))
+  (let ((frame (ewm--focused-frame)))
+    ;; Select it first so the delete-frame advice notifies the compositor.
+    (unless (eq frame (selected-frame))
+      (select-frame frame))
+    (delete-frame frame)))
 
 (defun ewm--current-frame ()
   "Frame the user is visually on -- compositor-authoritative.
@@ -1398,12 +1486,22 @@ Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
   "Frame the user is on per the compositor, falling back to `selected-frame'."
   (or (ewm--current-frame) (selected-frame)))
 
+(defun ewm--strip-anchor-frame (output frames)
+  "Strip frame on OUTPUT to navigate from, given its FRAMES.
+The focused frame when it is in the strip, else the output's active strip
+frame, else the first -- so navigation works while a float holds focus."
+  (let ((focused (ewm--focused-frame))
+        (active (alist-get output ewm--output-active-frame nil nil #'equal)))
+    (cond ((memq focused frames) focused)
+          ((memq active frames) active)
+          (t (car frames)))))
+
 (defun ewm--frame-shift-on-output (delta)
   "Move strip focus by DELTA on the current output (no wrap-around).
 Returns the target frame on success, nil at the strip edge."
-  (let* ((current (ewm--focused-frame))
-         (output (frame-parameter current 'ewm-output))
+  (let* ((output (frame-parameter (ewm--focused-frame) 'ewm-output))
          (frames (ewm--strip-frames output))
+         (current (ewm--strip-anchor-frame output frames))
          (idx (cl-position current frames))
          (target-idx (and idx (+ idx delta))))
     (when (and target-idx (>= target-idx 0) (< target-idx (length frames)))
@@ -1686,6 +1784,7 @@ instead of the generated minor-mode command."
   "Install Emacs-side state before compositor startup events run."
   (ewm--disable-csd)
   (ewm--enable-layout-sync)
+  (add-hook 'ewm-layout-menu-deactivated-hook #'ewm--flush-pending-placements)
   (unless (advice-member-p #'ewm--select-frame-set-input-focus
                            'select-frame-set-input-focus)
     (advice-add 'select-frame-set-input-focus :override
@@ -1721,6 +1820,7 @@ instead of the generated minor-mode command."
 (defun ewm--teardown ()
   "Remove Emacs-side state installed by `ewm--setup'."
   (ewm--disable-layout-sync)
+  (remove-hook 'ewm-layout-menu-deactivated-hook #'ewm--flush-pending-placements)
   (advice-remove 'select-frame-set-input-focus
                  #'ewm--select-frame-set-input-focus)
   (when (memq #'ewm-input--sync-keyboard-capture post-command-hook)

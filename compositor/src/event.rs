@@ -58,22 +58,29 @@ pub enum Event {
     /// Compositor is ready
     #[serde(rename = "ready")]
     Ready,
-    /// New surface created.
-    ///
-    /// `frame_surface_id` is the xdg_toplevel id of the Emacs frame the
-    /// surface should be placed in.  Resolution order: parent toplevel's
-    /// frame -> focused frame on the target output -> active strip frame on
-    /// the target output.  When unset, the lisp side falls back to first-match
-    /// on `output`.
+    /// New surface created; the buffer is created now and placed at `Mapped`.
     #[serde(rename = "new")]
     New {
         id: u64,
         app: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
+        pid: i32,
+    },
+    /// App surface mapped: placed once, floating (`open_floating`) or tiled in `frame_surface_id`.
+    /// `width`/`height` carry the floating client's natural size so its frame fits it.
+    #[serde(rename = "mapped")]
+    Mapped {
+        id: u64,
+        open_floating: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         frame_surface_id: Option<u64>,
-        pid: i32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        height: Option<f64>,
     },
     /// Surface closed
     #[serde(rename = "close")]

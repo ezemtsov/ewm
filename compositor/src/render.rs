@@ -435,6 +435,14 @@ pub fn collect_render_elements_for_output(
             let Some(window) = id_windows.get(&frame.surface_id) else {
                 continue;
             };
+            // A frame created hidden (sized, then shown) has no buffer yet; skip it
+            // so its shadow never draws at the placeholder size.
+            if !window
+                .wl_surface()
+                .is_some_and(|s| crate::utils::is_mapped(&s))
+            {
+                continue;
+            }
             let frame_alpha = surface_open_anims
                 .get(&frame.surface_id)
                 .map(|a| a.value() as f32)

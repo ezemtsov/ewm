@@ -1,9 +1,4 @@
-//! Per-output floating Emacs frame space.
-//!
-//! This is intentionally shaped after niri's `FloatingSpace`: logical frame
-//! position is cached for rendering, while the durable position is stored as a
-//! fraction of the output working area so output/working-area changes preserve
-//! the user's placement.
+//! Per-output floating Emacs frame space; durable positions stored as a working-area fraction.
 
 use std::iter::zip;
 
@@ -20,7 +15,7 @@ pub const DEFAULT_FRAME_HEIGHT: f64 = 480.0;
 const MIN_FRAME_WIDTH: f64 = 160.0;
 const MIN_FRAME_HEIGHT: f64 = 120.0;
 
-/// Niri-style resize edge set.
+/// Bitflag set of frame resize edges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ResizeEdge(u32);
 
@@ -206,12 +201,7 @@ impl Data {
     }
 
     pub fn update(&mut self, frame: &Frame) {
-        let size = Self::frame_size(frame, self.working_area);
-        if self.size == size {
-            return;
-        }
-        self.size = size;
-        self.recompute_logical_pos();
+        self.set_size(Self::frame_size(frame, self.working_area));
     }
 
     pub fn set_size(&mut self, size: Size<f64, Logical>) {
@@ -307,6 +297,10 @@ impl FloatingSpace {
         }
     }
 
+    pub fn working_area(&self) -> Rectangle<f64, Logical> {
+        self.working_area
+    }
+
     pub fn update_config(&mut self, working_area: Rectangle<f64, Logical>) {
         self.working_area = working_area;
         for (frame, data) in zip(&self.frames, &mut self.data) {
@@ -316,9 +310,9 @@ impl FloatingSpace {
     }
 
     pub fn add_frame(&mut self, frame: Frame) {
-        let pos = self
-            .stored_or_default_frame_pos(&frame)
-            .unwrap_or_else(|| self.centered_pos_for(Data::frame_size(&frame, self.working_area)));
+        let stored = self.stored_or_default_frame_pos(&frame);
+        let size = Data::frame_size(&frame, self.working_area);
+        let pos = stored.unwrap_or_else(|| self.centered_pos_for(size));
         let data = Data::new(self.working_area, &frame, pos);
         self.active_frame_id = Some(frame.surface_id);
         self.data.insert(0, data);
@@ -327,7 +321,7 @@ impl FloatingSpace {
 
     fn centered_pos_for(&self, size: Size<f64, Logical>) -> Point<f64, Logical> {
         let x = self.working_area.loc.x + (self.working_area.size.w - size.w).max(0.0) / 2.0;
-        let y = self.working_area.loc.y + (self.working_area.size.h - size.h).max(0.0) / 3.0;
+        let y = self.working_area.loc.y + (self.working_area.size.h - size.h).max(0.0) / 2.0;
         Point::from((x, y))
     }
 
@@ -404,8 +398,9 @@ impl FloatingSpace {
                     std::mem::take(&mut self.frames[idx].workspace_name);
                 let preserved_fullscreen = self.frames[idx].fullscreen;
                 let prev_size = self.data[idx].size();
+                let was_auto = self.frames[idx].floating_pos.is_none();
                 let preserved_pos = self.data[idx].pos;
-                new_frame.floating_pos = Some(preserved_pos);
+                new_frame.floating_pos = (!was_auto).then_some(preserved_pos);
                 new_frame.fullscreen = preserved_fullscreen.filter(|fullscreen| {
                     new_frame.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id)
                 });
@@ -414,6 +409,12 @@ impl FloatingSpace {
                     self.frames[idx].workspace_name = preserved_workspace_name;
                 }
                 self.data[idx].update(&self.frames[idx]);
+                // Auto-floated frames are added placeholder-sized; center once the real size lands.
+                let recenter = was_auto && self.data[idx].size() != prev_size;
+                if recenter {
+                    let centered = self.centered_pos_for(self.data[idx].size());
+                    self.data[idx].set_logical_pos(centered);
+                }
                 if let Some(resize) = self
                     .interactive_resize
                     .filter(|resize| resize.frame_id == self.frames[idx].surface_id)
@@ -438,18 +439,22 @@ impl FloatingSpace {
                 frame.entries.clear();
                 frame.selected_entry_id = None;
                 frame.fullscreen = None;
-                frame.floating_pos = Some(data.pos);
+                // Persist only an already-explicit position; leave auto frames auto.
+                if frame.floating_pos.is_some() {
+                    frame.floating_pos = Some(data.pos);
+                }
             }
         }
     }
 
     pub fn move_frame_by(&mut self, id: u64, delta: Point<f64, Logical>) -> bool {
         let clock = self.clock.clone();
-        let Some((_, data)) = self.frame_with_data_mut(id) else {
+        let Some((frame, data)) = self.frame_with_data_mut(id) else {
             return false;
         };
         let prev = data.logical_pos();
         data.set_logical_pos(prev + delta);
+        frame.floating_pos = Some(data.pos);
         let diff = prev - data.logical_pos();
         if diff.x * diff.x + diff.y * diff.y > 10.0 * 10.0 {
             data.set_move_anim(diff.x, clock);
@@ -515,11 +520,12 @@ impl FloatingSpace {
             return false;
         }
 
-        let Some((_, data)) = self.frame_with_data_mut(frame_id) else {
+        let Some((frame, data)) = self.frame_with_data_mut(frame_id) else {
             return false;
         };
 
         data.set_logical_pos(move_.original_pos + delta);
+        frame.floating_pos = Some(data.pos);
 
         true
     }
@@ -602,6 +608,7 @@ impl FloatingSpace {
         frame.height = new_size.h;
         data.set_size(new_size);
         data.set_logical_pos(new_pos);
+        frame.floating_pos = Some(data.pos);
 
         Some(Size::from((
             new_size.w.round() as i32,

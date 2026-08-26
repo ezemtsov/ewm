@@ -128,6 +128,14 @@ fn value_as_f64(val: Value<'_>) -> Result<f64> {
         .or_else(|_| val.into_rust::<i64>().map(|i| i as f64))
 }
 
+fn optional_f64(val: Value<'_>) -> Result<Option<f64>> {
+    if val.is_not_nil() {
+        value_as_f64(val).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 fn nonzero_u64_from_i64(id: i64) -> Option<NonZeroU64> {
     u64::try_from(id).ok().and_then(NonZeroU64::new)
 }
@@ -215,6 +223,8 @@ pub fn set_text_input_surrounding(snapshot: Option<SurroundingSnapshot>) {
 pub struct PendingFrame {
     pub output: String,
     pub floating: bool,
+    /// Requested top-left in logical pixels; floating frames only, else centered.
+    pub pos: Option<(f64, f64)>,
 }
 
 static PENDING_FRAMES: OnceLock<Mutex<VecDeque<PendingFrame>>> = OnceLock::new();
@@ -525,6 +535,11 @@ pub enum ModuleCommand {
     /// Request verbose state dump for debugging (ewm-show-state).
     /// Compositor sends the JSON string back via the reply channel.
     GetDebugState(Reply<String>),
+    /// Query the tiled entry id under a floating frame's center (0 = none).
+    EntryUnderFloatingCenter {
+        floating_frame_id: u64,
+        reply: Reply<String>,
+    },
     /// Request activation token creation. Compositor sends the token string back via the reply
     /// channel.
     CreateActivationToken(Reply<String>),
@@ -1203,17 +1218,20 @@ fn prepare_frame_module(output: String) -> Result<()> {
     pending_frames().lock().unwrap().push_back(PendingFrame {
         output: output.clone(),
         floating: false,
+        pos: None,
     });
     tracing::info!("Prepared frame for output {}", output);
     Ok(())
 }
 
-/// Prepare next frame as a floating frame on OUTPUT.
+/// Prepare next frame as a floating frame on OUTPUT, optionally at top-left X/Y.
 #[defun]
-fn prepare_floating_frame_module(output: String) -> Result<()> {
+fn prepare_floating_frame_module(output: String, x: Value<'_>, y: Value<'_>) -> Result<()> {
+    let pos = optional_f64(x)?.zip(optional_f64(y)?);
     pending_frames().lock().unwrap().push_back(PendingFrame {
         output: output.clone(),
         floating: true,
+        pos,
     });
     tracing::info!("Prepared floating frame for output {}", output);
     Ok(())
@@ -1625,6 +1643,23 @@ fn get_debug_state_module() -> Result<Option<String>> {
         Duration::from_millis(200),
         "compositor state dump",
     ))
+}
+
+/// Tiled entry id under a floating frame's center, or nil (module mode).
+#[defun]
+fn entry_under_floating_center_module(floating_frame_id: i64) -> Result<Option<i64>> {
+    let id = floating_frame_id.max(0) as u64;
+    let reply = request_reply(
+        move |reply| ModuleCommand::EntryUnderFloatingCenter {
+            floating_frame_id: id,
+            reply,
+        },
+        Duration::from_millis(200),
+        "entry under floating center",
+    );
+    Ok(reply
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|&n| n > 0))
 }
 
 /// Set clipboard selection from Emacs (module mode).

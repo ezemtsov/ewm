@@ -120,6 +120,40 @@ impl Fixture {
         toplevel
     }
 
+    /// Open a fixed-size toplevel (min == max), exercising the auto-float path.
+    pub fn open_toplevel_fixed_size(
+        &mut self,
+        client: &mut TestClient,
+        title: &str,
+        size: Size<i32, Logical>,
+    ) -> crate::testing::Toplevel {
+        let toplevel = client.create_toplevel(title);
+        toplevel.xdg_toplevel.set_min_size(size.w, size.h);
+        toplevel.xdg_toplevel.set_max_size(size.w, size.h);
+        toplevel.surface.commit();
+        self.roundtrip(client);
+        self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
+        toplevel
+    }
+
+    /// Open a toplevel parented to PARENT (a dialog), exercising auto-float.
+    pub fn open_toplevel_with_parent(
+        &mut self,
+        client: &mut TestClient,
+        title: &str,
+        parent: &crate::testing::Toplevel,
+        size: Size<i32, Logical>,
+    ) -> crate::testing::Toplevel {
+        let toplevel = client.create_toplevel(title);
+        toplevel
+            .xdg_toplevel
+            .set_parent(Some(&parent.xdg_toplevel));
+        toplevel.surface.commit();
+        self.roundtrip(client);
+        self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
+        toplevel
+    }
+
     /// Drive a full xdg popup lifecycle.
     pub fn open_popup(
         &mut self,
