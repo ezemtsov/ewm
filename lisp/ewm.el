@@ -614,17 +614,28 @@ Similar to `exwm-workspace-rename-buffer'."
       (setq name (format "*%s<%d>*" basename (cl-incf counter))))
     (rename-buffer name)))
 
+(defvar ewm--late-frames-replayed nil
+  "Non-nil once frames created after the ready event asked for a focus replay.")
+
 (defun ewm--handle-outputs-complete ()
   "Apply output config, then create any missing per-output frames."
   (ewm--apply-output-config)
   ;; For pgtk, CSS goes in before any frame is created so the GTK widget
   ;; background is set on the first wl_surface commit.
   (ewm--apply-gtk-bg-css)
-  (dolist (output (ewm-get-active-outputs))
-    (unless (ewm--frame-for-output output)
-      (ewm--create-frame-for-output output)))
-  (ewm--enforce-frame-output-parity)
-  (ewm-layout--refresh))
+  (let (created)
+    (dolist (output (ewm-get-active-outputs))
+      (unless (ewm--frame-for-output output)
+        (ewm--create-frame-for-output output)
+        (setq created t)))
+    (ewm--enforce-frame-output-parity)
+    (ewm-layout--refresh)
+    ;; Frames created after the ready event missed the replay `ewm-start-module'
+    ;; asks for, and PGTK drops the enter they get before their first roundtrip.
+    ;; Once only: the replay costs a leave/enter for whatever holds focus.
+    (when (and created ewm--compositor-ready (not ewm--late-frames-replayed))
+      (setq ewm--late-frames-replayed t)
+      (run-with-idle-timer 0 nil #'ewm-notify-initialized-module))))
 
 (defun ewm--handle-environment (event)
   "Handle environment event from compositor.
