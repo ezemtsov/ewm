@@ -8594,6 +8594,10 @@ impl State {
                 // Force-resend keyboard.enter; PGTK silently dropped the
                 // initial one (sent before its first surface roundtrip).
                 info!("Client initialized; replaying keyboard focus");
+                // set_focus() sends nothing when the target is unchanged, so
+                // drop the protocol focus or the replay is a no-op.
+                let keyboard = self.ewm.keyboard.clone();
+                keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
                 self.ewm.keyboard_focus = None;
                 self.sync_keyboard_focus();
             }
