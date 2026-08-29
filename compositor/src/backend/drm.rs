@@ -1200,9 +1200,7 @@ impl DrmBackendState {
         debug!("Resuming DRM session");
         self.cancel_closed_lid_settle_timer();
 
-        if self.libinput.resume().is_err() {
-            warn!("Error resuming libinput");
-        }
+        self.resume_input();
 
         // GPUs may have been added or removed during the pause; reconcile the
         // device map with what udev currently reports.
@@ -1324,6 +1322,13 @@ impl DrmBackendState {
         // even if no output topology changed.
         if !lid_policy_handled {
             ewm.queue_event(crate::event::Event::OutputsComplete);
+        }
+    }
+
+    /// Re-open the input devices after the session became active.
+    pub(crate) fn resume_input(&mut self) {
+        if self.libinput.resume().is_err() {
+            warn!("Error resuming libinput");
         }
     }
 
@@ -3178,6 +3183,11 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     libinput
         .udev_assign_seat(&seat_name)
         .map_err(|()| "Failed to assign seat to libinput")?;
+    if !session_active {
+        // logind revokes the evdev fds of an inactive session, and only a
+        // suspended context re-enumerates them when libinput is resumed.
+        libinput.suspend();
+    }
 
     // Create channel for deferred DRM initialization
     let (init_sender, init_receiver) = channel::<DrmMessage>();
@@ -3339,6 +3349,10 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                     {
                         info!("First session activation - triggering DRM init");
                         state.backend.trigger_init();
+                        // trigger_init() covers DRM only.
+                        if let Some(drm) = state.backend.as_drm_mut() {
+                            drm.resume_input();
+                        }
                     } else {
                         state.backend.resume(&mut state.ewm);
                     }
