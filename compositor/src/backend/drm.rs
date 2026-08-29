@@ -3059,9 +3059,8 @@ fn initialize_drm(
     if !lid_policy_handled {
         state.ewm.queue_event(crate::event::Event::OutputsComplete);
     }
-    state.ewm.queue_event(crate::event::Event::Ready);
     info!(
-        "Sent {} output_detected events, compositor ready",
+        "Sent {} output_detected events",
         state.backend.output_info_count()
     );
 
@@ -3409,7 +3408,9 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                 info!("Received DRM init message");
                 if let Err(e) = initialize_drm(state, &display_handle_for_init, &event_loop_handle)
                 {
-                    warn!("Failed to initialize DRM: {:?}", e);
+                    // Ready is already out, so nothing else reports this.
+                    error!("Failed to initialize DRM: {:?}", e);
+                    state.ewm.stop();
                 }
             }
         })?;
@@ -3529,6 +3530,11 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
             return Err(format!("Failed to initialize DRM: {:?}", e).into());
         }
     }
+
+    // Ready means the socket is up, not that DRM is initialised: an inactive
+    // session defers the init above, and the Lisp side would time out waiting.
+    state.ewm.queue_event(crate::event::Event::Ready);
+    info!("Compositor ready");
 
     let pid = std::process::id();
     info!("Tracking Emacs PID {}", pid);
