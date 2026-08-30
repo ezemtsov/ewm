@@ -11,6 +11,8 @@
 ;;; Code:
 
 (declare-function ewm-im-commit-module "ewm-core")
+(declare-function ewm-text-input-replace-module "ewm-core")
+(declare-function ewm-text-input-surrounding-module "ewm-core")
 (declare-function ewm-text-input-forward-key-module "ewm-core")
 (declare-function ewm-text-input-intercept-module "ewm-core")
 (declare-function ewm-get-focused-id "ewm-core")
@@ -40,6 +42,15 @@ Called when a client's text field loses focus."
 (defun ewm-im-commit (text surface-id)
   "Commit TEXT to the client text field on SURFACE-ID."
   (ewm-im-commit-module text surface-id))
+
+(defun ewm-text-input-replace (text surface-id)
+  "Replace the whole content of the field on SURFACE-ID with TEXT."
+  (ewm-text-input-replace-module text surface-id))
+
+(defun ewm-text-input-surrounding ()
+  "Return the active field's surrounding text, or nil.
+Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
+  (ewm-text-input-surrounding-module))
 
 (defun ewm-text-input--forward-key (event)
   "Hand EVENT's key back to the compositor."
@@ -138,6 +149,111 @@ Commit the IM translation to the client, else forward the key unchanged."
   "Disable text input mode when a client text field is deactivated."
   (setq ewm-text-input--client-active nil)
   (ewm-text-input--refresh-auto-state))
+
+;;; Edit a field's content in an Emacs buffer.
+
+;; Only for clients that report surrounding text, bounded by its 4000-byte window.
+
+(defvar-local ewm-edit--surface-id nil
+  "Surface id of the field this `ewm-edit' buffer replaces.")
+
+(defvar-local ewm-edit--window-configuration nil
+  "Window configuration to restore when the `ewm-edit' buffer closes.")
+
+;; Survive a major-mode change in the edit buffer.
+(put 'ewm-edit--surface-id 'permanent-local t)
+(put 'ewm-edit--window-configuration 'permanent-local t)
+
+(defun ewm-edit--buffer-name (surface-id)
+  "Buffer name for editing the field on SURFACE-ID."
+  (let ((client (gethash surface-id ewm--surfaces)))
+    (format "*ewm-edit %s*"
+            (if (buffer-live-p client) (buffer-name client) surface-id))))
+
+(defvar ewm-edit-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'ewm-edit-finish)
+    (define-key map (kbd "C-c C-k") #'ewm-edit-cancel)
+    map)
+  "Keymap for `ewm-edit-mode'.")
+
+(define-minor-mode ewm-edit-mode
+  "Minor mode for buffers editing a Wayland field via `ewm-edit'."
+  :init-value nil
+  :lighter " ewm-edit")
+(put 'ewm-edit-mode 'permanent-local t)
+
+(defvar ewm-edit--pending (make-hash-table :test 'eql)
+  "Surface id -> edit buffer awaiting a replace ack from the compositor.")
+
+(defun ewm-edit ()
+  "Edit the focused Wayland text field's content in an Emacs buffer."
+  (interactive)
+  (let* ((surrounding (or (ewm-text-input-surrounding)
+                          (user-error "Editing unsupported")))
+         (surface-id (nth 0 surrounding))
+         (text (nth 1 surrounding))
+         (cursor (nth 2 surrounding))
+         (config (current-window-configuration))
+         (buffer (get-buffer-create (ewm-edit--buffer-name surface-id))))
+    ;; A late ack for a prior replace must not kill this fresh buffer.
+    (remhash surface-id ewm-edit--pending)
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert text)
+      (goto-char (or (ignore-errors (byte-to-position (1+ cursor))) (point-max)))
+      (ewm-edit-mode 1)
+      (setq ewm-edit--surface-id surface-id)
+      (setq ewm-edit--window-configuration config)
+      (setq header-line-format
+            (substitute-command-keys
+             "Edit, then \\[ewm-edit-finish] to replace or \\[ewm-edit-cancel] to cancel")))
+    (pop-to-buffer buffer)))
+
+(defun ewm-edit-finish ()
+  "Send this buffer's contents to replace the originating field."
+  (interactive)
+  (unless ewm-edit-mode
+    (user-error "Not in an ewm-edit buffer"))
+  (let ((text (buffer-string))
+        (surface-id ewm-edit--surface-id)
+        (config ewm-edit--window-configuration))
+    (puthash surface-id (current-buffer) ewm-edit--pending)
+    (setq header-line-format "Replacing…")
+    ;; Restoring the config refocuses the field, which drains the queued replace.
+    (when config (set-window-configuration config))
+    (ewm-text-input-replace text surface-id)))
+
+(defun ewm-edit-cancel ()
+  "Abandon the edit, leaving the field untouched."
+  (interactive)
+  (unless ewm-edit-mode
+    (user-error "Not in an ewm-edit buffer"))
+  (let ((config ewm-edit--window-configuration))
+    (when ewm-edit--surface-id
+      (remhash ewm-edit--surface-id ewm-edit--pending))
+    (kill-buffer)
+    (when config (set-window-configuration config))))
+
+(defun ewm--handle-text-input-replaced (event)
+  "Drop the edit buffer whose replace the compositor delivered."
+  (let* ((surface-id (alist-get 'surface_id event))
+         (buffer (gethash surface-id ewm-edit--pending)))
+    (remhash surface-id ewm-edit--pending)
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer))))
+
+(defun ewm--handle-text-input-replace-dropped (event)
+  "Re-surface the edit buffer whose replace the compositor dropped."
+  (let* ((surface-id (alist-get 'surface_id event))
+         (buffer (gethash surface-id ewm-edit--pending)))
+    (remhash surface-id ewm-edit--pending)
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq header-line-format
+              (substitute-command-keys
+               "Replace not applied; edit kept. \\[ewm-edit-finish] retries, \\[ewm-edit-cancel] discards")))
+      (pop-to-buffer buffer))))
 
 (provide 'ewm-text-input)
 ;;; ewm-text-input.el ends here

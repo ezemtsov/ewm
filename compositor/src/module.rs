@@ -183,6 +183,25 @@ pub fn shared_state() -> &'static Mutex<SharedState> {
     SHARED_STATE.get_or_init(|| Mutex::new(SharedState::default()))
 }
 
+#[derive(Clone)]
+pub struct SurroundingSnapshot {
+    pub surface_id: u64,
+    pub text: String,
+    pub cursor: u32,
+    pub anchor: u32,
+}
+
+/// Pulled synchronously by `ewm-edit` instead of pushed per keystroke.
+static TEXT_INPUT_SURROUNDING: OnceLock<Mutex<Option<SurroundingSnapshot>>> = OnceLock::new();
+
+fn text_input_surrounding() -> &'static Mutex<Option<SurroundingSnapshot>> {
+    TEXT_INPUT_SURROUNDING.get_or_init(|| Mutex::new(None))
+}
+
+pub fn set_text_input_surrounding(snapshot: Option<SurroundingSnapshot>) {
+    *text_input_surrounding().lock().unwrap() = snapshot;
+}
+
 /// Pending frame-to-output assignments (synchronous to avoid race with surface creation)
 static PENDING_FRAME_OUTPUTS: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
 
@@ -440,6 +459,10 @@ pub enum ModuleCommand {
         enabled: Option<bool>,
     },
     ImCommit {
+        text: String,
+        surface_id: u64,
+    },
+    TextInputReplace {
         text: String,
         surface_id: u64,
     },
@@ -1360,6 +1383,36 @@ fn parse_translate_target(env: &Env, spec: Value<'_>) -> Result<Option<Translate
 #[defun]
 fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
     push_command(ModuleCommand::ImCommit {
+        text,
+        surface_id: surface_id as u64,
+    });
+    Ok(())
+}
+
+/// Surrounding text of the active field as (SURFACE-ID TEXT CURSOR ANCHOR), or nil.
+#[defun]
+fn text_input_surrounding_module<'a>(env: &'a Env) -> Result<Value<'a>> {
+    // Release the lock before building the list over the FFI.
+    let snapshot = text_input_surrounding().lock().unwrap().clone();
+    match snapshot {
+        Some(s) => env.cons(
+            s.surface_id as i64,
+            env.cons(
+                s.text.as_str(),
+                env.cons(
+                    s.cursor as i64,
+                    env.cons(s.anchor as i64, ().into_lisp(env)?)?,
+                )?,
+            )?,
+        ),
+        None => ().into_lisp(env),
+    }
+}
+
+/// Replace the whole content of the active field on SURFACE-ID with TEXT.
+#[defun]
+fn text_input_replace_module(text: String, surface_id: i64) -> Result<()> {
+    push_command(ModuleCommand::TextInputReplace {
         text,
         surface_id: surface_id as u64,
     });

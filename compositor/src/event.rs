@@ -111,6 +111,10 @@ pub enum Event {
     /// Text input deactivated
     #[serde(rename = "text-input-deactivated")]
     TextInputDeactivated,
+    #[serde(rename = "text-input-replaced")]
+    TextInputReplaced { surface_id: u64 },
+    #[serde(rename = "text-input-replace-dropped")]
+    TextInputReplaceDropped { surface_id: u64 },
     /// Intercepted key; `keycode`/`surface_id` let Lisp forward it back to the client.
     #[serde(rename = "key")]
     Key {

@@ -23,11 +23,19 @@
 (defvar ewm-text-input-tests--commits nil)
 (defvar ewm-text-input-tests--forwards nil)
 (defvar ewm-text-input-tests--intercepts nil)
+(defvar ewm-text-input-tests--replaces nil)
+(defvar ewm-text-input-tests--surrounding nil)
 
 ;; The compositor dynamic module isn't loaded in the test harness; stub
 ;; the module entry points `ewm-text-input' needs.
 (defun ewm-im-commit-module (text surface-id)
   (push (cons surface-id text) ewm-text-input-tests--commits))
+
+(defun ewm-text-input-replace-module (text surface-id)
+  (push (cons surface-id text) ewm-text-input-tests--replaces))
+
+(defun ewm-text-input-surrounding-module ()
+  ewm-text-input-tests--surrounding)
 
 (defun ewm-text-input-forward-key-module (&rest args)
   (push args ewm-text-input-tests--forwards))
@@ -60,12 +68,19 @@
          (ewm-text-input-tests--focused-id nil)
          (ewm-text-input-tests--commits nil)
          (ewm-text-input-tests--forwards nil)
-         (ewm-text-input-tests--intercepts nil))
+         (ewm-text-input-tests--intercepts nil)
+         (ewm-text-input-tests--replaces nil)
+         (ewm-text-input-tests--surrounding nil)
+         (ewm-edit--pending (make-hash-table :test 'eql)))
      (unwind-protect
          (progn
            (ewm-text-input-mode -1)
            ,@body)
-       (ewm-text-input-mode (if old-mode 1 -1)))))
+       (ewm-text-input-mode (if old-mode 1 -1))
+       ;; Sweep edit buffers left awaiting an ack.
+       (dolist (buf (buffer-list))
+         (when (string-prefix-p "*ewm-edit " (buffer-name buf))
+           (kill-buffer buf))))))
 
 (defmacro ewm-text-input-tests--with-buffers (buffers &rest body)
   "Bind BUFFERS to temporary buffers while running BODY."
@@ -191,6 +206,91 @@
         (ewm--handle-text-input-activated))
       (should-not ewm-text-input-mode)
       (should (equal ewm-text-input-tests--intercepts '(nil))))))
+
+(ert-deftest ewm-text-input-tests/ewm-edit-refuses-without-surrounding ()
+  "`ewm-edit' errors cleanly when no field reports surrounding text."
+  (ewm-text-input-tests--with-state
+    (setq ewm-text-input-tests--surrounding nil)
+    (should-error (ewm-edit) :type 'user-error)))
+
+(ert-deftest ewm-text-input-tests/ewm-edit-finish-replaces-edited-text ()
+  "Finishing sends the replace and keeps the buffer until the compositor acks."
+  (ewm-text-input-tests--with-state
+    (cl-letf (((symbol-function 'set-window-configuration) (lambda (&rest _) nil)))
+      (setq ewm-text-input-tests--surrounding '(10 "old" 3 3))
+      (ewm-edit)
+      (with-current-buffer (ewm-edit--buffer-name 10)
+        (should (string= (buffer-string) "old"))
+        (should ewm-edit-mode)
+        (erase-buffer)
+        (insert "new text")
+        (ewm-edit-finish))
+      (should (equal ewm-text-input-tests--replaces '((10 . "new text"))))
+      (should (buffer-live-p (get-buffer (ewm-edit--buffer-name 10))))
+      (ewm--handle-text-input-replaced '((surface_id . 10)))
+      (should-not (get-buffer (ewm-edit--buffer-name 10))))))
+
+(ert-deftest ewm-text-input-tests/ewm-edit-dropped-replace-preserves-buffer ()
+  "A dropped replace re-surfaces the edit buffer instead of losing the edit."
+  (ewm-text-input-tests--with-state
+    (cl-letf (((symbol-function 'set-window-configuration) (lambda (&rest _) nil))
+              ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
+      (setq ewm-text-input-tests--surrounding '(10 "old" 3 3))
+      (ewm-edit)
+      (with-current-buffer (ewm-edit--buffer-name 10)
+        (erase-buffer)
+        (insert "kept")
+        (ewm-edit-finish))
+      (ewm--handle-text-input-replace-dropped '((surface_id . 10)))
+      (let ((buf (get-buffer (ewm-edit--buffer-name 10))))
+        (should (buffer-live-p buf))
+        (should (string= (with-current-buffer buf (buffer-string)) "kept"))))))
+
+(ert-deftest ewm-text-input-tests/ewm-edit-survives-major-mode-change ()
+  "Switching major mode in the edit buffer keeps the edit committable."
+  (ewm-text-input-tests--with-state
+    (cl-letf (((symbol-function 'set-window-configuration) (lambda (&rest _) nil)))
+      (setq ewm-text-input-tests--surrounding '(10 "old" 3 3))
+      (ewm-edit)
+      (with-current-buffer (ewm-edit--buffer-name 10)
+        (text-mode)                      ; triggers kill-all-local-variables
+        (should ewm-edit-mode)           ; permanent-local kept the mode on
+        (should (eq ewm-edit--surface-id 10))
+        (erase-buffer)
+        (insert "changed")
+        (ewm-edit-finish))
+      (should (equal ewm-text-input-tests--replaces '((10 . "changed")))))))
+
+(ert-deftest ewm-text-input-tests/ewm-edit-reinvoke-survives-stale-ack ()
+  "Re-editing a field with a pending replace survives the prior replace's ack."
+  (ewm-text-input-tests--with-state
+    (cl-letf (((symbol-function 'set-window-configuration) (lambda (&rest _) nil)))
+      (setq ewm-text-input-tests--surrounding '(10 "old" 3 3))
+      (ewm-edit)
+      (with-current-buffer (ewm-edit--buffer-name 10)
+        (erase-buffer) (insert "first") (ewm-edit-finish))
+      ;; Re-edit the same field before its ack; the buffer is reused.
+      (ewm-edit)
+      (with-current-buffer (ewm-edit--buffer-name 10)
+        (erase-buffer) (insert "second"))
+      ;; The prior replace's ack must not kill the re-opened edit.
+      (ewm--handle-text-input-replaced '((surface_id . 10)))
+      (let ((buf (get-buffer (ewm-edit--buffer-name 10))))
+        (should (buffer-live-p buf))
+        (should (string= (with-current-buffer buf (buffer-string)) "second"))))))
+
+(ert-deftest ewm-text-input-tests/ewm-edit-cancel-leaves-field ()
+  "Cancelling closes the buffer without replacing the field."
+  (ewm-text-input-tests--with-state
+    (cl-letf (((symbol-function 'set-window-configuration) (lambda (&rest _) nil)))
+      (setq ewm-text-input-tests--surrounding '(10 "old" 3 3))
+      (ewm-edit)
+      (with-current-buffer (ewm-edit--buffer-name 10)
+        (erase-buffer)
+        (insert "discard me")
+        (ewm-edit-cancel))
+      (should-not ewm-text-input-tests--replaces)
+      (should-not (get-buffer (ewm-edit--buffer-name 10))))))
 
 (provide 'ewm-text-input-tests)
 ;;; ewm-text-input-tests.el ends here

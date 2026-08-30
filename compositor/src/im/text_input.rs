@@ -17,6 +17,39 @@ pub enum CommitResult {
     DroppedStale,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct Surrounding {
+    len: u32,
+    sel_start: u32,
+    sel_end: u32,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PendingReplace {
+    surface_id: u64,
+    text: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Replacement {
+    pub before: u32,
+    pub after: u32,
+    pub text: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReplaceResult {
+    Deliver(Replacement),
+    Queued,
+    DroppedStale,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DrainedReplaces {
+    pub deliver: Option<(u64, Replacement)>,
+    pub dropped: Vec<u64>,
+}
+
 /// Surface-aware commit gate for text-input commits produced by Emacs.
 ///
 /// Commits may arrive while a client is cycling text-input disable/enable.
@@ -26,6 +59,8 @@ pub enum CommitResult {
 pub struct TextInputCommitState {
     active: bool,
     pending_commits: Vec<PendingCommit>,
+    surrounding: Option<(u64, Surrounding)>,
+    pending_replace: Vec<PendingReplace>,
 }
 
 impl TextInputCommitState {
@@ -42,7 +77,80 @@ impl TextInputCommitState {
     }
 
     pub fn deactivate(&mut self) -> bool {
+        self.surrounding = None;
         std::mem::take(&mut self.active)
+    }
+
+    pub fn set_surrounding(
+        &mut self,
+        active_surface_id: Option<u64>,
+        text_len: u32,
+        cursor: u32,
+        anchor: u32,
+    ) {
+        self.surrounding = active_surface_id.map(|surface_id| {
+            (
+                surface_id,
+                Surrounding {
+                    len: text_len,
+                    sel_start: cursor.min(anchor).min(text_len),
+                    sel_end: cursor.max(anchor).min(text_len),
+                },
+            )
+        });
+    }
+
+    /// `None` until this surface has reported surrounding text.
+    fn delete_lengths(&self, surface_id: u64) -> Option<(u32, u32)> {
+        match self.surrounding {
+            Some((id, s)) if id == surface_id => Some((s.sel_start, s.len.saturating_sub(s.sel_end))),
+            _ => None,
+        }
+    }
+
+    /// Queued until `target_surface_id` is active with fresh surrounding.
+    pub fn replace(
+        &mut self,
+        active_surface_id: Option<u64>,
+        target_surface_id: u64,
+        text: String,
+    ) -> ReplaceResult {
+        match active_surface_id {
+            Some(active) if active == target_surface_id => {
+                if let Some((before, after)) = self.delete_lengths(active) {
+                    return ReplaceResult::Deliver(Replacement { before, after, text });
+                }
+            }
+            Some(_) => return ReplaceResult::DroppedStale,
+            None => {}
+        }
+        // Not re-active yet, or active without fresh surrounding: queue.
+        self.pending_replace.push(PendingReplace {
+            surface_id: target_surface_id,
+            text,
+        });
+        ReplaceResult::Queued
+    }
+
+    /// Last replace queued for the active surface wins; the rest drop as stale.
+    pub fn drain_pending_replace(&mut self, active_surface_id: Option<u64>) -> DrainedReplaces {
+        let mut out = DrainedReplaces::default();
+        let Some(active) = active_surface_id else {
+            return out;
+        };
+        let Some((before, after)) = self.delete_lengths(active) else {
+            return out;
+        };
+        let mut text = None;
+        for pr in self.pending_replace.drain(..) {
+            if pr.surface_id == active {
+                text = Some(pr.text);
+            } else {
+                out.dropped.push(pr.surface_id);
+            }
+        }
+        out.deliver = text.map(|text| (active, Replacement { before, after, text }));
+        out
     }
 
     pub fn commit(
@@ -121,4 +229,26 @@ pub fn commit_active<D: SeatHandler + 'static>(seat: &Seat<D>, text: String) {
     if delivered {
         text_input.done(false);
     }
+}
+
+pub fn replace_active<D: SeatHandler + 'static>(
+    seat: &Seat<D>,
+    before: u32,
+    after: u32,
+    text: String,
+) -> bool {
+    let text_input = seat.text_input();
+    let mut payload = Some((before, after, text));
+    let mut delivered = false;
+    text_input.with_active_text_input(|ti, _surface| {
+        if let Some((before, after, text)) = payload.take() {
+            ti.delete_surrounding_text(before, after);
+            ti.commit_string(Some(text));
+        }
+        delivered = true;
+    });
+    if delivered {
+        text_input.done(false);
+    }
+    delivered
 }

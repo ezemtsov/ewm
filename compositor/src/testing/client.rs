@@ -60,6 +60,16 @@ pub enum ClientEvent {
         surface: wl_surface::WlSurface,
         output: wl_output::WlOutput,
     },
+    TextInputCommitString {
+        text: Option<String>,
+    },
+    TextInputDeleteSurroundingText {
+        before: u32,
+        after: u32,
+    },
+    TextInputDone {
+        serial: u32,
+    },
 }
 
 pub struct TestClient {
@@ -557,7 +567,34 @@ wayland_client::delegate_noop!(ClientState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
-wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_v3::ZwpTextInputV3);
+
+impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &zwp_text_input_v3::ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_text_input_v3::Event::CommitString { text } => {
+                state.events.push(ClientEvent::TextInputCommitString { text })
+            }
+            zwp_text_input_v3::Event::DeleteSurroundingText {
+                before_length,
+                after_length,
+            } => state.events.push(ClientEvent::TextInputDeleteSurroundingText {
+                before: before_length,
+                after: after_length,
+            }),
+            zwp_text_input_v3::Event::Done { serial } => {
+                state.events.push(ClientEvent::TextInputDone { serial })
+            }
+            _ => {}
+        }
+    }
+}
 wayland_client::delegate_noop!(ClientState: ignore zwp_input_method_manager_v2::ZwpInputMethodManagerV2);
 wayland_client::delegate_noop!(ClientState: ignore zwp_input_method_v2::ZwpInputMethodV2);
 #[cfg(feature = "testing-layer-shell")]

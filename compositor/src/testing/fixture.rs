@@ -304,6 +304,12 @@ impl Fixture {
         self.state.ewm.active_text_input_surface_id()
     }
 
+    pub fn replace_active_text_input(&self, before: u32, after: u32, text: &str) {
+        self.state
+            .ewm
+            .replace_active_text_input(before, after, text.to_string());
+    }
+
     pub fn keyboard_focus_surface_id(&self) -> Option<u64> {
         self.state
             .ewm

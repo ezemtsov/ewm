@@ -5314,6 +5314,16 @@ impl Ewm {
         im::text_input::commit_active(&self.seat, text)
     }
 
+    fn replace_active_text_input(&self, before: u32, after: u32, text: String) -> bool {
+        im::text_input::replace_active(&self.seat, before, after, text)
+    }
+
+    fn deliver_replace_ack(&mut self, surface_id: u64, r: im::text_input::Replacement) {
+        if self.replace_active_text_input(r.before, r.after, r.text) {
+            self.queue_event(Event::TextInputReplaced { surface_id });
+        }
+    }
+
     /// Get surface ID from a WlSurface
     pub fn surface_id(&self, surface: &WlSurface) -> Option<u64> {
         self.id_windows.iter().find_map(|(&id, window)| {
@@ -8366,6 +8376,25 @@ impl State {
                     }
                 }
             }
+            ModuleCommand::TextInputReplace { text, surface_id } => {
+                let active_surface_id = self.ewm.active_text_input_surface_id();
+                match self
+                    .ewm
+                    .im_text_input
+                    .replace(active_surface_id, surface_id, text)
+                {
+                    im::text_input::ReplaceResult::Deliver(r) => {
+                        self.ewm.deliver_replace_ack(surface_id, r);
+                    }
+                    im::text_input::ReplaceResult::Queued => {
+                        debug!("TextInputReplace: queued (surface_id={surface_id})");
+                    }
+                    im::text_input::ReplaceResult::DroppedStale => {
+                        debug!("TextInputReplace: dropped stale replace (surface_id={surface_id})");
+                        self.ewm.queue_event(Event::TextInputReplaceDropped { surface_id });
+                    }
+                }
+            }
             ModuleCommand::TextInputForwardKey {
                 surface_id,
                 keycode,
@@ -8644,6 +8673,34 @@ impl State {
             im::relay::ImEvent::Deactivated => {
                 if self.ewm.im_text_input.deactivate() {
                     self.ewm.queue_event(Event::TextInputDeactivated);
+                }
+                crate::module::set_text_input_surrounding(None);
+            }
+            im::relay::ImEvent::SurroundingText {
+                text,
+                cursor,
+                anchor,
+            } => {
+                let active_surface_id = self.ewm.active_text_input_surface_id();
+                self.ewm.im_text_input.set_surrounding(
+                    active_surface_id,
+                    text.len() as u32,
+                    cursor,
+                    anchor,
+                );
+                // Publish for `ewm-edit` to pull, rather than pushing per keystroke.
+                crate::module::set_text_input_surrounding(active_surface_id.map(|surface_id| {
+                    crate::module::SurroundingSnapshot { surface_id, text, cursor, anchor }
+                }));
+                // A finish queued during the refocus gap now has fresh lengths.
+                let drained = self.ewm.im_text_input.drain_pending_replace(active_surface_id);
+                if let Some((surface_id, r)) = drained.deliver {
+                    debug!("TextInputReplace: draining queued replace (surface_id={surface_id})");
+                    self.ewm.deliver_replace_ack(surface_id, r);
+                }
+                for surface_id in drained.dropped {
+                    debug!("TextInputReplace: dropped stale queued replace (surface_id={surface_id})");
+                    self.ewm.queue_event(Event::TextInputReplaceDropped { surface_id });
                 }
             }
         }

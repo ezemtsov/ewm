@@ -55,6 +55,8 @@
     (define-key map (kbd "s-f") #'ewm-toggle-fullscreen)
     ;; Lock session
     (define-key map (kbd "s-l") #'ewm-lock-session)
+    ;; Edit the focused text field
+    (define-key map (kbd "s-e") #'ewm-edit)
     ;; Surface buffer cycling
     (define-key map (kbd "s-<tab>") #'ewm-next-surface-buffer)
     ;; Emacs sees S-Tab as iso-lefttab; compositor sees Tab+Shift.  Need both.
@@ -92,6 +94,7 @@ Override individual bindings with `use-package':
 (declare-function ewm-launch-app "ewm")
 (declare-function ewm-toggle-fullscreen "ewm")
 (declare-function ewm-lock-session "ewm")
+(declare-function ewm-edit "ewm-text-input")
 (declare-function ewm-frame-new "ewm")
 (declare-function ewm-frame-close "ewm")
 (declare-function ewm-frame-select "ewm")

@@ -22,6 +22,8 @@ use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_v2::Zw
 pub enum ImEvent {
     Activated,
     Deactivated,
+    /// `cursor`/`anchor` are byte offsets into `text`.
+    SurroundingText { text: String, cursor: u32, anchor: u32 },
 }
 
 /// Spawn the relay thread and return the calloop channel carrying its
@@ -127,6 +129,17 @@ impl Dispatch<ZwpInputMethodV2, ()> for RelayState {
             }
             Event::Deactivate => {
                 let _ = state.event_tx.send(ImEvent::Deactivated);
+            }
+            Event::SurroundingText {
+                text,
+                cursor,
+                anchor,
+            } => {
+                let _ = state.event_tx.send(ImEvent::SurroundingText {
+                    text,
+                    cursor,
+                    anchor,
+                });
             }
             Event::Unavailable => tracing::warn!("IM relay: unavailable"),
             _ => {}

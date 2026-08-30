@@ -119,6 +119,9 @@ FORMAT-STRING and ARGS are passed to `format'."
                  (setq quit-flag nil)
                  (ewm--log "Event handler quit while handling %S"
                            (alist-get 'event event)))
+                ;; A user-error is expected feedback, not a handler fault.
+                (user-error
+                 (message "%s" (error-message-string dispatch-err)))
                 (error
                  (message "EWM: event handler error: %s" dispatch-err))))
           (error (message "EWM: event parse error: %s" err)))))))
@@ -372,6 +375,8 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ("ready" (ewm--handle-ready))
       ("text-input-activated" (ewm--handle-text-input-activated))
       ("text-input-deactivated" (ewm--handle-text-input-deactivated))
+      ("text-input-replaced" (ewm--handle-text-input-replaced event))
+      ("text-input-replace-dropped" (ewm--handle-text-input-replace-dropped event))
       ("key" (ewm--handle-key event))
       ("intercepted-command" (ewm--handle-intercepted-command event))
       ("working_area" (ewm--handle-working-area event))
