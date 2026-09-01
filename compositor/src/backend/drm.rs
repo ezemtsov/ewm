@@ -2688,6 +2688,12 @@ impl DrmBackendState {
         let render_node = egl_device.try_get_render_node()?.unwrap_or(node);
         info!("DRM device {:?} uses render node {:?}", node, render_node);
 
+        // A display-only device has no render node, so the startup probe fell
+        // back to the primary node, which cannot render.
+        if self.primary_render_node == Some(node) {
+            self.primary_render_node = Some(render_node);
+        }
+
         let gpu_manager = self
             .gpu_manager
             .as_mut()
