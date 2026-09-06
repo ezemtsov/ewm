@@ -3897,11 +3897,17 @@ impl Ewm {
             IdleAction::DeactivateMonitors => {
                 self.deactivate_monitors();
             }
+            // A second locker would be refused, and spawning it reaps the first.
+            IdleAction::RunCommand(_) if self.lock_client_is_live() => self.deactivate_monitors(),
             IdleAction::RunCommand(cmd) => {
                 match std::process::Command::new("sh").arg("-c").arg(cmd).spawn() {
                     Ok(child) => {
                         info!("Idle command spawned: {}", cmd);
-                        self.idle_timeout.child_process = Some(child);
+                        // Reap the child the lock guard spared.
+                        if let Some(mut previous) = self.idle_timeout.child_process.replace(child) {
+                            let _ = previous.kill();
+                            let _ = previous.wait();
+                        }
                     }
                     Err(err) => {
                         warn!("Failed to spawn idle command: {:?}", err);
@@ -4114,6 +4120,10 @@ impl Ewm {
 
     /// Kill idle child process (e.g., on lid close).
     pub fn kill_idle_child(&mut self) {
+        // Killing the lock client leaves the session blanked for good.
+        if self.lock_client_is_live() {
+            return;
+        }
         if let Some(mut child) = self.idle_timeout.child_process.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -7548,23 +7558,14 @@ impl SessionLockHandler for State {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
-        // Check for dead locker client holding the lock
-        if let LockState::Locked(ref lock) = self.ewm.lock_state {
-            if lock.is_alive() {
-                info!("Session lock request ignored: already locked with active client");
-                return;
-            }
-            // Previous client died, allow new lock
-            info!("Previous lock client dead, allowing new lock");
-        } else if !matches!(self.ewm.lock_state, LockState::Unlocked) {
-            info!("Session lock request ignored: already locking");
+        // Liveness, not the state, decides: a replacement is the only way out
+        // of a lock whose client is gone.
+        if self.ewm.lock_client_is_live() {
+            info!("Session lock request ignored: a live client holds the lock");
             return;
         }
 
         info!("Session lock requested");
-
-        // Wake from idle if locked while idle (need monitors on for lock screen)
-        self.ewm.wake_from_idle();
 
         // Save current focus to restore after unlock
         if self.ewm.focused_surface_id() != 0 {
@@ -7586,6 +7587,10 @@ impl SessionLockHandler for State {
             }
             self.ewm.queue_redraw_all();
         }
+
+        // Monitors on for the lock screen. After the state is set, so the wake
+        // spares the lock client.
+        self.ewm.wake_from_idle();
     }
 
     fn unlock(&mut self) {
@@ -7774,6 +7779,15 @@ impl Ewm {
     /// Check if the session is locked (locking or fully locked)
     pub fn is_locked(&self) -> bool {
         !matches!(self.lock_state, LockState::Unlocked)
+    }
+
+    /// Check whether a live client holds the session lock, or is taking it.
+    pub fn lock_client_is_live(&self) -> bool {
+        match &self.lock_state {
+            LockState::Unlocked => false,
+            LockState::Locking(locker) => locker.ext_session_lock().is_alive(),
+            LockState::Locked(lock) => lock.is_alive(),
+        }
     }
 
     /// Check if all outputs have rendered locked frames and confirm lock if so
