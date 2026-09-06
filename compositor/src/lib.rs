@@ -7212,28 +7212,32 @@ impl XdgShellHandler for State {
 delegate_xdg_shell!(State);
 
 // XDG Decoration
+/// Emacs draws the frames, so a client that asks is told not to decorate.
+fn set_server_side_decoration(toplevel: &ToplevelSurface) {
+    use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+
+    toplevel.with_pending_state(|state| {
+        state.decoration_mode = Some(Mode::ServerSide);
+    });
+    toplevel.send_configure();
+}
+
 impl XdgDecorationHandler for State {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
-
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(Mode::ClientSide);
-        });
-        toplevel.send_configure();
+        set_server_side_decoration(&toplevel);
     }
 
     fn request_mode(
         &mut self,
         toplevel: ToplevelSurface,
-        mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        _mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     ) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(mode);
-        });
-        toplevel.send_configure();
+        set_server_side_decoration(&toplevel);
     }
 
-    fn unset_mode(&mut self, _toplevel: ToplevelSurface) {}
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        set_server_side_decoration(&toplevel);
+    }
 }
 smithay::delegate_xdg_decoration!(State);
 
