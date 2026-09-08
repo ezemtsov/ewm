@@ -193,6 +193,7 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
+use smithay::wayland::xdg_system_bell::{XdgSystemBellHandler, XdgSystemBellState};
 use smithay::{
     delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
     delegate_dmabuf, delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
@@ -200,7 +201,7 @@ use smithay::{
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_tablet_manager,
     delegate_text_input_manager, delegate_viewporter, delegate_virtual_keyboard_manager,
-    delegate_xdg_activation, delegate_xdg_foreign, delegate_xdg_shell,
+    delegate_xdg_activation, delegate_xdg_foreign, delegate_xdg_shell, delegate_xdg_system_bell,
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -977,6 +978,8 @@ pub struct Ewm {
 
     pub xdg_foreign_state: XdgForeignState,
 
+    pub xdg_system_bell_state: XdgSystemBellState,
+
     // Foreign toplevel state (exposes windows to external tools)
     pub foreign_toplevel_state: ForeignToplevelManagerState,
 
@@ -1376,6 +1379,8 @@ impl Ewm {
 
         let xdg_foreign_state = XdgForeignState::new::<State>(&display_handle);
 
+        let xdg_system_bell_state = XdgSystemBellState::new::<State>(&display_handle);
+
         // Initialize foreign toplevel management (exposes windows to external tools)
         let foreign_toplevel_state =
             ForeignToplevelManagerState::new::<State, _>(&display_handle, |_| true);
@@ -1512,6 +1517,7 @@ impl Ewm {
             working_areas: HashMap::new(),
             activation_state,
             xdg_foreign_state,
+            xdg_system_bell_state,
             foreign_toplevel_state,
             workspace_state,
             output_management_state,
@@ -8233,6 +8239,18 @@ impl XdgForeignHandler for State {
 }
 delegate_xdg_foreign!(State);
 
+impl XdgSystemBellHandler for State {
+    fn ring(&mut self, surface: Option<WlSurface>) {
+        let id = surface.and_then(|surface| self.ewm.surface_id(&surface));
+        // Emacs rang this itself; echoing it back would loop.
+        if id.is_some_and(|id| self.ewm.is_emacs_frame(id)) {
+            return;
+        }
+        self.ewm.queue_event(Event::Bell { id });
+    }
+}
+delegate_xdg_system_bell!(State);
+
 // Foreign toplevel management protocol (exposes windows to external tools)
 impl ForeignToplevelHandler for State {
     fn foreign_toplevel_manager_state(&mut self) -> &mut ForeignToplevelManagerState {
@@ -10177,6 +10195,27 @@ mod tests {
         assert!(matches!(&events[0], Event::Minimize { id } if *id == surface_id));
         assert!(matches!(&events[1], Event::MaximizeRequest { id } if *id == surface_id));
         assert!(matches!(&events[2], Event::UnmaximizeRequest { id } if *id == surface_id));
+    }
+
+    #[test]
+    fn system_bell_forwards_toplevel_id() {
+        let mut fix = testing::Fixture::new().unwrap();
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
+        fix.add_output(HEAD_A, 1600, 900);
+
+        let toplevel = fix.open_toplevel(&mut client, "bell", Size::from((400, 400)));
+        let surface_id = fix.find_surface_id(&client, &toplevel.surface).unwrap();
+
+        fix.enable_event_capture();
+        client.ring_bell(Some(&toplevel.surface));
+        client.ring_bell(None);
+        fix.roundtrip(&mut client);
+
+        let events = fix.drain_events();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Bell { id: Some(id) } if *id == surface_id));
+        assert!(matches!(&events[1], Event::Bell { id: None }));
     }
 
     #[test]

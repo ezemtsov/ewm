@@ -114,5 +114,19 @@
         (setq ewm--module-mode nil)
         (setq ewm--compositor-ready nil)))))
 
+(ert-deftest ewm-event-tests/bell-resolves-surface-buffer ()
+  "A bell passes its live surface buffer to `ewm-bell-function', else nil."
+  (let ((ewm--surfaces (make-hash-table :test 'eql))
+        rung)
+    (with-temp-buffer
+      (puthash 10 (current-buffer) ewm--surfaces)
+      (let ((ewm-bell-function (lambda (source) (push source rung))))
+        (ewm--handle-event '((event . "bell") (id . 10)))
+        (ewm--handle-event '((event . "bell") (id . 11)))
+        (ewm--handle-event '((event . "bell"))))
+      (let ((ewm-bell-function nil))
+        (ewm--handle-event '((event . "bell") (id . 10))))
+      (should (equal rung (list nil nil (current-buffer)))))))
+
 (provide 'ewm-event-tests)
 ;;; ewm-event-tests.el ends here

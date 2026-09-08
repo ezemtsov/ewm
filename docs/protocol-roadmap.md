@@ -16,6 +16,7 @@ This document outlines Wayland protocols to implement for broader application co
 | `linux-dmabuf` | Efficient buffer sharing |
 | `xdg-output` | Multi-monitor info |
 | `xdg-activation-v1` | Focus requests from apps |
+| `xdg-system-bell-v1` | System bell, forwarded to Emacs via `ewm-bell-function` |
 | `wlr-foreign-toplevel-manager-v1` | Allows external tools to manage windows |
 | `ext-foreign-toplevel-list-v1` | Allows external tools to list windows |
 | `ext-session-lock-v1` | Secure screen locking (swaylock) |
@@ -168,6 +169,7 @@ session, position toplevel at pointer during drag, handle drop/cancel
 | idle-notify | `swayidle` | Done |
 | session-lock | `swaylock` | Done |
 | activation | Launch apps from terminal | Done |
+| system-bell | `printf '\a'` in foot or kitty | Done |
 | data-control | `wl-copy`, `wl-paste`, `cliphist` | Done |
 | workspace | waybar, DankMaterialShell | Done |
 | output-management | `wlr-randr`, DankMaterialShell | Done |

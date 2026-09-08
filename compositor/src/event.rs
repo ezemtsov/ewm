@@ -178,6 +178,12 @@ pub enum Event {
     /// Surface requests to leave maximized mode
     #[serde(rename = "unmaximize_request")]
     UnmaximizeRequest { id: u64 },
+    /// Client rang the system bell.
+    #[serde(rename = "bell")]
+    Bell {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
+    },
     /// Idle state changed (native idle timeout)
     #[serde(rename = "idle_state_changed")]
     IdleStateChanged { idle: bool },

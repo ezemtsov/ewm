@@ -30,7 +30,7 @@ Launch apps with `s-d`. See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) f
 - Wayland applications as regular Emacs buffers
 - Emacs-native window management, focus, keybindings, and fullscreen
 - Multi-monitor DRM backend with hotplug, output configuration, and fractional scaling
-- Layer-shell, workspace, screen lock, idle, activation, clipboard, and drag-and-drop protocol support
+- Layer-shell, workspace, screen lock, idle, activation, system bell, clipboard, and drag-and-drop protocol support
 - Screen sharing through xdg-desktop-portal and PipeWire
 - Input methods and keyboard configuration integrated with Emacs
 - External app launching through XDG desktop entries

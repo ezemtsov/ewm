@@ -398,6 +398,7 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ("activate_workspace" (ewm--handle-activate-workspace event))
       ("maximize_request" (ewm--handle-maximize-request event))
       ("unmaximize_request" (ewm--handle-unmaximize-request event))
+      ("bell" (ewm--handle-bell event))
       ("idle_state_changed" (ewm--handle-idle-state-changed event))
       ("environment" (ewm--handle-environment event))
       ("frame_shown" (ewm--handle-frame-shown event))
@@ -544,6 +545,24 @@ No-op: tiling layout already manages window sizes."
   "Handle unmaximize request EVENT.
 No-op: tiling layout has no maximized state to restore."
   nil)
+
+(defcustom ewm-bell-function #'ewm-bell-ding
+  "Function called when a client rings the system bell.
+It receives the surface buffer, or nil when the bell names no known surface.
+The default rings the Emacs bell, so `visible-bell' and `ring-bell-function'
+apply; nil ignores the bell."
+  :type '(choice (const :tag "Ignore" nil) function)
+  :group 'ewm)
+
+(defun ewm-bell-ding (_source)
+  "Ring the Emacs bell."
+  (ding t))
+
+(defun ewm--handle-bell (event)
+  "Call `ewm-bell-function' with the surface buffer named by EVENT, if any."
+  (when ewm-bell-function
+    (let ((buf (gethash (alist-get 'id event) ewm--surfaces)))
+      (funcall ewm-bell-function (and (buffer-live-p buf) buf)))))
 
 ;;; Shell CWD tracking
 

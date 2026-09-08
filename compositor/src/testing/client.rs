@@ -19,6 +19,7 @@ use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, 
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
+use wayland_protocols::xdg::system_bell::v1::client::xdg_system_bell_v1;
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
@@ -89,6 +90,7 @@ pub struct ClientState {
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub text_input_manager: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3>,
     pub input_method_manager: Option<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>,
+    pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
     #[cfg(feature = "testing-layer-shell")]
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
@@ -235,6 +237,14 @@ impl TestClient {
             .get_input_method(&seat, &qh, ())
     }
 
+    pub fn ring_bell(&self, surface: Option<&wl_surface::WlSurface>) {
+        self.state
+            .system_bell
+            .as_ref()
+            .expect("xdg_system_bell_v1 not bound; roundtrip the registry first")
+            .ring(surface);
+    }
+
     /// Caller must roundtrip before attaching the first buffer.
     #[cfg(feature = "testing-layer-shell")]
     pub fn create_layer_surface(
@@ -346,6 +356,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             == zwp_input_method_manager_v2::ZwpInputMethodManagerV2::interface().name
         {
             state.input_method_manager = Some(registry.bind(name, version, qh, ()));
+        } else if interface == xdg_system_bell_v1::XdgSystemBellV1::interface().name {
+            state.system_bell = Some(registry.bind(name, version, qh, ()));
         }
         #[cfg(feature = "testing-layer-shell")]
         if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
@@ -567,6 +579,7 @@ wayland_client::delegate_noop!(ClientState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
+wayland_client::delegate_noop!(ClientState: ignore xdg_system_bell_v1::XdgSystemBellV1);
 
 impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientState {
     fn event(
