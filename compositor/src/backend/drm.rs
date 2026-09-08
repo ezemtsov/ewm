@@ -37,6 +37,7 @@ use tracing::{debug, error, info, trace, warn};
 
 #[cfg(feature = "screencast")]
 use smithay::utils::Size;
+use smithay::wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait};
 use smithay::{
     backend::{
         allocator::{
@@ -3436,6 +3437,15 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
         move |mut event, _, state| match event {
             InputEvent::DeviceAdded { ref mut device } => {
                 apply_libinput_settings(device, &state.ewm.input_configs);
+                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletTool) {
+                    if device.size().is_none() {
+                        warn!("tablet tool device has no size");
+                    }
+
+                    let tablet_seat = state.ewm.seat.tablet_seat();
+                    let desc = TabletDescriptor::from(&*device);
+                    tablet_seat.add_tablet::<State>(&state.ewm.display_handle, &desc);
+                }
                 if device.has_capability(smithay::reexports::input::DeviceCapability::Touch)
                     && state.ewm.touch.is_none()
                 {
@@ -3494,6 +3504,18 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
             InputEvent::TouchFrame { event } => {
                 crate::input::handle_touch_frame::<LibinputInputBackend>(state, event);
             }
+            InputEvent::TabletToolAxis { event } => {
+                crate::input::handle_tablet_tool_axis::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::TabletToolTip { event } => {
+                crate::input::handle_tablet_tool_tip::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::TabletToolProximity { event } => {
+                crate::input::handle_tablet_tool_proximity::<LibinputInputBackend>(state, event);
+            }
+            InputEvent::TabletToolButton { event } => {
+                crate::input::handle_tablet_tool_button::<LibinputInputBackend>(state, event);
+            }
             InputEvent::SwitchToggle { event } => {
                 use smithay::backend::input::{
                     Switch, SwitchState, SwitchToggleEvent as SwitchEvt,
@@ -3506,6 +3528,14 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                 }
             }
             InputEvent::DeviceRemoved { ref device } => {
+                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletTool) {
+                    let tablet_seat = state.ewm.seat.tablet_seat();
+                    let desc = TabletDescriptor::from(device);
+                    tablet_seat.remove_tablet(&desc);
+                    if tablet_seat.count_tablets() == 0 {
+                        tablet_seat.clear_tools();
+                    }
+                }
                 let was_touch =
                     device.has_capability(smithay::reexports::input::DeviceCapability::Touch);
                 if let Backend::Drm(drm) = &mut state.backend {

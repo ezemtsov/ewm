@@ -496,7 +496,7 @@ impl Ewm {
         let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
         let mut cursor_location = Point::<i32, Physical>::from((0, 0));
 
-        let (px, py) = self.pointer_location();
+        let (px, py) = self.cursor_location();
         let rect = geometry.entry_rect;
         if px >= rect.loc.x as f64
             && py >= rect.loc.y as f64
@@ -681,7 +681,7 @@ impl Ewm {
             });
 
             let cursor_location = output_cast_cursor_location(
-                self.pointer_location(),
+                self.cursor_location(),
                 output_pos,
                 output_size,
                 output_scale,

@@ -185,7 +185,7 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
-use smithay::wayland::tablet_manager::TabletSeatHandler;
+use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatHandler};
 use smithay::wayland::text_input::TextInputManagerState;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
@@ -198,9 +198,9 @@ use smithay::{
     delegate_dmabuf, delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
     delegate_input_method_manager, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
-    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_activation,
-    delegate_xdg_foreign, delegate_xdg_shell,
+    delegate_seat, delegate_session_lock, delegate_shm, delegate_tablet_manager,
+    delegate_text_input_manager, delegate_viewporter, delegate_virtual_keyboard_manager,
+    delegate_xdg_activation, delegate_xdg_foreign, delegate_xdg_shell,
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -845,6 +845,7 @@ pub struct Ewm {
     pub keyboard: KeyboardHandle<State>,
     /// Cached touch handle, present only while a touch-capable device exists.
     pub touch: Option<TouchHandle<State>>,
+    pub tablet_cursor_location: Option<Point<f64, Logical>>,
 
     // Surface tracking
     next_surface_id: u64,
@@ -896,7 +897,7 @@ pub struct Ewm {
     // Input
     /// Surface under the pointer + its global origin, for constraint checks.
     pub pointer_focus: Option<SurfaceHit>,
-    /// Last output the pointer was on, for per-output cursor redraw.
+    /// Last output the cursor was drawn on, for per-output cursor redraw.
     pointer_output: Option<Output>,
     pub focused_frame_id: u64,
     pub focused_entry_id: Option<LayoutEntryId>,
@@ -1039,6 +1040,10 @@ pub struct Ewm {
     // Cursor shape protocol (wp-cursor-shape-v1)
     #[allow(dead_code)]
     pub cursor_shape_manager_state: CursorShapeManagerState,
+
+    // Tablet protocol (zwp-tablet-v2)
+    #[allow(dead_code)]
+    pub tablet_manager_state: TabletManagerState,
 
     // Screencasting state: PipeWire connection, active casts,
     // window->output cache.
@@ -1422,6 +1427,9 @@ impl Ewm {
         // Initialize cursor shape protocol (wp-cursor-shape-v1)
         let cursor_shape_manager_state = CursorShapeManagerState::new::<State>(&display_handle);
 
+        // Initialize tablet protocol (zwp-tablet-v2)
+        let tablet_manager_state = TabletManagerState::new::<State>(&display_handle);
+
         let (worker_event_tx, worker_event_rx) =
             smithay::reexports::calloop::channel::channel::<Event>();
         loop_handle_clone
@@ -1450,6 +1458,7 @@ impl Ewm {
             pointer,
             keyboard,
             touch: None,
+            tablet_cursor_location: None,
             next_surface_id: 1,
             window_ids: HashMap::new(),
             id_windows: HashMap::new(),
@@ -1523,6 +1532,7 @@ impl Ewm {
             relative_pointer_state,
             pointer_constraints_state,
             cursor_shape_manager_state,
+            tablet_manager_state,
             #[cfg(feature = "screencast")]
             casting: screencasting::Screencasting::new(&loop_handle_clone),
             #[cfg(feature = "screencast")]
@@ -4225,7 +4235,7 @@ impl Ewm {
     }
 
     fn pointer_is_on_output(&self, output: &Output) -> bool {
-        let pos: Point<f64, Logical> = self.pointer_location().into();
+        let pos: Point<f64, Logical> = self.cursor_location().into();
         self.space
             .output_under(pos)
             .any(|candidate| candidate == output)
@@ -4239,13 +4249,28 @@ impl Ewm {
         (pos.x, pos.y)
     }
 
+    /// Where the cursor is drawn: the tablet tool while one is in use, else the pointer.
+    pub fn cursor_location(&self) -> (f64, f64) {
+        match self.tablet_cursor_location {
+            Some(pos) => (pos.x, pos.y),
+            None => self.pointer_location(),
+        }
+    }
+
+    /// Hand the drawn cursor back to the pointer after real pointer input.
+    pub fn clear_tablet_cursor(&mut self) {
+        if self.tablet_cursor_location.take().is_some() {
+            self.queue_redraw_for_pointer();
+        }
+    }
+
     /// Queue a redraw for outputs overlapping the cursor.
     /// Redraws the output the pointer is currently on, plus the previous
     /// output if the pointer crossed a boundary.
     pub fn queue_redraw_for_pointer(&mut self) {
         self.refresh_cursor_outputs();
 
-        let pos = smithay::utils::Point::from(self.pointer_location());
+        let pos = smithay::utils::Point::from(self.cursor_location());
         let current = self.output_at(pos).cloned();
         let prev = self.pointer_output.take();
 
@@ -4271,7 +4296,7 @@ impl Ewm {
 
         tracy_span!("Ewm::refresh_cursor_outputs");
 
-        let pointer_pos: Point<f64, Logical> = self.pointer_location().into();
+        let pointer_pos: Point<f64, Logical> = self.cursor_location().into();
 
         match self.cursor_manager.cursor_image() {
             CursorImageStatus::Surface(surface) => {
@@ -4593,6 +4618,11 @@ impl Ewm {
         }
 
         if !self.cursor_hide.hide_when_typing {
+            return;
+        }
+
+        // A pen in use moves constantly; hiding would just flicker.
+        if self.tablet_cursor_location.is_some() {
             return;
         }
 
@@ -5983,7 +6013,7 @@ impl Ewm {
             .or_else(|| self.first_output())
     }
 
-    fn first_output(&self) -> Option<&Output> {
+    pub(crate) fn first_output(&self) -> Option<&Output> {
         self.sorted_outputs.first()
     }
 
@@ -6217,7 +6247,7 @@ impl Ewm {
     }
 
     /// Get the output where the focused frame is located
-    fn get_focused_output(&self) -> Option<String> {
+    pub(crate) fn get_focused_output(&self) -> Option<String> {
         if self.focused_frame_id == 0 {
             return None;
         }
@@ -6228,7 +6258,7 @@ impl Ewm {
     /// Get the output under the cursor position
     fn output_under_cursor(&self) -> Option<String> {
         use smithay::utils::Point;
-        let (px, py) = self.pointer_location();
+        let (px, py) = self.cursor_location();
         let cursor_point = Point::from((px as i32, py as i32));
 
         for output in &self.sorted_outputs {
@@ -6776,8 +6806,8 @@ impl Ewm {
                     .map(move |f| (f.surface_id, out.to_string()))
             }))
             .collect();
-        let pointer_pos: Point<f64, Logical> = self.pointer_location().into();
-        let pointer_output = self.output_at(pointer_pos);
+        let cursor_pos: Point<f64, Logical> = self.cursor_location().into();
+        let pointer_output = self.output_at(cursor_pos);
         let cursor_scale = pointer_output
             .map(|output| output.current_scale().integer_scale())
             .unwrap_or(1);
@@ -6809,6 +6839,7 @@ impl Ewm {
             "working_areas": self.get_working_areas_info(),
             "layer_surfaces": self.get_layer_surfaces_info(),
             "pointer_location": self.pointer_location(),
+            "tablet_cursor_location": self.tablet_cursor_location.map(|p| (p.x, p.y)),
             "cursor": {
                 "output": cursor_output,
                 "image": self.cursor_manager.debug_state(cursor_scale),
@@ -7735,6 +7766,7 @@ impl TabletSeatHandler for State {
         self.ewm.queue_redraw_all();
     }
 }
+delegate_tablet_manager!(State);
 
 // Data device / selection
 impl SelectionHandler for State {
@@ -8647,10 +8679,13 @@ impl State {
     /// Does NOT activate pointer constraints (programmatic warps from Emacs
     /// during layout changes should not trap the pointer).
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
-        let pos = Point::from((x, y));
-        if !self.ewm.pointer.is_grabbed() {
-            self.ewm.pointer_focus = self.ewm.surface_under_point(pos);
+        let pointer = self.ewm.pointer.clone();
+        // A grab or constraint owns the pointer; a warp would teleport it.
+        if pointer.is_grabbed() || input::active_constraint_for_focus(self, &pointer).is_some() {
+            return;
         }
+        let pos = Point::from((x, y));
+        self.ewm.pointer_focus = self.ewm.pointer_target_at(pos);
         let under = self.ewm.pointer_focus.clone();
         self.send_pointer_motion(pos, under);
         self.ewm.queue_redraw_for_pointer();
@@ -9090,7 +9125,10 @@ impl State {
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {
-                self.warp_pointer(x, y);
+                // Don't warp while a pen is in use.
+                if self.ewm.tablet_cursor_location.is_none() {
+                    self.warp_pointer(x, y);
+                }
             }
             ModuleCommand::ConfigureOutput {
                 name,

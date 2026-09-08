@@ -599,7 +599,8 @@ pub fn release_all_keys(state: &mut State) {
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, PointerAxisEvent,
-    PointerButtonEvent, PointerMotionEvent,
+    PointerButtonEvent, PointerMotionEvent, ProximityState, TabletToolButtonEvent, TabletToolEvent,
+    TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState,
 };
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus as PointerFocus,
@@ -608,11 +609,13 @@ use smithay::input::pointer::{
 use smithay::input::touch::{
     DownEvent as TouchDown, MotionEvent as TouchMotion, UpEvent as TouchUp,
 };
+use smithay::output::Output;
 // Libinput device configuration
 use smithay::reexports::input as libinput;
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Rectangle, Transform};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
+use smithay::wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait};
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -689,6 +692,7 @@ pub enum DeviceType {
     Trackball,
     Trackpoint,
     Keyboard,
+    Tablet,
 }
 
 impl DeviceType {
@@ -700,12 +704,13 @@ impl DeviceType {
             "trackball" => Some(DeviceType::Trackball),
             "trackpoint" => Some(DeviceType::Trackpoint),
             "keyboard" => Some(DeviceType::Keyboard),
+            "tablet" => Some(DeviceType::Tablet),
             _ => None,
         }
     }
 }
 
-pub const DEVICE_TYPE_VALUES: &str = "touchpad, mouse, trackball, trackpoint, keyboard";
+pub const DEVICE_TYPE_VALUES: &str = "touchpad, mouse, trackball, trackpoint, keyboard, tablet";
 pub const ACCEL_PROFILE_VALUES: &str = "flat, adaptive";
 pub const CLICK_METHOD_VALUES: &str = "button-areas, clickfinger";
 pub const SCROLL_METHOD_VALUES: &str = "no-scroll, two-finger, edge, on-button-down";
@@ -740,6 +745,10 @@ pub struct InputConfigEntry {
     pub xkb_layouts: Option<String>,
     pub xkb_variants: Option<String>,
     pub xkb_options: Option<String>,
+    // Tablet-specific settings
+    pub calibration_matrix: Option<[f32; 6]>,
+    pub map_to_output: Option<String>,
+    pub map_to_focused_output: Option<bool>,
 }
 
 pub fn effective_keyboard_repeat(configs: &[InputConfigEntry]) -> (i32, i32) {
@@ -760,7 +769,12 @@ pub fn effective_keyboard_repeat(configs: &[InputConfigEntry]) -> (i32, i32) {
 /// - Touchpad: `config_tap_finger_count() > 0`
 /// - Trackball/trackpoint: udev properties `ID_INPUT_TRACKBALL` / `ID_INPUT_POINTINGSTICK`
 /// - Mouse: has Pointer capability and is not touchpad/trackball/trackpoint
+/// - Tablet: has TabletTool capability
 fn detect_device_type(device: &libinput::Device) -> Option<DeviceType> {
+    if device.has_capability(libinput::DeviceCapability::TabletTool) {
+        return Some(DeviceType::Tablet);
+    }
+
     if device.config_tap_finger_count() > 0 {
         return Some(DeviceType::Touchpad);
     }
@@ -806,6 +820,21 @@ macro_rules! resolve_opt {
     };
 }
 
+/// The device-specific and type-default config entries for a device.
+fn lookup_configs<'a>(
+    configs: &'a [InputConfigEntry],
+    device_name: &str,
+    device_type: DeviceType,
+) -> (Option<&'a InputConfigEntry>, Option<&'a InputConfigEntry>) {
+    let device_cfg = configs
+        .iter()
+        .find(|c| c.device.as_deref() == Some(device_name));
+    let type_cfg = configs
+        .iter()
+        .find(|c| c.device.is_none() && c.device_type == Some(device_type));
+    (device_cfg, type_cfg)
+}
+
 /// Apply libinput settings to a device using 3-level cascade:
 /// device-specific config -> type-default config -> hardware default.
 pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputConfigEntry]) {
@@ -815,14 +844,27 @@ pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputCo
     };
 
     let device_name = device.name().into_owned();
-    let device_cfg = configs
-        .iter()
-        .find(|c| c.device.as_deref() == Some(device_name.as_ref()));
-    let type_cfg = configs
-        .iter()
-        .find(|c| c.device.is_none() && c.device_type == Some(detected_type));
+    let (device_cfg, type_cfg) = lookup_configs(configs, &device_name, detected_type);
 
     tracing::debug!("Configuring {:?}: {}", detected_type, device_name);
+
+    if device.config_calibration_has_matrix() {
+        #[rustfmt::skip]
+        const IDENTITY_MATRIX: [f32; 6] = [
+            1., 0., 0.,
+            0., 1., 0.,
+        ];
+
+        let _ = device.config_calibration_set_matrix(
+            resolve_opt!(
+                device_cfg,
+                type_cfg,
+                calibration_matrix,
+                device.config_calibration_default_matrix()
+            )
+            .unwrap_or(IDENTITY_MATRIX),
+        );
+    }
 
     // Settings common to all pointer devices
     let _ = device.config_scroll_set_natural_scroll_enabled(resolve!(
@@ -955,6 +997,7 @@ mod tests {
             Some(DeviceType::Trackpoint)
         );
         assert_eq!(DeviceType::parse("keyboard"), Some(DeviceType::Keyboard));
+        assert_eq!(DeviceType::parse("tablet"), Some(DeviceType::Tablet));
 
         assert_eq!(parse_accel_profile("flat"), Some(AccelProfile::Flat));
         assert_eq!(
@@ -997,7 +1040,7 @@ mod tests {
 
     #[test]
     fn input_config_enums_reject_unknown_values() {
-        assert_eq!(DeviceType::parse("tablet"), None);
+        assert_eq!(DeviceType::parse("stylus"), None);
         assert_eq!(parse_accel_profile("linear"), None);
         assert_eq!(parse_click_method("areas"), None);
         assert_eq!(parse_scroll_method("wheel"), None);
@@ -1044,7 +1087,7 @@ mod tests {
 }
 
 /// Result of checking for an active pointer constraint.
-enum ActiveConstraint {
+pub(crate) enum ActiveConstraint {
     /// Pointer is locked in place, no position change allowed.
     Locked,
     /// Pointer is confined to a surface, optionally within a region.
@@ -1076,7 +1119,7 @@ fn active_constraint(
     })
 }
 
-fn active_constraint_for_focus(
+pub(crate) fn active_constraint_for_focus(
     state: &State,
     pointer: &smithay::input::pointer::PointerHandle<State>,
 ) -> Option<(SurfaceHit, ActiveConstraint)> {
@@ -1115,6 +1158,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
     event: B::PointerMotionEvent,
 ) -> bool {
     tracy_span!("handle_pointer_motion");
+    state.ewm.clear_tablet_cursor();
     let (current_x, current_y) = state.ewm.pointer_location();
     let delta = event.delta();
 
@@ -1216,6 +1260,7 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     event: B::PointerMotionAbsoluteEvent,
 ) -> bool {
     tracy_span!("handle_pointer_motion_absolute");
+    state.ewm.clear_tablet_cursor();
     let output_size = state.ewm.output_size;
     let pos = event.position_transformed(output_size);
 
@@ -1269,9 +1314,12 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
 }
 
 fn focus_pointer_target(state: &mut State, source: &str) {
-    let (px, py) = state.ewm.pointer_location();
-    let pos = (px, py).into();
+    let pos = state.ewm.pointer_location().into();
+    focus_target_at(state, pos, source);
+}
 
+/// Click-to-focus at `pos`: layer surfaces get on-demand focus, else the frame under.
+fn focus_target_at(state: &mut State, pos: Point<f64, Logical>, source: &str) {
     let layer_under = state.ewm.layer_under_point(pos);
     let on_layer = layer_under.is_some();
     state.ewm.focus_layer_surface_if_on_demand(layer_under);
@@ -1287,7 +1335,10 @@ fn focus_pointer_target(state: &mut State, source: &str) {
         let (x, y) = state
             .ewm
             .pointer_target_at(pos)
-            .map(|(_, origin)| (Some(px - origin.x), Some(py - origin.y)))
+            .map(|(_, origin)| {
+                let d = pos - origin;
+                (Some(d.x), Some(d.y))
+            })
             .unwrap_or((None, None));
         state.ewm.queue_event(crate::Event::Focus {
             focus_id,
@@ -1380,6 +1431,7 @@ pub(crate) fn handle_pointer_button_state(
     button_code: u32,
     time_msec: u32,
 ) {
+    state.ewm.clear_tablet_cursor();
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
 
@@ -1571,6 +1623,7 @@ pub fn handle_gesture_swipe_end<B: InputBackend>(
 /// Handle pointer axis (scroll wheel, touchpad scroll)
 pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::PointerAxisEvent) {
     tracy_span!("handle_pointer_axis");
+    state.ewm.clear_tablet_cursor();
     let pointer = state.ewm.pointer.clone();
 
     // When locked, skip scroll-to-focus
@@ -1726,4 +1779,210 @@ pub fn handle_touch_frame<B: InputBackend>(state: &mut State, _event: B::TouchFr
         return;
     };
     touch.frame(state);
+}
+
+// Tablet event handling
+
+/// The output a tablet maps onto, resolved through the input config cascade.
+fn output_for_tablet(state: &State, device: &libinput::Device) -> Option<Output> {
+    let (device_cfg, type_cfg) =
+        lookup_configs(&state.ewm.input_configs, &device.name(), DeviceType::Tablet);
+
+    if resolve!(device_cfg, type_cfg, map_to_focused_output, false) {
+        let name = state.ewm.active_output()?;
+        state.ewm.find_mapped_output(&name)
+    } else {
+        let map_to_output = device_cfg
+            .and_then(|c| c.map_to_output.as_deref())
+            .or_else(|| type_cfg.and_then(|c| c.map_to_output.as_deref()));
+        map_to_output.and_then(|name| state.ewm.find_mapped_output(name))
+    }
+}
+
+/// Tablet event position in global space: output mapping, aspect correction, clamping.
+fn compute_tablet_position<B: InputBackend<Device = libinput::Device>>(
+    state: &State,
+    event: &(impl Event<B> + TabletToolEvent<B>),
+) -> Option<Point<f64, Logical>> {
+    let device = event.device();
+    let mapped = output_for_tablet(state, &device);
+    let (target_geo, transform) = match &mapped {
+        Some(output) => (
+            state.ewm.space.output_geometry(output)?,
+            output.current_transform(),
+        ),
+        // Do not keep ratio for the unified mode as this is what OpenTabletDriver expects.
+        None => (
+            Rectangle::from_size(state.ewm.output_size),
+            Transform::Normal,
+        ),
+    };
+
+    // FIXME: the 1 px margin should come from the output under the clamped position.
+    let scale_output = mapped.as_ref().or_else(|| state.ewm.first_output())?;
+    let px = 1. / scale_output.current_scale().fractional_scale();
+
+    let size = transform.invert().transform_size(target_geo.size);
+    let mut pos = transform.transform_point_in(event.position_transformed(size), &size.to_f64());
+
+    if mapped.is_some() {
+        if let Some(tablet_ratio) = device.size().map(|(w, h)| w / h) {
+            // This code does the same thing as mutter with "keep aspect ratio" enabled.
+            let ratio = tablet_ratio / (size.w as f64 / size.h as f64);
+            if ratio > 1. {
+                pos.x *= ratio;
+            } else {
+                pos.y /= ratio;
+            }
+        }
+    }
+
+    pos.x = pos.x.clamp(0.0, (target_geo.size.w as f64 - px).max(0.0));
+    pos.y = pos.y.clamp(0.0, (target_geo.size.h as f64 - px).max(0.0));
+    Some(pos + target_geo.loc.to_f64())
+}
+
+pub fn handle_tablet_tool_axis<B: InputBackend<Device = libinput::Device>>(
+    state: &mut State,
+    event: B::TabletToolAxisEvent,
+) {
+    let tablet_seat = state.ewm.seat.tablet_seat();
+    let tablet = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
+    let tool = tablet_seat.get_tool(&event.tool());
+    let (Some(tablet), Some(tool)) = (tablet, tool) else {
+        return;
+    };
+    let Some(pos) = compute_tablet_position(state, &event) else {
+        return;
+    };
+
+    if event.pressure_has_changed() {
+        tool.pressure(event.pressure());
+    }
+    if event.distance_has_changed() {
+        tool.distance(event.distance());
+    }
+    if event.tilt_has_changed() {
+        tool.tilt(event.tilt());
+    }
+    if event.slider_has_changed() {
+        tool.slider_position(event.slider_position());
+    }
+    if event.rotation_has_changed() {
+        tool.rotation(event.rotation());
+    }
+    if event.wheel_has_changed() {
+        tool.wheel(event.wheel_delta(), event.wheel_delta_discrete());
+    }
+
+    let under = state.ewm.pointer_target_at(pos);
+    tool.motion(
+        pos,
+        under,
+        &tablet,
+        SERIAL_COUNTER.next_serial(),
+        event.time_msec(),
+    );
+
+    state.ewm.tablet_cursor_location = Some(pos);
+    state.ewm.queue_redraw_for_pointer();
+    notify_pointer_activity(state);
+}
+
+pub fn handle_tablet_tool_tip<B: InputBackend<Device = libinput::Device>>(
+    state: &mut State,
+    event: B::TabletToolTipEvent,
+) {
+    let tablet_seat = state.ewm.seat.tablet_seat();
+    let tablet = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
+    let tool = tablet_seat.get_tool(&event.tool());
+    let (Some(tablet), Some(tool)) = (tablet, tool) else {
+        return;
+    };
+
+    match event.tip_state() {
+        TabletToolTipState::Down => {
+            let Some(pos) = compute_tablet_position(state, &event) else {
+                return;
+            };
+
+            // The tip carries its own position; the hover focus may be stale.
+            let under = state.ewm.pointer_target_at(pos);
+            tool.motion(
+                pos,
+                under,
+                &tablet,
+                SERIAL_COUNTER.next_serial(),
+                event.time_msec(),
+            );
+            tool.tip_down(SERIAL_COUNTER.next_serial(), event.time_msec());
+
+            state.ewm.tablet_cursor_location = Some(pos);
+            if !state.ewm.is_locked() {
+                focus_target_at(state, pos, "tablet");
+            }
+            state.sync_keyboard_focus();
+            state.ewm.queue_redraw_for_pointer();
+        }
+        TabletToolTipState::Up => {
+            tool.tip_up(event.time_msec());
+        }
+    }
+    notify_pointer_activity(state);
+}
+
+pub fn handle_tablet_tool_proximity<B: InputBackend<Device = libinput::Device>>(
+    state: &mut State,
+    event: B::TabletToolProximityEvent,
+) {
+    let tablet_seat = state.ewm.seat.tablet_seat();
+    let display_handle = state.ewm.display_handle.clone();
+    let tool = tablet_seat.add_tool::<State>(state, &display_handle, &event.tool());
+    let Some(tablet) = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device())) else {
+        return;
+    };
+
+    match event.state() {
+        ProximityState::In => {
+            let Some(pos) = compute_tablet_position(state, &event) else {
+                return;
+            };
+            if let Some(under) = state.ewm.pointer_target_at(pos) {
+                tool.proximity_in(
+                    pos,
+                    under,
+                    &tablet,
+                    SERIAL_COUNTER.next_serial(),
+                    event.time_msec(),
+                );
+            }
+            state.ewm.tablet_cursor_location = Some(pos);
+            state.ewm.queue_redraw_for_pointer();
+        }
+        ProximityState::Out => {
+            tool.proximity_out(event.time_msec());
+
+            // Land the pointer where the pen left so it doesn't jump.
+            if let Some(pos) = state.ewm.tablet_cursor_location {
+                state.warp_pointer(pos.x, pos.y);
+            }
+            state.ewm.clear_tablet_cursor();
+        }
+    }
+    notify_pointer_activity(state);
+}
+
+pub fn handle_tablet_tool_button<B: InputBackend>(
+    state: &mut State,
+    event: B::TabletToolButtonEvent,
+) {
+    if let Some(tool) = state.ewm.seat.tablet_seat().get_tool(&event.tool()) {
+        tool.button(
+            event.button(),
+            event.button_state(),
+            SERIAL_COUNTER.next_serial(),
+            event.time_msec(),
+        );
+    }
+    notify_pointer_activity(state);
 }

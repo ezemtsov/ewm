@@ -87,6 +87,9 @@ use_symbols! {
     kw_xkb_layouts     => ":xkb-layouts"
     kw_xkb_variants    => ":xkb-variants"
     kw_xkb_options     => ":xkb-options"
+    kw_calibration_matrix => ":calibration-matrix"
+    kw_map_to_output   => ":map-to-output"
+    kw_map_to_focused_output => ":map-to-focused-output"
 }
 
 // Cached Lisp function subrs used in hot-path defuns (interning string on every call is wasteful).
@@ -95,6 +98,7 @@ use_functions! {
     length
     aref
     car
+    cdr
     cadr
     cddr
     symbol_name => "symbol-name"
@@ -165,6 +169,27 @@ fn parse_optional_input_enum<T>(
             (format!("Invalid {key_name} \"{s}\", expected: {expected}"),),
         )?;
     }
+    Ok(None)
+}
+
+/// Parse a `:calibration-matrix` list of six numbers.
+fn parse_calibration_matrix(env: &Env, val: Value<'_>) -> Result<Option<[f32; 6]>> {
+    let mut values = Vec::new();
+    let mut rest = val;
+    while rest.is_not_nil() {
+        values.push(value_as_f64(env.call(car, (rest,))?)? as f32);
+        rest = env.call(cdr, (rest,))?;
+    }
+    if let Ok(matrix) = <[f32; 6]>::try_from(values.as_slice()) {
+        return Ok(Some(matrix));
+    }
+    env.signal(
+        ewm_input_invalid_value,
+        (format!(
+            "Invalid :calibration-matrix, expected 6 numbers, got {}",
+            values.len()
+        ),),
+    )?;
     Ok(None)
 }
 
@@ -1854,6 +1879,16 @@ fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
                 if val.is_not_nil() {
                     entry.xkb_options = Some(val.into_rust()?);
                 }
+            } else if key == *kw_calibration_matrix {
+                if val.is_not_nil() {
+                    entry.calibration_matrix = parse_calibration_matrix(env, val)?;
+                }
+            } else if key == *kw_map_to_output {
+                if val.is_not_nil() {
+                    entry.map_to_output = Some(val.into_rust()?);
+                }
+            } else if key == *kw_map_to_focused_output {
+                entry.map_to_focused_output = Some(val.is_not_nil());
             } else {
                 let key_name: String = env.call(symbol_name, (key,))?.into_rust()?;
                 env.signal(

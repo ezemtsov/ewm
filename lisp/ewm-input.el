@@ -136,7 +136,7 @@ Override individual bindings with `use-package':
   "Input device configuration alist.
 Each entry is (KEY . PROPS) where KEY is:
   - A symbol for type defaults: `touchpad', `mouse', `trackball',
-    `trackpoint', `keyboard'
+    `trackpoint', `keyboard', `tablet'
   - A string for device-specific overrides (exact device name)
 
 PROPS is a plist of settings (omitted properties use device defaults):
@@ -161,6 +161,14 @@ PROPS is a plist of settings (omitted properties use device defaults):
   :xkb-variants STRING  - Comma-separated XKB variants, parallel to layouts
                           (e.g. \"dvorak,\" or \",ergol\"; empty entry = default)
   :xkb-options STRING   - XKB options (e.g. \"ctrl:nocaps\")
+
+  Tablet:
+  :left-handed BOOL     - Rotate the tablet 180 degrees
+  :calibration-matrix LIST - Six numbers, libinput calibration matrix
+  :map-to-output STRING - Output name the tablet maps onto
+  :map-to-focused-output BOOL - Map onto the focused output instead;
+                                takes precedence over :map-to-output
+  Without a mapping the tablet covers all outputs together.
 
 Device-specific entries override type defaults for matching settings.
 

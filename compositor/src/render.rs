@@ -274,7 +274,7 @@ pub fn collect_render_elements_for_output(
 
     // The cursor goes on top.
     if include_cursor && !ewm.cursor_hide.is_hidden {
-        let (pointer_x, pointer_y) = ewm.pointer_location();
+        let (pointer_x, pointer_y) = ewm.cursor_location();
         let pointer_pos = Point::from((pointer_x as i32, pointer_y as i32));
 
         if output_rect.contains(pointer_pos) {
@@ -296,7 +296,7 @@ pub fn collect_render_elements_for_output(
     // DnD icon renders above everything except the cursor.
     if include_layers {
         if let Some(dnd_icon) = ewm.dnd_icon.as_ref() {
-            let (pointer_x, pointer_y) = ewm.pointer_location();
+            let (pointer_x, pointer_y) = ewm.cursor_location();
             let icon_pos = Point::from((
                 pointer_x + dnd_icon.offset.x as f64 - output_pos.x as f64,
                 pointer_y + dnd_icon.offset.y as f64 - output_pos.y as f64,
