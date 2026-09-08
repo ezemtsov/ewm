@@ -27,7 +27,7 @@ pkgs.mkShell {
     systemd.dev  # provides libudev.pc
     libdrm.dev
     libgbm       # provides gbm
-    libdisplay-info  # EDID parsing for monitor make/model
+    libdisplay-info_0_3
 
     # For PipeWire screen sharing
     pipewire.dev
