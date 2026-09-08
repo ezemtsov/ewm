@@ -2715,36 +2715,53 @@ impl Ewm {
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryHit<'_>> {
+        if let Some(hit) = self.floating_entry_under_matching(pos, &mut predicate) {
+            return Some(hit);
+        }
+        // A floating frame occludes the strip; don't match a tiled entry beneath it.
+        if self.floating_frame_under(pos).is_some() {
+            return None;
+        }
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
-        if let Some(space) = self.floating_spaces.get(&output.name()) {
-            for (frame, frame_rect) in space.frames_with_render_geo() {
-                for entry in frame.entries.iter() {
-                    if !predicate(entry) {
-                        continue;
-                    }
-                    let fullscreen = frame.entry_fullscreen(entry.id);
-                    let rect = Rectangle::new(
-                        Point::from((
-                            output_geo.loc.x + frame_rect.loc.x as i32 + entry.x,
-                            output_geo.loc.y + frame_rect.loc.y as i32 + entry.y,
-                        )),
-                        Size::from((entry.w as i32, entry.h as i32)),
-                    );
-                    if Self::rect_contains_f64(rect, pos) {
-                        return Some(LayoutEntryHit {
-                            entry,
-                            fullscreen,
-                            rect,
-                            output_size: output_geo.size,
-                        });
-                    }
+        let strip = self.frame_set.mapped_strip(&output.name())?;
+        self.tiled_entry_under_matching(strip, output_geo, working_area, pos, predicate)
+    }
+
+    /// Hit-test `pos` against floating frames' entries only (the overlay above the strip).
+    fn floating_entry_under_matching(
+        &self,
+        pos: Point<f64, Logical>,
+        mut predicate: impl FnMut(&LayoutEntry) -> bool,
+    ) -> Option<LayoutEntryHit<'_>> {
+        let output = self.output_at(pos)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let space = self.floating_spaces.get(&output.name())?;
+        for (frame, frame_rect) in space.frames_with_render_geo() {
+            for entry in frame.entries.iter() {
+                if !predicate(entry) {
+                    continue;
+                }
+                let fullscreen = frame.entry_fullscreen(entry.id);
+                let rect = Rectangle::new(
+                    Point::from((
+                        output_geo.loc.x + frame_rect.loc.x as i32 + entry.x,
+                        output_geo.loc.y + frame_rect.loc.y as i32 + entry.y,
+                    )),
+                    Size::from((entry.w as i32, entry.h as i32)),
+                );
+                if Self::rect_contains_f64(rect, pos) {
+                    return Some(LayoutEntryHit {
+                        entry,
+                        fullscreen,
+                        rect,
+                        output_size: output_geo.size,
+                    });
                 }
             }
         }
-        let strip = self.frame_set.mapped_strip(&output.name())?;
-        self.tiled_entry_under_matching(strip, output_geo, working_area, pos, predicate)
+        None
     }
 
     /// Hit-test `pos` against a tiled strip's entries only (no floating overlay).
@@ -2843,14 +2860,9 @@ impl Ewm {
     /// separately by `popup_surface_under`, so popup placement and z-order stay
     /// identical to rendering.
     pub fn layout_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
-        if let Some(surface) = self
-            .surface_layout_entry_under(pos)
+        self.surface_layout_entry_under(pos)
             .and_then(|hit| self.surface_under_layout_entry(pos, hit))
-        {
-            return Some(surface);
-        }
-
-        self.surface_under_frame(pos)
+            .or_else(|| self.surface_under_frame(pos))
     }
 
     fn surface_under_layout_entry(
@@ -9708,6 +9720,64 @@ mod tests {
         );
         // Unknown floating id -> nothing.
         assert_eq!(fix.ewm_ref().tiled_entry_under_floating_center(4242), None);
+    }
+
+    #[test]
+    fn floating_frame_occludes_the_strip_when_hit_testing() {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+
+        // Tiled entry spanning the whole output (the background frame).
+        let tiled_entry = nz(1);
+        let mut tiled = strip::Frame::new(100);
+        tiled.width = 1600.0;
+        tiled.selected_entry_id = Some(tiled_entry);
+        tiled.entries.push(LayoutEntry::surface(
+            tiled_entry,
+            "app".to_string(),
+            5000,
+            0,
+            0,
+            1600,
+            900,
+        ));
+        fix.ewm().apply_output_layout(HEAD_A, vec![tiled]);
+
+        // Floating frame (400x480, centered at (600,210)) over the tiled entry;
+        // its 400x400 entry leaves an 80px strip of the frame's own surface.
+        let floating_entry = nz(3001);
+        fix.ewm()
+            .apply_floating_layout(HEAD_A, vec![frame_with_entry(200, floating_entry, 9000)]);
+
+        let over_entry = Point::from((800.0, 400.0)); // inside the floating entry
+        // The frame's own surface below its entry: the modeline and echo area --
+        // the only region where focus fell through to the strip.
+        let modeline = Point::from((800.0, 620.0));
+        let echo_area = Point::from((800.0, 685.0));
+        let outside = Point::from((100.0, 100.0)); // tiled area beside the float
+
+        let ewm = fix.ewm_ref();
+        let on_float = Some((HEAD_A.to_string(), 200));
+        // Scene sanity: the anchors are where the geometry above puts them.
+        assert_eq!(ewm.floating_frame_under(over_entry), on_float);
+        assert_eq!(ewm.floating_frame_under(modeline), on_float);
+        assert_eq!(ewm.floating_frame_under(echo_area), on_float);
+        assert!(ewm.floating_frame_under(outside).is_none());
+
+        // The modeline and echo area occlude the tiled entry beneath them.
+        assert_eq!(ewm.layout_entry_id_under(modeline), None);
+        assert_eq!(ewm.layout_entry_id_under(echo_area), None);
+        // The floating entry still resolves; the tiled entry still wins beside the float.
+        assert_eq!(ewm.layout_entry_id_under(over_entry), Some(floating_entry));
+        assert_eq!(ewm.layout_entry_id_under(outside), Some(tiled_entry));
+
+        // No point over the floating frame ever hit-tests to the tiled entry beneath.
+        proptest!(|(x in 0i32..1600, y in 0i32..900)| {
+            let p = Point::from((x as f64, y as f64));
+            if ewm.floating_frame_under(p).is_some() {
+                prop_assert_ne!(ewm.layout_entry_id_under(p), Some(tiled_entry));
+            }
+        });
     }
 
     fn output_names(outputs: &[OutputInfo]) -> Vec<String> {
