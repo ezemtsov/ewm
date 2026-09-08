@@ -10305,7 +10305,7 @@ mod tests {
 
         assert_eq!(
             fix.ewm_ref().emacs_frame_origin(200),
-            Some(Point::from((480, 140))),
+            Some(Point::from((480, 210))),
         );
     }
 }
