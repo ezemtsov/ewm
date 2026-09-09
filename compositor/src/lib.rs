@@ -122,7 +122,8 @@ use smithay::desktop::utils::{
 };
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
-    LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window, WindowSurfaceType,
+    LayerSurface as DesktopLayerSurface, PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager,
+    PopupPointerGrab, PopupUngrabStrategy, Space, Window, WindowSurfaceType,
 };
 use smithay::input::dnd::{self, DnDGrab, DndGrabHandler, DndTarget};
 use smithay::input::keyboard::xkb::keysyms;
@@ -961,6 +962,9 @@ pub struct Ewm {
     // Popup manager for XDG popups
     pub popups: PopupManager,
 
+    // Active popup (menu) grab; suppresses EWM's own focus routing while live.
+    pub popup_grab: Option<PopupGrab<State>>,
+
     // DnD icon surface (shown at pointer during drag)
     pub dnd_icon: Option<DndIcon>,
 
@@ -1510,6 +1514,7 @@ impl Ewm {
             text_input_intercept: false,
             im_text_input: im::text_input::TextInputCommitState::default(),
             popups: PopupManager::default(),
+            popup_grab: None,
             dnd_icon: None,
             layer_shell_state,
             unmapped_layer_surfaces: std::collections::HashSet::new(),
@@ -6241,9 +6246,10 @@ impl Ewm {
         &mut self,
         pos: Point<f64, Logical>,
     ) -> (Option<SurfaceHit>, bool) {
-        // An active grab (click drag, DnD) pins delivery to the grab surface;
-        // keep `pointer_focus` pinned with it.
-        if self.pointer.is_grabbed() {
+        // A delivery-pinning grab (click-drag, DnD) keeps its surface; a popup
+        // grab instead needs the real surface under the pointer to route hover.
+        let grabbed = self.pointer.is_grabbed();
+        if grabbed && self.popup_grab.is_none() {
             return (self.pointer_focus.clone(), false);
         }
         let under = self.pointer_target_at(pos);
@@ -6254,7 +6260,9 @@ impl Ewm {
         let entry_id = self.layout_entry_id_under(pos);
         let entry_changed = mem::replace(&mut self.pointer_entry_id, entry_id) != entry_id;
 
-        if self.focus_follows_mouse_mode
+        // Don't retarget keyboard focus while grabbed; the grab owns it.
+        if !grabbed
+            && self.focus_follows_mouse_mode
             && (focus_changed || entry_changed)
             && !self.is_strip_animating_at(pos)
         {
@@ -7983,13 +7991,43 @@ impl XdgShellHandler for State {
             return;
         };
 
-        if let Err(err) = self
-            .ewm
-            .popups
-            .grab_popup(root, popup, &self.ewm.seat, serial)
-        {
-            warn!("error grabbing popup: {err:?}");
+        let seat = self.ewm.seat.clone();
+        let mut grab = match self.ewm.popups.grab_popup(root, popup, &seat, serial) {
+            Ok(grab) => grab,
+            Err(err) => {
+                warn!("error grabbing popup: {err:?}");
+                return;
+            }
+        };
+
+        // Install the grab on the seat so a click outside the popup dismisses it.
+        if let Some(keyboard) = seat.get_keyboard() {
+            if keyboard.is_grabbed()
+                && !(keyboard.has_grab(serial)
+                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
         }
+        if let Some(pointer) = seat.get_pointer() {
+            if pointer.is_grabbed()
+                && !(pointer.has_grab(serial)
+                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            pointer.set_grab(
+                self,
+                PopupPointerGrab::new(&grab),
+                serial,
+                smithay::input::pointer::Focus::Keep,
+            );
+        }
+        self.ewm.popup_grab = Some(grab);
     }
 
     fn reposition_request(
@@ -8898,10 +8936,21 @@ impl State {
                 .map(|s| s.into_owned())
         });
 
-        if self.ewm.keyboard_focus != new_focus {
+        // A popup grab owns the keyboard; driving focus here would fight it and
+        // dismiss the menu.  `refresh_popup_grab` clears the grab on dismissal.
+        if self.ewm.popup_grab.is_none() && self.ewm.keyboard_focus != new_focus {
             self.ewm.keyboard_focus = new_focus.clone();
             let keyboard = self.ewm.keyboard.clone();
             keyboard.set_focus(self, new_focus, SERIAL_COUNTER.next_serial());
+        }
+    }
+
+    /// Drop the tracked popup grab once it has ended.
+    pub fn refresh_popup_grab(&mut self) {
+        if let Some(grab) = &self.ewm.popup_grab {
+            if grab.has_ended() {
+                self.ewm.popup_grab = None;
+            }
         }
     }
 
@@ -9040,6 +9089,8 @@ impl State {
         }
 
         self.process_pending_commands();
+        self.ewm.popups.cleanup();
+        self.refresh_popup_grab();
         self.sync_keyboard_focus();
 
         self.ewm.refresh_idle_inhibit();

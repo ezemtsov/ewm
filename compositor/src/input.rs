@@ -1460,17 +1460,16 @@ pub(crate) fn handle_pointer_button_state(
         return;
     }
 
-    // When locked, skip click-to-focus and just forward to lock surface
-    if !state.ewm.is_locked() {
-        // Click-to-focus: on button press, focus the surface under pointer
-        if button_state == ButtonState::Pressed {
+    // A popup grab owns input routing: skip click-to-focus so an outside click
+    // dismisses the menu instead of re-focusing under it.
+    if state.ewm.popup_grab.is_none() {
+        // Click-to-focus on press, unless locked (then just forward to the lock).
+        if !state.ewm.is_locked() && button_state == ButtonState::Pressed {
             focus_pointer_target(state, "click");
         }
+        // Sync keyboard focus before forwarding, so the right surface gets keys.
+        state.sync_keyboard_focus();
     }
-
-    // Sync keyboard focus before forwarding the button event,
-    // so the correct surface receives any subsequent key events.
-    state.sync_keyboard_focus();
 
     pointer.button(
         state,

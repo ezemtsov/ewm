@@ -115,6 +115,7 @@ pub struct Toplevel {
 pub struct Popup {
     pub surface: wl_surface::WlSurface,
     pub xdg_surface: xdg_surface::XdgSurface,
+    pub xdg_popup: xdg_popup::XdgPopup,
 }
 
 #[cfg(feature = "testing-layer-shell")]
@@ -285,6 +286,17 @@ impl TestClient {
         anchor: Rectangle<i32, Logical>,
         size: Size<i32, Logical>,
     ) -> Popup {
+        self.create_popup_on(&parent.xdg_surface, anchor, size)
+    }
+
+    /// Create a popup whose parent is an arbitrary xdg_surface (a toplevel or,
+    /// for a submenu, another popup).
+    pub fn create_popup_on(
+        &mut self,
+        parent_xdg: &xdg_surface::XdgSurface,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) -> Popup {
         let qh = self.eq.handle();
         let positioner = self.wm_base().create_positioner(&qh, ());
         positioner.set_anchor_rect(anchor.loc.x, anchor.loc.y, anchor.size.w, anchor.size.h);
@@ -293,13 +305,20 @@ impl TestClient {
         positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
         let surface = self.compositor().create_surface(&qh, ());
         let xdg_surface = self.wm_base().get_xdg_surface(&surface, &qh, ());
-        let _popup = xdg_surface.get_popup(Some(&parent.xdg_surface), &positioner, &qh, ());
+        let xdg_popup = xdg_surface.get_popup(Some(parent_xdg), &positioner, &qh, ());
         positioner.destroy();
         surface.commit();
         Popup {
             surface,
             xdg_surface,
+            xdg_popup,
         }
+    }
+
+    /// Request an `xdg_popup.grab` on the seat with `serial`.
+    pub fn grab_popup(&self, popup: &Popup, serial: u32) {
+        let seat = self.state.seat.as_ref().expect("wl_seat not bound");
+        popup.xdg_popup.grab(seat, serial);
     }
 
     /// Caller must roundtrip before reading server-side state.
@@ -325,6 +344,7 @@ impl TestClient {
         Popup {
             surface,
             xdg_surface,
+            xdg_popup,
         }
     }
 }

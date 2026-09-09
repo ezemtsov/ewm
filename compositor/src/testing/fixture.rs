@@ -168,6 +168,46 @@ impl Fixture {
         popup
     }
 
+    /// Open a popup on `parent` (a toplevel), grabbed before the mapping commit.
+    pub fn open_popup_grabbed(
+        &mut self,
+        client: &mut TestClient,
+        parent: &crate::testing::Toplevel,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+        serial: u32,
+    ) -> crate::testing::Popup {
+        self.open_grabbed_popup_on(client, &parent.xdg_surface, anchor, size, serial)
+    }
+
+    /// Open a submenu: a popup parented to another popup, grabbed before mapping.
+    pub fn open_nested_popup_grabbed(
+        &mut self,
+        client: &mut TestClient,
+        parent: &crate::testing::Popup,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+        serial: u32,
+    ) -> crate::testing::Popup {
+        self.open_grabbed_popup_on(client, &parent.xdg_surface, anchor, size, serial)
+    }
+
+    /// Request the grab before the mapping commit; a grab after mapping is rejected.
+    fn open_grabbed_popup_on(
+        &mut self,
+        client: &mut TestClient,
+        parent_xdg: &wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+        serial: u32,
+    ) -> crate::testing::Popup {
+        let popup = client.create_popup_on(parent_xdg, anchor, size);
+        self.roundtrip(client);
+        client.grab_popup(&popup, serial);
+        self.finish_xdg(client, &popup.surface, &popup.xdg_surface, size);
+        popup
+    }
+
     /// Drive a full layer-shell surface lifecycle.
     #[cfg(feature = "testing-layer-shell")]
     pub fn open_layer_surface(
