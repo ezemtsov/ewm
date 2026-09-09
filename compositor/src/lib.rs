@@ -8956,27 +8956,19 @@ impl State {
             return;
         }
         let keyboard = self.ewm.keyboard.clone();
-        let saved_mods = keyboard.modifier_state();
-        let mut replay_mods = saved_mods;
-        replay_mods.ctrl = ctrl;
-        replay_mods.alt = alt;
-        replay_mods.shift = shift;
-        replay_mods.logo = logo;
         self.sync_keyboard_focus();
-        keyboard.set_modifier_state(replay_mods);
-        keyboard.advertise_modifier_state(self);
-        for key_state in [KeyState::Pressed, KeyState::Released] {
-            keyboard.input_forward(
-                self,
-                keycode.into(),
-                key_state,
-                SERIAL_COUNTER.next_serial(),
-                0,
-                false,
-            );
-        }
-        keyboard.set_modifier_state(saved_mods);
-        keyboard.advertise_modifier_state(self);
+        crate::input::forward_with_modifiers(self, &keyboard, (ctrl, alt, shift, logo), |state| {
+            for key_state in [KeyState::Pressed, KeyState::Released] {
+                keyboard.input_forward(
+                    state,
+                    keycode.into(),
+                    key_state,
+                    SERIAL_COUNTER.next_serial(),
+                    0,
+                    false,
+                );
+            }
+        });
     }
 
     pub(crate) fn on_intercept_repeat_timer(&mut self, keycode: u32) {

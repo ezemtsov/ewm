@@ -49,6 +49,12 @@ pub enum ClientEvent {
         key: u32,
         pressed: bool,
     },
+    KeyboardModifiers {
+        depressed: u32,
+        latched: u32,
+        locked: u32,
+        group: u32,
+    },
     ToplevelConfigure {
         width: i32,
         height: i32,
@@ -465,6 +471,18 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientState {
             } => state.events.push(ClientEvent::KeyboardKey {
                 key,
                 pressed: key_state == wl_keyboard::KeyState::Pressed,
+            }),
+            wl_keyboard::Event::Modifiers {
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                group,
+                ..
+            } => state.events.push(ClientEvent::KeyboardModifiers {
+                depressed: mods_depressed,
+                latched: mods_latched,
+                locked: mods_locked,
+                group,
             }),
             _ => {}
         }

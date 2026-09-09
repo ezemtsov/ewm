@@ -245,8 +245,29 @@ fn resolve_keycode(
     })
 }
 
-/// Forward `keycode` to the focused surface with the target's modifiers, then
-/// restore the live modifier state.
+/// Run `forward` with `(ctrl, alt, shift, logo)` advertised as the held
+/// modifiers, then restore and re-advertise the live modifier state so the
+/// client isn't left latched at the target.
+pub(crate) fn forward_with_modifiers(
+    state: &mut State,
+    keyboard: &KeyboardHandle<State>,
+    (ctrl, alt, shift, logo): (bool, bool, bool, bool),
+    forward: impl FnOnce(&mut State),
+) {
+    let saved = keyboard.modifier_state();
+    let mut target = saved;
+    target.ctrl = ctrl;
+    target.alt = alt;
+    target.shift = shift;
+    target.logo = logo;
+    keyboard.set_modifier_state(target);
+    keyboard.advertise_modifier_state(state);
+    forward(&mut *state);
+    keyboard.set_modifier_state(saved);
+    keyboard.advertise_modifier_state(state);
+}
+
+/// Forward `keycode` to the focused surface with the target's modifiers.
 fn forward_translate(
     state: &mut State,
     keyboard: &KeyboardHandle<State>,
@@ -256,16 +277,12 @@ fn forward_translate(
     time: u32,
     target: &TranslateTarget,
 ) {
-    let saved_mods = keyboard.modifier_state();
-    let mut target_mods = saved_mods;
-    target_mods.ctrl = target.ctrl;
-    target_mods.alt = target.alt;
-    target_mods.shift = target.shift;
-    target_mods.logo = target.logo;
-    keyboard.set_modifier_state(target_mods);
-    keyboard.advertise_modifier_state(state);
-    keyboard.input_forward(state, keycode, key_state, serial, time, false);
-    keyboard.set_modifier_state(saved_mods);
+    forward_with_modifiers(
+        state,
+        keyboard,
+        (target.ctrl, target.alt, target.shift, target.logo),
+        |state| keyboard.input_forward(state, keycode, key_state, serial, time, false),
+    );
 }
 
 /// Process a keyboard key event and return the compositor action taken.

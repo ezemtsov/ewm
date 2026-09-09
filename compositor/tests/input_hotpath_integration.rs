@@ -360,6 +360,40 @@ impl Harness {
     }
 }
 
+// A key translated with modifiers must resync the focused client back to the
+// live modifier state; otherwise the client stays latched at the target mods
+// and later events (e.g. mouse clicks) report a phantom modifier.
+#[test]
+fn translated_key_restores_client_modifier_state() {
+    let mut h = Harness::new();
+    h.focus(FocusMode::EmbeddedApp)
+        .emulations(&[(keysyms::KEY_x, "super")]);
+    let _ = h.app.drain_events(); // discard the focus-enter events
+
+    h.tap(KEY_X, KeyboardAction::Translated);
+    h.pump();
+
+    let depressed: Vec<u32> = h
+        .app
+        .drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            ClientEvent::KeyboardModifiers { depressed, .. } => Some(depressed),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        depressed.iter().any(|&d| d != 0),
+        "the translate must advertise its target modifier: {depressed:?}",
+    );
+    assert_eq!(
+        depressed.last().copied(),
+        Some(0),
+        "client left latched at modifiers {depressed:?} after a translated key",
+    );
+}
+
 #[test]
 fn keyboard_hotpath_guarantees_for_embedded_and_fullscreen_surfaces() {
     use FocusMode::{EmacsBuffer, EmbeddedApp, FullscreenApp};
