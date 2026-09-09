@@ -32,12 +32,12 @@
   withToolkitScrollBars = false;
 }).overrideAttrs (old: {
   pname = "emacs31-pwayl";
-  version = "31.0.90";
+  version = "31.1";
 
   src = fetchgit {
     url = "https://codeberg.org/ezemtsov/emacs.git";
-    rev = "24c89abfecd2d0fe65d0c807eede672b6b2265d3"; # wayland-31
-    hash = "sha256-GjXlCnDN+vZ69lJQFAlDOe59lu4eZkyphdG02yPn8IA=";
+    rev = "05e0d94d35e5c90a7f70c9435d50f9f0eba90bcf"; # wayland-31.1
+    hash = "sha256-jAWiUYpi37IDTk226R+lqF2m6B8ext1LwyTE7qzhR5o=";
   };
 
   # Drop the image opt-outs the bare (no-GTK) build inherits, then turn the
