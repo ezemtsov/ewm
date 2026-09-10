@@ -3143,12 +3143,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     );
 
     // Connect input method relay to ourselves
-    let socket_path = std::env::var("XDG_RUNTIME_DIR")
-        .map(|dir| std::path::PathBuf::from(dir).join(&socket_name_str))
-        .ok();
-    if let Some(ref path) = socket_path {
-        ewm.connect_im_relay(path);
-    }
+    ewm.connect_im_relay();
 
     // Find primary GPU: env override or udev detection
     let gpu_path = match std::env::var("EWM_RENDER_DEVICE") {

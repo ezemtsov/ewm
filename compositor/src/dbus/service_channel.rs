@@ -4,7 +4,6 @@
 //! xdg-desktop-portal-gnome to connect as a Wayland client to the compositor.
 
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 
 use smithay::reexports::wayland_server::DisplayHandle;
 use tracing::info;
@@ -44,10 +43,9 @@ impl ServiceChannel {
         let (sock1, sock2) = UnixStream::pair()
             .map_err(|e| fdo::Error::Failed(format!("Failed to create socket pair: {e}")))?;
 
-        // Insert the portal as a Wayland client using the same ClientState type
-        // that the compositor uses for all clients (required for proper global binding)
+        // Socketpair peer credentials are our own.
         self.display
-            .insert_client(sock2, Arc::new(ClientState::default()))
+            .insert_client(sock2, ClientState::portal())
             .map_err(|e| fdo::Error::Failed(format!("Failed to insert client: {e}")))?;
 
         info!("Portal connected via ServiceChannel");

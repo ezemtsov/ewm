@@ -102,7 +102,7 @@ JSON line is delivered exactly once. Serde serialization replaces the manual
 | Event | Rust | Purpose |
 |-------|------|---------|
 | `ready` | `Event::Ready` | Compositor initialized |
-| `new` | `Event::New{id,app,output,frame_surface_id,pid}` | Surface created |
+| `new` | `Event::New{id,app,output,pid}` | Surface created; `output` only for Emacs frames |
 | `close` | `Event::Close{id}` | Surface destroyed |
 | `focus` | `Event::Focus{view_id,x,y}` | View focused |
 | `title` | `Event::Title{id,app,title}` | Surface title changed |

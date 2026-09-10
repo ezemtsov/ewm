@@ -7,9 +7,7 @@
 //! directly through TextInputHandle to avoid cross-thread serial races.
 
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
 
 use smithay::reexports::calloop::channel::{channel, Channel, Sender};
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
@@ -26,16 +24,14 @@ pub enum ImEvent {
     SurroundingText { text: String, cursor: u32, anchor: u32 },
 }
 
-/// Spawn the relay thread and return the calloop channel carrying its
+/// Spawn the relay thread on STREAM and return the calloop channel carrying its
 /// activate/deactivate events. The detached thread owns the Wayland connection
 /// backing the input_method_v2 instance for the process lifetime.
-pub fn connect(socket_path: &std::path::Path) -> Channel<ImEvent> {
-    let path = socket_path.to_path_buf();
+pub fn connect(stream: UnixStream) -> Channel<ImEvent> {
     let (event_tx, event_rx) = channel();
 
     thread::spawn(move || {
-        thread::sleep(Duration::from_millis(100));
-        if let Err(e) = run_relay(path, event_tx) {
+        if let Err(e) = run_relay(stream, event_tx) {
             tracing::warn!("IM relay error: {}", e);
         }
     });
@@ -44,10 +40,9 @@ pub fn connect(socket_path: &std::path::Path) -> Channel<ImEvent> {
 }
 
 fn run_relay(
-    socket_path: PathBuf,
+    stream: UnixStream,
     event_tx: Sender<ImEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let stream = UnixStream::connect(&socket_path)?;
     let conn = Connection::from_socket(stream)?;
     let (globals, mut queue) = registry_queue_init::<RelayState>(&conn)?;
     let qh = queue.handle();

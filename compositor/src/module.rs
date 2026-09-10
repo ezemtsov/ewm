@@ -258,6 +258,11 @@ fn pending_frames() -> &'static Mutex<VecDeque<PendingFrame>> {
     PENDING_FRAMES.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
+/// Queue FRAME for the next Emacs toplevel.
+pub(crate) fn prepare_frame(frame: PendingFrame) {
+    pending_frames().lock().unwrap().push_back(frame);
+}
+
 /// Take the next pending frame output (called by compositor when creating surfaces).
 pub fn take_pending_frame() -> Option<PendingFrame> {
     pending_frames().lock().unwrap().pop_front()
@@ -1240,12 +1245,12 @@ fn warp_pointer_module(x: Value<'_>, y: Value<'_>) -> Result<()> {
 /// Prepare next frame for output (synchronous to avoid race with surface creation).
 #[defun]
 fn prepare_frame_module(output: String) -> Result<()> {
-    pending_frames().lock().unwrap().push_back(PendingFrame {
-        output: output.clone(),
+    tracing::info!("Prepared frame for output {}", output);
+    prepare_frame(PendingFrame {
+        output,
         floating: false,
         pos: None,
     });
-    tracing::info!("Prepared frame for output {}", output);
     Ok(())
 }
 
@@ -1253,12 +1258,12 @@ fn prepare_frame_module(output: String) -> Result<()> {
 #[defun]
 fn prepare_floating_frame_module(output: String, x: Value<'_>, y: Value<'_>) -> Result<()> {
     let pos = optional_f64(x)?.zip(optional_f64(y)?);
-    pending_frames().lock().unwrap().push_back(PendingFrame {
-        output: output.clone(),
+    tracing::info!("Prepared floating frame for output {}", output);
+    prepare_frame(PendingFrame {
+        output,
         floating: true,
         pos,
     });
-    tracing::info!("Prepared floating frame for output {}", output);
     Ok(())
 }
 

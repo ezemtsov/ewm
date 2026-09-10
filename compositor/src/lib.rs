@@ -101,6 +101,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::os::unix::io::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -151,7 +152,7 @@ use smithay::reexports::wayland_server::backend::{
 };
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource, WEnum};
+use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource, WEnum};
 use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
@@ -1263,13 +1264,18 @@ impl FrameSet {
     }
 }
 
-/// Whether a toplevel opens floating: a dialog (has a parent) or fixed-height.
+/// Whether a toplevel opens floating: parented (dialog), portal or fixed-height.
 fn compute_open_floating(toplevel: &ToplevelSurface) -> bool {
     use smithay::wayland::compositor::with_states;
     use smithay::wayland::shell::xdg::SurfaceCachedState;
 
     // Windows with a parent (usually dialogs) open as floating by default.
     if toplevel.parent().is_some() {
+        return true;
+    }
+
+    // Portal dialogs float even when the requester passed no parent_window.
+    if is_portal_surface(toplevel.wl_surface()) {
         return true;
     }
 
@@ -1571,9 +1577,15 @@ impl Ewm {
         }
     }
 
-    /// Connect the input method relay after socket is ready.
-    pub fn connect_im_relay(&mut self, socket_path: &std::path::Path) {
-        let channel = im::relay::connect(socket_path);
+    /// Connect the input method relay over a socketpair of our own.
+    pub fn connect_im_relay(&mut self) {
+        let (server_end, client_end) =
+            UnixStream::pair().expect("failed to create IM relay socketpair");
+        // Socketpair peer credentials are our own.
+        self.display_handle
+            .insert_client(server_end, Arc::new(ClientState::default()))
+            .expect("failed to insert IM relay client");
+        let channel = im::relay::connect(client_end);
         self.loop_handle
             .insert_source(channel, |event, _, state| {
                 if let smithay::reexports::calloop::channel::Event::Msg(event) = event {
@@ -5550,18 +5562,6 @@ impl Ewm {
         self.emacs_pid = Some(pid);
     }
 
-    /// Check if a surface belongs to the Emacs client
-    fn is_emacs_client(&self, surface: &WlSurface) -> bool {
-        if let Some(emacs_pid) = self.emacs_pid {
-            if let Ok(client) = self.display_handle.get_client(surface.id()) {
-                if let Ok(creds) = client.get_credentials(&self.display_handle) {
-                    return creds.pid == emacs_pid as i32;
-                }
-            }
-        }
-        false
-    }
-
     /// Check if focus is on an Emacs surface (for key interception decisions)
     pub fn is_focus_on_emacs(&self) -> bool {
         self.focused_entry_id.is_none() && self.is_emacs_frame(self.focused_frame_id)
@@ -7092,12 +7092,13 @@ impl Ewm {
         let id = self.next_surface_id;
         self.next_surface_id += 1;
 
-        // Check if this surface belongs to the Emacs client
-        let is_emacs = self.is_emacs_client(surface.wl_surface());
+        let identity = client_identity(surface.wl_surface());
+        let client_pid = identity.as_ref().map_or(0, |i| i.credentials.pid);
+        // Only Emacs connects to the listening socket from this process.
+        let is_emacs = self.emacs_pid.is_some_and(|pid| client_pid == pid as i32);
         if is_emacs {
             info!("Surface {} is an Emacs surface", id);
-        }
-        if !is_emacs {
+        } else {
             self.unmapped_surfaces.insert(id);
         }
 
@@ -7107,23 +7108,12 @@ impl Ewm {
                 .get::<XdgToplevelSurfaceData>()
                 .and_then(|d| d.lock().unwrap().app_id.clone())
         })
-        .unwrap_or_else(|| {
-            self.get_client_process_name(surface.wl_surface())
-                .unwrap_or_else(|| "unknown".to_string())
-        });
-
-        // Extract client PID (before surface is moved)
-        let client_pid = self
-            .display_handle
-            .get_client(surface.wl_surface().id())
-            .ok()
-            .and_then(|c| c.get_credentials(&self.display_handle).ok())
-            .map(|creds| creds.pid)
-            .unwrap_or(0);
+        .or_else(|| identity.and_then(|i| i.comm))
+        .unwrap_or_else(|| "unknown".to_string());
 
         // Determine target output before the initial configure so floating
         // Emacs frames don't get the normal maximized/working-area configure.
-        let pending_frame = module::take_pending_frame();
+        let pending_frame = is_emacs.then(module::take_pending_frame).flatten();
         let frame_output = pending_frame.as_ref().map(|pending| pending.output.clone());
         let frame_is_floating = pending_frame
             .as_ref()
@@ -7229,7 +7219,7 @@ impl Ewm {
         self.queue_event(Event::New {
             id,
             app: app.clone(),
-            output: target_output.clone(),
+            output: target_output.clone().filter(|_| is_emacs),
             pid: client_pid,
         });
         // Eager-inserted new emacs frames land at the strip's end and aren't
@@ -7335,30 +7325,8 @@ impl Ewm {
 
         event_loop
             .insert_source(socket, |client, _, state| {
-                let client_state = Arc::new(ClientState::default());
-                match state
-                    .ewm
-                    .display_handle
-                    .insert_client(client, client_state.clone())
-                {
-                    Ok(client) => {
-                        let client_id = client.id();
-                        match state
-                            .ewm
-                            .display_handle
-                            .backend_handle()
-                            .get_client_credentials(client_id.clone())
-                        {
-                            Ok(credentials) => client_state.set_credentials(credentials),
-                            Err(e) => {
-                                debug!(
-                                    "Failed to get credentials for client {:?}: {}",
-                                    client_id, e
-                                )
-                            }
-                        }
-                    }
-                    Err(e) => warn!("Failed to insert client: {}", e),
+                if let Err(e) = ClientState::insert(&mut state.ewm.display_handle, client) {
+                    warn!("Failed to insert client: {}", e);
                 }
             })
             .expect("Failed to init wayland socket source");
@@ -7366,15 +7334,6 @@ impl Ewm {
         register_display_source(event_loop, display);
 
         Ok(socket_name)
-    }
-
-    fn get_client_process_name(&self, surface: &WlSurface) -> Option<String> {
-        let client = self.display_handle.get_client(surface.id()).ok()?;
-        let creds = client.get_credentials(&self.display_handle).ok()?;
-        let comm_path = format!("/proc/{}/comm", creds.pid);
-        std::fs::read_to_string(&comm_path)
-            .ok()
-            .map(|s| s.trim().to_string())
     }
 
     fn check_surface_info_changes(&mut self, surface: &WlSurface) {
@@ -7526,10 +7485,37 @@ fn client_process_name(credentials: Credentials) -> Option<String> {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor: CompositorClientState,
+    /// Whether this is the portal backend from the Mutter service channel.
+    portal: bool,
     identity: OnceLock<ClientIdentity>,
 }
 
 impl ClientState {
+    pub(crate) fn portal() -> Arc<Self> {
+        Arc::new(Self {
+            portal: true,
+            ..Default::default()
+        })
+    }
+
+    /// Insert a listener-accepted STREAM and record its peer credentials.
+    pub(crate) fn insert(
+        handle: &mut DisplayHandle,
+        stream: UnixStream,
+    ) -> std::io::Result<Client> {
+        let state = Arc::new(ClientState::default());
+        let client = handle.insert_client(stream, state.clone())?;
+        match handle.backend_handle().get_client_credentials(client.id()) {
+            Ok(credentials) => state.set_credentials(credentials),
+            Err(e) => debug!(
+                "Failed to get credentials for client {:?}: {}",
+                client.id(),
+                e
+            ),
+        }
+        Ok(client)
+    }
+
     fn set_credentials(&self, credentials: Credentials) {
         let _ = self
             .identity
@@ -7537,10 +7523,11 @@ impl ClientState {
     }
 
     fn identity_description(&self) -> String {
-        self.identity
-            .get()
-            .map(|identity| identity.describe())
-            .unwrap_or_else(|| "pid=<unknown> uid=<unknown> gid=<unknown> comm=<unknown>".into())
+        match self.identity.get() {
+            Some(identity) => identity.describe(),
+            None if self.portal => "portal".into(),
+            None => "pid=<unknown> uid=<unknown> gid=<unknown> comm=<unknown>".into(),
+        }
     }
 }
 impl ClientData for ClientState {
@@ -7555,6 +7542,25 @@ impl ClientData for ClientState {
             self.identity_description()
         );
     }
+}
+
+/// The state attached to CLIENT at insertion.
+fn client_state(client: &Client) -> &ClientState {
+    client
+        .get_data::<ClientState>()
+        .expect("ClientState inserted at connection time")
+}
+
+/// Whether SURFACE belongs to the portal backend.
+fn is_portal_surface(surface: &WlSurface) -> bool {
+    surface
+        .client()
+        .is_some_and(|client| client_state(&client).portal)
+}
+
+/// The identity recorded when SURFACE's client connected, if any.
+fn client_identity(surface: &WlSurface) -> Option<ClientIdentity> {
+    client_state(&surface.client()?).identity.get().cloned()
 }
 
 // Buffer handling
@@ -7572,14 +7578,8 @@ impl CompositorHandler for State {
         &mut self.ewm.compositor_state
     }
 
-    fn client_compositor_state<'a>(
-        &self,
-        client: &'a smithay::reexports::wayland_server::Client,
-    ) -> &'a CompositorClientState {
-        &client
-            .get_data::<ClientState>()
-            .expect("ClientState inserted at connection time")
-            .compositor
+    fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        &client_state(client).compositor
     }
 
     fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {

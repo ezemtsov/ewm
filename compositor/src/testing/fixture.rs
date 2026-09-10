@@ -4,7 +4,6 @@
 //! including a headless backend, event loop, and Wayland display.
 
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::time::Duration;
 
 use smithay::backend::input::ButtonState;
@@ -65,15 +64,22 @@ impl Fixture {
         Ok(Self { event_loop, state })
     }
 
-    /// Pair a `UnixStream` with the server `Display`, returning a `TestClient`
-    /// on the other end. Roundtrip after to bind globals.
+    /// Pair a `UnixStream` with the server `Display` as the listener would,
+    /// returning a `TestClient` on the other end. Roundtrip after to bind globals.
     pub fn new_client(&mut self) -> Result<TestClient, Box<dyn std::error::Error>> {
+        let (server_end, client_end) = UnixStream::pair()?;
+        let server_client = ClientState::insert(&mut self.state.ewm.display_handle, server_end)?;
+        TestClient::new(client_end, server_client.id())
+    }
+
+    /// Like `new_client`, but tagged as the portal backend from the service channel.
+    pub fn new_portal_client(&mut self) -> Result<TestClient, Box<dyn std::error::Error>> {
         let (server_end, client_end) = UnixStream::pair()?;
         let server_client = self
             .state
             .ewm
             .display_handle
-            .insert_client(server_end, Arc::new(ClientState::default()))?;
+            .insert_client(server_end, ClientState::portal())?;
         TestClient::new(client_end, server_client.id())
     }
 

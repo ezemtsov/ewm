@@ -63,6 +63,7 @@ pub enum Event {
     New {
         id: u64,
         app: String,
+        /// Emacs toplevels only.
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
         pid: i32,

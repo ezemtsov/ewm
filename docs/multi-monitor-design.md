@@ -89,7 +89,7 @@ Emacs calls module functions directly (no serialization needed):
 ```
 1. External client (Firefox, terminal, etc.) creates surface
 2. Compositor assigns to active output (cursor/focus based)
-3. Compositor pushes new event with { id, app, output }
+3. Compositor pushes new event with { id, app, pid } (`output` is sent for Emacs frames only)
 4. Emacs receives via pipe fd, creates buffer for surface
 5. Emacs includes surface in next OutputLayout declaration for the target output
 6. Compositor positions and displays the surface

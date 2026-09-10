@@ -18,3 +18,17 @@ pub use fixture::Fixture;
 pub fn mark_active_frame_close(id: u64) {
     crate::module::mark_pending_active_frame_close(id);
 }
+
+/// Queue a tiled Emacs frame for OUTPUT, as `ewm-prepare-frame` does.
+pub fn prepare_frame(output: &str) {
+    crate::module::prepare_frame(crate::module::PendingFrame {
+        output: output.to_owned(),
+        floating: false,
+        pos: None,
+    });
+}
+
+/// Drop every queued frame; the queue is a process-wide static.
+pub fn clear_pending_frames() {
+    while crate::module::take_pending_frame().is_some() {}
+}

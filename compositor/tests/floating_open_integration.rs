@@ -1,6 +1,6 @@
-//! Auto-float: dialogs (parented) and fixed-height windows open floating;
-//! ordinary windows tile.  The decision is taken at map, once the client has
-//! committed its xdg min/max size hints.
+//! Auto-float: portal windows, dialogs (parented) and fixed-height windows
+//! open floating; ordinary windows tile. The decision is taken at map, once
+//! the client has committed its xdg min/max size hints.
 
 use ewm_core::event::Event;
 use ewm_core::testing::Fixture;
@@ -116,5 +116,31 @@ fn dialog_with_parent_auto_floats() {
         mapped_open_floating(&mut fix, sid),
         Some(true),
         "a toplevel with a parent (dialog) must open floating",
+    );
+}
+
+#[test]
+fn portal_toplevel_auto_floats() {
+    // Socketpair clients carry no identity; only the portal tag makes this float.
+    let mut fix = Fixture::new().unwrap();
+    fix.enable_event_capture();
+    fix.add_output(OUTPUT, 1920, 1080);
+    fix.ewm().set_emacs_pid(std::process::id());
+
+    let mut client = fix.new_portal_client().unwrap();
+    fix.roundtrip(&mut client);
+    let toplevel = fix.open_toplevel(
+        &mut client,
+        "portal",
+        Size::<i32, Logical>::from((400, 300)),
+    );
+    let sid = fix
+        .find_surface_id(&client, &toplevel.surface)
+        .expect("server did not assign a surface id");
+
+    assert_eq!(
+        mapped_open_floating(&mut fix, sid),
+        Some(true),
+        "a portal window must open floating even without a parent or size hints",
     );
 }

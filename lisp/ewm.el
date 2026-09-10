@@ -450,8 +450,8 @@ order, which `ewm-frame-new' may have reordered in the strip."
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
-If there's a pending frame for this output, this is an Emacs frame.
-Otherwise, creates a buffer for external surface."
+An Emacs frame surface carries its output; if an in-flight frame there
+matches it is paired, otherwise a surface buffer is created."
   (let ((id (alist-get 'id event))
         (app (alist-get 'app event))
         (output (alist-get 'output event))
