@@ -4,6 +4,7 @@
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
 use ewm_core::{Event, LayoutEntry, LayoutEntryId};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Size;
 
 const HEAD: &str = "HEAD-A";
@@ -12,8 +13,9 @@ const APP_ENTRY: LayoutEntryId = LayoutEntryId::new(1).unwrap();
 const TEXT_ENTRY: LayoutEntryId = LayoutEntryId::new(2).unwrap();
 
 /// An Emacs frame filling the output: an app view on the left, a plain
-/// Emacs window on the right. Returns the fixture and the two surface ids.
-fn scene() -> (Fixture, u64, u64) {
+/// Emacs window on the right. Returns the fixture, the two surface ids and
+/// a drag icon surface belonging to the app.
+fn scene() -> (Fixture, u64, u64, WlSurface) {
     let mut fix = Fixture::new().unwrap();
     let mut frame_client = fix.new_client().unwrap();
     let mut app_client = fix.new_client().unwrap();
@@ -27,6 +29,9 @@ fn scene() -> (Fixture, u64, u64) {
         .unwrap();
     let app = fix.open_toplevel(&mut app_client, "app", Size::from((800, 900)));
     let app_sid = fix.find_surface_id(&app_client, &app.surface).unwrap();
+    let icon = app_client.create_surface();
+    fix.roundtrip(&mut app_client);
+    let icon = fix.server_surface(&app_client, &icon);
 
     let mut frame = Frame::new(frame_sid);
     frame.width = 1600.0;
@@ -51,17 +56,17 @@ fn scene() -> (Fixture, u64, u64) {
     fix.ewm().apply_output_layout(HEAD, vec![frame]);
     fix.roundtrip(&mut frame_client);
     fix.roundtrip(&mut app_client);
-    (fix, app_sid, frame_sid)
+    (fix, app_sid, frame_sid, icon)
 }
 
 #[test]
 fn dnd_grab_follows_pointer_and_drop_focuses_target() {
-    let (mut fix, app_sid, frame_sid) = scene();
+    let (mut fix, app_sid, frame_sid, icon) = scene();
 
     fix.pointer_motion_to(400.0, 450.0);
     fix.pointer_button(BTN_LEFT, true);
     assert_eq!(fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
-    fix.start_pointer_dnd(app_sid);
+    fix.start_pointer_dnd(app_sid, Some(icon));
     assert!(fix.ewm_ref().pointer.is_grabbed());
     assert!(fix.ewm_ref().dnd_icon.is_some());
     // Focus-follows-mouse must stay quiet for the whole drag.
@@ -95,13 +100,13 @@ fn dnd_grab_follows_pointer_and_drop_focuses_target() {
 
 #[test]
 fn restarted_drag_keeps_its_icon() {
-    let (mut fix, app_sid, _) = scene();
+    let (mut fix, app_sid, _, icon) = scene();
 
     fix.pointer_motion_to(400.0, 450.0);
     fix.pointer_button(BTN_LEFT, true);
-    fix.start_pointer_dnd(app_sid);
+    fix.start_pointer_dnd(app_sid, Some(icon.clone()));
     // The second grab cancels the first, which must not clear the new icon.
-    fix.start_pointer_dnd(app_sid);
+    fix.start_pointer_dnd(app_sid, Some(icon));
     assert!(fix.ewm_ref().pointer.is_grabbed());
     assert!(fix.ewm_ref().dnd_icon.is_some());
 
@@ -111,7 +116,7 @@ fn restarted_drag_keeps_its_icon() {
 
 #[test]
 fn click_drag_still_pins_pointer_focus() {
-    let (mut fix, app_sid, _) = scene();
+    let (mut fix, app_sid, _, _) = scene();
 
     fix.pointer_motion_to(400.0, 450.0);
     fix.pointer_button(BTN_LEFT, true);

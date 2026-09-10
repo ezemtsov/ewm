@@ -493,7 +493,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
         Op::StartDnd => {
             // Needs a held button; a second start supersedes the first grab.
             if h.fix.ewm_ref().pointer.is_grabbed() {
-                h.fix.start_pointer_dnd(h.sid);
+                h.fix.start_pointer_dnd(h.sid, None);
                 h.dnd_active = true;
             }
         }

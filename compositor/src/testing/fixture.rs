@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use smithay::backend::input::ButtonState;
 use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tracing::info;
@@ -287,9 +288,28 @@ impl Fixture {
         })
     }
 
-    /// Start a pointer drag from surface SID, using it as the icon too; a
-    /// button must be held.
-    pub fn start_pointer_dnd(&mut self, sid: u64) {
+    /// Server-side resource of a client's bare (non-toplevel) surface.
+    pub fn server_surface(
+        &self,
+        client: &TestClient,
+        client_surface: &wayland_client::protocol::wl_surface::WlSurface,
+    ) -> WlSurface {
+        use smithay::reexports::wayland_server::Resource as _;
+        use wayland_client::Proxy as _;
+        let dh = &self.state.ewm.display_handle;
+        let id = dh
+            .backend_handle()
+            .object_for_protocol_id(
+                client.server_client_id.clone(),
+                WlSurface::interface(),
+                client_surface.id().protocol_id(),
+            )
+            .expect("surface not on the server; roundtrip first");
+        WlSurface::from_id(dh, id).unwrap()
+    }
+
+    /// Start a pointer drag from surface SID with ICON; a button must be held.
+    pub fn start_pointer_dnd(&mut self, sid: u64, icon: Option<WlSurface>) {
         use smithay::input::dnd::GrabType;
         use smithay::utils::SERIAL_COUNTER;
         use smithay::wayland::seat::WaylandFocus as _;
@@ -302,8 +322,8 @@ impl Fixture {
             .into_owned();
         let seat = self.state.ewm.seat.clone();
         self.state.dnd_requested(
-            source.clone(),
-            Some(source),
+            source,
+            icon,
             seat,
             SERIAL_COUNTER.next_serial(),
             GrabType::Pointer,

@@ -255,6 +255,10 @@ impl TestClient {
             .get_input_method(&seat, &qh, ())
     }
 
+    pub fn create_surface(&self) -> wl_surface::WlSurface {
+        self.compositor().create_surface(&self.qh(), ())
+    }
+
     pub fn create_kde_decoration(
         &self,
         surface: &wl_surface::WlSurface,
