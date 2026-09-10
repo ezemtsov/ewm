@@ -20,6 +20,10 @@ use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 use wayland_protocols::xdg::system_bell::v1::client::xdg_system_bell_v1;
+use wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration;
+use wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration_manager::{
+    self, OrgKdeKwinServerDecorationManager,
+};
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
@@ -77,6 +81,12 @@ pub enum ClientEvent {
     TextInputDone {
         serial: u32,
     },
+    KdeDecorationDefaultMode {
+        mode: WEnum<org_kde_kwin_server_decoration_manager::Mode>,
+    },
+    KdeDecorationMode {
+        mode: WEnum<org_kde_kwin_server_decoration::Mode>,
+    },
 }
 
 pub struct TestClient {
@@ -97,6 +107,7 @@ pub struct ClientState {
     pub text_input_manager: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3>,
     pub input_method_manager: Option<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>,
     pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
+    pub kde_decoration_manager: Option<OrgKdeKwinServerDecorationManager>,
     #[cfg(feature = "testing-layer-shell")]
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
@@ -244,6 +255,17 @@ impl TestClient {
             .get_input_method(&seat, &qh, ())
     }
 
+    pub fn create_kde_decoration(
+        &self,
+        surface: &wl_surface::WlSurface,
+    ) -> org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration {
+        self.state
+            .kde_decoration_manager
+            .as_ref()
+            .expect("kde decoration manager not bound; roundtrip the registry first")
+            .create(surface, &self.qh(), ())
+    }
+
     pub fn ring_bell(&self, surface: Option<&wl_surface::WlSurface>) {
         self.state
             .system_bell
@@ -384,6 +406,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.input_method_manager = Some(registry.bind(name, version, qh, ()));
         } else if interface == xdg_system_bell_v1::XdgSystemBellV1::interface().name {
             state.system_bell = Some(registry.bind(name, version, qh, ()));
+        } else if interface == OrgKdeKwinServerDecorationManager::interface().name {
+            state.kde_decoration_manager = Some(registry.bind(name, version, qh, ()));
         }
         #[cfg(feature = "testing-layer-shell")]
         if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
@@ -583,6 +607,38 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for ClientState {
             state
                 .events
                 .push(ClientEvent::ToplevelConfigure { width, height });
+        }
+    }
+}
+
+impl Dispatch<OrgKdeKwinServerDecorationManager, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &OrgKdeKwinServerDecorationManager,
+        event: org_kde_kwin_server_decoration_manager::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let org_kde_kwin_server_decoration_manager::Event::DefaultMode { mode } = event {
+            state
+                .events
+                .push(ClientEvent::KdeDecorationDefaultMode { mode });
+        }
+    }
+}
+
+impl Dispatch<org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+        event: org_kde_kwin_server_decoration::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let org_kde_kwin_server_decoration::Event::Mode { mode } = event {
+            state.events.push(ClientEvent::KdeDecorationMode { mode });
         }
     }
 }

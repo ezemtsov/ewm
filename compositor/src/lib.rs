@@ -139,13 +139,17 @@ use smithay::reexports::calloop::{
 };
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
+    Mode as KdeDecorationMode, OrgKdeKwinServerDecoration,
+};
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode;
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 use smithay::reexports::wayland_server::backend::{
     ClientData, ClientId, Credentials, DisconnectReason,
 };
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource};
+use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource, WEnum};
 use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
@@ -178,6 +182,7 @@ use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTa
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
+use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
 use smithay::wayland::shell::wlr_layer::{Layer, WlrLayerShellHandler, WlrLayerShellState};
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
@@ -834,6 +839,7 @@ pub struct Ewm {
     pub xdg_shell_state: XdgShellState,
     #[allow(dead_code)]
     pub xdg_decoration_state: XdgDecorationState,
+    pub kde_decoration_state: KdeDecorationState,
     pub shm_state: ShmState,
     pub dmabuf_state: DmabufState,
     pub seat_state: SeatState<State>,
@@ -1337,6 +1343,8 @@ impl Ewm {
             ],
         );
         let xdg_decoration_state = XdgDecorationState::new::<State>(&display_handle);
+        let kde_decoration_state =
+            KdeDecorationState::new::<State>(&display_handle, KdeDefaultMode::Server);
         let shm_state = ShmState::new::<State>(&display_handle, vec![]);
         let dmabuf_state = DmabufState::new();
         let mut seat_state: SeatState<State> = SeatState::new();
@@ -1457,6 +1465,7 @@ impl Ewm {
             compositor_state,
             xdg_shell_state,
             xdg_decoration_state,
+            kde_decoration_state,
             shm_state,
             dmabuf_state,
             seat_state,
@@ -8103,6 +8112,27 @@ impl XdgDecorationHandler for State {
     }
 }
 smithay::delegate_xdg_decoration!(State);
+
+// KDE Decoration, the only kind GTK understands
+impl KdeDecorationHandler for State {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.ewm.kde_decoration_state
+    }
+
+    fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
+        decoration.mode(KdeDecorationMode::Server);
+    }
+
+    fn request_mode(
+        &mut self,
+        _surface: &WlSurface,
+        decoration: &OrgKdeKwinServerDecoration,
+        _mode: WEnum<KdeDecorationMode>,
+    ) {
+        decoration.mode(KdeDecorationMode::Server);
+    }
+}
+smithay::delegate_kde_decoration!(State);
 
 // Layer Shell
 impl WlrLayerShellHandler for State {

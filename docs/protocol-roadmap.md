@@ -9,6 +9,7 @@ This document outlines Wayland protocols to implement for broader application co
 | `wl-compositor` | Core Wayland |
 | `xdg-shell` | Window management (including fullscreen) |
 | `xdg-decoration` | Server-side decorations |
+| `kde-server-decoration` | Server-side decorations for GTK clients |
 | `wlr-layer-shell` | Panels, notifications, wallpapers |
 | `wlr-screencopy` | Screenshot/recording |
 | `zwp-text-input-v3` | Input method support |
