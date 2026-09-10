@@ -873,7 +873,7 @@ fn compositor_state() -> &'static Mutex<CompositorState> {
 }
 
 /// Initialize logging to journald.
-/// Filter controlled by RUST_LOG env var (default: ewm=debug,smithay=warn).
+/// Filter controlled by RUST_LOG env var (default: ewm=info,smithay=warn).
 /// View logs with: journalctl --user -t ewm -f
 fn init_logging() {
     use std::sync::Once;
@@ -883,7 +883,7 @@ fn init_logging() {
 
     static INIT_LOG: Once = Once::new();
     INIT_LOG.call_once(|| {
-        let default_filter = "ewm=debug,smithay=warn";
+        let default_filter = "ewm=info,smithay=warn";
         let filter =
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 

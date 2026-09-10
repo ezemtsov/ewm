@@ -28,6 +28,7 @@ if [[ "$emacs_path" == */* && ! -x "$emacs_path" ]]; then
 fi
 
 cargo build --release --features screencast
+export RUST_LOG="${RUST_LOG:-ewm=debug,smithay=warn}"
 EWM_MODULE_PATH="$script_dir/target/release/libewm_core.so" \
     exec "$emacs_path" --fg-daemon=vt2 \
     -L "$script_dir/../lisp" \
