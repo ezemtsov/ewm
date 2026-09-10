@@ -287,6 +287,29 @@ impl Fixture {
         })
     }
 
+    /// Start a pointer drag from surface SID, using it as the icon too; a
+    /// button must be held.
+    pub fn start_pointer_dnd(&mut self, sid: u64) {
+        use smithay::input::dnd::GrabType;
+        use smithay::utils::SERIAL_COUNTER;
+        use smithay::wayland::seat::WaylandFocus as _;
+        use smithay::wayland::selection::data_device::WaylandDndGrabHandler as _;
+
+        assert!(self.state.ewm.pointer.is_grabbed(), "start_drag needs a held button");
+        let source = self.state.ewm.id_windows[&sid]
+            .wl_surface()
+            .unwrap()
+            .into_owned();
+        let seat = self.state.ewm.seat.clone();
+        self.state.dnd_requested(
+            source.clone(),
+            Some(source),
+            seat,
+            SERIAL_COUNTER.next_serial(),
+            GrabType::Pointer,
+        );
+    }
+
     /// Add a virtual output with the given name and size
     pub fn add_output(&mut self, name: &str, width: i32, height: i32) {
         let Backend::Headless(headless) = &mut self.state.backend else {
@@ -390,6 +413,14 @@ impl Fixture {
             .keyboard_focus
             .as_ref()
             .and_then(|surface| self.state.ewm.surface_id(surface))
+    }
+
+    pub fn pointer_focus_surface_id(&self) -> Option<u64> {
+        self.state
+            .ewm
+            .pointer_focus
+            .as_ref()
+            .and_then(|(surface, _)| self.state.ewm.surface_id(surface))
     }
 
     /// Apply stored output config for the named output (headless backend)

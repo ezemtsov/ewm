@@ -1335,8 +1335,20 @@ fn focus_pointer_target(state: &mut State, source: &str) {
     focus_target_at(state, pos, source);
 }
 
+/// Focus a drop's target like a click; a torn-off tab's window then opens there.
+fn focus_pending_drop(state: &mut State) {
+    if let Some(pos) = state.ewm.pending_drop.take() {
+        focus_target_at(state, pos, "drop");
+        state.sync_keyboard_focus();
+        state.maybe_activate_pointer_constraint();
+    }
+}
+
 /// Click-to-focus at `pos`: layer surfaces get on-demand focus, else the frame under.
 fn focus_target_at(state: &mut State, pos: Point<f64, Logical>, source: &str) {
+    if state.ewm.is_locked() {
+        return;
+    }
     let layer_under = state.ewm.layer_under_point(pos);
     let on_layer = layer_under.is_some();
     state.ewm.focus_layer_surface_if_on_demand(layer_under);
@@ -1463,8 +1475,7 @@ pub(crate) fn handle_pointer_button_state(
     // A popup grab owns input routing: skip click-to-focus so an outside click
     // dismisses the menu instead of re-focusing under it.
     if state.ewm.popup_grab.is_none() {
-        // Click-to-focus on press, unless locked (then just forward to the lock).
-        if !state.ewm.is_locked() && button_state == ButtonState::Pressed {
+        if button_state == ButtonState::Pressed {
             focus_pointer_target(state, "click");
         }
         // Sync keyboard focus before forwarding, so the right surface gets keys.
@@ -1481,6 +1492,7 @@ pub(crate) fn handle_pointer_button_state(
         },
     );
     pointer.frame(state);
+    focus_pending_drop(state);
 
     if button_state == ButtonState::Released {
         state.refresh_pointer_after_scene_change(false);
@@ -1642,11 +1654,8 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
     state.ewm.clear_tablet_cursor();
     let pointer = state.ewm.pointer.clone();
 
-    // When locked, skip scroll-to-focus
-    if !state.ewm.is_locked() {
-        // Scroll-to-focus: focus the surface under pointer on scroll
-        focus_pointer_target(state, "scroll");
-    }
+    // Scroll-to-focus: focus the surface under pointer on scroll
+    focus_pointer_target(state, "scroll");
 
     // Sync keyboard focus before forwarding the scroll event.
     state.sync_keyboard_focus();
@@ -1778,6 +1787,7 @@ pub fn handle_touch_up<B: InputBackend>(state: &mut State, event: B::TouchUpEven
             time: event.time_msec(),
         },
     );
+    focus_pending_drop(state);
     notify_activity(state);
 }
 
@@ -1934,9 +1944,7 @@ pub fn handle_tablet_tool_tip<B: InputBackend<Device = libinput::Device>>(
             tool.tip_down(SERIAL_COUNTER.next_serial(), event.time_msec());
 
             state.ewm.tablet_cursor_location = Some(pos);
-            if !state.ewm.is_locked() {
-                focus_target_at(state, pos, "tablet");
-            }
+            focus_target_at(state, pos, "tablet");
             state.sync_keyboard_focus();
             state.ewm.queue_redraw_for_pointer();
         }

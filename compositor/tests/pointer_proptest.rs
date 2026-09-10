@@ -15,10 +15,13 @@
 //!       pin to `output_geo.loc`, and non-fullscreen entries use
 //!       `output_geo.loc + working_area.loc + frame_dx + entry.{x,y}`.
 //!
-//! L3  - Pointer focus matches hit-test. Outside a pointer grab,
-//!       `ewm.pointer_focus.map(|(s, _)| s)` equals
+//! L3  - Pointer focus matches hit-test. Outside a pointer grab and during
+//!       a DnD grab, `ewm.pointer_focus.map(|(s, _)| s)` equals
 //!       `ewm.surface_under_point(pointer_location).map(|(s, _)| s)`.
-//!       During a grab, `pointer_focus` stays pinned to the grab surface.
+//!       During a click grab, `pointer_focus` stays pinned to the grab surface.
+//!
+//! D1  - No focus change mid-drag. A `WarpPointer` during a DnD grab leaves
+//!       `focused_entry_id` untouched, whatever focus-follows-mouse says.
 //!
 //! P1  - Enter target. After every `WarpPointer(p)` op followed by a
 //!       roundtrip, the client's most recent enter/leave transition matches
@@ -181,6 +184,8 @@ enum Op {
     SetFocusFollowsMouse {
         on: bool,
     },
+    /// Start a DnD from the app toplevel; a no-op unless a button is held.
+    StartDnd,
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -204,6 +209,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreateFramePopup { ax, ay }),
         any::<bool>().prop_map(|on| Op::SetClientFullscreen { on }),
         any::<bool>().prop_map(|on| Op::SetFocusFollowsMouse { on }),
+        Just(Op::StartDnd),
     ]
 }
 
@@ -231,6 +237,8 @@ struct Harness {
     pointer_focus_after_button: Option<SurfaceKey>,
     pointer_hit_after_button: Option<SurfaceKey>,
     pointer_grabbed_after_button: bool,
+    dnd_active: bool,
+    focused_entry_before_warp: Option<LayoutEntryId>,
 }
 
 impl Harness {
@@ -268,6 +276,8 @@ impl Harness {
             pointer_focus_after_button: None,
             pointer_hit_after_button: None,
             pointer_grabbed_after_button: false,
+            dnd_active: false,
+            focused_entry_before_warp: None,
         };
         // Drain setup events into the harness so the first op starts clean.
         let setup_events = h.client.drain_events();
@@ -441,6 +451,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
             };
             h.pointer_entry_id_before_warp = entry_id;
             h.pointer_surface_id_before_warp = surface_id;
+            h.focused_entry_before_warp = h.fix.ewm_ref().focused_entry_id;
             h.fix.pointer_motion_to(x as f64, y as f64);
         }
         Op::ProgrammaticWarpPointer { x, y } => {
@@ -477,6 +488,14 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.pointer_focus_after_button = focus;
             h.pointer_hit_after_button = hit;
             h.pointer_grabbed_after_button = grabbed;
+            h.dnd_active &= grabbed;
+        }
+        Op::StartDnd => {
+            // Needs a held button; a second start supersedes the first grab.
+            if h.fix.ewm_ref().pointer.is_grabbed() {
+                h.fix.start_pointer_dnd(h.sid);
+                h.dnd_active = true;
+            }
         }
         Op::CreatePopup { ax, ay } => {
             // Skip when the parent isn't placed; unconstrain would zero-clamp.
@@ -779,8 +798,8 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
 
 fn check_l3(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    // A grab pins pointer_focus to the grab surface, not the hit-test result.
-    if ewm.pointer.is_grabbed() {
+    // A click grab pins pointer_focus to its surface; a DnD grab hit-tests.
+    if ewm.pointer.is_grabbed() && !h.dnd_active {
         return Ok(());
     }
     let hit = ewm.surface_under_point(p);
@@ -801,6 +820,18 @@ fn check_l3(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
 fn check_l3_current(h: &Harness) -> Result<(), TestCaseError> {
     let p = Point::from(h.fix.ewm_ref().pointer_location());
     check_l3(h, p)
+}
+
+fn check_d1(h: &Harness) -> Result<(), TestCaseError> {
+    if !h.dnd_active {
+        return Ok(());
+    }
+    prop_assert_eq!(
+        h.fix.ewm_ref().focused_entry_id,
+        h.focused_entry_before_warp,
+        "D1: a drag must not move focus",
+    );
+    Ok(())
 }
 
 fn rect_contains_f64(rect: Rectangle<i32, Logical>, p: Point<f64, Logical>) -> bool {
@@ -1173,10 +1204,12 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
             check_p1(h, &events, p)?;
             check_f1(h, p)?;
             check_n1(h, p)?;
+            check_d1(h)?;
         }
         Op::ProgrammaticWarpPointer { x, y } => {
             let p = Point::from((x as f64, y as f64));
-            check_l3(h, p)?;
+            // A grab ignores the warp, so check where the pointer actually is.
+            check_l3_current(h)?;
             check_p1(h, &events, p)?;
             check_n1(h, p)?;
         }

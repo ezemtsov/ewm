@@ -51,13 +51,6 @@ fn frame_with_entry_at(
     }
 }
 
-fn pointer_focus_surface_id(fixture: &Fixture) -> Option<u64> {
-    let ewm = fixture.ewm_ref();
-    ewm.pointer_focus
-        .as_ref()
-        .and_then(|(surface, _)| ewm.surface_id(surface))
-}
-
 fn entry_fullscreen(fixture: &Fixture, output: &str, entry_id: LayoutEntryId) -> Option<bool> {
     fixture
         .ewm_ref()
@@ -263,7 +256,7 @@ fn output_layout_command_refreshes_pointer_focus() {
         vec![frame_with_entry_at(100, entry_id, surface_id, 0, 0)],
     );
     fixture.warp_pointer(10.0, 10.0);
-    assert_eq!(pointer_focus_surface_id(&fixture), Some(surface_id));
+    assert_eq!(fixture.pointer_focus_surface_id(), Some(surface_id));
 
     fixture.apply_output_layout_command(
         "Virtual-1",
@@ -273,7 +266,7 @@ fn output_layout_command_refreshes_pointer_focus() {
         .ewm_ref()
         .surface_under_point(Point::from((10.0, 10.0)))
         .is_none());
-    assert_eq!(pointer_focus_surface_id(&fixture), None);
+    assert_eq!(fixture.pointer_focus_surface_id(), None);
 }
 
 #[test]
@@ -308,16 +301,16 @@ fn frame_focus_switch_refreshes_stationary_pointer_after_transition() {
         ],
     );
     fixture.warp_pointer(10.0, 10.0);
-    assert_eq!(pointer_focus_surface_id(&fixture), Some(first_surface_id));
+    assert_eq!(fixture.pointer_focus_surface_id(), Some(first_surface_id));
 
     fixture.ewm().animations_clock.set_complete_instantly(true);
     fixture.ewm().set_focus_frame(200, "test", false);
-    assert_eq!(pointer_focus_surface_id(&fixture), Some(first_surface_id));
+    assert_eq!(fixture.pointer_focus_surface_id(), Some(first_surface_id));
 
     fixture.dispatch();
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), second_surface_id);
-    assert_eq!(pointer_focus_surface_id(&fixture), Some(second_surface_id));
+    assert_eq!(fixture.pointer_focus_surface_id(), Some(second_surface_id));
 }
 
 #[test]

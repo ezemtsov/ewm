@@ -45,17 +45,20 @@ This document outlines Wayland protocols to implement for broader application co
   Emacs can split the window for dragged surfaces while replacing the
   buffer for explicitly launched apps
 
-**Why we need it**: Without this protocol, browsers detach tabs by
-internally creating a new window with no compositor-level signal that
-it's part of a drag. The compositor sees an ordinary `new_toplevel` and
-Emacs has no way to know it should split. With `xdg-toplevel-drag-v1`,
-the client declares the association explicitly, and the compositor can
-tag the new surface event with `drag: true`.
+**Why we need it**: Without this protocol, browsers detach tabs over
+plain `wl_data_device`: Firefox opens a new window when the drop is
+rejected, Chromium (133+) keeps the torn-off window hidden during the
+drag and shows it when the drag ends. Both work today: Emacs rejects the
+tab's mime types, and a drop focuses the Emacs window under the pointer
+like a click, so the new window lands there. What is missing is the live
+window following the cursor and an explicit association between the drag
+and the new toplevel.
 
-**Status**: Chromium 144 supports it client-side. Smithay has no
-compositor-side handler yet (tracked in Smithay#781). Implementation
-requires building the handler against raw `wayland-protocols` bindings,
-similar to our `screencopy` and `output-management` custom protocols.
+**Status**: Chromium supports it client-side; Firefox does not (GTK3,
+Bugzilla 1955820). Smithay has no compositor-side handler yet (tracked
+in Smithay#781). Implementation requires building the handler against
+raw `wayland-protocols` bindings, similar to our `screencopy` and
+`output-management` custom protocols.
 
 **Complexity**: Medium. Intercept DnD grab, bind toplevel to drag
 session, position toplevel at pointer during drag, handle drop/cancel
@@ -177,7 +180,7 @@ session, position toplevel at pointer during drag, handle drop/cancel
 | data-device (DnD) | Nemo file drag, Firefox tab drag | Done |
 | pointer-constraints | `pointer-constraints-demo` | TODO |
 | idle-inhibit | Video player, `wayland-info` | Done |
-| xdg-toplevel-drag | Chromium tab detach | TODO |
+| xdg-toplevel-drag | Chromium live tab drag | TODO |
 
 ## References
 

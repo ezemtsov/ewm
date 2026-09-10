@@ -128,7 +128,9 @@ use smithay::desktop::{
 use smithay::input::dnd::{self, DnDGrab, DndGrabHandler, DndTarget};
 use smithay::input::keyboard::xkb::keysyms;
 use smithay::input::keyboard::{KeyboardHandle, ModifiersState};
-use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData, PointerHandle};
+use smithay::input::pointer::{
+    ClickGrab, CursorImageStatus, CursorImageSurfaceData, PointerHandle,
+};
 use smithay::input::touch::TouchHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{self, Output, PhysicalProperties, Subpixel};
@@ -973,6 +975,8 @@ pub struct Ewm {
 
     // DnD icon surface (shown at pointer during drag)
     pub dnd_icon: Option<DndIcon>,
+    // Drop location from `dropped`, focused by the input handler outside the pointer lock.
+    pub pending_drop: Option<Point<f64, Logical>>,
 
     // Layer shell state
     pub layer_shell_state: WlrLayerShellState,
@@ -1525,6 +1529,7 @@ impl Ewm {
             popups: PopupManager::default(),
             popup_grab: None,
             dnd_icon: None,
+            pending_drop: None,
             layer_shell_state,
             unmapped_layer_surfaces: std::collections::HashSet::new(),
             layer_shell_on_demand_focus: None,
@@ -6251,14 +6256,23 @@ impl Ewm {
         focus.as_ref().map(|(surface, _)| surface)
     }
 
+    /// Click, move and resize grabs pin delivery; DnD and popup grabs hit-test.
+    fn grab_pins_pointer_focus(&self) -> bool {
+        self.pointer
+            .with_grab(|_, grab| {
+                grab.is::<ClickGrab<State>>()
+                    || grab.is::<floating_move_grab::MoveGrab>()
+                    || grab.is::<floating_resize_grab::ResizeGrab>()
+            })
+            .unwrap_or(false)
+    }
+
     pub(crate) fn update_pointer_focus_for_motion(
         &mut self,
         pos: Point<f64, Logical>,
     ) -> (Option<SurfaceHit>, bool) {
-        // A delivery-pinning grab (click-drag, DnD) keeps its surface; a popup
-        // grab instead needs the real surface under the pointer to route hover.
         let grabbed = self.pointer.is_grabbed();
-        if grabbed && self.popup_grab.is_none() {
+        if self.grab_pins_pointer_focus() {
             return (self.pointer_focus.clone(), false);
         }
         let under = self.pointer_target_at(pos);
@@ -7854,15 +7868,12 @@ impl WaylandDndGrabHandler for State {
         serial: smithay::utils::Serial,
         type_: dnd::GrabType,
     ) {
-        self.ewm.dnd_icon = icon.map(|surface| DndIcon {
-            surface,
-            offset: Point::from((0, 0)),
-        });
-
         match type_ {
             dnd::GrabType::Pointer => {
                 let pointer = seat.get_pointer().unwrap();
-                let start_data = pointer.grab_start_data().unwrap();
+                let mut start_data = pointer.grab_start_data().unwrap();
+                // Seeds the drop location; the click grab's press point is stale.
+                start_data.location = pointer.current_location();
                 let grab = DnDGrab::new_pointer(&self.ewm.display_handle, start_data, source, seat);
                 pointer.set_grab(self, grab, serial, smithay::input::pointer::Focus::Keep);
             }
@@ -7874,6 +7885,11 @@ impl WaylandDndGrabHandler for State {
             }
         }
 
+        // After set_grab: cancelling a superseded DnD grab clears the icon.
+        self.ewm.dnd_icon = icon.map(|surface| DndIcon {
+            surface,
+            offset: Point::from((0, 0)),
+        });
         self.ewm.queue_redraw_all();
     }
 }
@@ -7883,8 +7899,17 @@ impl DndGrabHandler for State {
         _target: Option<DndTarget<'_, Self>>,
         _validated: bool,
         _seat: Seat<Self>,
-        _location: Point<f64, Logical>,
+        location: Point<f64, Logical>,
     ) {
+        // A drop acts like a click; a torn-off tab's window then opens there.
+        self.ewm.pending_drop = Some(location);
+        self.ewm.dnd_icon = None;
+        self.ewm.queue_redraw_all();
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>, _location: Point<f64, Logical>) {
+        // Forget the hover so focus-follows-mouse re-evaluates on the next motion.
+        self.ewm.pointer_entry_id = None;
         self.ewm.dnd_icon = None;
         self.ewm.queue_redraw_all();
     }
@@ -8793,7 +8818,7 @@ impl State {
     /// a motion event so Smithay's internal pointer focus is up to date.
     /// Called before constraint activation to ensure focus is synced.
     fn refresh_pointer_focus(&mut self) {
-        if self.ewm.pointer.is_grabbed() {
+        if self.ewm.grab_pins_pointer_focus() {
             return;
         }
         let (x, y) = self.ewm.pointer_location();
@@ -8814,7 +8839,7 @@ impl State {
     }
 
     fn refresh_pointer_after_scene_change(&mut self, skip_strip_animation: bool) -> bool {
-        if self.ewm.pointer.is_grabbed() {
+        if self.ewm.grab_pins_pointer_focus() {
             return false;
         }
         let (x, y) = self.ewm.pointer_location();
@@ -8977,10 +9002,17 @@ impl State {
 
     /// Drop the tracked popup grab once it has ended.
     pub fn refresh_popup_grab(&mut self) {
-        if let Some(grab) = &self.ewm.popup_grab {
-            if grab.has_ended() {
-                self.ewm.popup_grab = None;
-            }
+        let Some(grab) = &self.ewm.popup_grab else {
+            return;
+        };
+        // A DnD started from the menu takes over the pointer grab.
+        let superseded = self
+            .ewm
+            .pointer
+            .with_grab(|_, g| !g.is::<PopupPointerGrab<State>>())
+            .unwrap_or(false);
+        if grab.has_ended() || superseded {
+            self.ewm.popup_grab = None;
         }
     }
 
