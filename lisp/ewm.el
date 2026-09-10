@@ -1834,7 +1834,7 @@ instead of the generated minor-mode command."
     (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css))
   (unless (advice-member-p #'ewm--prevent-frame-deletion 'delete-frame)
     (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion))
-  (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
+  (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook t))
 
 (defun ewm--teardown ()
   "Remove Emacs-side state installed by `ewm--setup'."
