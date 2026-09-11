@@ -323,12 +323,44 @@ impl TestClient {
         anchor: Rectangle<i32, Logical>,
         size: Size<i32, Logical>,
     ) -> Popup {
+        self.create_popup_with(
+            parent_xdg,
+            anchor,
+            size,
+            xdg_positioner::ConstraintAdjustment::None,
+        )
+    }
+
+    /// Like `create_popup`, asking the compositor to slide the popup on screen.
+    pub fn create_sliding_popup(
+        &mut self,
+        parent: &Toplevel,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) -> Popup {
+        self.create_popup_with(
+            &parent.xdg_surface,
+            anchor,
+            size,
+            xdg_positioner::ConstraintAdjustment::SlideX
+                | xdg_positioner::ConstraintAdjustment::SlideY,
+        )
+    }
+
+    fn create_popup_with(
+        &mut self,
+        parent_xdg: &xdg_surface::XdgSurface,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+        adjustment: xdg_positioner::ConstraintAdjustment,
+    ) -> Popup {
         let qh = self.eq.handle();
         let positioner = self.wm_base().create_positioner(&qh, ());
         positioner.set_anchor_rect(anchor.loc.x, anchor.loc.y, anchor.size.w, anchor.size.h);
         positioner.set_size(size.w, size.h);
         positioner.set_anchor(xdg_positioner::Anchor::BottomLeft);
         positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
+        positioner.set_constraint_adjustment(adjustment);
         let surface = self.compositor().create_surface(&qh, ());
         let xdg_surface = self.wm_base().get_xdg_surface(&surface, &qh, ());
         let xdg_popup = xdg_surface.get_popup(Some(parent_xdg), &positioner, &qh, ());

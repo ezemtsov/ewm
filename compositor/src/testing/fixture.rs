@@ -175,6 +175,20 @@ impl Fixture {
         popup
     }
 
+    /// Open a popup on `parent` that asks to be slid back on screen.
+    pub fn open_sliding_popup(
+        &mut self,
+        client: &mut TestClient,
+        parent: &crate::testing::Toplevel,
+        anchor: Rectangle<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) -> crate::testing::Popup {
+        let popup = client.create_sliding_popup(parent, anchor, size);
+        self.roundtrip(client);
+        self.finish_xdg(client, &popup.surface, &popup.xdg_surface, size);
+        popup
+    }
+
     /// Open a popup on `parent` (a toplevel), grabbed before the mapping commit.
     pub fn open_popup_grabbed(
         &mut self,

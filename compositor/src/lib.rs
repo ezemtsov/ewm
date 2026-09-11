@@ -7001,6 +7001,18 @@ impl Ewm {
         ))
     }
 
+    /// Working area in an Emacs frame's own coordinates.
+    fn frame_popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
+        let output = self.mapped_output_by_name(self.frame_location(id)?.output_name)?;
+        let output_geo = self.space.output_geometry(output)?;
+        let working_area = self.get_working_area(output);
+        let origin = self.emacs_frame_origin(id)?;
+        Some(Rectangle::new(
+            output_geo.loc + working_area.loc - origin,
+            working_area.size,
+        ))
+    }
+
     /// Unconstrain a popup's position to keep it within screen bounds.
     ///
     /// For window popups, computes the target from the layout entry position
@@ -7015,9 +7027,12 @@ impl Ewm {
 
         // Window popup path
         if let Some(id) = self.surface_id(&root) {
-            let raw_target = self
-                .popup_target_rect(id)
-                .unwrap_or_else(|| Rectangle::from_size(self.output_size));
+            let raw_target = if self.is_emacs_frame(id) {
+                self.frame_popup_target_rect(id)
+            } else {
+                self.popup_target_rect(id)
+            }
+            .unwrap_or_else(|| Rectangle::from_size(self.output_size));
             let toplevel_coords = get_popup_toplevel_coords(&popup_kind);
             let mut target = raw_target;
             target.loc -= toplevel_coords;
