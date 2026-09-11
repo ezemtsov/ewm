@@ -1612,20 +1612,20 @@ impl Ewm {
             .expect("failed to register IM relay event source");
     }
 
-    /// Remove a surface from all output strips and the reverse index.
-    fn remove_surface_from_layouts(&mut self, id: u64) {
+    /// Detach a surface from every layout entry and the reverse index.
+    fn detach_surface_from_layouts(&mut self, id: u64) {
         self.surface_outputs.remove(&id);
         for frame in self.frame_set.all_frames_mut() {
-            frame.retain_entries(|entry| entry.surface_id() != Some(id));
+            frame.detach_surface(id);
         }
         for space in self.floating_spaces.values_mut() {
             for frame in &mut space.frames {
-                frame.retain_entries(|entry| entry.surface_id() != Some(id));
+                frame.detach_surface(id);
             }
         }
     }
 
-    /// Restore the focus invariants after a layout swap or surface destruction:
+    /// Restore the focus invariants after a layout swap or frame removal:
     /// drop stale `selected_entry_id` / `focused_entry_id`, and zero
     /// `focused_frame_id` when its frame no longer exists.
     fn prune_dangling_focus(&mut self) {
@@ -7329,7 +7329,7 @@ impl Ewm {
         self.flush_pending_title_event(id);
         self.surface_info.remove(&id);
         let was_emacs = self.is_emacs_frame(id);
-        self.remove_surface_from_layouts(id);
+        self.detach_surface_from_layouts(id);
         self.remove_emacs_frame_from_strip(id, active_close);
         self.prune_dangling_focus();
         self.queue_event(Event::Close { id });
@@ -7338,8 +7338,9 @@ impl Ewm {
             id, was_focused, close_was_active, was_emacs, output
         );
 
-        #[cfg(feature = "screencast")]
-        self.refresh_mapped_cast_outputs();
+        if was_emacs {
+            self.refresh_mapped_cast_outputs();
+        }
 
         if active_close {
             // Output may be unknown if lisp pruned the frame before destroy fired.

@@ -384,14 +384,14 @@ impl Frame {
         self.fullscreen = None;
     }
 
-    pub fn retain_entries(&mut self, mut keep: impl FnMut(&LayoutEntry) -> bool) {
-        self.entries.retain(|entry| keep(entry));
-        self.validate_fullscreen();
-        if let Some(selected) = self.selected_entry_id {
-            if !self.entries.iter().any(|entry| entry.id == selected) {
-                self.selected_entry_id = None;
+    /// Unbind a destroyed surface from its entries without removing them.
+    pub fn detach_surface(&mut self, surface_id: u64) {
+        for entry in &mut self.entries {
+            if entry.surface_id() == Some(surface_id) {
+                entry.surface = None;
             }
         }
+        self.validate_fullscreen();
     }
 }
 

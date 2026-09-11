@@ -367,6 +367,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             let was_present = layout_surface_ids(fix).contains(&id);
             let was_focused = fix.ewm_ref().focused_surface_id() == id;
             let prev_focused_frame = fix.ewm_ref().focused_frame_id;
+            let prev_focused_entry = fix.ewm_ref().focused_entry_id;
             let destroyed_entry_ids: HashSet<LayoutEntryId> = all_frames(fix)
                 .flat_map(|frame| frame.entries.iter())
                 .filter(|entry| entry.surface_id() == Some(id))
@@ -389,23 +390,22 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     "destroy({}) left stale surface_outputs entry",
                     id,
                 );
+                let detached: HashSet<LayoutEntryId> = all_frames(fix)
+                    .flat_map(|frame| frame.entries.iter())
+                    .filter(|entry| entry.surface.is_none())
+                    .map(|entry| entry.id)
+                    .collect();
+                assert!(
+                    destroyed_entry_ids.is_subset(&detached),
+                    "destroy({}) removed the windows that showed it",
+                    id,
+                );
                 assert_ne!(
                     fix.ewm_ref().focused_surface_id(),
                     id,
                     "destroy({}) left keyboard focus on the dead surface",
                     id,
                 );
-                for frame in all_frames(fix) {
-                    assert!(
-                        frame
-                            .selected_entry_id
-                            .is_none_or(|entry_id| !destroyed_entry_ids.contains(&entry_id)),
-                        "destroy({}) left stale selected_entry_id {:?} on frame {}",
-                        id,
-                        frame.selected_entry_id,
-                        frame.surface_id,
-                    );
-                }
                 if was_focused {
                     assert_eq!(
                         fix.ewm_ref().focused_frame_id,
@@ -415,8 +415,8 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     );
                     assert_eq!(
                         fix.ewm_ref().focused_entry_id,
-                        None,
-                        "destroy({}) left focused_entry_id set",
+                        prev_focused_entry,
+                        "destroy({}) moved focus off the window",
                         id,
                     );
                 }
@@ -598,44 +598,6 @@ proptest! {
         prop_assert!(!strip_frame_ids(&fix).contains(&closing_id));
         let strip = fix.ewm_ref().frame_set.mapped_strip(OUTPUTS[0]).unwrap();
         prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(expected));
-    }
-
-    #[test]
-    fn destroying_focused_embedded_surface_parks_focus_on_host_frame(
-        surface_id in ENTRY_SID_RANGE,
-        entry_idx in 0usize..MAX_ENTRIES_PER_LAYOUT,
-    ) {
-        let mut fix = Fixture::new().unwrap();
-        fix.add_output(OUTPUTS[0], 1920, 1080);
-
-        let entry_id = entry_entry_id_for(100, entry_idx);
-        fix.ewm()
-            .apply_output_layout(OUTPUTS[0], vec![frame_with_entry(100, entry_id, surface_id)]);
-        prop_assert!(fix
-            .ewm_ref()
-            .surface_outputs
-            .get(&surface_id)
-            .is_some_and(|outputs| outputs.contains(OUTPUTS[0])));
-        fix.ewm().set_focus_entry(entry_id, "proptest", false);
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, 100);
-        prop_assert_eq!(fix.ewm_ref().focused_entry_id, Some(entry_id));
-        prop_assert_eq!(fix.ewm_ref().focused_surface_id(), surface_id);
-
-        let refocus = fix.ewm().handle_toplevel_destroyed_by_id(surface_id);
-
-        prop_assert_eq!(refocus, None);
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, 100);
-        prop_assert_eq!(fix.ewm_ref().focused_entry_id, None);
-        prop_assert_eq!(fix.ewm_ref().focused_surface_id(), 100);
-        prop_assert!(!fix.ewm_ref().surface_outputs.contains_key(&surface_id));
-        let frame = fix
-            .ewm_ref()
-            .frame_set.mapped_strip(OUTPUTS[0])
-            .and_then(|strip| strip.frames.first())
-            .unwrap();
-        prop_assert_eq!(frame.surface_id, 100);
-        prop_assert_eq!(frame.selected_entry_id, None);
-        prop_assert!(frame.entries.is_empty());
     }
 
     #[test]

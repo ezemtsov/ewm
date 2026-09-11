@@ -97,7 +97,7 @@ fn destroying_real_toplevel_cleans_layout_focus_indexes_and_emits_close() {
     assert!(!layout_surface_ids(&fix).contains(&sid));
     assert!(!fix.ewm_ref().surface_outputs.contains_key(&sid));
     assert_eq!(fix.ewm_ref().focused_frame_id, frame_id);
-    assert_eq!(fix.ewm_ref().focused_entry_id, None);
+    assert_eq!(fix.ewm_ref().focused_entry_id, Some(entry_id));
     assert_eq!(fix.ewm_ref().focused_surface_id(), frame_id);
 
     let events = fix.drain_events();
@@ -185,7 +185,7 @@ fn disconnecting_focused_toplevel_cleans_layout_focus_indexes_and_emits_close() 
     assert!(!layout_surface_ids(&fix).contains(&sid));
     assert!(!fix.ewm_ref().surface_outputs.contains_key(&sid));
     assert_eq!(fix.ewm_ref().focused_frame_id, frame_id);
-    assert_eq!(fix.ewm_ref().focused_entry_id, None);
+    assert_eq!(fix.ewm_ref().focused_entry_id, Some(entry_id));
     assert_eq!(fix.ewm_ref().focused_surface_id(), frame_id);
 
     let events = fix.drain_events();

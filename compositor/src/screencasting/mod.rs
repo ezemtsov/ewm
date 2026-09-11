@@ -103,8 +103,7 @@ pub struct Screencasting {
     /// stays registered across reinits after `FatalError`.
     pub pw_to_compositor: Sender<PwToCompositor>,
 
-    /// Cached map: layout entry id -> output. Populated in
-    /// `apply_output_layout()`.
+    /// Layout entry id -> output, rebuilt by `refresh_mapped_cast_outputs`.
     pub mapped_cast_output: HashMap<LayoutEntryId, Output>,
 
     // Drop PipeWire last, specifically after `casts`, to prevent a
