@@ -219,6 +219,11 @@ use crate::protocols::foreign_toplevel::{
 };
 use crate::protocols::output_management::{OutputManagementHandler, OutputManagementState};
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
+use crate::protocols::virtual_pointer::{
+    VirtualPointerAxisEvent, VirtualPointerButtonEvent, VirtualPointerHandler,
+    VirtualPointerInputBackend, VirtualPointerManagerState, VirtualPointerMotionAbsoluteEvent,
+    VirtualPointerMotionEvent,
+};
 use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
 
 fn surface_root(surface: &WlSurface) -> WlSurface {
@@ -942,6 +947,9 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub virtual_keyboard_state: VirtualKeyboardManagerState,
 
+    // Virtual pointer state (zwlr-virtual-pointer-v1 protocol)
+    pub virtual_pointer_state: VirtualPointerManagerState,
+
     // When true, intercept all keys and send to Emacs for text input
     pub text_input_intercept: bool,
     // Deduplicates relay activate/deactivate events and holds commits queued
@@ -1373,6 +1381,10 @@ impl Ewm {
         let virtual_keyboard_state =
             VirtualKeyboardManagerState::new::<State, _>(&display_handle, |_| true);
 
+        // Initialize virtual pointer (zwlr-virtual-pointer-v1)
+        let virtual_pointer_state =
+            VirtualPointerManagerState::new::<State, _>(&display_handle, |_| true);
+
         // Initialize layer shell for panels, notifications, etc.
         let layer_shell_state = WlrLayerShellState::new::<State>(&display_handle);
 
@@ -1511,6 +1523,7 @@ impl Ewm {
             text_input_state,
             input_method_state,
             virtual_keyboard_state,
+            virtual_pointer_state,
             text_input_intercept: false,
             im_text_input: im::text_input::TextInputCommitState::default(),
             popups: PopupManager::default(),
@@ -7979,6 +7992,33 @@ delegate_input_method_manager!(State);
 // Smithay handles key forwarding directly to the focused surface, bypassing the
 // compositor's keyboard input pipeline. No VirtualKeyboardHandler impl needed.
 delegate_virtual_keyboard_manager!(State);
+
+// Virtual Pointer (zwlr-virtual-pointer-v1: lets clients inject pointer motion,
+// buttons and axis, routed through the normal input handlers).
+impl VirtualPointerHandler for State {
+    fn virtual_pointer_manager_state(&mut self) -> &mut VirtualPointerManagerState {
+        &mut self.ewm.virtual_pointer_state
+    }
+
+    fn on_virtual_pointer_motion(&mut self, event: VirtualPointerMotionEvent) {
+        crate::input::handle_pointer_motion::<VirtualPointerInputBackend>(self, event);
+        self.ewm.queue_redraw_for_pointer();
+    }
+
+    fn on_virtual_pointer_motion_absolute(&mut self, event: VirtualPointerMotionAbsoluteEvent) {
+        crate::input::handle_pointer_motion_absolute::<VirtualPointerInputBackend>(self, event);
+        self.ewm.queue_redraw_for_pointer();
+    }
+
+    fn on_virtual_pointer_button(&mut self, event: VirtualPointerButtonEvent) {
+        crate::input::handle_pointer_button::<VirtualPointerInputBackend>(self, event);
+    }
+
+    fn on_virtual_pointer_axis(&mut self, event: VirtualPointerAxisEvent) {
+        crate::input::handle_pointer_axis::<VirtualPointerInputBackend>(self, event);
+    }
+}
+delegate_virtual_pointer!(State);
 
 // XDG Shell
 impl XdgShellHandler for State {
