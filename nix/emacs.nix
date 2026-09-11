@@ -36,8 +36,8 @@
 
   src = fetchgit {
     url = "https://codeberg.org/ezemtsov/emacs.git";
-    rev = "05e0d94d35e5c90a7f70c9435d50f9f0eba90bcf"; # wayland-31.1
-    hash = "sha256-jAWiUYpi37IDTk226R+lqF2m6B8ext1LwyTE7qzhR5o=";
+    rev = "f7f37411b1c4ad713e227e7f039847159a07732d"; # wayland-31.1
+    hash = "sha256-WpbNF0k29BFTvumBlb58TZse+OaHOQ+ODsiLrw4AGmQ=";
   };
 
   # Drop the image opt-outs the bare (no-GTK) build inherits, then turn the
