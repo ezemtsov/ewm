@@ -51,6 +51,12 @@
 //!       dispatch/roundtrip, if the button op leaves no active grab,
 //!       `pointer_focus` already matches the current hit-test target.
 //!
+//! P6  - Drag-source coordinates. After a `WarpPointer(p)` op while a click
+//!       grab pins the frame's toplevel, the frame client receives motion at
+//!       `p - origin`, unless drag-source is on and the surface under `p`
+//!       belongs to another client: then it receives `-(p - origin) - 1`,
+//!       both coordinates negative.
+//!
 //! C1  - Configure tracks primary. If the toplevel has a primary entry,
 //!       the most recent `xdg_toplevel.configure` the client received
 //!       carries `(width, height)` equal to that entry's output size when
@@ -184,6 +190,9 @@ enum Op {
     SetFocusFollowsMouse {
         on: bool,
     },
+    SetDragSource {
+        on: bool,
+    },
     /// Start a DnD from the app toplevel; a no-op unless a button is held.
     StartDnd,
 }
@@ -209,6 +218,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         (50i32..350, 50i32..350).prop_map(|(ax, ay)| Op::CreateFramePopup { ax, ay }),
         any::<bool>().prop_map(|on| Op::SetClientFullscreen { on }),
         any::<bool>().prop_map(|on| Op::SetFocusFollowsMouse { on }),
+        any::<bool>().prop_map(|on| Op::SetDragSource { on }),
         Just(Op::StartDnd),
     ]
 }
@@ -223,6 +233,8 @@ struct Harness {
     frame_toplevel: Toplevel,
     frame_sid: u64,
     frame_popups: Vec<Popup>,
+    /// Frame client events from the last `roundtrip_all`.
+    frame_events: Vec<ClientEvent>,
     /// Latest `xdg_toplevel.configure` size the client has been told, accumulated
     /// across drain windows. `None` until the first configure arrives.
     last_configure: Option<(i32, i32)>,
@@ -268,6 +280,7 @@ impl Harness {
             frame_toplevel,
             frame_sid,
             frame_popups: Vec::new(),
+            frame_events: Vec::new(),
             last_configure: None,
             toplevel_on_outputs: HashSet::new(),
             pointer_entry_id_before_warp: None,
@@ -289,7 +302,7 @@ impl Harness {
     fn roundtrip_all(&mut self) {
         self.fix.roundtrip(&mut self.client);
         self.fix.roundtrip(&mut self.frame_client);
-        self.frame_client.drain_events();
+        self.frame_events = self.frame_client.drain_events();
     }
 
     /// Apply enter/leave/configure events from a drain window to harness state.
@@ -439,6 +452,9 @@ fn apply_op(h: &mut Harness, op: &Op) {
         }
         Op::SetFocusFollowsMouse { on } => {
             h.fix.ewm().focus_follows_mouse_mode = on;
+        }
+        Op::SetDragSource { on } => {
+            h.fix.ewm().emacs_drag_source = on;
         }
         Op::WarpPointer { x, y } => {
             let (entry_id, surface_id) = {
@@ -994,6 +1010,58 @@ fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+fn check_p6(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    if !ewm.pointer.is_grabbed() || h.dnd_active {
+        return Ok(());
+    }
+    let Some((focus, origin)) = ewm.pointer_focus.as_ref() else {
+        return Ok(());
+    };
+    let frame_key = client_surface_key(&h.frame_client, &h.frame_toplevel.surface);
+    if server_surface_key(ewm, focus) != Some(frame_key) {
+        return Ok(());
+    }
+    let hit_client = ewm
+        .surface_under_point(p)
+        .and_then(|(s, _)| ewm.display_handle.get_client(s.id()).ok())
+        .map(|c| c.id());
+    let foreign =
+        ewm.emacs_drag_source && hit_client.is_some_and(|c| c != h.frame_client.server_client_id());
+    let local = p - *origin;
+    let expected = if foreign {
+        Point::from((-local.x - 1.0, -local.y - 1.0))
+    } else {
+        local
+    };
+    let motions: Vec<(f64, f64)> = h
+        .frame_events
+        .iter()
+        .filter_map(|e| match e {
+            ClientEvent::PointerMotion { x, y } => Some((*x, *y)),
+            _ => None,
+        })
+        .collect();
+    prop_assert!(
+        !motions.is_empty(),
+        "P6: pinned frame received no motion for warp to {:?}",
+        p
+    );
+    for (x, y) in motions {
+        prop_assert!(
+            (x - expected.x).abs() < 0.01 && (y - expected.y).abs() < 0.01,
+            "P6: warp to {:?} (foreign={}, drag_source={}) reached the frame at ({}, {}), expected {:?}",
+            p,
+            foreign,
+            ewm.emacs_drag_source,
+            x,
+            y,
+            expected
+        );
+    }
+    Ok(())
+}
+
 fn check_p3(h: &Harness, events: &[ClientEvent], pressed: bool) -> Result<(), TestCaseError> {
     let focus_id = h.pointer_focus_at_button.clone();
     let ours = h.our_surface_keys();
@@ -1202,6 +1270,7 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
             let p = Point::from((x as f64, y as f64));
             check_l3(h, p)?;
             check_p1(h, &events, p)?;
+            check_p6(h, p)?;
             check_f1(h, p)?;
             check_n1(h, p)?;
             check_d1(h)?;

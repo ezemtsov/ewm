@@ -86,6 +86,7 @@ Override individual bindings with `use-package':
 (declare-function ewm-keyboard-capture-begin-module "ewm-core" (reason))
 (declare-function ewm-keyboard-capture-end-module "ewm-core" (token))
 (declare-function ewm-keyboard-redirect-capture-clear-module "ewm-core")
+(declare-function ewm-set-drag-source "ewm-core" (active))
 (declare-function ewm-get-focused-id "ewm-core")
 (declare-function ewm-get-focused-frame-id "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
@@ -322,6 +323,36 @@ warps from packages that temporarily switch windows internally
         (setq ewm--mff-last-window window)
         (ewm-input--warp-pointer-to-window window)))))
 
+;;; Drag source
+;;
+;; mouse.el starts a cross-program drag only once the pointer leaves the
+;; frame's pixel bounds, but other clients live inside frames here, so the
+;; compositor reports motion over them as outside while `track-mouse' is
+;; `drag-source'.  The `track-mouse' form binds and restores the variable
+;; from C without notifying watchers, so the watcher only sees the `setq';
+;; `post-command-hook' clears the flag once the command ends.
+
+(defvar ewm-input--drag-source nil
+  "Drag-source state last pushed to the compositor.")
+
+(defun ewm-input--set-drag-source (active)
+  "Push ACTIVE to the compositor when it differs from the last push."
+  (setq active (and active t))
+  ;; Cache only what a live module was told, so a change while the module
+  ;; is off is re-pushed once it starts.
+  (when (and (not (eq active ewm-input--drag-source))
+             (bound-and-true-p ewm--module-mode))
+    (setq ewm-input--drag-source active)
+    (ewm-set-drag-source active)))
+
+(defun ewm-input--track-mouse-watcher (_symbol newval _operation _where)
+  "Mirror `track-mouse' becoming NEWVAL into the compositor."
+  (ewm-input--set-drag-source (eq newval 'drag-source)))
+
+(defun ewm-input--sync-drag-source ()
+  "Mirror the current `track-mouse' into the compositor."
+  (ewm-input--set-drag-source (eq track-mouse 'drag-source)))
+
 ;;; Keyboard capture
 ;;
 ;; The compositor consumes the physical key that starts an intercepted Emacs
@@ -458,6 +489,8 @@ redirect capture."
   "Enable EWM input handling."
   (setq ewm--mff-last-window (selected-window))
   (add-hook 'post-command-hook #'ewm-input--sync-keyboard-capture)
+  (add-hook 'post-command-hook #'ewm-input--sync-drag-source)
+  (add-variable-watcher 'track-mouse #'ewm-input--track-mouse-watcher)
   (add-hook 'minibuffer-setup-hook #'ewm-input--keyboard-capture-on)
   (add-hook 'minibuffer-exit-hook #'ewm-input--sync-keyboard-capture)
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
@@ -471,6 +504,9 @@ redirect capture."
   "Disable EWM input handling."
   (setq ewm--mff-last-window nil)
   (remove-hook 'post-command-hook #'ewm-input--sync-keyboard-capture)
+  (remove-hook 'post-command-hook #'ewm-input--sync-drag-source)
+  (remove-variable-watcher 'track-mouse #'ewm-input--track-mouse-watcher)
+  (ewm-input--set-drag-source nil)
   (remove-hook 'minibuffer-setup-hook #'ewm-input--keyboard-capture-on)
   (remove-hook 'minibuffer-exit-hook #'ewm-input--sync-keyboard-capture)
   (remove-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)

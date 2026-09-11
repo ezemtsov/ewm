@@ -625,6 +625,10 @@ pub enum ModuleCommand {
     ConfigureFocusFollowsMouse {
         state: bool,
     },
+    /// Mirror whether Emacs' `track-mouse' is `drag-source'.
+    SetDragSource {
+        active: bool,
+    },
     /// Focus the active frame on the output adjacent to the current one.
     /// `dx`/`dy` are -1/+1 along one axis; the other axis is 0.
     FocusOutputDirection {
@@ -1739,6 +1743,16 @@ fn configure_cursor_module(theme: Option<String>, size: i64) -> Result<()> {
 fn set_focus_follows_mouse(state: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::ConfigureFocusFollowsMouse {
         state: state.is_not_nil(),
+    });
+    Ok(())
+}
+
+/// Tell the compositor whether Emacs is tracking a drag source (module mode).
+/// ACTIVE is non-nil while `track-mouse' is `drag-source'.
+#[defun]
+fn set_drag_source(active: Value<'_>) -> Result<()> {
+    push_command(ModuleCommand::SetDragSource {
+        active: active.is_not_nil(),
     });
     Ok(())
 }

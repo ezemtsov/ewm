@@ -30,6 +30,7 @@ use smithay::input::keyboard::{
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
 
+use crate::frame_click_grab::FrameClickGrab;
 use crate::im::repeat::HeldKeyOwner;
 use crate::{
     module, tracy_span, InterceptDispatch, InterceptedKey, State, SurfaceHit, TranslateTarget,
@@ -620,7 +621,7 @@ use smithay::backend::input::{
     TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState,
 };
 use smithay::input::pointer::{
-    AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus as PointerFocus,
+    AxisFrame, ButtonEvent, ClickGrab, CursorIcon, CursorImageStatus, Focus as PointerFocus,
     GrabStartData as PointerGrabStartData, MotionEvent, RelativeMotionEvent,
 };
 use smithay::input::touch::{
@@ -1454,6 +1455,26 @@ fn try_start_floating_mod_mouse_grab(
     false
 }
 
+/// Swap the implicit click grab on an Emacs frame's own surface for `FrameClickGrab`.
+fn replace_frame_click_grab(state: &mut State, serial: smithay::utils::Serial) {
+    let pointer = state.ewm.pointer.clone();
+    if pointer.with_grab(|_, grab| grab.is::<ClickGrab<State>>()) != Some(true) {
+        return;
+    }
+    let Some(start_data) = pointer.grab_start_data() else {
+        return;
+    };
+    let on_frame = start_data
+        .focus
+        .as_ref()
+        .and_then(|(surface, _)| state.ewm.surface_id(surface))
+        .is_some_and(|id| state.ewm.is_emacs_frame(id));
+    if on_frame {
+        let grab = FrameClickGrab::new(start_data);
+        pointer.set_grab(state, grab, serial, PointerFocus::Keep);
+    }
+}
+
 pub(crate) fn handle_pointer_button_state(
     state: &mut State,
     button_state: ButtonState,
@@ -1491,6 +1512,9 @@ pub(crate) fn handle_pointer_button_state(
             time: time_msec,
         },
     );
+    if button_state == ButtonState::Pressed {
+        replace_frame_click_grab(state, serial);
+    }
     pointer.frame(state);
     focus_pending_drop(state);
 

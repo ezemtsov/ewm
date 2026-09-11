@@ -36,6 +36,7 @@ pub mod floating;
 mod floating_move_grab;
 mod floating_resize_grab;
 mod floating_shadow;
+mod frame_click_grab;
 pub mod frame_clock;
 pub mod gtk;
 pub mod im;
@@ -903,6 +904,8 @@ pub struct Ewm {
     pub introspect_windows_dirty: bool,
     /// Focus follows mouse
     pub focus_follows_mouse_mode: bool,
+    /// Emacs is tracking a drag source (`track-mouse' is `drag-source').
+    pub emacs_drag_source: bool,
     /// Alpha multiplier for inactive layout entries; 1.0 disables.
     pub unfocused_alpha: f32,
     /// UID of the layout entry currently under the pointer (for FFM view detection).
@@ -1510,6 +1513,7 @@ impl Ewm {
             active_outputs_dirty: true,
             introspect_windows_dirty: false,
             focus_follows_mouse_mode: false,
+            emacs_drag_source: false,
             unfocused_alpha: 1.0,
             pointer_entry_id: None,
             input_configs: Vec::new(),
@@ -6270,10 +6274,23 @@ impl Ewm {
         self.pointer
             .with_grab(|_, grab| {
                 grab.is::<ClickGrab<State>>()
+                    || grab.is::<frame_click_grab::FrameClickGrab>()
                     || grab.is::<floating_move_grab::MoveGrab>()
                     || grab.is::<floating_resize_grab::ResizeGrab>()
             })
             .unwrap_or(false)
+    }
+
+    /// Emacs tracks a drag source and `pos` is over another client's surface.
+    pub(crate) fn drag_source_over_foreign(
+        &self,
+        frame: &WlSurface,
+        pos: Point<f64, Logical>,
+    ) -> bool {
+        self.emacs_drag_source
+            && self.surface_under_point(pos).is_some_and(|(surface, _)| {
+                surface.client().map(|c| c.id()) != frame.client().map(|c| c.id())
+            })
     }
 
     pub(crate) fn update_pointer_focus_for_motion(
@@ -9607,6 +9624,9 @@ impl State {
             }
             ModuleCommand::ConfigureFocusFollowsMouse { state: setting } => {
                 self.ewm.focus_follows_mouse_mode = setting;
+            }
+            ModuleCommand::SetDragSource { active } => {
+                self.ewm.emacs_drag_source = active;
             }
             ModuleCommand::ConfigureUnfocusedAlpha { alpha } => {
                 self.ewm.unfocused_alpha = alpha.clamp(0.0, 1.0);
