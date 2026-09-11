@@ -3749,10 +3749,10 @@ impl Ewm {
         self.focus_any_frame_if_unfocused(focus_reason);
     }
 
-    fn sync_focus_after_layout_merge(&mut self, output_name: &str) {
+    /// Follow the focused frame's selected window after a merge, even if only its surface changed.
+    fn sync_focus_after_layout_merge(&mut self, output_name: &str, focused_surface: u64) {
         let frame_id = self.focused_frame_id;
-        let focused_entry_id = self.focused_entry_id;
-        let mut focus_entry_update: Option<Option<LayoutEntryId>> = None;
+        let mut selected = None;
 
         let Some(strip) = self.frame_set.mapped_strip_mut(output_name) else {
             return;
@@ -3763,26 +3763,27 @@ impl Ewm {
             .position(|frame| frame.surface_id == frame_id)
         {
             strip.set_active(new_idx);
-            let new_entry = strip.frames[new_idx].selected_entry_id;
-            if new_entry != focused_entry_id {
-                focus_entry_update = Some(new_entry);
-            }
+            selected = Some(strip.frames[new_idx].selected_entry_id);
         } else if !strip.frames.is_empty() {
             let clamped = strip.active_idx().min(strip.frames.len() - 1);
             strip.set_active(clamped);
         }
 
-        if let Some(new_entry) = focus_entry_update {
-            self.set_focus_state(frame_id, new_entry);
+        let Some(new_entry) = selected else {
+            return;
+        };
+        let entry_changed = new_entry != self.focused_entry_id;
+        self.set_focus_state(frame_id, new_entry);
+        if entry_changed || self.focused_surface_id() != focused_surface {
             self.clear_focused_urgency();
+            self.flush_pending_title_event(self.focused_surface_id());
             module::record_focus(self.focused_surface_id(), "layout_selected", None);
         }
     }
 
-    fn sync_focus_after_floating_layout_merge(&mut self, output_name: &str) {
+    fn sync_focus_after_floating_layout_merge(&mut self, output_name: &str, focused_surface: u64) {
         let frame_id = self.focused_frame_id;
-        let focused_entry_id = self.focused_entry_id;
-        let mut focus_entry_update: Option<Option<LayoutEntryId>> = None;
+        let mut selected = None;
 
         let Some(space) = self.floating_spaces.get_mut(output_name) else {
             return;
@@ -3792,16 +3793,18 @@ impl Ewm {
             .iter()
             .position(|frame| frame.surface_id == frame_id)
         {
-            let new_entry = space.frames[idx].selected_entry_id;
-            if new_entry != focused_entry_id {
-                focus_entry_update = Some(new_entry);
-            }
+            selected = Some(space.frames[idx].selected_entry_id);
             space.activate_frame(frame_id);
         }
 
-        if let Some(new_entry) = focus_entry_update {
-            self.set_focus_state(frame_id, new_entry);
+        let Some(new_entry) = selected else {
+            return;
+        };
+        let entry_changed = new_entry != self.focused_entry_id;
+        self.set_focus_state(frame_id, new_entry);
+        if entry_changed || self.focused_surface_id() != focused_surface {
             self.clear_focused_urgency();
+            self.flush_pending_title_event(self.focused_surface_id());
             module::record_focus(self.focused_surface_id(), "floating_layout_selected", None);
         }
     }
@@ -3845,9 +3848,10 @@ impl Ewm {
         // Omitted frames keep their chrome until Wayland destroy arrives, but
         // their layout entries are cleared by `merge_layout_frames`.
         let clock = self.animations_clock.clone();
+        let focused_surface = self.focused_surface_id();
         let strip_entry = self.frame_set.ensure_mapped_strip(output_name, clock);
         strip_entry.merge_layout_frames(frames, module::has_pending_active_frame_close);
-        self.sync_focus_after_layout_merge(output_name);
+        self.sync_focus_after_layout_merge(output_name, focused_surface);
 
         self.reconcile_entry_snapshots(&snapshots);
         self.send_frame_migration_output_events(&output, &migrations);
@@ -3874,12 +3878,13 @@ impl Ewm {
     /// Apply floating frame contents for an output; Rust keeps positions and stacking.
     pub fn apply_floating_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
         let pre = self.strip_entries(output_name);
+        let focused_surface = self.focused_surface_id();
         let Some(space) = self.ensure_floating_space_for_output(output_name) else {
             warn!("apply_floating_layout: output '{}' not found", output_name);
             return;
         };
         space.merge_layout_frames(frames);
-        self.sync_focus_after_floating_layout_merge(output_name);
+        self.sync_focus_after_floating_layout_merge(output_name, focused_surface);
         let post = self.strip_entries(output_name);
         let output = self.find_mapped_output(output_name);
         self.reconcile_output_membership(output_name, output.as_ref(), &pre, &post);
@@ -5581,7 +5586,7 @@ impl Ewm {
 
     /// Check if focus is on an Emacs surface (for key interception decisions)
     pub fn is_focus_on_emacs(&self) -> bool {
-        self.focused_entry_id.is_none() && self.is_emacs_frame(self.focused_frame_id)
+        self.is_emacs_frame(self.focused_surface_id())
     }
 
     pub(crate) fn is_keyboard_focus_on_emacs(&self) -> bool {
