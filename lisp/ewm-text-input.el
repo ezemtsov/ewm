@@ -157,12 +157,8 @@ Commit the IM translation to the client, else forward the key unchanged."
 (defvar-local ewm-edit--surface-id nil
   "Surface id of the field this `ewm-edit' buffer replaces.")
 
-(defvar-local ewm-edit--window-configuration nil
-  "Window configuration to restore when the `ewm-edit' buffer closes.")
-
 ;; Survive a major-mode change in the edit buffer.
 (put 'ewm-edit--surface-id 'permanent-local t)
-(put 'ewm-edit--window-configuration 'permanent-local t)
 
 (defun ewm-edit--buffer-name (surface-id)
   "Buffer name for editing the field on SURFACE-ID."
@@ -194,7 +190,6 @@ Commit the IM translation to the client, else forward the key unchanged."
          (surface-id (nth 0 surrounding))
          (text (nth 1 surrounding))
          (cursor (nth 2 surrounding))
-         (config (current-window-configuration))
          (buffer (get-buffer-create (ewm-edit--buffer-name surface-id))))
     ;; A late ack for a prior replace must not kill this fresh buffer.
     (remhash surface-id ewm-edit--pending)
@@ -204,7 +199,6 @@ Commit the IM translation to the client, else forward the key unchanged."
       (goto-char (or (ignore-errors (byte-to-position (1+ cursor))) (point-max)))
       (ewm-edit-mode 1)
       (setq ewm-edit--surface-id surface-id)
-      (setq ewm-edit--window-configuration config)
       (setq header-line-format
             (substitute-command-keys
              "Edit, then \\[ewm-edit-finish] to replace or \\[ewm-edit-cancel] to cancel")))
@@ -216,12 +210,11 @@ Commit the IM translation to the client, else forward the key unchanged."
   (unless ewm-edit-mode
     (user-error "Not in an ewm-edit buffer"))
   (let ((text (buffer-string))
-        (surface-id ewm-edit--surface-id)
-        (config ewm-edit--window-configuration))
+        (surface-id ewm-edit--surface-id))
     (puthash surface-id (current-buffer) ewm-edit--pending)
     (setq header-line-format "Replacing…")
-    ;; Restoring the config refocuses the field, which drains the queued replace.
-    (when config (set-window-configuration config))
+    ;; Return to the field, keeping the edit buffer until the replace is acked.
+    (quit-windows-on (current-buffer))
     (ewm-text-input-replace text surface-id)))
 
 (defun ewm-edit-cancel ()
@@ -229,11 +222,9 @@ Commit the IM translation to the client, else forward the key unchanged."
   (interactive)
   (unless ewm-edit-mode
     (user-error "Not in an ewm-edit buffer"))
-  (let ((config ewm-edit--window-configuration))
-    (when ewm-edit--surface-id
-      (remhash ewm-edit--surface-id ewm-edit--pending))
-    (kill-buffer)
-    (when config (set-window-configuration config))))
+  (when ewm-edit--surface-id
+    (remhash ewm-edit--surface-id ewm-edit--pending))
+  (quit-windows-on (current-buffer) t))
 
 (defun ewm--handle-text-input-replaced (event)
   "Drop the edit buffer whose replace the compositor delivered."

@@ -22,6 +22,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'windmove)
 
 (defmacro ewm--cmd (&rest args)
   "Create an interactive command that runs ARGS as a subprocess."
@@ -70,8 +71,8 @@
     ;; Reorder frames horizontally; reorder windows within a frame vertically.
     (define-key map (kbd "C-s-<left>") #'ewm-frame-move-left)
     (define-key map (kbd "C-s-<right>") #'ewm-frame-move-right)
-    (define-key map (kbd "C-s-<up>") #'buf-move-up)
-    (define-key map (kbd "C-s-<down>") #'buf-move-down)
+    (define-key map (kbd "C-s-<up>") #'windmove-swap-states-up)
+    (define-key map (kbd "C-s-<down>") #'windmove-swap-states-down)
     ;; Select Nth frame on current output's strip.
     (dotimes (i 9)
       (define-key map (kbd (format "s-%d" (1+ i))) #'ewm-frame-select))
@@ -249,7 +250,7 @@ the original binding from `ewm-mode-map' is used."
   '(ewm-focus-left ewm-focus-right ewm-focus-up ewm-focus-down
     ewm-frame-left ewm-frame-right
     ewm-frame-move-left ewm-frame-move-right
-    buf-move-up buf-move-down
+    windmove-swap-states-up windmove-swap-states-down
     ewm-next-surface-buffer ewm-prev-surface-buffer)
   "Commands whose intercepted key bindings repeat while held."
   :type '(repeat function)
@@ -365,9 +366,6 @@ warps from packages that temporarily switch windows internally
 (defvar ewm-input--keyboard-capture-token nil
   "Current compositor keyboard-capture lease token, or nil.")
 
-(defvar ewm-input--intercepted-command-active nil
-  "Non-nil while running an intercepted command from the compositor.")
-
 (defun ewm-input--prefix-key-active-p ()
   "Return non-nil when the current command keys are an incomplete prefix."
   (and (null this-command)
@@ -399,8 +397,7 @@ warps from packages that temporarily switch windows internally
 
 (defun ewm-input--keyboard-capture-start-allowed-p ()
   "Return non-nil when a new compositor keyboard-capture lease may start."
-  (or ewm-input--intercepted-command-active
-      (not (bound-and-true-p ewm--module-mode))
+  (or (not (bound-and-true-p ewm--module-mode))
       (ewm-input--emacs-frame-focused-p)
       (ewm-input--command-key-active-p)
       (ewm-input--prefix-key-active-p)))
@@ -453,11 +450,9 @@ redirect capture."
 (defun ewm-input--set-read-function-capture (enabled)
   "Enable or disable capture advice around input-reading functions."
   (dolist (fn ewm-input--keyboard-capture-read-functions)
-    (when (fboundp fn)
-      (if enabled
-          (unless (advice-member-p #'ewm-input--with-keyboard-capture fn)
-            (advice-add fn :around #'ewm-input--with-keyboard-capture))
-        (advice-remove fn #'ewm-input--with-keyboard-capture)))))
+    (if enabled
+        (advice-add fn :around #'ewm-input--with-keyboard-capture)
+      (advice-remove fn #'ewm-input--with-keyboard-capture))))
 
 ;;; Frame-switch suppression
 ;;
@@ -638,22 +633,14 @@ get a :translate target delivered to non-Emacs surfaces."
        (vconcat (mapcar #'cdr (nreverse specs)))))))
 
 (defun ewm--handle-intercepted-command (event)
-  "Invoke an intercepted command EVENT through `ewm-mode-map'."
+  "Queue intercepted EVENT for normal Emacs command processing."
   (when-let* ((key (alist-get 'key event))
-              ((stringp key))
-              (macro (read-kbd-macro key t))
-              ((> (length macro) 0))
-              (binding (lookup-key ewm-mode-map macro))
-              ((ewm--live-binding-p binding))
-              ((not (keymapp binding)))
-              ((commandp binding)))
-    (let ((last-command-event (aref macro (1- (length macro))))
-          (last-input-event (aref macro (1- (length macro))))
-          (this-command binding)
-          (ewm-input--intercepted-command-active t))
-      (unwind-protect
-          (call-interactively binding nil macro)
-        (ewm-input--sync-keyboard-capture)))))
+              ((stringp key)))
+    ;; These are new keystrokes: record them for command keys and macros.
+    ;; Append so multiple events received in one pipe read retain their order.
+    (setq unread-command-events
+          (nconc unread-command-events
+                 (mapcar (lambda (event) (cons t event)) (key-parse key))))))
 
 (provide 'ewm-input)
 ;;; ewm-input.el ends here

@@ -44,7 +44,6 @@
 
 (defvar ewm--module-mode)
 (defvar ewm-input--keyboard-capture-token)
-(defvar ewm-input--intercepted-command-active)
 (defvar ewm-input-tests--focused-id 2)
 (defvar ewm-input-tests--focused-frame-id 2)
 
@@ -54,7 +53,6 @@
   (cl-destructuring-bind (token command &optional menu-active) state
     `(let ((ewm--module-mode t)
            (ewm-input--keyboard-capture-token ,token)
-           (ewm-input--intercepted-command-active nil)
            (this-command ,command)
            (prefix-arg nil)
            calls)
@@ -254,56 +252,44 @@
   (should (null (ewm--parse-intercept-entry [some vector])))
   (should (null (ewm--parse-intercept-entry 'a-symbol))))
 
-(ert-deftest ewm-input-tests/intercepted-command-uses-ewm-mode-map-binding ()
-  "Command events invoke the `ewm-mode-map' binding, not ambient maps."
-  (let ((ewm-mode-map (copy-keymap ewm-mode-map))
-        (ewm--module-mode nil)
-        (ewm-input--keyboard-capture-token nil)
-        (ambient-map (make-sparse-keymap))
-        seen
-        ambient-hit)
-    (define-key ewm-mode-map (kbd "s-1")
-                (lambda ()
-                  (interactive)
-                  (setq seen last-command-event)))
-    (define-key ambient-map (kbd "s-1")
-                (lambda ()
-                  (interactive)
-                  (setq ambient-hit t)))
-    (let ((overriding-terminal-local-map ambient-map))
-      (ewm--handle-intercepted-command '((key . "s-1"))))
-    (should (equal seen ?\s-1))
-    (should-not ambient-hit)))
+(ert-deftest ewm-input-tests/intercepted-command-uses-active-keymap ()
+  "Queued commands respect normal key lookup and command hooks."
+  (let ((overriding-terminal-local-map (make-sparse-keymap))
+        (unread-command-events nil)
+        (pre-command-hook nil)
+        (post-command-hook nil)
+        seen)
+    (define-key overriding-terminal-local-map (kbd "s-1")
+                (lambda () (interactive) (push last-command-event seen)))
+    (add-hook 'post-command-hook
+              (lambda () (when (equal last-command-event ?\s-1)
+                           (push 'post seen))))
+    (ewm--handle-intercepted-command '((key . "s-1")))
+    (should-not seen)
+    (execute-kbd-macro [])
+    (should (equal seen '(post ?\s-1)))))
 
-(ert-deftest ewm-input-tests/intercepted-command-syncs-keyboard-capture ()
-  "Command-event dispatch updates capture state after the command returns."
-  (let ((ewm-mode-map (copy-keymap ewm-mode-map))
-        synced)
-    (define-key ewm-mode-map (kbd "s-2")
-                (lambda () (interactive)))
-    (cl-letf (((symbol-function 'ewm-input--sync-keyboard-capture)
-               (lambda () (setq synced t))))
-      (ewm--handle-intercepted-command '((key . "s-2"))))
-    (should synced)))
+(ert-deftest ewm-input-tests/intercepted-command-retains-event-order ()
+  "Multiple pipe events append to input already waiting for Emacs."
+  (let ((unread-command-events (list (cons t ?a))))
+    (ewm--handle-intercepted-command '((key . "s-2")))
+    (ewm--handle-intercepted-command '((key . "s-3")))
+    (should (equal unread-command-events '((t . ?a) (t . ?\s-2) (t . ?\s-3))))))
 
-(ert-deftest ewm-input-tests/intercepted-command-cleanup-does-not-refresh-layout ()
-  "Command dispatch may sync capture, but must not send layout updates."
-  (let ((ewm-mode-map (copy-keymap ewm-mode-map))
-        (ewm--module-mode t)
+(ert-deftest ewm-input-tests/intercepted-command-does-not-change-focus ()
+  "Queueing input leaves capture and layout changes to command processing."
+  (let ((ewm--module-mode t)
         (ewm-input--keyboard-capture-token 42)
+        (unread-command-events nil)
         calls)
-    (define-key ewm-mode-map (kbd "s-3")
-                (lambda () (interactive)))
     (cl-letf (((symbol-function 'ewm-keyboard-capture-end-module)
-               (lambda (token) (push (list :end token) calls) t))
+               (lambda (token) (push token calls)))
               ((symbol-function 'ewm-keyboard-redirect-capture-clear-module)
-               (lambda () (push :clear-redirect calls) t))
-              ((symbol-function 'ewm-layout--menu-active-p)
-               (lambda () nil)))
+               (lambda () (push :clear calls))))
       (ewm-input-tests--should-not-refresh-layout
         (ewm--handle-intercepted-command '((key . "s-3")))))
-    (should (equal calls '(:clear-redirect (:end 42))))
-    (should-not ewm-input--keyboard-capture-token)))
+    (should-not calls)
+    (should (equal ewm-input--keyboard-capture-token 42))))
 
 ;;;; keyboard capture sync
 
@@ -371,12 +357,13 @@
     (should (equal ewm-input--keyboard-capture-token 42))))
 
 (ert-deftest ewm-input-tests/keyboard-capture-on-allows-intercepted-command ()
-  "An EWM command launched from an app may capture for minibuffer input."
-  (ewm-input-tests--with-capture-state (nil nil)
+  "A queued EWM command has normal command-key provenance for capture."
+  (ewm-input-tests--with-capture-state (nil 'ewm-launch-app)
     (let ((ewm-input-tests--focused-id 3)
-          (ewm-input-tests--focused-frame-id 2)
-          (ewm-input--intercepted-command-active t))
-      (ewm-input--keyboard-capture-on))
+          (ewm-input-tests--focused-frame-id 2))
+      (cl-letf (((symbol-function 'this-command-keys-vector)
+                 (lambda () (kbd "s-d"))))
+        (ewm-input--keyboard-capture-on)))
     (should (equal calls '((:begin "command-loop"))))
     (should (equal ewm-input--keyboard-capture-token 42))))
 

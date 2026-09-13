@@ -12,8 +12,6 @@
 
 ;;; Code:
 
-(require 'cl-lib)
-
 (declare-function ewm-focus-target-module "ewm-core" (focus-id))
 (declare-function ewm-layout--ensure-frame-focus-id "ewm-layout" (frame))
 (declare-function ewm-layout--menu-active-p "ewm-layout" ())
@@ -37,11 +35,9 @@
 
 (defun ewm--find-window-by-entry-id (entry-id)
   "Window whose `ewm-entry-id' parameter is ENTRY-ID, if any."
-  (cl-some
-   (lambda (frame)
-     (cl-find-if (lambda (w) (eql (window-parameter w 'ewm-entry-id) entry-id))
-                 (window-list frame 'no-minibuf)))
-   (frame-list)))
+  (get-window-with-predicate
+   (lambda (window) (eql (window-parameter window 'ewm-entry-id) entry-id))
+   'no-minibuf t))
 
 (defun ewm--find-frame-by-focus-id (focus-id)
   "Frame whose chrome focus id matches FOCUS-ID, if any.

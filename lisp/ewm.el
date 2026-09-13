@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
-;; Package-Requires: ((emacs "28.1"))
+;; Package-Requires: ((emacs "29.1"))
 
 ;;; Commentary:
 
@@ -90,9 +90,6 @@ FORMAT-STRING and ARGS are passed to `format'."
 (defvar ewm--compositor-ready nil
   "Non-nil when compositor has signaled it is ready.")
 
-(defvar ewm--mode-command-active nil
-  "Non-nil while the generated `ewm-mode' command owns hook dispatch.")
-
 (defconst ewm--compositor-ready-timeout 30.0
   "Seconds to wait for the compositor to signal readiness on start.")
 
@@ -100,7 +97,7 @@ FORMAT-STRING and ARGS are passed to `format'."
   "Seconds to wait for the compositor to halt on stop.")
 
 (defconst ewm--compositor-poll-interval 0.1
-  "Seconds between polls of the compositor's ready/running flag.")
+  "Seconds between polls of the compositor's running flag during shutdown.")
 
 (defun ewm--compositor-active-p ()
   "Return non-nil if compositor is active."
@@ -138,15 +135,12 @@ FORMAT-STRING and ARGS are passed to `format'."
   "Create a pipe process and register it as the compositor event channel."
   (ewm--destroy-event-channel)
   (setq ewm--event-buffer "")
-  (let ((proc (make-pipe-process :name "ewm-events"
-                                 :noquery t
-                                 :filter #'ewm--event-filter)))
-    ;; Drop the auto-allocated buffer: the filter consumes the pipe
-    ;; directly, and leaving it exposes a kill target in `list-buffers'.
-    (let ((buf (process-buffer proc)))
-      (set-process-buffer proc nil)
-      (when (buffer-live-p buf) (kill-buffer buf)))
-    (setq ewm--event-process proc))
+  (with-temp-buffer
+    (setq ewm--event-process
+          (make-pipe-process :name "ewm-events" :buffer (current-buffer)
+                             :coding 'utf-8-unix :noquery t
+                             :filter #'ewm--event-filter))
+    (set-process-buffer ewm--event-process nil))
   (ewm-init-event-channel ewm--event-process))
 
 (defun ewm--destroy-event-channel ()
@@ -575,36 +569,25 @@ apply; nil ignores the bell."
   "Maximum depth when walking a shell's /proc PPid chain to find its surface.")
 
 (defun ewm--cwd-ancestors (pid)
-  "Return list of ancestor PIDs for PID by walking /proc PPid chain."
-  (let ((ancestors nil)
+  "Return PID and its ancestors on the compositor host."
+  (let ((default-directory "/")
+        (ancestors nil)
         (current pid)
         (depth 0))
     (while (and current (< depth ewm--cwd-ancestor-walk-max))
       (push current ancestors)
-      (let ((status-file (format "/proc/%d/status" current)))
-        (setq current
-              (when (file-readable-p status-file)
-                (with-temp-buffer
-                  (insert-file-contents status-file)
-                  (when (re-search-forward "^PPid:\\s-*\\([0-9]+\\)" nil t)
-                    (let ((ppid (string-to-number (match-string 1))))
-                      (and (> ppid 1) ppid)))))))
+      (let ((ppid (alist-get 'ppid (process-attributes current))))
+        (setq current (and ppid (> ppid 1) ppid)))
       (cl-incf depth))
     ancestors))
 
 (defun ewm--cwd-find-buffer (shell-pid)
   "Find the surface buffer whose PID is an ancestor of SHELL-PID."
-  (let ((ancestors (ewm--cwd-ancestors shell-pid))
-        (found nil))
-    (maphash (lambda (_id buf)
-               (when (and (not found)
-                          (buffer-live-p buf)
-                          (buffer-local-value 'ewm-surface-pid buf)
-                          (memq (buffer-local-value 'ewm-surface-pid buf)
-                                ancestors))
-                 (setq found buf)))
-             ewm--surfaces)
-    found))
+  (let ((ancestors (ewm--cwd-ancestors shell-pid)))
+    (cl-loop for buf being the hash-values of ewm--surfaces
+             when (and (buffer-live-p buf)
+                       (memq (buffer-local-value 'ewm-surface-pid buf) ancestors))
+             return buf)))
 
 (defun ewm--report-cwd (shell-pid cwd)
   "Report that shell with SHELL-PID has changed directory to CWD.
@@ -678,17 +661,8 @@ Frame migration is compositor-owned and arrives as `frame_moved' events."
 Similar to `exwm-workspace-rename-buffer'."
   (let* ((app (or ewm-surface-app "unknown"))
          (title (or ewm-surface-title ""))
-         ;; Use title if available, otherwise just app
-         (basename (if (string-empty-p title)
-                       (format "ewm:%s" app)
-                     (format "ewm:%s" title)))
-         (name (format "*%s*" basename))
-         (counter 1))
-    ;; Handle name conflicts by adding <N> suffix
-    (while (and (get-buffer name)
-                (not (eq (get-buffer name) (current-buffer))))
-      (setq name (format "*%s<%d>*" basename (cl-incf counter))))
-    (rename-buffer name)))
+         (name (format "*ewm:%s*" (if (string-empty-p title) app title))))
+    (rename-buffer name t)))
 
 (defvar ewm--late-frames-replayed nil
   "Non-nil once frames created after the ready event asked for a focus replay.")
@@ -738,32 +712,19 @@ changing the available area for Emacs frames."
 
 ;;; Clipboard integration
 
-(defvar ewm--last-selection nil
-  "Last selection text received from compositor, to avoid echo.")
-
-(defconst ewm--unset (make-symbol "ewm--unset")
-  "Internal marker for saved values that have not been set.")
-
-(defvar ewm--saved-interprogram-cut-function ewm--unset
-  "Saved value of `interprogram-cut-function' before EWM override.")
-
-(defvar ewm--saved-interprogram-paste-function ewm--unset
-  "Saved value of `interprogram-paste-function' before EWM override.")
-
 (defun ewm--handle-selection-changed (event)
   "Handle selection-changed EVENT from compositor.
 Push the text onto the kill ring."
   (let ((text (alist-get 'text event)))
     (when (and text (not (string-empty-p text))
                (not (equal text (car kill-ring))))
-      (setq ewm--last-selection text)
-      (kill-new text))))
+      (let ((interprogram-cut-function nil)
+            (interprogram-paste-function nil))
+        (kill-new text)))))
 
 (defun ewm--interprogram-cut-function (text)
   "Send TEXT to Wayland clipboard via compositor."
-  (when (and (ewm--compositor-active-p)
-             (not (equal text ewm--last-selection)))
-    (setq ewm--last-selection text)
+  (when (ewm--compositor-active-p)
     (ewm-set-selection-module text)))
 
 (defun ewm--handle-activate-workspace (event)
@@ -982,18 +943,11 @@ the request when the workspace is already focused."
 (defun ewm-show-state ()
   "Display the compositor state dump in *ewm-state*."
   (interactive)
-  (let ((buf (get-buffer-create "*ewm-state*")))
-    (with-current-buffer buf
-      (let ((inhibit-read-only t)) (erase-buffer)))
-    (let ((json (ewm-get-debug-state-module)))
-      (unless json
-        (user-error "Timed out waiting for compositor state dump"))
-      (with-current-buffer buf
-        (let ((inhibit-read-only t))
-          (insert json)
-          (goto-char (point-min)))
-        (when (fboundp 'js-json-mode) (js-json-mode))
-        (display-buffer buf)))))
+  (let ((json (or (ewm-get-debug-state-module)
+                  (user-error "Timed out waiting for compositor state dump"))))
+    (with-current-buffer-window "*ewm-state*" nil nil
+      (insert json)
+      (when (fboundp 'js-json-mode) (js-json-mode)))))
 
 (defun ewm-list-outputs ()
   "Display connected outputs with properties and ewm-output-config suggestions.
@@ -1006,65 +960,62 @@ survives connector re-numbering when cables are replugged."
   (interactive)
   (if (null ewm--output-info)
       (message "No output info available (is the compositor running?)")
-    (with-current-buffer (get-buffer-create "*ewm-outputs*")
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (dolist (entry ewm--output-info)
-          (let* ((info        (cdr entry))
-                 (name        (alist-get 'name      info))
-                 (mms         (ewm--output-mms info))
-                 (config-key  (ewm--output-config-key info))
-                 (x           (or (alist-get 'x         info) 0))
-                 (y           (or (alist-get 'y         info) 0))
-                 (scale       (or (alist-get 'scale     info) 1.0))
-                 (transform   (or (alist-get 'transform info) 0))
-                 (width-mm    (or (alist-get 'width_mm  info) 0))
-                 (height-mm   (or (alist-get 'height_mm info) 0))
-                 (modes       (alist-get 'modes info))
-                 (cur (when modes
-                        (seq-find (lambda (m) (alist-get 'current m)) modes)))
-                 (transform-str
-                  (pcase transform
-                    (0 "Normal")   (1 "90°")          (2 "180°")
-                    (3 "270°")     (4 "Flipped")       (5 "Flipped+90°")
-                    (6 "Flipped+180°") (7 "Flipped+270°")
-                    (_ (number-to-string transform)))))
-            (insert (format "Output \"%s\" (%s)\n" mms name))
-            (if cur
-                (insert (format "  Current mode: %dx%d @ %.3f Hz%s\n"
-                                (alist-get 'width   cur)
-                                (alist-get 'height  cur)
-                                (/ (float (alist-get 'refresh cur)) 1000.0)
-                                (if (alist-get 'preferred cur) " (preferred)" "")))
-              (insert "  Disabled / no current mode\n"))
-            (insert (format "  Scale: %g\n" scale))
-            (insert (format "  Transform: %s\n" transform-str))
-            (insert (format "  Position: %d, %d\n" x y))
-            (when (or (> width-mm 0) (> height-mm 0))
-              (insert (format "  Physical size: %dx%d mm\n" width-mm height-mm)))
-            (when modes
-              (insert "  Available modes:\n")
-              (seq-do
-               (lambda (m)
-                 (insert
-                  (format "    %dx%d @ %.3f Hz%s\n"
-                          (alist-get 'width  m)
-                          (alist-get 'height m)
-                          (/ (float (alist-get 'refresh m)) 1000.0)
-                          (concat
-                           (if (alist-get 'current   m) " (current)"   "")
-                           (if (alist-get 'preferred m) " (preferred)" "")))))
-               modes))
-            (when cur
-              (insert (format "\n  Suggested ewm-output-config entry:\n"))
-              (insert (format "    (\"%s\" :width %d :height %d :scale %g)\n"
-                              config-key
-                              (alist-get 'width  cur)
-                              (alist-get 'height cur)
-                              scale)))
-            (insert "\n")))
-        (goto-char (point-min)))
-      (display-buffer (current-buffer)))))
+    (with-current-buffer-window "*ewm-outputs*" nil nil
+      (dolist (entry ewm--output-info)
+        (let* ((info        (cdr entry))
+               (name        (alist-get 'name      info))
+               (mms         (ewm--output-mms info))
+               (config-key  (ewm--output-config-key info))
+               (x           (or (alist-get 'x         info) 0))
+               (y           (or (alist-get 'y         info) 0))
+               (scale       (or (alist-get 'scale     info) 1.0))
+               (transform   (or (alist-get 'transform info) 0))
+               (width-mm    (or (alist-get 'width_mm  info) 0))
+               (height-mm   (or (alist-get 'height_mm info) 0))
+               (modes       (alist-get 'modes info))
+               (cur (when modes
+                      (seq-find (lambda (m) (alist-get 'current m)) modes)))
+               (transform-str
+                (pcase transform
+                  (0 "Normal")   (1 "90°")          (2 "180°")
+                  (3 "270°")     (4 "Flipped")       (5 "Flipped+90°")
+                  (6 "Flipped+180°") (7 "Flipped+270°")
+                  (_ (number-to-string transform)))))
+          (insert (format "Output \"%s\" (%s)\n" mms name))
+          (if cur
+              (insert (format "  Current mode: %dx%d @ %.3f Hz%s\n"
+                              (alist-get 'width   cur)
+                              (alist-get 'height  cur)
+                              (/ (float (alist-get 'refresh cur)) 1000.0)
+                              (if (alist-get 'preferred cur) " (preferred)" "")))
+            (insert "  Disabled / no current mode\n"))
+          (insert (format "  Scale: %g\n" scale))
+          (insert (format "  Transform: %s\n" transform-str))
+          (insert (format "  Position: %d, %d\n" x y))
+          (when (or (> width-mm 0) (> height-mm 0))
+            (insert (format "  Physical size: %dx%d mm\n" width-mm height-mm)))
+          (when modes
+            (insert "  Available modes:\n")
+            (seq-do
+             (lambda (m)
+               (insert
+                (format "    %dx%d @ %.3f Hz%s\n"
+                        (alist-get 'width  m)
+                        (alist-get 'height m)
+                        (/ (float (alist-get 'refresh m)) 1000.0)
+                        (concat
+                         (if (alist-get 'current   m) " (current)"   "")
+                         (if (alist-get 'preferred m) " (preferred)" "")))))
+             modes))
+          (when cur
+            (insert "\n  Suggested ewm-output-config entry:\n")
+            (insert (format "    (\"%s\" :width %d :height %d :scale %g)\n"
+                            config-key
+                            (alist-get 'width  cur)
+                            (alist-get 'height cur)
+                            scale)))
+          (insert "\n")))
+      (special-mode))))
 
 (defun ewm-debug-mode (&optional enable)
   "Toggle compositor debug mode for verbose logging.
@@ -1158,16 +1109,11 @@ string (e.g. \"Dell U2722D ABC123\").  Tries exact connector match first,
 then case-insensitive MMS match against `ewm--output-info'.
 Returns CONFIG-NAME itself when no live output matches, so the compositor
 still stores the config for future hot-plug."
-  (let ((result nil))
-    (dolist (entry ewm--output-info)
-      (unless result
-        (let ((connector (car entry))
-              (info      (cdr entry)))
-          (when (or (string= config-name connector)
-                    (string-equal-ignore-case config-name
-                                              (ewm--output-mms info)))
-            (setq result connector)))))
-    (or result config-name)))
+  (or (car (assoc config-name ewm--output-info))
+      (car (cl-find config-name ewm--output-info
+                    :key (lambda (entry) (ewm--output-mms (cdr entry)))
+                    :test #'string-equal-ignore-case))
+      config-name))
 
 (defun ewm--apply-output-config ()
   "Apply user output configuration from `ewm-output-config'.
@@ -1175,33 +1121,12 @@ Config keys may be connector names (\"DP-1\") or Make-Model-Serial strings
 (\"Dell U2722D ABC123\"); the latter are resolved to the live connector name
 via `ewm--find-connector-for-config' before sending to the compositor."
   (dolist (config ewm-output-config)
-    (let* ((config-name (car config))
-           (props       (cdr config))
-           (connector   (ewm--find-connector-for-config config-name))
-           (width     (plist-get props :width))
-           (height    (plist-get props :height))
-           (refresh   (plist-get props :refresh))
-           (custom    (plist-get props :custom))
-           (modeline  (plist-get props :modeline))
-           (x         (plist-get props :x))
-           (y         (plist-get props :y))
-           (scale     (plist-get props :scale))
-           (transform (plist-get props :transform)))
-      (let ((has-enabled (plist-member props :enabled))
-            (enabled     (plist-get props :enabled)))
-        (when (or width height refresh modeline scale transform x y has-enabled)
-          (apply #'ewm-configure-output connector
-                 (append
-                  (when width     (list :width width))
-                  (when height    (list :height height))
-                  (when refresh   (list :refresh refresh))
-                  (when custom    (list :custom custom))
-                  (when modeline  (list :modeline modeline))
-                  (when x         (list :x x))
-                  (when y         (list :y y))
-                  (when scale     (list :scale scale))
-                  (when transform (list :transform transform))
-                  (when has-enabled (list :enabled enabled)))))))))
+    (let ((props (cdr config)))
+      (when (or (plist-member props :enabled)
+                (cl-some (lambda (key) (plist-get props key))
+                         '(:width :height :refresh :modeline :scale :transform :x :y)))
+        (apply #'ewm-configure-output
+               (ewm--find-connector-for-config (car config)) props)))))
 
 ;;; Frame management
 
@@ -1246,9 +1171,7 @@ native Wayland backend)."
 
 (defun ewm--strip-set (output frames)
   "Replace OUTPUT's strip with FRAMES, dropping the entry when empty."
-  (if frames
-      (setf (alist-get output ewm--strips nil nil #'equal) frames)
-    (setq ewm--strips (assoc-delete-all output ewm--strips #'equal))))
+  (setf (alist-get output ewm--strips nil t #'equal) frames))
 
 (defun ewm--floating-frames (output)
   "Return OUTPUT's floating frame list, top-to-bottom."
@@ -1256,10 +1179,7 @@ native Wayland backend)."
 
 (defun ewm--floating-set (output frames)
   "Replace OUTPUT's floating frame list, dropping the entry when empty."
-  (if frames
-      (setf (alist-get output ewm--floating-frames nil nil #'equal) frames)
-    (setq ewm--floating-frames
-          (assoc-delete-all output ewm--floating-frames #'equal))))
+  (setf (alist-get output ewm--floating-frames nil t #'equal) frames))
 
 (defun ewm--floating-insert (frame output)
   "Insert FRAME at the top of OUTPUT's floating frame stack."
@@ -1336,7 +1256,6 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
 
 (defun ewm--on-make-frame (frame)
   "Hook for frame creation. Drop frames not assigned to an output."
-  (ewm--fixup-display-customs frame)
   (when (and (ewm--output-managed-p frame)
              (not (frame-parameter frame 'ewm-output)))
     (ewm--log "on-make-frame: frame=%s action=schedule-delete" frame)
@@ -1644,57 +1563,49 @@ manages the strip via `ewm-frame-new'/`ewm-frame-close'."
 This is the primary entry point for using EWM from `emacs --daemon' on TTY.
 The compositor runs as a thread within the Emacs process."
   (interactive)
+  (ewm-mode 1))
+
+(defun ewm--start-compositor ()
+  "Start the compositor and wait for readiness, cleaning up on failure."
   (when (and (fboundp 'ewm-running) (ewm-running))
     (user-error "EWM compositor is already running"))
   (setq ewm--module-mode nil
         ewm--compositor-ready nil)
-  (ewm--publish-mode-state nil)
-  (ewm--apply-cursor-env)
-  ;; Pipe channel must exist before the compositor starts, so no early
-  ;; events are dropped.
-  (ewm--init-event-channel)
-  (if (ewm-start (ewm--cursor-theme) (ewm--cursor-size))
-      (progn
-        (setq ewm--module-mode t)
-        (ewm--setup)
-        ;; Wait for compositor ready event (with timeout)
-        (let ((ticks (truncate
-                      (/ ewm--compositor-ready-timeout
-                         ewm--compositor-poll-interval))))
-          (while (and (> ticks 0) (not ewm--compositor-ready))
-            (accept-process-output ewm--event-process
-                                   ewm--compositor-poll-interval)
-            (cl-decf ticks))
-          (unless ewm--compositor-ready
-            (ewm--stop-compositor)
-            (ewm--destroy-event-channel)
-            (ewm--teardown)
-            (setq ewm--module-mode nil
-                  ewm--compositor-ready nil)
-            (error "Compositor failed to become ready")))
-        ;; Tell the compositor when init is fully done so it can replay the
-        ;; first wl_keyboard.enter (PGTK drops it pre-roundtrip).
-        (if after-init-time
-            (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)
-          (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module))
-        ;; For pgtk, re-apply now that graphical frames exist and
-        ;; face-attribute can return the real theme background instead of
-        ;; the black fallback.
-        (ewm--apply-gtk-bg-css)
-        (ewm--publish-mode-state t))
-    (ewm--destroy-event-channel)
-    (error "Failed to start compositor")))
+  (let (started)
+    (unwind-protect
+        (progn
+          (ewm--apply-cursor-env)
+          ;; Register the event pipe before starting the compositor.
+          (ewm--init-event-channel)
+          (unless (ewm-start (ewm--cursor-theme) (ewm--cursor-size))
+            (error "Failed to start compositor"))
+          (setq ewm--module-mode t)
+          (ewm--setup)
+          (with-timeout (ewm--compositor-ready-timeout
+                         (error "Compositor failed to become ready"))
+            (while (not ewm--compositor-ready)
+              (accept-process-output ewm--event-process)))
+          ;; Replay the first keyboard enter after init (PGTK drops it early).
+          (if after-init-time
+              (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)
+            (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module))
+          ;; Graphical frames now have the real theme background.
+          (ewm--apply-gtk-bg-css)
+          (setq started t))
+      (unless started
+        (ewm--stop-compositor)
+        (ewm--destroy-event-channel)
+        (ewm--teardown)
+        (setq ewm--module-mode nil
+              ewm--compositor-ready nil)))))
 
 (defun ewm--stop-compositor ()
   "Request graceful compositor shutdown."
   (when (and (fboundp 'ewm-stop) (fboundp 'ewm-running) (ewm-running))
     (ewm-stop)
-    (let ((ticks (truncate
-                  (/ ewm--compositor-stop-timeout
-                     ewm--compositor-poll-interval))))
-      (while (and (> ticks 0) (ewm-running))
-        (sleep-for ewm--compositor-poll-interval)
-        (cl-decf ticks)))))
+    (with-timeout (ewm--compositor-stop-timeout nil)
+      (while (ewm-running)
+        (sleep-for ewm--compositor-poll-interval)))))
 
 (declare-function ewm-gtk-set-style "ewm-core")
 
@@ -1709,44 +1620,29 @@ The compositor runs as a thread within the Emacs process."
           (ewm-gtk-set-style (format "window { background-color: %s; }" bg))
         (error (message "EWM: ewm-gtk-set-style failed: %s" err))))))
 
-(defun ewm--kill-emacs-hook ()
-  "Stop compositor gracefully before Emacs exits.
-Ensures the compositor thread is cleanly shut down when Emacs terminates."
-  (ewm--stop-compositor))
-
 ;;; Process spawning with activation tokens
 
 (defun ewm--inject-activation-token (orig-fun &rest args)
   "Advice to inject XDG_ACTIVATION_TOKEN into spawned processes.
 This allows spawned GUI applications to request focus via xdg_activation."
-  (if (and ewm-mode (fboundp 'ewm-create-activation-token))
-      (let ((token (ewm-create-activation-token)))
-        (if token
-            (let ((process-environment
-                   (cons (format "XDG_ACTIVATION_TOKEN=%s" token)
-                         (cons (format "DESKTOP_STARTUP_ID=%s" token)
-                               process-environment))))
-              (apply orig-fun args))
-          ;; Token creation failed, proceed without it
-          (apply orig-fun args)))
-    ;; EWM not active, proceed normally
+  (let* ((token (and ewm-mode (fboundp 'ewm-create-activation-token)
+                     (ewm-create-activation-token)))
+         (process-environment
+          (if token
+              (cons (format "XDG_ACTIVATION_TOKEN=%s" token)
+                    (cons (format "DESKTOP_STARTUP_ID=%s" token)
+                          process-environment))
+            process-environment)))
     (apply orig-fun args)))
-
-(defconst ewm--process-functions '(start-process make-process)
-  "Process-spawning functions to advise for activation token injection.
-Only async functions need tokens. `call-process' is synchronous and
-used for CLI tools (git, grep, etc.) that never consume activation tokens.")
 
 (defun ewm--enable-process-advice ()
   "Enable automatic activation token injection for spawned processes."
-  (dolist (fn ewm--process-functions)
-    (unless (advice-member-p #'ewm--inject-activation-token fn)
-      (advice-add fn :around #'ewm--inject-activation-token))))
+  ;; `start-process' and the shell helpers all call `make-process'.
+  (advice-add 'make-process :around #'ewm--inject-activation-token))
 
 (defun ewm--disable-process-advice ()
   "Disable automatic activation token injection."
-  (dolist (fn ewm--process-functions)
-    (advice-remove fn #'ewm--inject-activation-token)))
+  (advice-remove 'make-process #'ewm--inject-activation-token))
 
 ;;; Application launcher
 
@@ -1760,58 +1656,18 @@ used for CLI tools (git, grep, etc.) that never consume activation tokens.")
 (defun ewm-launch-app ()
   "Launch an XDG desktop application via `completing-read'."
   (interactive)
-  (let* ((apps (ewm-list-xdg-apps))
-         (names (mapcar #'car apps))
-         (name (completing-read "Launch app: " names nil t)))
-    (ewm-launch-xdg-command name)))
-
-(defun ewm--fixup-display-customs (frame)
-  "Re-evaluate defcustom defaults that got nil during headless init.
-EWM starts Emacs as a foreground daemon, so display-probing functions
-return nil when init.el loads packages.  Re-evaluate affected defaults
-now that a graphical FRAME exists."
-  (when (display-graphic-p frame)
-    (let ((probe-re (regexp-opt '("image-transforms-p"
-                                  "face-valid-attribute-values"
-                                  "display-graphic-p"
-                                  "display-images-p"))))
-      (mapatoms
-       (lambda (sym)
-         (when-let* ((std (get sym 'standard-value))
-                     (form (car-safe std)))
-           (when (and (boundp sym)
-                      (null (symbol-value sym))
-                      (not (get sym 'saved-value))
-                      (not (get sym 'customized-value))
-                      (string-match-p probe-re (prin1-to-string form)))
-             (custom-reevaluate-setting sym))))))))
-
+  (ewm-launch-xdg-command
+   (completing-read "Launch app: " (ewm-list-xdg-apps) nil t)))
 
 ;;; Global minor mode
-
-(defun ewm--publish-mode-state (enabled)
-  "Set public `ewm-mode' state to ENABLED.
-This helper is used when startup happens through `ewm-start-module'
-instead of the generated minor-mode command."
-  (let ((changed (not (eq (default-value 'ewm-mode) enabled))))
-    (setq-default ewm-mode enabled)
-    (when (boundp 'global-minor-modes)
-      (if enabled
-          (add-to-list 'global-minor-modes 'ewm-mode)
-        (setq global-minor-modes (delq 'ewm-mode global-minor-modes))))
-    (force-mode-line-update)
-    (when (and enabled changed (not ewm--mode-command-active))
-      (run-hooks 'ewm-mode-hook))))
 
 (defun ewm--setup ()
   "Install Emacs-side state before compositor startup events run."
   (ewm--disable-csd)
   (ewm--enable-layout-sync)
   (add-hook 'ewm-layout-menu-deactivated-hook #'ewm--flush-pending-placements)
-  (unless (advice-member-p #'ewm--select-frame-set-input-focus
-                           'select-frame-set-input-focus)
-    (advice-add 'select-frame-set-input-focus :override
-                #'ewm--select-frame-set-input-focus))
+  (advice-add 'select-frame-set-input-focus :override
+              #'ewm--select-frame-set-input-focus)
   (ewm-input--enable)
   (if after-init-time
       (ewm--send-intercept-keys)
@@ -1826,19 +1682,14 @@ instead of the generated minor-mode command."
     (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode-enable)
   (ewm--enable-process-advice)
-  (when (eq ewm--saved-interprogram-cut-function ewm--unset)
-    (setq ewm--saved-interprogram-cut-function interprogram-cut-function))
-  (setq interprogram-cut-function #'ewm--interprogram-cut-function)
-  (when (eq ewm--saved-interprogram-paste-function ewm--unset)
-    (setq ewm--saved-interprogram-paste-function interprogram-paste-function))
-  (setq interprogram-paste-function nil)
+  (add-function :override interprogram-cut-function #'ewm--interprogram-cut-function)
+  (add-function :override interprogram-paste-function #'ignore)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (add-hook 'delete-frame-functions #'ewm--on-delete-frame)
   (when (ewm--gtk-backed-p)
     (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css))
-  (unless (advice-member-p #'ewm--prevent-frame-deletion 'delete-frame)
-    (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion))
-  (add-hook 'kill-emacs-hook #'ewm--kill-emacs-hook t))
+  (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion)
+  (add-hook 'kill-emacs-hook #'ewm--stop-compositor t))
 
 (defun ewm--teardown ()
   "Remove Emacs-side state installed by `ewm--setup'."
@@ -1852,21 +1703,24 @@ instead of the generated minor-mode command."
             (memq #'ewm-text-input--auto-disable ewm-text-input-deactivated-hook))
     (ewm-text-input-auto-mode-disable))
   (ewm--disable-process-advice)
-  (unless (eq ewm--saved-interprogram-cut-function ewm--unset)
-    (when (eq interprogram-cut-function #'ewm--interprogram-cut-function)
-      (setq interprogram-cut-function ewm--saved-interprogram-cut-function))
-    (setq ewm--saved-interprogram-cut-function ewm--unset))
-  (unless (eq ewm--saved-interprogram-paste-function ewm--unset)
-    (when (null interprogram-paste-function)
-      (setq interprogram-paste-function ewm--saved-interprogram-paste-function))
-    (setq ewm--saved-interprogram-paste-function ewm--unset))
+  (remove-function interprogram-cut-function #'ewm--interprogram-cut-function)
+  (remove-function interprogram-paste-function #'ignore)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (remove-hook 'delete-frame-functions #'ewm--on-delete-frame)
   (remove-hook 'after-init-hook #'ewm--send-intercept-keys)
   (remove-hook 'emacs-startup-hook #'ewm-notify-initialized-module)
   (remove-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css)
   (advice-remove 'delete-frame #'ewm--prevent-frame-deletion)
-  (remove-hook 'kill-emacs-hook #'ewm--kill-emacs-hook))
+  (remove-hook 'kill-emacs-hook #'ewm--stop-compositor))
+
+;;;###autoload
+(defcustom ewm-mode nil
+  "Non-nil when the EWM compositor session is ready.
+Use the `ewm-mode' command to change this variable."
+  :type 'boolean
+  :set #'custom-set-minor-mode
+  :initialize #'custom-initialize-default
+  :group 'ewm)
 
 ;;;###autoload
 (define-minor-mode ewm-mode
@@ -1875,16 +1729,15 @@ instead of the generated minor-mode command."
   :lighter " ewm"
   :keymap ewm-mode-map
   :group 'ewm
-  (let ((ewm--mode-command-active t))
-    (if ewm-mode
-        (unless ewm--module-mode
-          ;; `define-minor-mode' sets the mode variable before startup;
-          ;; keep the public state false until startup publishes readiness.
-          (ewm--publish-mode-state nil)
-          (ewm-start-module))
-      (when ewm--module-mode
-        (ewm--publish-mode-state t)
-        (user-error "EWM cannot be disabled; exit Emacs to end the session")))))
+  ;; The setter completes before Emacs updates mode lists and runs hooks.
+  :variable ((default-value 'ewm-mode)
+             . (lambda (enabled)
+                 (if enabled
+                     (unless (default-value 'ewm-mode)
+                       (ewm--start-compositor))
+                   (when ewm--module-mode
+                     (user-error "EWM cannot be disabled; exit Emacs to end the session")))
+                 (setq-default ewm-mode enabled))))
 
 (provide 'ewm)
 ;;; ewm.el ends here

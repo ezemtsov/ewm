@@ -62,9 +62,7 @@ The bit-32 range is reserved for frame chrome (see
 (defun ewm-layout--ensure-entry-id (window)
   "Return a stable entry id for WINDOW."
   (or (window-parameter window 'ewm-entry-id)
-      (let ((id (ewm-layout--fresh-entry-id)))
-        (set-window-parameter window 'ewm-entry-id id)
-        id)))
+      (set-window-parameter window 'ewm-entry-id (ewm-layout--fresh-entry-id))))
 
 (defun ewm-layout--ensure-frame-focus-id (frame)
   "Return FRAME's chrome focus id derived from its `ewm-surface-id'.
@@ -131,7 +129,10 @@ compositor parks keyboard focus on the frame chrome."
 (defun ewm-layout--refresh ()
   "Send current window layouts to the compositor."
   (when ewm--module-mode
-    (ewm-layout--send-layouts)))
+    ;; An error here would drop us from `window-state-change-hook' for good.
+    (condition-case err
+        (ewm-layout--send-layouts)
+      (error (message "EWM: layout sync error: %s" (error-message-string err))))))
 
 (defun ewm-layout--make-output-entry (window)
   "Create an entry geometry plist for WINDOW with frame-relative coordinates.
@@ -143,26 +144,6 @@ working area; compositor adds output geometry + working area offset."
          (width (- (pop edges) x))
          (height (- (pop edges) y)))
     `(:x ,x :y ,y :w ,width :h ,height)))
-
-(defun ewm--window-config-change ()
-  "Hook called when window configuration changes."
-  (ewm-layout--refresh))
-
-(defun ewm--on-window-size-change (_frame)
-  "Refresh layout when window sizes change.
-Catches minibuffer height changes that window-configuration-change misses."
-  (ewm-layout--refresh))
-
-(defun ewm--on-window-selection-change (_frame)
-  "Re-send layouts when selected window changes.
-Compositor focus is driven by user commands (`ewm-frame-select',
-windmove, click), not by Emacs-internal selection churn from process
-filters like telega."
-  (ewm-layout--send-layouts))
-
-(defun ewm--on-window-buffer-change (_frame)
-  "Re-send layouts when a buffer changes within a window."
-  (ewm-layout--send-layouts))
 
 (defvar ewm-layout--last-menu-active nil
   "Cached previous `ewm-layout--menu-active-p' for edge detection.")
@@ -183,18 +164,12 @@ filters like telega."
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."
   (setq ewm-layout--last-menu-active (and (ewm-layout--menu-active-p) t))
-  (add-hook 'window-configuration-change-hook #'ewm--window-config-change)
-  (add-hook 'window-size-change-functions #'ewm--on-window-size-change)
-  (add-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
-  (add-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change)
+  (add-hook 'window-state-change-hook #'ewm-layout--refresh)
   (add-hook 'post-command-hook #'ewm-layout--on-post-command))
 
 (defun ewm--disable-layout-sync ()
   "Disable automatic layout sync."
-  (remove-hook 'window-configuration-change-hook #'ewm--window-config-change)
-  (remove-hook 'window-size-change-functions #'ewm--on-window-size-change)
-  (remove-hook 'window-selection-change-functions #'ewm--on-window-selection-change)
-  (remove-hook 'window-buffer-change-functions #'ewm--on-window-buffer-change)
+  (remove-hook 'window-state-change-hook #'ewm-layout--refresh)
   (remove-hook 'post-command-hook #'ewm-layout--on-post-command))
 
 (provide 'ewm-layout)
