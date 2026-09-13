@@ -491,13 +491,17 @@ matches it is paired, otherwise a surface buffer is created."
 
 (defun ewm--place-surface-buffer (buffer floating output host-id &optional width height)
   "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID."
-  (if floating
-      (ewm--float-buffer-into-frame buffer nil output host-id width height)
-    (when-let* ((target (or (ewm--frame-by-surface-id host-id)
-                            (ewm--surface-target-frame-for-output output))))
-      (select-frame target)
+  (let ((host (or (ewm--frame-by-surface-id host-id)
+                  (ewm--surface-target-frame-for-output output))))
+    (when host (select-frame host))
+    (cond
+     (floating
+      (pop-to-buffer buffer `(ewm-display-buffer-floating
+                              (ewm-output . ,output)
+                              ,@(and width height `((ewm-size . (,width . ,height)))))))
+     (host
       (pop-to-buffer-same-window buffer)
-      (ewm-layout--refresh))))
+      (ewm-layout--refresh)))))
 
 (defun ewm--floating-frames-showing (buffer)
   "Return the floating frames currently displaying BUFFER."
@@ -1335,7 +1339,9 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
   (ewm-prepare-floating-frame output-name (car pos) (cdr pos))
   (let ((frame (ewm--make-output-frame
                 output-name
-                `((ewm-floating . t) (width . 80) (height . 24) ,@extra-params))))
+                `((ewm-floating . t) ,@extra-params (width . 80) (height . 24)))))
+    ;; `quit-window' would iconify otherwise, which EWM frames cannot do.
+    (set-frame-parameter frame 'auto-hide-function (lambda () (delete-frame frame)))
     (ewm--floating-insert frame output-name)
     frame))
 
@@ -1410,53 +1416,67 @@ selected frame\", which can change during pgtk's internal close handling."
                       (axis height (nth 3 area) (frame-text-height frame) (nth 3 rect))
                       t))))
 
-(defun ewm--float-buffer-into-frame (buffer source-window output origin-id
-                                            &optional width height pos)
-  "Host BUFFER in a new floating frame on OUTPUT, closing SOURCE-WINDOW."
-  (let ((floating (ewm--create-floating-frame-for-output
-                   output
-                   ;; Stay hidden until fitted so only the final size is ever rendered.
-                   `((visibility . nil)
-                     (ewm-focus-on-create . t)
-                     ,@(when origin-id
-                         `((ewm-floating-origin-frame-id . ,origin-id))))
-                   pos)))
-    (set-window-buffer (frame-selected-window floating) buffer)
-    (when (and width height)
-      (ewm--fit-floating-frame floating width height))
-    (make-frame-visible floating)
-    (when (window-live-p source-window)
-      ;; Reclaim the space: drop the window, or bury if it is the frame's only one.
-      (if (eq t (window-deletable-p source-window))
-          (delete-window source-window)
-        (quit-window nil source-window)))
-    (if (frame-parameter floating 'ewm-surface-id)
-        (select-frame-set-input-focus floating)
-      (select-frame floating))
-    (ewm-layout--refresh)
-    floating))
+(defun ewm--make-floating-frame (alist)
+  "Make a floating frame from ALIST and `pop-up-frame-alist', or nil."
+  (when-let* ((output (or (alist-get 'ewm-output alist)
+                          (frame-parameter nil 'ewm-output))))
+    (let ((origin (frame-parameter nil 'ewm-surface-id)))
+      (ewm--create-floating-frame-for-output
+       output
+       ;; Stay hidden until fitted so only the final size is ever rendered.
+       `((visibility . nil)
+         ,@(and origin `((ewm-floating-origin-frame-id . ,origin)))
+         ,@pop-up-frame-alist)
+       (alist-get 'ewm-position alist)))))
+
+(defvar ewm--inhibit-floating nil
+  "Non-nil makes `ewm-display-buffer-floating' decline, so attach cannot re-float.")
+
+(defun ewm-display-buffer-floating (buffer alist)
+  "Display BUFFER in a new floating frame; a `display-buffer' action function.
+Looks come from `pop-up-frame-parameters'.  EWM's own placements add
+`ewm-output', `ewm-size' (client body W . H) and `ewm-position'
+(top-left X . Y)."
+  (unless ewm--inhibit-floating
+    (let ((pop-up-frame-function (lambda () (ewm--make-floating-frame alist))))
+      ;; Fit after the user's window parameters land, then show.
+      (when-let* ((window (display-buffer-pop-up-frame
+                           buffer (cons '(inhibit-switch-frame . t) alist)))
+                  (frame (window-frame window)))
+        (when-let* ((size (alist-get 'ewm-size alist)))
+          (ewm--fit-floating-frame frame (car size) (cdr size)))
+        (make-frame-visible frame)
+        window))))
 
 (defvar ewm-floating-popout-scale 0.9
   "Fraction of the source window a popped-out floating frame occupies.")
 
 (defun ewm--floating-detach-selected-buffer (frame)
   "Detach FRAME's selected buffer into a floating frame centered over its tile."
-  (let* ((output (frame-parameter frame 'ewm-output))
-         (origin-id (frame-parameter frame 'ewm-surface-id))
-         (source-window (frame-selected-window frame))
-         (buffer (window-buffer source-window)))
-    (unless output
+  (let* ((source-window (frame-selected-window frame))
+         (rect (ewm--window-body-pixel-rect source-window))
+         (w (nth 2 rect))
+         (h (nth 3 rect))
+         (fw (round (* w ewm-floating-popout-scale)))
+         (fh (round (* h ewm-floating-popout-scale))))
+    (unless (frame-parameter frame 'ewm-output)
       (user-error "Current frame has no ewm-output"))
     (when (window-minibuffer-p source-window)
       (user-error "Cannot detach minibuffer window"))
-    (let* ((rect (ewm--window-body-pixel-rect source-window))
-           (w (nth 2 rect))
-           (h (nth 3 rect))
-           (fw (round (* w ewm-floating-popout-scale)))
-           (fh (round (* h ewm-floating-popout-scale))))
-      (ewm--float-buffer-into-frame buffer source-window output origin-id fw fh
-                                    (cons (+ (nth 0 rect) (/ (- w fw) 2))
-                                          (+ (nth 1 rect) (/ (- h fh) 2)))))))
+    (select-frame frame)
+    (pop-to-buffer (window-buffer source-window)
+                   `(ewm-display-buffer-floating
+                     (inhibit-same-window . t)
+                     (ewm-size . (,fw . ,fh))
+                     (ewm-position . (,(+ (nth 0 rect) (/ (- w fw) 2))
+                                      . ,(+ (nth 1 rect) (/ (- h fh) 2))))))
+    ;; Reclaim the tile once the buffer has left for a float.
+    (when (and (window-live-p source-window)
+               (frame-parameter (window-frame (selected-window)) 'ewm-floating))
+      (save-selected-window
+        (if (eq t (window-deletable-p source-window))
+            (delete-window source-window)
+          (quit-window nil source-window))))))
 
 (defun ewm--floating-attach-selected-buffer (floating-frame)
   "Absorb FLOATING-FRAME's buffer into the tiled window under its center."
@@ -1473,7 +1493,8 @@ selected frame\", which can change during pgtk's internal close handling."
     (if (window-live-p window)
         (select-window window)
       (select-frame-set-input-focus fallback))
-    (pop-to-buffer buffer)
+    (let ((ewm--inhibit-floating t))
+      (pop-to-buffer buffer))
     (ewm-layout--refresh)))
 
 (defun ewm-floating-toggle ()

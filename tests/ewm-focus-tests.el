@@ -86,6 +86,7 @@ The batch frame is shared; we save and restore the parameters we touch."
   `(let* ((,var (selected-frame))
           (saved-surface-id (frame-parameter ,var 'ewm-surface-id))
           (saved-output (frame-parameter ,var 'ewm-output))
+          (saved-focus (frame-parameter ,var 'ewm-focus-on-create))
           (saved-window (frame-selected-window ,var))
           (saved-buffer (window-buffer saved-window))
           (saved-entry-id (window-parameter saved-window 'ewm-entry-id))
@@ -98,9 +99,11 @@ The batch frame is shared; we save and restore the parameters we touch."
            ,@body)
        (set-frame-parameter ,var 'ewm-surface-id saved-surface-id)
        (set-frame-parameter ,var 'ewm-output saved-output)
+       (set-frame-parameter ,var 'ewm-focus-on-create saved-focus)
        (when (buffer-live-p saved-buffer)
          (set-window-buffer saved-window saved-buffer))
        (set-window-parameter saved-window 'ewm-entry-id saved-entry-id)
+       (set-window-parameter saved-window 'quit-restore nil)
        (dolist (b ewm-focus-tests--scratch-buffers)
          (when (buffer-live-p b) (kill-buffer b))))))
 
@@ -388,6 +391,121 @@ buffer; `mapped' displays and publishes it."
   (should-not (fboundp 'ewm-frame-new-floating))
   (should-not (fboundp 'ewm-floating-frame-move-left))
   (should-not (fboundp 'ewm-floating-frame-widen)))
+
+(ert-deftest ewm-focus/floating-placement-goes-through-pop-to-buffer ()
+  "A compositor float is placed from its host frame with the floating action."
+  (ewm-focus-tests--with-frame f
+    (let ((buf (ewm-focus-tests--make-surface-buffer 42))
+          popped)
+      (cl-letf (((symbol-function 'pop-to-buffer)
+                 (lambda (buffer action &optional _norecord)
+                   (setq popped (cons buffer action)))))
+        (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id
+                                   480.0 160.0)
+        (should (equal (cons buf '(ewm-display-buffer-floating
+                                   (ewm-output . "HEAD-A")
+                                   (ewm-size 480.0 . 160.0)))
+                       popped))))))
+
+(defmacro ewm-focus-tests--with-stubbed-float (vars &rest body)
+  "Run BODY with float creation stubbed onto the batch frame.
+VARS is (MADE FITTED): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
+  (declare (indent 1))
+  (pcase-let ((`(,made ,fitted) vars))
+    `(let (,made ,fitted (ewm--module-mode nil))
+       (cl-letf (((symbol-function 'ewm--create-floating-frame-for-output)
+                  (lambda (output params pos)
+                    (setq ,made (list output params pos))
+                    (selected-frame)))
+                 ((symbol-function 'ewm--fit-floating-frame)
+                  (lambda (_frame w h) (setq ,fitted (cons w h))))
+                 ((symbol-function 'make-frame-visible) #'ignore))
+         ,@body))))
+
+(ert-deftest ewm-focus/floating-action-frame-params ()
+  "Output and origin come from the selected frame, looks from user rules."
+  (ewm-focus-tests--with-frame f
+    (let ((buf (ewm-focus-tests--make-surface-buffer 42))
+          (display-buffer-alist
+           '((" \\*ewm-test-surface-42\\*" nil
+              (pop-up-frame-parameters . ((minibuffer . nil)))))))
+      (ewm-focus-tests--with-stubbed-float (made fitted)
+        (should (display-buffer buf '(ewm-display-buffer-floating
+                                      (ewm-size . (480 . 160))
+                                      (ewm-position . (10 . 20)))))
+        (pcase-let ((`(,output ,params ,pos) made))
+          (should (equal ewm-focus-tests--output output))
+          (should (equal '(10 . 20) pos))
+          (should (equal '(visibility . nil) (assq 'visibility params)))
+          (should (equal '(minibuffer . nil) (assq 'minibuffer params)))
+          (should (eql ewm-focus-tests--frame-surface-id
+                       (alist-get 'ewm-floating-origin-frame-id params))))
+        (should (equal '(480 . 160) fitted)))
+      (ewm-focus-tests--with-stubbed-float (made _fitted)
+        (should (display-buffer buf '(ewm-display-buffer-floating
+                                      (ewm-output . "HEAD-A"))))
+        (should (equal "HEAD-A" (car made)))))))
+
+(ert-deftest ewm-focus/floating-action-declines-off-output ()
+  "Off any output the action returns nil and `display-buffer' falls through."
+  (ewm-focus-tests--with-frame f
+    (set-frame-parameter f 'ewm-output nil)
+    (let ((buf (ewm-focus-tests--make-surface-buffer 42)))
+      (ewm-focus-tests--with-stubbed-float (made _fitted)
+        (should (display-buffer buf '(ewm-display-buffer-floating)))
+        (should-not made)))))
+
+(ert-deftest ewm-focus/floating-action-honors-inhibit ()
+  "`ewm--inhibit-floating' makes the action decline, so attach cannot re-float."
+  (let ((ewm--inhibit-floating t))
+    (ewm-focus-tests--with-stubbed-float (made _fitted)
+      (should-not (ewm-display-buffer-floating (current-buffer) nil))
+      (should-not made))))
+
+(ert-deftest ewm-focus/detach-ignores-same-window-rules ()
+  "A catch-all same-window rule cannot keep the buffer in its tile."
+  (ewm-focus-tests--with-frame f
+    (let ((buf (ewm-focus-tests--make-surface-buffer 42))
+          (display-buffer-alist
+           '((".*" (display-buffer-reuse-window display-buffer-same-window)))))
+      (set-window-buffer (frame-selected-window f) buf)
+      (ewm-focus-tests--with-stubbed-float (made fitted)
+        (ewm--floating-detach-selected-buffer f)
+        (should (equal '(5 . 5) (nth 2 made)))
+        (should (equal '(90 . 90) fitted))))))
+
+(ert-deftest ewm-focus/detach-keeps-tile-when-rule-shows-elsewhere ()
+  "A rule that shows the buffer in a sibling window leaves the tile alone."
+  (ewm-focus-tests--with-frame f
+    (save-window-excursion
+      (let ((buf (ewm-focus-tests--make-surface-buffer 42))
+            (source (frame-selected-window f))
+            (display-buffer-alist
+             '((" \\*ewm-test-surface-42\\*" display-buffer-pop-up-window)))
+            (split-height-threshold 0))
+        (set-window-buffer source buf)
+        (ewm-focus-tests--with-stubbed-float (made _fitted)
+          (ewm--floating-detach-selected-buffer f)
+          (should-not made)
+          (should (window-live-p source))
+          (should-not (eq source (selected-window)))
+          (should (eq buf (window-buffer (selected-window)))))))))
+
+(ert-deftest ewm-focus/set-input-focus-queues-for-in-flight-frame ()
+  "Focusing a frame without a surface id queues via `ewm-focus-on-create'."
+  (ewm-focus-tests--with-frame f
+    (let ((ewm--module-mode t) sent)
+      (cl-letf (((symbol-function 'ewm-focus-target-module)
+                 (lambda (id) (push id sent))))
+        (set-frame-parameter f 'ewm-surface-id nil)
+        (ewm--select-frame-set-input-focus f)
+        (should (null sent))
+        (should (frame-parameter f 'ewm-focus-on-create))
+        (set-frame-parameter f 'ewm-focus-on-create nil)
+        (set-frame-parameter f 'ewm-surface-id ewm-focus-tests--frame-surface-id)
+        (ewm--select-frame-set-input-focus f)
+        (should (equal (list (ewm-layout--ensure-frame-focus-id f)) sent))
+        (should-not (frame-parameter f 'ewm-focus-on-create))))))
 
 (ert-deftest ewm-focus/delete-frame-advice-passes-captured-frame ()
   "Interactive nil FRAME must resolve once, before close handling can alter selection."

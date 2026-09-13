@@ -29,7 +29,10 @@
   "Override skipping `x-focus-frame' so xdg_activation can't echo back."
   (select-frame frame norecord)
   (when (bound-and-true-p ewm--module-mode)
-    (ewm-focus-target-module (ewm-layout--ensure-frame-focus-id frame)))
+    ;; Queue focus for an in-flight frame until its surface arrives.
+    (if-let* ((focus-id (ewm-layout--ensure-frame-focus-id frame)))
+        (ewm-focus-target-module focus-id)
+      (set-frame-parameter frame 'ewm-focus-on-create t)))
   frame)
 
 (defun ewm--find-window-by-entry-id (entry-id)
