@@ -110,7 +110,7 @@ define_errors! {
     ewm_input_unknown_key  "Unknown input config key"            (ewm_input_error)
 }
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
@@ -216,6 +216,7 @@ pub struct SharedState {
     pub pointer_location: (f64, f64),
     pub active_outputs: Vec<ActiveOutput>,
     pub frame_origins: Vec<FrameOrigin>,
+    pub active_frames: HashMap<String, u64>,
 }
 
 static SHARED_STATE: OnceLock<Mutex<SharedState>> = OnceLock::new();
@@ -483,6 +484,13 @@ fn get_output_origin<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
         Some(output) => env.cons(output.origin.0 as i64, output.origin.1 as i64),
         None => ().into_lisp(env),
     }
+}
+
+/// Surface id of the strip frame shown on output NAME, or nil.
+#[defun]
+fn get_active_frame_id(name: String) -> Result<Option<i64>> {
+    let state = shared_state().lock().unwrap();
+    Ok(state.active_frames.get(&name).map(|id| *id as i64))
 }
 
 /// Query Emacs frame origin (called by Emacs for mouse-follows-focus pointer warping).

@@ -30,6 +30,9 @@ Similar to `exwm-title'.")
 (defvar-local ewm-surface-pid nil
   "Client PID for this surface.")
 
+(defvar-local ewm-surface-size nil
+  "Client's natural size (W . H) in logical pixels at map, or nil.")
+
 (defun ewm-surface-buffer-p (buffer)
   "If BUFFER is an EWM surface buffer, return its surface id, else nil."
   (and buffer (buffer-local-value 'ewm-surface-id buffer)))

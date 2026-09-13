@@ -1309,8 +1309,8 @@ fn ensure_min_max_size(x: i32, min: i32, max: i32) -> i32 {
     }
 }
 
-/// A floating window's geometry clamped to its min/max size hints.
-fn floating_open_size(window: &Window) -> Option<Size<i32, Logical>> {
+/// The window's geometry clamped to its min/max size hints.
+fn natural_open_size(window: &Window) -> Option<Size<i32, Logical>> {
     use smithay::wayland::compositor::with_states;
     use smithay::wayland::shell::xdg::SurfaceCachedState;
 
@@ -2325,6 +2325,17 @@ impl Ewm {
     pub fn active_frame_surface_id(&self, output_name: &str) -> Option<u64> {
         let strip = self.frame_set.mapped_strip(output_name)?;
         strip.active_frame().map(|f| f.surface_id)
+    }
+
+    /// Active Emacs frame surface id per mapped output.
+    fn active_frames_snapshot(&self) -> HashMap<String, u64> {
+        self.sorted_outputs
+            .iter()
+            .filter_map(|o| {
+                let name = o.name();
+                self.active_frame_surface_id(&name).map(|id| (name, id))
+            })
+            .collect()
     }
 
     fn workspace_name_from_rename(name: String) -> Option<String> {
@@ -5893,7 +5904,12 @@ impl Ewm {
             return;
         }
 
-        if first_title || app_changed || self.focused_surface_id() == id {
+        // Pre-map titles feed placement rules, so they are never debounced.
+        if first_title
+            || app_changed
+            || self.unmapped_surfaces.contains(&id)
+            || self.focused_surface_id() == id
+        {
             self.discard_pending_title_event(id);
             self.queue_event(Event::Title { id, app, title });
             return;
@@ -7726,6 +7742,8 @@ impl CompositorHandler for State {
             if let Some(window) = self.ewm.id_windows.get(&id) {
                 window.on_commit();
             }
+            // Title before Mapped, so placement rules see a title set on the mapping commit.
+            self.ewm.check_surface_info_changes(surface);
 
             // unmapped->mapped transition: seed the open-fade once. The
             // 16ms delay holds alpha at 0 for one vblank so the empty/white
@@ -7754,18 +7772,17 @@ impl CompositorHandler for State {
                 let output = self.ewm.active_output();
                 let frame_surface_id =
                     self.ewm.resolve_app_host_frame(parent_id, output.as_deref());
-                // Floating frames fit the client's natural size; tiled clients fill their frame.
-                // A size that fills the working area is dropped so the client picks its own.
-                let (width, height) = open_floating
-                    .then(|| self.ewm.id_windows.get(&id).and_then(floating_open_size))
-                    .flatten()
-                    .filter(|s| {
-                        output
-                            .as_deref()
-                            .and_then(|name| self.ewm.mapped_output_by_name(name))
-                            .map(|o| self.ewm.get_working_area(o))
-                            .map_or(true, |wa| s.w < wa.size.w && s.h < wa.size.h)
-                    })
+                // Size hint for floating placement, dropped when it fills the working area.
+                let working_area = output
+                    .as_deref()
+                    .and_then(|name| self.ewm.mapped_output_by_name(name))
+                    .map(|o| self.ewm.get_working_area(o));
+                let (width, height) = self
+                    .ewm
+                    .id_windows
+                    .get(&id)
+                    .and_then(natural_open_size)
+                    .filter(|s| working_area.is_none_or(|wa| s.w < wa.size.w && s.h < wa.size.h))
                     .map(|s| (s.w as f64, s.h as f64))
                     .unzip();
                 self.ewm.queue_event(Event::Mapped {
@@ -7779,8 +7796,6 @@ impl CompositorHandler for State {
             }
 
             self.ewm.queue_redraw_for_surface(id);
-
-            self.ewm.check_surface_info_changes(surface);
             return;
         }
 
@@ -9296,11 +9311,14 @@ impl State {
         if self.ewm.active_outputs_dirty {
             self.ewm.flush_active_outputs();
         }
+        let frame_origins = self.ewm.frame_origins_snapshot();
+        let active_frames = self.ewm.active_frames_snapshot();
         let mut shared = module::shared_state().lock().unwrap();
         shared.focused_surface_id = self.ewm.focused_surface_id();
         shared.focused_frame_id = self.ewm.focused_frame_id;
         shared.pointer_location = self.ewm.pointer_location();
-        shared.frame_origins = self.ewm.frame_origins_snapshot();
+        shared.frame_origins = frame_origins;
+        shared.active_frames = active_frames;
     }
 
     /// Handle a module command (from Emacs via dynamic module).

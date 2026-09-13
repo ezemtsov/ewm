@@ -127,6 +127,21 @@ impl Fixture {
         toplevel
     }
 
+    /// Open a toplevel titled FIRST before map and retitled SECOND on the mapping commit.
+    pub fn open_toplevel_retitled(
+        &mut self,
+        client: &mut TestClient,
+        first: &str,
+        second: &str,
+        size: Size<i32, Logical>,
+    ) -> crate::testing::Toplevel {
+        let toplevel = client.create_toplevel(first);
+        self.roundtrip(client);
+        toplevel.xdg_toplevel.set_title(second.to_string());
+        self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
+        toplevel
+    }
+
     /// Open a fixed-size toplevel (min == max), exercising the auto-float path.
     pub fn open_toplevel_fixed_size(
         &mut self,

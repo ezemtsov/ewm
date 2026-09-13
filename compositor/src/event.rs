@@ -69,7 +69,7 @@ pub enum Event {
         pid: i32,
     },
     /// App surface mapped: placed once, floating (`open_floating`) or tiled in `frame_surface_id`.
-    /// `width`/`height` carry the floating client's natural size so its frame fits it.
+    /// `width`/`height` carry the client's natural size, dropped when it fills the working area.
     #[serde(rename = "mapped")]
     Mapped {
         id: u64,

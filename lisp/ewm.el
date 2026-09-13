@@ -64,6 +64,7 @@
 (declare-function ewm-notify-initialized-module "ewm-core")
 (declare-function ewm-focus-output-direction-module "ewm-core")
 (declare-function ewm-get-focused-frame-id "ewm-core")
+(declare-function ewm-get-active-frame-id "ewm-core")
 (declare-function ewm--handle-intercepted-command "ewm-input" (event))
 
 ;;; Logging
@@ -401,8 +402,8 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ("bell" (ewm--handle-bell event))
       ("idle_state_changed" (ewm--handle-idle-state-changed event))
       ("environment" (ewm--handle-environment event))
-      ("frame_shown" (ewm--handle-frame-shown event))
-      ("frame_hidden" (ewm--handle-frame-hidden event))
+      ("frame_shown" (ewm--gtk-frame-updates event #'ewm-gtk-thaw-frame-updates))
+      ("frame_hidden" (ewm--gtk-frame-updates event #'ewm-gtk-freeze-frame-updates))
       ("frame_moved" (ewm--handle-frame-moved event)))))
 
 ;;; Event handlers
@@ -470,12 +471,14 @@ matches it is paired, otherwise a surface buffer is created."
   (when-let* ((id (alist-get 'id event))
               (buffer (gethash id ewm--surfaces))
               ((buffer-live-p buffer)))
+    (when-let* ((width (alist-get 'width event))
+                (height (alist-get 'height event)))
+      (with-current-buffer buffer
+        (setq-local ewm-surface-size (cons width height))))
     (let ((args (list buffer
                       (alist-get 'open_floating event)
                       (alist-get 'output event)
-                      (alist-get 'frame_surface_id event)
-                      (alist-get 'width event)
-                      (alist-get 'height event))))
+                      (alist-get 'frame_surface_id event))))
       ;; A menu is up: defer so placement neither disrupts nor is dropped by it.
       (if (ewm-layout--menu-active-p)
           (push args ewm--pending-placements)
@@ -489,16 +492,14 @@ matches it is paired, otherwise a surface buffer is created."
       (when (buffer-live-p (car args))
         (apply #'ewm--place-surface-buffer args)))))
 
-(defun ewm--place-surface-buffer (buffer floating output host-id &optional width height)
+(defun ewm--place-surface-buffer (buffer floating output host-id)
   "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID."
   (let ((host (or (ewm--frame-by-surface-id host-id)
                   (ewm--surface-target-frame-for-output output))))
     (when host (select-frame host))
     (cond
      (floating
-      (pop-to-buffer buffer `(ewm-display-buffer-floating
-                              (ewm-output . ,output)
-                              ,@(and width height `((ewm-size . (,width . ,height)))))))
+      (pop-to-buffer buffer `(ewm-display-buffer-floating (ewm-output . ,output))))
      (host
       (pop-to-buffer-same-window buffer)
       (ewm-layout--refresh)))))
@@ -785,37 +786,20 @@ Select the Nth Emacs frame on the requested output (1-based index)."
 (declare-function ewm-gtk-freeze-frame-updates "ewm-core")
 (declare-function ewm-gtk-thaw-frame-updates "ewm-core")
 
-(defun ewm--frame-window-id (frame)
-  (and (frame-live-p frame) (frame-parameter frame 'window-id)))
-
-(defvar ewm--output-active-frame nil
-  "Alist of OUTPUT -> the strip frame the compositor last marked active there.
-Anchors strip navigation and surface placement while a float holds focus.")
-
 (defun ewm-output-active-frame (output)
   "Return the strip frame shown on OUTPUT, or its first frame."
   (let ((frames (ewm--strip-frames output))
-        (active (alist-get output ewm--output-active-frame nil nil #'equal)))
+        (active (and output
+                     (ewm--frame-by-surface-id (ewm-get-active-frame-id output)))))
+    ;; `ewm--strips' can lag the compositor by an event.
     (if (memq active frames) active (car frames))))
 
-(defun ewm--handle-frame-shown (event)
-  (when-let* ((id (alist-get 'id event))
-              (frame (ewm--frame-by-surface-id id)))
-    ;; Floats get frame_shown too; only strip frames anchor an output.
-    (unless (frame-parameter frame 'ewm-floating)
-      (setf (alist-get (frame-parameter frame 'ewm-output)
-                       ewm--output-active-frame nil nil #'equal)
-            frame))
-    (when-let* (((ewm--gtk-backed-p))
-                (wid (ewm--frame-window-id frame)))
-      (ignore-errors (ewm-gtk-thaw-frame-updates wid)))))
-
-(defun ewm--handle-frame-hidden (event)
-  (when (ewm--gtk-backed-p)
-    (when-let* ((id (alist-get 'id event))
-                (frame (ewm--frame-by-surface-id id))
-                (wid (ewm--frame-window-id frame)))
-      (ignore-errors (ewm-gtk-freeze-frame-updates wid)))))
+(defun ewm--gtk-frame-updates (event fn)
+  "Call FN with the GTK window id of EVENT's frame, when GTK-backed."
+  (when-let* (((ewm--gtk-backed-p))
+              (frame (ewm--frame-by-surface-id (alist-get 'id event)))
+              (wid (frame-parameter frame 'window-id)))
+    (ignore-errors (funcall fn wid))))
 
 (defun ewm--handle-frame-moved (event)
   "Mirror the compositor-authoritative output for an Emacs frame."
@@ -1439,16 +1423,17 @@ selected frame\", which can change during pgtk's internal close handling."
 
 (defun ewm-display-buffer-floating (buffer alist)
   "Display BUFFER in a new floating frame; a `display-buffer' action function.
-Looks come from `pop-up-frame-parameters'.  EWM's own placements add
-`ewm-output', `ewm-size' (client body W . H) and `ewm-position'
-(top-left X . Y)."
+Looks come from `pop-up-frame-parameters'.  The frame is fitted to `ewm-size'
+(client body W . H) in ALIST, else to the buffer's `ewm-surface-size'.  EWM's
+own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
   (unless ewm--inhibit-floating
     (let ((pop-up-frame-function (lambda () (ewm--make-floating-frame alist))))
       ;; Fit after the user's window parameters land, then show.
       (when-let* ((window (display-buffer-pop-up-frame
                            buffer (cons '(inhibit-switch-frame . t) alist)))
                   (frame (window-frame window)))
-        (when-let* ((size (alist-get 'ewm-size alist)))
+        (when-let* ((size (or (alist-get 'ewm-size alist)
+                              (buffer-local-value 'ewm-surface-size buffer))))
           (ewm--fit-floating-frame frame (car size) (cdr size)))
         (make-frame-visible frame)
         window))))

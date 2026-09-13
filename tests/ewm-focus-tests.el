@@ -31,6 +31,8 @@
   (defun ewm-focus-target-module (_focus-id) nil))
 (unless (fboundp 'ewm-prepare-frame-close-module)
   (defun ewm-prepare-frame-close-module (_surface-id) nil))
+(unless (fboundp 'ewm-get-active-frame-id)
+  (defun ewm-get-active-frame-id (_output) nil))
 ;; The dynamic module provides the `ewm-core' feature in production;
 ;; stub it here so `(require 'ewm)' resolves under batch.
 (provide 'ewm-core)
@@ -308,7 +310,8 @@ buffer; `mapped' displays and publishes it."
            '((id . 42) (open_floating . t) (output . "HEAD-A") (frame_surface_id . 7)
              (width . 480.0) (height . 160.0)))
           (should (null ewm--pending-placements))
-          (should (equal (list buf t "HEAD-A" 7 480.0 160.0) (car placed))))
+          (should (equal (list buf t "HEAD-A" 7) (car placed)))
+          (should (equal '(480.0 . 160.0) (buffer-local-value 'ewm-surface-size buf))))
       (kill-buffer buf))))
 
 (ert-deftest ewm-focus/mapped-surface-defers-while-menu-active ()
@@ -327,7 +330,7 @@ buffer; `mapped' displays and publishes it."
           (should (null placed))
           (should (= 1 (length ewm--pending-placements)))
           (ewm--flush-pending-placements)
-          (should (equal (list buf nil "HEAD-A" 7 nil nil) (car placed)))
+          (should (equal (list buf nil "HEAD-A" 7) (car placed)))
           (should (= 1 (length placed)))
           (should (null ewm--pending-placements)))
       (kill-buffer buf))))
@@ -379,8 +382,7 @@ buffer; `mapped' displays and publishes it."
 (ert-deftest ewm-focus/surface-target-skips-focused-floating-frame ()
   "New-surface fallback ignores a focused float and takes the shown strip frame."
   (ewm-focus-tests--with-frame f
-    (let ((ewm--strips `((,ewm-focus-tests--output . (g))))
-          (ewm--output-active-frame nil))
+    (let ((ewm--strips `((,ewm-focus-tests--output . (g)))))
       (set-frame-parameter f 'ewm-floating t)
       (unwind-protect
           (cl-letf (((symbol-function 'ewm--current-frame) (lambda () f)))
@@ -413,12 +415,15 @@ buffer; `mapped' displays and publishes it."
 
 (ert-deftest ewm-focus/output-active-frame-must-be-in-strip ()
   "`ewm-output-active-frame' returns the shown strip frame, else the first."
-  (let ((ewm--strips '(("A" . (g f)) ("B" . (g))))
-        (ewm--output-active-frame '(("A" . f) ("B" . f))))
-    (should (eq 'f (ewm-output-active-frame "A")))
-    ;; Stale record: f left B's strip.
-    (should (eq 'g (ewm-output-active-frame "B")))
-    (should-not (ewm-output-active-frame "C"))))
+  (ewm-focus-tests--with-frame f
+    (let ((ewm--strips `(("A" . (g ,f)) ("B" . (g)))))
+      (cl-letf (((symbol-function 'ewm-get-active-frame-id)
+                 (lambda (_output) ewm-focus-tests--frame-surface-id)))
+        (should (eq f (ewm-output-active-frame "A")))
+        ;; The compositor names a frame that has not joined B's strip yet.
+        (should (eq 'g (ewm-output-active-frame "B")))
+        (should-not (ewm-output-active-frame "C"))
+        (should-not (ewm-output-active-frame nil))))))
 
 (ert-deftest ewm-focus/floating-placement-goes-through-pop-to-buffer ()
   "A compositor float is placed from its host frame with the floating action."
@@ -428,11 +433,8 @@ buffer; `mapped' displays and publishes it."
       (cl-letf (((symbol-function 'pop-to-buffer)
                  (lambda (buffer action &optional _norecord)
                    (setq popped (cons buffer action)))))
-        (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id
-                                   480.0 160.0)
-        (should (equal (cons buf '(ewm-display-buffer-floating
-                                   (ewm-output . "HEAD-A")
-                                   (ewm-size 480.0 . 160.0)))
+        (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id)
+        (should (equal (cons buf '(ewm-display-buffer-floating (ewm-output . "HEAD-A")))
                        popped))))))
 
 (defmacro ewm-focus-tests--with-stubbed-float (vars &rest body)
@@ -453,7 +455,7 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
          ,@body))))
 
 (ert-deftest ewm-focus/floating-action-frame-params ()
-  "Output and origin come from the selected frame, looks from user rules."
+  "Output and origin come from the selected frame, looks from rules, size from the surface."
   (ewm-focus-tests--with-frame f
     (let ((buf (ewm-focus-tests--make-surface-buffer 42))
           (display-buffer-alist
@@ -471,10 +473,12 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
           (should (eql ewm-focus-tests--frame-surface-id
                        (alist-get 'ewm-floating-origin-frame-id params))))
         (should (equal '(480 . 160) fitted)))
-      (ewm-focus-tests--with-stubbed-float (made)
+      (with-current-buffer buf (setq-local ewm-surface-size '(300 . 200)))
+      (ewm-focus-tests--with-stubbed-float (made fitted)
         (should (display-buffer buf '(ewm-display-buffer-floating
                                       (ewm-output . "HEAD-A"))))
-        (should (equal "HEAD-A" (car made)))))))
+        (should (equal "HEAD-A" (car made)))
+        (should (equal '(300 . 200) fitted))))))
 
 (ert-deftest ewm-focus/floating-action-declines-off-output ()
   "Off any output the action returns nil and `display-buffer' falls through."
