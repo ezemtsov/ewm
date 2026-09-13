@@ -624,7 +624,9 @@ The current buffer is the surface buffer when this runs."
   (let ((app (alist-get 'app event))
         (title (alist-get 'title event)))
     (ewm--with-surface-buffer-from-event event
-      (setq-local ewm-surface-app app)
+      ;; No app_id from the client; keep the comm-derived name.
+      (unless (member app '(nil ""))
+        (setq-local ewm-surface-app app))
       (setq-local ewm-surface-title title)
       (ewm--rename-buffer)
       (run-hooks 'ewm-update-title-hook))))
@@ -698,7 +700,7 @@ Similar to `exwm-workspace-rename-buffer'."
   (ewm--apply-gtk-bg-css)
   (let (created)
     (dolist (output (ewm-get-active-outputs))
-      (unless (ewm--frame-for-output output)
+      (unless (ewm--strip-frames output)
         (ewm--create-frame-for-output output)
         (setq created t)))
     (ewm--enforce-frame-output-parity)
@@ -788,15 +790,22 @@ Select the Nth Emacs frame on the requested output (1-based index)."
 
 (defvar ewm--output-active-frame nil
   "Alist of OUTPUT -> the strip frame the compositor last marked active there.
-Lets strip navigation find its anchor when a floating frame holds focus.")
+Anchors strip navigation and surface placement while a float holds focus.")
+
+(defun ewm-output-active-frame (output)
+  "Return the strip frame shown on OUTPUT, or its first frame."
+  (let ((frames (ewm--strip-frames output))
+        (active (alist-get output ewm--output-active-frame nil nil #'equal)))
+    (if (memq active frames) active (car frames))))
 
 (defun ewm--handle-frame-shown (event)
   (when-let* ((id (alist-get 'id event))
               (frame (ewm--frame-by-surface-id id)))
-    ;; `frame_shown' always names a tiled strip frame (never a float).
-    (setf (alist-get (frame-parameter frame 'ewm-output)
-                     ewm--output-active-frame nil nil #'equal)
-          frame)
+    ;; Floats get frame_shown too; only strip frames anchor an output.
+    (unless (frame-parameter frame 'ewm-floating)
+      (setf (alist-get (frame-parameter frame 'ewm-output)
+                       ewm--output-active-frame nil nil #'equal)
+            frame))
     (when-let* (((ewm--gtk-backed-p))
                 (wid (ewm--frame-window-id frame)))
       (ignore-errors (ewm-gtk-thaw-frame-updates wid)))))
@@ -1233,10 +1242,6 @@ native Wayland backend)."
   "Return non-nil if FRAME is bound to a compositor output."
   (memq (framep-on-display frame) ewm--managed-window-systems))
 
-(defun ewm--frame-for-output (output-name)
-  "Return the first frame in OUTPUT-NAME's strip, or nil."
-  (car (ewm--strip-frames output-name)))
-
 (defun ewm--surface-target-frame-for-output (output-name)
   "Return the best tiled fallback frame for a new surface on OUTPUT-NAME."
   (or (let ((frame (ignore-errors (ewm--focused-frame))))
@@ -1244,7 +1249,7 @@ native Wayland backend)."
              (not (frame-parameter frame 'ewm-floating))
              (equal (frame-parameter frame 'ewm-output) output-name)
              frame))
-      (ewm--frame-for-output output-name)))
+      (ewm-output-active-frame output-name)))
 
 (defun ewm--frame-in-flight-p (frame)
   "Return non-nil when FRAME has an output assignment but no surface id yet."
@@ -1396,7 +1401,7 @@ selected frame\", which can change during pgtk's internal close handling."
                   (origin (ewm--frame-by-surface-id origin-id))
                   ((not (frame-parameter origin 'ewm-floating))))
         origin)
-      (ewm--frame-for-output (frame-parameter floating-frame 'ewm-output))))
+      (ewm-output-active-frame (frame-parameter floating-frame 'ewm-output))))
 
 (defun ewm--window-body-pixel-rect (window)
   "Return WINDOW's inner text area as an (X Y WIDTH HEIGHT) pixel list."
@@ -1526,22 +1531,15 @@ Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
   "Frame the user is on per the compositor, falling back to `selected-frame'."
   (or (ewm--current-frame) (selected-frame)))
 
-(defun ewm--strip-anchor-frame (output frames)
-  "Strip frame on OUTPUT to navigate from, given its FRAMES.
-The focused frame when it is in the strip, else the output's active strip
-frame, else the first -- so navigation works while a float holds focus."
-  (let ((focused (ewm--focused-frame))
-        (active (alist-get output ewm--output-active-frame nil nil #'equal)))
-    (cond ((memq focused frames) focused)
-          ((memq active frames) active)
-          (t (car frames)))))
-
 (defun ewm--frame-shift-on-output (delta)
   "Move strip focus by DELTA on the current output (no wrap-around).
-Returns the target frame on success, nil at the strip edge."
-  (let* ((output (frame-parameter (ewm--focused-frame) 'ewm-output))
+Returns the target frame on success, nil at the strip edge.  Anchors at
+the focused frame when it is in the strip, else the shown frame, so
+navigation works while a float holds focus."
+  (let* ((focused (ewm--focused-frame))
+         (output (frame-parameter focused 'ewm-output))
          (frames (ewm--strip-frames output))
-         (current (ewm--strip-anchor-frame output frames))
+         (current (if (memq focused frames) focused (ewm-output-active-frame output)))
          (idx (cl-position current frames))
          (target-idx (and idx (+ idx delta))))
     (when (and target-idx (>= target-idx 0) (< target-idx (length frames)))

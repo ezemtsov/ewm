@@ -10,6 +10,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+
 (declare-function ewm-close "ewm")
 (declare-function ewm-im-commit "ewm-text-input")
 
@@ -31,6 +33,17 @@ Similar to `exwm-title'.")
 (defun ewm-surface-buffer-p (buffer)
   "If BUFFER is an EWM surface buffer, return its surface id, else nil."
   (and buffer (buffer-local-value 'ewm-surface-id buffer)))
+
+;;;###autoload
+(cl-defun ewm-surface-match (&key app title)
+  "Return a `display-buffer-alist' condition matching APP and TITLE regexps.
+A nil regexp matches anything; matching is case-sensitive."
+  (lambda (buffer &optional _action)
+    (with-current-buffer buffer
+      (let ((case-fold-search nil))
+        (and ewm-surface-id
+             (or (null app) (string-match-p app (or ewm-surface-app "")))
+             (or (null title) (string-match-p title (or ewm-surface-title ""))))))))
 
 (defvar ewm--surfaces)
 

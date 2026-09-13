@@ -376,14 +376,17 @@ buffer; `mapped' displays and publishes it."
   (cl-letf (((symbol-function 'ewm--current-frame) #'ignore))
     (should (eq (selected-frame) (ewm--focused-frame)))))
 
-(ert-deftest ewm-focus/surface-target-prefers-focused-floating-frame ()
-  "New-surface fallback may target the focused floating frame."
+(ert-deftest ewm-focus/surface-target-skips-focused-floating-frame ()
+  "New-surface fallback ignores a focused float and takes the shown strip frame."
   (ewm-focus-tests--with-frame f
-    (let ((ewm--strips nil)
-          (ewm--floating-frames `((,ewm-focus-tests--output . (,f)))))
-      (cl-letf (((symbol-function 'ewm--current-frame) (lambda () f)))
-        (should (eq f (ewm--surface-target-frame-for-output
-                       ewm-focus-tests--output)))))))
+    (let ((ewm--strips `((,ewm-focus-tests--output . (g))))
+          (ewm--output-active-frame nil))
+      (set-frame-parameter f 'ewm-floating t)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ewm--current-frame) (lambda () f)))
+            (should (eq 'g (ewm--surface-target-frame-for-output
+                            ewm-focus-tests--output))))
+        (set-frame-parameter f 'ewm-floating nil)))))
 
 (ert-deftest ewm-focus/floating-public-command-is-toggle ()
   "Floating exposes one interactive command: `ewm-floating-toggle'."
@@ -391,6 +394,31 @@ buffer; `mapped' displays and publishes it."
   (should-not (fboundp 'ewm-frame-new-floating))
   (should-not (fboundp 'ewm-floating-frame-move-left))
   (should-not (fboundp 'ewm-floating-frame-widen)))
+
+(ert-deftest ewm-focus/surface-match-is-a-display-buffer-condition ()
+  "`ewm-surface-match' matches app and title regexps on surface buffers only."
+  (ewm-focus-tests--with-frame f
+    (let ((buf (ewm-focus-tests--make-surface-buffer 42)))
+      (with-current-buffer buf
+        (setq-local ewm-surface-app "firefox" ewm-surface-title "Picture-in-Picture"))
+      (should (buffer-match-p (ewm-surface-match :app "^firefox$" :title "^Picture") buf))
+      (should-not (buffer-match-p (ewm-surface-match :app "fire" :title "Gmail") buf))
+      (should-not (buffer-match-p (ewm-surface-match :app "^chrome" :title "^Picture") buf))
+      (should-not (buffer-match-p (ewm-surface-match :app "^FIREFOX$") buf))
+      (should-not (buffer-match-p (ewm-surface-match) (messages-buffer)))
+      (let ((display-buffer-alist `((,(ewm-surface-match :app "fire") nil (foo . t)))))
+        (should (equal '(nil (foo . t))
+                       (display-buffer-assq-regexp (buffer-name buf)
+                                                   display-buffer-alist nil)))))))
+
+(ert-deftest ewm-focus/output-active-frame-must-be-in-strip ()
+  "`ewm-output-active-frame' returns the shown strip frame, else the first."
+  (let ((ewm--strips '(("A" . (g f)) ("B" . (g))))
+        (ewm--output-active-frame '(("A" . f) ("B" . f))))
+    (should (eq 'f (ewm-output-active-frame "A")))
+    ;; Stale record: f left B's strip.
+    (should (eq 'g (ewm-output-active-frame "B")))
+    (should-not (ewm-output-active-frame "C"))))
 
 (ert-deftest ewm-focus/floating-placement-goes-through-pop-to-buffer ()
   "A compositor float is placed from its host frame with the floating action."
@@ -409,16 +437,18 @@ buffer; `mapped' displays and publishes it."
 
 (defmacro ewm-focus-tests--with-stubbed-float (vars &rest body)
   "Run BODY with float creation stubbed onto the batch frame.
-VARS is (MADE FITTED): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
+VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
   (declare (indent 1))
   (pcase-let ((`(,made ,fitted) vars))
-    `(let (,made ,fitted (ewm--module-mode nil))
+    `(let (,made ,@(and fitted (list fitted)) (ewm--module-mode nil))
        (cl-letf (((symbol-function 'ewm--create-floating-frame-for-output)
                   (lambda (output params pos)
                     (setq ,made (list output params pos))
                     (selected-frame)))
                  ((symbol-function 'ewm--fit-floating-frame)
-                  (lambda (_frame w h) (setq ,fitted (cons w h))))
+                  ,(if fitted
+                       `(lambda (_frame w h) (setq ,fitted (cons w h)))
+                     '#'ignore))
                  ((symbol-function 'make-frame-visible) #'ignore))
          ,@body))))
 
@@ -441,7 +471,7 @@ VARS is (MADE FITTED): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
           (should (eql ewm-focus-tests--frame-surface-id
                        (alist-get 'ewm-floating-origin-frame-id params))))
         (should (equal '(480 . 160) fitted)))
-      (ewm-focus-tests--with-stubbed-float (made _fitted)
+      (ewm-focus-tests--with-stubbed-float (made)
         (should (display-buffer buf '(ewm-display-buffer-floating
                                       (ewm-output . "HEAD-A"))))
         (should (equal "HEAD-A" (car made)))))))
@@ -451,14 +481,14 @@ VARS is (MADE FITTED): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
   (ewm-focus-tests--with-frame f
     (set-frame-parameter f 'ewm-output nil)
     (let ((buf (ewm-focus-tests--make-surface-buffer 42)))
-      (ewm-focus-tests--with-stubbed-float (made _fitted)
+      (ewm-focus-tests--with-stubbed-float (made)
         (should (display-buffer buf '(ewm-display-buffer-floating)))
         (should-not made)))))
 
 (ert-deftest ewm-focus/floating-action-honors-inhibit ()
   "`ewm--inhibit-floating' makes the action decline, so attach cannot re-float."
   (let ((ewm--inhibit-floating t))
-    (ewm-focus-tests--with-stubbed-float (made _fitted)
+    (ewm-focus-tests--with-stubbed-float (made)
       (should-not (ewm-display-buffer-floating (current-buffer) nil))
       (should-not made))))
 
@@ -484,7 +514,7 @@ VARS is (MADE FITTED): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
              '((" \\*ewm-test-surface-42\\*" display-buffer-pop-up-window)))
             (split-height-threshold 0))
         (set-window-buffer source buf)
-        (ewm-focus-tests--with-stubbed-float (made _fitted)
+        (ewm-focus-tests--with-stubbed-float (made)
           (ewm--floating-detach-selected-buffer f)
           (should-not made)
           (should (window-live-p source))
