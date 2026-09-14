@@ -843,31 +843,24 @@ of inactivity.  Useful for video playback or presentations."
   (interactive)
   (start-process "loginctl" nil "loginctl" "lock-session"))
 
-(defun ewm--sorted-surface-buffers ()
-  "Return live surface buffers sorted by surface ID."
-  (sort (cl-loop for buf being the hash-values of ewm--surfaces
-                 when (buffer-live-p buf) collect buf)
-        (lambda (a b) (< (ewm-surface-buffer-p a)
-                         (ewm-surface-buffer-p b)))))
-
-(defun ewm--cycle-surface-buffer (delta)
-  "Switch to surface buffer DELTA steps away from current."
-  (let ((bufs (ewm--sorted-surface-buffers))
-        (cur (current-buffer)))
-    (when (cdr bufs)
-      (let* ((pos (cl-position cur bufs))
-             (next (nth (if pos (mod (+ pos delta) (length bufs)) 0) bufs)))
-        (switch-to-buffer next)))))
+(defun ewm--cycle-surface-buffer (command)
+  "Run buffer-navigation COMMAND with a surface-only filter."
+  (let* ((skip switch-to-prev-buffer-skip)
+         (switch-to-prev-buffer-skip
+          (lambda (window buffer bury-or-kill)
+            (or (not (ewm-surface-buffer-p buffer))
+                (switch-to-prev-buffer-skip-p skip window buffer bury-or-kill)))))
+    (funcall command)))
 
 (defun ewm-next-surface-buffer ()
-  "Switch to the next surface buffer in the current window."
+  "Like `next-buffer', but only among surface buffers."
   (interactive)
-  (ewm--cycle-surface-buffer 1))
+  (ewm--cycle-surface-buffer #'next-buffer))
 
 (defun ewm-prev-surface-buffer ()
-  "Switch to the previous surface buffer in the current window."
+  "Like `previous-buffer', but only among surface buffers."
   (interactive)
-  (ewm--cycle-surface-buffer -1))
+  (ewm--cycle-surface-buffer #'previous-buffer))
 
 (defun ewm-toggle-fullscreen ()
   "Toggle fullscreen for the current layout view."
