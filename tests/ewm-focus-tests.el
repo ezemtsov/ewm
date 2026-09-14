@@ -33,6 +33,8 @@
   (defun ewm-prepare-frame-close-module (_surface-id) nil))
 (unless (fboundp 'ewm-get-active-frame-id)
   (defun ewm-get-active-frame-id (_output) nil))
+(unless (fboundp 'ewm-get-output-origin)
+  (defun ewm-get-output-origin (_output) nil))
 ;; The dynamic module provides the `ewm-core' feature in production;
 ;; stub it here so `(require 'ewm)' resolves under batch.
 (provide 'ewm-core)
@@ -96,7 +98,7 @@ The batch frame is shared; we save and restore the parameters we touch."
      (set-frame-parameter ,var 'ewm-surface-id ewm-focus-tests--frame-surface-id)
      (set-frame-parameter ,var 'ewm-output ewm-focus-tests--output)
      (unwind-protect
-         (cl-letf (((symbol-function 'ewm--window-inside-absolute-pixel-edges)
+         (cl-letf (((symbol-function 'ewm--window-body-pixel-rect)
                     (lambda (&optional _window) '(0 0 100 100))))
            ,@body)
        (set-frame-parameter ,var 'ewm-surface-id saved-surface-id)
@@ -495,6 +497,17 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
         (should (equal '(5 . 5) (nth 2 made)))
         (should (equal '(90 . 90) fitted))))))
 
+(ert-deftest ewm-focus/detach-positions-relative-to-output ()
+  "The float lands over its tile: the rect shifts by frame minus output origin."
+  (ewm-focus-tests--with-frame f
+    (let ((buf (ewm-focus-tests--make-surface-buffer 42)))
+      (set-window-buffer (frame-selected-window f) buf)
+      (cl-letf (((symbol-function 'ewm--get-frame-origin) (lambda (_) '(200 . 300)))
+                ((symbol-function 'ewm--get-output-origin) (lambda (_) '(100 . 100))))
+        (ewm-focus-tests--with-stubbed-float (made)
+          (ewm--floating-detach-selected-buffer f)
+          (should (equal '(105 . 205) (nth 2 made))))))))
+
 (ert-deftest ewm-focus/detach-keeps-tile-when-rule-shows-elsewhere ()
   "A rule that shows the buffer in a sibling window leaves the tile alone."
   (ewm-focus-tests--with-frame f
@@ -761,8 +774,8 @@ pointer."
                  (lambda () '(0.0 . 0.0)))
                 ((symbol-function 'window-pixel-edges)
                  (lambda (&optional _) '(0 0 100 100)))
-                ((symbol-function 'window-inside-pixel-edges)
-                 (lambda (&optional _) '(10 20 110 120)))
+                ((symbol-function 'ewm--window-body-pixel-rect)
+                 (lambda (_) '(10 20 100 100)))
                 ((symbol-function 'ewm-warp-pointer)
                  (lambda (x y) (setq warped (cons x y)))))
         (ewm-input--warp-pointer-to-window (frame-selected-window f))

@@ -71,21 +71,14 @@ Computed deterministically so the compositor can construct the same id at
   (when-let ((sid (frame-parameter frame 'ewm-surface-id)))
     (logior ewm-layout--frame-focus-id-marker sid)))
 
-;; Compatibility wrapper for window-inside-absolute-pixel-edges
-;; Fixes tab-line handling for Emacs < 31 (from exwm-core.el)
-(defalias 'ewm--window-inside-absolute-pixel-edges
-  (if (< emacs-major-version 31)
-      (lambda (&optional window)
-        "Return absolute pixel edges of WINDOW's text area.
-This version correctly handles tab-lines on Emacs prior to v31."
-        (let* ((window (window-normalize-window window t))
-               (edges (window-inside-absolute-pixel-edges window))
-               (tab-line-height (window-tab-line-height window)))
-          (cl-incf (elt edges 1) tab-line-height)
-          (cl-incf (elt edges 3) tab-line-height)
-          edges))
-    #'window-inside-absolute-pixel-edges)
-  "Return inner absolute pixel edges of WINDOW, handling tab-lines correctly.")
+(defun ewm--window-body-pixel-rect (window)
+  "Return WINDOW's text area as frame-relative (X Y WIDTH HEIGHT) pixels."
+  (pcase-let ((`(,left ,top ,right ,bottom) (window-inside-pixel-edges window)))
+    (list left
+          ;; Before Emacs 31, body edges omitted the tab-line offset.
+          (+ top (if (< emacs-major-version 31) (window-tab-line-height window) 0))
+          (- right left)
+          (- bottom top))))
 
 (defun ewm-layout--build-frame-plist (frame menu-active)
   "Plist describing FRAME for `ewm-output-layout'.
@@ -136,13 +129,8 @@ compositor parks keyboard focus on the frame chrome."
 
 (defun ewm-layout--make-output-entry (window)
   "Create an entry geometry plist for WINDOW with frame-relative coordinates.
-Returns (:x X :y Y :w W :h H).  Coordinates are relative to the output's
-working area; compositor adds output geometry + working area offset."
-  (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
-         (x (pop edges))
-         (y (pop edges))
-         (width (- (pop edges) x))
-         (height (- (pop edges) y)))
+Returns (:x X :y Y :w W :h H); the compositor adds the frame's origin."
+  (pcase-let ((`(,x ,y ,width ,height) (ewm--window-body-pixel-rect window)))
     `(:x ,x :y ,y :w ,width :h ,height)))
 
 (defvar ewm-layout--last-menu-active nil

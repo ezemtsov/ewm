@@ -1278,13 +1278,6 @@ selected frame\", which can change during pgtk's internal close handling."
         origin)
       (ewm-output-active-frame (frame-parameter floating-frame 'ewm-output))))
 
-(defun ewm--window-body-pixel-rect (window)
-  "Return WINDOW's inner text area as an (X Y WIDTH HEIGHT) pixel list."
-  (let* ((edges (ewm--window-inside-absolute-pixel-edges window))
-         (x (nth 0 edges))
-         (y (nth 1 edges)))
-    (list x y (- (nth 2 edges) x) (- (nth 3 edges) y))))
-
 (defun ewm--fit-floating-frame (frame width height)
   "Size FRAME so its client window body is WIDTH×HEIGHT logical pixels."
   (let ((rect (ewm--window-body-pixel-rect (frame-selected-window frame)))
@@ -1345,12 +1338,16 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
     (when (window-minibuffer-p source-window)
       (user-error "Cannot detach minibuffer window"))
     (select-frame frame)
-    (pop-to-buffer (window-buffer source-window)
-                   `(ewm-display-buffer-floating
-                     (inhibit-same-window . t)
-                     (ewm-size . (,fw . ,fh))
-                     (ewm-position . (,(+ (nth 0 rect) (/ (- w fw) 2))
-                                      . ,(+ (nth 1 rect) (/ (- h fh) 2))))))
+    ;; Float positions are output-relative.
+    (pcase-let ((`(,fx . ,fy) (ewm--get-frame-origin frame))
+                (`(,ox . ,oy) (ewm--get-output-origin
+                               (frame-parameter frame 'ewm-output))))
+      (pop-to-buffer (window-buffer source-window)
+                     `(ewm-display-buffer-floating
+                       (inhibit-same-window . t)
+                       (ewm-size . (,fw . ,fh))
+                       (ewm-position . (,(+ (nth 0 rect) (- fx ox) (/ (- w fw) 2))
+                                        . ,(+ (nth 1 rect) (- fy oy) (/ (- h fh) 2)))))))
     ;; Reclaim the tile once the buffer has left for a float.
     (when (and (window-live-p source-window)
                (frame-parameter (window-frame (selected-window)) 'ewm-floating))

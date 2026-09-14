@@ -92,6 +92,7 @@ Override individual bindings with `use-package':
 (declare-function ewm-get-focused-frame-id "ewm-core")
 (declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-layout--menu-active-p "ewm-layout")
+(declare-function ewm--window-body-pixel-rect "ewm-layout" (window))
 (declare-function ewm-warp-pointer "ewm")
 (declare-function ewm--get-frame-origin "ewm")
 ;; Defined in ewm.el (loaded after ewm-input.el)
@@ -301,10 +302,9 @@ Does nothing if pointer is already inside the window or if it's a minibuffer."
               (ewm-input--pointer-in-window-p window))
     (when-let* ((frame (window-frame window))
                 (frame-origin (ewm--get-frame-origin frame)))
-      (let* ((edges (window-inside-pixel-edges window))
-             (x (+ (car frame-origin) (/ (+ (nth 0 edges) (nth 2 edges)) 2)))
-             (y (+ (cdr frame-origin) (/ (+ (nth 1 edges) (nth 3 edges)) 2))))
-        (ewm-warp-pointer (float x) (float y))))))
+      (pcase-let ((`(,x ,y ,width ,height) (ewm--window-body-pixel-rect window)))
+        (ewm-warp-pointer (float (+ (car frame-origin) x (/ width 2)))
+                          (float (+ (cdr frame-origin) y (/ height 2))))))))
 
 (defun ewm-input--on-window-selection-change (_frame)
   "Warp pointer when selected window changes.
