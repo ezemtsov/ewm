@@ -32,8 +32,9 @@
 //!
 //! PP1 - Single popup placement per popup. For every popup parented to a
 //!       toplevel S currently in `id_windows`, `collect_popup_placements`
-//!       emits exactly one placement, anchored to S's focused-or-primary
-//!       view origin.
+//!       emits exactly one placement before output culling, anchored to S's
+//!       focused-or-primary view origin. S may sit off-screen, e.g. a frame
+//!       the strip scrolled away from.
 //!
 //! PP2 - Popup placement/render-order parity. The centre of every visible
 //!       popup placement, whether parented to an embedded app surface or an
@@ -117,6 +118,14 @@ fn view_size() -> Size<i32, Logical> {
 /// `collect_popup_placements`.
 fn world_rect() -> Rectangle<i32, Logical> {
     Rectangle::new(Point::from((-100, -100)), Size::from((5000, 5000)))
+}
+
+/// Culls nothing: placements of popups on scrolled-off parents still count.
+fn everywhere() -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        Point::from((-1_000_000, -1_000_000)),
+        Size::from((2_000_000, 2_000_000)),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1233,7 +1242,7 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
             continue;
         }
         let has_anchor = ewm.window_global_position(window).is_some();
-        let placements = collect_popup_placements(ewm, world_rect(), None);
+        let placements = collect_popup_placements(ewm, everywhere(), None);
         for (popup, _) in &popups {
             let popup_key = server_surface_key(ewm, popup.wl_surface());
             let matching = placements
@@ -1483,3 +1492,4 @@ proptest! {
         check_n4(&h)?;
     }
 }
+
