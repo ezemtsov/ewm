@@ -23,6 +23,7 @@
 //!
 //! 6. **VT switching**: Ctrl+Alt+F1-F12 arrive as XF86Switch_VT_N keysyms.
 
+use serde::Deserialize;
 use smithay::backend::input::KeyState;
 use smithay::input::keyboard::{
     keysyms, xkb, FilterResult, Keycode, KeyboardHandle, Keysym, ModifiersState,
@@ -638,7 +639,8 @@ use smithay::wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait};
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum AccelProfile {
     Flat,
     Adaptive,
@@ -653,7 +655,8 @@ impl From<AccelProfile> for libinput::AccelProfile {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ClickMethod {
     ButtonAreas,
     Clickfinger,
@@ -668,7 +671,8 @@ impl From<ClickMethod> for libinput::ClickMethod {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ScrollMethod {
     NoScroll,
     TwoFinger,
@@ -687,7 +691,8 @@ impl From<ScrollMethod> for libinput::ScrollMethod {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TapButtonMap {
     LeftRightMiddle,
     LeftMiddleRight,
@@ -703,7 +708,8 @@ impl From<TapButtonMap> for libinput::TapButtonMap {
 }
 
 /// Input device type for configuration matching.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum DeviceType {
     Touchpad,
     Mouse,
@@ -713,26 +719,6 @@ pub enum DeviceType {
     Tablet,
 }
 
-impl DeviceType {
-    /// Parse from string (Elisp symbol name).
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "touchpad" => Some(DeviceType::Touchpad),
-            "mouse" => Some(DeviceType::Mouse),
-            "trackball" => Some(DeviceType::Trackball),
-            "trackpoint" => Some(DeviceType::Trackpoint),
-            "keyboard" => Some(DeviceType::Keyboard),
-            "tablet" => Some(DeviceType::Tablet),
-            _ => None,
-        }
-    }
-}
-
-pub const DEVICE_TYPE_VALUES: &str = "touchpad, mouse, trackball, trackpoint, keyboard, tablet";
-pub const ACCEL_PROFILE_VALUES: &str = "flat, adaptive";
-pub const CLICK_METHOD_VALUES: &str = "button-areas, clickfinger";
-pub const SCROLL_METHOD_VALUES: &str = "no-scroll, two-finger, edge, on-button-down";
-pub const TAP_BUTTON_MAP_VALUES: &str = "left-right-middle, left-middle-right";
 pub const DEFAULT_KEYBOARD_REPEAT_DELAY: i32 = 200;
 pub const DEFAULT_KEYBOARD_REPEAT_RATE: i32 = 25;
 
@@ -740,21 +726,28 @@ pub const DEFAULT_KEYBOARD_REPEAT_RATE: i32 = 25;
 ///
 /// Type defaults have `device: None` and `device_type: Some(...)`.
 /// Device-specific overrides have `device: Some("name")` and optional `device_type`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct InputConfigEntry {
     /// None = type default, Some("device name") = device-specific override
     pub device: Option<String>,
     /// Required for type defaults, optional for device overrides (auto-detected)
+    #[serde(rename = "type")]
     pub device_type: Option<DeviceType>,
     // All possible settings (superset of touchpad + mouse)
+    #[serde(deserialize_with = "elisp::serde::present")]
     pub natural_scroll: Option<bool>,
+    #[serde(deserialize_with = "elisp::serde::present")]
     pub tap: Option<bool>,
+    #[serde(deserialize_with = "elisp::serde::present")]
     pub dwt: Option<bool>,
     pub accel_speed: Option<f64>,
     pub accel_profile: Option<AccelProfile>,
     pub click_method: Option<ClickMethod>,
     pub scroll_method: Option<ScrollMethod>,
+    #[serde(deserialize_with = "elisp::serde::present")]
     pub left_handed: Option<bool>,
+    #[serde(deserialize_with = "elisp::serde::present")]
     pub middle_emulation: Option<bool>,
     pub tap_button_map: Option<TapButtonMap>,
     // Keyboard-specific settings
@@ -766,6 +759,7 @@ pub struct InputConfigEntry {
     // Tablet-specific settings
     pub calibration_matrix: Option<[f32; 6]>,
     pub map_to_output: Option<String>,
+    #[serde(deserialize_with = "elisp::serde::present")]
     pub map_to_focused_output: Option<bool>,
 }
 
@@ -963,106 +957,68 @@ pub fn apply_libinput_settings(device: &mut libinput::Device, configs: &[InputCo
     }
 }
 
-/// Parse an acceleration profile string.
-pub fn parse_accel_profile(s: &str) -> Option<AccelProfile> {
-    match s {
-        "flat" => Some(AccelProfile::Flat),
-        "adaptive" => Some(AccelProfile::Adaptive),
-        _ => None,
-    }
-}
-
-/// Parse a click method string.
-pub fn parse_click_method(s: &str) -> Option<ClickMethod> {
-    match s {
-        "button-areas" => Some(ClickMethod::ButtonAreas),
-        "clickfinger" => Some(ClickMethod::Clickfinger),
-        _ => None,
-    }
-}
-
-/// Parse a scroll method string.
-pub fn parse_scroll_method(s: &str) -> Option<ScrollMethod> {
-    match s {
-        "no-scroll" => Some(ScrollMethod::NoScroll),
-        "two-finger" => Some(ScrollMethod::TwoFinger),
-        "edge" => Some(ScrollMethod::Edge),
-        "on-button-down" => Some(ScrollMethod::OnButtonDown),
-        _ => None,
-    }
-}
-
-/// Parse a tap button map string.
-pub fn parse_tap_button_map(s: &str) -> Option<TapButtonMap> {
-    match s {
-        "left-right-middle" => Some(TapButtonMap::LeftRightMiddle),
-        "left-middle-right" => Some(TapButtonMap::LeftMiddleRight),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use elisp::Value;
+
     use super::*;
 
+    fn plist(pairs: &[(&str, Value)]) -> Value {
+        let items = pairs
+            .iter()
+            .flat_map(|(key, value)| [Value::symbol(format!(":{key}")), value.clone()]);
+        Value::List(items.collect())
+    }
+
+    fn text(s: &str) -> Value {
+        Value::Str(s.into())
+    }
+
     #[test]
-    fn input_config_enums_parse_known_values() {
-        assert_eq!(DeviceType::parse("touchpad"), Some(DeviceType::Touchpad));
-        assert_eq!(DeviceType::parse("mouse"), Some(DeviceType::Mouse));
-        assert_eq!(DeviceType::parse("trackball"), Some(DeviceType::Trackball));
+    fn input_config_reads_lisp_plist() {
+        let matrix = [1, 0, 0, 0, 1, 0].map(Value::Int).to_vec();
+        let entry: InputConfigEntry = elisp::serde::from_value(&plist(&[
+            ("type", text("touchpad")),
+            ("tap", Value::NIL),
+            ("accel-speed", Value::Float(-0.2)),
+            ("accel-profile", text("flat")),
+            ("click-method", Value::symbol("clickfinger")),
+            ("scroll-method", text("two-finger")),
+            ("tap-button-map", text("left-middle-right")),
+            ("calibration-matrix", Value::List(matrix)),
+        ]))
+        .unwrap();
+        assert_eq!(entry.device_type, Some(DeviceType::Touchpad));
+        assert_eq!(entry.tap, Some(false));
+        assert_eq!(entry.dwt, None);
+        assert_eq!(entry.accel_speed, Some(-0.2));
+        assert_eq!(entry.accel_profile, Some(AccelProfile::Flat));
+        assert_eq!(entry.click_method, Some(ClickMethod::Clickfinger));
+        assert_eq!(entry.scroll_method, Some(ScrollMethod::TwoFinger));
+        assert_eq!(entry.tap_button_map, Some(TapButtonMap::LeftMiddleRight));
         assert_eq!(
-            DeviceType::parse("trackpoint"),
-            Some(DeviceType::Trackpoint)
-        );
-        assert_eq!(DeviceType::parse("keyboard"), Some(DeviceType::Keyboard));
-        assert_eq!(DeviceType::parse("tablet"), Some(DeviceType::Tablet));
-
-        assert_eq!(parse_accel_profile("flat"), Some(AccelProfile::Flat));
-        assert_eq!(
-            parse_accel_profile("adaptive"),
-            Some(AccelProfile::Adaptive),
-        );
-
-        assert_eq!(
-            parse_click_method("button-areas"),
-            Some(ClickMethod::ButtonAreas),
-        );
-        assert_eq!(
-            parse_click_method("clickfinger"),
-            Some(ClickMethod::Clickfinger),
-        );
-
-        assert_eq!(
-            parse_scroll_method("no-scroll"),
-            Some(ScrollMethod::NoScroll)
-        );
-        assert_eq!(
-            parse_scroll_method("two-finger"),
-            Some(ScrollMethod::TwoFinger)
-        );
-        assert_eq!(parse_scroll_method("edge"), Some(ScrollMethod::Edge));
-        assert_eq!(
-            parse_scroll_method("on-button-down"),
-            Some(ScrollMethod::OnButtonDown),
-        );
-
-        assert_eq!(
-            parse_tap_button_map("left-right-middle"),
-            Some(TapButtonMap::LeftRightMiddle),
-        );
-        assert_eq!(
-            parse_tap_button_map("left-middle-right"),
-            Some(TapButtonMap::LeftMiddleRight),
+            entry.calibration_matrix,
+            Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
         );
     }
 
     #[test]
-    fn input_config_enums_reject_unknown_values() {
-        assert_eq!(DeviceType::parse("stylus"), None);
-        assert_eq!(parse_accel_profile("linear"), None);
-        assert_eq!(parse_click_method("areas"), None);
-        assert_eq!(parse_scroll_method("wheel"), None);
-        assert_eq!(parse_tap_button_map("middle-left-right"), None);
+    fn input_config_rejects_unknown_values_and_keys() {
+        let err = |pairs: &[(&str, Value)]| {
+            elisp::serde::from_value::<InputConfigEntry>(&plist(pairs))
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            err(&[("accel-profile", text("linear"))]),
+            "unknown variant `linear`, expected `flat` or `adaptive`"
+        );
+        assert!(err(&[("natrual-scroll", Value::symbol("t"))])
+            .starts_with("unknown field `natrual-scroll`"));
+        assert!(
+            err(&[("calibration-matrix", Value::List(vec![Value::Int(1)]))])
+                .contains("invalid length 1")
+        );
     }
 
     #[test]

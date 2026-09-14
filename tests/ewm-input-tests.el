@@ -89,17 +89,17 @@
 ;;;; ewm--event-to-intercept-spec
 
 (ert-deftest ewm-input-tests/spec-plain-key ()
-  "Plain character event maps to :key and :fullscreen :false."
+  "Plain character event maps to :key with every flag nil."
   (let ((spec (ewm--event-to-intercept-spec ?a)))
     (should (equal (plist-get spec :key) ?a))
-    (should (eq (plist-get spec :ctrl) :false))
-    (should (eq (plist-get spec :alt) :false))
-    (should (eq (plist-get spec :shift) :false))
-    (should (eq (plist-get spec :super) :false))
-    (should (eq (plist-get spec :fullscreen) :false))
+    (should-not (plist-get spec :ctrl))
+    (should-not (plist-get spec :alt))
+    (should-not (plist-get spec :shift))
+    (should-not (plist-get spec :super))
+    (should-not (plist-get spec :fullscreen))
     (should (equal (plist-get spec :description) "a"))
     (should (equal (plist-get spec :dispatch) "command"))
-    (should (eq (plist-get spec :repeat) :false))
+    (should-not (plist-get spec :repeat))
     (should-not (plist-get spec :translate))))
 
 (ert-deftest ewm-input-tests/spec-fullscreen-flag ()
@@ -127,7 +127,7 @@
          (target (plist-get spec :translate)))
     (should (equal (plist-get target :key) ?c))
     (should (eq (plist-get target :ctrl) t))
-    (should (eq (plist-get target :super) :false))))
+    (should-not (plist-get target :super))))
 
 (ert-deftest ewm-input-tests/spec-keymap-prefix-dispatch ()
   "Keymap prefixes request keyboard dispatch."
@@ -149,7 +149,7 @@
   (let ((repeatable (ewm--event-to-intercept-spec (aref (kbd "s-<left>") 0)))
         (one-shot (ewm--event-to-intercept-spec (aref (kbd "s-f") 0))))
     (should (eq (plist-get repeatable :repeat) t))
-    (should (eq (plist-get one-shot :repeat) :false))))
+    (should-not (plist-get one-shot :repeat))))
 
 (ert-deftest ewm-input-tests/xf86-aliases-follow-gdk-style-bindings ()
   "CamelCase hardware bindings get xkbcommon XF86 aliases."

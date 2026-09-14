@@ -5884,7 +5884,7 @@ impl Ewm {
         if let Some(sink) = &mut self.captured_events {
             sink.push(event.clone());
         }
-        module::write_event(&event);
+        module::push_event(event);
     }
 
     pub(crate) fn record_emacs_keyboard_activity(&mut self) {
@@ -9362,16 +9362,19 @@ impl State {
             }
             ModuleCommand::ConfigureOutput {
                 name,
-                x,
-                y,
-                width,
-                height,
-                refresh,
-                custom,
-                modeline,
-                scale,
-                transform,
-                enabled,
+                config:
+                    module::OutputConfig {
+                        x,
+                        y,
+                        width,
+                        height,
+                        refresh,
+                        custom,
+                        modeline,
+                        scale,
+                        transform,
+                        enabled,
+                    },
             } => {
                 let current_output = self.ewm.find_mapped_output(&name);
                 let current_mode = current_output
@@ -9514,19 +9517,18 @@ impl State {
             }
             ModuleCommand::GetDebugState(reply) => {
                 let outputs = self.backend.output_info_list(&self.ewm.sorted_outputs);
-                let json = serde_json::to_string_pretty(&self.ewm.debug_state(&outputs))
-                    .unwrap_or_default();
-                let _ = reply.send(json);
+                let state = elisp::serde::to_value(self.ewm.debug_state(&outputs))
+                    .unwrap_or(elisp::Value::NIL);
+                let _ = reply.send(state);
             }
             ModuleCommand::EntryUnderFloatingCenter {
                 floating_frame_id,
                 reply,
             } => {
-                let id = self
+                let entry = self
                     .ewm
-                    .tiled_entry_under_floating_center(floating_frame_id)
-                    .map_or(0, |entry| entry.get());
-                let _ = reply.send(id.to_string());
+                    .tiled_entry_under_floating_center(floating_frame_id);
+                let _ = reply.send(entry);
             }
             ModuleCommand::CreateActivationToken(reply) => {
                 let (token_ref, _) = self.ewm.activation_state.create_external_token(None);

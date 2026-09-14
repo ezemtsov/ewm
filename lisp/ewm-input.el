@@ -547,7 +547,7 @@ runtime."
 
 (defun ewm--event-key-spec (event)
   "Return a (:key VALUE modifier-flags) plist for EVENT, or nil.
-VALUE is the ASCII code or special-key name; flags are t or :false."
+VALUE is the ASCII code or special-key name; flags are t or nil."
   (let* ((mods (event-modifiers event))
          (base (event-basic-type event))
          ;; base is either an integer (ASCII) or a symbol (special key)
@@ -557,10 +557,10 @@ VALUE is the ASCII code or special-key name; flags are t or :false."
                      (t nil))))
     (when key-value
       (list :key key-value
-            :ctrl (if (memq 'control mods) t :false)
-            :alt (if (memq 'meta mods) t :false)
-            :shift (if (memq 'shift mods) t :false)
-            :super (if (memq 'super mods) t :false)))))
+            :ctrl (and (memq 'control mods) t)
+            :alt (and (memq 'meta mods) t)
+            :shift (and (memq 'shift mods) t)
+            :super (and (memq 'super mods) t)))))
 
 (defun ewm--event-to-intercept-spec (event &optional fullscreen translate dispatch)
   "Convert EVENT to an intercept specification for the compositor.
@@ -572,9 +572,9 @@ as that key instead of going to Emacs."
     (when key-spec
       `(,@key-spec
         :description ,(key-description (vector event))
-        :fullscreen ,(if fullscreen t :false)
+        :fullscreen ,(and fullscreen t)
         :dispatch ,(or dispatch (ewm--event-dispatch event))
-        :repeat ,(if (ewm--event-repeat-p event) t :false)
+        :repeat ,(and (ewm--event-repeat-p event) t)
         ,@(when translate
             (list :translate (ewm--event-key-spec
                               (aref (key-parse translate) 0))))))))

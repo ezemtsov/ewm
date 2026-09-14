@@ -20,6 +20,8 @@ libc = "0.2.180"
 libdisplay-info = "0.3.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+elisp = { git = "https://codeberg.org/ezemtsov/elisp", rev = "44f20d3ae754bbefdbeec184c5490a99935166a0", features = ["serde"] }
+elisp-emacs = { git = "https://codeberg.org/ezemtsov/elisp", rev = "44f20d3ae754bbefdbeec184c5490a99935166a0" }
 tracing = { version = "0.1.44", features = ["max_level_trace", "release_max_level_debug"] }
 tracing-subscriber = { version = "=0.3.19", features = ["env-filter"] }
 tracing-journald = "0.3"

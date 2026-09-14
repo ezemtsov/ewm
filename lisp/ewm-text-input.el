@@ -96,7 +96,7 @@ For quail-based input methods, looks up the translation directly."
   "Intercept keys only while a client field is active and an IM is set."
   (let ((enabled (and ewm-text-input--client-active
                       (ewm-text-input--active-input-method))))
-    (ewm-text-input-intercept (if enabled t :false))
+    (ewm-text-input-intercept (and enabled t))
     (ewm-text-input-mode (if enabled 1 -1))))
 
 (defun ewm-text-input-auto-mode-enable ()
@@ -117,12 +117,12 @@ client text fields gain/lose focus."
   (remove-hook 'input-method-activate-hook #'ewm-text-input--refresh-auto-state)
   (remove-hook 'input-method-deactivate-hook #'ewm-text-input--refresh-auto-state)
   (setq ewm-text-input--client-active nil)
-  (ewm-text-input-intercept :false)
+  (ewm-text-input-intercept nil)
   (ewm-text-input-mode -1))
 
 (defun ewm-text-input-intercept (enabled)
   "Enable or disable text input key interception."
-  (ewm-text-input-intercept-module (if (eq enabled :false) nil enabled)))
+  (ewm-text-input-intercept-module enabled))
 
 (defun ewm--handle-key (event)
   "Handle key EVENT from the compositor during text-input interception.

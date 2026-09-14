@@ -5,6 +5,8 @@
 
 use std::str::FromStr;
 
+use serde::{de, Deserialize, Deserializer};
+
 /// A requested video mode: width/height with optional refresh in Hz.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConfiguredMode {
@@ -81,6 +83,13 @@ impl FromStr for VSyncPolarity {
             "-vsync" => Ok(Self::NVSync),
             _ => Err(r#"invalid vertical sync polarity, can be "+vsync" or "-vsync""#),
         }
+    }
+}
+
+/// Reads the X11 modeline string.
+impl<'de> Deserialize<'de> for Modeline {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d)?.parse().map_err(de::Error::custom)
     }
 }
 

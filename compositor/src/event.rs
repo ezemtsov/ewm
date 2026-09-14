@@ -1,16 +1,11 @@
 //! Event types for the compositor-to-Emacs interface.
 //!
 //! These types represent events sent from the compositor to Emacs
-//! via the dynamic module interface. The `Serialize` derive is used
-//! for debug state serialization.
+//! via the dynamic module interface, as Lisp data through the elisp crate.
 
 use std::collections::HashMap;
 
 use serde::Serialize;
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
 
 /// Output mode information
 #[derive(Serialize, Clone, Debug)]
@@ -51,9 +46,9 @@ pub struct WorkingAreaInfo {
 
 /// Events sent from compositor to Emacs.
 ///
-/// Serialized to JSON via serde and sent to Emacs over a pipe fd.
+/// Reaches Lisp as `(variant . body)`: a struct variant is an alist, a unit variant the bare
+/// symbol.
 #[derive(Serialize, Clone, Debug)]
-#[serde(tag = "event")]
 pub enum Event {
     /// Compositor is ready
     #[serde(rename = "ready")]
@@ -64,23 +59,18 @@ pub enum Event {
         id: u64,
         app: String,
         /// Emacs toplevels only.
-        #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
         pid: i32,
     },
     /// App surface mapped: placed once, floating (`open_floating`) or tiled in `frame_surface_id`.
-    /// `width`/`height` carry the client's natural size, dropped when it fills the working area.
+    /// `width`/`height` carry the client's natural size, nil when it fills the working area.
     #[serde(rename = "mapped")]
     Mapped {
         id: u64,
         open_floating: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         frame_surface_id: Option<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         width: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         height: Option<f64>,
     },
     /// Surface closed
@@ -95,11 +85,8 @@ pub enum Event {
     #[serde(rename = "focus")]
     Focus {
         focus_id: std::num::NonZeroU64,
-        #[serde(skip_serializing_if = "Option::is_none")]
         x: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         y: Option<f64>,
-        #[serde(default, skip_serializing_if = "is_false")]
         pointer: bool,
     },
     /// Output connected
@@ -135,7 +122,6 @@ pub enum Event {
     Key {
         keycode: u32,
         keysym: u32,
-        #[serde(skip_serializing_if = "Option::is_none")]
         utf8: Option<String>,
         surface_id: u64,
         ctrl: bool,
@@ -181,10 +167,7 @@ pub enum Event {
     UnmaximizeRequest { id: u64 },
     /// Client rang the system bell.
     #[serde(rename = "bell")]
-    Bell {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<u64>,
-    },
+    Bell { id: Option<u64> },
     /// Idle state changed (native idle timeout)
     #[serde(rename = "idle_state_changed")]
     IdleStateChanged { idle: bool },

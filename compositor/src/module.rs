@@ -5,7 +5,8 @@
 //! 1. **Thread safety**: The compositor runs in a separate thread from Emacs. Communication uses
 //!    queues, pipes, and shared state:
 //!    - `COMMAND_QUEUE`: Emacs -> Compositor commands (layouts, focus, etc.)
-//!    - `EVENT_WRITER`: Compositor -> Emacs events via pipe fd (open_channel)
+//!    - `EVENT_CHANNEL`: Compositor -> Emacs events, a queue drained by `drain_events`; the pipe fd
+//!      (open_channel) only carries a wakeup byte
 //!    - `SHARED_STATE`: Compositor -> Emacs snapshot (focus, pointer, outputs)
 //!    - `KEYBOARD_CAPTURE_ACTIVE`: derived from tokened Emacs input leases
 //!
@@ -36,80 +37,6 @@
 //! per compositor tick in `update_shared_state()`. This gives consistent
 //! snapshots without scattered atomics.
 
-use anyhow::anyhow;
-use emacs::{define_errors, defun, use_functions, use_symbols, Env, IntoLisp, Result, Value};
-
-// Cached Lisp symbols used in hot-path defuns (interning on every call is wasteful).
-use_symbols! {
-    // Boolean sentinel: Emacs uses :false to pass an explicit false through the module interface,
-    // since nil is indistinguishable from "argument absent".
-    kw_false => ":false"
-    // output_layout_module / intercept_keys_module plist keys
-    kw_x           => ":x"
-    kw_y           => ":y"
-    kw_w           => ":w"
-    kw_h           => ":h"
-    kw_fullscreen  => ":fullscreen"
-    kw_key         => ":key"
-    kw_description => ":description"
-    kw_ctrl        => ":ctrl"
-    kw_alt         => ":alt"
-    kw_shift       => ":shift"
-    kw_super       => ":super"
-    kw_translate   => ":translate"
-    kw_dispatch    => ":dispatch"
-    kw_repeat      => ":repeat"
-    kw_name       => ":name"
-    kw_width      => ":width"
-    kw_height     => ":height"
-    kw_entries    => ":entries"
-    kw_surface_id => ":surface-id"
-    kw_entry_id    => ":entry-id"
-    kw_focus_id    => ":focus-id"
-    kw_selected_entry_id => ":selected-entry-id"
-    // configure_output_module: marker for "not provided" (distinct from nil)
-    kw_unset  => ":unset"
-    // configure_input_module plist property names
-    kw_device          => ":device"
-    kw_type            => ":type"
-    kw_natural_scroll  => ":natural-scroll"
-    kw_tap             => ":tap"
-    kw_dwt             => ":dwt"
-    kw_left_handed     => ":left-handed"
-    kw_middle_emulation => ":middle-emulation"
-    kw_accel_speed     => ":accel-speed"
-    kw_accel_profile   => ":accel-profile"
-    kw_click_method    => ":click-method"
-    kw_scroll_method   => ":scroll-method"
-    kw_tap_button_map  => ":tap-button-map"
-    kw_repeat_delay    => ":repeat-delay"
-    kw_repeat_rate     => ":repeat-rate"
-    kw_xkb_layouts     => ":xkb-layouts"
-    kw_xkb_variants    => ":xkb-variants"
-    kw_xkb_options     => ":xkb-options"
-    kw_calibration_matrix => ":calibration-matrix"
-    kw_map_to_output   => ":map-to-output"
-    kw_map_to_focused_output => ":map-to-focused-output"
-}
-
-// Cached Lisp function subrs used in hot-path defuns (interning string on every call is wasteful).
-use_functions! {
-    plist_get   => "plist-get"
-    length
-    aref
-    car
-    cdr
-    cadr
-    cddr
-    symbol_name => "symbol-name"
-}
-
-define_errors! {
-    ewm_input_error        "EWM input configuration error"
-    ewm_input_invalid_value "Invalid value for input config key" (ewm_input_error)
-    ewm_input_unknown_key  "Unknown input config key"            (ewm_input_error)
-}
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -117,6 +44,11 @@ use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use anyhow::anyhow;
+use elisp::Value as Data;
+use elisp_emacs::Lisp;
+use emacs::{defun, Env, Result, Value};
+use serde::Deserialize;
 use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
 
@@ -124,74 +56,9 @@ use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{reply_channel, ReplyError};
-use crate::{InterceptDispatch, InterceptedKey, LayoutEntry, TranslateTarget};
-
-/// Extract a number from a Lisp value as f64, accepting both int and float.
-fn value_as_f64(val: Value<'_>) -> Result<f64> {
-    val.into_rust::<f64>()
-        .or_else(|_| val.into_rust::<i64>().map(|i| i as f64))
-}
-
-fn optional_f64(val: Value<'_>) -> Result<Option<f64>> {
-    if val.is_not_nil() {
-        value_as_f64(val).map(Some)
-    } else {
-        Ok(None)
-    }
-}
-
-fn nonzero_u64_from_i64(id: i64) -> Option<NonZeroU64> {
-    u64::try_from(id).ok().and_then(NonZeroU64::new)
-}
-
-fn optional_nonzero_u64(val: Value<'_>) -> Result<Option<NonZeroU64>> {
-    if val.is_not_nil() {
-        Ok(nonzero_u64_from_i64(val.into_rust::<i64>()?))
-    } else {
-        Ok(None)
-    }
-}
-
-fn parse_optional_input_enum<T>(
-    env: &Env,
-    key_name: &str,
-    val: Value<'_>,
-    parse: impl FnOnce(&str) -> Option<T>,
-    expected: &str,
-) -> Result<Option<T>> {
-    if val.is_not_nil() {
-        let s: String = val.into_rust()?;
-        if let Some(parsed) = parse(&s) {
-            return Ok(Some(parsed));
-        }
-        env.signal(
-            ewm_input_invalid_value,
-            (format!("Invalid {key_name} \"{s}\", expected: {expected}"),),
-        )?;
-    }
-    Ok(None)
-}
-
-/// Parse a `:calibration-matrix` list of six numbers.
-fn parse_calibration_matrix(env: &Env, val: Value<'_>) -> Result<Option<[f32; 6]>> {
-    let mut values = Vec::new();
-    let mut rest = val;
-    while rest.is_not_nil() {
-        values.push(value_as_f64(env.call(car, (rest,))?)? as f32);
-        rest = env.call(cdr, (rest,))?;
-    }
-    if let Ok(matrix) = <[f32; 6]>::try_from(values.as_slice()) {
-        return Ok(Some(matrix));
-    }
-    env.signal(
-        ewm_input_invalid_value,
-        (format!(
-            "Invalid :calibration-matrix, expected 6 numbers, got {}",
-            values.len()
-        ),),
-    )?;
-    Ok(None)
-}
+use crate::{
+    FocusId, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, TranslateTarget,
+};
 
 // Shared State (read by Emacs, written by compositor)
 
@@ -462,28 +329,24 @@ fn get_focused_frame_id() -> Result<i64> {
 
 /// Return a list of active output names (e.g., ("eDP-1" "DP-1")).
 #[defun]
-fn get_active_outputs<'a>(env: &'a Env) -> Result<Value<'a>> {
+fn get_active_outputs() -> Result<Lisp<Vec<String>>> {
     let state = shared_state().lock().unwrap();
-    let mut result: Value<'a> = ().into_lisp(env)?;
-    for output in state.active_outputs.iter().rev() {
-        result = env.cons(output.name.as_str(), result)?;
-    }
-    Ok(result)
+    let names = state.active_outputs.iter().map(|o| o.name.clone());
+    Ok(Lisp(names.collect()))
+}
+
+/// `(x . y)`.
+fn point((x, y): (i32, i32)) -> Data {
+    Data::cons(Data::Int(x.into()), Data::Int(y.into()))
 }
 
 /// Query output origin (called by Emacs for mouse-follows-focus pointer warping).
 /// Returns (x . y) cons cell, or nil if output not found.
 #[defun]
-fn get_output_origin<'a>(env: &'a Env, name: String) -> Result<Value<'a>> {
+fn get_output_origin(name: String) -> Result<Lisp<Data>> {
     let state = shared_state().lock().unwrap();
-    match state
-        .active_outputs
-        .iter()
-        .find(|output| output.name == name)
-    {
-        Some(output) => env.cons(output.origin.0 as i64, output.origin.1 as i64),
-        None => ().into_lisp(env),
-    }
+    let output = state.active_outputs.iter().find(|o| o.name == name);
+    Ok(Lisp(output.map_or(Data::NIL, |o| point(o.origin))))
 }
 
 /// Surface id of the strip frame shown on output NAME, or nil.
@@ -496,27 +359,21 @@ fn get_active_frame_id(name: String) -> Result<Option<i64>> {
 /// Query Emacs frame origin (called by Emacs for mouse-follows-focus pointer warping).
 /// Returns (x . y) cons cell, or nil if the frame is not visible.
 #[defun]
-fn get_frame_origin<'a>(env: &'a Env, surface_id: i64) -> Result<Value<'a>> {
-    let Ok(surface_id) = u64::try_from(surface_id) else {
-        return ().into_lisp(env);
-    };
+fn get_frame_origin(surface_id: i64) -> Result<Lisp<Data>> {
     let state = shared_state().lock().unwrap();
-    match state
+    let frame = state
         .frame_origins
         .iter()
-        .find(|frame| frame.surface_id == surface_id)
-    {
-        Some(frame) => env.cons(frame.origin.0 as i64, frame.origin.1 as i64),
-        None => ().into_lisp(env),
-    }
+        .find(|f| u64::try_from(surface_id) == Ok(f.surface_id));
+    Ok(Lisp(frame.map_or(Data::NIL, |f| point(f.origin))))
 }
 
 /// Query pointer location (called by Emacs for mouse-follows-focus).
 /// Returns (x . y) cons cell in compositor coordinates.
 #[defun]
-fn get_pointer_location<'a>(env: &'a Env) -> Result<Value<'a>> {
+fn get_pointer_location() -> Result<Lisp<Data>> {
     let (x, y) = shared_state().lock().unwrap().pointer_location;
-    env.cons(x, y)
+    Ok(Lisp(Data::cons(Data::Float(x), Data::Float(y))))
 }
 
 // Module Commands (Emacs -> Compositor)
@@ -533,16 +390,7 @@ pub enum ModuleCommand {
     },
     ConfigureOutput {
         name: String,
-        x: Option<i32>,
-        y: Option<i32>,
-        width: Option<i32>,
-        height: Option<i32>,
-        refresh: Option<f64>,
-        custom: bool,
-        modeline: Option<crate::output_mode::Modeline>,
-        scale: Option<f64>,
-        transform: Option<i32>,
-        enabled: Option<bool>,
+        config: OutputConfig,
     },
     ImCommit {
         text: String,
@@ -571,12 +419,12 @@ pub enum ModuleCommand {
     },
     GetLayouts,
     /// Request verbose state dump for debugging (ewm-show-state).
-    /// Compositor sends the JSON string back via the reply channel.
-    GetDebugState(Reply<String>),
-    /// Query the tiled entry id under a floating frame's center (0 = none).
+    /// Compositor sends the state as Lisp data back via the reply channel.
+    GetDebugState(Reply<Data>),
+    /// Query the tiled entry id under a floating frame's center.
     EntryUnderFloatingCenter {
         floating_frame_id: u64,
-        reply: Reply<String>,
+        reply: Reply<Option<LayoutEntryId>>,
     },
     /// Request activation token creation. Compositor sends the token string back via the reply
     /// channel.
@@ -609,7 +457,7 @@ pub enum ModuleCommand {
     },
     /// Toggle compositor-owned fullscreen for a layout view.
     ToggleFullscreen {
-        entry_id: crate::LayoutEntryId,
+        entry_id: LayoutEntryId,
     },
     /// Configure input devices (unified)
     ConfigureInput {
@@ -656,7 +504,7 @@ pub enum ModuleCommand {
     },
     /// Sole channel for Emacs-initiated focus; bypasses xdg_activation.
     FocusTarget {
-        focus_id: std::num::NonZeroU64,
+        focus_id: NonZeroU64,
     },
     /// Set alpha multiplier for unfocused toplevels (1.0 = disabled).
     ConfigureUnfocusedAlpha {
@@ -738,9 +586,9 @@ fn create_activation_token() -> Result<Option<String>> {
 /// Push a request-reply command with a one-shot reply slot and block on the
 /// reply.  Fast-fails with `None` if the compositor isn't running so callers
 /// don't burn the full timeout when there's no one to answer.
-fn request_reply<F>(make_cmd: F, timeout: Duration, label: &str) -> Option<String>
+fn request_reply<T, F>(make_cmd: F, timeout: Duration, label: &str) -> Option<T>
 where
-    F: FnOnce(Reply<String>) -> ModuleCommand,
+    F: FnOnce(Reply<T>) -> ModuleCommand,
 {
     if !is_running() {
         return None;
@@ -812,29 +660,48 @@ pub fn get_focus_history() -> Vec<FocusEvent> {
     focus_history().lock().unwrap().iter().cloned().collect()
 }
 
-// Event Pipe (compositor -> Emacs via open_channel fd)
+// Event channel (compositor -> Emacs): a queue drained by `drain_events`, the pipe as wakeup.
 
-/// Pipe writer for sending events to Emacs.  Set by `init_event_channel`.
-static EVENT_WRITER: Mutex<Option<Box<dyn std::io::Write + Send>>> = Mutex::new(None);
+struct EventChannel {
+    queue: VecDeque<crate::event::Event>,
+    wakeup: Box<dyn std::io::Write + Send>,
+}
 
-/// Initialize the event channel from a pipe process.
-/// Called from Elisp before starting the compositor thread.
+/// Set by `init_event_channel`, before the compositor thread starts.
+static EVENT_CHANNEL: Mutex<Option<EventChannel>> = Mutex::new(None);
+
+/// Register the pipe process whose filter drains events with `drain_events`.
 #[defun]
 fn init_event_channel(env: &Env, pipe_process: Value<'_>) -> Result<()> {
-    let writer = env.open_channel(pipe_process)?;
-    *EVENT_WRITER.lock().unwrap() = Some(Box::new(writer));
+    let wakeup = Box::new(env.open_channel(pipe_process)?);
+    *EVENT_CHANNEL.lock().unwrap() = Some(EventChannel {
+        queue: VecDeque::new(),
+        wakeup,
+    });
     Ok(())
 }
 
-/// Write `event` as one JSON line to the Emacs pipe.
-pub(crate) fn write_event(event: &crate::event::Event) {
+/// Queue `event` for Emacs, waking the pipe filter when the queue was idle.
+pub(crate) fn push_event(event: crate::event::Event) {
     use std::io::Write;
-    let mut buf = serde_json::to_vec(event).unwrap_or_default();
-    buf.push(b'\n');
-    let mut guard = EVENT_WRITER.lock().unwrap();
-    if let Some(w) = guard.as_mut() {
-        let _ = w.write_all(&buf);
+    let mut guard = EVENT_CHANNEL.lock().unwrap();
+    let Some(channel) = guard.as_mut() else {
+        return;
+    };
+    channel.queue.push_back(event);
+    if channel.queue.len() == 1 {
+        let _ = channel.wakeup.write_all(b"\0");
     }
+}
+
+/// The queued events, oldest first, as Lisp data.
+#[defun]
+fn drain_events() -> Result<Lisp<Vec<crate::event::Event>>> {
+    let events: Vec<crate::event::Event> = match EVENT_CHANNEL.lock().unwrap().as_mut() {
+        Some(channel) => channel.queue.drain(..).collect(),
+        None => Vec::new(),
+    };
+    Ok(Lisp(events))
 }
 
 /// Test function - returns a greeting
@@ -1026,155 +893,108 @@ fn socket() -> Result<Option<String>> {
 
 // Module Command Functions (direct Emacs -> Compositor)
 
-/// Parse a vector of frame plists from Emacs into `Frame`s, dropping any frame
-/// or entry missing its id.
-fn parse_layout_frames(env: &Env, frames: Value<'_>) -> Result<Vec<Frame>> {
-    let frames_len: i64 = env.call(length, (frames,))?.into_rust()?;
-    let mut parsed_frames = Vec::with_capacity(frames_len as usize);
-
-    for i in 0..frames_len {
-        let frame = env.call(aref, (frames, i))?;
-
-        let name: String = env
-            .call(plist_get, (frame, kw_name))?
-            .into_rust()
-            .unwrap_or_default();
-
-        let surface_id = env
-            .call(plist_get, (frame, kw_surface_id))?
-            .into_rust::<i64>()
-            .unwrap_or(0) as u64;
-
-        let focus_id = match optional_nonzero_u64(env.call(plist_get, (frame, kw_focus_id))?)? {
-            Some(v) => v,
-            None => {
-                tracing::warn!("frame {} layout dropped: missing focus_id", surface_id);
-                continue;
-            }
-        };
-
-        let width = value_as_f64(env.call(plist_get, (frame, kw_width))?).unwrap_or(0.0);
-        let height = value_as_f64(env.call(plist_get, (frame, kw_height))?).unwrap_or(0.0);
-
-        let selected_entry_id =
-            optional_nonzero_u64(env.call(plist_get, (frame, kw_selected_entry_id))?)?;
-
-        let entries_val = env.call(plist_get, (frame, kw_entries))?;
-        let entries_len: i64 = if entries_val.is_not_nil() {
-            env.call(length, (entries_val,))?.into_rust()?
-        } else {
-            0
-        };
-        let mut entries = Vec::with_capacity(entries_len as usize);
-        for j in 0..entries_len {
-            let entry = env.call(aref, (entries_val, j))?;
-
-            let name: String = env
-                .call(plist_get, (entry, kw_name))?
-                .into_rust()
-                .unwrap_or_default();
-
-            let entry_id = match optional_nonzero_u64(env.call(plist_get, (entry, kw_entry_id))?)? {
-                Some(v) => v,
-                None => {
-                    tracing::warn!("layout entry dropped: missing entry_id");
-                    continue;
-                }
-            };
-            let x: i64 = env.call(plist_get, (entry, kw_x))?.into_rust()?;
-            let y: i64 = env.call(plist_get, (entry, kw_y))?.into_rust()?;
-            let w: i64 = env.call(plist_get, (entry, kw_w))?.into_rust()?;
-            let h: i64 = env.call(plist_get, (entry, kw_h))?.into_rust()?;
-            let surface_id_val = env.call(plist_get, (entry, kw_surface_id))?;
-            let surface_id = if surface_id_val.is_not_nil() {
-                surface_id_val.into_rust::<i64>().unwrap_or(0) as u64
-            } else {
-                0
-            };
-
-            entries.push(if surface_id == 0 {
-                LayoutEntry::emacs_window(entry_id, name, x as i32, y as i32, w as u32, h as u32)
-            } else {
-                LayoutEntry::surface(
-                    entry_id, name, surface_id, x as i32, y as i32, w as u32, h as u32,
-                )
-            });
-        }
-
-        parsed_frames.push(Frame {
-            name,
-            workspace_name: None,
-            surface_id,
-            focus_id,
-            width,
-            height,
-            entries,
-            fullscreen: None,
-            selected_entry_id,
-            move_anim: None,
-            floating_pos: None,
-        });
-    }
-
-    Ok(parsed_frames)
+/// One Emacs window of a frame as Lisp spells it; `surface-id` names the view it shows.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct EntrySpec {
+    entry_id: LayoutEntryId,
+    name: String,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    surface_id: Option<u64>,
 }
 
-/// Set declarative layout for an output (module mode).
-///
-/// OUTPUT is the output name. FRAMES is a vector of plists describing the
-/// strip of Emacs frames left-to-right. Each frame plist has:
-///   :name NAME :surface-id ID :focus-id N :selected-entry-id N|nil
-///   :width FLOAT :entries [ENTRY ...]
-/// where each ENTRY is a plist `:entry-id :name :x :y :w :h` with optional
-/// `:surface-id`.
-/// Entry coordinates are relative to the owning frame's working area.
+/// One frame of a strip as Lisp spells it; entries are relative to its working area.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct FrameSpec {
+    name: String,
+    surface_id: u64,
+    focus_id: Option<FocusId>,
+    selected_entry_id: Option<LayoutEntryId>,
+    width: f64,
+    height: f64,
+    entries: Vec<EntrySpec>,
+}
+
+impl FrameSpec {
+    /// `None` drops a frame whose focus id is still in flight.
+    fn frame(self) -> Option<Frame> {
+        let Some(focus_id) = self.focus_id else {
+            tracing::warn!("frame {} layout dropped: missing focus_id", self.surface_id);
+            return None;
+        };
+        let entries = self
+            .entries
+            .into_iter()
+            .map(|e| match e.surface_id.filter(|&id| id != 0) {
+                Some(sid) => LayoutEntry::surface(e.entry_id, e.name, sid, e.x, e.y, e.w, e.h),
+                None => LayoutEntry::emacs_window(e.entry_id, e.name, e.x, e.y, e.w, e.h),
+            });
+        Some(Frame {
+            name: self.name,
+            focus_id,
+            width: self.width,
+            height: self.height,
+            entries: entries.collect(),
+            selected_entry_id: self.selected_entry_id,
+            ..Frame::new(self.surface_id)
+        })
+    }
+}
+
+fn layout_frames(frames: Lisp<Vec<FrameSpec>>) -> Vec<Frame> {
+    frames.0.into_iter().filter_map(FrameSpec::frame).collect()
+}
+
+/// Set OUTPUT's strip to FRAMES, a vector of `FrameSpec` plists left to right.
 #[defun]
-fn output_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
+fn output_layout_module(output: String, frames: Lisp<Vec<FrameSpec>>) -> Result<()> {
     push_command(ModuleCommand::OutputLayout {
         output,
-        frames: parse_layout_frames(env, frames)?,
+        frames: layout_frames(frames),
     });
     Ok(())
 }
 
-/// Set declarative floating-frame contents for OUTPUT.
-///
-/// Rust preserves compositor-owned floating positions and stacking order.
+/// Set OUTPUT's floating Emacs frames to FRAMES; Rust keeps their positions and stacking.
 #[defun]
-fn floating_layout_module(env: &Env, output: String, frames: Value<'_>) -> Result<()> {
+fn floating_layout_module(output: String, frames: Lisp<Vec<FrameSpec>>) -> Result<()> {
     push_command(ModuleCommand::FloatingLayout {
         output,
-        frames: parse_layout_frames(env, frames)?,
+        frames: layout_frames(frames),
     });
     Ok(())
 }
 
 /// Move floating frame ID by DX/DY logical pixels.
 #[defun]
-fn move_floating_frame_module(id: i64, dx: Value<'_>, dy: Value<'_>) -> Result<()> {
+fn move_floating_frame_module(id: i64, dx: Lisp<f64>, dy: Lisp<f64>) -> Result<()> {
     if id <= 0 {
         tracing::warn!("move_floating_frame_module: ignored invalid id {id}");
         return Ok(());
     }
     push_command(ModuleCommand::MoveFloatingFrame {
         id: id as u64,
-        dx: value_as_f64(dx)?,
-        dy: value_as_f64(dy)?,
+        dx: dx.0,
+        dy: dy.0,
     });
     Ok(())
 }
 
 /// Resize floating frame ID by DW/DH logical pixels.
 #[defun]
-fn resize_floating_frame_module(id: i64, dw: Value<'_>, dh: Value<'_>) -> Result<()> {
+fn resize_floating_frame_module(id: i64, dw: Lisp<f64>, dh: Lisp<f64>) -> Result<()> {
     if id <= 0 {
         tracing::warn!("resize_floating_frame_module: ignored invalid id {id}");
         return Ok(());
     }
     push_command(ModuleCommand::ResizeFloatingFrame {
         id: id as u64,
-        dw: value_as_f64(dw)?,
-        dh: value_as_f64(dh)?,
+        dw: dw.0,
+        dh: dh.0,
     });
     Ok(())
 }
@@ -1189,7 +1009,7 @@ fn close_module(id: i64) -> Result<()> {
 /// Toggle compositor-owned fullscreen for ENTRY-ID.
 #[defun]
 fn toggle_fullscreen_module(entry_id: i64) -> Result<()> {
-    if let Some(entry_id) = std::num::NonZeroU64::new(entry_id.max(0) as u64) {
+    if let Some(entry_id) = NonZeroU64::new(entry_id.max(0) as u64) {
         push_command(ModuleCommand::ToggleFullscreen { entry_id });
     }
     Ok(())
@@ -1229,7 +1049,7 @@ fn workspace_mark_urgent_module(frame_surface_id: Option<i64>) -> Result<()> {
 /// Sole focus channel from Lisp. FOCUS-ID names a frame chrome or layout entry.
 #[defun]
 fn focus_target_module(focus_id: i64) -> Result<()> {
-    let Some(focus_id) = std::num::NonZeroU64::new(focus_id as u64) else {
+    let Some(focus_id) = NonZeroU64::new(focus_id as u64) else {
         tracing::warn!("focus_target_module: ignored 0 focus_id");
         return Ok(());
     };
@@ -1246,11 +1066,8 @@ fn notify_initialized_module() -> Result<()> {
 
 /// Warp pointer to absolute position (module mode).
 #[defun]
-fn warp_pointer_module(x: Value<'_>, y: Value<'_>) -> Result<()> {
-    push_command(ModuleCommand::WarpPointer {
-        x: value_as_f64(x)?,
-        y: value_as_f64(y)?,
-    });
+fn warp_pointer_module(x: Lisp<f64>, y: Lisp<f64>) -> Result<()> {
+    push_command(ModuleCommand::WarpPointer { x: x.0, y: y.0 });
     Ok(())
 }
 
@@ -1268,8 +1085,12 @@ fn prepare_frame_module(output: String) -> Result<()> {
 
 /// Prepare next frame as a floating frame on OUTPUT, optionally at top-left X/Y.
 #[defun]
-fn prepare_floating_frame_module(output: String, x: Value<'_>, y: Value<'_>) -> Result<()> {
-    let pos = optional_f64(x)?.zip(optional_f64(y)?);
+fn prepare_floating_frame_module(
+    output: String,
+    x: Lisp<Option<f64>>,
+    y: Lisp<Option<f64>>,
+) -> Result<()> {
+    let pos = x.0.zip(y.0);
     tracing::info!("Prepared floating frame for output {}", output);
     prepare_frame(PendingFrame {
         output,
@@ -1292,67 +1113,34 @@ fn prepare_frame_close_module(id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Configure output (module mode).
-/// ENABLED should be t, nil, or omitted.
-/// SCALE is a float (e.g. 1.5). TRANSFORM is an integer (0=Normal, 1=90, 2=180, 3=270, 4=Flipped,
-/// 5=Flipped90, 6=Flipped180, 7=Flipped270).
-/// CUSTOM, when non-nil, generates a CVT mode for WIDTH/HEIGHT/REFRESH instead of
-/// matching an advertised mode; REFRESH is then required.
-/// MODELINE is an X11 modeline string and takes precedence over the mode fields.
-#[defun]
-#[allow(clippy::too_many_arguments)]
-fn configure_output_module(
-    name: String,
-    x: Option<i64>,
-    y: Option<i64>,
-    width: Option<i64>,
-    height: Option<i64>,
-    refresh: Value<'_>,
-    custom: Value<'_>,
-    modeline: Option<String>,
-    scale: Value<'_>,
-    transform: Option<i64>,
-    enabled: Value<'_>,
-) -> Result<()> {
-    let refresh = if refresh.is_not_nil() {
-        Some(value_as_f64(refresh)?)
-    } else {
-        None
-    };
-    let modeline = modeline
-        .map(|s| s.parse::<crate::output_mode::Modeline>())
-        .transpose()
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let scale = if scale.is_not_nil() {
-        Some(value_as_f64(scale)?)
-    } else {
-        None
-    };
-    // Convert enabled value: t -> Some(true), nil -> Some(false), unspecified -> None
-    // We use a special marker to detect "not provided" vs nil
-    let enabled_opt = if enabled.is_not_nil() {
-        // Check if it's :unset (our marker for "not provided")
-        if enabled == *kw_unset {
-            None
-        } else {
-            Some(true)
-        }
-    } else {
-        Some(false)
-    };
+/// An output's requested configuration as Lisp spells it; absent keys leave things as they are.
+///
+/// `custom` generates a CVT mode for `width`/`height`/`refresh` instead of matching an
+/// advertised one; `modeline` takes precedence over the mode fields. `transform` counts
+/// 0=Normal, 1=90, 2=180, 3=270, 4=Flipped, 5=Flipped90, 6=Flipped180, 7=Flipped270.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct OutputConfig {
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub refresh: Option<f64>,
+    pub custom: bool,
+    pub modeline: Option<crate::output_mode::Modeline>,
+    pub scale: Option<f64>,
+    pub transform: Option<i32>,
+    /// `nil` disables the output, absence leaves it.
+    #[serde(deserialize_with = "elisp::serde::present")]
+    pub enabled: Option<bool>,
+}
 
+/// Configure output NAME from CONFIG, an `OutputConfig` plist.
+#[defun]
+fn configure_output_module(name: String, config: Lisp<OutputConfig>) -> Result<()> {
     push_command(ModuleCommand::ConfigureOutput {
         name,
-        x: x.map(|v| v as i32),
-        y: y.map(|v| v as i32),
-        width: width.map(|v| v as i32),
-        height: height.map(|v| v as i32),
-        refresh,
-        custom: custom.is_not_nil(),
-        modeline,
-        scale,
-        transform: transform.map(|v| v as i32),
-        enabled: enabled_opt,
+        config: config.0,
     });
     Ok(())
 }
@@ -1423,135 +1211,124 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
     no_symbol
 }
 
-/// Resolve a plist :key value (Unicode codepoint integer or key name string)
-/// to an XKB keysym, or None when it is neither. The keysym may be NoSymbol.
-fn keysym_from_value(key_val: Value<'_>) -> Option<xkb::Keysym> {
-    if let Ok(codepoint) = key_val.into_rust::<i64>() {
-        Some(xkb::utf32_to_keysym(codepoint as u32))
-    } else if let Ok(name) = key_val.into_rust::<String>() {
-        Some(resolve_keysym_from_name(&name))
-    } else {
-        None
+/// A key as Emacs names it: a character code or a key name like `left`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum KeyName {
+    Code(u32),
+    Name(String),
+}
+
+impl KeyName {
+    /// The keysym, `None` when libxkbcommon knows no such name.
+    fn keysym(&self) -> Option<xkb::Keysym> {
+        let keysym = match self {
+            KeyName::Code(code) => xkb::utf32_to_keysym(*code),
+            KeyName::Name(name) => resolve_keysym_from_name(name),
+        };
+        (keysym != keysyms::KEY_NoSymbol.into()).then_some(keysym)
     }
-}
 
-/// Truthy plist value: present and not the `:false` sentinel.
-fn value_is_true(v: Value<'_>) -> bool {
-    v.is_not_nil() && v != *kw_false
-}
-
-/// Set intercepted keys (module mode).
-/// KEYS is a vector of plists with :key :description :ctrl :alt :shift
-/// :super :fullscreen :dispatch keys.
-/// A key with a :translate (:key ... modifiers) plist is delivered to non-Emacs
-/// surfaces as that target key instead of being sent to Emacs.
-#[defun]
-fn intercept_keys_module(env: &Env, keys: Value<'_>) -> Result<()> {
-    let mut parsed_keys = Vec::new();
-
-    let len: i64 = env.call(length, (keys,))?.into_rust()?;
-
-    for i in 0..len {
-        let key_spec = env.call(aref, (keys, i))?;
-
-        // Resolve keysym from Emacs key description using libxkbcommon.
-        // Emacs passes either an integer (Unicode codepoint) or a string (key name).
-        let key_val = env.call(plist_get, (key_spec, kw_key))?;
-        let description_val = env.call(plist_get, (key_spec, kw_description))?;
-        let key_description = if let Ok(description) = description_val.into_rust::<String>() {
-            description
-        } else if let Ok(codepoint) = key_val.into_rust::<i64>() {
-            char::from_u32(codepoint as u32)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| format!("U+{:X}", codepoint))
-        } else if let Ok(name) = key_val.into_rust::<String>() {
-            format!("<{name}>")
-        } else {
-            String::new()
-        };
-        let Some(keysym) = keysym_from_value(key_val) else {
-            continue; // Skip invalid keys
-        };
-
-        if keysym == keysyms::KEY_NoSymbol.into() {
-            let desc = if let Ok(v) = key_val.into_rust::<i64>() {
-                format!("codepoint {}", v)
-            } else if let Ok(v) = key_val.into_rust::<String>() {
-                format!("name {:?}", v)
-            } else {
-                "unknown".to_string()
-            };
-            tracing::warn!("Could not resolve keysym for key {}, skipping", desc);
-            continue;
+    fn description(&self) -> String {
+        match self {
+            KeyName::Code(code) => char::from_u32(*code)
+                .map(String::from)
+                .unwrap_or_else(|| format!("U+{code:X}")),
+            KeyName::Name(name) => format!("<{name}>"),
         }
-
-        // Extract modifier flags
-        let ctrl_val = env.call(plist_get, (key_spec, kw_ctrl))?;
-        let alt_val = env.call(plist_get, (key_spec, kw_alt))?;
-        let shift_val = env.call(plist_get, (key_spec, kw_shift))?;
-        let super_val = env.call(plist_get, (key_spec, kw_super))?;
-        let allow_fullscreen_val = env.call(plist_get, (key_spec, kw_fullscreen))?;
-        let dispatch_val = env.call(plist_get, (key_spec, kw_dispatch))?;
-        let repeat_val = env.call(plist_get, (key_spec, kw_repeat))?;
-
-        // A :translate target overrides dispatch: the matched key is delivered
-        // to non-Emacs surfaces as the target key instead of going to Emacs.
-        let translate_val = env.call(plist_get, (key_spec, kw_translate))?;
-        let dispatch = if translate_val.is_not_nil() {
-            match parse_translate_target(env, translate_val)? {
-                Some(target) => InterceptDispatch::Translate(target),
-                None => continue,
-            }
-        } else if let Ok(dispatch) = dispatch_val.into_rust::<String>() {
-            match dispatch.as_str() {
-                "command" => InterceptDispatch::Command,
-                "keyboard" => InterceptDispatch::Keyboard,
-                other => {
-                    tracing::warn!("Unknown intercept dispatch {:?}, using keyboard", other);
-                    InterceptDispatch::Keyboard
-                }
-            }
-        } else {
-            InterceptDispatch::Keyboard
-        };
-
-        parsed_keys.push(InterceptedKey {
-            keysym: keysym.raw(),
-            key: key_description,
-            ctrl: value_is_true(ctrl_val),
-            alt: value_is_true(alt_val),
-            shift: value_is_true(shift_val),
-            logo: value_is_true(super_val),
-            allow_fullscreen: value_is_true(allow_fullscreen_val),
-            dispatch,
-            repeat: value_is_true(repeat_val),
-        });
     }
-
-    let count = parsed_keys.len();
-    *intercepted_keys().write().unwrap() = parsed_keys;
-    tracing::info!("Intercepted keys set ({count} keys)");
-    Ok(())
 }
 
-/// Parse a :translate target plist (:key plus :ctrl/:alt/:shift/:super flags)
-/// into a `TranslateTarget`, resolving the keysym from the key name or codepoint.
-fn parse_translate_target(env: &Env, spec: Value<'_>) -> Result<Option<TranslateTarget>> {
-    let key_val = env.call(plist_get, (spec, kw_key))?;
-    let Some(keysym) = keysym_from_value(key_val) else {
-        return Ok(None);
-    };
-    if keysym == keysyms::KEY_NoSymbol.into() {
-        tracing::warn!("Could not resolve :translate target keysym, skipping binding");
-        return Ok(None);
+/// One intercepted key as Lisp spells it.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct KeySpec {
+    key: KeyName,
+    description: Option<String>,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    alt: bool,
+    #[serde(default)]
+    shift: bool,
+    #[serde(rename = "super", default)]
+    logo: bool,
+    #[serde(default)]
+    fullscreen: bool,
+    dispatch: Option<Dispatch>,
+    /// Delivered to non-Emacs surfaces as this key instead of going to Emacs.
+    translate: Option<TranslateSpec>,
+    #[serde(default)]
+    repeat: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Dispatch {
+    Keyboard,
+    Command,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct TranslateSpec {
+    key: KeyName,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    alt: bool,
+    #[serde(default)]
+    shift: bool,
+    #[serde(rename = "super", default)]
+    logo: bool,
+}
+
+impl KeySpec {
+    /// Resolve the keysyms; `None` skips a key libxkbcommon cannot name.
+    fn resolve(self) -> Option<InterceptedKey> {
+        let Some(keysym) = self.key.keysym() else {
+            let key = self.key.description();
+            tracing::warn!("Could not resolve keysym for key {key}, skipping");
+            return None;
+        };
+        let dispatch = match (self.translate, self.dispatch) {
+            (Some(target), _) => {
+                let Some(keysym) = target.key.keysym() else {
+                    tracing::warn!("Could not resolve :translate target keysym, skipping binding");
+                    return None;
+                };
+                InterceptDispatch::Translate(TranslateTarget {
+                    keysym: keysym.raw(),
+                    ctrl: target.ctrl,
+                    alt: target.alt,
+                    shift: target.shift,
+                    logo: target.logo,
+                })
+            }
+            (None, Some(Dispatch::Command)) => InterceptDispatch::Command,
+            (None, _) => InterceptDispatch::Keyboard,
+        };
+        Some(InterceptedKey {
+            keysym: keysym.raw(),
+            key: self.description.unwrap_or_else(|| self.key.description()),
+            ctrl: self.ctrl,
+            alt: self.alt,
+            shift: self.shift,
+            logo: self.logo,
+            allow_fullscreen: self.fullscreen,
+            dispatch,
+            repeat: self.repeat,
+        })
     }
-    Ok(Some(TranslateTarget {
-        keysym: keysym.raw(),
-        ctrl: value_is_true(env.call(plist_get, (spec, kw_ctrl))?),
-        alt: value_is_true(env.call(plist_get, (spec, kw_alt))?),
-        shift: value_is_true(env.call(plist_get, (spec, kw_shift))?),
-        logo: value_is_true(env.call(plist_get, (spec, kw_super))?),
-    }))
+}
+
+/// Set intercepted keys from KEYS, a vector of `KeySpec` plists.
+#[defun]
+fn intercept_keys_module(keys: Lisp<Vec<KeySpec>>) -> Result<()> {
+    let keys: Vec<InterceptedKey> = keys.0.into_iter().filter_map(KeySpec::resolve).collect();
+    tracing::info!("Intercepted keys set ({} keys)", keys.len());
+    *intercepted_keys().write().unwrap() = keys;
+    Ok(())
 }
 
 /// Commit text to a client text field.
@@ -1568,22 +1345,11 @@ fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
 
 /// Surrounding text of the active field as (SURFACE-ID TEXT CURSOR ANCHOR), or nil.
 #[defun]
-fn text_input_surrounding_module<'a>(env: &'a Env) -> Result<Value<'a>> {
-    // Release the lock before building the list over the FFI.
+fn text_input_surrounding_module() -> Result<Lisp<Option<(u64, String, u32, u32)>>> {
     let snapshot = text_input_surrounding().lock().unwrap().clone();
-    match snapshot {
-        Some(s) => env.cons(
-            s.surface_id as i64,
-            env.cons(
-                s.text.as_str(),
-                env.cons(
-                    s.cursor as i64,
-                    env.cons(s.anchor as i64, ().into_lisp(env)?)?,
-                )?,
-            )?,
-        ),
-        None => ().into_lisp(env),
-    }
+    Ok(Lisp(
+        snapshot.map(|s| (s.surface_id, s.text, s.cursor, s.anchor)),
+    ))
 }
 
 /// Replace the whole content of the active field on SURFACE-ID with TEXT.
@@ -1621,11 +1387,10 @@ fn text_input_forward_key_module(
 }
 
 /// Enable/disable text input interception (module mode).
-/// ENABLED should be t or nil.
 #[defun]
 fn text_input_intercept_module(enabled: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::TextInputIntercept {
-        enabled: enabled.is_not_nil() && enabled != *kw_false,
+        enabled: enabled.is_not_nil(),
     });
     Ok(())
 }
@@ -1677,14 +1442,15 @@ fn get_layouts_module() -> Result<()> {
 }
 
 /// Request verbose compositor state dump for debugging (module mode).
-/// Blocks until the compositor replies; returns the JSON string, or nil on timeout.
+/// Blocks until the compositor replies; returns the state as Lisp data, or nil on timeout.
 #[defun]
-fn get_debug_state_module() -> Result<Option<String>> {
+fn get_debug_state_module() -> Result<Option<Lisp<Data>>> {
     Ok(request_reply(
         ModuleCommand::GetDebugState,
         Duration::from_millis(200),
         "compositor state dump",
-    ))
+    )
+    .map(Lisp))
 }
 
 /// Tiled entry id under a floating frame's center, or nil (module mode).
@@ -1699,9 +1465,7 @@ fn entry_under_floating_center_module(floating_frame_id: i64) -> Result<Option<i
         Duration::from_millis(200),
         "entry under floating center",
     );
-    Ok(reply
-        .and_then(|s| s.parse::<i64>().ok())
-        .filter(|&n| n > 0))
+    Ok(reply.flatten().map(|entry| entry.get() as i64))
 }
 
 /// Set clipboard selection from Emacs (module mode).
@@ -1798,139 +1562,10 @@ fn set_idle_inhibited(inhibited: Value<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Configure input devices (module mode).
-/// CONFIGS is a vector of plists, each with :device :type and setting properties.
+/// Configure input devices from CONFIGS, a vector of `InputConfigEntry` plists.
 #[defun]
-fn configure_input_module(env: &Env, configs: Value<'_>) -> Result<()> {
-    use crate::input;
-
-    let len: i64 = env.call(length, (configs,))?.into_rust()?;
-    let mut entries = Vec::new();
-
-    for i in 0..len {
-        let plist = env.call(aref, (configs, i))?;
-        let mut entry = input::InputConfigEntry::default();
-
-        // Walk plist key/value pairs. Compare the key symbol Value directly against
-        // cached GlobalRefs, avoiding symbol-name -> String -> match on every iteration.
-        let mut rest = plist;
-        while rest.is_not_nil() {
-            let key = env.call(car, (rest,))?;
-            let val = env.call(cadr, (rest,))?;
-
-            if key == *kw_device {
-                if val.is_not_nil() {
-                    entry.device = Some(val.into_rust()?);
-                }
-            } else if key == *kw_type {
-                if let Some(v) = parse_optional_input_enum(
-                    env,
-                    ":type",
-                    val,
-                    input::DeviceType::parse,
-                    input::DEVICE_TYPE_VALUES,
-                )? {
-                    entry.device_type = Some(v);
-                }
-            } else if key == *kw_natural_scroll {
-                entry.natural_scroll = Some(val.is_not_nil());
-            } else if key == *kw_tap {
-                entry.tap = Some(val.is_not_nil());
-            } else if key == *kw_dwt {
-                entry.dwt = Some(val.is_not_nil());
-            } else if key == *kw_left_handed {
-                entry.left_handed = Some(val.is_not_nil());
-            } else if key == *kw_middle_emulation {
-                entry.middle_emulation = Some(val.is_not_nil());
-            } else if key == *kw_accel_speed {
-                if val.is_not_nil() {
-                    entry.accel_speed = Some(value_as_f64(val)?);
-                }
-            } else if key == *kw_accel_profile {
-                if let Some(v) = parse_optional_input_enum(
-                    env,
-                    ":accel-profile",
-                    val,
-                    input::parse_accel_profile,
-                    input::ACCEL_PROFILE_VALUES,
-                )? {
-                    entry.accel_profile = Some(v);
-                }
-            } else if key == *kw_click_method {
-                if let Some(v) = parse_optional_input_enum(
-                    env,
-                    ":click-method",
-                    val,
-                    input::parse_click_method,
-                    input::CLICK_METHOD_VALUES,
-                )? {
-                    entry.click_method = Some(v);
-                }
-            } else if key == *kw_scroll_method {
-                if let Some(v) = parse_optional_input_enum(
-                    env,
-                    ":scroll-method",
-                    val,
-                    input::parse_scroll_method,
-                    input::SCROLL_METHOD_VALUES,
-                )? {
-                    entry.scroll_method = Some(v);
-                }
-            } else if key == *kw_tap_button_map {
-                if let Some(v) = parse_optional_input_enum(
-                    env,
-                    ":tap-button-map",
-                    val,
-                    input::parse_tap_button_map,
-                    input::TAP_BUTTON_MAP_VALUES,
-                )? {
-                    entry.tap_button_map = Some(v);
-                }
-            } else if key == *kw_repeat_delay {
-                if val.is_not_nil() {
-                    entry.repeat_delay = Some(val.into_rust::<i64>()? as i32);
-                }
-            } else if key == *kw_repeat_rate {
-                if val.is_not_nil() {
-                    entry.repeat_rate = Some(val.into_rust::<i64>()? as i32);
-                }
-            } else if key == *kw_xkb_layouts {
-                if val.is_not_nil() {
-                    entry.xkb_layouts = Some(val.into_rust()?);
-                }
-            } else if key == *kw_xkb_variants {
-                if val.is_not_nil() {
-                    entry.xkb_variants = Some(val.into_rust()?);
-                }
-            } else if key == *kw_xkb_options {
-                if val.is_not_nil() {
-                    entry.xkb_options = Some(val.into_rust()?);
-                }
-            } else if key == *kw_calibration_matrix {
-                if val.is_not_nil() {
-                    entry.calibration_matrix = parse_calibration_matrix(env, val)?;
-                }
-            } else if key == *kw_map_to_output {
-                if val.is_not_nil() {
-                    entry.map_to_output = Some(val.into_rust()?);
-                }
-            } else if key == *kw_map_to_focused_output {
-                entry.map_to_focused_output = Some(val.is_not_nil());
-            } else {
-                let key_name: String = env.call(symbol_name, (key,))?.into_rust()?;
-                env.signal(
-                    ewm_input_unknown_key,
-                    (format!("Unknown input config key {key_name}"),),
-                )?;
-            }
-
-            rest = env.call(cddr, (rest,))?;
-        }
-
-        entries.push(entry);
-    }
-
-    push_command(ModuleCommand::ConfigureInput { configs: entries });
+fn configure_input_module(configs: Lisp<Vec<crate::input::InputConfigEntry>>) -> Result<()> {
+    push_command(ModuleCommand::ConfigureInput { configs: configs.0 });
     Ok(())
 }
 
@@ -1958,43 +1593,28 @@ fn debug_mode_p() -> Result<bool> {
 }
 
 /// List installed XDG desktop applications.
-/// Returns an alist of (name . commandline) for apps that have a command.
+/// Returns an alist of (name . commandline) strings for apps that have a command, sorted by name.
 /// Runs synchronously in the Emacs thread (GIO just reads .desktop files).
 #[defun]
-fn list_xdg_apps<'a>(env: &'a Env) -> Result<Value<'a>> {
+fn list_xdg_apps() -> Result<Lisp<Data>> {
     use gio::prelude::*;
 
-    let mut result: Value<'a> = ().into_lisp(env)?;
-
-    for app in gio::AppInfo::all() {
-        if !app.should_show() {
-            continue;
-        }
-
-        let name = app.name();
-        let commandline = match app.commandline() {
-            Some(c) => c.to_string_lossy().to_string(),
-            None => continue,
-        };
-
-        let pair = env.cons(name.as_str(), commandline.as_str())?;
-        result = env.cons(pair, result)?;
-    }
-
-    result = env.call("nreverse", (result,))?;
-    Ok(result)
+    let apps: BTreeMap<String, String> = gio::AppInfo::all()
+        .into_iter()
+        .filter(|app| app.should_show())
+        .filter_map(|app| {
+            let commandline = app.commandline()?.to_string_lossy().into_owned();
+            Some((app.name().to_string(), commandline))
+        })
+        .collect();
+    // Built by hand: serialized as a map, the names would intern as symbols.
+    let pair = |(name, commandline)| Data::cons(Data::Str(name), Data::Str(commandline));
+    Ok(Lisp(Data::List(apps.into_iter().map(pair).collect())))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{nonzero_u64_from_i64, KeyboardCaptureState};
-
-    #[test]
-    fn nonzero_u64_from_i64_rejects_zero_and_negative_values() {
-        assert_eq!(nonzero_u64_from_i64(-1), None);
-        assert_eq!(nonzero_u64_from_i64(0), None);
-        assert_eq!(nonzero_u64_from_i64(42).map(|id| id.get()), Some(42));
-    }
+    use super::KeyboardCaptureState;
 
     #[test]
     fn stale_keyboard_capture_end_keeps_newer_lease() {

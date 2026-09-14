@@ -34,6 +34,7 @@
 
 ;; Functions provided by the ewm-core dynamic module
 (declare-function ewm-init-event-channel "ewm-core")
+(declare-function ewm-drain-events "ewm-core")
 (declare-function ewm-set-selection-module "ewm-core")
 (declare-function ewm-output-layout-module "ewm-core")
 (declare-function ewm-floating-layout-module "ewm-core")
@@ -106,39 +107,33 @@ FORMAT-STRING and ARGS are passed to `format'."
 (defvar ewm--event-process nil
   "Pipe process receiving compositor events via open_channel.")
 
-(defvar ewm--event-buffer ""
-  "Accumulator for partial JSON lines from the event pipe.")
+(defvar ewm--draining-events nil
+  "Non-nil while `ewm--event-filter' dispatches the queue.")
 
-(defun ewm--event-filter (_proc output)
-  "Process newline-delimited JSON events from the compositor pipe."
-  (setq ewm--event-buffer (concat ewm--event-buffer output))
-  (while (string-match "\n" ewm--event-buffer)
-    (let ((line (substring ewm--event-buffer 0 (match-beginning 0))))
-      (setq ewm--event-buffer (substring ewm--event-buffer (match-end 0)))
-      (when (> (length line) 0)
-        (condition-case err
-            (let ((event (json-parse-string line :object-type 'alist :false-object nil)))
-              (condition-case dispatch-err
-                  (ewm--handle-event event)
-                (quit
-                 (setq quit-flag nil)
-                 (ewm--log "Event handler quit while handling %S"
-                           (alist-get 'event event)))
-                ;; A user-error is expected feedback, not a handler fault.
-                (user-error
-                 (message "%s" (error-message-string dispatch-err)))
-                (error
-                 (message "EWM: event handler error: %s" dispatch-err))))
-          (error (message "EWM: event parse error: %s" err)))))))
+(defun ewm--event-filter (_proc _output)
+  "Dispatch the events the compositor queued; the pipe only carries a wakeup."
+  ;; A nested filter (a handler waited for output) must not jump the queue.
+  (unless ewm--draining-events
+    (let ((ewm--draining-events t))
+      (while-let ((events (ewm-drain-events)))
+        (dolist (event events)
+          (condition-case dispatch-err
+              (ewm--handle-event event)
+            (quit
+             (setq quit-flag nil)
+             (ewm--log "Event handler quit while handling %S" (car (ensure-list event))))
+            ;; A user-error is expected feedback, not a handler fault.
+            (user-error
+             (message "%s" (error-message-string dispatch-err)))
+            (error
+             (message "EWM: event handler error: %s" dispatch-err))))))))
 
 (defun ewm--init-event-channel ()
   "Create a pipe process and register it as the compositor event channel."
   (ewm--destroy-event-channel)
-  (setq ewm--event-buffer "")
   (with-temp-buffer
     (setq ewm--event-process
-          (make-pipe-process :name "ewm-events" :buffer (current-buffer)
-                             :coding 'utf-8-unix :noquery t
+          (make-pipe-process :name "ewm-events" :buffer (current-buffer) :noquery t
                              :filter #'ewm--event-filter))
     (set-process-buffer ewm--event-process nil))
   (ewm-init-event-channel ewm--event-process))
@@ -368,37 +363,38 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
 ;;; Protocol
 
 (defun ewm--handle-event (event)
-  "Handle EVENT from compositor (an alist with symbol keys)."
-  (let ((type (alist-get 'event event)))
-    (pcase type
-      ("new" (ewm--handle-new-surface event))
-      ("mapped" (ewm--handle-mapped-surface event))
-      ("close" (ewm--handle-close-surface event))
-      ("minimize" (ewm--handle-minimize-surface event))
-      ("title" (ewm--handle-title-update event))
-      ("focus" (ewm--handle-focus event))
-      ("output_detected" (ewm--handle-output-detected event))
-      ("output_config_changed" (ewm--handle-output-config-changed event))
-      ("output_disconnected" (ewm--handle-output-disconnected event))
-      ("outputs_complete" (ewm--handle-outputs-complete))
-      ("ready" (ewm--handle-ready))
-      ("text-input-activated" (ewm--handle-text-input-activated))
-      ("text-input-deactivated" (ewm--handle-text-input-deactivated))
-      ("text-input-replaced" (ewm--handle-text-input-replaced event))
-      ("text-input-replace-dropped" (ewm--handle-text-input-replace-dropped event))
-      ("key" (ewm--handle-key event))
-      ("intercepted-command" (ewm--handle-intercepted-command event))
-      ("working_area" (ewm--handle-working-area event))
-      ("selection-changed" (ewm--handle-selection-changed event))
-      ("activate_workspace" (ewm--handle-activate-workspace event))
-      ("maximize_request" (ewm--handle-maximize-request event))
-      ("unmaximize_request" (ewm--handle-unmaximize-request event))
-      ("bell" (ewm--handle-bell event))
-      ("idle_state_changed" (ewm--handle-idle-state-changed event))
-      ("environment" (ewm--handle-environment event))
-      ("frame_shown" (ewm--gtk-frame-updates event #'ewm-gtk-thaw-frame-updates))
-      ("frame_hidden" (ewm--gtk-frame-updates event #'ewm-gtk-freeze-frame-updates))
-      ("frame_moved" (ewm--handle-frame-moved event)))))
+  "Dispatch EVENT: a variant symbol, or one consed onto its alist body."
+  (let* ((event (ensure-list event))
+         (body (cdr event)))
+    (pcase (car event)
+      ('new (ewm--handle-new-surface body))
+      ('mapped (ewm--handle-mapped-surface body))
+      ('close (ewm--handle-close-surface body))
+      ('minimize (ewm--handle-minimize-surface body))
+      ('title (ewm--handle-title-update body))
+      ('focus (ewm--handle-focus body))
+      ('output_detected (ewm--handle-output-detected body))
+      ('output_config_changed (ewm--handle-output-config-changed body))
+      ('output_disconnected (ewm--handle-output-disconnected body))
+      ('outputs_complete (ewm--handle-outputs-complete))
+      ('ready (ewm--handle-ready))
+      ('text-input-activated (ewm--handle-text-input-activated))
+      ('text-input-deactivated (ewm--handle-text-input-deactivated))
+      ('text-input-replaced (ewm--handle-text-input-replaced body))
+      ('text-input-replace-dropped (ewm--handle-text-input-replace-dropped body))
+      ('key (ewm--handle-key body))
+      ('intercepted-command (ewm--handle-intercepted-command body))
+      ('working_area (ewm--handle-working-area body))
+      ('selection-changed (ewm--handle-selection-changed body))
+      ('activate_workspace (ewm--handle-activate-workspace body))
+      ('maximize_request (ewm--handle-maximize-request body))
+      ('unmaximize_request (ewm--handle-unmaximize-request body))
+      ('bell (ewm--handle-bell body))
+      ('idle_state_changed (ewm--handle-idle-state-changed body))
+      ('environment (ewm--handle-environment body))
+      ('frame_shown (ewm--gtk-frame-updates body #'ewm-gtk-thaw-frame-updates))
+      ('frame_hidden (ewm--gtk-frame-updates body #'ewm-gtk-freeze-frame-updates))
+      ('frame_moved (ewm--handle-frame-moved body)))))
 
 ;;; Event handlers
 
@@ -667,9 +663,15 @@ Similar to `exwm-workspace-rename-buffer'."
 (defvar ewm--late-frames-replayed nil
   "Non-nil once frames created after the ready event asked for a focus replay.")
 
+(defun ewm--apply-user-config (name thunk)
+  "Call THUNK, reporting an error in the NAME option as a warning."
+  (condition-case err
+      (funcall thunk)
+    (error (display-warning 'ewm (format "%s: %s" name (error-message-string err))))))
+
 (defun ewm--handle-outputs-complete ()
   "Apply output config, then create any missing per-output frames."
-  (ewm--apply-output-config)
+  (ewm--apply-user-config "ewm-output-config" #'ewm--apply-output-config)
   ;; For pgtk, CSS goes in before any frame is created so the GTK widget
   ;; background is set on the first wl_surface commit.
   (ewm--apply-gtk-bg-css)
@@ -898,14 +900,8 @@ For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
                      (pid . ,(emacs-pid))))))
 
 (defun ewm-output-layout (output frames)
-  "Set declarative layout for OUTPUT as a nested frame strip.
-FRAMES is a vector of plists describing the Emacs frame strip on the
-output, left-to-right.  Each frame plist has:
-  :name NAME :surface-id ID :focus-id N :selected-entry-id N|nil :width FLOAT
-  :entries ENTRIES
-where ENTRIES is a vector of plists
-`:entry-id :name :x :y :w :h' with optional `:surface-id'.
-Entry coordinates are relative to the owning frame's working area."
+  "Set OUTPUT's frame strip to FRAMES.
+FRAMES is a vector of `ewm-layout--build-frame-plist' plists, left to right."
   (ewm-output-layout-module output frames))
 
 (defun ewm-floating-layout (output frames)
@@ -943,11 +939,11 @@ the request when the workspace is already focused."
 (defun ewm-show-state ()
   "Display the compositor state dump in *ewm-state*."
   (interactive)
-  (let ((json (or (ewm-get-debug-state-module)
-                  (user-error "Timed out waiting for compositor state dump"))))
+  (let ((state (or (ewm-get-debug-state-module)
+                   (user-error "Timed out waiting for compositor state dump"))))
     (with-current-buffer-window "*ewm-state*" nil nil
-      (insert json)
-      (when (fboundp 'js-json-mode) (js-json-mode)))))
+      (emacs-lisp-mode)
+      (pp state (current-buffer)))))
 
 (defun ewm-list-outputs ()
   "Display connected outputs with properties and ewm-output-config suggestions.
@@ -1048,20 +1044,7 @@ ARGS is a plist with optional keys:
   :scale      - fractional scale (e.g. 1.5)
   :transform  - transform integer (0=Normal, 1=90, 2=180, 3=270, ...)
   :enabled    - t or nil to enable/disable the output"
-  (ewm-configure-output-module
-   name
-   (plist-get args :x)
-   (plist-get args :y)
-   (plist-get args :width)
-   (plist-get args :height)
-   (plist-get args :refresh)
-   (plist-get args :custom)
-   (plist-get args :modeline)
-   (plist-get args :scale)
-   (plist-get args :transform)
-   (if (plist-member args :enabled)
-       (plist-get args :enabled)
-     :unset)))
+  (ewm-configure-output-module name args))
 
 (defun ewm-prepare-frame (output)
   "Tell compositor to assign next frame to OUTPUT."
@@ -1672,7 +1655,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (if after-init-time
       (ewm--send-intercept-keys)
     (add-hook 'after-init-hook #'ewm--send-intercept-keys))
-  (ewm--send-input-config)
+  (ewm--apply-user-config "ewm-input-config" #'ewm--send-input-config)
   (ewm--send-idle-config)
   (ewm--send-cursor-config)
   (ewm--send-cursor-hide-config)

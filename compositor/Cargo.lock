@@ -550,6 +550,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
+name = "elisp"
+version = "0.0.1"
+source = "git+https://codeberg.org/ezemtsov/elisp?rev=44f20d3ae754bbefdbeec184c5490a99935166a0#44f20d3ae754bbefdbeec184c5490a99935166a0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "elisp-emacs"
+version = "0.0.1"
+source = "git+https://codeberg.org/ezemtsov/elisp?rev=44f20d3ae754bbefdbeec184c5490a99935166a0#44f20d3ae754bbefdbeec184c5490a99935166a0"
+dependencies = [
+ "elisp",
+ "emacs",
+ "serde",
+]
+
+[[package]]
 name = "emacs"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -662,6 +680,8 @@ dependencies = [
  "async-io",
  "bytemuck",
  "drm-ffi",
+ "elisp",
+ "elisp-emacs",
  "emacs",
  "futures-util",
  "gio",
