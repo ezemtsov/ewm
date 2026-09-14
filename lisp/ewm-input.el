@@ -590,47 +590,27 @@ Returns (event . fullscreen-p) or nil."
 
 (defun ewm--send-intercept-keys ()
   "Send intercepted keys configuration to compositor.
-Scans `ewm-intercept-prefixes' first (so :fullscreen flags win),
-then `ewm-mode-map' bindings.  Keys in `ewm-surface-emulate-keys'
-get a :translate target delivered to non-Emacs surfaces."
+Combine `ewm-intercept-prefixes', `ewm-mode-map', and
+`ewm-surface-emulate-keys' into one specification per key."
   (ewm-input--install-xf86-key-aliases)
-  (let ((specs nil)
-        (fullscreen-events nil))
-    (cl-flet ((put-spec (event spec)
-                (setf (alist-get event specs nil nil #'eql) spec)))
-      ;; Intercept prefixes first; :fullscreen entries populate fullscreen-events.
-      (dolist (entry ewm-intercept-prefixes)
-        (when-let* ((parsed (ewm--parse-intercept-entry entry)))
-          (let ((event (car parsed)))
-            (when (cdr parsed)
-              (push event fullscreen-events))
-            (when-let* ((spec (ewm--event-to-intercept-spec
-                               event
-                               (or (cdr parsed) (memq event fullscreen-events))
-                               nil
-                               (ewm--event-dispatch event t))))
-              (put-spec event spec)))))
-      ;; Keymap bindings: fullscreen flag and translate target looked up.
-      (map-keymap
-       (lambda (event binding)
-         (when (ewm--live-binding-p binding)
-           (when-let* ((spec (ewm--event-to-intercept-spec
-                              event
-                              (memq event fullscreen-events)
-                              (alist-get event ewm-surface-emulate-keys nil nil #'eql)
-                              (ewm--event-dispatch event))))
-             (put-spec event spec))))
-       ewm-mode-map)
-      ;; Translate keys not bound in `ewm-mode-map' still need a spec so the
-      ;; surface receives the target; on Emacs focus the key passes through.
-      (dolist (entry ewm-surface-emulate-keys)
-        (let ((event (car entry)))
-          (unless (alist-get event specs nil nil #'eql)
-            (when-let* ((spec (ewm--event-to-intercept-spec
-                               event (memq event fullscreen-events) (cdr entry))))
-              (put-spec event spec)))))
-      (ewm-intercept-keys-module
-       (vconcat (mapcar #'cdr (nreverse specs)))))))
+  (let* ((prefixes (delq nil (mapcar #'ewm--parse-intercept-entry
+                                    ewm-intercept-prefixes)))
+         (fullscreen-events (mapcar #'car (cl-remove-if-not #'cdr prefixes)))
+         events specs)
+    (map-keymap (lambda (event binding)
+                  (when (ewm--live-binding-p binding)
+                    (push event events)))
+                ewm-mode-map)
+    (dolist (event (delete-dups (append (mapcar #'car prefixes)
+                                       (nreverse events)
+                                       (mapcar #'car ewm-surface-emulate-keys))))
+      (when-let* ((spec (ewm--event-to-intercept-spec
+                         event
+                         (memq event fullscreen-events)
+                         (alist-get event ewm-surface-emulate-keys nil nil #'eql)
+                         (ewm--event-dispatch event (assq event prefixes)))))
+        (push spec specs)))
+    (ewm-intercept-keys-module (vconcat (nreverse specs)))))
 
 (defun ewm--handle-intercepted-command (event)
   "Queue intercepted EVENT for normal Emacs command processing."
