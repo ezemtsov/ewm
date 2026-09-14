@@ -289,21 +289,15 @@ the original binding from `ewm-mode-map' is used."
 Coordinates are in compositor space."
   (let* ((frame (window-frame window))
          (frame-origin (ewm--get-frame-origin frame))
-         (edges (window-pixel-edges window))
-         (left (+ (car frame-origin) (nth 0 edges)))
-         (top (+ (cdr frame-origin) (nth 1 edges)))
-         (right (+ (car frame-origin) (nth 2 edges)))
-         (bottom (+ (cdr frame-origin) (nth 3 edges)))
-         (pointer (ewm-get-pointer-location))
-         (px (car pointer))
-         (py (cdr pointer)))
-    (and (<= left px right)
-         (<= top py bottom))))
+         (pointer (ewm-get-pointer-location)))
+    (eq window (window-at-x-y (- (car pointer) (car frame-origin))
+                               (- (cdr pointer) (cdr frame-origin))
+                               frame))))
 
 (defun ewm-input--warp-pointer-to-window (window)
   "Warp pointer to center of WINDOW.
 Does nothing if pointer is already inside the window or if it's a minibuffer."
-  (unless (or (minibufferp (window-buffer window))
+  (unless (or (window-minibuffer-p window)
               (ewm-input--pointer-in-window-p window))
     (when-let* ((frame (window-frame window))
                 (frame-origin (ewm--get-frame-origin frame)))
