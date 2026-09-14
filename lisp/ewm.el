@@ -494,17 +494,9 @@ matches it is paired, otherwise a surface buffer is created."
       (pop-to-buffer-same-window buffer)
       (ewm-layout--refresh)))))
 
-(defun ewm--floating-frames-showing (buffer)
-  "Return the floating frames currently displaying BUFFER."
-  (seq-uniq
-   (seq-keep (lambda (win)
-               (let ((frame (window-frame win)))
-                 (and (frame-parameter frame 'ewm-floating) frame)))
-             (get-buffer-window-list buffer nil t))))
-
 (defun ewm--handle-close-surface (event)
   "Handle close surface EVENT.
-Kills the surface buffer, or deletes an Emacs frame whose toplevel died
+Quits the surface buffer's windows and kills it, or deletes a frame that died
 without lisp asking (e.g. compositor-driven destroy)."
   (let* ((id (alist-get 'id event))
          (buf (gethash id ewm--surfaces))
@@ -513,16 +505,20 @@ without lisp asking (e.g. compositor-driven destroy)."
               (cond (buf "buffer") (frame "frame-orphan") (t "unknown")))
     (cond
      (buf
-      ;; A floating frame hosts a single surface; delete it once that dies.
-      (let ((hosts (ewm--floating-frames-showing buf)))
-        (when (buffer-live-p buf)
-          (with-current-buffer buf
-            (remove-hook 'kill-buffer-query-functions
-                         #'ewm--kill-buffer-query-function t))
-          (kill-buffer buf))
-        (remhash id ewm--surfaces)
-        (dolist (host hosts)
-          (when (frame-live-p host) (delete-frame host t)))))
+      (remhash id ewm--surfaces)
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (remove-hook 'kill-buffer-query-functions
+                       #'ewm--kill-buffer-query-function t))
+        ;; Let Emacs retire single-window floats even with buffer history.
+        (dolist (window (get-buffer-window-list buf nil t))
+          (when (and (frame-parameter (window-frame window) 'ewm-floating)
+                     (not (window-parent window)))
+            (set-window-dedicated-p window t)))
+        (save-selected-window
+          (quit-windows-on buf t))
+        ;; Emacs 30 leaves an undisplayed buffer alive.
+        (when (buffer-live-p buf) (kill-buffer buf))))
      (frame
       (ignore-errors (delete-frame frame t))))))
 

@@ -335,19 +335,6 @@ buffer; `mapped' displays and publishes it."
           (should (null ewm--pending-placements)))
       (kill-buffer buf))))
 
-(ert-deftest ewm-focus/floating-frames-showing-filters-by-param ()
-  "`ewm--floating-frames-showing' returns a frame only while it is floating."
-  (ewm-focus-tests--with-frame f
-    (let ((buf (ewm-focus-tests--make-surface-buffer 99)))
-      (set-window-buffer (frame-selected-window f) buf)
-      (unwind-protect
-          (progn
-            (set-frame-parameter f 'ewm-floating nil)
-            (should-not (ewm--floating-frames-showing buf))
-            (set-frame-parameter f 'ewm-floating t)
-            (should (memq f (ewm--floating-frames-showing buf))))
-        (set-frame-parameter f 'ewm-floating nil)))))
-
 (ert-deftest ewm-focus/handle-focus-skips-while-modal ()
   "Incoming focus events must not change selection during modal input."
   (ewm-focus-tests--with-frame f
