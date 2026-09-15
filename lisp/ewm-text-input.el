@@ -32,11 +32,13 @@ Use this to enable special input handling modes.")
 (defun ewm--handle-text-input-activated ()
   "Handle text-input-activated event from compositor.
 Called when a client's text field gains focus."
+  (setq ewm-text-input--client-active t)
   (run-hooks 'ewm-text-input-activated-hook))
 
 (defun ewm--handle-text-input-deactivated ()
   "Handle text-input-deactivated event from compositor.
 Called when a client's text field loses focus."
+  (setq ewm-text-input--client-active nil)
   (run-hooks 'ewm-text-input-deactivated-hook))
 
 (defun ewm-im-commit (text surface-id)
@@ -92,33 +94,33 @@ For quail-based input methods, looks up the translation directly."
               ((buffer-live-p surface-buf)))
     (buffer-local-value 'current-input-method surface-buf)))
 
+(defvar ewm-text-input-auto-mode)
+
 (defun ewm-text-input--refresh-auto-state ()
-  "Intercept keys only while a client field is active and an IM is set."
-  (let ((enabled (and ewm-text-input--client-active
+  "Intercept keys only in auto mode with an active field and input method."
+  (let ((enabled (and ewm-text-input-auto-mode
+                      ewm-text-input--client-active
                       (ewm-text-input--active-input-method))))
     (ewm-text-input-intercept (and enabled t))
     (ewm-text-input-mode (if enabled 1 -1))))
 
-(defun ewm-text-input-auto-mode-enable ()
-  "Enable automatic text input mode switching.
-Text input mode will be enabled/disabled automatically when
-client text fields gain/lose focus."
-  (interactive)
-  (add-hook 'ewm-text-input-activated-hook #'ewm-text-input--auto-enable)
-  (add-hook 'ewm-text-input-deactivated-hook #'ewm-text-input--auto-disable)
-  (add-hook 'input-method-activate-hook #'ewm-text-input--refresh-auto-state)
-  (add-hook 'input-method-deactivate-hook #'ewm-text-input--refresh-auto-state))
+(defun ewm-text-input--input-method-deactivated ()
+  "Refresh interception after the current buffer's input method turns off."
+  ;; Emacs runs the deactivate hook before clearing this variable.
+  (let ((current-input-method nil))
+    (ewm-text-input--refresh-auto-state)))
 
-(defun ewm-text-input-auto-mode-disable ()
-  "Disable automatic text input mode switching."
-  (interactive)
-  (remove-hook 'ewm-text-input-activated-hook #'ewm-text-input--auto-enable)
-  (remove-hook 'ewm-text-input-deactivated-hook #'ewm-text-input--auto-disable)
-  (remove-hook 'input-method-activate-hook #'ewm-text-input--refresh-auto-state)
-  (remove-hook 'input-method-deactivate-hook #'ewm-text-input--refresh-auto-state)
-  (setq ewm-text-input--client-active nil)
-  (ewm-text-input-intercept nil)
-  (ewm-text-input-mode -1))
+(define-minor-mode ewm-text-input-auto-mode
+  "Automatically relay input methods to active Wayland text fields."
+  :global t
+  :group 'ewm
+  (let ((hook-function (if ewm-text-input-auto-mode #'add-hook #'remove-hook)))
+    (dolist (hook '(ewm-text-input-activated-hook ewm-text-input-deactivated-hook
+                   input-method-activate-hook))
+      (funcall hook-function hook #'ewm-text-input--refresh-auto-state))
+    (funcall hook-function 'input-method-deactivate-hook
+             #'ewm-text-input--input-method-deactivated))
+  (ewm-text-input--refresh-auto-state))
 
 (defun ewm-text-input-intercept (enabled)
   "Enable or disable text input key interception."
@@ -139,16 +141,6 @@ Commit the IM translation to the client, else forward the key unchanged."
           (ewm-im-commit (ewm-text-input--translate-char (string-to-char utf8))
                          surface-id))
       (ewm-text-input--forward-key event))))
-
-(defun ewm-text-input--auto-enable ()
-  "Enable text input mode when a client text field is activated."
-  (setq ewm-text-input--client-active t)
-  (ewm-text-input--refresh-auto-state))
-
-(defun ewm-text-input--auto-disable ()
-  "Disable text input mode when a client text field is deactivated."
-  (setq ewm-text-input--client-active nil)
-  (ewm-text-input--refresh-auto-state))
 
 ;;; Edit a field's content in an Emacs buffer.
 
