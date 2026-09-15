@@ -232,17 +232,15 @@ Set with `setopt' (or `:custom' in `use-package'):
   :group 'ewm-input)
 
 (defcustom ewm-surface-emulate-keys
-  '((?\s-c . "C-c")
-    (?\s-v . "C-v"))
-  "Key bindings translated to a different key for non-Emacs surfaces.
-Each entry is (KEY-EVENT . TARGET) where TARGET is a key description
-\(e.g. \"C-c\", \"<down>\", \"M-S-c\").
-
-When a non-Emacs Wayland surface has focus, the matched key is delivered
-to it as TARGET instead of going to Emacs (e.g. s-c becomes C-c for
-clipboard copy in Firefox, or C-j becomes <down>).  When Emacs has focus,
-the original binding from `ewm-mode-map' is used."
-  :type '(alist :key-type character :value-type string)
+  '((kill-ring-save . "C-c")
+    (yank . "C-v"))
+  "Surface equivalents of Emacs commands, as (COMMAND . KEY) entries.
+When a non-Emacs surface has focus, a key bound to COMMAND in
+`ewm-mode-map' is delivered to the surface as KEY instead of running
+COMMAND (e.g. s-v bound to `yank' pastes with C-v in Firefox).
+Rebinding the key in `ewm-mode-map' to another command ends the
+emulation."
+  :type '(alist :key-type function :value-type string)
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
   :group 'ewm-input)
@@ -556,22 +554,17 @@ VALUE is the ASCII code or special-key name; flags are t or nil."
             :shift (and (memq 'shift mods) t)
             :super (and (memq 'super mods) t)))))
 
-(defun ewm--event-to-intercept-spec (event &optional fullscreen translate dispatch)
-  "Convert EVENT to an intercept specification for the compositor.
-Returns a plist with :key, modifier flags, :fullscreen, :dispatch, and
-optionally :translate.  TRANSLATE is a target key description (e.g. \"C-c\"
-or \"<down>\"); when set, the matched key is delivered to non-Emacs surfaces
-as that key instead of going to Emacs."
-  (let ((key-spec (ewm--event-key-spec event)))
-    (when key-spec
-      `(,@key-spec
-        :description ,(key-description (vector event))
-        :fullscreen ,(and fullscreen t)
-        :dispatch ,(or dispatch (ewm--event-dispatch event))
-        :repeat ,(and (ewm--event-repeat-p event) t)
-        ,@(when translate
-            (list :translate (ewm--event-key-spec
-                              (aref (key-parse translate) 0))))))))
+(defun ewm--event-to-intercept-spec (event &optional fullscreen dispatch)
+  "Return EVENT's compositor intercept spec plist, or nil."
+  (when-let* ((key-spec (ewm--event-key-spec event)))
+    `(,@key-spec
+      :description ,(key-description (vector event))
+      :fullscreen ,(and fullscreen t)
+      :dispatch ,(or dispatch (ewm--event-dispatch event))
+      :repeat ,(and (ewm--event-repeat-p event) t)
+      ,@(when-let* ((key (alist-get (ewm--event-mode-binding event)
+                                    ewm-surface-emulate-keys)))
+          (list :translate (ewm--event-key-spec (aref (key-parse key) 0)))))))
 
 (defun ewm--parse-intercept-entry (entry)
   "Parse ENTRY from `ewm-intercept-prefixes'.
@@ -583,9 +576,7 @@ Returns (event . fullscreen-p) or nil."
      ((stringp key) (cons (aref (key-parse key) 0) (and fullscreen t))))))
 
 (defun ewm--send-intercept-keys ()
-  "Send intercepted keys configuration to compositor.
-Combine `ewm-intercept-prefixes', `ewm-mode-map', and
-`ewm-surface-emulate-keys' into one specification per key."
+  "Send `ewm-intercept-prefixes' and `ewm-mode-map' keys to the compositor."
   (ewm-input--install-xf86-key-aliases)
   (let* ((prefixes (delq nil (mapcar #'ewm--parse-intercept-entry
                                     ewm-intercept-prefixes)))
@@ -596,12 +587,10 @@ Combine `ewm-intercept-prefixes', `ewm-mode-map', and
                     (push event events)))
                 ewm-mode-map)
     (dolist (event (delete-dups (append (mapcar #'car prefixes)
-                                       (nreverse events)
-                                       (mapcar #'car ewm-surface-emulate-keys))))
+                                       (nreverse events))))
       (when-let* ((spec (ewm--event-to-intercept-spec
                          event
                          (memq event fullscreen-events)
-                         (alist-get event ewm-surface-emulate-keys nil nil #'eql)
                          (ewm--event-dispatch event (assq event prefixes)))))
         (push spec specs)))
     (ewm-intercept-keys-module (vconcat (nreverse specs)))))

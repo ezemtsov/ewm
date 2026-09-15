@@ -121,13 +121,22 @@
   (let ((spec (ewm--event-to-intercept-spec 'XF86AudioMute)))
     (should (equal (plist-get spec :key) "XF86AudioMute"))))
 
-(ert-deftest ewm-input-tests/spec-translate-appended ()
-  "`translate' arg appears as a trailing :translate key spec."
-  (let* ((spec (ewm--event-to-intercept-spec ?\s-c nil "C-c"))
-         (target (plist-get spec :translate)))
-    (should (equal (plist-get target :key) ?c))
-    (should (eq (plist-get target :ctrl) t))
-    (should-not (plist-get target :super))))
+(ert-deftest ewm-input-tests/spec-translate-follows-command ()
+  "Any key bound to an emulated command gets its surface translation."
+  (let ((ewm-mode-map (make-sparse-keymap)))
+    (define-key ewm-mode-map (kbd "s-y") #'yank)
+    (let ((target (plist-get (ewm--event-to-intercept-spec ?\s-y) :translate)))
+      (should (equal (plist-get target :key) ?v))
+      (should (eq (plist-get target :ctrl) t))
+      (should-not (plist-get target :super)))))
+
+(ert-deftest ewm-input-tests/spec-rebound-key-drops-translate ()
+  "Rebinding s-v in `ewm-mode-map' sends it to Emacs, not as C-v."
+  (let ((ewm-mode-map (make-sparse-keymap)))
+    (define-key ewm-mode-map (kbd "s-v") #'forward-char)
+    (let ((spec (ewm--event-to-intercept-spec ?\s-v)))
+      (should (equal (plist-get spec :dispatch) "command"))
+      (should-not (plist-get spec :translate)))))
 
 (ert-deftest ewm-input-tests/spec-keymap-prefix-dispatch ()
   "Keymap prefixes request keyboard dispatch."
@@ -177,7 +186,6 @@
   (let ((ewm-intercept-prefixes
          '(?\M-x ?\C-u ("<AudioLowerVolume>" :fullscreen)
            ("<Print>" :fullscreen) "<Print>"))
-        (ewm-surface-emulate-keys nil)
         captured)
     (cl-letf (((symbol-function 'ewm-intercept-keys-module)
                (lambda (keys) (setq captured keys))))
@@ -204,21 +212,6 @@
         (should (equal (plist-get spec :dispatch) "command"))
         (should (eq (plist-get spec :fullscreen) t))
         (should (eq (plist-get spec :repeat) t))))))
-
-(ert-deftest ewm-input-tests/translate-key-not-in-mode-map-still-sent ()
-  "A `ewm-surface-emulate-keys' entry absent from `ewm-mode-map' is emitted."
-  (let ((ewm-intercept-prefixes nil)
-        (ewm-mode-map (make-sparse-keymap))
-        (ewm-surface-emulate-keys '((?\C-j . "<down>")))
-        captured)
-    (cl-letf (((symbol-function 'ewm-intercept-keys-module)
-               (lambda (keys) (setq captured keys))))
-      (ewm--send-intercept-keys))
-    (let* ((spec (car (append captured nil)))
-           (target (plist-get spec :translate)))
-      (should (equal (plist-get spec :key) ?j))
-      (should (eq (plist-get spec :ctrl) t))
-      (should (equal (plist-get target :key) "down")))))
 
 ;;;; ewm--parse-intercept-entry
 
