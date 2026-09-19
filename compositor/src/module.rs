@@ -356,8 +356,8 @@ fn get_active_frame_id(name: String) -> Result<Option<i64>> {
     Ok(state.active_frames.get(&name).map(|id| *id as i64))
 }
 
-/// Query Emacs frame origin (called by Emacs for mouse-follows-focus pointer warping).
-/// Returns (x . y) cons cell, or nil if the frame is not visible.
+/// Query a floating Emacs frame's origin for mouse-follows-focus pointer warping.
+/// Returns (x . y) cons cell, or nil if the frame is not found.
 #[defun]
 fn get_frame_origin(surface_id: i64) -> Result<Lisp<Data>> {
     let state = shared_state().lock().unwrap();

@@ -6495,28 +6495,6 @@ impl Ewm {
     fn frame_origins_snapshot(&self) -> Vec<module::FrameOrigin> {
         let mut origins = Vec::new();
 
-        // Tiled frames: resolve each output's geometry once, then place frames.
-        for (name, strip) in self.mapped_output_strips() {
-            let Some(output) = self.mapped_output_by_name(name) else {
-                continue;
-            };
-            let Some(output_geo) = self.space.output_geometry(output) else {
-                continue;
-            };
-            let working_area = self.get_working_area(output);
-            for (frame_idx, frame) in strip.frames.iter().enumerate() {
-                if frame.surface_id == 0 {
-                    continue;
-                }
-                let loc =
-                    Self::frame_rect(output_geo, working_area, strip, frame_idx, frame).loc;
-                origins.push(module::FrameOrigin {
-                    surface_id: frame.surface_id,
-                    origin: (loc.x, loc.y),
-                });
-            }
-        }
-
         // Floating frames carry their own logical position.
         for (name, space) in &self.floating_spaces {
             let Some(output) = self.mapped_output_by_name(name) else {

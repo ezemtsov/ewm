@@ -1060,8 +1060,9 @@ ARGS is a plist with optional keys:
 
 (defun ewm--get-frame-origin (frame)
   "Return global origin for FRAME, falling back to its output origin."
-  (or (when-let ((id (frame-parameter frame 'ewm-surface-id)))
-        (and (fboundp 'ewm-get-frame-origin)
+  (or (and (frame-parameter frame 'ewm-floating)
+           (fboundp 'ewm-get-frame-origin)
+           (when-let* ((id (frame-parameter frame 'ewm-surface-id)))
              (ewm-get-frame-origin id)))
       (ewm--get-output-origin (frame-parameter frame 'ewm-output))))
 
