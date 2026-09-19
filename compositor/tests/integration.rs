@@ -6,7 +6,7 @@ use ewm_core::backend::{closest_representable_scale, int_to_transform, transform
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::utils::output_size;
-use ewm_core::{LayoutEntry, LayoutEntryId, OutputConfig};
+use ewm_core::{Event, LayoutEntry, LayoutEntryId, OutputConfig};
 use proptest::prelude::*;
 use smithay::utils::{Logical, Point, Size};
 use wayland_client::Proxy as _;
@@ -311,6 +311,82 @@ fn frame_focus_switch_refreshes_stationary_pointer_after_transition() {
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), second_surface_id);
     assert_eq!(fixture.pointer_focus_surface_id(), Some(second_surface_id));
+}
+
+#[test]
+fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
+    let mut fixture = Fixture::new().unwrap();
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.ewm().animations_clock.set_complete_instantly(true);
+    fixture.apply_output_layout_command(
+        "Virtual-1",
+        vec![
+            frame_with_entry(10, nz(1), 100),
+            frame_with_entry(11, nz(2), 101),
+        ],
+    );
+    fixture.dispatch_roundtrip(2);
+    let neighbour_focus_id = fixture
+        .ewm_ref()
+        .frame_set
+        .mapped_strip("Virtual-1")
+        .unwrap()
+        .frames[1]
+        .focus_id;
+    fixture.pointer_motion_to(640.0, 360.0);
+    fixture.enable_event_capture();
+
+    {
+        let strip = fixture
+            .ewm()
+            .frame_set
+            .mapped_strip_mut("Virtual-1")
+            .unwrap();
+        strip.gesture_begin();
+        strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
+        // A late zero delta drains the velocity history so the snap is decided by position.
+        strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
+    }
+    fixture.ewm().strip_gesture_end("Virtual-1", 1280.0);
+    fixture.dispatch_roundtrip(2);
+
+    let strip = fixture.ewm_ref().frame_set.mapped_strip("Virtual-1").unwrap();
+    assert_eq!(strip.active_idx(), 1);
+    assert_eq!(fixture.ewm_ref().pointer_location(), (640.0, 360.0));
+    // Pointer focus, so Emacs anchors mouse-follows-focus instead of warping.
+    assert!(fixture.drain_events().iter().any(|event| matches!(
+        event,
+        Event::Focus { focus_id, x: Some(x), y: Some(y), pointer: true }
+            if *focus_id == neighbour_focus_id && *x == 640.0 && *y == 360.0
+    )));
+
+    // A swipe past the strip end snaps back to the same frame and changes no focus.
+    {
+        let strip = fixture
+            .ewm()
+            .frame_set
+            .mapped_strip_mut("Virtual-1")
+            .unwrap();
+        strip.gesture_begin();
+        strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
+        strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
+    }
+    fixture.ewm().strip_gesture_end("Virtual-1", 1280.0);
+    fixture.dispatch_roundtrip(2);
+
+    assert_eq!(
+        fixture
+            .ewm_ref()
+            .frame_set
+            .mapped_strip("Virtual-1")
+            .unwrap()
+            .active_idx(),
+        1
+    );
+    assert!(!fixture
+        .drain_events()
+        .iter()
+        .any(|event| matches!(event, Event::Focus { .. })));
 }
 
 #[test]

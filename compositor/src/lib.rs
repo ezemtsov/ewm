@@ -2446,6 +2446,57 @@ impl Ewm {
         }
     }
 
+    /// End a strip swipe on `output_name`: snap to the nearest frame and focus it.
+    pub fn strip_gesture_end(&mut self, output_name: &str, working_w: f64) {
+        let prev_active_id = self
+            .frame_set
+            .mapped_strip(output_name)
+            .and_then(|s| s.active_frame())
+            .map(|f| f.surface_id);
+        let target = self.frame_set.mapped_strip_mut(output_name).and_then(|s| {
+            s.gesture_end(working_w);
+            s.frames.get(s.active_idx()).map(|f| f.surface_id)
+        });
+        self.reconcile_active_for_output(output_name, prev_active_id);
+        // A swipe that snaps back changes nothing; don't refocus.
+        let target = target.filter(|&id| Some(id) != prev_active_id);
+        let output = self.find_mapped_output(output_name);
+        if let (Some(id), Some(output)) = (target, &output) {
+            // The frame settles flush with the working area.
+            let origin = self
+                .space
+                .output_geometry(output)
+                .map_or(Point::default(), |geo| {
+                    geo.loc + self.get_working_area(output).loc
+                });
+            let (px, py) = self.pointer_location();
+            let pos_in_frame = Point::from((px, py)) - origin.to_f64();
+            self.set_focus_frame_from_pointer(id, "gesture", pos_in_frame);
+        }
+        if let Some(output) = output {
+            self.queue_redraw(&output);
+        }
+    }
+
+    /// Focus a frame reached with the pointer at frame-relative `pos_in_frame`.
+    /// Pointer focus keeps Emacs from warping the pointer to the frame.
+    fn set_focus_frame_from_pointer(
+        &mut self,
+        frame_surface_id: u64,
+        source: &str,
+        pos_in_frame: Point<f64, Logical>,
+    ) {
+        self.set_focus_frame(frame_surface_id, source, false);
+        if let Some(focus_id) = self.focus_id_of_frame(frame_surface_id) {
+            self.queue_event(Event::Focus {
+                focus_id,
+                x: Some(pos_in_frame.x),
+                y: Some(pos_in_frame.y),
+                pointer: true,
+            });
+        }
+    }
+
     /// Global logical top-left of an Emacs frame's working area,
     /// driven by the strip column (frames aren't placed in `space`).
     pub fn emacs_frame_origin(
