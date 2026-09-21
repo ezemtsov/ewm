@@ -62,6 +62,8 @@
 (declare-function ewm-set-focus-follows-mouse "ewm-core")
 (declare-function ewm-set-unfocused-alpha "ewm-core")
 (declare-function ewm-set-animations-enabled "ewm-core")
+(declare-function ewm-configure-overview-module "ewm-core" (zoom red green blue))
+(declare-function ewm-overview-module "ewm-core" (action))
 (declare-function ewm-notify-initialized-module "ewm-core")
 (declare-function ewm-focus-output-direction-module "ewm-core")
 (declare-function ewm-get-focused-frame-id "ewm-core")
@@ -194,6 +196,26 @@ and layer surfaces (panels, lock screen) are never dimmed."
          (set-default sym val)
          (when (fboundp 'ewm-set-unfocused-alpha)
            (ewm-set-unfocused-alpha (float val)))))
+
+(defun ewm--set-overview-option (sym val)
+  "Set overview option SYM to VAL and push the overview config to the compositor."
+  (set-default sym val)
+  (when (fboundp 'ewm--send-overview-config)
+    (ewm--send-overview-config)))
+
+(defcustom ewm-overview-zoom 0.5
+  "Scale of each output's content in the overview.
+A float above 0.0 and at most 0.75; smaller values show more of the strip."
+  :type 'float
+  :group 'ewm
+  :set #'ewm--set-overview-option)
+
+(defcustom ewm-overview-backdrop-color "#262626"
+  "Color behind the zoomed-out output in the overview.
+A color name or #RRGGBB spec; unknown names fall back to the default."
+  :type 'color
+  :group 'ewm
+  :set #'ewm--set-overview-option)
 
 (defvar ewm--is-ffm-focus-event nil
   "Whether the current event was triggered by focus follows mouse.
@@ -797,6 +819,17 @@ Select the Nth Emacs frame on the requested output (1-based index)."
        (ewm-configure-idle-module ewm-idle "blank"))
       (`(,(and (pred integerp) secs) . ,(and (pred stringp) cmd))
        (ewm-configure-idle-module secs cmd)))))
+
+(defun ewm--send-overview-config ()
+  "Send overview zoom and backdrop color to the compositor."
+  (when (ewm--compositor-active-p)
+    ;; `tty-color-standard-values' parses names and hex specs without a display.
+    (let ((rgb (or (tty-color-standard-values
+                   (tty-color-canonicalize ewm-overview-backdrop-color))
+                   (tty-color-standard-values
+                    (eval (car (get 'ewm-overview-backdrop-color 'standard-value)) t)))))
+      (apply #'ewm-configure-overview-module (float ewm-overview-zoom)
+             (mapcar (lambda (c) (/ c 65535.0)) rgb)))))
 
 (defun ewm--cursor-theme ()
   "Return the configured EWM cursor theme, or nil for automatic selection."
@@ -1442,6 +1475,22 @@ navigation works while a float holds focus."
   (interactive)
   (ewm--frame-shift-on-output 1))
 
+(defun ewm-overview-toggle ()
+  "Toggle the overview: zoom every output out to show its whole strip.
+Click a frame to select it and zoom back in."
+  (interactive)
+  (ewm-overview-module "toggle"))
+
+(defun ewm-overview-open ()
+  "Open the overview."
+  (interactive)
+  (ewm-overview-module "open"))
+
+(defun ewm-overview-close ()
+  "Close the overview."
+  (interactive)
+  (ewm-overview-module "close"))
+
 (defun ewm-frame-select ()
   "Select the Nth frame (1-based) on the current output.
 Reads the digit from `last-command-event'.  No-op if N is past the
@@ -1659,6 +1708,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (ewm--send-cursor-hide-config)
   (ewm-set-unfocused-alpha (float ewm-unfocused-alpha))
   (ewm-set-animations-enabled ewm-animations-enabled)
+  (ewm--send-overview-config)
   (when (and (not ewm-focus-follows-mouse) mouse-autoselect-window)
     (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode 1)

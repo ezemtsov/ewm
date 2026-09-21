@@ -24,7 +24,7 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Fourcc};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
-use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::{
     render_elements_from_surface_tree, WaylandSurfaceRenderElement,
 };
@@ -48,10 +48,11 @@ use tracing::warn;
 
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
+use crate::render_helpers::zoom::ZoomRenderElement;
 use crate::{tracy_span, Ewm, State};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
-/// per surface via `collect_popup_placements`; smithay's `Window::render_elements`
+/// per surface via `window_popup_placements`; smithay's `Window::render_elements`
 /// would otherwise inline them at every view's location, duplicating across outputs.
 fn render_window_without_popups(
     window: &smithay::desktop::Window,
@@ -73,27 +74,48 @@ fn render_window_without_popups(
     )
 }
 
+type ConstrainedRenderElement =
+    CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>;
+
+// Output content the overview zooms: frames, their views, floating frames,
+// window popups, the bottom/background layers and the output fill.
+render_elements! {
+    pub ContentRenderElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Constrained=ConstrainedRenderElement,
+    SolidColor=SolidColorRenderElement,
+    Shadow=crate::render_helpers::shadow::ShadowRenderElement,
+}
+
+/// Content scaled about the output origin, then moved into place.
+pub type ZoomedRenderElement = ZoomRenderElement<ContentRenderElement>;
+
 // Combined render element type for ewm.
 // Generated via Smithay's `render_elements!` macro, which auto-derives
 // `Element`, `RenderElement<GlesRenderer>`, and `From` impls for each variant.
 render_elements! {
     pub EwmRenderElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
-    Constrained=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    Constrained=ConstrainedRenderElement,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     SolidColor=SolidColorRenderElement,
     Texture=crate::texture::TextureRenderElement<GlesTexture>,
-    Shadow=crate::render_helpers::shadow::ShadowRenderElement,
+    Zoomed=ZoomedRenderElement,
+}
+
+/// An output-sized solid colour at the output origin.
+fn solid(buffer: &SolidColorBuffer, scale: Scale<f64>) -> SolidColorRenderElement {
+    SolidColorRenderElement::from_buffer(buffer, (0, 0), scale, 1., Kind::Unspecified)
 }
 
 /// Render layer surfaces on a specific layer to element list.
 /// LayerMap returns layers in reverse stacking order, so we reverse to get correct order.
-fn render_layer(
+fn render_layer<E: From<WaylandSurfaceRenderElement<GlesRenderer>>>(
     layer_map: &LayerMap,
     layer: Layer,
     renderer: &mut GlesRenderer,
     scale: Scale<f64>,
-    elements: &mut Vec<EwmRenderElement>,
+    elements: &mut Vec<E>,
 ) {
     for surface in layer_map.layers_on(layer).rev() {
         if let Some(geo) = layer_map.layer_geometry(surface) {
@@ -106,7 +128,7 @@ fn render_layer(
                     1.0,
                     Kind::Unspecified,
                 );
-            elements.extend(render_elements.into_iter().map(EwmRenderElement::Surface));
+            elements.extend(render_elements.into_iter().map(E::from));
         }
     }
 }
@@ -171,8 +193,8 @@ pub fn render_cursor_elements(
 ///
 /// Shared pipeline for all view rendering: fullscreen primary/non-primary
 /// and normal primary/non-primary.
-pub(crate) fn push_constrained(
-    elements: &mut Vec<EwmRenderElement>,
+pub(crate) fn push_constrained<E: From<ConstrainedRenderElement>>(
+    elements: &mut Vec<E>,
     view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     loc: Point<i32, Physical>,
     element_scale: Scale<f64>,
@@ -184,12 +206,12 @@ pub(crate) fn push_constrained(
             .into_iter()
             .map(|e| RescaleRenderElement::from_element(e, loc, element_scale))
             .filter_map(|e| CropRenderElement::from_element(e, output_scale, constrain))
-            .map(EwmRenderElement::Constrained),
+            .map(E::from),
     );
 }
 
-pub(crate) fn push_view_elements_fit(
-    elements: &mut Vec<EwmRenderElement>,
+pub(crate) fn push_view_elements_fit<E: From<ConstrainedRenderElement>>(
+    elements: &mut Vec<E>,
     view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     loc: Point<i32, Physical>,
     source_size: Size<i32, Physical>,
@@ -233,11 +255,10 @@ pub(crate) fn push_view_elements_fit(
 /// Rendering order (front to back):
 /// 1. Cursor (highest z-order, always visible)
 /// 2. Overlay layer
-/// 3. Top layer
-/// 4. Popups
-/// 5. Views and windows
-/// 6. Bottom layer
-/// 7. Background layer (lowest z-order)
+/// 3. Top layer and layer-shell popups
+/// 4. Zoomed by the overview: window popups, floating frames, views, frames, bottom and background
+///    layers, the output fill and the overview shadow
+/// 5. Overview backdrop (lowest z-order)
 ///
 /// Parameters:
 /// - `output`: The output to render for (provides layer map)
@@ -331,14 +352,10 @@ pub fn collect_render_elements_for_output(
         }
 
         // Draw the solid color background.
-        let bg_element = SolidColorRenderElement::from_buffer(
+        elements.push(EwmRenderElement::SolidColor(solid(
             &state.lock_color_buffer,
-            (0, 0),
             scale,
-            1.,
-            Kind::Unspecified,
-        );
-        elements.push(EwmRenderElement::SolidColor(bg_element));
+        )));
 
         return (elements, cursor_elements);
     }
@@ -349,10 +366,10 @@ pub fn collect_render_elements_for_output(
     // this borrow is alive would panic.
     let (mut overlay_elems, mut top_elems, mut bottom_elems, mut bg_elems) = if include_layers {
         let layer_map = layer_map_for_output(output);
-        let mut overlay = Vec::new();
-        let mut top = Vec::new();
-        let mut bottom = Vec::new();
-        let mut bg = Vec::new();
+        let mut overlay: Vec<EwmRenderElement> = Vec::new();
+        let mut top: Vec<EwmRenderElement> = Vec::new();
+        let mut bottom: Vec<ContentRenderElement> = Vec::new();
+        let mut bg: Vec<ContentRenderElement> = Vec::new();
         render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut overlay);
         render_layer(&layer_map, Layer::Top, renderer, scale, &mut top);
         render_layer(&layer_map, Layer::Bottom, renderer, scale, &mut bottom);
@@ -363,23 +380,51 @@ pub fn collect_render_elements_for_output(
         (Vec::new(), Vec::new(), Vec::new(), Vec::new())
     };
 
-    // 2. Overlay layer
+    // Overlay layer
     elements.append(&mut overlay_elems);
 
-    // 3. Top layer, deferred if fullscreen (fullscreen covers Top layer)
+    // Top layer, deferred if fullscreen (fullscreen covers Top layer)
     let above_top_layer = ewm.render_above_top_layer(output);
 
     if !above_top_layer {
         elements.append(&mut top_elems);
     }
 
-    // Track position for popup insertion (after top layer / before windows)
-    let popup_insert_pos = elements.len();
+    // Popups of the unzoomed layers stay at unit scale above the zoomed content.
+    if include_layers {
+        for placement in layer_popup_placements(output, output_rect, &[Layer::Overlay, Layer::Top])
+        {
+            push_popup(&mut elements, renderer, scale, output_pos, &placement);
+        }
+    }
 
-    // 4. Render declared surfaces from output_strips. Frames outside the viewport are culled.
+    // Everything below scales with the overview. Elements are built in
+    // output-local coordinates and wrapped on the way into `elements`.
+    let geometry = ewm.overview_geometry(output);
+    let zoom_offset = geometry.offset.to_physical_precise_round(scale);
+    let zoomed = move |elem| {
+        EwmRenderElement::Zoomed(ZoomRenderElement::new(elem, geometry.zoom, zoom_offset))
+    };
+    let mut content: Vec<ContentRenderElement> = Vec::new();
+
+    // Window popups, above their frames, culled against the content the zoom shows.
+    for placement in window_popup_placements(ewm, geometry.visible_content(output_rect)) {
+        push_popup(&mut content, renderer, scale, output_pos, &placement);
+    }
+
+    // Popups of the zoomed layers zoom with them.
+    if include_layers {
+        let layers = &[Layer::Bottom, Layer::Background];
+        for placement in layer_popup_placements(output, output_rect, layers) {
+            push_popup(&mut content, renderer, scale, output_pos, &placement);
+        }
+    }
+
+    // Render declared surfaces from output_strips. Frames outside the viewport are culled.
     let working_area = ewm.get_working_area(output);
     let view_size =
         Size::<f64, Logical>::from((working_area.size.w as f64, working_area.size.h as f64));
+    let strip_viewport = geometry.strip_viewport(working_area);
     if let Some(space) = ewm.floating_spaces.get_mut(&output.name()) {
         let id_windows = &ewm.id_windows;
         let focused_entry_id = ewm.focused_entry_id;
@@ -421,7 +466,7 @@ pub fn collect_render_elements_for_output(
                     let source_size: Size<i32, Physical> =
                         window.geometry().size.to_physical_precise_round(scale);
                     push_view_elements_fit(
-                        &mut elements,
+                        &mut content,
                         view_elements,
                         loc_physical,
                         source_size,
@@ -451,7 +496,7 @@ pub fn collect_render_elements_for_output(
                 frame_rect.loc.to_physical_precise_round(scale);
             let view_elements =
                 render_window_without_popups(window, renderer, frame_offset, scale, frame_alpha);
-            elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
+            content.extend(view_elements.into_iter().map(ContentRenderElement::Surface));
 
             let shadow = data.shadow_mut();
             shadow.update_render_elements(
@@ -462,14 +507,16 @@ pub fn collect_render_elements_for_output(
                 frame_alpha,
             );
             shadow.render(renderer, frame_rect.loc, &mut |shadow| {
-                elements.push(EwmRenderElement::Shadow(shadow));
+                content.push(ContentRenderElement::Shadow(shadow));
             });
         }
     }
     let strip = ewm.frame_set.mapped_strip(&output.name());
     if let Some(strip) = strip {
         let active_idx = strip.active_idx();
-        for (frame_idx, frame, frame_rect) in strip.frames_with_render_geo(view_size) {
+        for (frame_idx, frame, frame_rect) in
+            strip.frames_with_render_geo(view_size, strip_viewport)
+        {
             let frame_offset: Point<i32, Physical> =
                 frame_rect.loc.to_physical_precise_round(scale);
             let in_active_frame = frame_idx == active_idx;
@@ -526,7 +573,7 @@ pub fn collect_render_elements_for_output(
                             let source_size: Size<i32, Physical> =
                                 window.geometry().size.to_physical_precise_round(scale);
                             push_view_elements_fit(
-                                &mut elements,
+                                &mut content,
                                 view_elements,
                                 loc_physical,
                                 source_size,
@@ -547,7 +594,7 @@ pub fn collect_render_elements_for_output(
                             let source_size: Size<i32, Physical> =
                                 window.geometry().size.to_physical_precise_round(scale);
                             push_view_elements_fit(
-                                &mut elements,
+                                &mut content,
                                 view_elements,
                                 loc_physical,
                                 source_size,
@@ -566,7 +613,7 @@ pub fn collect_render_elements_for_output(
                                 1.0,
                                 Kind::Unspecified,
                             );
-                            elements.push(EwmRenderElement::SolidColor(bg));
+                            content.push(ContentRenderElement::SolidColor(bg));
                         }
                         continue;
                     }
@@ -598,7 +645,7 @@ pub fn collect_render_elements_for_output(
                         let source_size: Size<i32, Physical> =
                             window.geometry().size.to_physical_precise_round(scale);
                         push_view_elements_fit(
-                            &mut elements,
+                            &mut content,
                             view_elements,
                             loc_physical,
                             source_size,
@@ -613,7 +660,7 @@ pub fn collect_render_elements_for_output(
                         let source_size: Size<i32, Physical> =
                             window.geometry().size.to_physical_precise_round(scale);
                         push_view_elements_fit(
-                            &mut elements,
+                            &mut content,
                             view_elements,
                             loc_physical,
                             source_size,
@@ -626,18 +673,19 @@ pub fn collect_render_elements_for_output(
             }
         }
     }
+    elements.extend(content.drain(..).map(zoomed));
 
-    // 4b. Deferred Top layer (behind fullscreen surface)
+    // Deferred Top layer (behind fullscreen surface)
     if above_top_layer {
         elements.append(&mut top_elems);
     }
 
-    // 5. Emacs frame chrome, culled the same way as step 4.
+    // The frames' own surfaces, culled like their views.
     let working_area_loc_physical =
         Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
             .to_physical_precise_round(scale);
     if let Some(strip) = strip {
-        for (_, frame, frame_rect) in strip.frames_with_render_geo(view_size) {
+        for (_, frame, frame_rect) in strip.frames_with_render_geo(view_size, strip_viewport) {
             let Some(window) = ewm.id_windows.get(&frame.surface_id) else {
                 continue;
             };
@@ -655,38 +703,74 @@ pub fn collect_render_elements_for_output(
                 scale,
                 frame_alpha,
             );
-            elements.extend(view_elements.into_iter().map(EwmRenderElement::Surface));
+            content.extend(view_elements.into_iter().map(ContentRenderElement::Surface));
         }
     }
 
-    // 6. Bottom layer
-    elements.append(&mut bottom_elems);
+    // Bottom layer
+    content.append(&mut bottom_elems);
 
-    // 7. Background layer
-    elements.append(&mut bg_elems);
+    // Background layer
+    content.append(&mut bg_elems);
 
-    let mut popup_elements: Vec<EwmRenderElement> = Vec::new();
+    // Output fill behind everything on it; in the overview also the shadow and the backdrop.
+    let overview_progress = ewm.overview.progress();
+    let backdrop_color = ewm.overview.backdrop_color;
+    let mut backdrop = None;
+    if let Some(state) = ewm.output_state.get_mut(output) {
+        content.push(ContentRenderElement::SolidColor(solid(
+            &state.background,
+            scale,
+        )));
 
-    for placement in collect_popup_placements(ewm, output_rect, include_layers.then_some(output)) {
-        let render_loc = Point::from((
-            placement.location.x - output_pos.x,
-            placement.location.y - output_pos.y,
-        ));
-        let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-            render_elements_from_surface_tree(
-                renderer,
-                &placement.surface,
-                render_loc.to_physical_precise_round(scale),
-                scale,
-                1.0,
-                Kind::Unspecified,
+        if let Some(progress) = overview_progress {
+            state.overview_shadow.update_render_elements(
+                output_size.to_f64(),
+                true,
+                crate::shadow_style::CornerRadius::default(),
+                scale.x,
+                progress.clamp(0., 1.) as f32,
             );
-        popup_elements.extend(render_elements.into_iter().map(EwmRenderElement::Surface));
+            state
+                .overview_shadow
+                .render(renderer, Point::from((0., 0.)), &mut |shadow| {
+                    content.push(ContentRenderElement::Shadow(shadow));
+                });
+            state.overview_backdrop.set_color(backdrop_color);
+            backdrop = Some(EwmRenderElement::SolidColor(solid(
+                &state.overview_backdrop,
+                scale,
+            )));
+        }
     }
-
-    elements.splice(popup_insert_pos..popup_insert_pos, popup_elements);
+    elements.extend(content.into_iter().map(zoomed));
+    elements.extend(backdrop);
 
     (elements, cursor_elements)
+}
+
+/// Render one popup placement into `elements`.
+fn push_popup<E: From<WaylandSurfaceRenderElement<GlesRenderer>>>(
+    elements: &mut Vec<E>,
+    renderer: &mut GlesRenderer,
+    scale: Scale<f64>,
+    output_pos: Point<i32, smithay::utils::Logical>,
+    placement: &PopupPlacement,
+) {
+    let render_loc = Point::from((
+        placement.location.x - output_pos.x,
+        placement.location.y - output_pos.y,
+    ));
+    let render_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+        render_elements_from_surface_tree(
+            renderer,
+            &placement.surface,
+            render_loc.to_physical_precise_round(scale),
+            scale,
+            1.0,
+            Kind::Unspecified,
+        );
+    elements.extend(render_elements.into_iter().map(E::from));
 }
 
 /// One on-screen placement of a popup.
@@ -697,13 +781,34 @@ pub struct PopupPlacement {
     pub size: Size<i32, smithay::utils::Logical>,
 }
 
-/// Popup placements visible on an output. One placement per popup, anchored
-/// to the parent surface's render position: focused-or-primary view for
-/// layout entries, the frame's own origin for Emacs frames.
+/// Popup placements on an output, front to back: layer-shell popups, then
+/// window popups unless the overview has zoomed them away with their windows.
 pub fn collect_popup_placements(
     ewm: &Ewm,
     output_rect: Rectangle<i32, smithay::utils::Logical>,
     layer_popup_output: Option<&Output>,
+) -> Vec<PopupPlacement> {
+    // Bottom and background popups zoom away with their layers.
+    let layers: &[Layer] = if ewm.overview.is_active() {
+        &[Layer::Overlay, Layer::Top]
+    } else {
+        &[Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background]
+    };
+    let mut placements = layer_popup_output.map_or_else(Vec::new, |output| {
+        layer_popup_placements(output, output_rect, layers)
+    });
+    if !ewm.overview.is_active() {
+        placements.extend(window_popup_placements(ewm, output_rect));
+    }
+    placements
+}
+
+/// Popups of toplevel windows overlapping `output_rect`. One placement per
+/// popup, anchored to the parent surface's render position: focused-or-primary
+/// view for layout entries, the frame's own origin for Emacs frames.
+pub fn window_popup_placements(
+    ewm: &Ewm,
+    output_rect: Rectangle<i32, smithay::utils::Logical>,
 ) -> Vec<PopupPlacement> {
     use smithay::wayland::seat::WaylandFocus;
     let mut placements = Vec::new();
@@ -733,33 +838,38 @@ pub fn collect_popup_placements(
             });
         }
     }
+    placements
+}
 
-    if let Some(output) = layer_popup_output {
-        let layer_map = layer_map_for_output(output);
-        for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
-            for surface in layer_map.layers_on(layer).rev() {
-                let Some(geo) = layer_map.layer_geometry(surface) else {
+/// Popups of the layer-shell surfaces on `layers`, visible on an output.
+pub fn layer_popup_placements(
+    output: &Output,
+    output_rect: Rectangle<i32, smithay::utils::Logical>,
+    layers: &[Layer],
+) -> Vec<PopupPlacement> {
+    let mut placements = Vec::new();
+    let layer_map = layer_map_for_output(output);
+    for &layer in layers {
+        for surface in layer_map.layers_on(layer).rev() {
+            let Some(geo) = layer_map.layer_geometry(surface) else {
+                continue;
+            };
+
+            for (popup, popup_offset) in PopupManager::popups_for_surface(surface.wl_surface()) {
+                let popup_loc = output_rect.loc + geo.loc + popup_offset - popup.geometry().loc;
+                let popup_rect: Rectangle<i32, smithay::utils::Logical> =
+                    Rectangle::new(popup_loc, popup.geometry().size);
+                if !output_rect.overlaps(popup_rect) {
                     continue;
-                };
-
-                for (popup, popup_offset) in PopupManager::popups_for_surface(surface.wl_surface())
-                {
-                    let popup_loc = output_rect.loc + geo.loc + popup_offset - popup.geometry().loc;
-                    let popup_rect: Rectangle<i32, smithay::utils::Logical> =
-                        Rectangle::new(popup_loc, popup.geometry().size);
-                    if !output_rect.overlaps(popup_rect) {
-                        continue;
-                    }
-                    placements.push(PopupPlacement {
-                        surface: popup.wl_surface().clone(),
-                        location: popup_loc,
-                        size: popup.geometry().size,
-                    });
                 }
+                placements.push(PopupPlacement {
+                    surface: popup.wl_surface().clone(),
+                    location: popup_loc,
+                    size: popup.geometry().size,
+                });
             }
         }
     }
-
     placements
 }
 

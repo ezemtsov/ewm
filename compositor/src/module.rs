@@ -514,6 +514,15 @@ pub enum ModuleCommand {
     ConfigureAnimations {
         enabled: bool,
     },
+    /// Open, close or toggle the zoomed-out strip view.
+    Overview {
+        action: OverviewAction,
+    },
+    /// Overview zoom factor and backdrop colour.
+    ConfigureOverview {
+        zoom: f64,
+        backdrop_color: [f32; 4],
+    },
     /// Set manual idle inhibition (from Emacs)
     SetIdleInhibited {
         inhibited: bool,
@@ -521,6 +530,13 @@ pub enum ModuleCommand {
     /// Client init done; force-resend wl_keyboard.enter (PGTK drops the
     /// pre-roundtrip one).
     Initialized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverviewAction {
+    Toggle,
+    Open,
+    Close,
 }
 
 /// Command queue shared between Emacs thread and compositor
@@ -1545,6 +1561,32 @@ fn set_unfocused_alpha(alpha: f64) -> Result<()> {
 fn set_animations_enabled(enabled: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::ConfigureAnimations {
         enabled: enabled.is_not_nil(),
+    });
+    Ok(())
+}
+
+/// Drive the overview (module mode). ACTION is "toggle", "open" or "close".
+#[defun]
+fn overview_module(action: String) -> Result<()> {
+    let action = match action.as_str() {
+        "toggle" => OverviewAction::Toggle,
+        "open" => OverviewAction::Open,
+        "close" => OverviewAction::Close,
+        other => return Err(anyhow!("unknown overview action: {other}").into()),
+    };
+    push_command(ModuleCommand::Overview { action });
+    Ok(())
+}
+
+/// Configure the overview (module mode).
+/// ZOOM scales the strip when zoomed out; RED, GREEN and BLUE in 0.0..=1.0
+/// colour the backdrop behind it.
+#[defun]
+fn configure_overview_module(zoom: f64, red: f64, green: f64, blue: f64) -> Result<()> {
+    let channel = |value: f64| value.clamp(0.0, 1.0) as f32;
+    push_command(ModuleCommand::ConfigureOverview {
+        zoom,
+        backdrop_color: [channel(red), channel(green), channel(blue), 1.0],
     });
     Ok(())
 }

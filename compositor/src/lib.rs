@@ -44,6 +44,7 @@ pub mod input;
 mod module;
 mod shadow_style;
 pub mod output_mode;
+pub mod overview;
 pub mod protocols;
 pub mod render;
 mod render_helpers;
@@ -411,6 +412,12 @@ pub struct OutputState {
     pub frame_callback_sequence: u32,
     /// Black backdrop for fullscreen surfaces (covers entire output)
     pub fullscreen_backdrop: SolidColorBuffer,
+    /// Fill of the output behind its frames.
+    pub background: SolidColorBuffer,
+    /// Backdrop behind the zoomed-out output in the overview.
+    pub overview_backdrop: SolidColorBuffer,
+    /// Shadow under the zoomed-out output in the overview.
+    pub overview_shadow: floating_shadow::Shadow,
 }
 
 impl OutputState {
@@ -427,6 +434,11 @@ impl OutputState {
             lock_color_buffer: SolidColorBuffer::new(size, [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
             fullscreen_backdrop: SolidColorBuffer::new(size, [0.0, 0.0, 0.0, 1.0]),
+            background: SolidColorBuffer::new(size, overview::DEFAULT_BACKGROUND_COLOR),
+            overview_backdrop: SolidColorBuffer::new(size, overview::DEFAULT_BACKDROP_COLOR),
+            overview_shadow: floating_shadow::Shadow::new(overview::shadow_config(f64::from(
+                size.1,
+            ))),
         }
     }
 
@@ -435,9 +447,13 @@ impl OutputState {
         self.lock_color_buffer.resize(size);
     }
 
-    /// Resize the fullscreen backdrop buffer for this output
-    pub fn resize_fullscreen_backdrop(&mut self, size: (i32, i32)) {
+    /// Resize the fullscreen and overview backdrops for this output.
+    pub fn resize_backdrops(&mut self, size: (i32, i32)) {
         self.fullscreen_backdrop.resize(size);
+        self.background.resize(size);
+        self.overview_backdrop.resize(size);
+        self.overview_shadow
+            .update_config(overview::shadow_config(f64::from(size.1)));
     }
 }
 
@@ -858,6 +874,8 @@ pub struct Ewm {
     /// Shared "complete instantly" toggle threaded into every `ViewAnimation`
     /// constructed under this `Ewm`.  Flipped by `ConfigureAnimations`.
     pub animations_clock: strip::AnimationsClock,
+    /// Zoomed-out strip view shared by all outputs.
+    pub overview: overview::Overview,
     /// Reverse index: surface_id -> set of output names it appears on
     pub surface_outputs: HashMap<u64, HashSet<String>>,
     /// Per-surface open-fade, seeded on the first buffer-bearing commit.
@@ -1463,6 +1481,8 @@ impl Ewm {
             })
             .expect("failed to register worker event source");
 
+        let animations_clock = strip::AnimationsClock::default();
+
         Self {
             stop_signal: None,
             space: Space::default(),
@@ -1491,7 +1511,8 @@ impl Ewm {
             last_emacs_keyboard_activity: Instant::now(),
             frame_set: FrameSet::default(),
             floating_spaces: HashMap::new(),
-            animations_clock: strip::AnimationsClock::default(),
+            overview: overview::Overview::new(animations_clock.clone()),
+            animations_clock,
             surface_outputs: HashMap::new(),
             surface_open_anims: HashMap::new(),
             unmapped_surfaces: HashSet::new(),
@@ -2446,6 +2467,181 @@ impl Ewm {
         }
     }
 
+    /// Where `output`'s content lands on screen under the overview zoom.
+    pub fn overview_geometry(&self, output: &Output) -> overview::Geometry {
+        let Some(progress) = self.overview.progress() else {
+            return overview::Geometry::default();
+        };
+        let size = self
+            .space
+            .output_geometry(output)
+            .map(|geo| geo.size.to_f64())
+            .unwrap_or_default();
+        let scale = output.current_scale().fractional_scale();
+        let shift = self
+            .frame_set
+            .mapped_strip(&output.name())
+            .map_or(0.0, |strip| strip.overview_shift)
+            * progress;
+        overview::Geometry::new(size, scale, self.overview.zoom(), shift)
+    }
+
+    /// Strip frame under an output-local content point, with the point's
+    /// frame-relative position.
+    fn overview_frame_under(
+        &self,
+        output: &Output,
+        geometry: &overview::Geometry,
+        in_content: Point<f64, Logical>,
+    ) -> Option<(usize, Point<f64, Logical>)> {
+        let working_area = self.get_working_area(output);
+        let in_strip = in_content - working_area.loc.to_f64();
+        let strip = self.frame_set.mapped_strip(&output.name())?;
+        strip
+            .frames_with_render_geo(
+                working_area.size.to_f64(),
+                geometry.strip_viewport(working_area),
+            )
+            .find(|(_, _, rect)| rect.contains(in_strip))
+            .map(|(idx, _, rect)| (idx, in_strip - rect.loc))
+    }
+
+    /// Click in the open overview: a frame under `pos` becomes active, and a
+    /// click anywhere on the zoomed output closes the overview.
+    pub fn overview_click(&mut self, pos: Point<f64, Logical>) {
+        let Some(output) = self.output_at(pos).cloned() else {
+            return;
+        };
+        let Some(output_geo) = self.space.output_geometry(&output) else {
+            return;
+        };
+        let pos_within_output = pos - output_geo.loc.to_f64();
+        let geometry = self.overview_geometry(&output);
+        let in_content = geometry.to_content(pos_within_output);
+        let floating_frame = self
+            .floating_spaces
+            .get(&output.name())
+            .and_then(|space| space.frame_under(in_content));
+        if let Some((frame_id, rect)) = floating_frame {
+            self.set_focus_frame_from_pointer(frame_id, "overview", in_content - rect.loc);
+            self.overview_close();
+        } else if let Some((idx, pos_in_frame)) =
+            self.overview_frame_under(&output, &geometry, in_content)
+        {
+            self.overview_activate_frame(&output.name(), idx, pos_in_frame);
+        } else if Rectangle::from_size(output_geo.size.to_f64()).contains(in_content) {
+            self.overview_close();
+        }
+    }
+
+    /// Activate frame `idx` and close; the strip snaps onto it and the zoom carries the slide.
+    fn overview_activate_frame(
+        &mut self,
+        output_name: &str,
+        idx: usize,
+        pos_in_frame: Point<f64, Logical>,
+    ) {
+        self.bake_overview_shifts();
+        let Some(strip) = self.frame_set.mapped_strip(output_name) else {
+            return;
+        };
+        let Some(target) = strip.frames.get(idx).map(|frame| frame.surface_id) else {
+            return;
+        };
+        let prev_view_pos = strip.view_pos();
+        let zoom = self.overview.zoom();
+        let progress = self.overview.progress().unwrap_or(0.0);
+        self.set_focus_frame_from_pointer(target, "overview", pos_in_frame);
+        if progress > 0.01 {
+            if let Some(strip) = self.frame_set.mapped_strip_mut(output_name) {
+                strip.view_offset = strip::ViewOffset::Static(0.0);
+                strip.overview_shift = (strip.view_pos() - prev_view_pos) * zoom / progress;
+            }
+        }
+        self.overview.close();
+        self.queue_redraw_all();
+    }
+
+    /// Turn leftover overview shifts back into strip slides before the zoom changes course.
+    fn bake_overview_shifts(&mut self) {
+        let progress = self.overview.progress();
+        let zoom = self.overview.zoom();
+        for strip in self.frame_set.mapped_strips_mut() {
+            let shift = mem::take(&mut strip.overview_shift);
+            // A closed overview showed no shift, so there is nothing to carry over.
+            if let Some(progress) = progress.filter(|_| shift != 0.0) {
+                strip.view_offset.offset(-shift * progress / zoom);
+                strip.animate_view_offset(0.0, strip::DEFAULT_ANIM_DURATION);
+            }
+        }
+    }
+
+    pub fn overview_toggle(&mut self) {
+        if self.is_locked() {
+            return;
+        }
+        self.bake_overview_shifts();
+        let was_active = self.overview.is_active();
+        self.overview.toggle();
+        if !was_active {
+            self.set_inactive_frames_shown(true);
+        }
+        self.queue_redraw_all();
+    }
+
+    /// Thaw every frame while the overview shows them all, or refreeze the inactive ones.
+    fn set_inactive_frames_shown(&mut self, shown: bool) {
+        let ids: Vec<u64> = self
+            .frame_set
+            .mapped_strips()
+            .values()
+            .flat_map(|strip| {
+                let active = strip.active_frame().map(|f| f.surface_id);
+                strip
+                    .frames
+                    .iter()
+                    .map(|f| f.surface_id)
+                    .filter(move |id| Some(*id) != active)
+            })
+            .collect();
+        for id in ids {
+            self.queue_event(if shown {
+                Event::FrameShown { id }
+            } else {
+                Event::FrameHidden { id }
+            });
+        }
+    }
+
+    pub fn overview_open(&mut self) -> bool {
+        if self.overview.is_open() {
+            return false;
+        }
+        self.overview_toggle();
+        true
+    }
+
+    pub fn overview_close(&mut self) -> bool {
+        if !self.overview.is_open() {
+            return false;
+        }
+        self.overview_toggle();
+        true
+    }
+
+    pub fn overview_gesture_begin(&mut self) {
+        if self.is_locked() {
+            return;
+        }
+        self.bake_overview_shifts();
+        let was_active = self.overview.is_active();
+        self.overview.gesture_begin();
+        if !was_active {
+            self.set_inactive_frames_shown(true);
+        }
+        self.queue_redraw_all();
+    }
+
     /// End a strip swipe on `output_name`: snap to the nearest frame and focus it.
     pub fn strip_gesture_end(&mut self, output_name: &str, working_w: f64) {
         let prev_active_id = self
@@ -2462,24 +2658,28 @@ impl Ewm {
         let target = target.filter(|&id| Some(id) != prev_active_id);
         let output = self.find_mapped_output(output_name);
         if let (Some(id), Some(output)) = (target, &output) {
-            // The frame settles flush with the working area.
-            let origin = self
-                .space
-                .output_geometry(output)
-                .map_or(Point::default(), |geo| {
-                    geo.loc + self.get_working_area(output).loc
-                });
-            let (px, py) = self.pointer_location();
-            let pos_in_frame = Point::from((px, py)) - origin.to_f64();
-            self.set_focus_frame_from_pointer(id, "gesture", pos_in_frame);
+            if self.pointer_is_on_output(output) {
+                // The frame settles flush with the working area.
+                let output_loc = self
+                    .space
+                    .output_geometry(output)
+                    .map_or(Point::default(), |geo| geo.loc);
+                let (px, py) = self.pointer_location();
+                let in_content = self
+                    .overview_geometry(output)
+                    .to_content(Point::from((px, py)) - output_loc.to_f64());
+                let pos_in_frame = in_content - self.get_working_area(output).loc.to_f64();
+                self.set_focus_frame_from_pointer(id, "gesture", pos_in_frame);
+            } else {
+                self.set_focus_frame(id, "gesture", true);
+            }
         }
         if let Some(output) = output {
             self.queue_redraw(&output);
         }
     }
 
-    /// Focus a frame reached with the pointer at frame-relative `pos_in_frame`.
-    /// Pointer focus keeps Emacs from warping the pointer to the frame.
+    /// Focus a frame reached with the pointer; Emacs then anchors mouse-follows-focus.
     fn set_focus_frame_from_pointer(
         &mut self,
         frame_surface_id: u64,
@@ -2539,7 +2739,8 @@ impl Ewm {
         frame_idx: usize,
         frame: &strip::Frame,
     ) -> Rectangle<i32, Logical> {
-        let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+        // Rounded so popups and hits track a sliding frame.
+        let frame_dx = strip.screen_x_of_frame(frame_idx).round() as i32;
         Rectangle::new(
             Point::from((
                 output_geo.loc.x + working_area.loc.x + frame_dx,
@@ -2687,7 +2888,7 @@ impl Ewm {
             );
         }
 
-        let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
+        let frame_dx = strip.screen_x_of_frame(frame_idx).round() as i32;
         Rectangle::new(
             Point::from((
                 output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
@@ -2792,6 +2993,9 @@ impl Ewm {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(String, &floating::FloatingSpace, Point<f64, Logical>)> {
+        if self.overview.is_active() {
+            return None;
+        }
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let output_name = output.name();
@@ -2820,6 +3024,10 @@ impl Ewm {
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryHit<'_>> {
+        // Zoomed content only takes overview clicks.
+        if self.overview.is_active() {
+            return None;
+        }
         if let Some(hit) = self.floating_entry_under_matching(pos, &mut predicate) {
             return Some(hit);
         }
@@ -2993,6 +3201,9 @@ impl Ewm {
 
     /// Find the frame containing `pos`, returning the frame surface itself.
     fn surface_under_frame(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
+        if self.overview.is_active() {
+            return None;
+        }
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
@@ -3289,10 +3500,11 @@ impl Ewm {
 
     /// True iff the active frame has a fullscreen entry covering the Top layer.
     pub fn render_above_top_layer(&self, output: &Output) -> bool {
-        self.frame_set
-            .mapped_strip(&output.name())
-            .and_then(|s| s.active_frame())
-            .is_some_and(|frame| frame.fullscreen.is_some())
+        !self.overview.is_active()
+            && self
+                .frame_set
+                .mapped_strip(&output.name())
+                .is_some_and(strip::Strip::active_frame_is_fullscreen)
     }
 
     /// Entry id of the layout entry under a point.
@@ -4877,7 +5089,10 @@ impl Ewm {
     /// A visible fullscreen surface on any output inhibits idle.
     /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
     fn fullscreen_surface_inhibits_idle(&self) -> bool {
-        self.space.outputs().any(|o| self.render_above_top_layer(o))
+        self.frame_set
+            .mapped_strips()
+            .values()
+            .any(strip::Strip::active_frame_is_fullscreen)
     }
 
     /// Kill idle child process (e.g., on lid close).
@@ -4941,6 +5156,11 @@ impl Ewm {
     /// Called before each render so the `unfinished_animations_remain` flag
     /// reflects only live animations.
     fn advance_animations(&mut self, output: &Output) {
+        let was_active = self.overview.is_active();
+        self.overview.advance();
+        if was_active && !self.overview.is_active() {
+            self.set_inactive_frames_shown(false);
+        }
         if let Some(strip) = self.frame_set.mapped_strip_mut(&output.name()) {
             strip.advance();
         }
@@ -5014,7 +5234,7 @@ impl Ewm {
             // Compute whether animations need another frame on this output.
             // When true, VBlank handlers queue another redraw to keep animations pumping.
             // Done animations are already cleared by advance_animations() above.
-            state.unfinished_animations_remain = false;
+            state.unfinished_animations_remain = self.overview.is_animating();
         }
         if let Some(strip) = self.frame_set.mapped_strip(&output.name()) {
             let any_open_fade = strip
@@ -6084,7 +6304,8 @@ impl Ewm {
         }
         if let Some(id) = prev_active_id {
             // Skip if the frame was destroyed -- the lisp side already handled it.
-            if strip.frames.iter().any(|f| f.surface_id == id) {
+            // The overview keeps every frame visible.
+            if !self.overview.is_active() && strip.frames.iter().any(|f| f.surface_id == id) {
                 self.queue_event(Event::FrameHidden { id });
             }
         }
@@ -6247,6 +6468,9 @@ impl Ewm {
         // Top/Bottom/Background are visually behind it and must not intercept clicks.
         let layers: &[Layer] = if above_top_layer {
             &[Layer::Overlay]
+        } else if self.overview.is_active() {
+            // Bottom and background are zoomed away behind the overview backdrop.
+            &[Layer::Overlay, Layer::Top]
         } else {
             &[Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background]
         };
@@ -6314,6 +6538,11 @@ impl Ewm {
                 {
                     return Some(result);
                 }
+            }
+
+            // Bottom and background layers are zoomed away behind the overview backdrop.
+            if self.overview.is_active() {
+                return None;
             }
 
             if let Some(result) =
@@ -6669,7 +6898,7 @@ impl Ewm {
         let is_locked = self.is_locked();
         if let Some(state) = self.output_state.get_mut(output) {
             state.resize_lock_buffer((output_size.w as i32, output_size.h as i32));
-            state.resize_fullscreen_backdrop((output_size.w as i32, output_size.h as i32));
+            state.resize_backdrops((output_size.w as i32, output_size.h as i32));
             if is_locked {
                 if let Some(lock_surface) = &state.lock_surface {
                     configure_lock_surface(lock_surface, output);
@@ -6956,6 +7185,11 @@ impl Ewm {
             "surfaces": &self.surface_info,
             "emacs_surfaces": emacs_surfaces,
             "output_strips": &self.frame_set.mapped_strips(),
+            "overview": {
+                "open": self.overview.is_open(),
+                "progress": self.overview.progress(),
+                "zoom": self.overview.zoom(),
+            },
             "homeless_frames": &self.frame_set.homeless_frames(),
             "floating_spaces": &self.floating_spaces,
             "surface_outputs": &self.surface_outputs,
@@ -9709,6 +9943,26 @@ impl State {
             ModuleCommand::ConfigureAnimations { enabled } => {
                 self.ewm.animations_clock.set_complete_instantly(!enabled);
             }
+            ModuleCommand::Overview { action } => {
+                match action {
+                    module::OverviewAction::Toggle => self.ewm.overview_toggle(),
+                    module::OverviewAction::Open => {
+                        self.ewm.overview_open();
+                    }
+                    module::OverviewAction::Close => {
+                        self.ewm.overview_close();
+                    }
+                }
+                self.refresh_pointer_after_scene_change(false);
+            }
+            ModuleCommand::ConfigureOverview {
+                zoom,
+                backdrop_color,
+            } => {
+                self.ewm.overview.set_zoom(zoom);
+                self.ewm.overview.backdrop_color = backdrop_color;
+                self.ewm.queue_redraw_all();
+            }
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;
             }
@@ -10669,6 +10923,29 @@ mod tests {
             fix.ewm_ref().emacs_frame_origin(200),
             Some(Point::from((480, 210))),
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        // Mid-slide, popups and hits round the frame's position like the renderer.
+        #[test]
+        fn emacs_frame_origin_rounds_a_sliding_frame(offset in -2000f64..=2000.) {
+            let mut fix = testing::Fixture::new().unwrap();
+            fix.add_output(HEAD_A, 1600, 900);
+            fix.ewm().apply_output_layout(
+                HEAD_A,
+                vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
+            );
+            let strip = fix.ewm().frame_set.mapped_strip_mut(HEAD_A).unwrap();
+            strip.view_offset = strip::ViewOffset::Static(offset);
+            let expected = (strip.column_x(1) - strip.view_pos()).round() as i32;
+
+            prop_assert_eq!(
+                fix.ewm_ref().emacs_frame_origin(101),
+                Some(Point::from((expected, 0))),
+            );
+        }
     }
 }
 

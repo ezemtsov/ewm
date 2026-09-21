@@ -390,6 +390,51 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
 }
 
 #[test]
+fn strip_swipe_with_the_pointer_on_another_output_warps_like_a_key() {
+    let mut fixture = Fixture::new().unwrap();
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.add_output("Virtual-2", 1280, 720);
+    fixture.ewm().animations_clock.set_complete_instantly(true);
+    fixture.apply_output_layout_command(
+        "Virtual-1",
+        vec![
+            frame_with_entry(10, nz(1), 100),
+            frame_with_entry(11, nz(2), 101),
+        ],
+    );
+    fixture.dispatch_roundtrip(2);
+    let other = fixture
+        .ewm_ref()
+        .space
+        .outputs()
+        .find(|output| output.name() == "Virtual-2")
+        .cloned()
+        .unwrap();
+    let geo = fixture.ewm_ref().space.output_geometry(&other).unwrap();
+    fixture.pointer_motion_to(f64::from(geo.loc.x) + 100.0, f64::from(geo.loc.y) + 100.0);
+    fixture.enable_event_capture();
+
+    {
+        let strip = fixture
+            .ewm()
+            .frame_set
+            .mapped_strip_mut("Virtual-1")
+            .unwrap();
+        strip.gesture_begin();
+        strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
+        strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
+    }
+    fixture.ewm().strip_gesture_end("Virtual-1", 1280.0);
+    fixture.dispatch_roundtrip(2);
+
+    // Keyboard-style focus, so mouse-follows-focus brings the pointer over.
+    assert!(fixture
+        .drain_events()
+        .iter()
+        .any(|event| matches!(event, Event::Focus { pointer: false, .. })));
+}
+
+#[test]
 fn disabling_and_reenabling_headless_output_updates_protocol_state() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);

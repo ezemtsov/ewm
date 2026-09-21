@@ -404,6 +404,9 @@ pub struct Strip {
     active_idx: usize,
     #[serde(skip)]
     pub view_offset: ViewOffset,
+    /// Screen x shift per unit of overview progress after snapping onto a picked frame.
+    #[serde(skip)]
+    pub overview_shift: f64,
     #[serde(skip)]
     pub clock: AnimationsClock,
 }
@@ -415,6 +418,7 @@ impl Strip {
             gap: 0.0,
             active_idx: 0,
             view_offset: ViewOffset::default(),
+            overview_shift: 0.0,
             clock,
         }
     }
@@ -455,8 +459,17 @@ impl Strip {
     pub fn column_x(&self, idx: usize) -> f64 {
         self.frames[..idx.min(self.frames.len())]
             .iter()
-            .map(|f| f.width + self.gap)
+            .map(|f| self.stride(f))
             .sum()
+    }
+
+    /// Room a frame takes in the strip; an unsized frame takes none.
+    fn stride(&self, frame: &Frame) -> f64 {
+        if frame.width > 0.0 {
+            frame.width + self.gap
+        } else {
+            0.0
+        }
     }
 
     /// Strip-relative viewport left edge.
@@ -506,22 +519,21 @@ impl Strip {
         self.view_offset.is_animation_ongoing() || self.frames.iter().any(|f| f.move_anim.is_some())
     }
 
-    /// `(idx, &Frame, screen_rect)` for frames whose rect intersects the viewport.
-    /// Prefix-sums column offsets in a single pass (niri-style) so the cull is O(N).
+    /// `(idx, &Frame, screen_rect)` for frames whose rect intersects the screen-space
+    /// `viewport`. Prefix-sums column offsets in a single pass so the cull is O(N).
     pub fn frames_with_render_geo(
         &self,
         view_size: Size<f64, Logical>,
+        viewport: Rectangle<f64, Logical>,
     ) -> impl Iterator<Item = (usize, &Frame, Rectangle<f64, Logical>)> {
-        let viewport = Rectangle::from_size(view_size);
         let view_pos = self.view_pos();
-        let gap = self.gap;
         let mut col_x = 0.0;
         self.frames.iter().enumerate().filter_map(move |(idx, f)| {
-            let screen_x = col_x - view_pos + f.move_offset();
-            col_x += f.width + gap;
             if f.width <= 0.0 {
                 return None;
             }
+            let screen_x = col_x - view_pos + f.move_offset();
+            col_x += self.stride(f);
             let rect = Rectangle::new(
                 Point::from((screen_x, 0.0)),
                 Size::from((f.width, view_size.h)),
@@ -552,6 +564,11 @@ impl Strip {
 
     pub fn active_frame(&self) -> Option<&Frame> {
         self.frames.get(self.active_idx)
+    }
+
+    pub fn active_frame_is_fullscreen(&self) -> bool {
+        self.active_frame()
+            .is_some_and(|frame| frame.fullscreen.is_some())
     }
 
     /// Entries on the active (on-screen at rest) frame only.
@@ -671,7 +688,7 @@ impl Strip {
             return;
         }
         let clock = self.clock.clone();
-        let offset = self.frames[idx].width + self.gap;
+        let offset = self.stride(&self.frames[idx]);
         let (slide, from) = if anchor_idx <= idx {
             (&mut self.frames[idx + 1..], offset)
         } else {
@@ -807,6 +824,7 @@ mod tests {
             gap,
             active_idx,
             view_offset: ViewOffset::default(),
+            overview_shift: 0.0,
             clock: AnimationsClock::default(),
         }
     }
@@ -834,6 +852,7 @@ mod tests {
             let expected = widths
                 .iter()
                 .take(idx.min(widths.len()))
+                .filter(|w| **w > 0.0)
                 .map(|w| *w + gap)
                 .sum::<f64>();
 
@@ -881,16 +900,17 @@ mod tests {
 
             let mut column_x = 0.0;
             let expected = s.frames.iter().enumerate().filter_map(|(idx, frame)| {
+                if frame.width <= 0.0 {
+                    return None;
+                }
                 let screen_x = column_x - view_pos;
                 column_x += frame.width + s.gap;
-                (frame.width > 0.0
-                    && screen_x < view.w
-                    && screen_x + frame.width > 0.0)
+                (screen_x < view.w && screen_x + frame.width > 0.0)
                     .then_some((idx, screen_x, frame.width))
             }).collect::<Vec<_>>();
 
             let rendered = s
-                .frames_with_render_geo(view)
+                .frames_with_render_geo(view, Rectangle::from_size(view))
                 .map(|(idx, _, rect)| (idx, rect.loc.x, rect.size.w, rect.size.h))
                 .collect::<Vec<_>>();
 

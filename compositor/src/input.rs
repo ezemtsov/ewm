@@ -1335,6 +1335,14 @@ fn focus_target_at(state: &mut State, pos: Point<f64, Logical>, source: &str) {
     }
 }
 
+/// In the overview, zoomed content takes no surface input: a click or tap picks a frame.
+fn overview_click_at(state: &mut State, pos: Point<f64, Logical>) {
+    if state.ewm.overview.is_active() && state.ewm.layer_under_point(pos).is_none() {
+        state.ewm.overview_click(pos);
+        state.refresh_pointer_after_scene_change(false);
+    }
+}
+
 /// Handle pointer button press/release with click-to-focus
 pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::PointerButtonEvent) {
     tracy_span!("handle_pointer_button");
@@ -1449,6 +1457,14 @@ pub(crate) fn handle_pointer_button_state(
         return;
     }
 
+    if button_state == ButtonState::Pressed
+        && button_code == BTN_LEFT
+        && !state.ewm.is_locked()
+        && state.ewm.popup_grab.is_none()
+    {
+        overview_click_at(state, state.ewm.pointer_location().into());
+    }
+
     // A popup grab owns input routing: skip click-to-focus so an outside click
     // dismisses the menu instead of re-focusing under it.
     if state.ewm.popup_grab.is_none() {
@@ -1482,7 +1498,7 @@ pub(crate) fn handle_pointer_button_state(
     notify_pointer_activity(state);
 }
 
-/// In-flight 3-finger swipe gesture state for strip scrolling.
+/// In-flight 3-finger swipe: horizontal scrolls a strip, vertical drives the overview.
 #[derive(Default)]
 pub struct GestureState {
     pub cumulative: Option<(f64, f64)>,
@@ -1541,6 +1557,8 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
         dx = le.dx_unaccelerated();
         dy = le.dy_unaccelerated();
     }
+    // Swiping up always opens the overview, whatever the scroll direction setting.
+    let uninverted_dy = dy;
     if let Some(dev) = (&event.device() as &dyn std::any::Any).downcast_ref::<libinput::Device>() {
         if dev.config_scroll_natural_scroll_enabled() {
             dx = -dx;
@@ -1562,13 +1580,24 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
                     }
                     state.ewm.gesture.active_output = Some(out);
                 }
+            } else if !state.ewm.is_locked() {
+                state.ewm.overview_gesture_begin();
             }
+        }
+        return;
+    }
+
+    if let Some(changed) = state.ewm.overview.gesture_update(-uninverted_dy, timestamp) {
+        if changed {
+            state.ewm.queue_redraw_all();
         }
         return;
     }
 
     if let Some(out) = state.ewm.gesture.active_output.clone() {
         let w = working_area_width(state, &out);
+        // Zoomed-out content still follows the fingers on screen.
+        let dx = dx / state.ewm.overview.zoom();
         if let Some(strip) = state.ewm.frame_set.mapped_strip_mut(&out) {
             strip.gesture_update(dx, timestamp, w);
         }
@@ -1595,6 +1624,11 @@ pub fn handle_gesture_swipe_end<B: InputBackend>(
 ) {
     use smithay::backend::input::{Event, GestureEndEvent};
     state.ewm.gesture.cumulative = None;
+    if state.ewm.overview.gesture_end() {
+        state.ewm.queue_redraw_all();
+        state.refresh_pointer_after_scene_change(false);
+        return;
+    }
     if let Some(out) = state.ewm.gesture.active_output.take() {
         let w = working_area_width(state, &out);
         state.ewm.strip_gesture_end(&out, w);
@@ -1689,6 +1723,7 @@ pub fn handle_touch_down<B: InputBackend>(state: &mut State, event: B::TouchDown
             .lock_surface_focus()
             .map(|s| (s, (0.0, 0.0).into()))
     } else {
+        overview_click_at(state, pos);
         state.ewm.surface_under_point(pos)
     };
 
