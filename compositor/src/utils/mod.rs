@@ -4,11 +4,14 @@
 //! The fractional-scale protocol has N/120 precision, so coordinates must be carefully
 //! rounded to avoid subpixel drift.
 
+pub mod region;
 pub mod reply;
 
 use std::time::Duration;
 
-use smithay::backend::renderer::utils::with_renderer_surface_state;
+use smithay::backend::renderer::utils::{
+    with_renderer_surface_state, RendererSurfaceStateUserData,
+};
 use smithay::output::{self, Output};
 use smithay::reexports::rustix::time::{clock_gettime, ClockId};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -93,6 +96,18 @@ pub fn send_scale_transform(
     with_fractional_scale(data, |fractional| {
         fractional.set_preferred_scale(scale.fractional_scale());
     });
+}
+
+/// Returns the geometry of the surface.
+///
+/// Returns `None` if the surface isn't mapped.
+pub fn surface_geo(states: &SurfaceData) -> Option<Rectangle<i32, Logical>> {
+    let data = states.data_map.get::<RendererSurfaceStateUserData>();
+    data.and_then(|d| d.lock().unwrap().view())
+        .map(|view| Rectangle {
+            loc: view.offset,
+            size: view.dst,
+        })
 }
 
 #[cfg(test)]

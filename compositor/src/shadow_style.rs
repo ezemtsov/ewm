@@ -186,3 +186,39 @@ pub struct ShadowOffset {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FloatOrInt(pub f64);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blur {
+    pub off: bool,
+    pub passes: u8,
+    pub offset: f64,
+    pub noise: f64,
+    pub saturation: f64,
+}
+
+impl Default for Blur {
+    fn default() -> Self {
+        Self {
+            off: false,
+            passes: 3,
+            offset: 3.,
+            noise: 0.02,
+            saturation: 1.5,
+        }
+    }
+}
+
+/// Resolved background effect rule.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct BackgroundEffect {
+    /// Whether to blur the background.
+    ///
+    /// - `None`: blur when the window/layer requests it (e.g. through ext-background-effect
+    ///   protocol)
+    /// - `Some(false)`: never blur
+    /// - `Some(true)`: always blur
+    pub blur: Option<bool>,
+
+    pub noise: Option<f64>,
+    pub saturation: Option<f64>,
+}

@@ -1003,8 +1003,8 @@ fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
     let popup_ids = h.popup_surface_keys();
     for p in &placements {
         let centre = Point::from((
-            (p.location.x + p.size.w / 2) as f64,
-            (p.location.y + p.size.h / 2) as f64,
+            (p.location.x + p.geometry.size.w / 2) as f64,
+            (p.location.y + p.geometry.size.h / 2) as f64,
         ));
         let hit = ewm.surface_under_point(centre);
         let hit_id = server_hit_key(ewm, hit.as_ref().map(|(s, _)| s));
@@ -1327,8 +1327,8 @@ fn emacs_frame_popup_receives_hits_above_embedded_surface() {
             .find(|p| server_surface_key(ewm, &p.surface).as_ref() == Some(&popup_key))
             .expect("frame popup placement");
         let centre = Point::from((
-            (placement.location.x + placement.size.w / 2) as f64,
-            (placement.location.y + placement.size.h / 2) as f64,
+            (placement.location.x + placement.geometry.size.w / 2) as f64,
+            (placement.location.y + placement.geometry.size.h / 2) as f64,
         ));
         let hit = ewm.surface_under_point(centre);
         (centre, server_hit_key(ewm, hit.as_ref().map(|(s, _)| s)))
@@ -1373,8 +1373,8 @@ fn layer_shell_popup_receives_placement_and_hit_testing() {
             .find(|p| server_surface_key(ewm, &p.surface).as_ref() == Some(&popup_key))
             .expect("layer popup placement");
         let centre = Point::from((
-            (placement.location.x + placement.size.w / 2) as f64,
-            (placement.location.y + placement.size.h / 2) as f64,
+            (placement.location.x + placement.geometry.size.w / 2) as f64,
+            (placement.location.y + placement.geometry.size.h / 2) as f64,
         ));
         let hit = ewm.surface_under_point(centre);
         let hit_key = server_hit_key(ewm, hit.as_ref().map(|(s, _)| s));

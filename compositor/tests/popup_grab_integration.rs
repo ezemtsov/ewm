@@ -69,8 +69,8 @@ fn popup_grab_routes_input_and_dismisses_on_outside_click() {
         let placements = collect_popup_placements(fix.ewm_ref(), world_rect(), None);
         let p = placements.first().expect("the popup should be placed");
         Point::from((
-            (p.location.x + p.size.w / 2) as f64,
-            (p.location.y + p.size.h / 2) as f64,
+            (p.location.x + p.geometry.size.w / 2) as f64,
+            (p.location.y + p.geometry.size.h / 2) as f64,
         ))
     };
     // Sanity: that point really is the popup surface.

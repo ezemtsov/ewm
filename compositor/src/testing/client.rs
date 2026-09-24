@@ -11,10 +11,14 @@ use std::os::unix::net::UnixStream;
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::utils::{Logical, Rectangle, Size};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm,
-    wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region, wl_registry, wl_seat,
+    wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::{
+    self, ExtBackgroundEffectManagerV1,
+};
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1;
 use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, zwp_text_input_v3};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
@@ -87,6 +91,9 @@ pub enum ClientEvent {
     KdeDecorationMode {
         mode: WEnum<org_kde_kwin_server_decoration::Mode>,
     },
+    BackgroundEffectCapabilities {
+        flags: WEnum<ext_background_effect_manager_v1::Capability>,
+    },
 }
 
 pub struct TestClient {
@@ -108,6 +115,7 @@ pub struct ClientState {
     pub input_method_manager: Option<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>,
     pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
     pub kde_decoration_manager: Option<OrgKdeKwinServerDecorationManager>,
+    pub background_effect_manager: Option<ExtBackgroundEffectManagerV1>,
     #[cfg(feature = "testing-layer-shell")]
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
@@ -268,6 +276,21 @@ impl TestClient {
             .as_ref()
             .expect("kde decoration manager not bound; roundtrip the registry first")
             .create(surface, &self.qh(), ())
+    }
+
+    pub fn create_region(&self) -> wl_region::WlRegion {
+        self.compositor().create_region(&self.qh(), ())
+    }
+
+    pub fn create_background_effect(
+        &self,
+        surface: &wl_surface::WlSurface,
+    ) -> ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1 {
+        self.state
+            .background_effect_manager
+            .as_ref()
+            .expect("background effect manager not bound; roundtrip the registry first")
+            .get_background_effect(surface, &self.qh(), ())
     }
 
     pub fn ring_bell(&self, surface: Option<&wl_surface::WlSurface>) {
@@ -444,6 +467,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.system_bell = Some(registry.bind(name, version, qh, ()));
         } else if interface == OrgKdeKwinServerDecorationManager::interface().name {
             state.kde_decoration_manager = Some(registry.bind(name, version, qh, ()));
+        } else if interface == ExtBackgroundEffectManagerV1::interface().name {
+            state.background_effect_manager = Some(registry.bind(name, version, qh, ()));
         }
         #[cfg(feature = "testing-layer-shell")]
         if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
@@ -679,6 +704,23 @@ impl Dispatch<org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration, ()> fo
     }
 }
 
+impl Dispatch<ExtBackgroundEffectManagerV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &ExtBackgroundEffectManagerV1,
+        event: ext_background_effect_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_background_effect_manager_v1::Event::Capabilities { flags } = event {
+            state
+                .events
+                .push(ClientEvent::BackgroundEffectCapabilities { flags });
+        }
+    }
+}
+
 impl Dispatch<wl_surface::WlSurface, ()> for ClientState {
     fn event(
         state: &mut Self,
@@ -710,6 +752,8 @@ wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
 wayland_client::delegate_noop!(ClientState: ignore xdg_system_bell_v1::XdgSystemBellV1);
+wayland_client::delegate_noop!(ClientState: ignore wl_region::WlRegion);
+wayland_client::delegate_noop!(ClientState: ignore ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1);
 
 impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientState {
     fn event(

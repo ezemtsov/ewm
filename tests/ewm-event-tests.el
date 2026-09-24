@@ -38,6 +38,7 @@
 (ewm-test--stub ewm-set-unfocused-alpha (_alpha) nil)
 (ewm-test--stub ewm-set-animations-enabled (_enabled) nil)
 (ewm-test--stub ewm-configure-overview-module (_zoom _r _g _b) nil)
+(ewm-test--stub ewm-configure-blur-module (_on _passes _offset _noise _saturation) nil)
 (ewm-test--stub ewm-notify-initialized-module () nil)
 (ewm-test--stub ewm-gtk-set-style (_css) nil)
 (ewm-test--stub ewm-configure-input-module (_config) nil)

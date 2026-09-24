@@ -39,6 +39,7 @@ mod floating_shadow;
 mod frame_click_grab;
 pub mod frame_clock;
 pub mod gtk;
+pub mod handlers;
 pub mod im;
 pub mod input;
 mod module;
@@ -157,6 +158,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource, WEnum};
 use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
+use smithay::wayland::background_effect::BackgroundEffectState;
 use smithay::wayland::compositor::{
     get_parent, is_sync_subsurface, with_surface_tree_downward, CompositorClientState,
     CompositorHandler, CompositorState, SurfaceData, TraversalAction,
@@ -843,6 +845,7 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub xdg_decoration_state: XdgDecorationState,
     pub kde_decoration_state: KdeDecorationState,
+    pub background_effect_state: BackgroundEffectState,
     pub shm_state: ShmState,
     pub dmabuf_state: DmabufState,
     pub seat_state: SeatState<State>,
@@ -926,6 +929,8 @@ pub struct Ewm {
     pub emacs_drag_source: bool,
     /// Alpha multiplier for inactive layout entries; 1.0 disables.
     pub unfocused_alpha: f32,
+    /// Blur settings for surfaces that request background blur.
+    pub blur_config: shadow_style::Blur,
     /// UID of the layout entry currently under the pointer (for FFM view detection).
     pub pointer_entry_id: Option<LayoutEntryId>,
 
@@ -1364,6 +1369,7 @@ impl Ewm {
         let xdg_decoration_state = XdgDecorationState::new::<State>(&display_handle);
         let kde_decoration_state =
             KdeDecorationState::new::<State>(&display_handle, KdeDefaultMode::Server);
+        let background_effect_state = BackgroundEffectState::new::<State>(&display_handle);
         let shm_state = ShmState::new::<State>(&display_handle, vec![]);
         let dmabuf_state = DmabufState::new();
         let mut seat_state: SeatState<State> = SeatState::new();
@@ -1491,6 +1497,7 @@ impl Ewm {
             xdg_shell_state,
             xdg_decoration_state,
             kde_decoration_state,
+            background_effect_state,
             shm_state,
             dmabuf_state,
             seat_state,
@@ -1536,6 +1543,7 @@ impl Ewm {
             focus_follows_mouse_mode: false,
             emacs_drag_source: false,
             unfocused_alpha: 1.0,
+            blur_config: shadow_style::Blur::default(),
             pointer_entry_id: None,
             input_configs: Vec::new(),
             emacs_pid: None,
@@ -9939,6 +9947,12 @@ impl State {
             }
             ModuleCommand::ConfigureUnfocusedAlpha { alpha } => {
                 self.ewm.unfocused_alpha = alpha.clamp(0.0, 1.0);
+            }
+            ModuleCommand::ConfigureBlur { config } => {
+                if self.ewm.blur_config != config {
+                    self.ewm.blur_config = config;
+                    self.ewm.queue_redraw_all();
+                }
             }
             ModuleCommand::ConfigureAnimations { enabled } => {
                 self.ewm.animations_clock.set_complete_instantly(!enabled);

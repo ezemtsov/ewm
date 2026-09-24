@@ -63,6 +63,8 @@
 (declare-function ewm-set-unfocused-alpha "ewm-core")
 (declare-function ewm-set-animations-enabled "ewm-core")
 (declare-function ewm-configure-overview-module "ewm-core" (zoom red green blue))
+(declare-function ewm-configure-blur-module "ewm-core"
+                  (on passes offset noise saturation))
 (declare-function ewm-overview-module "ewm-core" (action))
 (declare-function ewm-notify-initialized-module "ewm-core")
 (declare-function ewm-focus-output-direction-module "ewm-core")
@@ -197,25 +199,58 @@ and layer surfaces (panels, lock screen) are never dimmed."
          (when (fboundp 'ewm-set-unfocused-alpha)
            (ewm-set-unfocused-alpha (float val)))))
 
-(defun ewm--set-overview-option (sym val)
-  "Set overview option SYM to VAL and push the overview config to the compositor."
-  (set-default sym val)
-  (when (fboundp 'ewm--send-overview-config)
-    (ewm--send-overview-config)))
+(defun ewm--send-on-set (send)
+  "Return a `defcustom' setter that stores the value, then calls SEND if defined."
+  (lambda (sym val)
+    (set-default sym val)
+    (when (fboundp send)
+      (funcall send))))
 
 (defcustom ewm-overview-zoom 0.5
   "Scale of each output's content in the overview.
 A float above 0.0 and at most 0.75; smaller values show more of the strip."
   :type 'float
   :group 'ewm
-  :set #'ewm--set-overview-option)
+  :set (ewm--send-on-set 'ewm--send-overview-config))
 
 (defcustom ewm-overview-backdrop-color "#262626"
   "Color behind the zoomed-out output in the overview.
 A color name or #RRGGBB spec; unknown names fall back to the default."
   :type 'color
   :group 'ewm
-  :set #'ewm--set-overview-option)
+  :set (ewm--send-on-set 'ewm--send-overview-config))
+
+(defcustom ewm-blur t
+  "Whether to blur behind surfaces that ask for it.
+Clients request blur through the ext-background-effect protocol and
+the blurred area follows the region they set."
+  :type 'boolean
+  :group 'ewm
+  :set (ewm--send-on-set 'ewm--send-blur-config))
+
+(defcustom ewm-blur-passes 3
+  "Number of blur passes, 1 to 31. More passes blur further."
+  :type 'natnum
+  :group 'ewm
+  :set (ewm--send-on-set 'ewm--send-blur-config))
+
+(defcustom ewm-blur-offset 3.0
+  "Sampling offset per blur pass, in pixels."
+  :type 'float
+  :group 'ewm
+  :set (ewm--send-on-set 'ewm--send-blur-config))
+
+(defcustom ewm-blur-noise 0.02
+  "Noise added to blurred areas; 0.0 disables it."
+  :type 'float
+  :group 'ewm
+  :set (ewm--send-on-set 'ewm--send-blur-config))
+
+(defcustom ewm-blur-saturation 1.5
+  "Saturation multiplier for blurred areas; 1.0 keeps colors as they are."
+  :type 'float
+  :group 'ewm
+  :set (ewm--send-on-set 'ewm--send-blur-config))
 
 (defvar ewm--is-ffm-focus-event nil
   "Whether the current event was triggered by focus follows mouse.
@@ -284,10 +319,7 @@ Example:
     (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0 :transform 0)
     (\"eDP-1\" :width 1024 :height 640 :refresh 60 :custom t))"
   :type '(alist :key-type string :value-type plist)
-  :set (lambda (sym val)
-         (set-default sym val)
-         (when (fboundp 'ewm--apply-output-config)
-           (ewm--apply-output-config)))
+  :set (ewm--send-on-set 'ewm--apply-output-config)
   :group 'ewm)
 
 (defcustom ewm-idle nil
@@ -305,10 +337,7 @@ Examples:
                  (cons :tag "Run command after N seconds"
                        (integer :tag "Seconds")
                        (string :tag "Shell command")))
-  :set (lambda (sym val)
-         (set-default sym val)
-         (when (fboundp 'ewm--send-idle-config)
-           (ewm--send-idle-config)))
+  :set (ewm--send-on-set 'ewm--send-idle-config)
   :group 'ewm)
 
 (defvar ewm-idle-hook nil
@@ -325,10 +354,7 @@ Examples:
   5     ; hide after 5 seconds of no pointer activity"
   :type '(choice (const :tag "Disabled" nil)
                  (integer :tag "Hide after N seconds"))
-  :set (lambda (sym val)
-         (set-default sym val)
-         (when (fboundp 'ewm--send-cursor-hide-config)
-           (ewm--send-cursor-hide-config)))
+  :set (ewm--send-on-set 'ewm--send-cursor-hide-config)
   :group 'ewm)
 
 (defcustom ewm-cursor-theme nil
@@ -336,10 +362,7 @@ Examples:
 When nil, EWM picks a loadable theme from the session environment."
   :type '(choice (const :tag "Auto" nil)
                  (string :tag "Theme"))
-  :set (lambda (sym val)
-         (set-default sym val)
-         (when (fboundp 'ewm--send-cursor-config)
-           (ewm--send-cursor-config)))
+  :set (ewm--send-on-set 'ewm--send-cursor-config)
   :group 'ewm)
 
 (defvar ewm--session-cursor-theme (getenv "XCURSOR_THEME")
@@ -352,10 +375,7 @@ When nil, EWM picks a loadable theme from the session environment."
       24)
   "Xcursor size used by EWM and clients launched from it."
   :type '(integer :tag "Pixels")
-  :set (lambda (sym val)
-         (set-default sym val)
-         (when (fboundp 'ewm--send-cursor-config)
-           (ewm--send-cursor-config)))
+  :set (ewm--send-on-set 'ewm--send-cursor-config)
   :group 'ewm)
 
 (defcustom ewm-cursor-hide-when-typing nil
@@ -363,10 +383,7 @@ When nil, EWM picks a loadable theme from the session environment."
 Pointer motion restores it.  Independent from `ewm-cursor-auto-hide';
 both can be enabled together."
   :type 'boolean
-  :set (lambda (sym val)
-         (set-default sym val)
-         (when (fboundp 'ewm--send-cursor-hide-config)
-           (ewm--send-cursor-hide-config)))
+  :set (ewm--send-on-set 'ewm--send-cursor-hide-config)
   :group 'ewm)
 
 (defvar ewm-idle-inhibited nil
@@ -830,6 +847,13 @@ Select the Nth Emacs frame on the requested output (1-based index)."
                     (eval (car (get 'ewm-overview-backdrop-color 'standard-value)) t)))))
       (apply #'ewm-configure-overview-module (float ewm-overview-zoom)
              (mapcar (lambda (c) (/ c 65535.0)) rgb)))))
+
+(defun ewm--send-blur-config ()
+  "Send blur settings to the compositor."
+  (when (ewm--compositor-active-p)
+    (ewm-configure-blur-module ewm-blur (truncate ewm-blur-passes)
+                               (float ewm-blur-offset) (float ewm-blur-noise)
+                               (float ewm-blur-saturation))))
 
 (defun ewm--cursor-theme ()
   "Return the configured EWM cursor theme, or nil for automatic selection."
@@ -1709,6 +1733,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (ewm-set-unfocused-alpha (float ewm-unfocused-alpha))
   (ewm-set-animations-enabled ewm-animations-enabled)
   (ewm--send-overview-config)
+  (ewm--send-blur-config)
   (when (and (not ewm-focus-follows-mouse) mouse-autoselect-window)
     (customize-set-variable 'ewm-focus-follows-mouse t))
   (ewm-text-input-auto-mode 1)

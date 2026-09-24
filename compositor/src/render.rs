@@ -40,7 +40,9 @@ use smithay::output::{Output, OutputModeSource};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_shm::Format;
-use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::user_data::UserDataMap;
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 use smithay::wayland::shm;
@@ -48,7 +50,10 @@ use tracing::warn;
 
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
+use crate::render_helpers::background_effect;
+use crate::render_helpers::framebuffer_effect::FramebufferEffectElement;
 use crate::render_helpers::zoom::ZoomRenderElement;
+use crate::shadow_style::{BackgroundEffect, Blur, CornerRadius};
 use crate::{tracy_span, Ewm, State};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
@@ -85,6 +90,7 @@ render_elements! {
     Constrained=ConstrainedRenderElement,
     SolidColor=SolidColorRenderElement,
     Shadow=crate::render_helpers::shadow::ShadowRenderElement,
+    BackgroundEffect=FramebufferEffectElement,
 }
 
 /// Content scaled about the output origin, then moved into place.
@@ -101,6 +107,7 @@ render_elements! {
     SolidColor=SolidColorRenderElement,
     Texture=crate::texture::TextureRenderElement<GlesTexture>,
     Zoomed=ZoomedRenderElement,
+    BackgroundEffect=FramebufferEffectElement,
 }
 
 /// An output-sized solid colour at the output origin.
@@ -110,11 +117,14 @@ fn solid(buffer: &SolidColorBuffer, scale: Scale<f64>) -> SolidColorRenderElemen
 
 /// Render layer surfaces on a specific layer to element list.
 /// LayerMap returns layers in reverse stacking order, so we reverse to get correct order.
-fn render_layer<E: From<WaylandSurfaceRenderElement<GlesRenderer>>>(
+fn render_layer<
+    E: From<WaylandSurfaceRenderElement<GlesRenderer>> + From<FramebufferEffectElement>,
+>(
     layer_map: &LayerMap,
     layer: Layer,
     renderer: &mut GlesRenderer,
     scale: Scale<f64>,
+    blur_config: Blur,
     elements: &mut Vec<E>,
 ) {
     for surface in layer_map.layers_on(layer).rev() {
@@ -129,8 +139,81 @@ fn render_layer<E: From<WaylandSurfaceRenderElement<GlesRenderer>>>(
                     Kind::Unspecified,
                 );
             elements.extend(render_elements.into_iter().map(E::from));
+
+            push_background_effect(
+                elements,
+                None,
+                surface.wl_surface(),
+                geo.to_f64(),
+                false,
+                Point::from((0., 0.)),
+                Scale::from(1.),
+                scale.x,
+                blur_config,
+            );
         }
     }
+}
+
+/// Blur behind `surface` if it asked for one, in output-local logical coordinates.
+#[allow(clippy::too_many_arguments)]
+fn push_background_effect<E: From<FramebufferEffectElement>>(
+    elements: &mut Vec<E>,
+    ns: Option<usize>,
+    surface: &WlSurface,
+    geometry: Rectangle<f64, Logical>,
+    clip_to_geometry: bool,
+    surface_off: Point<f64, Logical>,
+    surface_scale: Scale<f64>,
+    scale: f64,
+    blur_config: Blur,
+) {
+    if blur_config.off {
+        return;
+    }
+    background_effect::render_for_tile(
+        ns,
+        geometry,
+        scale,
+        clip_to_geometry,
+        surface,
+        surface_off,
+        surface_scale,
+        blur_config,
+        CornerRadius::default(),
+        BackgroundEffect::default(),
+        &mut |elem| elements.push(elem.into()),
+    );
+}
+
+/// Blur behind one view of `window`, clipped like the view itself.
+#[allow(clippy::too_many_arguments)]
+fn push_view_background_effect<E: From<FramebufferEffectElement>>(
+    elements: &mut Vec<E>,
+    ns: Option<usize>,
+    window: &smithay::desktop::Window,
+    loc: Point<i32, Physical>,
+    element_scale: Scale<f64>,
+    output_scale: Scale<f64>,
+    constrain: Rectangle<i32, Physical>,
+    blur_config: Blur,
+) {
+    let Some(surface) = window.wl_surface() else {
+        return;
+    };
+    let geometry = constrain.to_f64().to_logical(output_scale);
+    let surface_off = loc.to_f64().to_logical(output_scale) - geometry.loc;
+    push_background_effect(
+        elements,
+        ns,
+        &surface,
+        geometry,
+        true,
+        surface_off,
+        element_scale,
+        output_scale.x,
+        blur_config,
+    );
 }
 
 pub fn render_cursor_elements(
@@ -210,14 +293,21 @@ pub(crate) fn push_constrained<E: From<ConstrainedRenderElement>>(
     );
 }
 
-pub(crate) fn push_view_elements_fit<E: From<ConstrainedRenderElement>>(
+/// A view of `window` and the blur behind it, in that order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn push_view_elements_fit<
+    E: From<ConstrainedRenderElement> + From<FramebufferEffectElement>,
+>(
     elements: &mut Vec<E>,
+    window: &smithay::desktop::Window,
     view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     loc: Point<i32, Physical>,
     source_size: Size<i32, Physical>,
     output_scale: Scale<f64>,
     constrain: Rectangle<i32, Physical>,
     fill: bool,
+    ns: Option<usize>,
+    blur_config: Blur,
 ) {
     let element_scale = if fill {
         if source_size.w <= 0 || source_size.h <= 0 {
@@ -238,6 +328,17 @@ pub(crate) fn push_view_elements_fit<E: From<ConstrainedRenderElement>>(
         element_scale,
         output_scale,
         constrain,
+    );
+
+    push_view_background_effect(
+        elements,
+        ns,
+        window,
+        loc,
+        element_scale,
+        output_scale,
+        constrain,
+        blur_config,
     );
 }
 
@@ -283,8 +384,7 @@ pub fn collect_render_elements_for_output(
     tracy_span!("collect_render_elements");
     crate::render_helpers::init(renderer);
 
-    use smithay::utils::Logical;
-
+    let blur_config = ewm.blur_config;
     let mut elements: Vec<EwmRenderElement> = Vec::new();
     let mut cursor_elements: Vec<EwmRenderElement> = Vec::new();
     let output_rect: Rectangle<i32, Logical> = Rectangle::new(output_pos, output_size);
@@ -370,10 +470,38 @@ pub fn collect_render_elements_for_output(
         let mut top: Vec<EwmRenderElement> = Vec::new();
         let mut bottom: Vec<ContentRenderElement> = Vec::new();
         let mut bg: Vec<ContentRenderElement> = Vec::new();
-        render_layer(&layer_map, Layer::Overlay, renderer, scale, &mut overlay);
-        render_layer(&layer_map, Layer::Top, renderer, scale, &mut top);
-        render_layer(&layer_map, Layer::Bottom, renderer, scale, &mut bottom);
-        render_layer(&layer_map, Layer::Background, renderer, scale, &mut bg);
+        render_layer(
+            &layer_map,
+            Layer::Overlay,
+            renderer,
+            scale,
+            blur_config,
+            &mut overlay,
+        );
+        render_layer(
+            &layer_map,
+            Layer::Top,
+            renderer,
+            scale,
+            blur_config,
+            &mut top,
+        );
+        render_layer(
+            &layer_map,
+            Layer::Bottom,
+            renderer,
+            scale,
+            blur_config,
+            &mut bottom,
+        );
+        render_layer(
+            &layer_map,
+            Layer::Background,
+            renderer,
+            scale,
+            blur_config,
+            &mut bg,
+        );
         (overlay, top, bottom, bg)
         // layer_map (RefMut) dropped here
     } else {
@@ -394,7 +522,14 @@ pub fn collect_render_elements_for_output(
     if include_layers {
         for placement in layer_popup_placements(output, output_rect, &[Layer::Overlay, Layer::Top])
         {
-            push_popup(&mut elements, renderer, scale, output_pos, &placement);
+            push_popup(
+                &mut elements,
+                renderer,
+                scale,
+                output_pos,
+                &placement,
+                blur_config,
+            );
         }
     }
 
@@ -409,14 +544,28 @@ pub fn collect_render_elements_for_output(
 
     // Window popups, above their frames, culled against the content the zoom shows.
     for placement in window_popup_placements(ewm, geometry.visible_content(output_rect)) {
-        push_popup(&mut content, renderer, scale, output_pos, &placement);
+        push_popup(
+            &mut content,
+            renderer,
+            scale,
+            output_pos,
+            &placement,
+            blur_config,
+        );
     }
 
     // Popups of the zoomed layers zoom with them.
     if include_layers {
         let layers = &[Layer::Bottom, Layer::Background];
         for placement in layer_popup_placements(output, output_rect, layers) {
-            push_popup(&mut content, renderer, scale, output_pos, &placement);
+            push_popup(
+                &mut content,
+                renderer,
+                scale,
+                output_pos,
+                &placement,
+                blur_config,
+            );
         }
     }
 
@@ -467,12 +616,15 @@ pub fn collect_render_elements_for_output(
                         window.geometry().size.to_physical_precise_round(scale);
                     push_view_elements_fit(
                         &mut content,
+                        window,
                         view_elements,
                         loc_physical,
                         source_size,
                         scale,
                         constrain,
                         !entry.primary(),
+                        Some(entry.id.get() as usize),
+                        blur_config,
                     );
                 }
             }
@@ -497,6 +649,16 @@ pub fn collect_render_elements_for_output(
             let view_elements =
                 render_window_without_popups(window, renderer, frame_offset, scale, frame_alpha);
             content.extend(view_elements.into_iter().map(ContentRenderElement::Surface));
+            push_view_background_effect(
+                &mut content,
+                None,
+                window,
+                frame_offset,
+                Scale::from(1.),
+                scale,
+                frame_rect.to_physical_precise_round(scale),
+                blur_config,
+            );
 
             let shadow = data.shadow_mut();
             shadow.update_render_elements(
@@ -574,12 +736,15 @@ pub fn collect_render_elements_for_output(
                                 window.geometry().size.to_physical_precise_round(scale);
                             push_view_elements_fit(
                                 &mut content,
+                                window,
                                 view_elements,
                                 loc_physical,
                                 source_size,
                                 scale,
                                 constrain,
                                 false,
+                                Some(entry.id.get() as usize),
+                                blur_config,
                             );
                         } else {
                             // Non-primary: uniform stretch to fill output, crop overflow.
@@ -595,12 +760,15 @@ pub fn collect_render_elements_for_output(
                                 window.geometry().size.to_physical_precise_round(scale);
                             push_view_elements_fit(
                                 &mut content,
+                                window,
                                 view_elements,
                                 loc_physical,
                                 source_size,
                                 scale,
                                 constrain,
                                 true,
+                                Some(entry.id.get() as usize),
+                                blur_config,
                             );
                         }
 
@@ -646,12 +814,15 @@ pub fn collect_render_elements_for_output(
                             window.geometry().size.to_physical_precise_round(scale);
                         push_view_elements_fit(
                             &mut content,
+                            window,
                             view_elements,
                             loc_physical,
                             source_size,
                             scale,
                             constrain,
                             false,
+                            Some(entry.id.get() as usize),
+                            blur_config,
                         );
                     } else {
                         // Non-primary view: stretch buffer to fill entry bounds, then crop.
@@ -661,12 +832,15 @@ pub fn collect_render_elements_for_output(
                             window.geometry().size.to_physical_precise_round(scale);
                         push_view_elements_fit(
                             &mut content,
+                            window,
                             view_elements,
                             loc_physical,
                             source_size,
                             scale,
                             constrain,
                             true,
+                            Some(entry.id.get() as usize),
+                            blur_config,
                         );
                     }
                 }
@@ -696,14 +870,21 @@ pub fn collect_render_elements_for_output(
                 .get(&frame.surface_id)
                 .map(|a| a.value() as f32)
                 .unwrap_or(1.0);
-            let view_elements = render_window_without_popups(
-                window,
-                renderer,
-                working_area_loc_physical + frame_offset_emacs,
-                scale,
-                frame_alpha,
-            );
+            let frame_loc = working_area_loc_physical + frame_offset_emacs;
+            let view_elements =
+                render_window_without_popups(window, renderer, frame_loc, scale, frame_alpha);
             content.extend(view_elements.into_iter().map(ContentRenderElement::Surface));
+            let frame_size: Size<i32, Physical> = frame_rect.size.to_physical_precise_round(scale);
+            push_view_background_effect(
+                &mut content,
+                None,
+                window,
+                frame_loc,
+                Scale::from(1.),
+                scale,
+                Rectangle::new(frame_loc, frame_size),
+                blur_config,
+            );
         }
     }
 
@@ -750,12 +931,15 @@ pub fn collect_render_elements_for_output(
 }
 
 /// Render one popup placement into `elements`.
-fn push_popup<E: From<WaylandSurfaceRenderElement<GlesRenderer>>>(
+fn push_popup<
+    E: From<WaylandSurfaceRenderElement<GlesRenderer>> + From<FramebufferEffectElement>,
+>(
     elements: &mut Vec<E>,
     renderer: &mut GlesRenderer,
     scale: Scale<f64>,
-    output_pos: Point<i32, smithay::utils::Logical>,
+    output_pos: Point<i32, Logical>,
     placement: &PopupPlacement,
+    blur_config: Blur,
 ) {
     let render_loc = Point::from((
         placement.location.x - output_pos.x,
@@ -771,14 +955,29 @@ fn push_popup<E: From<WaylandSurfaceRenderElement<GlesRenderer>>>(
             Kind::Unspecified,
         );
     elements.extend(render_elements.into_iter().map(E::from));
+
+    let mut geometry = placement.geometry;
+    geometry.loc += render_loc;
+    push_background_effect(
+        elements,
+        None,
+        &placement.surface,
+        geometry.to_f64(),
+        false,
+        placement.geometry.loc.upscale(-1).to_f64(),
+        Scale::from(1.),
+        scale.x,
+        blur_config,
+    );
 }
 
 /// One on-screen placement of a popup.
 #[derive(Clone)]
 pub struct PopupPlacement {
-    pub surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-    pub location: Point<i32, smithay::utils::Logical>,
-    pub size: Size<i32, smithay::utils::Logical>,
+    pub surface: WlSurface,
+    pub location: Point<i32, Logical>,
+    /// Popup geometry within its surface.
+    pub geometry: Rectangle<i32, Logical>,
 }
 
 /// Popup placements on an output, front to back: layer-shell popups, then
@@ -825,16 +1024,17 @@ pub fn window_popup_placements(
         };
         let window_geo = window.geometry();
         for (popup, popup_offset) in popups {
-            let popup_loc = window_loc + window_geo.loc + popup_offset - popup.geometry().loc;
+            let popup_geo = popup.geometry();
+            let popup_loc = window_loc + window_geo.loc + popup_offset - popup_geo.loc;
             let popup_rect: Rectangle<i32, smithay::utils::Logical> =
-                Rectangle::new(popup_loc, popup.geometry().size);
+                Rectangle::new(popup_loc, popup_geo.size);
             if !output_rect.overlaps(popup_rect) {
                 continue;
             }
             placements.push(PopupPlacement {
                 surface: popup.wl_surface().clone(),
                 location: popup_loc,
-                size: popup.geometry().size,
+                geometry: popup_geo,
             });
         }
     }
@@ -856,16 +1056,17 @@ pub fn layer_popup_placements(
             };
 
             for (popup, popup_offset) in PopupManager::popups_for_surface(surface.wl_surface()) {
-                let popup_loc = output_rect.loc + geo.loc + popup_offset - popup.geometry().loc;
+                let popup_geo = popup.geometry();
+                let popup_loc = output_rect.loc + geo.loc + popup_offset - popup_geo.loc;
                 let popup_rect: Rectangle<i32, smithay::utils::Logical> =
-                    Rectangle::new(popup_loc, popup.geometry().size);
+                    Rectangle::new(popup_loc, popup_geo.size);
                 if !output_rect.overlaps(popup_rect) {
                     continue;
                 }
                 placements.push(PopupPlacement {
                     surface: popup.wl_surface().clone(),
                     location: popup_loc,
-                    size: popup.geometry().size,
+                    geometry: popup_geo,
                 });
             }
         }
@@ -986,9 +1187,19 @@ fn render_elements_impl(
         let dst = element.geometry(scale);
 
         if let Some(mut damage) = output_rect.intersection(dst) {
+            if damage.is_empty() {
+                continue;
+            }
             damage.loc -= dst.loc;
+
+            let cache = UserDataMap::new();
+            if element.is_framebuffer_effect() {
+                element
+                    .capture_framebuffer(&mut frame, src, dst, &cache)
+                    .context("error in capture_framebuffer()")?;
+            }
             element
-                .draw(&mut frame, src, dst, &[damage], &[], None)
+                .draw(&mut frame, src, dst, &[damage], &[], Some(&cache))
                 .context("error drawing element")?;
         }
     }

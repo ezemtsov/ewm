@@ -1,14 +1,17 @@
 use glam::Mat3;
 use smithay::backend::renderer::gles::{
-    GlesFrame, GlesRenderer, Uniform, UniformName, UniformType, UniformValue,
+    GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType, UniformValue,
 };
 use tracing::{error, warn};
 
 use super::renderer::NiriRenderer;
 use super::shader_element::ShaderProgram;
+use crate::render_helpers::blur::BlurProgram;
 
 pub struct Shaders {
     pub shadow: Option<ShaderProgram>,
+    pub postprocess_and_clip: Option<GlesTexProgram>,
+    pub blur: Option<BlurProgram>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +46,39 @@ impl Shaders {
         })
         .ok();
 
-        Self { shadow }
+        let postprocess_and_clip = renderer
+            .compile_custom_texture_shader(
+                concat!(
+                    include_str!("clipped_surface.frag"),
+                    include_str!("rounding_alpha.frag"),
+                    include_str!("postprocess.frag"),
+                ),
+                &[
+                    UniformName::new("ewm_scale", UniformType::_1f),
+                    UniformName::new("geo_size", UniformType::_2f),
+                    UniformName::new("corner_radius", UniformType::_4f),
+                    UniformName::new("input_to_geo", UniformType::Matrix3x3),
+                    UniformName::new("noise", UniformType::_1f),
+                    UniformName::new("saturation", UniformType::_1f),
+                    UniformName::new("bg_color", UniformType::_4f),
+                ],
+            )
+            .map_err(|err| {
+                warn!("error compiling postprocess_and_clip shader: {err:?}");
+            })
+            .ok();
+
+        let blur = BlurProgram::compile(renderer)
+            .map_err(|err| {
+                warn!("error compiling blur shaders: {err:?}");
+            })
+            .ok();
+
+        Self {
+            shadow,
+            postprocess_and_clip,
+            blur,
+        }
     }
 
     pub fn get_from_frame<'a>(frame: &'a mut GlesFrame<'_, '_>) -> &'a Self {

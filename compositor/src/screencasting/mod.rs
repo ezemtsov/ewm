@@ -466,12 +466,15 @@ impl Ewm {
                 let mut elements = Vec::new();
                 crate::render::push_view_elements_fit(
                     &mut elements,
+                    window,
                     view_elements,
                     Point::default(),
                     source_size,
                     output_scale,
                     Rectangle::from_size(entry_size),
                     !geometry.entry.primary(),
+                    None,
+                    self.blur_config,
                 );
                 return elements;
             }

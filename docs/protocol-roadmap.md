@@ -30,6 +30,7 @@ This document outlines Wayland protocols to implement for broader application co
 | `wp-viewporter` | Buffer scaling/cropping |
 | `wlr-gamma-control-unstable-v1` | Manage gamma tables of outputs |
 | `wlr-output-management-unstable-v1` | External display configuration (wlr-randr, wdisplays, DankMaterialShell) |
+| `ext-background-effect-v1` | Blur behind surfaces that request it |
 | `wl_data_device` | Drag-and-drop (icon rendering, data transfer between clients) |
 
 ## Priority 1: Application Compatibility

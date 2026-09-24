@@ -510,6 +510,10 @@ pub enum ModuleCommand {
     ConfigureUnfocusedAlpha {
         alpha: f32,
     },
+    /// Blur settings for surfaces that request background blur.
+    ConfigureBlur {
+        config: crate::shadow_style::Blur,
+    },
     /// Flip the `AnimationsClock` shared by every `ViewAnimation`.
     ConfigureAnimations {
         enabled: bool,
@@ -1551,6 +1555,29 @@ fn set_drag_source(active: Value<'_>) -> Result<()> {
 fn set_unfocused_alpha(alpha: f64) -> Result<()> {
     let alpha = alpha.clamp(0.0, 1.0) as f32;
     push_command(ModuleCommand::ConfigureUnfocusedAlpha { alpha });
+    Ok(())
+}
+
+/// Configure background blur (module mode).
+/// ON enables blur behind surfaces that request it; PASSES, OFFSET, NOISE
+/// and SATURATION tune how it looks.
+#[defun]
+fn configure_blur_module(
+    on: Value<'_>,
+    passes: i64,
+    offset: f64,
+    noise: f64,
+    saturation: f64,
+) -> Result<()> {
+    push_command(ModuleCommand::ConfigureBlur {
+        config: crate::shadow_style::Blur {
+            off: !on.is_not_nil(),
+            passes: passes.clamp(1, 31) as u8,
+            offset: offset.clamp(0., 100.),
+            noise: noise.clamp(0., 1000.),
+            saturation: saturation.clamp(0., 1000.),
+        },
+    });
     Ok(())
 }
 

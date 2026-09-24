@@ -1,5 +1,8 @@
 use smithay::backend::renderer::gles::GlesRenderer;
 
+pub mod background_effect;
+pub mod blur;
+pub mod framebuffer_effect;
 pub mod renderer;
 pub mod resources;
 pub mod shader_element;
