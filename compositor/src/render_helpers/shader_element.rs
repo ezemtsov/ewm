@@ -80,10 +80,10 @@ unsafe fn compile_program(
     let vert_position = c"vert_position";
     let matrix = c"matrix";
     let tex_matrix = c"tex_matrix";
-    let size = c"niri_size";
-    let scale = c"niri_scale";
-    let alpha = c"niri_alpha";
-    let tint = c"niri_tint";
+    let size = c"ewm_size";
+    let scale = c"ewm_scale";
+    let alpha = c"ewm_alpha";
+    let tint = c"ewm_tint";
 
     Ok(ShaderProgram(Rc::new(ShaderProgramInner {
         normal: ShaderProgramInternal {

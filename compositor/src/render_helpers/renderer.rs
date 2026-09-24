@@ -5,33 +5,33 @@ use smithay::backend::renderer::{
 };
 
 /// Trait with our main renderer requirements to save on the typing.
-pub trait NiriRenderer:
+pub trait EwmRenderer:
     ImportAll
     + ImportMem
     + ExportMem
     + Bind<Dmabuf>
     + Offscreen<GlesTexture>
-    + Renderer<TextureId = Self::NiriTextureId, Error = Self::NiriError>
+    + Renderer<TextureId = Self::EwmTextureId, Error = Self::EwmError>
     + AsGlesRenderer
 {
     // Associated types to work around the instability of associated type bounds.
-    type NiriTextureId: Texture + Clone + Send + 'static;
-    type NiriError: std::error::Error
+    type EwmTextureId: Texture + Clone + Send + 'static;
+    type EwmError: std::error::Error
         + Send
         + Sync
         + From<<GlesRenderer as RendererSuper>::Error>
         + 'static;
 }
 
-impl<R> NiriRenderer for R
+impl<R> EwmRenderer for R
 where
     R: ImportAll + ImportMem + ExportMem + Bind<Dmabuf> + Offscreen<GlesTexture> + AsGlesRenderer,
     R::TextureId: Texture + Clone + Send + 'static,
     R::Error:
         std::error::Error + Send + Sync + From<<GlesRenderer as RendererSuper>::Error> + 'static,
 {
-    type NiriTextureId = R::TextureId;
-    type NiriError = R::Error;
+    type EwmTextureId = R::TextureId;
+    type EwmError = R::Error;
 }
 
 /// Trait for getting the underlying `GlesRenderer`.

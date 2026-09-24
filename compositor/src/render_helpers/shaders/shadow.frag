@@ -1,14 +1,14 @@
 precision highp float;
 
 #if defined(DEBUG_FLAGS)
-uniform float niri_tint;
+uniform float ewm_tint;
 #endif
 
-uniform float niri_alpha;
-uniform float niri_scale;
+uniform float ewm_alpha;
+uniform float ewm_scale;
 
-uniform vec2 niri_size;
-varying vec2 niri_v_coords;
+uniform vec2 ewm_size;
+varying vec2 ewm_v_coords;
 
 uniform vec4 shadow_color;
 uniform float sigma;
@@ -72,18 +72,18 @@ float roundedBoxShadow(vec2 lower, vec2 upper, vec2 point, float sigma, float co
   return value;
 }
 
-float niri_rounding_alpha(vec2 coords, vec2 size, vec4 corner_radius);
+float ewm_rounding_alpha(vec2 coords, vec2 size, vec4 corner_radius);
 
 void main() {
-    vec3 coords_geo = input_to_geo * vec3(niri_v_coords, 1.0);
-    vec3 coords_window_geo = window_input_to_geo * vec3(niri_v_coords, 1.0);
+    vec3 coords_geo = input_to_geo * vec3(ewm_v_coords, 1.0);
+    vec3 coords_window_geo = window_input_to_geo * vec3(ewm_v_coords, 1.0);
 
     vec4 color = shadow_color;
 
     float shadow_value;
     if (sigma < 0.1) {
         // With low enough sigma just draw a rounded rectangle.
-        shadow_value = niri_rounding_alpha(coords_geo.xy, geo_size, corner_radius);
+        shadow_value = ewm_rounding_alpha(coords_geo.xy, geo_size, corner_radius);
     } else {
         shadow_value = roundedBoxShadow(
             vec2(0.0, 0.0),
@@ -103,15 +103,15 @@ void main() {
     if (window_geo_size != vec2(0.0, 0.0)) {
         if (0.0 <= coords_window_geo.x && coords_window_geo.x <= window_geo_size.x
                 && 0.0 <= coords_window_geo.y && coords_window_geo.y <= window_geo_size.y) {
-            float alpha = niri_rounding_alpha(coords_window_geo.xy, window_geo_size, window_corner_radius);
+            float alpha = ewm_rounding_alpha(coords_window_geo.xy, window_geo_size, window_corner_radius);
             color = color * (1.0 - alpha);
         }
     }
 
-    color = color * niri_alpha;
+    color = color * ewm_alpha;
 
 #if defined(DEBUG_FLAGS)
-    if (niri_tint == 1.0)
+    if (ewm_tint == 1.0)
         color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
 #endif
 

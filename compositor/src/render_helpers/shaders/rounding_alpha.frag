@@ -1,4 +1,4 @@
-float niri_rounding_alpha(vec2 coords, vec2 size, vec4 corner_radius) {
+float ewm_rounding_alpha(vec2 coords, vec2 size, vec4 corner_radius) {
     vec2 center;
     float radius;
 
@@ -22,6 +22,6 @@ float niri_rounding_alpha(vec2 coords, vec2 size, vec4 corner_radius) {
 
     // Manual smoothstep() between radius - half_px and radius + half_px
     // to avoid a division in clamp().
-    float t = clamp((dist - radius) * niri_scale + 0.5, 0.0, 1.0);
+    float t = clamp((dist - radius) * ewm_scale + 0.5, 0.0, 1.0);
     return 1.0 - t * t * (3.0 - 2.0 * t);
 }

@@ -3,7 +3,7 @@ use std::iter::zip;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::shadow_style::{CornerRadius, Shadow as ShadowConfig};
-use crate::render_helpers::renderer::NiriRenderer;
+use crate::render_helpers::renderer::EwmRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
 
 #[derive(Debug)]
@@ -164,7 +164,7 @@ impl Shadow {
 
     pub fn render(
         &self,
-        renderer: &mut impl NiriRenderer,
+        renderer: &mut impl EwmRenderer,
         location: Point<f64, Logical>,
         push: &mut dyn FnMut(ShadowRenderElement),
     ) {
