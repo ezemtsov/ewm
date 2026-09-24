@@ -39,7 +39,9 @@
     (environment (vars (WAYLAND_DISPLAY . "wayland-ewm-vt2")))
     (frame_shown (id . 1))
     (frame_hidden (id . 1))
-    (frame_moved (id . 1) (output . "DP-1") (home_output . "BOE 0x0a1b"))))
+    (frame_moved (id . 1) (output . "DP-1") (home_output . "BOE 0x0a1b"))
+    (overview (open . t))
+    (overview (open))))
 
 (provide 'every-event)
 ;;; every-event.el ends here

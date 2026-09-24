@@ -434,7 +434,8 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ('environment (ewm--handle-environment body))
       ('frame_shown (ewm--gtk-frame-updates body #'ewm-gtk-thaw-frame-updates))
       ('frame_hidden (ewm--gtk-frame-updates body #'ewm-gtk-freeze-frame-updates))
-      ('frame_moved (ewm--handle-frame-moved body)))))
+      ('frame_moved (ewm--handle-frame-moved body))
+      ('overview (ewm--handle-overview body)))))
 
 ;;; Event handlers
 
@@ -826,6 +827,13 @@ Select the Nth Emacs frame on the requested output (1-based index)."
   "Handle idle_state_changed EVENT from compositor."
   (let ((idle (alist-get 'idle event)))
     (run-hook-with-args 'ewm-idle-hook idle)))
+
+(defvar ewm-overview-hook nil
+  "Functions called with non-nil when the overview opens and nil when it closes.")
+
+(defun ewm--handle-overview (event)
+  "Handle overview EVENT from compositor."
+  (run-hook-with-args 'ewm-overview-hook (alist-get 'open event)))
 
 (defun ewm--send-idle-config ()
   "Send idle timeout configuration to compositor."

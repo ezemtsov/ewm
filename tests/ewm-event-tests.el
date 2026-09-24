@@ -105,7 +105,8 @@
                   (environment . ewm--handle-environment)
                   (frame_shown . ewm--gtk-frame-updates)
                   (frame_hidden . ewm--gtk-frame-updates)
-                  (frame_moved . ewm--handle-frame-moved)))
+                  (frame_moved . ewm--handle-frame-moved)
+                  (overview . ewm--handle-overview)))
          ;; Layout notifications have no Lisp side yet.
          (unhandled '(layouts layout-switched))
          (handlers (delete-dups (mapcar #'cdr table)))

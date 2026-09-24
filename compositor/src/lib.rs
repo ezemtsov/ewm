@@ -2566,8 +2566,23 @@ impl Ewm {
                 strip.overview_shift = (strip.view_pos() - prev_view_pos) * zoom / progress;
             }
         }
-        self.overview.close();
+        self.with_overview(|overview| overview.close());
         self.queue_redraw_all();
+    }
+
+    /// Change the overview and tell Emacs when it opens or closes.
+    fn with_overview<R>(&mut self, change: impl FnOnce(&mut overview::Overview) -> R) -> R {
+        let was_open = self.overview.is_open();
+        let result = change(&mut self.overview);
+        let open = self.overview.is_open();
+        if open != was_open {
+            self.queue_event(Event::Overview { open });
+        }
+        result
+    }
+
+    pub fn overview_gesture_end(&mut self) -> bool {
+        self.with_overview(|overview| overview.gesture_end())
     }
 
     /// Turn leftover overview shifts back into strip slides before the zoom changes course.
@@ -2590,7 +2605,7 @@ impl Ewm {
         }
         self.bake_overview_shifts();
         let was_active = self.overview.is_active();
-        self.overview.toggle();
+        self.with_overview(|overview| overview.toggle());
         if !was_active {
             self.set_inactive_frames_shown(true);
         }
@@ -2643,7 +2658,7 @@ impl Ewm {
         }
         self.bake_overview_shifts();
         let was_active = self.overview.is_active();
-        self.overview.gesture_begin();
+        self.with_overview(|overview| overview.gesture_begin());
         if !was_active {
             self.set_inactive_frames_shown(true);
         }

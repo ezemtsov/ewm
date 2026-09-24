@@ -82,6 +82,39 @@ fn open_close_toggle_track_state_and_zoom() {
 }
 
 #[test]
+fn overview_events_follow_the_open_state() {
+    let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
+    fix.enable_event_capture();
+
+    fix.ewm().overview_toggle();
+    fix.ewm().overview_open();
+    fix.ewm().overview_close();
+    fix.ewm().overview_close();
+    let opens: Vec<bool> = fix
+        .drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Overview { open } => Some(open),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opens, [true, false]);
+
+    // A gesture reports opening when it begins and closing when it snaps back.
+    fix.ewm().overview_gesture_begin();
+    fix.ewm().overview_gesture_end();
+    let opens: Vec<bool> = fix
+        .drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Overview { open } => Some(open),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opens, [true, false]);
+}
+
+#[test]
 fn zoomed_content_takes_no_pointer_hits() {
     let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
     let pos: Point<f64, Logical> = Point::from((960.0, 540.0));

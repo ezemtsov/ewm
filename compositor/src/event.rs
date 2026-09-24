@@ -177,6 +177,9 @@ pub enum Event {
     /// Environment variables for Emacs to apply
     #[serde(rename = "environment")]
     Environment { vars: HashMap<String, String> },
+    /// The overview opened or closed.
+    #[serde(rename = "overview")]
+    Overview { open: bool },
     /// Emacs frame became the active one in its strip.
     #[serde(rename = "frame_shown")]
     FrameShown { id: u64 },

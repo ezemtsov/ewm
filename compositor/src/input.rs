@@ -1624,7 +1624,7 @@ pub fn handle_gesture_swipe_end<B: InputBackend>(
 ) {
     use smithay::backend::input::{Event, GestureEndEvent};
     state.ewm.gesture.cumulative = None;
-    if state.ewm.overview.gesture_end() {
+    if state.ewm.overview_gesture_end() {
         state.ewm.queue_redraw_all();
         state.refresh_pointer_after_scene_change(false);
         return;
