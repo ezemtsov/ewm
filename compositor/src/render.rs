@@ -357,8 +357,8 @@ pub(crate) fn push_view_elements_fit<
 /// 1. Cursor (highest z-order, always visible)
 /// 2. Overlay layer
 /// 3. Top layer and layer-shell popups
-/// 4. Zoomed by the overview: window popups, floating frames, views, frames, bottom and background
-///    layers, the output fill and the overview shadow
+/// 4. Zoomed by the overview: window popups, floating frames, views, frames (these four also slide
+///    off when hidden), bottom and background layers, the output fill and the overview shadow
 /// 5. Overview backdrop (lowest z-order)
 ///
 /// Parameters:
@@ -540,6 +540,13 @@ pub fn collect_render_elements_for_output(
     let zoomed = move |elem| {
         EwmRenderElement::Zoomed(ZoomRenderElement::new(elem, geometry.zoom, zoom_offset))
     };
+    // Frames and what sits on them slide up one output height in content space when hidden.
+    let slide = ewm.hide.current() * f64::from(output_size.h) * geometry.zoom;
+    let slide_offset =
+        zoom_offset + Point::<f64, Logical>::from((0., -slide)).to_physical_precise_round(scale);
+    let slid = move |elem| {
+        EwmRenderElement::Zoomed(ZoomRenderElement::new(elem, geometry.zoom, slide_offset))
+    };
     let mut content: Vec<ContentRenderElement> = Vec::new();
 
     // Window popups, above their frames, culled against the content the zoom shows.
@@ -553,6 +560,7 @@ pub fn collect_render_elements_for_output(
             blur_config,
         );
     }
+    elements.extend(content.drain(..).map(slid));
 
     // Popups of the zoomed layers zoom with them.
     if include_layers {
@@ -567,6 +575,7 @@ pub fn collect_render_elements_for_output(
                 blur_config,
             );
         }
+        elements.extend(content.drain(..).map(zoomed));
     }
 
     // Render declared surfaces from output_strips. Frames outside the viewport are culled.
@@ -847,7 +856,7 @@ pub fn collect_render_elements_for_output(
             }
         }
     }
-    elements.extend(content.drain(..).map(zoomed));
+    elements.extend(content.drain(..).map(slid));
 
     // Deferred Top layer (behind fullscreen surface)
     if above_top_layer {
@@ -887,6 +896,8 @@ pub fn collect_render_elements_for_output(
             );
         }
     }
+
+    elements.extend(content.drain(..).map(slid));
 
     // Bottom layer
     content.append(&mut bottom_elems);
@@ -981,7 +992,7 @@ pub struct PopupPlacement {
 }
 
 /// Popup placements on an output, front to back: layer-shell popups, then
-/// window popups unless the overview has zoomed them away with their windows.
+/// window popups unless the overview or the hide has moved them away with their windows.
 pub fn collect_popup_placements(
     ewm: &Ewm,
     output_rect: Rectangle<i32, smithay::utils::Logical>,
@@ -996,7 +1007,7 @@ pub fn collect_popup_placements(
     let mut placements = layer_popup_output.map_or_else(Vec::new, |output| {
         layer_popup_placements(output, output_rect, layers)
     });
-    if !ewm.overview.is_active() {
+    if ewm.frames_in_place() {
         placements.extend(window_popup_placements(ewm, output_rect));
     }
     placements

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use ewm_core::event::{Event, OutputInfo, OutputMode};
 
-const VARIANTS: usize = 32;
+const VARIANTS: usize = 33;
 
 /// Exhaustive by construction: a new variant does not compile until it is numbered here.
 fn variant(event: &Event) -> usize {
@@ -43,6 +43,7 @@ fn variant(event: &Event) -> usize {
         Event::FrameMoved { .. } => 29,
         Event::ActivateSurface { .. } => 30,
         Event::Overview { .. } => 31,
+        Event::Hide { .. } => 32,
     }
 }
 
@@ -197,6 +198,8 @@ fn every_event() -> Vec<Event> {
         },
         Event::Overview { open: true },
         Event::Overview { open: false },
+        Event::Hide { hidden: true },
+        Event::Hide { hidden: false },
     ]
 }
 

@@ -41,7 +41,9 @@
     (frame_hidden (id . 1))
     (frame_moved (id . 1) (output . "DP-1") (home_output . "BOE 0x0a1b"))
     (overview (open . t))
-    (overview (open))))
+    (overview (open))
+    (hide (hidden . t))
+    (hide (hidden))))
 
 (provide 'every-event)
 ;;; every-event.el ends here

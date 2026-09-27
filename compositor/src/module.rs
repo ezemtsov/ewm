@@ -527,6 +527,8 @@ pub enum ModuleCommand {
         zoom: f64,
         backdrop_color: [f32; 4],
     },
+    /// Slide every frame off its output, or bring them back.
+    HideToggle,
     /// Set manual idle inhibition (from Emacs)
     SetIdleInhibited {
         inhibited: bool,
@@ -1602,6 +1604,13 @@ fn overview_module(action: String) -> Result<()> {
         other => return Err(anyhow!("unknown overview action: {other}").into()),
     };
     push_command(ModuleCommand::Overview { action });
+    Ok(())
+}
+
+/// Slide every frame off its output, or bring them back (module mode).
+#[defun]
+fn hide_toggle_module() -> Result<()> {
+    push_command(ModuleCommand::HideToggle);
     Ok(())
 }
 

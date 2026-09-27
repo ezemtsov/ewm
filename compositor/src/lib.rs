@@ -879,6 +879,8 @@ pub struct Ewm {
     pub animations_clock: strip::AnimationsClock,
     /// Zoomed-out strip view shared by all outputs.
     pub overview: overview::Overview,
+    /// Frames' slide off the top of every output: 0 in place, 1 fully off.
+    pub hide: strip::ViewOffset,
     /// Reverse index: surface_id -> set of output names it appears on
     pub surface_outputs: HashMap<u64, HashSet<String>>,
     /// Per-surface open-fade, seeded on the first buffer-bearing commit.
@@ -1519,6 +1521,7 @@ impl Ewm {
             frame_set: FrameSet::default(),
             floating_spaces: HashMap::new(),
             overview: overview::Overview::new(animations_clock.clone()),
+            hide: strip::ViewOffset::default(),
             animations_clock,
             surface_outputs: HashMap::new(),
             surface_open_anims: HashMap::new(),
@@ -2525,7 +2528,10 @@ impl Ewm {
         };
         let pos_within_output = pos - output_geo.loc.to_f64();
         let geometry = self.overview_geometry(&output);
-        let in_content = geometry.to_content(pos_within_output);
+        let in_output = geometry.to_content(pos_within_output);
+        // Hidden frames have slid up, so the click maps onto where they were.
+        let slide = self.hide.current() * f64::from(output_geo.size.h);
+        let in_content = in_output + Point::from((0., slide));
         let floating_frame = self
             .floating_spaces
             .get(&output.name())
@@ -2537,7 +2543,7 @@ impl Ewm {
             self.overview_frame_under(&output, &geometry, in_content)
         {
             self.overview_activate_frame(&output.name(), idx, pos_in_frame);
-        } else if Rectangle::from_size(output_geo.size.to_f64()).contains(in_content) {
+        } else if Rectangle::from_size(output_geo.size.to_f64()).contains(in_output) {
             self.overview_close();
         }
     }
@@ -2662,6 +2668,31 @@ impl Ewm {
         if !was_active {
             self.set_inactive_frames_shown(true);
         }
+        self.queue_redraw_all();
+    }
+
+    pub fn frames_hidden(&self) -> bool {
+        self.hide.target() == 1.
+    }
+
+    /// Neither the overview nor the hide has moved the frames.
+    pub fn frames_in_place(&self) -> bool {
+        !self.overview.is_active() && self.hide.is_static() && !self.frames_hidden()
+    }
+
+    /// Slide every frame off its output or bring them back, and tell Emacs.
+    pub fn hide_toggle(&mut self) {
+        if self.is_locked() {
+            return;
+        }
+        let hidden = !self.frames_hidden();
+        self.hide = strip::ViewOffset::Animation(strip::ViewAnimation::new(
+            self.animations_clock.clone(),
+            self.hide.current(),
+            if hidden { 1. } else { 0. },
+            strip::DEFAULT_ANIM_DURATION,
+        ));
+        self.queue_event(Event::Hide { hidden });
         self.queue_redraw_all();
     }
 
@@ -3016,7 +3047,7 @@ impl Ewm {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(String, &floating::FloatingSpace, Point<f64, Logical>)> {
-        if self.overview.is_active() {
+        if !self.frames_in_place() {
             return None;
         }
         let output = self.output_at(pos)?;
@@ -3047,8 +3078,8 @@ impl Ewm {
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryHit<'_>> {
-        // Zoomed content only takes overview clicks.
-        if self.overview.is_active() {
+        // Zoomed or hidden content takes no surface hits.
+        if !self.frames_in_place() {
             return None;
         }
         if let Some(hit) = self.floating_entry_under_matching(pos, &mut predicate) {
@@ -3224,7 +3255,7 @@ impl Ewm {
 
     /// Find the frame containing `pos`, returning the frame surface itself.
     fn surface_under_frame(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
-        if self.overview.is_active() {
+        if !self.frames_in_place() {
             return None;
         }
         let output = self.output_at(pos)?;
@@ -3523,7 +3554,7 @@ impl Ewm {
 
     /// True iff the active frame has a fullscreen entry covering the Top layer.
     pub fn render_above_top_layer(&self, output: &Output) -> bool {
-        !self.overview.is_active()
+        self.frames_in_place()
             && self
                 .frame_set
                 .mapped_strip(&output.name())
@@ -5112,10 +5143,12 @@ impl Ewm {
     /// A visible fullscreen surface on any output inhibits idle.
     /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
     fn fullscreen_surface_inhibits_idle(&self) -> bool {
-        self.frame_set
-            .mapped_strips()
-            .values()
-            .any(strip::Strip::active_frame_is_fullscreen)
+        !self.frames_hidden()
+            && self
+                .frame_set
+                .mapped_strips()
+                .values()
+                .any(strip::Strip::active_frame_is_fullscreen)
     }
 
     /// Kill idle child process (e.g., on lid close).
@@ -5184,6 +5217,7 @@ impl Ewm {
         if was_active && !self.overview.is_active() {
             self.set_inactive_frames_shown(false);
         }
+        self.hide.advance();
         if let Some(strip) = self.frame_set.mapped_strip_mut(&output.name()) {
             strip.advance();
         }
@@ -5257,7 +5291,8 @@ impl Ewm {
             // Compute whether animations need another frame on this output.
             // When true, VBlank handlers queue another redraw to keep animations pumping.
             // Done animations are already cleared by advance_animations() above.
-            state.unfinished_animations_remain = self.overview.is_animating();
+            state.unfinished_animations_remain =
+                self.overview.is_animating() || self.hide.is_animation_ongoing();
         }
         if let Some(strip) = self.frame_set.mapped_strip(&output.name()) {
             let any_open_fade = strip
@@ -5708,6 +5743,8 @@ impl Ewm {
                     .values()
                     .flat_map(|space| space.frames.iter().map(|frame| frame.surface_id)),
             )
+            // Hidden frames have slid off their outputs too.
+            .filter(|_| !self.frames_hidden())
             .collect();
         self.frame_set
             .all_frames()
@@ -9982,6 +10019,10 @@ impl State {
                         self.ewm.overview_close();
                     }
                 }
+                self.refresh_pointer_after_scene_change(false);
+            }
+            ModuleCommand::HideToggle => {
+                self.ewm.hide_toggle();
                 self.refresh_pointer_after_scene_change(false);
             }
             ModuleCommand::ConfigureOverview {

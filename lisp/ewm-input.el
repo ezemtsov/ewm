@@ -50,6 +50,8 @@
     ;; Overview: zoom the strip out and back in.
     (define-key map (kbd "s-S-<up>") #'ewm-overview-open)
     (define-key map (kbd "s-S-<down>") #'ewm-overview-close)
+    ;; Slide every frame off screen and back.
+    (define-key map (kbd "s-m") #'ewm-hide-toggle)
     ;; Clipboard
     (define-key map (kbd "s-c") #'kill-ring-save)
     (define-key map (kbd "s-v") #'yank)
@@ -111,6 +113,7 @@ Override individual bindings with `use-package':
 (declare-function ewm-frame-right "ewm")
 (declare-function ewm-overview-open "ewm")
 (declare-function ewm-overview-close "ewm")
+(declare-function ewm-hide-toggle "ewm")
 (declare-function ewm-frame-move-left "ewm")
 (declare-function ewm-frame-move-right "ewm")
 (declare-function ewm-focus-left "ewm")
@@ -212,7 +215,7 @@ Example:
 (defcustom ewm-intercept-prefixes
   '(?\C-x ?\C-u ?\C-h ?\M-x (?\s-f :fullscreen)
           ("s-S-<left>" :fullscreen) ("s-S-<right>" :fullscreen)
-          ("s-S-<up>" :fullscreen) ("s-S-<down>" :fullscreen)
+          ("s-S-<up>" :fullscreen) ("s-S-<down>" :fullscreen) ("s-m" :fullscreen)
           ("<MonBrightnessUp>" :fullscreen) ("<MonBrightnessDown>" :fullscreen)
           ("<AudioRaiseVolume>" :fullscreen) ("<AudioLowerVolume>" :fullscreen)
           ("<AudioMute>" :fullscreen) ("<AudioMicMute>" :fullscreen)

@@ -180,6 +180,9 @@ pub enum Event {
     /// The overview opened or closed.
     #[serde(rename = "overview")]
     Overview { open: bool },
+    /// Frames slid off their outputs or came back.
+    #[serde(rename = "hide")]
+    Hide { hidden: bool },
     /// Emacs frame became the active one in its strip.
     #[serde(rename = "frame_shown")]
     FrameShown { id: u64 },

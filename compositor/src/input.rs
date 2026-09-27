@@ -1335,12 +1335,18 @@ fn focus_target_at(state: &mut State, pos: Point<f64, Logical>, source: &str) {
     }
 }
 
-/// In the overview, zoomed content takes no surface input: a click or tap picks a frame.
-fn overview_click_at(state: &mut State, pos: Point<f64, Logical>) {
-    if state.ewm.overview.is_active() && state.ewm.layer_under_point(pos).is_none() {
-        state.ewm.overview_click(pos);
-        state.refresh_pointer_after_scene_change(false);
+/// A click on moved-away content picks an overview frame and brings hidden frames back.
+fn content_click_at(state: &mut State, pos: Point<f64, Logical>) {
+    if state.ewm.frames_in_place() || state.ewm.layer_under_point(pos).is_some() {
+        return;
     }
+    if state.ewm.overview.is_active() {
+        state.ewm.overview_click(pos);
+    }
+    if state.ewm.frames_hidden() {
+        state.ewm.hide_toggle();
+    }
+    state.refresh_pointer_after_scene_change(false);
 }
 
 /// Handle pointer button press/release with click-to-focus
@@ -1462,7 +1468,7 @@ pub(crate) fn handle_pointer_button_state(
         && !state.ewm.is_locked()
         && state.ewm.popup_grab.is_none()
     {
-        overview_click_at(state, state.ewm.pointer_location().into());
+        content_click_at(state, state.ewm.pointer_location().into());
     }
 
     // A popup grab owns input routing: skip click-to-focus so an outside click
@@ -1574,6 +1580,10 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
         if cx * cx + cy * cy >= GESTURE_DEADZONE_SQ {
             state.ewm.gesture.cumulative = None;
             if cx.abs() > cy.abs() {
+                // A hidden strip would scroll unseen.
+                if state.ewm.frames_hidden() {
+                    return;
+                }
                 if let Some(out) = state.ewm.active_output() {
                     if let Some(strip) = state.ewm.frame_set.mapped_strip_mut(&out) {
                         strip.gesture_begin();
@@ -1723,7 +1733,7 @@ pub fn handle_touch_down<B: InputBackend>(state: &mut State, event: B::TouchDown
             .lock_surface_focus()
             .map(|s| (s, (0.0, 0.0).into()))
     } else {
-        overview_click_at(state, pos);
+        content_click_at(state, pos);
         state.ewm.surface_under_point(pos)
     };
 

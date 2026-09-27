@@ -66,6 +66,7 @@
 (declare-function ewm-configure-blur-module "ewm-core"
                   (on passes offset noise saturation))
 (declare-function ewm-overview-module "ewm-core" (action))
+(declare-function ewm-hide-toggle-module "ewm-core")
 (declare-function ewm-notify-initialized-module "ewm-core")
 (declare-function ewm-focus-output-direction-module "ewm-core")
 (declare-function ewm-get-focused-frame-id "ewm-core")
@@ -435,7 +436,8 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ('frame_shown (ewm--gtk-frame-updates body #'ewm-gtk-thaw-frame-updates))
       ('frame_hidden (ewm--gtk-frame-updates body #'ewm-gtk-freeze-frame-updates))
       ('frame_moved (ewm--handle-frame-moved body))
-      ('overview (ewm--handle-overview body)))))
+      ('overview (ewm--handle-overview body))
+      ('hide (ewm--handle-hide body)))))
 
 ;;; Event handlers
 
@@ -834,6 +836,13 @@ Select the Nth Emacs frame on the requested output (1-based index)."
 (defun ewm--handle-overview (event)
   "Handle overview EVENT from compositor."
   (run-hook-with-args 'ewm-overview-hook (alist-get 'open event)))
+
+(defvar ewm-hide-hook nil
+  "Functions called with non-nil when frames slide away and nil when they return.")
+
+(defun ewm--handle-hide (event)
+  "Handle hide EVENT from compositor."
+  (run-hook-with-args 'ewm-hide-hook (alist-get 'hidden event)))
 
 (defun ewm--send-idle-config ()
   "Send idle timeout configuration to compositor."
@@ -1522,6 +1531,12 @@ Click a frame to select it and zoom back in."
   "Close the overview."
   (interactive)
   (ewm-overview-module "close"))
+
+(defun ewm-hide-toggle ()
+  "Slide every frame off its output to show what is behind, or bring them back.
+Clicking the emptied output also brings them back."
+  (interactive)
+  (ewm-hide-toggle-module))
 
 (defun ewm-frame-select ()
   "Select the Nth frame (1-based) on the current output.
