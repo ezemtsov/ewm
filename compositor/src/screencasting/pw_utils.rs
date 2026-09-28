@@ -15,6 +15,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use pipewire::context::ContextRc;
 use pipewire::core::{CoreRc, PW_ID_CORE};
+use pipewire::loop_::Timeout;
 use pipewire::main_loop::MainLoopRc;
 use pipewire::properties::PropertiesBox;
 use pipewire::spa::buffer::DataType;
@@ -172,7 +173,7 @@ impl PipeWire {
         let generic = Generic::new(MainLoopFd(main_loop), Interest::READ, Mode::Level);
         let token = event_loop
             .insert_source(generic, move |_, wrapper, _: &mut State| {
-                wrapper.0.loop_().iterate(Duration::ZERO);
+                wrapper.0.loop_().iterate(Timeout::None);
                 Ok(PostAction::Continue)
             })
             .map_err(|e| anyhow::anyhow!("error inserting PipeWire source: {}", e))?;

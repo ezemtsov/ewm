@@ -53,7 +53,7 @@ features = ["display-info"]
 
 # PipeWire for screen sharing (optional)
 [dependencies.pipewire]
-version = "0.9.2"
+version = "0.10"
 optional = true
 features = ["v0_3_33"]
 
