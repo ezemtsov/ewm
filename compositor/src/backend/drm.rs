@@ -35,9 +35,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 
+use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait};
 #[cfg(feature = "screencast")]
 use smithay::utils::Size;
-use smithay::wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait};
 use smithay::{
     backend::{
         allocator::{
@@ -709,13 +709,15 @@ fn build_surface_dmabuf_feedback(
         .clone()
         .add_preference_tranche(
             surface_scanout_node.dev_id(),
-            Some(TrancheFlags::Scanout),
+            TrancheFlags::Scanout,
             primary_scanout_formats,
+            4..=6,
         )
         .add_preference_tranche(
             surface_scanout_node.dev_id(),
-            Some(TrancheFlags::Scanout),
+            TrancheFlags::Scanout,
             overlay_scanout_formats,
+            4..=6,
         )
         .build()?;
 
@@ -3439,7 +3441,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
 
                     let tablet_seat = state.ewm.seat.tablet_seat();
                     let desc = TabletDescriptor::from(&*device);
-                    tablet_seat.add_tablet::<State>(&state.ewm.display_handle, &desc);
+                    tablet_seat.add_wp_tablet(&state.ewm.display_handle, &desc);
                 }
                 if device.has_capability(smithay::reexports::input::DeviceCapability::Touch)
                     && state.ewm.touch.is_none()
@@ -3455,7 +3457,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                     state,
                     kb_event.key_code().into(),
                     kb_event.state(),
-                    Event::time_msec(&kb_event),
+                    Event::time(&kb_event),
                 );
                 if let KeyboardAction::ChangeVt(vt) = action {
                     state.backend.change_vt(vt);

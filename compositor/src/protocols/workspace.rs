@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::protocols::EmptyData;
 use crate::strip::{Frame, Strip};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::ext::workspace::v1::server::{
@@ -22,6 +23,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
 
 const VERSION: u32 = 1;
 
@@ -53,6 +55,10 @@ struct GroupData {
     instances: Vec<ExtWorkspaceGroupHandleV1>,
 }
 
+/// Manager binding a handle belongs to.
+#[derive(PartialEq, Eq)]
+pub struct WrappedManager(ExtWorkspaceManagerV1);
+
 impl GroupData {
     /// Create a new group handle for a manager binding and send initial properties.
     fn add_instance<D>(
@@ -62,12 +68,12 @@ impl GroupData {
         manager: &ExtWorkspaceManagerV1,
     ) -> Option<ExtWorkspaceGroupHandleV1>
     where
-        D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
+        D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager> + 'static,
     {
         let Ok(handle) = client.create_resource::<ExtWorkspaceGroupHandleV1, _, D>(
             display,
             manager.version(),
-            manager.clone(),
+            WrappedManager(manager.clone()),
         ) else {
             return None;
         };
@@ -168,12 +174,12 @@ impl WorkspaceData {
         manager: &ExtWorkspaceManagerV1,
     ) -> Option<ExtWorkspaceHandleV1>
     where
-        D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
+        D: Dispatch<ExtWorkspaceHandleV1, WrappedManager> + 'static,
     {
         let Ok(handle) = client.create_resource::<ExtWorkspaceHandleV1, _, D>(
             display,
             manager.version(),
-            manager.clone(),
+            WrappedManager(manager.clone()),
         ) else {
             return None;
         };
@@ -244,7 +250,6 @@ impl WorkspaceManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
         D: GlobalDispatch<ExtWorkspaceManagerV1, WorkspaceGlobalData>,
-        D: Dispatch<ExtWorkspaceManagerV1, ()>,
         D: 'static,
         F: for<'c> Fn(&'c Client) -> bool + Send + Sync + 'static,
     {
@@ -286,15 +291,16 @@ impl WorkspaceManagerState {
 
     fn remove_manager(&mut self, manager: &ExtWorkspaceManagerV1) {
         self.instances.retain(|m, _| m != manager);
+        let manager = WrappedManager(manager.clone());
         for group_data in self.groups.values_mut() {
             group_data
                 .instances
-                .retain(|inst| inst.data() != Some(manager));
+                .retain(|inst| inst.data() != Some(&manager));
         }
         for ws_data in self.workspaces.values_mut() {
             ws_data
                 .instances
-                .retain(|inst| inst.data() != Some(manager));
+                .retain(|inst| inst.data() != Some(&manager));
         }
     }
 }
@@ -443,7 +449,7 @@ fn remove_stale_groups(
 
 fn group_for_output<D>(workspace_state: &WorkspaceManagerState, output: Output) -> GroupData
 where
-    D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
+    D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager> + 'static,
 {
     let mut group = GroupData {
         output,
@@ -465,7 +471,7 @@ fn sync_groups<D>(
     desired: &DesiredWorkspaceSnapshot,
 ) -> HashSet<String>
 where
-    D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
+    D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager> + 'static,
 {
     let mut new_groups = HashSet::new();
 
@@ -534,7 +540,7 @@ fn insert_workspace<D>(
     key: WorkspaceKey,
     desired: &DesiredWorkspace,
 ) where
-    D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
+    D: Dispatch<ExtWorkspaceHandleV1, WrappedManager> + 'static,
 {
     let mut workspace = WorkspaceData::from_desired(desired);
     for manager in workspace_state.instances.keys() {
@@ -569,7 +575,7 @@ fn sync_workspaces<D>(
     new_groups: &HashSet<String>,
 ) -> bool
 where
-    D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
+    D: Dispatch<ExtWorkspaceHandleV1, WrappedManager> + 'static,
 {
     let mut changed = false;
 
@@ -620,8 +626,8 @@ pub fn refresh<D>(
     urgent_workspaces: &HashSet<u64>,
     sorted_outputs: &[Output],
 ) where
-    D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1> + 'static,
-    D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1> + 'static,
+    D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager> + 'static,
+    D: Dispatch<ExtWorkspaceHandleV1, WrappedManager> + 'static,
 {
     let desired = desired_workspace_snapshot(
         output_strips,
@@ -682,7 +688,7 @@ fn send_workspace_enter(
     ws_instances: &[ExtWorkspaceHandleV1],
 ) {
     for group in group_instances {
-        let group_mgr: &ExtWorkspaceManagerV1 = group.data().unwrap();
+        let group_mgr: &WrappedManager = group.data().unwrap();
         for ws in ws_instances {
             if ws.data() == Some(group_mgr) {
                 group.workspace_enter(ws);
@@ -697,7 +703,7 @@ fn send_workspace_leave(
     ws_instances: &[ExtWorkspaceHandleV1],
 ) {
     for group in group_instances {
-        let group_mgr: &ExtWorkspaceManagerV1 = group.data().unwrap();
+        let group_mgr: &WrappedManager = group.data().unwrap();
         for ws in ws_instances {
             if ws.data() == Some(group_mgr) {
                 group.workspace_leave(ws);
@@ -706,25 +712,24 @@ fn send_workspace_leave(
     }
 }
 
-// GlobalDispatch: new client binds to the workspace manager global
+// GlobalDispatch2: new client binds to the workspace manager global
 
-impl<D> GlobalDispatch<ExtWorkspaceManagerV1, WorkspaceGlobalData, D> for WorkspaceManagerState
+impl<D> GlobalDispatch2<ExtWorkspaceManagerV1, D> for WorkspaceGlobalData
 where
-    D: GlobalDispatch<ExtWorkspaceManagerV1, WorkspaceGlobalData>,
-    D: Dispatch<ExtWorkspaceManagerV1, ()>,
-    D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1>,
-    D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1>,
+    D: Dispatch<ExtWorkspaceManagerV1, EmptyData>,
+    D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager>,
+    D: Dispatch<ExtWorkspaceHandleV1, WrappedManager>,
     D: WorkspaceHandler,
 {
     fn bind(
+        &self,
         state: &mut D,
         _handle: &DisplayHandle,
         client: &Client,
         resource: New<ExtWorkspaceManagerV1>,
-        _global_data: &WorkspaceGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
-        let manager = data_init.init(resource, ());
+        let manager = data_init.init(resource, EmptyData);
         let ps = state.workspace_manager_state();
 
         // Create workspace instances for the new client, grouped by their
@@ -759,24 +764,23 @@ where
         ps.instances.insert(manager, Vec::new());
     }
 
-    fn can_view(client: Client, global_data: &WorkspaceGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-// Dispatch for manager requests
+// Dispatch2 for manager requests
 
-impl<D> Dispatch<ExtWorkspaceManagerV1, (), D> for WorkspaceManagerState
+impl<D> Dispatch2<ExtWorkspaceManagerV1, D> for EmptyData
 where
-    D: Dispatch<ExtWorkspaceManagerV1, ()>,
     D: WorkspaceHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ExtWorkspaceManagerV1,
         request: <ExtWorkspaceManagerV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -808,25 +812,24 @@ where
         }
     }
 
-    fn destroyed(state: &mut D, _client: ClientId, resource: &ExtWorkspaceManagerV1, _data: &()) {
+    fn destroyed(&self, state: &mut D, _client: ClientId, resource: &ExtWorkspaceManagerV1) {
         let ps = state.workspace_manager_state();
         ps.remove_manager(resource);
     }
 }
 
-// Dispatch for group handle requests
+// Dispatch2 for group handle requests
 
-impl<D> Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1, D> for WorkspaceManagerState
+impl<D> Dispatch2<ExtWorkspaceGroupHandleV1, D> for WrappedManager
 where
-    D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1>,
     D: WorkspaceHandler,
 {
     fn request(
+        &self,
         _state: &mut D,
         _client: &Client,
         _resource: &ExtWorkspaceGroupHandleV1,
         request: <ExtWorkspaceGroupHandleV1 as Resource>::Request,
-        _data: &ExtWorkspaceManagerV1,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -837,12 +840,7 @@ where
         }
     }
 
-    fn destroyed(
-        state: &mut D,
-        _client: ClientId,
-        resource: &ExtWorkspaceGroupHandleV1,
-        _data: &ExtWorkspaceManagerV1,
-    ) {
+    fn destroyed(&self, state: &mut D, _client: ClientId, resource: &ExtWorkspaceGroupHandleV1) {
         let ps = state.workspace_manager_state();
         for group_data in ps.groups.values_mut() {
             group_data.instances.retain(|inst| inst != resource);
@@ -850,19 +848,18 @@ where
     }
 }
 
-// Dispatch for workspace handle requests
+// Dispatch2 for workspace handle requests
 
-impl<D> Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1, D> for WorkspaceManagerState
+impl<D> Dispatch2<ExtWorkspaceHandleV1, D> for WrappedManager
 where
-    D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1>,
     D: WorkspaceHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ExtWorkspaceHandleV1,
         request: <ExtWorkspaceHandleV1 as Resource>::Request,
-        data: &ExtWorkspaceManagerV1,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -884,7 +881,7 @@ where
                 let frame_index = ws.coordinates[1] as usize + 1;
 
                 // Queue for processing on Commit.
-                if let Some(actions) = ps.instances.get_mut(data) {
+                if let Some(actions) = ps.instances.get_mut(&self.0) {
                     actions.push(Action::Activate {
                         output_name,
                         frame_index,
@@ -899,12 +896,7 @@ where
         }
     }
 
-    fn destroyed(
-        state: &mut D,
-        _client: ClientId,
-        resource: &ExtWorkspaceHandleV1,
-        _data: &ExtWorkspaceManagerV1,
-    ) {
+    fn destroyed(&self, state: &mut D, _client: ClientId, resource: &ExtWorkspaceHandleV1) {
         let ps = state.workspace_manager_state();
         for ws_data in ps.workspaces.values_mut() {
             ws_data.instances.retain(|inst| inst != resource);
@@ -1040,22 +1032,4 @@ mod tests {
             }
         }
     }
-}
-
-#[macro_export]
-macro_rules! delegate_workspace {
-    ($ty: ty) => {
-        smithay::reexports::wayland_server::delegate_global_dispatch!($ty: [
-            smithay::reexports::wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1: $crate::protocols::workspace::WorkspaceGlobalData
-        ] => $crate::protocols::workspace::WorkspaceManagerState);
-        smithay::reexports::wayland_server::delegate_dispatch!($ty: [
-            smithay::reexports::wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1: ()
-        ] => $crate::protocols::workspace::WorkspaceManagerState);
-        smithay::reexports::wayland_server::delegate_dispatch!($ty: [
-            smithay::reexports::wayland_protocols::ext::workspace::v1::server::ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1: smithay::reexports::wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1
-        ] => $crate::protocols::workspace::WorkspaceManagerState);
-        smithay::reexports::wayland_server::delegate_dispatch!($ty: [
-            smithay::reexports::wayland_protocols::ext::workspace::v1::server::ext_workspace_handle_v1::ExtWorkspaceHandleV1: smithay::reexports::wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1
-        ] => $crate::protocols::workspace::WorkspaceManagerState);
-    };
 }

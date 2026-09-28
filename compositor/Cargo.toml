@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 anyhow = "1.0.100"
 bytemuck = "1.25"
 drm-ffi = "0.9"
-glam = "0.32.1"
+glam = "0.33"
 libc = "0.2.180"
 libdisplay-info = "0.3.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -29,7 +29,7 @@ xcursor = "0.3.10"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"
-rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+rev = "79bbed5e1199090d787115614847a79c76607181"
 default-features = false
 features = [
     "backend_drm",
@@ -47,7 +47,7 @@ features = [
 
 [dependencies.smithay-drm-extras]
 git = "https://github.com/Smithay/smithay.git"
-rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+rev = "79bbed5e1199090d787115614847a79c76607181"
 default-features = false
 features = ["display-info"]
 

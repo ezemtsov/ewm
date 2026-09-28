@@ -112,7 +112,7 @@ pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
 use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
 use serde::{Deserialize, Serialize};
-use smithay::backend::input::{KeyState, TabletToolDescriptor};
+use smithay::backend::input::{InputTime, KeyState, TabletToolDescriptor};
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
 use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
 use smithay::backend::renderer::element::{
@@ -135,6 +135,7 @@ use smithay::input::keyboard::{KeyboardHandle, ModifiersState};
 use smithay::input::pointer::{
     ClickGrab, CursorImageStatus, CursorImageSurfaceData, PointerHandle,
 };
+use smithay::input::tablet::TabletSeatHandler;
 use smithay::input::touch::TouchHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{self, Output, PhysicalProperties, Subpixel};
@@ -198,7 +199,7 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
-use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatHandler};
+use smithay::wayland::tablet_manager::TabletManagerState;
 use smithay::wayland::text_input::TextInputManagerState;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
@@ -207,15 +208,6 @@ use smithay::wayland::xdg_activation::{
 };
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use smithay::wayland::xdg_system_bell::{XdgSystemBellHandler, XdgSystemBellState};
-use smithay::{
-    delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
-    delegate_dmabuf, delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
-    delegate_input_method_manager, delegate_layer_shell, delegate_output,
-    delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_session_lock, delegate_shm, delegate_tablet_manager,
-    delegate_text_input_manager, delegate_viewporter, delegate_virtual_keyboard_manager,
-    delegate_xdg_activation, delegate_xdg_foreign, delegate_xdg_shell, delegate_xdg_system_bell,
-};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::protocols::foreign_toplevel::{
@@ -8145,7 +8137,6 @@ impl CompositorHandler for State {
         }
     }
 }
-delegate_compositor!(State);
 
 // Shared memory
 impl ShmHandler for State {
@@ -8153,7 +8144,6 @@ impl ShmHandler for State {
         &self.ewm.shm_state
     }
 }
-delegate_shm!(State);
 
 // DMA-BUF
 impl DmabufHandler for State {
@@ -8170,7 +8160,6 @@ impl DmabufHandler for State {
         let _ = notifier.successful::<State>();
     }
 }
-delegate_dmabuf!(State);
 
 // Seat / input
 impl SeatHandler for State {
@@ -8197,16 +8186,17 @@ impl SeatHandler for State {
         self.ewm.queue_redraw_all();
     }
 }
-delegate_seat!(State);
-delegate_cursor_shape!(State);
 
 impl TabletSeatHandler for State {
+    type ToolFocus = WlSurface;
+
     fn tablet_tool_image(&mut self, _tool: &TabletToolDescriptor, image: CursorImageStatus) {
         self.ewm.cursor_manager.set_cursor_image(image);
         self.ewm.queue_redraw_all();
     }
 }
-delegate_tablet_manager!(State);
+
+smithay::delegate_dispatch2!(State);
 
 // Data device / selection
 impl SelectionHandler for State {
@@ -8310,21 +8300,18 @@ impl DataDeviceHandler for State {
         &mut self.ewm.data_device_state
     }
 }
-delegate_data_device!(State);
 
 impl PrimarySelectionHandler for State {
     fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
         &mut self.ewm.primary_selection_state
     }
 }
-delegate_primary_selection!(State);
 
 impl DataControlHandler for State {
     fn data_control_state(&mut self) -> &mut DataControlState {
         &mut self.ewm.data_control_state
     }
 }
-delegate_data_control!(State);
 
 // Output
 impl smithay::wayland::output::OutputHandler for State {
@@ -8343,10 +8330,6 @@ impl smithay::wayland::output::OutputHandler for State {
             .output_bound(&output, &wl_output);
     }
 }
-delegate_output!(State);
-
-// Text Input (for input method support)
-delegate_text_input_manager!(State);
 
 // Input Method (allows Emacs to act as input method)
 impl InputMethodHandler for State {
@@ -8366,12 +8349,6 @@ impl InputMethodHandler for State {
         Rectangle::default()
     }
 }
-delegate_input_method_manager!(State);
-
-// Virtual Keyboard (zwp-virtual-keyboard-v1: allows clients like wtype to inject key events)
-// Smithay handles key forwarding directly to the focused surface, bypassing the
-// compositor's keyboard input pipeline. No VirtualKeyboardHandler impl needed.
-delegate_virtual_keyboard_manager!(State);
 
 // Virtual Pointer (zwlr-virtual-pointer-v1: lets clients inject pointer motion,
 // buttons and axis, routed through the normal input handlers).
@@ -8398,7 +8375,6 @@ impl VirtualPointerHandler for State {
         crate::input::handle_pointer_axis::<VirtualPointerInputBackend>(self, event);
     }
 }
-delegate_virtual_pointer!(State);
 
 // XDG Shell
 impl XdgShellHandler for State {
@@ -8524,7 +8500,6 @@ impl XdgShellHandler for State {
         }
     }
 }
-delegate_xdg_shell!(State);
 
 // XDG Decoration
 /// Emacs draws the frames, so a client that asks is told not to decorate.
@@ -8554,7 +8529,6 @@ impl XdgDecorationHandler for State {
         set_server_side_decoration(&toplevel);
     }
 }
-smithay::delegate_xdg_decoration!(State);
 
 // KDE Decoration, the only kind GTK understands
 impl KdeDecorationHandler for State {
@@ -8575,7 +8549,6 @@ impl KdeDecorationHandler for State {
         decoration.mode(KdeDecorationMode::Server);
     }
 }
-smithay::delegate_kde_decoration!(State);
 
 // Layer Shell
 impl WlrLayerShellHandler for State {
@@ -8659,7 +8632,6 @@ impl WlrLayerShellHandler for State {
         }
     }
 }
-delegate_layer_shell!(State);
 
 struct UrgentOnlyMarker;
 
@@ -8753,14 +8725,12 @@ impl XdgActivationHandler for State {
         self.ewm.activation_state.remove_token(&token);
     }
 }
-delegate_xdg_activation!(State);
 
 impl XdgForeignHandler for State {
     fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
         &mut self.ewm.xdg_foreign_state
     }
 }
-delegate_xdg_foreign!(State);
 
 impl XdgSystemBellHandler for State {
     fn ring(&mut self, surface: Option<WlSurface>) {
@@ -8772,7 +8742,6 @@ impl XdgSystemBellHandler for State {
         self.ewm.queue_event(Event::Bell { id });
     }
 }
-delegate_xdg_system_bell!(State);
 
 // Foreign toplevel management protocol (exposes windows to external tools)
 impl ForeignToplevelHandler for State {
@@ -8830,7 +8799,6 @@ impl ForeignToplevelHandler for State {
         self.ewm.queue_minimize_request_for_surface(&wl_surface);
     }
 }
-delegate_foreign_toplevel!(State);
 
 // Workspace protocol (ext-workspace-v1: Emacs frames as workspaces)
 impl WorkspaceHandler for State {
@@ -8845,7 +8813,6 @@ impl WorkspaceHandler for State {
         });
     }
 }
-delegate_workspace!(State);
 
 // Output management protocol (wlr-output-management-unstable-v1)
 impl OutputManagementHandler for State {
@@ -8865,7 +8832,6 @@ impl OutputManagementHandler for State {
         }
     }
 }
-delegate_output_management!(State);
 
 // Screencopy protocol
 impl ScreencopyHandler for State {
@@ -8902,7 +8868,6 @@ impl ScreencopyHandler for State {
         &mut self.ewm.screencopy_state
     }
 }
-delegate_screencopy!(State);
 
 // Session Lock protocol (ext-session-lock-v1) for screen locking
 impl SessionLockHandler for State {
@@ -8995,7 +8960,6 @@ impl SessionLockHandler for State {
         self.ewm.queue_redraw(&output);
     }
 }
-delegate_session_lock!(State);
 
 // Idle notify protocol (ext-idle-notify-v1)
 impl IdleNotifierHandler for State {
@@ -9003,7 +8967,6 @@ impl IdleNotifierHandler for State {
         &mut self.ewm.idle_notifier_state
     }
 }
-delegate_idle_notify!(State);
 
 // Idle inhibit protocol (zwp-idle-inhibit-v1)
 impl IdleInhibitHandler for State {
@@ -9015,7 +8978,6 @@ impl IdleInhibitHandler for State {
         self.ewm.idle_inhibiting_surfaces.remove(&surface);
     }
 }
-delegate_idle_inhibit!(State);
 
 // Gamma control protocol (wlr-gamma-control-unstable-v1)
 impl crate::protocols::gamma_control::GammaControlHandler for State {
@@ -9048,22 +9010,11 @@ impl crate::protocols::gamma_control::GammaControlHandler for State {
         }
     }
 }
-delegate_gamma_control!(State);
 
 // Fractional scale protocol (wp-fractional-scale-v1)
 // Scale is sent from lifecycle-specific handlers (handle_new_toplevel, handle_layer_surface_commit,
 // configure_lock_surface, apply_output_config) that know the correct output.
 impl FractionalScaleHandler for State {}
-delegate_fractional_scale!(State);
-
-// Presentation time protocol (wp-presentation-time)
-smithay::delegate_presentation!(State);
-
-// Viewporter protocol (wp-viewporter, required by fractional scale clients)
-delegate_viewporter!(State);
-
-// Relative pointer protocol (zwp-relative-pointer-v1)
-delegate_relative_pointer!(State);
 
 // Pointer constraints protocol (zwp-pointer-constraints-v1)
 impl PointerConstraintsHandler for State {
@@ -9106,7 +9057,6 @@ impl PointerConstraintsHandler for State {
         self.ewm.queue_redraw_for_pointer();
     }
 }
-delegate_pointer_constraints!(State);
 
 /// Configure a lock surface to cover the full output
 fn configure_lock_surface(surface: &LockSurface, output: &Output) {
@@ -9290,7 +9240,7 @@ impl State {
             &smithay::input::pointer::MotionEvent {
                 location: pos,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: 0,
+                time: InputTime::now(),
             },
         );
         pointer.frame(self);
@@ -9439,7 +9389,7 @@ impl State {
         &mut self,
         keycode: u32,
         key_state: KeyState,
-        time: u32,
+        time: InputTime,
         mods_changed: bool,
     ) {
         let keyboard = self.ewm.keyboard.clone();
@@ -9494,7 +9444,7 @@ impl State {
                     keycode.into(),
                     key_state,
                     SERIAL_COUNTER.next_serial(),
-                    0,
+                    InputTime::now(),
                     false,
                 );
             }

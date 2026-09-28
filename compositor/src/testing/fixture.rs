@@ -6,7 +6,7 @@
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use smithay::backend::input::ButtonState;
+use smithay::backend::input::{ButtonState, InputTime};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Display;
@@ -510,7 +510,7 @@ impl Fixture {
             &MotionEvent {
                 location: pos,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: 0,
+                time: InputTime::from_millis(0),
             },
         );
         pointer.frame(&mut self.state);
@@ -556,7 +556,12 @@ impl Fixture {
         } else {
             KeyState::Released
         };
-        crate::input::handle_keyboard_event(&mut self.state, keycode, state, 0)
+        crate::input::handle_keyboard_event(
+            &mut self.state,
+            keycode,
+            state,
+            InputTime::from_millis(0),
+        )
     }
 
     /// Send a pointer button event at the seat's current pointer focus.
@@ -567,7 +572,12 @@ impl Fixture {
         } else {
             ButtonState::Released
         };
-        crate::input::handle_pointer_button_state(&mut self.state, state, button, 0);
+        crate::input::handle_pointer_button_state(
+            &mut self.state,
+            state,
+            button,
+            InputTime::from_millis(0),
+        );
     }
 
     /// Start mirroring `queue_event` into a per-Ewm buffer.

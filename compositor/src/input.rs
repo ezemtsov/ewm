@@ -180,7 +180,7 @@ fn handle_held_intercept(
     keycode: u32,
     key_state: KeyState,
     serial: smithay::utils::Serial,
-    time: u32,
+    time: InputTime,
 ) -> Option<KeyboardAction> {
     let owner = state.ewm.held_key_owner(keycode)?;
     let release = key_state == KeyState::Released;
@@ -276,7 +276,7 @@ fn forward_translate(
     keycode: Keycode,
     key_state: KeyState,
     serial: smithay::utils::Serial,
-    time: u32,
+    time: InputTime,
     target: &TranslateTarget,
 ) {
     forward_with_modifiers(
@@ -292,7 +292,7 @@ pub fn handle_keyboard_event(
     state: &mut State,
     keycode: u32,
     key_state: KeyState,
-    time: u32,
+    time: InputTime,
 ) -> KeyboardAction {
     let keyboard = state.ewm.keyboard.clone();
     tracy_span!("handle_keyboard_event");
@@ -596,7 +596,7 @@ pub fn release_all_keys(state: &mut State) {
     }
 
     let serial = SERIAL_COUNTER.next_serial();
-    let time = 0u32;
+    let time = InputTime::now();
 
     for keycode in pressed {
         keyboard.input::<(), _>(
@@ -617,14 +617,16 @@ pub fn release_all_keys(state: &mut State) {
 // Pointer event handling
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, PointerAxisEvent,
-    PointerButtonEvent, PointerMotionEvent, ProximityState, TabletToolButtonEvent, TabletToolEvent,
-    TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputTime,
+    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, ProximityState,
+    TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent, TabletToolTipEvent,
+    TabletToolTipState,
 };
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, ClickGrab, CursorIcon, CursorImageStatus, Focus as PointerFocus,
     GrabStartData as PointerGrabStartData, MotionEvent, RelativeMotionEvent,
 };
+use smithay::input::tablet::{self, TabletDescriptor, TabletSeatTrait};
 use smithay::input::touch::{
     DownEvent as TouchDown, MotionEvent as TouchMotion, UpEvent as TouchUp,
 };
@@ -634,7 +636,6 @@ use smithay::reexports::input as libinput;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
-use smithay::wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait};
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -1160,7 +1161,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
                     &RelativeMotionEvent {
                         delta: event.delta(),
                         delta_unaccel: event.delta_unaccel(),
-                        utime: event.time(),
+                        time: event.time(),
                     },
                 );
                 pointer.frame(state);
@@ -1182,7 +1183,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
                 &RelativeMotionEvent {
                     delta: event.delta(),
                     delta_unaccel: event.delta_unaccel(),
-                    utime: event.time(),
+                    time: event.time(),
                 },
             );
             pointer.frame(state);
@@ -1201,7 +1202,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
         &MotionEvent {
             location: (new_x, new_y).into(),
             serial,
-            time: event.time_msec(),
+            time: event.time(),
         },
     );
 
@@ -1212,7 +1213,7 @@ pub fn handle_pointer_motion<B: InputBackend>(
         &RelativeMotionEvent {
             delta: event.delta(),
             delta_unaccel: event.delta_unaccel(),
-            utime: event.time(),
+            time: event.time(),
         },
     );
 
@@ -1272,7 +1273,7 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
         &MotionEvent {
             location: pos,
             serial,
-            time: event.time_msec(),
+            time: event.time(),
         },
     );
     pointer.frame(state);
@@ -1352,7 +1353,7 @@ fn content_click_at(state: &mut State, pos: Point<f64, Logical>) {
 /// Handle pointer button press/release with click-to-focus
 pub fn handle_pointer_button<B: InputBackend>(state: &mut State, event: B::PointerButtonEvent) {
     tracy_span!("handle_pointer_button");
-    handle_pointer_button_state(state, event.state(), event.button_code(), event.time_msec());
+    handle_pointer_button_state(state, event.state(), event.button_code(), event.time());
 }
 
 fn try_start_floating_mod_mouse_grab(
@@ -1449,7 +1450,7 @@ pub(crate) fn handle_pointer_button_state(
     state: &mut State,
     button_state: ButtonState,
     button_code: u32,
-    time_msec: u32,
+    time: InputTime,
 ) {
     state.ewm.clear_tablet_cursor();
     let pointer = state.ewm.pointer.clone();
@@ -1487,7 +1488,7 @@ pub(crate) fn handle_pointer_button_state(
             button: button_code,
             state: button_state,
             serial,
-            time: time_msec,
+            time,
         },
     );
     if button_state == ButtonState::Pressed {
@@ -1537,7 +1538,7 @@ pub fn handle_gesture_swipe_begin<B: InputBackend>(
         state,
         &smithay::input::pointer::GestureSwipeBeginEvent {
             serial,
-            time: event.time_msec(),
+            time: event.time(),
             fingers: event.fingers(),
         },
     );
@@ -1571,7 +1572,7 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
             dy = -dy;
         }
     }
-    let timestamp = std::time::Duration::from_micros(event.time());
+    let timestamp = std::time::Duration::from_micros(event.time().micros());
 
     if let Some((cx, cy)) = state.ewm.gesture.cumulative.as_mut() {
         *cx += dx;
@@ -1621,7 +1622,7 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
     pointer.gesture_swipe_update(
         state,
         &smithay::input::pointer::GestureSwipeUpdateEvent {
-            time: event.time_msec(),
+            time: event.time(),
             delta: (dx, dy).into(),
         },
     );
@@ -1650,7 +1651,7 @@ pub fn handle_gesture_swipe_end<B: InputBackend>(
         state,
         &smithay::input::pointer::GestureSwipeEndEvent {
             serial,
-            time: event.time_msec(),
+            time: event.time(),
             cancelled: event.cancelled(),
         },
     );
@@ -1684,7 +1685,7 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
         .or_else(|| vertical_v120.map(|v| v / 120.0 * 15.0))
         .unwrap_or(0.0);
 
-    let mut frame = AxisFrame::new(event.time_msec()).source(source);
+    let mut frame = AxisFrame::new(event.time()).source(source);
     if horizontal != 0.0 {
         frame = frame.value(Axis::Horizontal, horizontal);
         // Send discrete v120 value for wheel scrolling (required by Firefox et al.)
@@ -1744,7 +1745,7 @@ pub fn handle_touch_down<B: InputBackend>(state: &mut State, event: B::TouchDown
             slot: event.slot(),
             location: pos,
             serial,
-            time: event.time_msec(),
+            time: event.time(),
         },
     );
     notify_activity(state);
@@ -1774,7 +1775,7 @@ pub fn handle_touch_motion<B: InputBackend>(state: &mut State, event: B::TouchMo
         &TouchMotion {
             slot: event.slot(),
             location: pos,
-            time: event.time_msec(),
+            time: event.time(),
         },
     );
     notify_activity(state);
@@ -1793,7 +1794,7 @@ pub fn handle_touch_up<B: InputBackend>(state: &mut State, event: B::TouchUpEven
         &TouchUp {
             slot: event.slot(),
             serial,
-            time: event.time_msec(),
+            time: event.time(),
         },
     );
     focus_pending_drop(state);
@@ -1877,90 +1878,91 @@ fn compute_tablet_position<B: InputBackend<Device = libinput::Device>>(
     Some(pos + target_geo.loc.to_f64())
 }
 
+fn tablet_axis_frame<B: InputBackend>(event: &impl TabletToolEvent<B>) -> tablet::tool::AxisFrame {
+    tablet::tool::AxisFrame {
+        pressure: event.pressure_has_changed().then(|| event.pressure()),
+        distance: event.distance_has_changed().then(|| event.distance()),
+        tilt: event.tilt_has_changed().then(|| event.tilt()),
+        rotation: event.rotation_has_changed().then(|| event.rotation()),
+        slider: event.slider_has_changed().then(|| event.slider_position()),
+        wheel: event
+            .wheel_has_changed()
+            .then(|| (event.wheel_delta(), event.wheel_delta_discrete())),
+    }
+}
+
 pub fn handle_tablet_tool_axis<B: InputBackend<Device = libinput::Device>>(
     state: &mut State,
     event: B::TabletToolAxisEvent,
 ) {
-    let tablet_seat = state.ewm.seat.tablet_seat();
-    let tablet = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
-    let tool = tablet_seat.get_tool(&event.tool());
-    let (Some(tablet), Some(tool)) = (tablet, tool) else {
-        return;
-    };
-    let Some(pos) = compute_tablet_position(state, &event) else {
-        return;
-    };
+    update_tablet_tool::<B>(state, &event, true);
+    notify_pointer_activity(state);
+}
 
-    if event.pressure_has_changed() {
-        tool.pressure(event.pressure());
-    }
-    if event.distance_has_changed() {
-        tool.distance(event.distance());
-    }
-    if event.tilt_has_changed() {
-        tool.tilt(event.tilt());
-    }
-    if event.slider_has_changed() {
-        tool.slider_position(event.slider_position());
-    }
-    if event.rotation_has_changed() {
-        tool.rotation(event.rotation());
-    }
-    if event.wheel_has_changed() {
-        tool.wheel(event.wheel_delta(), event.wheel_delta_discrete());
-    }
+/// Move the tool to the event position and deliver its axis values.
+fn update_tablet_tool<B: InputBackend<Device = libinput::Device>>(
+    state: &mut State,
+    event: &(impl Event<B> + TabletToolEvent<B>),
+    send_frame: bool,
+) {
+    let Some(tool) = state.ewm.seat.tablet_seat().get_tool(&event.tool()) else {
+        return;
+    };
+    let Some(pos) = compute_tablet_position(state, event) else {
+        return;
+    };
+    let time = event.time();
+    let frame = tablet_axis_frame(event);
 
     let under = state.ewm.pointer_target_at(pos);
     tool.motion(
-        pos,
+        state,
         under,
-        &tablet,
-        SERIAL_COUNTER.next_serial(),
-        event.time_msec(),
+        &tablet::tool::MotionEvent {
+            location: pos,
+            serial: SERIAL_COUNTER.next_serial(),
+            time,
+        },
     );
+    // Set axis after motion to ensure it reaches the new focus surface.
+    tool.axis(state, frame);
+    if send_frame {
+        tool.frame(state, time);
+    }
 
     state.ewm.tablet_cursor_location = Some(pos);
     state.ewm.queue_redraw_for_pointer();
-    notify_pointer_activity(state);
 }
 
 pub fn handle_tablet_tool_tip<B: InputBackend<Device = libinput::Device>>(
     state: &mut State,
     event: B::TabletToolTipEvent,
 ) {
-    let tablet_seat = state.ewm.seat.tablet_seat();
-    let tablet = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
-    let tool = tablet_seat.get_tool(&event.tool());
-    let (Some(tablet), Some(tool)) = (tablet, tool) else {
+    let Some(tool) = state.ewm.seat.tablet_seat().get_tool(&event.tool()) else {
         return;
     };
+    let time = event.time();
 
     match event.tip_state() {
         TabletToolTipState::Down => {
-            let Some(pos) = compute_tablet_position(state, &event) else {
-                return;
-            };
+            // Tip events can come together with axis event data with no separate axis event.
+            update_tablet_tool::<B>(state, &event, false);
+            let serial = SERIAL_COUNTER.next_serial();
+            tool.down(state, &tablet::tool::DownEvent { serial, time });
 
-            // The tip carries its own position; the hover focus may be stale.
-            let under = state.ewm.pointer_target_at(pos);
-            tool.motion(
-                pos,
-                under,
-                &tablet,
-                SERIAL_COUNTER.next_serial(),
-                event.time_msec(),
-            );
-            tool.tip_down(SERIAL_COUNTER.next_serial(), event.time_msec());
-
-            state.ewm.tablet_cursor_location = Some(pos);
-            focus_target_at(state, pos, "tablet");
-            state.sync_keyboard_focus();
-            state.ewm.queue_redraw_for_pointer();
+            if let Some(pos) = state.ewm.tablet_cursor_location {
+                focus_target_at(state, pos, "tablet");
+                state.sync_keyboard_focus();
+            }
         }
         TabletToolTipState::Up => {
-            tool.tip_up(event.time_msec());
+            let serial = SERIAL_COUNTER.next_serial();
+            tool.up(state, &tablet::tool::UpEvent { serial, time });
+            update_tablet_tool::<B>(state, &event, false);
         }
     }
+
+    tool.frame(state, time);
     notify_pointer_activity(state);
 }
 
@@ -1970,30 +1972,40 @@ pub fn handle_tablet_tool_proximity<B: InputBackend<Device = libinput::Device>>(
 ) {
     let tablet_seat = state.ewm.seat.tablet_seat();
     let display_handle = state.ewm.display_handle.clone();
-    let tool = tablet_seat.add_tool::<State>(state, &display_handle, &event.tool());
+    let tool = tablet_seat
+        .get_tool(&event.tool())
+        .unwrap_or_else(|| tablet_seat.add_wp_tool(state, &display_handle, &event.tool()));
     let Some(tablet) = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device())) else {
         return;
     };
+    let serial = SERIAL_COUNTER.next_serial();
+    let time = event.time();
 
     match event.state() {
         ProximityState::In => {
             let Some(pos) = compute_tablet_position(state, &event) else {
                 return;
             };
-            if let Some(under) = state.ewm.pointer_target_at(pos) {
-                tool.proximity_in(
-                    pos,
-                    under,
-                    &tablet,
-                    SERIAL_COUNTER.next_serial(),
-                    event.time_msec(),
-                );
-            }
+            let under = state.ewm.pointer_target_at(pos);
+            tool.proximity_in(
+                state,
+                under,
+                tablet,
+                &tablet::tool::ProximityInEvent {
+                    location: pos,
+                    axis: Some(tablet_axis_frame(&event)),
+                    serial,
+                    time,
+                },
+            );
+            tool.frame(state, time);
+
             state.ewm.tablet_cursor_location = Some(pos);
             state.ewm.queue_redraw_for_pointer();
         }
         ProximityState::Out => {
-            tool.proximity_out(event.time_msec());
+            tool.proximity_out(state, &tablet::tool::ProximityOutEvent { serial, time });
+            tool.frame(state, time);
 
             // Land the pointer where the pen left so it doesn't jump.
             if let Some(pos) = state.ewm.tablet_cursor_location {
@@ -2010,12 +2022,17 @@ pub fn handle_tablet_tool_button<B: InputBackend>(
     event: B::TabletToolButtonEvent,
 ) {
     if let Some(tool) = state.ewm.seat.tablet_seat().get_tool(&event.tool()) {
+        let time = event.time();
         tool.button(
-            event.button(),
-            event.button_state(),
-            SERIAL_COUNTER.next_serial(),
-            event.time_msec(),
+            state,
+            &tablet::tool::ButtonEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                button: event.button(),
+                state: event.button_state(),
+                time,
+            },
         );
+        tool.frame(state, time);
     }
     notify_pointer_activity(state);
 }
