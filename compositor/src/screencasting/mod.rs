@@ -10,19 +10,19 @@ use anyhow::Context as _;
 pub use pw_utils::{Cast, CastSessionId, CastSizeChange, CastStreamId, PipeWire, PwToCompositor};
 use smithay::backend::allocator::gbm::GbmDevice;
 use smithay::backend::drm::DrmDeviceFd;
-use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
 use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::Output;
-use smithay::reexports::calloop::channel::{self, Sender};
 use smithay::reexports::calloop::LoopHandle;
+use smithay::reexports::calloop::channel::{self, Sender};
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, info, warn};
 
 use crate::cursor::CursorTextureCache;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
-use crate::render::{render_cursor_elements, EwmRenderElement};
+use crate::render::{EwmRenderElement, render_cursor_elements};
 use crate::{Ewm, LayoutEntry, LayoutEntryId, State};
 
 fn output_cast_cursor_location(

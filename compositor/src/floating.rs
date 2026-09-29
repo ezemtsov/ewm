@@ -5,8 +5,8 @@ use std::iter::zip;
 use smithay::input::pointer::CursorIcon;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::strip::{Frame, ViewAnimation, DEFAULT_ANIM_DURATION};
 use crate::LayoutEntry;
+use crate::strip::{DEFAULT_ANIM_DURATION, Frame, ViewAnimation};
 
 /// By how many logical pixels command-driven floating frame moves nudge frames.
 pub const DIRECTIONAL_MOVE_PX: f64 = 50.0;
@@ -394,8 +394,7 @@ impl FloatingSpace {
         for mut new_frame in frames {
             order.insert(new_frame.surface_id);
             if let Some(idx) = self.idx_of(new_frame.surface_id) {
-                let preserved_workspace_name =
-                    std::mem::take(&mut self.frames[idx].workspace_name);
+                let preserved_workspace_name = std::mem::take(&mut self.frames[idx].workspace_name);
                 let preserved_fullscreen = self.frames[idx].fullscreen;
                 let prev_size = self.data[idx].size();
                 let was_auto = self.frames[idx].floating_pos.is_none();
@@ -633,9 +632,10 @@ impl FloatingSpace {
     pub fn frames_with_render_geo(
         &self,
     ) -> impl Iterator<Item = (&Frame, Rectangle<f64, Logical>)> {
-        self.frames.iter().zip(self.data.iter()).map(|(frame, data)| {
-            (frame, Rectangle::new(data.render_pos(), data.size()))
-        })
+        self.frames
+            .iter()
+            .zip(self.data.iter())
+            .map(|(frame, data)| (frame, Rectangle::new(data.render_pos(), data.size())))
     }
 
     pub fn frames_with_render_geo_mut(

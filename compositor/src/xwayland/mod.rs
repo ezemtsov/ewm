@@ -6,8 +6,8 @@
 use std::os::fd::OwnedFd;
 use std::os::unix::net::{SocketAddr, UnixListener};
 
-use anyhow::{anyhow, ensure, Context as _};
-use smithay::reexports::rustix::fs::{access, mkdir, unlink, Access, OFlags};
+use anyhow::{Context as _, anyhow, ensure};
+use smithay::reexports::rustix::fs::{Access, OFlags, access, mkdir, unlink};
 use smithay::reexports::rustix::io::Errno;
 use smithay::reexports::rustix::process::getpid;
 use smithay::reexports::rustix::{self};

@@ -7,8 +7,8 @@
 //!
 //! Ported from niri's `dbus/freedesktop_screensaver.rs`.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -18,7 +18,7 @@ use zbus::fdo::{self, RequestNameFlags};
 use zbus::message::Header;
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::NoneValue;
-use zbus::{interface, Task};
+use zbus::{Task, interface};
 
 /// org.freedesktop.ScreenSaver D-Bus interface.
 ///

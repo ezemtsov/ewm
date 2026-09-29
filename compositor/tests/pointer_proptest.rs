@@ -89,12 +89,12 @@ use std::collections::{HashMap, HashSet};
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel};
-use ewm_core::{fullscreen_center_offset, LayoutEntry, LayoutEntryId};
+use ewm_core::{LayoutEntry, LayoutEntryId, fullscreen_center_offset};
 use proptest::prelude::*;
 use smithay::desktop::PopupManager;
+use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface as ServerWlSurface;
-use smithay::reexports::wayland_server::Resource as _;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
 use wayland_client::Proxy as _;
@@ -1492,4 +1492,3 @@ proptest! {
         check_n4(&h)?;
     }
 }
-

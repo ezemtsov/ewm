@@ -38,9 +38,15 @@ fn popup_grab_routes_input_and_dismisses_on_outside_click() {
     let mut frame = Frame::new(100);
     frame.width = 400.0;
     frame.selected_entry_id = Some(entry);
-    frame
-        .entries
-        .push(LayoutEntry::surface(entry, "app".to_string(), app_sid, 0, 0, 400, 400));
+    frame.entries.push(LayoutEntry::surface(
+        entry,
+        "app".to_string(),
+        app_sid,
+        0,
+        0,
+        400,
+        400,
+    ));
     fix.ewm().apply_output_layout(HEAD, vec![frame]);
     fix.roundtrip(&mut client);
 
@@ -99,9 +105,13 @@ fn popup_grab_routes_input_and_dismisses_on_outside_click() {
     fix.roundtrip(&mut client);
     let events = client.drain_events();
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, ClientEvent::PointerButton { button: BTN_LEFT, pressed: true })),
+        events.iter().any(|e| matches!(
+            e,
+            ClientEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true
+            }
+        )),
         "click inside the popup should be delivered, got {events:?}",
     );
     assert!(
@@ -141,10 +151,17 @@ fn popup_grab_routes_input_and_dismisses_on_outside_click() {
     let mut app_frame = Frame::new(100);
     app_frame.width = 400.0;
     app_frame.selected_entry_id = Some(entry);
-    app_frame
-        .entries
-        .push(LayoutEntry::surface(entry, "app".to_string(), app_sid, 0, 0, 400, 400));
-    fix.ewm().apply_output_layout(HEAD, vec![app_frame, other_frame]);
+    app_frame.entries.push(LayoutEntry::surface(
+        entry,
+        "app".to_string(),
+        app_sid,
+        0,
+        0,
+        400,
+        400,
+    ));
+    fix.ewm()
+        .apply_output_layout(HEAD, vec![app_frame, other_frame]);
     fix.roundtrip(&mut client);
     fix.roundtrip(&mut other);
     let hit_other = fix
@@ -197,9 +214,15 @@ fn nested_submenu_popup_does_not_dismiss_the_chain() {
     let mut frame = Frame::new(100);
     frame.width = 400.0;
     frame.selected_entry_id = Some(entry);
-    frame
-        .entries
-        .push(LayoutEntry::surface(entry, "app".to_string(), app_sid, 0, 0, 400, 400));
+    frame.entries.push(LayoutEntry::surface(
+        entry,
+        "app".to_string(),
+        app_sid,
+        0,
+        0,
+        400,
+        400,
+    ));
     fix.ewm().apply_output_layout(HEAD, vec![frame]);
     fix.roundtrip(&mut client);
 

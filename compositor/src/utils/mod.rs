@@ -10,13 +10,13 @@ pub mod reply;
 use std::time::Duration;
 
 use smithay::backend::renderer::utils::{
-    with_renderer_surface_state, RendererSurfaceStateUserData,
+    RendererSurfaceStateUserData, with_renderer_surface_state,
 };
 use smithay::output::{self, Output};
-use smithay::reexports::rustix::time::{clock_gettime, ClockId};
+use smithay::reexports::rustix::time::{ClockId, clock_gettime};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Coordinate, Logical, Point, Rectangle, Size, Transform};
-use smithay::wayland::compositor::{send_surface_state, SurfaceData};
+use smithay::wayland::compositor::{SurfaceData, send_surface_state};
 use smithay::wayland::fractional_scale::with_fractional_scale;
 
 /// Get monotonic time for timestamps and frame scheduling.
@@ -67,7 +67,13 @@ pub fn output_identity(output: &Output) -> String {
     if !present(&props.make) && !present(&props.model) && !present(&props.serial_number) {
         return output.name();
     }
-    let field = |s: String| if present(&s) { s } else { "Unknown".to_string() };
+    let field = |s: String| {
+        if present(&s) {
+            s
+        } else {
+            "Unknown".to_string()
+        }
+    };
     format!(
         "{} {} {}",
         field(props.make),

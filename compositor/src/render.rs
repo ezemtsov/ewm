@@ -19,23 +19,23 @@
 
 use std::ptr;
 
-use anyhow::{ensure, Context};
+use anyhow::{Context, ensure};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Fourcc};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::{
-    render_elements_from_surface_tree, WaylandSurfaceRenderElement,
+    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
-use smithay::backend::renderer::element::{render_elements, Element, Kind, RenderElement};
+use smithay::backend::renderer::element::{Element, Kind, RenderElement, render_elements};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTarget, GlesTexture};
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
-use smithay::desktop::{layer_map_for_output, LayerMap, PopupManager};
+use smithay::desktop::{LayerMap, PopupManager, layer_map_for_output};
 use smithay::output::{Output, OutputModeSource};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
@@ -54,7 +54,7 @@ use crate::render_helpers::background_effect;
 use crate::render_helpers::framebuffer_effect::FramebufferEffectElement;
 use crate::render_helpers::zoom::ZoomRenderElement;
 use crate::shadow_style::{BackgroundEffect, Blur, CornerRadius};
-use crate::{tracy_span, Ewm, State};
+use crate::{Ewm, State, tracy_span};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
 /// per surface via `window_popup_placements`; smithay's `Window::render_elements`

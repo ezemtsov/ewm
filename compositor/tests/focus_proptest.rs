@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use ewm_core::event::Event;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{mark_active_frame_close, Fixture};
-use ewm_core::{resolve_keyboard_focus_target, LayoutEntry, LayoutEntryId, OutputConfig};
+use ewm_core::testing::{Fixture, mark_active_frame_close};
+use ewm_core::{LayoutEntry, LayoutEntryId, OutputConfig, resolve_keyboard_focus_target};
 use proptest::prelude::*;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];

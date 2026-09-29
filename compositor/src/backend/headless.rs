@@ -18,7 +18,7 @@ use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use tracing::{debug, info};
 
 use crate::backend::{
-    apply_enabled_output_config, apply_initial_output_config, map_initial_output, OutputInfos,
+    OutputInfos, apply_enabled_output_config, apply_initial_output_config, map_initial_output,
 };
 use crate::{Ewm, OutputState, RedrawState, State};
 

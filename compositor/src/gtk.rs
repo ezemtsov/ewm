@@ -5,10 +5,10 @@
 //! `dlsym` so we don't have a link-time dependency on GTK.  Calls here
 //! must run on the Emacs main thread.
 
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::OnceLock;
 
-use anyhow::{anyhow, ensure, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, ensure};
 
 /// `GTK_STYLE_PROVIDER_PRIORITY_APPLICATION`.
 const PRIORITY: u32 = 600;

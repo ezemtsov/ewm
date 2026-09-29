@@ -3,8 +3,8 @@
 //! Allows tools like wlr-randr and kanshi to query and configure outputs.
 //! Ported from niri's implementation, adapted to ewm's types.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::mem;
 
 use smithay::reexports::wayland_protocols_wlr::output_management::v1::server::{
@@ -24,9 +24,9 @@ use zwlr_output_head_v1::{AdaptiveSyncState, ZwlrOutputHeadV1};
 use zwlr_output_manager_v1::ZwlrOutputManagerV1;
 use zwlr_output_mode_v1::ZwlrOutputModeV1;
 
+use crate::OutputConfig;
 use crate::output_mode::{ConfiguredMode, Mode};
 use crate::protocols::EmptyData;
-use crate::OutputConfig;
 
 const VERSION: u32 = 4;
 

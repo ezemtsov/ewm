@@ -19,7 +19,9 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
     self, ExtBackgroundEffectManagerV1,
 };
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1;
-use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, zwp_text_input_v3};
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3, zwp_text_input_v3,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
@@ -765,16 +767,18 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientState {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwp_text_input_v3::Event::CommitString { text } => {
-                state.events.push(ClientEvent::TextInputCommitString { text })
-            }
+            zwp_text_input_v3::Event::CommitString { text } => state
+                .events
+                .push(ClientEvent::TextInputCommitString { text }),
             zwp_text_input_v3::Event::DeleteSurroundingText {
                 before_length,
                 after_length,
-            } => state.events.push(ClientEvent::TextInputDeleteSurroundingText {
-                before: before_length,
-                after: after_length,
-            }),
+            } => state
+                .events
+                .push(ClientEvent::TextInputDeleteSurroundingText {
+                    before: before_length,
+                    after: after_length,
+                }),
             zwp_text_input_v3::Event::Done { serial } => {
                 state.events.push(ClientEvent::TextInputDone { serial })
             }

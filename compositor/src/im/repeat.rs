@@ -5,8 +5,8 @@
 //! delivery while Emacs owns keyboard focus. Command and text-input
 //! interception use compositor timers because they are delivered over IPC.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -20,7 +20,10 @@ pub(crate) enum HeldKeyOwner {
     KeyboardRedirect,
     Command,
     TextInput,
-    Translate { keycode: u32, target: crate::TranslateTarget },
+    Translate {
+        keycode: u32,
+        target: crate::TranslateTarget,
+    },
 }
 
 impl HeldKeyOwner {

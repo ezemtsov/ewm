@@ -37,7 +37,11 @@ fn new_precedes_title_and_mapped() {
     let mut client = fix.new_client().unwrap();
     fix.roundtrip(&mut client);
     // create_toplevel sets a title in its initial (pre-map) commit.
-    let top = fix.open_toplevel(&mut client, "with-title", Size::<i32, Logical>::from((400, 300)));
+    let top = fix.open_toplevel(
+        &mut client,
+        "with-title",
+        Size::<i32, Logical>::from((400, 300)),
+    );
     let sid = fix.find_surface_id(&client, &top.surface).unwrap();
 
     let order: Vec<&str> = fix
@@ -51,7 +55,11 @@ fn new_precedes_title_and_mapped() {
         })
         .collect();
     let pos = |k| order.iter().position(|x| *x == k);
-    assert_eq!(pos("new"), Some(0), "New must be first for a surface; got {order:?}");
+    assert_eq!(
+        pos("new"),
+        Some(0),
+        "New must be first for a surface; got {order:?}"
+    );
     if let (Some(n), Some(t)) = (pos("new"), pos("title")) {
         assert!(n < t, "New must precede Title; got {order:?}");
     }
@@ -109,7 +117,11 @@ fn dialog_with_parent_auto_floats() {
 
     let mut client = fix.new_client().unwrap();
     fix.roundtrip(&mut client);
-    let parent = fix.open_toplevel(&mut client, "parent", Size::<i32, Logical>::from((800, 600)));
+    let parent = fix.open_toplevel(
+        &mut client,
+        "parent",
+        Size::<i32, Logical>::from((800, 600)),
+    );
     let dialog = fix.open_toplevel_with_parent(
         &mut client,
         "dialog",

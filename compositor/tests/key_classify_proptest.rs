@@ -16,10 +16,10 @@
 //!       forwards (Emacs is the focused client). Independent of the flag
 //!       and of fullscreen.
 
-use ewm_core::input::{classify_key, KeyAction};
+use ewm_core::input::{KeyAction, classify_key};
 use ewm_core::{InterceptDispatch, InterceptedKey, TranslateTarget};
 use proptest::prelude::*;
-use smithay::input::keyboard::{keysyms, Keysym, ModifiersState};
+use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
 fn text_input_action(keysym: u32, utf8: Option<String>, mods: &ModifiersState) -> KeyAction {
     KeyAction::TextInput {

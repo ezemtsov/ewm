@@ -3,13 +3,13 @@ use std::ffi::CString;
 use std::rc::Rc;
 
 use glam::{Mat3, Vec2};
+use smithay::backend::renderer::DebugFlags;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{
-    ffi, link_program, Capability, GlesError, GlesFrame, GlesRenderer, GlesTexture, Uniform,
-    UniformDesc, UniformName,
+    Capability, GlesError, GlesFrame, GlesRenderer, GlesTexture, Uniform, UniformDesc, UniformName,
+    ffi, link_program,
 };
 use smithay::backend::renderer::utils::{CommitCounter, OpaqueRegions};
-use smithay::backend::renderer::DebugFlags;
 use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
 

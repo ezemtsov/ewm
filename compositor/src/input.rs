@@ -26,7 +26,7 @@
 use serde::Deserialize;
 use smithay::backend::input::KeyState;
 use smithay::input::keyboard::{
-    keysyms, xkb, FilterResult, Keycode, KeyboardHandle, Keysym, ModifiersState,
+    FilterResult, KeyboardHandle, Keycode, Keysym, ModifiersState, keysyms, xkb,
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
@@ -34,7 +34,7 @@ use smithay::utils::SERIAL_COUNTER;
 use crate::frame_click_grab::FrameClickGrab;
 use crate::im::repeat::HeldKeyOwner;
 use crate::{
-    module, tracy_span, InterceptDispatch, InterceptedKey, State, SurfaceHit, TranslateTarget,
+    InterceptDispatch, InterceptedKey, State, SurfaceHit, TranslateTarget, module, tracy_span,
 };
 
 fn notify_activity(state: &mut State) {
@@ -465,7 +465,15 @@ pub fn handle_keyboard_event(
                         target,
                     },
                 );
-                forward_translate(state, &keyboard, target_keycode, key_state, serial, time, &target);
+                forward_translate(
+                    state,
+                    &keyboard,
+                    target_keycode,
+                    key_state,
+                    serial,
+                    time,
+                    &target,
+                );
                 tracing::debug!(
                     "translate: keycode={} -> keysym=0x{:x} surface={}",
                     keycode,
@@ -635,7 +643,7 @@ use smithay::output::Output;
 use smithay::reexports::input as libinput;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use smithay::wayland::compositor::RegionAttributes;
-use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
+use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -1014,8 +1022,10 @@ mod tests {
             err(&[("accel-profile", text("linear"))]),
             "unknown variant `linear`, expected `flat` or `adaptive`"
         );
-        assert!(err(&[("natrual-scroll", Value::symbol("t"))])
-            .starts_with("unknown field `natrual-scroll`"));
+        assert!(
+            err(&[("natrual-scroll", Value::symbol("t"))])
+                .starts_with("unknown field `natrual-scroll`")
+        );
         assert!(
             err(&[("calibration-matrix", Value::List(vec![Value::Int(1)]))])
                 .contains("invalid length 1")

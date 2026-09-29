@@ -12,11 +12,11 @@ use tracing::{debug, info, warn};
 use zbus::blocking::Connection;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::{DeserializeDict, OwnedObjectPath, SerializeDict, Type, Value};
-use zbus::{fdo, interface, ObjectServer};
+use zbus::{ObjectServer, fdo, interface};
 
-use super::{current_output_mode, OutputInfo, Start};
-use crate::screencasting::{CastSessionId, CastStreamId};
+use super::{OutputInfo, Start, current_output_mode};
 use crate::LayoutEntryId;
+use crate::screencasting::{CastSessionId, CastStreamId};
 
 /// Target for a screen cast stream.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -6,17 +6,17 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
 use smithay::input::pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{IsAlive, Logical, Physical, Point, Transform};
-use smithay::wayland::compositor::{with_states, SurfaceAttributes};
+use smithay::wayland::compositor::{SurfaceAttributes, with_states};
 use tracing::warn;
-use xcursor::parser::{parse_xcursor, Image};
 use xcursor::CursorTheme;
+use xcursor::parser::{Image, parse_xcursor};
 
 /// Some default looking `left_ptr` icon.
 static FALLBACK_CURSOR_DATA: &[u8] = include_bytes!("../resources/cursor.rgba");

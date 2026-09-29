@@ -6,13 +6,13 @@
 //! reported mirrored past the frame's top-left corner, so both coordinates
 //! go negative and Emacs hands the drag to the compositor.
 
+use smithay::input::SeatHandler;
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
     GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab,
     PointerInnerHandle, RelativeMotionEvent,
 };
-use smithay::input::SeatHandler;
 use smithay::utils::{Logical, Point};
 
 use crate::State;

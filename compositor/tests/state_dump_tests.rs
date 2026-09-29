@@ -3,11 +3,11 @@
 use std::collections::HashSet;
 use std::num::NonZeroU64;
 
+use ewm_core::LayoutEntry;
 use ewm_core::cursor::CursorConfig;
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
-use ewm_core::LayoutEntry;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const HEAD_A: &str = "HEAD-A";
 const HEAD_B: &str = "HEAD-B";

@@ -4,7 +4,7 @@
 //! Own binary: the pending-frame queue is a process-wide static.
 
 use ewm_core::event::Event;
-use ewm_core::testing::{clear_pending_frames, prepare_frame, Fixture, TestClient, Toplevel};
+use ewm_core::testing::{Fixture, TestClient, Toplevel, clear_pending_frames, prepare_frame};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use serde_json::json;

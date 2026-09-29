@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use smithay::backend::input::{ButtonState, InputTime};
 use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Display;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use tracing::info;
 
@@ -17,7 +17,7 @@ use crate::backend::{Backend, HeadlessBackend};
 use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 use crate::testing::TestClient;
-use crate::{register_display_source, ClientState, Ewm, OutputInfo, State};
+use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 
 /// Test fixture for integration testing
 ///
@@ -167,9 +167,7 @@ impl Fixture {
         size: Size<i32, Logical>,
     ) -> crate::testing::Toplevel {
         let toplevel = client.create_toplevel(title);
-        toplevel
-            .xdg_toplevel
-            .set_parent(Some(&parent.xdg_toplevel));
+        toplevel.xdg_toplevel.set_parent(Some(&parent.xdg_toplevel));
         toplevel.surface.commit();
         self.roundtrip(client);
         self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
@@ -350,7 +348,10 @@ impl Fixture {
         use smithay::wayland::seat::WaylandFocus as _;
         use smithay::wayland::selection::data_device::WaylandDndGrabHandler as _;
 
-        assert!(self.state.ewm.pointer.is_grabbed(), "start_drag needs a held button");
+        assert!(
+            self.state.ewm.pointer.is_grabbed(),
+            "start_drag needs a held button"
+        );
         let source = self.state.ewm.id_windows[&sid]
             .wl_surface()
             .unwrap()

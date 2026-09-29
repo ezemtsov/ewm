@@ -8,12 +8,12 @@ use smithay::wayland::background_effect::{
     self, BackgroundEffectSurfaceCachedState, ExtBackgroundEffectHandler,
 };
 use smithay::wayland::compositor::{
-    add_post_commit_hook, with_states, RegionAttributes, SurfaceData,
+    RegionAttributes, SurfaceData, add_post_commit_hook, with_states,
 };
 use tracing::{debug, error};
 
-use crate::utils::region::region_to_non_overlapping_rects;
 use crate::State;
+use crate::utils::region::region_to_non_overlapping_rects;
 
 /// Per-surface cache for processed blur region (non-overlapping rects).
 #[derive(Default)]

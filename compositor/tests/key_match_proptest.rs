@@ -2,7 +2,7 @@
 
 use ewm_core::{InterceptDispatch, InterceptedKey};
 use proptest::prelude::*;
-use smithay::input::keyboard::{keysyms, ModifiersState};
+use smithay::input::keyboard::{ModifiersState, keysyms};
 
 #[derive(Debug, Clone, Copy)]
 struct Flags {

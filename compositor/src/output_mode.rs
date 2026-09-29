@@ -5,7 +5,7 @@
 
 use std::str::FromStr;
 
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 
 /// A requested video mode: width/height with optional refresh in Hz.
 #[derive(Debug, Clone, Copy, PartialEq)]

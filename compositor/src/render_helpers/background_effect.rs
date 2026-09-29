@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Scale};
-use smithay::wayland::compositor::{with_states, SurfaceData};
+use smithay::wayland::compositor::{SurfaceData, with_states};
 
 use crate::handlers::background_effect::get_cached_blur_region;
 use crate::render_helpers::blur::BlurOptions;

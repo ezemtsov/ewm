@@ -19,10 +19,10 @@ use pipewire::loop_::Timeout;
 use pipewire::main_loop::MainLoopRc;
 use pipewire::properties::PropertiesBox;
 use pipewire::spa::buffer::DataType;
+use pipewire::spa::param::ParamType;
 use pipewire::spa::param::format::{FormatProperties, MediaSubtype, MediaType};
 use pipewire::spa::param::format_utils::parse_format;
 use pipewire::spa::param::video::{VideoFormat, VideoInfoRaw};
-use pipewire::spa::param::ParamType;
 use pipewire::spa::pod::deserialize::PodDeserializer;
 use pipewire::spa::pod::serialize::PodSerializer;
 use pipewire::spa::pod::{self, ChoiceValue, Pod, PodPropFlags, Property, PropertyFlags};
@@ -32,9 +32,9 @@ use pipewire::spa::utils::{
 };
 use pipewire::stream::{Stream, StreamFlags, StreamListener, StreamRc, StreamState};
 use pipewire::sys::pw_buffer;
+use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
 use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
-use smithay::backend::allocator::Fourcc;
 use smithay::backend::drm::DrmDeviceFd;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::RenderElement;
@@ -50,8 +50,8 @@ use smithay::utils::{Physical, Point, Scale, Size, Transform};
 use tracing::{debug, info, trace, warn};
 use zbus::object_server::SignalEmitter;
 
-use crate::dbus::{screen_cast, CastTarget, CursorMode};
 use crate::State;
+use crate::dbus::{CastTarget, CursorMode, screen_cast};
 
 /// PipeWire connection state. Outer code drops and recreates this on
 /// `PwToCompositor::FatalError`.
@@ -1172,7 +1172,8 @@ unsafe fn mark_buffer_as_good(spa_buf: *mut spa_buffer, sequence: &mut u64) {
 /// Find the SPA_META_Header in a spa_buffer.
 unsafe fn find_meta_header(buffer: *mut spa_buffer) -> Option<NonNull<spa_meta_header>> {
     unsafe {
-        let p = spa_buffer_find_meta_data(buffer, SPA_META_Header, size_of::<spa_meta_header>()).cast();
+        let p =
+            spa_buffer_find_meta_data(buffer, SPA_META_Header, size_of::<spa_meta_header>()).cast();
         NonNull::new(p)
     }
 }

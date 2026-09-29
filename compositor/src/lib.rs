@@ -43,7 +43,6 @@ pub mod handlers;
 pub mod im;
 pub mod input;
 mod module;
-mod shadow_style;
 pub mod output_mode;
 pub mod overview;
 pub mod protocols;
@@ -51,6 +50,7 @@ pub mod render;
 mod render_helpers;
 #[cfg(feature = "screencast")]
 pub mod screencasting;
+mod shadow_style;
 pub mod strip;
 pub mod texture;
 pub mod tracy;
@@ -1319,11 +1319,7 @@ fn compute_open_floating(toplevel: &ToplevelSurface) -> bool {
 
 fn ensure_min_max_size(x: i32, min: i32, max: i32) -> i32 {
     let x = if max > 0 { x.min(max) } else { x };
-    if min > 0 {
-        x.max(min)
-    } else {
-        x
-    }
+    if min > 0 { x.max(min) } else { x }
 }
 
 /// The window's geometry clamped to its min/max size hints.
@@ -1778,7 +1774,8 @@ impl Ewm {
     fn migrate_or_pool_output_frames(&mut self, output_name: &str, output: &Output) {
         let active_id = self.active_frame_surface_id(output_name);
         let home_identity = crate::utils::output_identity(output);
-        self.frame_set.remember_last_active(&home_identity, active_id);
+        self.frame_set
+            .remember_last_active(&home_identity, active_id);
 
         if !self.migrate_output_frames_to_fallback(output_name, &home_identity) {
             let pre = self.surface_outputs_for(output_name);
@@ -2416,7 +2413,13 @@ impl Ewm {
     }
 
     /// Activate a frame on OUTPUT, dispatching by placement kind.
-    fn activate_frame_at(&mut self, output: &str, floating: bool, frame_surface_id: u64, frame_idx: usize) {
+    fn activate_frame_at(
+        &mut self,
+        output: &str,
+        floating: bool,
+        frame_surface_id: u64,
+        frame_idx: usize,
+    ) {
         if floating {
             self.activate_floating_frame(output, frame_surface_id);
         } else {
@@ -3167,12 +3170,17 @@ impl Ewm {
     }
 
     /// The tiled entry whose rect contains a floating frame's center, for spatial reattach.
-    pub fn tiled_entry_under_floating_center(&self, floating_frame_id: u64) -> Option<LayoutEntryId> {
+    pub fn tiled_entry_under_floating_center(
+        &self,
+        floating_frame_id: u64,
+    ) -> Option<LayoutEntryId> {
         let (output_name, center) = self.floating_spaces.iter().find_map(|(name, space)| {
             space.frames_with_render_geo().find_map(|(frame, rect)| {
                 (frame.surface_id == floating_frame_id).then(|| {
-                    let c: Point<f64, Logical> =
-                        Point::from((rect.loc.x + rect.size.w / 2.0, rect.loc.y + rect.size.h / 2.0));
+                    let c: Point<f64, Logical> = Point::from((
+                        rect.loc.x + rect.size.w / 2.0,
+                        rect.loc.y + rect.size.h / 2.0,
+                    ));
                     (name.clone(), c)
                 })
             })
@@ -3180,7 +3188,10 @@ impl Ewm {
         let output = self.mapped_output_by_name(&output_name)?;
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
-        let center = Point::from((output_geo.loc.x as f64 + center.x, output_geo.loc.y as f64 + center.y));
+        let center = Point::from((
+            output_geo.loc.x as f64 + center.x,
+            output_geo.loc.y as f64 + center.y,
+        ));
         let strip = self.frame_set.mapped_strip(&output_name)?;
         self.tiled_entry_under_matching(strip, output_geo, working_area, center, |_| true)
             .map(|hit| hit.entry.id)
@@ -4411,7 +4422,11 @@ impl Ewm {
         best_area: &HashMap<u64, u64>,
     ) {
         for frame in self.frame_set.all_frames_mut() {
-            for entry in frame.entries.iter_mut().filter(|entry| entry.surface.is_some()) {
+            for entry in frame
+                .entries
+                .iter_mut()
+                .filter(|entry| entry.surface.is_some())
+            {
                 entry.set_primary(false);
             }
         }
@@ -6845,7 +6860,10 @@ impl Ewm {
                 let loc = data.logical_pos();
                 origins.push(module::FrameOrigin {
                     surface_id: frame.surface_id,
-                    origin: (output_geo.loc.x + loc.x as i32, output_geo.loc.y + loc.y as i32),
+                    origin: (
+                        output_geo.loc.x + loc.x as i32,
+                        output_geo.loc.y + loc.y as i32,
+                    ),
                 });
             }
         }
@@ -7453,7 +7471,9 @@ impl Ewm {
     }
 
     fn is_floating_frame(&self, id: u64) -> bool {
-        self.floating_spaces.values().any(|space| space.has_frame(id))
+        self.floating_spaces
+            .values()
+            .any(|space| space.has_frame(id))
     }
 
     /// Tiled host for an app surface: parent's frame, else focused, else active; never floating.
@@ -7524,7 +7544,12 @@ impl Ewm {
 
         debug!(
             "new_toplevel id={} is_emacs={} pending_output={:?} floating={} target_output={:?} pending_queue_after_take={:?}",
-            id, is_emacs, frame_output, frame_is_floating, target_output, module::peek_pending_frame_outputs()
+            id,
+            is_emacs,
+            frame_output,
+            frame_is_floating,
+            target_output,
+            module::peek_pending_frame_outputs()
         );
 
         if is_emacs {
@@ -8089,8 +8114,9 @@ impl CompositorHandler for State {
                     .unwrap_or((false, None));
                 let parent_id = parent.and_then(|wl| self.ewm.surface_id(&wl));
                 let output = self.ewm.active_output();
-                let frame_surface_id =
-                    self.ewm.resolve_app_host_frame(parent_id, output.as_deref());
+                let frame_surface_id = self
+                    .ewm
+                    .resolve_app_host_frame(parent_id, output.as_deref());
                 // Size hint for floating placement, dropped when it fills the working area.
                 let working_area = output
                     .as_deref()
@@ -8230,7 +8256,7 @@ impl SelectionHandler for State {
         std::thread::spawn(move || {
             use std::io::Write;
 
-            use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
+            use smithay::reexports::rustix::fs::{OFlags, fcntl_setfl};
             if let Err(err) = fcntl_setfl(&fd, OFlags::empty()) {
                 warn!("error clearing flags on selection fd: {err:?}");
             }
@@ -9734,7 +9760,8 @@ impl State {
                     }
                     im::text_input::ReplaceResult::DroppedStale => {
                         debug!("TextInputReplace: dropped stale replace (surface_id={surface_id})");
-                        self.ewm.queue_event(Event::TextInputReplaceDropped { surface_id });
+                        self.ewm
+                            .queue_event(Event::TextInputReplaceDropped { surface_id });
                     }
                 }
             }
@@ -10091,17 +10118,28 @@ impl State {
                 );
                 // Publish for `ewm-edit` to pull, rather than pushing per keystroke.
                 crate::module::set_text_input_surrounding(active_surface_id.map(|surface_id| {
-                    crate::module::SurroundingSnapshot { surface_id, text, cursor, anchor }
+                    crate::module::SurroundingSnapshot {
+                        surface_id,
+                        text,
+                        cursor,
+                        anchor,
+                    }
                 }));
                 // A finish queued during the refocus gap now has fresh lengths.
-                let drained = self.ewm.im_text_input.drain_pending_replace(active_surface_id);
+                let drained = self
+                    .ewm
+                    .im_text_input
+                    .drain_pending_replace(active_surface_id);
                 if let Some((surface_id, r)) = drained.deliver {
                     debug!("TextInputReplace: draining queued replace (surface_id={surface_id})");
                     self.ewm.deliver_replace_ack(surface_id, r);
                 }
                 for surface_id in drained.dropped {
-                    debug!("TextInputReplace: dropped stale queued replace (surface_id={surface_id})");
-                    self.ewm.queue_event(Event::TextInputReplaceDropped { surface_id });
+                    debug!(
+                        "TextInputReplace: dropped stale queued replace (surface_id={surface_id})"
+                    );
+                    self.ewm
+                        .queue_event(Event::TextInputReplaceDropped { surface_id });
                 }
             }
         }
@@ -10190,21 +10228,27 @@ mod tests {
 
         assert_eq!(fix.ewm_ref().focused_frame_id, 200);
         assert_eq!(fix.ewm_ref().focused_entry_id, Some(floating_entry_id));
-        assert_eq!(fix.ewm_ref().focused_surface_id(), floating_entry_surface_id);
+        assert_eq!(
+            fix.ewm_ref().focused_surface_id(),
+            floating_entry_surface_id
+        );
 
         fix.enable_event_capture();
         let mut client = fix.new_client().unwrap();
         fix.roundtrip(&mut client);
         let toplevel = fix.open_toplevel(&mut client, "app", Size::from((240, 160)));
         let app_surface_id = fix.find_surface_id(&client, &toplevel.surface).unwrap();
-        let placement = fix.drain_events().into_iter().find_map(|event| match event {
-            Event::Mapped {
-                id,
-                frame_surface_id,
-                ..
-            } if id == app_surface_id => frame_surface_id,
-            _ => None,
-        });
+        let placement = fix
+            .drain_events()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::Mapped {
+                    id,
+                    frame_surface_id,
+                    ..
+                } if id == app_surface_id => frame_surface_id,
+                _ => None,
+            });
 
         // Frame 200 is floating and focused, but a new surface must land on the
         // tiled frame (100), not clobber the floating overlay.
@@ -10219,9 +10263,15 @@ mod tests {
         let mut tiled = strip::Frame::new(100);
         tiled.width = 1600.0;
         tiled.selected_entry_id = Some(nz(1));
-        tiled
-            .entries
-            .push(LayoutEntry::surface(nz(1), "app".to_string(), 5000, 0, 0, 1600, 900));
+        tiled.entries.push(LayoutEntry::surface(
+            nz(1),
+            "app".to_string(),
+            5000,
+            0,
+            0,
+            1600,
+            900,
+        ));
         fix.ewm().apply_output_layout(HEAD_A, vec![tiled]);
         fix.ewm()
             .apply_floating_layout(HEAD_A, vec![frame_with_entry(200, nz(3001), 9000)]);

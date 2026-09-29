@@ -262,10 +262,12 @@ fn output_layout_command_refreshes_pointer_focus() {
         "Virtual-1",
         vec![frame_with_entry_at(100, entry_id, surface_id, 600, 0)],
     );
-    assert!(fixture
-        .ewm_ref()
-        .surface_under_point(Point::from((10.0, 10.0)))
-        .is_none());
+    assert!(
+        fixture
+            .ewm_ref()
+            .surface_under_point(Point::from((10.0, 10.0)))
+            .is_none()
+    );
     assert_eq!(fixture.pointer_focus_surface_id(), None);
 }
 
@@ -350,7 +352,11 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
     fixture.ewm().strip_gesture_end("Virtual-1", 1280.0);
     fixture.dispatch_roundtrip(2);
 
-    let strip = fixture.ewm_ref().frame_set.mapped_strip("Virtual-1").unwrap();
+    let strip = fixture
+        .ewm_ref()
+        .frame_set
+        .mapped_strip("Virtual-1")
+        .unwrap();
     assert_eq!(strip.active_idx(), 1);
     assert_eq!(fixture.ewm_ref().pointer_location(), (640.0, 360.0));
     // Pointer focus, so Emacs anchors mouse-follows-focus instead of warping.
@@ -383,10 +389,12 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
             .active_idx(),
         1
     );
-    assert!(!fixture
-        .drain_events()
-        .iter()
-        .any(|event| matches!(event, Event::Focus { .. })));
+    assert!(
+        !fixture
+            .drain_events()
+            .iter()
+            .any(|event| matches!(event, Event::Focus { .. }))
+    );
 }
 
 #[test]
@@ -428,10 +436,12 @@ fn strip_swipe_with_the_pointer_on_another_output_warps_like_a_key() {
     fixture.dispatch_roundtrip(2);
 
     // Keyboard-style focus, so mouse-follows-focus brings the pointer over.
-    assert!(fixture
-        .drain_events()
-        .iter()
-        .any(|event| matches!(event, Event::Focus { pointer: false, .. })));
+    assert!(
+        fixture
+            .drain_events()
+            .iter()
+            .any(|event| matches!(event, Event::Focus { pointer: false, .. }))
+    );
 }
 
 #[test]
@@ -456,11 +466,13 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
             .output_management_state
             .output_heads_changed
     );
-    assert!(!fixture
-        .ewm_ref()
-        .space
-        .outputs()
-        .any(|output| output.name() == "Virtual-1"));
+    assert!(
+        !fixture
+            .ewm_ref()
+            .space
+            .outputs()
+            .any(|output| output.name() == "Virtual-1")
+    );
     let output_infos = fixture.output_info_list();
     assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
 
@@ -480,11 +492,13 @@ fn disabling_and_reenabling_headless_output_updates_protocol_state() {
             .output_management_state
             .output_heads_changed
     );
-    assert!(fixture
-        .ewm_ref()
-        .space
-        .outputs()
-        .any(|output| output.name() == "Virtual-1"));
+    assert!(
+        fixture
+            .ewm_ref()
+            .space
+            .outputs()
+            .any(|output| output.name() == "Virtual-1")
+    );
     let output_infos = fixture.output_info_list();
     let heads = fixture.ewm_ref().build_output_head_states(&output_infos);
     let head = &heads["Virtual-1"];
@@ -506,11 +520,13 @@ fn headless_output_respects_initial_disabled_config() {
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.dispatch();
 
-    assert!(!fixture
-        .ewm_ref()
-        .space
-        .outputs()
-        .any(|output| output.name() == "Virtual-1"));
+    assert!(
+        !fixture
+            .ewm_ref()
+            .space
+            .outputs()
+            .any(|output| output.name() == "Virtual-1")
+    );
     let output_infos = fixture.output_info_list();
     assert!(!fixture.ewm_ref().build_output_head_states(&output_infos)["Virtual-1"].enabled);
 }
@@ -605,9 +621,11 @@ fn disabling_output_reassigns_primary_entry_to_mapped_entry() {
         .frame_set
         .mapped_strip("Virtual-2")
         .expect("Virtual-2 strip exists");
-    assert!(live_strip
-        .surface_entries()
-        .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary()));
+    assert!(
+        live_strip
+            .surface_entries()
+            .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary())
+    );
 }
 
 // A physical display, identified by a stable EDID serial. Its connector name
@@ -967,11 +985,13 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
     );
     fixture.roundtrip(&mut client);
 
-    assert!(fixture
-        .ewm_ref()
-        .surface_outputs
-        .get(&surface_id)
-        .is_some_and(|outputs| outputs.contains("Virtual-1")));
+    assert!(
+        fixture
+            .ewm_ref()
+            .surface_outputs
+            .get(&surface_id)
+            .is_some_and(|outputs| outputs.contains("Virtual-1"))
+    );
     let events = client.drain_events();
     assert!(has_surface_enter(
         &client,
@@ -990,11 +1010,13 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
     fixture.apply_output_config("Virtual-1");
     fixture.roundtrip(&mut client);
 
-    assert!(!fixture
-        .ewm_ref()
-        .surface_outputs
-        .get(&surface_id)
-        .is_some_and(|outputs| outputs.contains("Virtual-1")));
+    assert!(
+        !fixture
+            .ewm_ref()
+            .surface_outputs
+            .get(&surface_id)
+            .is_some_and(|outputs| outputs.contains("Virtual-1"))
+    );
     let events = client.drain_events();
     assert!(has_surface_leave(
         &client,
@@ -1013,11 +1035,13 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
     fixture.apply_output_config("Virtual-1");
     fixture.roundtrip(&mut client);
 
-    assert!(fixture
-        .ewm_ref()
-        .surface_outputs
-        .get(&surface_id)
-        .is_some_and(|outputs| outputs.contains("Virtual-1")));
+    assert!(
+        fixture
+            .ewm_ref()
+            .surface_outputs
+            .get(&surface_id)
+            .is_some_and(|outputs| outputs.contains("Virtual-1"))
+    );
     let events = client.drain_events();
     assert!(has_surface_enter(
         &client,

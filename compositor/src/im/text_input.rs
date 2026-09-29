@@ -103,7 +103,9 @@ impl TextInputCommitState {
     /// `None` until this surface has reported surrounding text.
     fn delete_lengths(&self, surface_id: u64) -> Option<(u32, u32)> {
         match self.surrounding {
-            Some((id, s)) if id == surface_id => Some((s.sel_start, s.len.saturating_sub(s.sel_end))),
+            Some((id, s)) if id == surface_id => {
+                Some((s.sel_start, s.len.saturating_sub(s.sel_end)))
+            }
             _ => None,
         }
     }
@@ -118,7 +120,11 @@ impl TextInputCommitState {
         match active_surface_id {
             Some(active) if active == target_surface_id => {
                 if let Some((before, after)) = self.delete_lengths(active) {
-                    return ReplaceResult::Deliver(Replacement { before, after, text });
+                    return ReplaceResult::Deliver(Replacement {
+                        before,
+                        after,
+                        text,
+                    });
                 }
             }
             Some(_) => return ReplaceResult::DroppedStale,
@@ -149,7 +155,16 @@ impl TextInputCommitState {
                 out.dropped.push(pr.surface_id);
             }
         }
-        out.deliver = text.map(|text| (active, Replacement { before, after, text }));
+        out.deliver = text.map(|text| {
+            (
+                active,
+                Replacement {
+                    before,
+                    after,
+                    text,
+                },
+            )
+        });
         out
     }
 

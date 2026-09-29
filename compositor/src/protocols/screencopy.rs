@@ -5,8 +5,8 @@
 //! capture screenshots.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -30,7 +30,7 @@ use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
-use smithay::wayland::{dmabuf, shm, Dispatch2, GlobalDispatch2};
+use smithay::wayland::{Dispatch2, GlobalDispatch2, dmabuf, shm};
 use tracing::trace;
 
 use crate::protocols::EmptyData;

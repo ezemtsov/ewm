@@ -4,8 +4,8 @@
 //! left edge is `column_x(active_idx) + view_offset.current()`.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};

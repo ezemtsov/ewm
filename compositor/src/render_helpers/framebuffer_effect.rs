@@ -6,7 +6,7 @@ use glam::{Mat3, Vec2};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::{Element, Id, RenderElement};
 use smithay::backend::renderer::gles::{
-    ffi, GlesError, GlesFrame, GlesRenderer, GlesTexture, Uniform,
+    GlesError, GlesFrame, GlesRenderer, GlesTexture, Uniform, ffi,
 };
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::{Frame as _, FrameContext, Offscreen, Texture as _};
@@ -17,7 +17,7 @@ use tracing::{trace, warn};
 
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::{Blur, BlurOptions};
-use crate::render_helpers::shaders::{mat3_uniform, Shaders};
+use crate::render_helpers::shaders::{Shaders, mat3_uniform};
 use crate::shadow_style::CornerRadius;
 use crate::utils::region::TransformedRegion;
 

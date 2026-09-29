@@ -9,8 +9,8 @@
 use std::os::unix::net::UnixStream;
 use std::thread;
 
-use smithay::reexports::calloop::channel::{channel, Channel, Sender};
-use wayland_client::globals::{registry_queue_init, GlobalListContents};
+use smithay::reexports::calloop::channel::{Channel, Sender, channel};
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle};
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
@@ -21,7 +21,11 @@ pub enum ImEvent {
     Activated,
     Deactivated,
     /// `cursor`/`anchor` are byte offsets into `text`.
-    SurroundingText { text: String, cursor: u32, anchor: u32 },
+    SurroundingText {
+        text: String,
+        cursor: u32,
+        anchor: u32,
+    },
 }
 
 /// Spawn the relay thread on STREAM and return the calloop channel carrying its

@@ -12,7 +12,7 @@ use std::time::Duration;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
-use crate::strip::{AnimationsClock, SwipeTracker, ViewAnimation, DEFAULT_ANIM_DURATION};
+use crate::strip::{AnimationsClock, DEFAULT_ANIM_DURATION, SwipeTracker, ViewAnimation};
 use crate::utils::get_monotonic_time;
 
 /// Touchpad travel in unaccelerated units for a full open or close.

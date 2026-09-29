@@ -47,7 +47,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use elisp::Value as Data;
 use elisp_emacs::Lisp;
-use emacs::{defun, Env, Result, Value};
+use emacs::{Env, Result, Value, defun};
 use serde::Deserialize;
 use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
@@ -55,7 +55,7 @@ use smithay::reexports::calloop::LoopSignal;
 use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 pub use crate::utils::reply::Reply;
-use crate::utils::reply::{reply_channel, ReplyError};
+use crate::utils::reply::{ReplyError, reply_channel};
 use crate::{
     FocusId, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, TranslateTarget,
 };
@@ -779,8 +779,8 @@ fn compositor_state() -> &'static Mutex<CompositorState> {
 fn init_logging() {
     use std::sync::Once;
 
-    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     static INIT_LOG: Once = Once::new();
     INIT_LOG.call_once(|| {

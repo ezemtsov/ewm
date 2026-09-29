@@ -1,8 +1,6 @@
 //! Properties for the whole-field replace gate used by `ewm-edit`.
 
-use ewm_core::im::text_input::{
-    DrainedReplaces, Replacement, ReplaceResult, TextInputCommitState,
-};
+use ewm_core::im::text_input::{DrainedReplaces, ReplaceResult, Replacement, TextInputCommitState};
 use proptest::prelude::*;
 
 const SURFACE_IDS: std::ops::RangeInclusive<u64> = 1..=4;
@@ -12,8 +10,15 @@ const MAX_OPS: usize = 40;
 enum Op {
     Activate(Option<u64>),
     Deactivate,
-    SetSurrounding { text_len: u32, cursor: u32, anchor: u32 },
-    Replace { surface_id: u64, text: String },
+    SetSurrounding {
+        text_len: u32,
+        cursor: u32,
+        anchor: u32,
+    },
+    Replace {
+        surface_id: u64,
+        text: String,
+    },
     Drain,
 }
 
@@ -63,7 +68,16 @@ impl Model {
                 out.dropped.push(surface_id);
             }
         }
-        out.deliver = text.map(|text| (active, Replacement { before, after, text }));
+        out.deliver = text.map(|text| {
+            (
+                active,
+                Replacement {
+                    before,
+                    after,
+                    text,
+                },
+            )
+        });
         out
     }
 }
@@ -136,7 +150,11 @@ fn replace_deletes_everything_before_end_cursor() {
     state.set_surrounding(Some(1), 11, 11, 11);
     assert_eq!(
         state.replace(Some(1), 1, "bye".to_string()),
-        ReplaceResult::Deliver(Replacement { before: 11, after: 0, text: "bye".to_string() })
+        ReplaceResult::Deliver(Replacement {
+            before: 11,
+            after: 0,
+            text: "bye".to_string()
+        })
     );
 }
 
@@ -148,7 +166,11 @@ fn replace_deletes_outside_the_selection() {
     state.set_surrounding(Some(1), 11, 7, 2);
     assert_eq!(
         state.replace(Some(1), 1, "X".to_string()),
-        ReplaceResult::Deliver(Replacement { before: 2, after: 4, text: "X".to_string() })
+        ReplaceResult::Deliver(Replacement {
+            before: 2,
+            after: 4,
+            text: "X".to_string()
+        })
     );
 }
 
@@ -166,7 +188,14 @@ fn replace_queues_until_fresh_surrounding_then_drains() {
     assert_eq!(
         state.drain_pending_replace(Some(1)),
         DrainedReplaces {
-            deliver: Some((1, Replacement { before: 4, after: 0, text: "x".to_string() })),
+            deliver: Some((
+                1,
+                Replacement {
+                    before: 4,
+                    after: 0,
+                    text: "x".to_string()
+                }
+            )),
             dropped: vec![],
         }
     );
@@ -175,11 +204,17 @@ fn replace_queues_until_fresh_surrounding_then_drains() {
 #[test]
 fn drain_reports_superseded_surface_as_dropped() {
     let mut state = TextInputCommitState::default();
-    assert_eq!(state.replace(None, 1, "a".to_string()), ReplaceResult::Queued);
+    assert_eq!(
+        state.replace(None, 1, "a".to_string()),
+        ReplaceResult::Queued
+    );
     state.set_surrounding(Some(2), 3, 3, 3);
     assert_eq!(
         state.drain_pending_replace(Some(2)),
-        DrainedReplaces { deliver: None, dropped: vec![1] }
+        DrainedReplaces {
+            deliver: None,
+            dropped: vec![1]
+        }
     );
 }
 

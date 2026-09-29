@@ -28,9 +28,9 @@ use std::os::fd::AsFd;
 
 use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
 use crate::tracy_span;
-use anyhow::{ensure, Context as _};
-use drm_ffi::drm_mode_modeinfo;
+use anyhow::{Context as _, ensure};
 use bytemuck::cast_slice_mut;
+use drm_ffi::drm_mode_modeinfo;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
@@ -41,41 +41,41 @@ use smithay::utils::Size;
 use smithay::{
     backend::{
         allocator::{
+            Modifier,
             format::FormatSet,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
-            Modifier,
         },
         drm::{
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType,
             compositor::{DrmCompositor, FrameFlags, PrimaryPlaneElement},
             exporter::gbm::GbmFramebufferExporter,
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType,
         },
         egl::{EGLDevice, EGLDisplay},
         input::{Event, InputEvent, KeyboardKeyEvent},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            gles::GlesRenderer,
-            multigpu::{gbm::GbmGlesBackend, GpuManager},
             ImportDma, ImportEgl,
+            gles::GlesRenderer,
+            multigpu::{GpuManager, gbm::GbmGlesBackend},
         },
-        session::{libseat::LibSeatSession, Event as SessionEvent, Session},
-        udev::{primary_gpu, UdevBackend, UdevEvent},
+        session::{Event as SessionEvent, Session, libseat::LibSeatSession},
+        udev::{UdevBackend, UdevEvent, primary_gpu},
     },
     output::{Mode, Output, OutputModeSource, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
-            channel::{channel, Sender},
-            timer::{TimeoutAction, Timer},
             EventLoop, LoopHandle, RegistrationToken,
+            channel::{Sender, channel},
+            timer::{TimeoutAction, Timer},
         },
         drm::control::{
-            connector, crtc, property, Device as ControlDevice, Mode as DrmMode, ModeFlags,
-            ModeTypeFlags, ResourceHandle,
+            Device as ControlDevice, Mode as DrmMode, ModeFlags, ModeTypeFlags, ResourceHandle,
+            connector, crtc, property,
         },
         input::Libinput,
         rustix::fs::OFlags,
         wayland_server::{
-            backend::GlobalId, protocol::wl_surface::WlSurface, Display, DisplayHandle,
+            Display, DisplayHandle, backend::GlobalId, protocol::wl_surface::WlSurface,
         },
     },
     utils::{DeviceFd, Scale},
@@ -89,15 +89,15 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::wayland::presentation::Refresh;
 
 use crate::{
+    Ewm, LockRenderState, OutputInfo, OutputMode, OutputState, RedrawState, State,
     backend::{
-        apply_enabled_output_config, apply_initial_output_config, map_initial_output, Backend,
-        OutputInfos,
+        Backend, OutputInfos, apply_enabled_output_config, apply_initial_output_config,
+        map_initial_output,
     },
     cursor::{CursorConfig, CursorTextureCache},
-    input::{apply_libinput_settings, handle_keyboard_event, KeyboardAction},
+    input::{KeyboardAction, apply_libinput_settings, handle_keyboard_event},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
     vblank_throttle::VBlankThrottle,
-    Ewm, LockRenderState, OutputInfo, OutputMode, OutputState, RedrawState, State,
 };
 
 const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
@@ -181,10 +181,10 @@ fn current_lid_closed_from_acpi() -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
+        ClosedLidNoExternalAction, LidPolicyReason, ModeFlags, ModeTypeFlags,
         calculate_drm_mode_from_modeline, calculate_mode_cvt, closed_lid_no_external_action,
         drm_mode_modeinfo, mode_refresh_millihertz, parse_acpi_lid_state, pick_advertised_mode,
-        should_suppress_laptop_panels, ClosedLidNoExternalAction, LidPolicyReason, ModeFlags,
-        ModeTypeFlags,
+        should_suppress_laptop_panels,
     };
     use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
 

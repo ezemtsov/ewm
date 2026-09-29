@@ -13,7 +13,7 @@ use std::{io, mem, thread};
 use smithay::reexports::calloop::channel::{Event as ChannelEvent, Sender};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, Mode, PostAction, RegistrationToken};
-use smithay::reexports::rustix::io::{fcntl_setfd, FdFlags};
+use smithay::reexports::rustix::io::{FdFlags, fcntl_setfd};
 use tracing::{debug, error, info, warn};
 
 use super::X11Connection;
