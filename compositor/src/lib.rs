@@ -156,7 +156,7 @@ use smithay::reexports::wayland_server::backend::{
 };
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource, WEnum};
+use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource};
 use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::background_effect::BackgroundEffectState;
@@ -8502,22 +8502,13 @@ impl XdgDecorationHandler for State {
     }
 }
 
-// KDE Decoration, the only kind GTK understands
+// KDE Decoration, the only kind GTK understands. GTK re-requests its mode until it is echoed.
 impl KdeDecorationHandler for State {
     fn kde_decoration_state(&self) -> &KdeDecorationState {
         &self.ewm.kde_decoration_state
     }
 
     fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
-        decoration.mode(KdeDecorationMode::Server);
-    }
-
-    fn request_mode(
-        &mut self,
-        _surface: &WlSurface,
-        decoration: &OrgKdeKwinServerDecoration,
-        _mode: WEnum<KdeDecorationMode>,
-    ) {
         decoration.mode(KdeDecorationMode::Server);
     }
 }

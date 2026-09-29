@@ -1,4 +1,4 @@
-//! KDE server decorations are always negotiated as server-side.
+//! KDE server decorations default to server-side, but the client's request wins.
 
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use smithay::utils::Size;
@@ -18,7 +18,7 @@ fn decoration_modes(client: &mut TestClient) -> Vec<WEnum<Mode>> {
 }
 
 #[test]
-fn kde_decoration_always_answers_server_mode() {
+fn kde_decoration_acknowledges_requested_mode() {
     let mut fix = Fixture::new().unwrap();
     let mut client = fix.new_client().unwrap();
     fix.roundtrip(&mut client);
@@ -37,5 +37,5 @@ fn kde_decoration_always_answers_server_mode() {
 
     decoration.request_mode(Mode::Client);
     fix.roundtrip(&mut client);
-    assert_eq!(decoration_modes(&mut client), [WEnum::Value(Mode::Server)]);
+    assert_eq!(decoration_modes(&mut client), [WEnum::Value(Mode::Client)]);
 }
