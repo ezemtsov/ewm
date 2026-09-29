@@ -178,10 +178,10 @@ impl Overview {
 
     /// Settle a finished animation. Call once per tick.
     pub fn advance(&mut self) {
-        if let Some(Progress::Animation(anim)) = &self.progress {
-            if anim.is_done() {
-                self.progress = self.open.then_some(Progress::Open);
-            }
+        if let Some(Progress::Animation(anim)) = &self.progress
+            && anim.is_done()
+        {
+            self.progress = self.open.then_some(Progress::Open);
         }
     }
 }

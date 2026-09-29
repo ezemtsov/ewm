@@ -534,10 +534,10 @@ impl FloatingSpace {
             return;
         };
 
-        if let Some(frame_id) = frame_id {
-            if frame_id != move_.frame_id {
-                return;
-            }
+        if let Some(frame_id) = frame_id
+            && frame_id != move_.frame_id
+        {
+            return;
         }
 
         self.interactive_move = None;
@@ -620,10 +620,10 @@ impl FloatingSpace {
             return;
         };
 
-        if let Some(frame_id) = frame_id {
-            if frame_id != resize.frame_id {
-                return;
-            }
+        if let Some(frame_id) = frame_id
+            && frame_id != resize.frame_id
+        {
+            return;
         }
 
         self.interactive_resize = None;

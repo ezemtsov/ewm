@@ -63,10 +63,10 @@ impl SwipeTracker {
     }
 
     pub fn push(&mut self, delta: f64, timestamp: Duration) {
-        if let Some(&(_, last)) = self.history.back() {
-            if timestamp < last {
-                return;
-            }
+        if let Some(&(_, last)) = self.history.back()
+            && timestamp < last
+        {
+            return;
         }
         self.history.push_back((delta, timestamp));
         self.pos += delta;
@@ -231,10 +231,10 @@ impl ViewOffset {
 
     /// Settle Animation -> Static once `is_done`. Call once per tick.
     pub fn advance(&mut self) {
-        if let ViewOffset::Animation(a) = self {
-            if a.is_done() {
-                *self = ViewOffset::Static(a.target());
-            }
+        if let ViewOffset::Animation(a) = self
+            && a.is_done()
+        {
+            *self = ViewOffset::Static(a.target());
         }
     }
 

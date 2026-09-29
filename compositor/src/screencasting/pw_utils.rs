@@ -152,10 +152,11 @@ impl PipeWire {
             .add_listener_local()
             .error(move |id, seq, res, message| {
                 warn!(id, seq, res, message, "PipeWire error");
-                if id == PW_ID_CORE && res == -32 {
-                    if let Err(err) = to_compositor_listener.send(PwToCompositor::FatalError) {
-                        warn!("error sending PipeWire FatalError: {err:?}");
-                    }
+                if id == PW_ID_CORE
+                    && res == -32
+                    && let Err(err) = to_compositor_listener.send(PwToCompositor::FatalError)
+                {
+                    warn!("error sending PipeWire FatalError: {err:?}");
                 }
             })
             .register();
@@ -342,405 +343,397 @@ impl PipeWire {
         let stop_cast_state_changed = stop_cast.clone();
         let gbm_clone = gbm.clone();
 
-        let listener =
-            stream
-                .add_local_listener_with_user_data(())
-                .state_changed({
-                    let inner = inner.clone();
-                    let stop_cast = stop_cast_state_changed;
-                    move |stream: &Stream, (), old, new| {
-                        debug!("PipeWire stream state: {old:?} -> {new:?}");
-                        let mut inner = inner.borrow_mut();
+        let listener = stream
+            .add_local_listener_with_user_data(())
+            .state_changed({
+                let inner = inner.clone();
+                let stop_cast = stop_cast_state_changed;
+                move |stream: &Stream, (), old, new| {
+                    debug!("PipeWire stream state: {old:?} -> {new:?}");
+                    let mut inner = inner.borrow_mut();
 
-                        match new {
-                            StreamState::Paused => {
-                                if inner.node_id.is_none() {
-                                    let id = stream.node_id();
-                                    info!("PipeWire stream paused, node_id: {id}");
-                                    inner.node_id = Some(id);
+                    match new {
+                        StreamState::Paused => {
+                            if inner.node_id.is_none() {
+                                let id = stream.node_id();
+                                info!("PipeWire stream paused, node_id: {id}");
+                                inner.node_id = Some(id);
 
-                                    info!(
-                                        "Emitting PipeWireStreamAdded signal with node_id={}",
-                                        id
-                                    );
-                                    async_io::block_on(async {
-                                        let res = screen_cast::Stream::pipe_wire_stream_added(
-                                            &signal_ctx,
-                                            id,
-                                        )
-                                        .await;
-                                        if let Err(err) = res {
-                                            warn!("Error sending PipeWireStreamAdded: {err:?}");
-                                            stop_cast();
-                                        } else {
-                                            info!(
-                                                "PipeWireStreamAdded signal emitted successfully"
-                                            );
-                                        }
-                                    });
-                                }
-                                inner.is_active = false;
+                                info!("Emitting PipeWireStreamAdded signal with node_id={}", id);
+                                async_io::block_on(async {
+                                    let res = screen_cast::Stream::pipe_wire_stream_added(
+                                        &signal_ctx,
+                                        id,
+                                    )
+                                    .await;
+                                    if let Err(err) = res {
+                                        warn!("Error sending PipeWireStreamAdded: {err:?}");
+                                        stop_cast();
+                                    } else {
+                                        info!("PipeWireStreamAdded signal emitted successfully");
+                                    }
+                                });
                             }
-                            StreamState::Streaming => {
-                                info!("PipeWire stream now streaming");
-                                inner.is_active = true;
-                                // Kick a redraw so the consumer gets an
-                                // initial frame even if nothing else is
-                                // driving renders on this output.
-                                if let Err(err) =
-                                    to_compositor_clone.send(PwToCompositor::Redraw { session_id })
-                                {
-                                    warn!("error sending Redraw to compositor: {err:?}");
-                                }
-                            }
-                            StreamState::Error(msg) => {
-                                warn!("PipeWire stream error: {msg}");
-                                if inner.is_active {
-                                    inner.is_active = false;
-                                    stop_cast();
-                                }
-                            }
-                            _ => {}
+                            inner.is_active = false;
                         }
+                        StreamState::Streaming => {
+                            info!("PipeWire stream now streaming");
+                            inner.is_active = true;
+                            // Kick a redraw so the consumer gets an
+                            // initial frame even if nothing else is
+                            // driving renders on this output.
+                            if let Err(err) =
+                                to_compositor_clone.send(PwToCompositor::Redraw { session_id })
+                            {
+                                warn!("error sending Redraw to compositor: {err:?}");
+                            }
+                        }
+                        StreamState::Error(msg) => {
+                            warn!("PipeWire stream error: {msg}");
+                            if inner.is_active {
+                                inner.is_active = false;
+                                stop_cast();
+                            }
+                        }
+                        _ => {}
                     }
-                })
-                .param_changed({
-                    let inner = inner.clone();
-                    let stop_cast = stop_cast.clone();
-                    let gbm = gbm_clone.clone();
-                    let param_render_formats = render_formats.clone();
-                    let param_alpha = alpha;
-                    move |stream: &Stream, (), id, pod| {
-                        if ParamType::from_raw(id) != ParamType::Format {
+                }
+            })
+            .param_changed({
+                let inner = inner.clone();
+                let stop_cast = stop_cast.clone();
+                let gbm = gbm_clone.clone();
+                let param_render_formats = render_formats.clone();
+                let param_alpha = alpha;
+                move |stream: &Stream, (), id, pod| {
+                    if ParamType::from_raw(id) != ParamType::Format {
+                        return;
+                    }
+
+                    let Some(pod) = pod else { return };
+
+                    let (m_type, m_subtype) = match parse_format(pod) {
+                        Ok(x) => x,
+                        Err(err) => {
+                            warn!("error parsing format: {err:?}");
                             return;
                         }
+                    };
 
-                        let Some(pod) = pod else { return };
+                    if m_type != MediaType::Video || m_subtype != MediaSubtype::Raw {
+                        return;
+                    }
 
-                        let (m_type, m_subtype) = match parse_format(pod) {
-                            Ok(x) => x,
-                            Err(err) => {
-                                warn!("error parsing format: {err:?}");
-                                return;
-                            }
+                    let mut format = VideoInfoRaw::new();
+                    if let Err(err) = format.parse(pod) {
+                        warn!("error parsing video format: {err:?}");
+                        return;
+                    }
+                    debug!("PipeWire format: {format:?}");
+
+                    let format_size = Size::from((format.size().width, format.size().height));
+
+                    let mut inner = inner.borrow_mut();
+                    let inner = &mut *inner;
+
+                    // Validate format size against expected size
+                    if format_size != inner.state.expected_format_size() {
+                        if !matches!(&inner.state, CastState::ResizePending { .. }) {
+                            warn!("unexpected format size, stopping cast");
+                            stop_cast();
+                            return;
+                        }
+                        debug!("wrong size during resize, waiting");
+                        return;
+                    }
+
+                    // Extract max framerate and compute min_time_between_frames
+                    let max_frame_rate = format.max_framerate();
+                    if max_frame_rate.num > 0 {
+                        let min_frame_time = Duration::from_micros(
+                            1_000_000 * u64::from(max_frame_rate.denom)
+                                / u64::from(max_frame_rate.num),
+                        );
+                        inner.min_time_between_frames = min_frame_time;
+                        debug!("min_time_between_frames set to {:?}", min_frame_time);
+                    }
+
+                    // Check if modifier needs fixation
+                    let object = pod.as_object().unwrap();
+                    let modifier_prop = object
+                        .find_prop(pipewire::spa::utils::Id(FormatProperties::VideoModifier.0));
+
+                    if let Some(prop) = modifier_prop
+                        && prop.flags().contains(PodPropFlags::DONT_FIXATE)
+                    {
+                        debug!("Fixating modifier");
+
+                        let pod_modifier = prop.value();
+                        let Ok((_, modifiers)) = PodDeserializer::deserialize_from::<Choice<i64>>(
+                            pod_modifier.as_bytes(),
+                        ) else {
+                            warn!("wrong modifier property type");
+                            stop_cast();
+                            return;
                         };
 
-                        if m_type != MediaType::Video || m_subtype != MediaSubtype::Raw {
+                        let ChoiceEnum::Enum { alternatives, .. } = modifiers.1 else {
+                            warn!("wrong modifier choice type");
+                            stop_cast();
                             return;
-                        }
+                        };
 
-                        let mut format = VideoInfoRaw::new();
-                        if let Err(err) = format.parse(pod) {
-                            warn!("error parsing video format: {err:?}");
-                            return;
-                        }
-                        debug!("PipeWire format: {format:?}");
-
-                        let format_size = Size::from((format.size().width, format.size().height));
-
-                        let mut inner = inner.borrow_mut();
-                        let inner = &mut *inner;
-
-                        // Validate format size against expected size
-                        if format_size != inner.state.expected_format_size() {
-                            if !matches!(&inner.state, CastState::ResizePending { .. }) {
-                                warn!("unexpected format size, stopping cast");
+                        let fourcc = if param_alpha {
+                            Fourcc::Argb8888
+                        } else {
+                            Fourcc::Xrgb8888
+                        };
+                        let (modifier, plane_count) = match find_preferred_modifier(
+                            &gbm,
+                            format_size,
+                            fourcc,
+                            alternatives,
+                        ) {
+                            Ok(x) => x,
+                            Err(err) => {
+                                warn!("couldn't find preferred modifier: {err:?}");
                                 stop_cast();
                                 return;
                             }
-                            debug!("wrong size during resize, waiting");
-                            return;
-                        }
-
-                        // Extract max framerate and compute min_time_between_frames
-                        let max_frame_rate = format.max_framerate();
-                        if max_frame_rate.num > 0 {
-                            let min_frame_time = Duration::from_micros(
-                                1_000_000 * u64::from(max_frame_rate.denom)
-                                    / u64::from(max_frame_rate.num),
-                            );
-                            inner.min_time_between_frames = min_frame_time;
-                            debug!("min_time_between_frames set to {:?}", min_frame_time);
-                        }
-
-                        // Check if modifier needs fixation
-                        let object = pod.as_object().unwrap();
-                        let modifier_prop = object
-                            .find_prop(pipewire::spa::utils::Id(FormatProperties::VideoModifier.0));
-
-                        if let Some(prop) = modifier_prop {
-                            if prop.flags().contains(PodPropFlags::DONT_FIXATE) {
-                                debug!("Fixating modifier");
-
-                                let pod_modifier = prop.value();
-                                let Ok((_, modifiers)) =
-                                    PodDeserializer::deserialize_from::<Choice<i64>>(
-                                        pod_modifier.as_bytes(),
-                                    )
-                                else {
-                                    warn!("wrong modifier property type");
-                                    stop_cast();
-                                    return;
-                                };
-
-                                let ChoiceEnum::Enum { alternatives, .. } = modifiers.1 else {
-                                    warn!("wrong modifier choice type");
-                                    stop_cast();
-                                    return;
-                                };
-
-                                let fourcc = if param_alpha {
-                                    Fourcc::Argb8888
-                                } else {
-                                    Fourcc::Xrgb8888
-                                };
-                                let (modifier, plane_count) = match find_preferred_modifier(
-                                    &gbm,
-                                    format_size,
-                                    fourcc,
-                                    alternatives,
-                                ) {
-                                    Ok(x) => x,
-                                    Err(err) => {
-                                        warn!("couldn't find preferred modifier: {err:?}");
-                                        stop_cast();
-                                        return;
-                                    }
-                                };
-
-                                debug!(
-                                    "modifier fixated: {modifier:?}, plane_count: {plane_count}, \
-                                     moving to confirmation pending"
-                                );
-
-                                inner.state = CastState::ConfirmationPending {
-                                    size: format_size,
-                                    modifier,
-                                    plane_count: plane_count as i32,
-                                };
-
-                                // Offer fixated format first, original as fallback
-                                let fixated_obj = make_video_params_fixated(
-                                    format_size,
-                                    inner.refresh,
-                                    modifier,
-                                    param_alpha,
-                                );
-                                let fallback_obj = make_video_params(
-                                    format_size,
-                                    inner.refresh,
-                                    &param_render_formats,
-                                    param_alpha,
-                                );
-                                let mut b1 = Vec::new();
-                                let pod1 = make_pod(&mut b1, fixated_obj);
-                                let mut b2 = Vec::new();
-                                let pod2 = make_pod(&mut b2, fallback_obj);
-
-                                if let Err(err) = stream.update_params(&mut [pod1, pod2]) {
-                                    warn!("error updating format params: {err:?}");
-                                }
-                                return;
-                            }
-                        }
-
-                        // Modifier is already fixated; verify it matches if we're confirming
-                        let modifier = Modifier::from(format.modifier());
-                        let plane_count = match &inner.state {
-                            CastState::ConfirmationPending {
-                                modifier: expected_mod,
-                                plane_count,
-                                ..
-                            } if *expected_mod == modifier => {
-                                debug!("modifier confirmed, moving to ready");
-                                *plane_count
-                            }
-                            _ => {
-                                // First negotiation with single modifier, or modifier changed.
-                                // Do a test allocation to validate.
-                                let fourcc = if param_alpha {
-                                    Fourcc::Argb8888
-                                } else {
-                                    Fourcc::Xrgb8888
-                                };
-                                let (_, pc) = match find_preferred_modifier(
-                                    &gbm,
-                                    format_size,
-                                    fourcc,
-                                    vec![format.modifier() as i64],
-                                ) {
-                                    Ok(x) => x,
-                                    Err(err) => {
-                                        warn!("test allocation failed: {err:?}");
-                                        stop_cast();
-                                        return;
-                                    }
-                                };
-                                debug!("ready with modifier: {modifier:?}, plane_count: {pc}");
-                                pc as i32
-                            }
                         };
 
-                        inner.state = CastState::Ready {
+                        debug!(
+                            "modifier fixated: {modifier:?}, plane_count: {plane_count}, \
+                                     moving to confirmation pending"
+                        );
+
+                        inner.state = CastState::ConfirmationPending {
                             size: format_size,
                             modifier,
-                            plane_count,
-                            damage_tracker: None,
-                            cursor_damage_tracker: None,
-                            last_cursor_location: None,
+                            plane_count: plane_count as i32,
                         };
 
-                        // Set buffer params + meta header
-                        let buffer_obj = pod::object!(
-                            SpaTypes::ObjectParamBuffers,
-                            ParamType::Buffers,
-                            Property::new(
-                                SPA_PARAM_BUFFERS_buffers,
-                                pod::Value::Choice(ChoiceValue::Int(Choice(
-                                    ChoiceFlags::empty(),
-                                    ChoiceEnum::Range {
-                                        default: 8,
-                                        min: 2,
-                                        max: 16
-                                    }
-                                ))),
-                            ),
-                            Property::new(SPA_PARAM_BUFFERS_blocks, pod::Value::Int(plane_count)),
-                            Property::new(
-                                SPA_PARAM_BUFFERS_dataType,
-                                pod::Value::Choice(ChoiceValue::Int(Choice(
-                                    ChoiceFlags::empty(),
-                                    ChoiceEnum::Flags {
-                                        default: 1 << DataType::DmaBuf.as_raw(),
-                                        flags: vec![1 << DataType::DmaBuf.as_raw()],
-                                    },
-                                ))),
-                            ),
+                        // Offer fixated format first, original as fallback
+                        let fixated_obj = make_video_params_fixated(
+                            format_size,
+                            inner.refresh,
+                            modifier,
+                            param_alpha,
                         );
-
-                        let meta_header_obj = pod::object!(
-                            SpaTypes::ObjectParamMeta,
-                            ParamType::Meta,
-                            Property::new(
-                                SPA_PARAM_META_type,
-                                pod::Value::Id(pipewire::spa::utils::Id(SPA_META_Header)),
-                            ),
-                            Property::new(
-                                SPA_PARAM_META_size,
-                                pod::Value::Int(size_of::<spa_meta_header>() as i32),
-                            ),
+                        let fallback_obj = make_video_params(
+                            format_size,
+                            inner.refresh,
+                            &param_render_formats,
+                            param_alpha,
                         );
-
                         let mut b1 = Vec::new();
-                        let pod1 = make_pod(&mut b1, buffer_obj);
+                        let pod1 = make_pod(&mut b1, fixated_obj);
                         let mut b2 = Vec::new();
-                        let pod2 = make_pod(&mut b2, meta_header_obj);
+                        let pod2 = make_pod(&mut b2, fallback_obj);
 
                         if let Err(err) = stream.update_params(&mut [pod1, pod2]) {
-                            warn!("error updating buffer params: {err:?}");
+                            warn!("error updating format params: {err:?}");
                         }
+                        return;
                     }
-                })
-                .add_buffer({
-                    let inner = inner.clone();
-                    let gbm = gbm_clone.clone();
-                    let add_buf_event_loop = event_loop.clone();
-                    let add_buf_target = target.clone();
-                    let add_buf_alpha = alpha;
-                    move |stream, (), buffer| {
-                        let mut inner = inner.borrow_mut();
 
-                        let CastState::Ready { size, modifier, .. } = &inner.state else {
-                            trace!("add_buffer but not ready yet");
-                            return;
-                        };
-                        let size = *size;
-                        let modifier = *modifier;
-
-                        trace!("add_buffer: size={size:?}, modifier={modifier:?}");
-
-                        unsafe {
-                            let spa_buffer = (*buffer).buffer;
-                            let fourcc = if add_buf_alpha {
+                    // Modifier is already fixated; verify it matches if we're confirming
+                    let modifier = Modifier::from(format.modifier());
+                    let plane_count = match &inner.state {
+                        CastState::ConfirmationPending {
+                            modifier: expected_mod,
+                            plane_count,
+                            ..
+                        } if *expected_mod == modifier => {
+                            debug!("modifier confirmed, moving to ready");
+                            *plane_count
+                        }
+                        _ => {
+                            // First negotiation with single modifier, or modifier changed.
+                            // Do a test allocation to validate.
+                            let fourcc = if param_alpha {
                                 Fourcc::Argb8888
                             } else {
                                 Fourcc::Xrgb8888
                             };
-
-                            let dmabuf = match allocate_dmabuf(&gbm, size, fourcc, modifier) {
-                                Ok(d) => d,
+                            let (_, pc) = match find_preferred_modifier(
+                                &gbm,
+                                format_size,
+                                fourcc,
+                                vec![format.modifier() as i64],
+                            ) {
+                                Ok(x) => x,
                                 Err(err) => {
-                                    warn!("error allocating dmabuf: {err:?}");
+                                    warn!("test allocation failed: {err:?}");
+                                    stop_cast();
                                     return;
                                 }
                             };
-
-                            let plane_count = dmabuf.num_planes();
-                            assert_eq!((*spa_buffer).n_datas as usize, plane_count);
-
-                            for (i, fd) in dmabuf.handles().enumerate() {
-                                let spa_data = (*spa_buffer).datas.add(i);
-                                assert!((*spa_data).type_ & (1 << DataType::DmaBuf.as_raw()) > 0);
-
-                                (*spa_data).type_ = DataType::DmaBuf.as_raw();
-                                (*spa_data).maxsize = 1;
-                                (*spa_data).fd = fd.as_raw_fd() as i64;
-                                (*spa_data).flags = SPA_DATA_FLAG_READWRITE;
-
-                                let chunk = (*spa_data).chunk;
-                                (*chunk).stride = dmabuf.strides().nth(i).unwrap_or(0) as i32;
-                                (*chunk).offset = dmabuf.offsets().nth(i).unwrap_or(0);
-                            }
-
-                            let fd = (*(*spa_buffer).datas).fd;
-                            let prev = inner.dmabufs.insert(fd, dmabuf);
-                            // PipeWire shouldn't hand us the same fd twice
-                            // for the same stream. The insert must always
-                            // happen (not inside debug_assert!, which is
-                            // a no-op in release builds and would silently
-                            // drop the dmabuf - closing its fds before
-                            // PipeWire serializes them to the consumer).
-                            debug_assert!(prev.is_none());
+                            debug!("ready with modifier: {modifier:?}, plane_count: {pc}");
+                            pc as i32
                         }
+                    };
 
-                        // During size re-negotiation, force a redraw once we got a newly sized
-                        // buffer.
-                        if inner.dmabufs.len() == 1 && stream.state() == StreamState::Streaming {
-                            let redraw_target = add_buf_target.clone();
-                            let _ = add_buf_event_loop.insert_source(
-                                Timer::from_duration(Duration::ZERO),
-                                move |_, _, state| {
-                                    let output =
-                                        state.ewm.screen_cast_output_for_target(&redraw_target);
-                                    if let Some(output) = output {
-                                        state.ewm.queue_redraw(&output);
-                                    }
-                                    TimeoutAction::Drop
+                    inner.state = CastState::Ready {
+                        size: format_size,
+                        modifier,
+                        plane_count,
+                        damage_tracker: None,
+                        cursor_damage_tracker: None,
+                        last_cursor_location: None,
+                    };
+
+                    // Set buffer params + meta header
+                    let buffer_obj = pod::object!(
+                        SpaTypes::ObjectParamBuffers,
+                        ParamType::Buffers,
+                        Property::new(
+                            SPA_PARAM_BUFFERS_buffers,
+                            pod::Value::Choice(ChoiceValue::Int(Choice(
+                                ChoiceFlags::empty(),
+                                ChoiceEnum::Range {
+                                    default: 8,
+                                    min: 2,
+                                    max: 16
+                                }
+                            ))),
+                        ),
+                        Property::new(SPA_PARAM_BUFFERS_blocks, pod::Value::Int(plane_count)),
+                        Property::new(
+                            SPA_PARAM_BUFFERS_dataType,
+                            pod::Value::Choice(ChoiceValue::Int(Choice(
+                                ChoiceFlags::empty(),
+                                ChoiceEnum::Flags {
+                                    default: 1 << DataType::DmaBuf.as_raw(),
+                                    flags: vec![1 << DataType::DmaBuf.as_raw()],
                                 },
-                            );
-                        }
+                            ))),
+                        ),
+                    );
+
+                    let meta_header_obj = pod::object!(
+                        SpaTypes::ObjectParamMeta,
+                        ParamType::Meta,
+                        Property::new(
+                            SPA_PARAM_META_type,
+                            pod::Value::Id(pipewire::spa::utils::Id(SPA_META_Header)),
+                        ),
+                        Property::new(
+                            SPA_PARAM_META_size,
+                            pod::Value::Int(size_of::<spa_meta_header>() as i32),
+                        ),
+                    );
+
+                    let mut b1 = Vec::new();
+                    let pod1 = make_pod(&mut b1, buffer_obj);
+                    let mut b2 = Vec::new();
+                    let pod2 = make_pod(&mut b2, meta_header_obj);
+
+                    if let Err(err) = stream.update_params(&mut [pod1, pod2]) {
+                        warn!("error updating buffer params: {err:?}");
                     }
-                })
-                .remove_buffer({
-                    let inner = inner.clone();
-                    move |_stream, (), buffer| {
-                        trace!("remove_buffer");
-                        let mut inner = inner.borrow_mut();
-                        inner
-                            .rendering_buffers
-                            .retain(|(buf, _)| buf.as_ptr() != buffer);
-                        unsafe {
-                            let spa_buffer = (*buffer).buffer;
-                            let spa_data = (*spa_buffer).datas;
-                            if (*spa_buffer).n_datas > 0 {
-                                let fd = (*spa_data).fd;
-                                inner.dmabufs.remove(&fd);
+                }
+            })
+            .add_buffer({
+                let inner = inner.clone();
+                let gbm = gbm_clone.clone();
+                let add_buf_event_loop = event_loop.clone();
+                let add_buf_target = target.clone();
+                let add_buf_alpha = alpha;
+                move |stream, (), buffer| {
+                    let mut inner = inner.borrow_mut();
+
+                    let CastState::Ready { size, modifier, .. } = &inner.state else {
+                        trace!("add_buffer but not ready yet");
+                        return;
+                    };
+                    let size = *size;
+                    let modifier = *modifier;
+
+                    trace!("add_buffer: size={size:?}, modifier={modifier:?}");
+
+                    unsafe {
+                        let spa_buffer = (*buffer).buffer;
+                        let fourcc = if add_buf_alpha {
+                            Fourcc::Argb8888
+                        } else {
+                            Fourcc::Xrgb8888
+                        };
+
+                        let dmabuf = match allocate_dmabuf(&gbm, size, fourcc, modifier) {
+                            Ok(d) => d,
+                            Err(err) => {
+                                warn!("error allocating dmabuf: {err:?}");
+                                return;
                             }
+                        };
+
+                        let plane_count = dmabuf.num_planes();
+                        assert_eq!((*spa_buffer).n_datas as usize, plane_count);
+
+                        for (i, fd) in dmabuf.handles().enumerate() {
+                            let spa_data = (*spa_buffer).datas.add(i);
+                            assert!((*spa_data).type_ & (1 << DataType::DmaBuf.as_raw()) > 0);
+
+                            (*spa_data).type_ = DataType::DmaBuf.as_raw();
+                            (*spa_data).maxsize = 1;
+                            (*spa_data).fd = fd.as_raw_fd() as i64;
+                            (*spa_data).flags = SPA_DATA_FLAG_READWRITE;
+
+                            let chunk = (*spa_data).chunk;
+                            (*chunk).stride = dmabuf.strides().nth(i).unwrap_or(0) as i32;
+                            (*chunk).offset = dmabuf.offsets().nth(i).unwrap_or(0);
+                        }
+
+                        let fd = (*(*spa_buffer).datas).fd;
+                        let prev = inner.dmabufs.insert(fd, dmabuf);
+                        // PipeWire shouldn't hand us the same fd twice
+                        // for the same stream. The insert must always
+                        // happen (not inside debug_assert!, which is
+                        // a no-op in release builds and would silently
+                        // drop the dmabuf - closing its fds before
+                        // PipeWire serializes them to the consumer).
+                        debug_assert!(prev.is_none());
+                    }
+
+                    // During size re-negotiation, force a redraw once we got a newly sized
+                    // buffer.
+                    if inner.dmabufs.len() == 1 && stream.state() == StreamState::Streaming {
+                        let redraw_target = add_buf_target.clone();
+                        let _ = add_buf_event_loop.insert_source(
+                            Timer::from_duration(Duration::ZERO),
+                            move |_, _, state| {
+                                let output =
+                                    state.ewm.screen_cast_output_for_target(&redraw_target);
+                                if let Some(output) = output {
+                                    state.ewm.queue_redraw(&output);
+                                }
+                                TimeoutAction::Drop
+                            },
+                        );
+                    }
+                }
+            })
+            .remove_buffer({
+                let inner = inner.clone();
+                move |_stream, (), buffer| {
+                    trace!("remove_buffer");
+                    let mut inner = inner.borrow_mut();
+                    inner
+                        .rendering_buffers
+                        .retain(|(buf, _)| buf.as_ptr() != buffer);
+                    unsafe {
+                        let spa_buffer = (*buffer).buffer;
+                        let spa_data = (*spa_buffer).datas;
+                        if (*spa_buffer).n_datas > 0 {
+                            let fd = (*spa_data).fd;
+                            inner.dmabufs.remove(&fd);
                         }
                     }
-                })
-                .register()
-                .context("error registering stream listener")?;
+                }
+            })
+            .register()
+            .context("error registering stream listener")?;
 
         // Create format parameters with available modifiers
         let mut buffer = Vec::new();

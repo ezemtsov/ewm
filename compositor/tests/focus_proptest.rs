@@ -255,28 +255,26 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             // I11/I13: layout-named frames are present and in layout order
             // when the target output is mapped.  Layouts for removed outputs
             // are stale content updates and do not own topology.
-            if output_mapped {
-                if let Some(strip) = fix.ewm_ref().frame_set.mapped_strip(dest) {
-                    for id in &placed {
-                        assert!(
-                            strip.frames.iter().any(|f| f.surface_id == *id),
-                            "invariant 11: frame {} missing from {} after layout",
-                            id,
-                            dest,
-                        );
-                    }
-                    let subseq: Vec<u64> = strip
-                        .frames
-                        .iter()
-                        .map(|f| f.surface_id)
-                        .filter(|id| placed.contains(id))
-                        .collect();
-                    assert_eq!(
-                        subseq, placed,
-                        "invariant 13: strip order on {} doesn't match layout order",
+            if output_mapped && let Some(strip) = fix.ewm_ref().frame_set.mapped_strip(dest) {
+                for id in &placed {
+                    assert!(
+                        strip.frames.iter().any(|f| f.surface_id == *id),
+                        "invariant 11: frame {} missing from {} after layout",
+                        id,
                         dest,
                     );
                 }
+                let subseq: Vec<u64> = strip
+                    .frames
+                    .iter()
+                    .map(|f| f.surface_id)
+                    .filter(|id| placed.contains(id))
+                    .collect();
+                assert_eq!(
+                    subseq, placed,
+                    "invariant 13: strip order on {} doesn't match layout order",
+                    dest,
+                );
             }
             // Only a layout that reaches the compositor drains pending activations.
             if fix.has_output(OUTPUTS[output]) {

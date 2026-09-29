@@ -181,10 +181,10 @@ impl CursorManager {
 
     /// Checks if the cursor WlSurface is alive, and if not, cleans it up.
     pub fn check_cursor_image_surface_alive(&mut self) {
-        if let CursorImageStatus::Surface(surface) = &self.current_cursor {
-            if !surface.alive() {
-                self.current_cursor = CursorImageStatus::default_named();
-            }
+        if let CursorImageStatus::Surface(surface) = &self.current_cursor
+            && !surface.alive()
+        {
+            self.current_cursor = CursorImageStatus::default_named();
         }
     }
 

@@ -178,214 +178,6 @@ fn current_lid_closed_from_acpi() -> Option<bool> {
     saw_open.then_some(false)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        ClosedLidNoExternalAction, LidPolicyReason, ModeFlags, ModeTypeFlags,
-        calculate_drm_mode_from_modeline, calculate_mode_cvt, closed_lid_no_external_action,
-        drm_mode_modeinfo, mode_refresh_millihertz, parse_acpi_lid_state, pick_advertised_mode,
-        should_suppress_laptop_panels,
-    };
-    use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
-
-    fn test_mode(width: u16, height: u16, refresh_millihertz: i32) -> super::DrmMode {
-        test_mode_with_flags(width, height, refresh_millihertz, ModeFlags::empty())
-    }
-
-    fn test_mode_with_flags(
-        width: u16,
-        height: u16,
-        refresh_millihertz: i32,
-        flags: ModeFlags,
-    ) -> super::DrmMode {
-        super::DrmMode::from(drm_mode_modeinfo {
-            clock: refresh_millihertz as u32,
-            hdisplay: width,
-            hsync_start: 900,
-            hsync_end: 950,
-            htotal: 1000,
-            vdisplay: height,
-            vsync_start: 700,
-            vsync_end: 750,
-            vtotal: 1000,
-            vrefresh: (refresh_millihertz as f64 / 1000.0).round() as u32,
-            flags: flags.bits(),
-            type_: 0,
-            name: [0; 32],
-            hskew: 0,
-            vscan: 0,
-        })
-    }
-
-    // Expected values cross-checked against niri's snapshots and the `cvt` utility.
-    #[test]
-    fn cvt_mode_matches_reference() {
-        let m = calculate_mode_cvt(1920, 1080, 60.0);
-        assert_eq!(m.size(), (1920, 1080));
-        assert_eq!(m.clock(), 173000);
-        assert_eq!(m.hsync(), (2048, 2248, 2576));
-        assert_eq!(m.vsync(), (1083, 1088, 1120));
-        assert_eq!(m.vrefresh(), 60);
-        assert!(m.mode_type().contains(ModeTypeFlags::USERDEF));
-
-        let m = calculate_mode_cvt(1920, 1080, 144.0);
-        assert_eq!(m.clock(), 452500);
-        assert_eq!(m.hsync(), (2088, 2296, 2672));
-        assert_eq!(m.vsync(), (1083, 1088, 1177));
-        assert_eq!(m.vrefresh(), 144);
-    }
-
-    #[test]
-    fn modeline_mode_matches_reference() {
-        let modeline = Modeline {
-            clock: 173.0,
-            hdisplay: 1920,
-            hsync_start: 2048,
-            hsync_end: 2248,
-            htotal: 2576,
-            vdisplay: 1080,
-            vsync_start: 1083,
-            vsync_end: 1088,
-            vtotal: 1120,
-            hsync_polarity: HSyncPolarity::NHSync,
-            vsync_polarity: VSyncPolarity::PVSync,
-        };
-        let m = calculate_drm_mode_from_modeline(&modeline).unwrap();
-        assert_eq!(m.size(), (1920, 1080));
-        assert_eq!(m.clock(), 173000);
-        assert_eq!(m.hsync(), (2048, 2248, 2576));
-        assert_eq!(m.vsync(), (1083, 1088, 1120));
-        assert_eq!(m.vrefresh(), 60);
-        assert!(m.mode_type().contains(ModeTypeFlags::USERDEF));
-    }
-
-    #[test]
-    fn modeline_parses_x11_form() {
-        let m: Modeline = "173.0 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync"
-            .parse()
-            .unwrap();
-        assert_eq!(m.clock, 173.0);
-        assert_eq!(m.hdisplay, 1920);
-        assert_eq!(m.htotal, 2576);
-        assert_eq!(m.vtotal, 1120);
-        assert_eq!(m.hsync_polarity, HSyncPolarity::NHSync);
-        assert_eq!(m.vsync_polarity, VSyncPolarity::PVSync);
-        assert!("173.0 1920".parse::<Modeline>().is_err());
-    }
-
-    #[test]
-    fn advertised_mode_with_refresh_picks_closest_precise_refresh() {
-        let modes = [test_mode(800, 600, 60_000), test_mode(800, 600, 59_940)];
-        let selected = pick_advertised_mode(
-            &modes,
-            ConfiguredMode {
-                width: 800,
-                height: 600,
-                refresh: Some(60.0),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(mode_refresh_millihertz(selected), 60_000);
-    }
-
-    #[test]
-    fn advertised_mode_with_refresh_accepts_precise_timing_delta() {
-        let modes = [calculate_mode_cvt(1920, 1080, 60.0)];
-        assert_ne!(mode_refresh_millihertz(modes[0]), 60_000);
-
-        let selected = pick_advertised_mode(
-            &modes,
-            ConfiguredMode {
-                width: 1920,
-                height: 1080,
-                refresh: Some(60.0),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(selected.size(), (1920, 1080));
-    }
-
-    #[test]
-    fn advertised_mode_without_refresh_picks_highest_precise_refresh() {
-        let modes = [test_mode(800, 600, 59_940), test_mode(800, 600, 60_000)];
-        let selected = pick_advertised_mode(
-            &modes,
-            ConfiguredMode {
-                width: 800,
-                height: 600,
-                refresh: None,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(mode_refresh_millihertz(selected), 60_000);
-    }
-
-    #[test]
-    fn advertised_mode_ignores_interlaced_modes() {
-        let modes = [
-            test_mode_with_flags(800, 600, 30_000, ModeFlags::INTERLACE),
-            test_mode(800, 600, 59_940),
-        ];
-        let selected = pick_advertised_mode(
-            &modes,
-            ConfiguredMode {
-                width: 800,
-                height: 600,
-                refresh: Some(60.0),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(mode_refresh_millihertz(selected), 59_940);
-    }
-
-    #[test]
-    fn parses_acpi_lid_state() {
-        assert_eq!(parse_acpi_lid_state("state:      closed\n"), Some(true));
-        assert_eq!(parse_acpi_lid_state("state:      open\n"), Some(false));
-        assert_eq!(parse_acpi_lid_state("state:      unknown\n"), None);
-    }
-
-    #[test]
-    fn closed_lid_without_external_only_settles_after_startup_or_resume() {
-        assert_eq!(
-            closed_lid_no_external_action(LidPolicyReason::Startup, false),
-            ClosedLidNoExternalAction::StartSettling
-        );
-        assert_eq!(
-            closed_lid_no_external_action(LidPolicyReason::Resume, false),
-            ClosedLidNoExternalAction::StartSettling
-        );
-        assert_eq!(
-            closed_lid_no_external_action(LidPolicyReason::Hotplug, false),
-            ClosedLidNoExternalAction::Suspend
-        );
-        assert_eq!(
-            closed_lid_no_external_action(LidPolicyReason::LidEvent, false),
-            ClosedLidNoExternalAction::Suspend
-        );
-        assert_eq!(
-            closed_lid_no_external_action(LidPolicyReason::SettlingTimeout, true),
-            ClosedLidNoExternalAction::Suspend
-        );
-        assert_eq!(
-            closed_lid_no_external_action(LidPolicyReason::Hotplug, true),
-            ClosedLidNoExternalAction::KeepSettling
-        );
-    }
-
-    #[test]
-    fn laptop_panel_suppression_requires_lid_support() {
-        assert!(!should_suppress_laptop_panels(false, false));
-        assert!(!should_suppress_laptop_panels(false, true));
-        assert!(!should_suppress_laptop_panels(true, false));
-        assert!(should_suppress_laptop_panels(true, true));
-    }
-}
-
 pub fn calculate_drm_mode_from_modeline(modeline: &Modeline) -> anyhow::Result<DrmMode> {
     ensure!(
         modeline.hdisplay < modeline.hsync_start,
@@ -905,19 +697,19 @@ impl GammaProps {
             )
             .inspect_err(|_| {
                 // Clean up the blob we just created on failure
-                if blob_id != 0 {
-                    if let Err(err) = device.destroy_property_blob(blob_id) {
-                        warn!("error destroying GAMMA_LUT property blob: {err:?}");
-                    }
+                if blob_id != 0
+                    && let Err(err) = device.destroy_property_blob(blob_id)
+                {
+                    warn!("error destroying GAMMA_LUT property blob: {err:?}");
                 }
             })
             .context("error setting GAMMA_LUT")?;
 
         // Destroy previous blob after successfully setting the new one
-        if let Some(previous) = std::mem::replace(&mut self.previous_blob, blob) {
-            if let Err(err) = device.destroy_property_blob(previous.get()) {
-                warn!("error destroying previous GAMMA_LUT blob: {err:?}");
-            }
+        if let Some(previous) = std::mem::replace(&mut self.previous_blob, blob)
+            && let Err(err) = device.destroy_property_blob(previous.get())
+        {
+            warn!("error destroying previous GAMMA_LUT blob: {err:?}");
         }
 
         Ok(())
@@ -1185,10 +977,9 @@ impl DrmBackendState {
                     if let RedrawState::WaitingForEstimatedVBlank(token)
                     | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
                         output_state.redraw_state
+                        && let Some(ref handle) = self.loop_handle
                     {
-                        if let Some(ref handle) = self.loop_handle {
-                            handle.remove(token);
-                        }
+                        handle.remove(token);
                     }
                     output_state.redraw_state = RedrawState::Idle;
                     output_state.unfinished_animations_remain = false;
@@ -1274,13 +1065,13 @@ impl DrmBackendState {
                     }
                 } else {
                     // No pending change; restore previous gamma state.
-                    if let Some(ref gamma_props) = surface.gamma_props {
-                        if let Err(err) = gamma_props.restore_gamma(&device.drm) {
-                            warn!(
-                                "error restoring gamma for {}: {err:?}",
-                                surface.output.name()
-                            );
-                        }
+                    if let Some(ref gamma_props) = surface.gamma_props
+                        && let Err(err) = gamma_props.restore_gamma(&device.drm)
+                    {
+                        warn!(
+                            "error restoring gamma for {}: {err:?}",
+                            surface.output.name()
+                        );
                     }
                 }
             }
@@ -1337,10 +1128,10 @@ impl DrmBackendState {
 
     /// Trigger deferred DRM initialization (called when session becomes active)
     pub(crate) fn trigger_init(&self) {
-        if let Some(sender) = &self.init_sender {
-            if let Err(e) = sender.send(DrmMessage::InitializeDrm) {
-                warn!("Failed to send DRM init message: {:?}", e);
-            }
+        if let Some(sender) = &self.init_sender
+            && let Err(e) = sender.send(DrmMessage::InitializeDrm)
+        {
+            warn!("Failed to send DRM init message: {:?}", e);
         }
     }
 
@@ -1527,11 +1318,11 @@ impl DrmBackendState {
         apply_enabled_output_config(ewm, &self.output_infos, &output, &config, smithay_mode);
 
         // Update frame clock refresh interval
-        if let Some(drm_mode) = new_drm_mode {
-            if let Some(output_state) = ewm.output_state.get_mut(&output) {
-                output_state.frame_clock =
-                    crate::frame_clock::FrameClock::new(Some(refresh_interval(drm_mode)));
-            }
+        if let Some(drm_mode) = new_drm_mode
+            && let Some(output_state) = ewm.output_state.get_mut(&output)
+        {
+            output_state.frame_clock =
+                crate::frame_clock::FrameClock::new(Some(refresh_interval(drm_mode)));
         }
 
         info!(
@@ -1628,12 +1419,11 @@ impl DrmBackendState {
         match render_result {
             Ok(result) => {
                 // Wait for GPU completion if the kernel can't handle fencing.
-                if result.needs_sync() {
-                    if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element {
-                        if let Err(err) = element.sync.wait() {
-                            warn!("error waiting for frame completion: {err:?}");
-                        }
-                    }
+                if result.needs_sync()
+                    && let PrimaryPlaneElement::Swapchain(element) = &result.primary_element
+                    && let Err(err) = element.sync.wait()
+                {
+                    warn!("error waiting for frame completion: {err:?}");
                 }
 
                 // Update primary scanout output tracking (for frame callback throttling)
@@ -2008,7 +1798,6 @@ impl DrmBackendState {
                 || self.closed_lid_settle_timer.is_some())
             && self.apply_lid_policy(ewm, LidPolicyReason::Hotplug)
         {
-            return;
         } else if changed {
             ewm.queue_event(crate::event::Event::OutputsComplete);
         }
@@ -2625,10 +2414,10 @@ impl DrmBackendState {
     }
 
     fn cancel_closed_lid_settle_timer(&mut self) {
-        if let Some(token) = self.closed_lid_settle_timer.take() {
-            if let Some(handle) = &self.loop_handle {
-                handle.remove(token);
-            }
+        if let Some(token) = self.closed_lid_settle_timer.take()
+            && let Some(handle) = &self.loop_handle
+        {
+            handle.remove(token);
         }
     }
 
@@ -2806,14 +2595,14 @@ impl DrmBackendState {
                         .map(|device| device.surfaces.values().map(|s| s.output.clone()).collect())
                         .unwrap_or_default();
                     for output in outputs {
-                        if let Some(output_state) = state.ewm.output_state.get_mut(&output) {
-                            if matches!(
+                        if let Some(output_state) = state.ewm.output_state.get_mut(&output)
+                            && matches!(
                                 output_state.redraw_state,
                                 RedrawState::WaitingForVBlank { .. }
-                            ) {
-                                warn!("Recovering stuck redraw state for {}", output.name());
-                                output_state.redraw_state = RedrawState::Queued;
-                            }
+                            )
+                        {
+                            warn!("Recovering stuck redraw state for {}", output.name());
+                            output_state.redraw_state = RedrawState::Queued;
                         }
                     }
                 }
@@ -3386,10 +3175,10 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
             }
             UdevEvent::Added { device_id, path } => {
                 debug!("UDev device added: {:?} at {:?}", device_id, path);
-                if let Some(drm) = state.backend.as_drm_mut() {
-                    if let Err(err) = drm.device_added(device_id, &path, &mut state.ewm) {
-                        warn!("Failed to add DRM device from udev: {:?}", err);
-                    }
+                if let Some(drm) = state.backend.as_drm_mut()
+                    && let Err(err) = drm.device_added(device_id, &path, &mut state.ewm)
+                {
+                    warn!("Failed to add DRM device from udev: {:?}", err);
                 }
             }
             UdevEvent::Removed { device_id } => {
@@ -3586,4 +3375,212 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     // Proper Drop ordering ensures DRM device is released before session
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ClosedLidNoExternalAction, LidPolicyReason, ModeFlags, ModeTypeFlags,
+        calculate_drm_mode_from_modeline, calculate_mode_cvt, closed_lid_no_external_action,
+        drm_mode_modeinfo, mode_refresh_millihertz, parse_acpi_lid_state, pick_advertised_mode,
+        should_suppress_laptop_panels,
+    };
+    use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
+
+    fn test_mode(width: u16, height: u16, refresh_millihertz: i32) -> super::DrmMode {
+        test_mode_with_flags(width, height, refresh_millihertz, ModeFlags::empty())
+    }
+
+    fn test_mode_with_flags(
+        width: u16,
+        height: u16,
+        refresh_millihertz: i32,
+        flags: ModeFlags,
+    ) -> super::DrmMode {
+        super::DrmMode::from(drm_mode_modeinfo {
+            clock: refresh_millihertz as u32,
+            hdisplay: width,
+            hsync_start: 900,
+            hsync_end: 950,
+            htotal: 1000,
+            vdisplay: height,
+            vsync_start: 700,
+            vsync_end: 750,
+            vtotal: 1000,
+            vrefresh: (refresh_millihertz as f64 / 1000.0).round() as u32,
+            flags: flags.bits(),
+            type_: 0,
+            name: [0; 32],
+            hskew: 0,
+            vscan: 0,
+        })
+    }
+
+    // Expected values cross-checked against niri's snapshots and the `cvt` utility.
+    #[test]
+    fn cvt_mode_matches_reference() {
+        let m = calculate_mode_cvt(1920, 1080, 60.0);
+        assert_eq!(m.size(), (1920, 1080));
+        assert_eq!(m.clock(), 173000);
+        assert_eq!(m.hsync(), (2048, 2248, 2576));
+        assert_eq!(m.vsync(), (1083, 1088, 1120));
+        assert_eq!(m.vrefresh(), 60);
+        assert!(m.mode_type().contains(ModeTypeFlags::USERDEF));
+
+        let m = calculate_mode_cvt(1920, 1080, 144.0);
+        assert_eq!(m.clock(), 452500);
+        assert_eq!(m.hsync(), (2088, 2296, 2672));
+        assert_eq!(m.vsync(), (1083, 1088, 1177));
+        assert_eq!(m.vrefresh(), 144);
+    }
+
+    #[test]
+    fn modeline_mode_matches_reference() {
+        let modeline = Modeline {
+            clock: 173.0,
+            hdisplay: 1920,
+            hsync_start: 2048,
+            hsync_end: 2248,
+            htotal: 2576,
+            vdisplay: 1080,
+            vsync_start: 1083,
+            vsync_end: 1088,
+            vtotal: 1120,
+            hsync_polarity: HSyncPolarity::NHSync,
+            vsync_polarity: VSyncPolarity::PVSync,
+        };
+        let m = calculate_drm_mode_from_modeline(&modeline).unwrap();
+        assert_eq!(m.size(), (1920, 1080));
+        assert_eq!(m.clock(), 173000);
+        assert_eq!(m.hsync(), (2048, 2248, 2576));
+        assert_eq!(m.vsync(), (1083, 1088, 1120));
+        assert_eq!(m.vrefresh(), 60);
+        assert!(m.mode_type().contains(ModeTypeFlags::USERDEF));
+    }
+
+    #[test]
+    fn modeline_parses_x11_form() {
+        let m: Modeline = "173.0 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync"
+            .parse()
+            .unwrap();
+        assert_eq!(m.clock, 173.0);
+        assert_eq!(m.hdisplay, 1920);
+        assert_eq!(m.htotal, 2576);
+        assert_eq!(m.vtotal, 1120);
+        assert_eq!(m.hsync_polarity, HSyncPolarity::NHSync);
+        assert_eq!(m.vsync_polarity, VSyncPolarity::PVSync);
+        assert!("173.0 1920".parse::<Modeline>().is_err());
+    }
+
+    #[test]
+    fn advertised_mode_with_refresh_picks_closest_precise_refresh() {
+        let modes = [test_mode(800, 600, 60_000), test_mode(800, 600, 59_940)];
+        let selected = pick_advertised_mode(
+            &modes,
+            ConfiguredMode {
+                width: 800,
+                height: 600,
+                refresh: Some(60.0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(mode_refresh_millihertz(selected), 60_000);
+    }
+
+    #[test]
+    fn advertised_mode_with_refresh_accepts_precise_timing_delta() {
+        let modes = [calculate_mode_cvt(1920, 1080, 60.0)];
+        assert_ne!(mode_refresh_millihertz(modes[0]), 60_000);
+
+        let selected = pick_advertised_mode(
+            &modes,
+            ConfiguredMode {
+                width: 1920,
+                height: 1080,
+                refresh: Some(60.0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(selected.size(), (1920, 1080));
+    }
+
+    #[test]
+    fn advertised_mode_without_refresh_picks_highest_precise_refresh() {
+        let modes = [test_mode(800, 600, 59_940), test_mode(800, 600, 60_000)];
+        let selected = pick_advertised_mode(
+            &modes,
+            ConfiguredMode {
+                width: 800,
+                height: 600,
+                refresh: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(mode_refresh_millihertz(selected), 60_000);
+    }
+
+    #[test]
+    fn advertised_mode_ignores_interlaced_modes() {
+        let modes = [
+            test_mode_with_flags(800, 600, 30_000, ModeFlags::INTERLACE),
+            test_mode(800, 600, 59_940),
+        ];
+        let selected = pick_advertised_mode(
+            &modes,
+            ConfiguredMode {
+                width: 800,
+                height: 600,
+                refresh: Some(60.0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(mode_refresh_millihertz(selected), 59_940);
+    }
+
+    #[test]
+    fn parses_acpi_lid_state() {
+        assert_eq!(parse_acpi_lid_state("state:      closed\n"), Some(true));
+        assert_eq!(parse_acpi_lid_state("state:      open\n"), Some(false));
+        assert_eq!(parse_acpi_lid_state("state:      unknown\n"), None);
+    }
+
+    #[test]
+    fn closed_lid_without_external_only_settles_after_startup_or_resume() {
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::Startup, false),
+            ClosedLidNoExternalAction::StartSettling
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::Resume, false),
+            ClosedLidNoExternalAction::StartSettling
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::Hotplug, false),
+            ClosedLidNoExternalAction::Suspend
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::LidEvent, false),
+            ClosedLidNoExternalAction::Suspend
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::SettlingTimeout, true),
+            ClosedLidNoExternalAction::Suspend
+        );
+        assert_eq!(
+            closed_lid_no_external_action(LidPolicyReason::Hotplug, true),
+            ClosedLidNoExternalAction::KeepSettling
+        );
+    }
+
+    #[test]
+    fn laptop_panel_suppression_requires_lid_support() {
+        assert!(!should_suppress_laptop_panels(false, false));
+        assert!(!should_suppress_laptop_panels(false, true));
+        assert!(!should_suppress_laptop_panels(true, false));
+        assert!(should_suppress_laptop_panels(true, true));
+    }
 }

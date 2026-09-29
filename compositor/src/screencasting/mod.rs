@@ -46,55 +46,6 @@ fn output_cast_cursor_location(
     output_local.to_physical_precise_round(output_scale)
 }
 
-#[cfg(test)]
-mod tests {
-    use proptest::prelude::*;
-
-    use super::*;
-
-    proptest! {
-        #[test]
-        fn output_cast_cursor_location_matches_visibility_and_output_geometry(
-            output_x in -2_000i32..=2_000,
-            output_y in -2_000i32..=2_000,
-            output_w in 1i32..=4_000,
-            output_h in 1i32..=4_000,
-            local_x in -1_000i32..=5_000,
-            local_y in -1_000i32..=5_000,
-            scale_milli in 250i32..=4_000,
-            include_cursor in any::<bool>(),
-        ) {
-            let output_pos = Point::from((output_x, output_y));
-            let output_size = Size::from((output_w, output_h));
-            let output_scale = Scale::from(f64::from(scale_milli) / 1_000.0);
-            let pointer_location = (
-                f64::from(output_x + local_x),
-                f64::from(output_y + local_y),
-            );
-
-            let inside_output =
-                (0..output_w).contains(&local_x) && (0..output_h).contains(&local_y);
-            let expected = if include_cursor && inside_output {
-                Point::from((f64::from(local_x), f64::from(local_y)))
-                    .to_physical_precise_round(output_scale)
-            } else {
-                Point::default()
-            };
-
-            prop_assert_eq!(
-                output_cast_cursor_location(
-                    pointer_location,
-                    output_pos,
-                    output_size,
-                    output_scale,
-                    include_cursor,
-                ),
-                expected,
-            );
-        }
-    }
-}
-
 pub struct Screencasting {
     pub casts: Vec<Cast>,
 
@@ -377,17 +328,16 @@ impl Ewm {
             }
         }
 
-        if let Some(ref dbus) = self.dbus_servers {
-            if let Some(ref conn) = dbus.conn_screen_cast {
-                let server = conn.object_server();
-                let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
-                if let Ok(iface) = server.interface::<_, dbus::screen_cast::Session>(path.as_str())
-                {
-                    async_io::block_on(async {
-                        let signal_emitter = iface.signal_emitter().clone();
-                        iface.get().stop(server.inner(), signal_emitter).await
-                    });
-                }
+        if let Some(ref dbus) = self.dbus_servers
+            && let Some(ref conn) = dbus.conn_screen_cast
+        {
+            let server = conn.object_server();
+            let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id);
+            if let Ok(iface) = server.interface::<_, dbus::screen_cast::Session>(path.as_str()) {
+                async_io::block_on(async {
+                    let signal_emitter = iface.signal_emitter().clone();
+                    iface.get().stop(server.inner(), signal_emitter).await
+                });
             }
         }
     }
@@ -449,35 +399,34 @@ impl Ewm {
             .entry
             .surface_id()
             .and_then(|surface_id| self.id_windows.get(&surface_id))
+            && let Some(surface) = window.wl_surface()
         {
-            if let Some(surface) = window.wl_surface() {
-                let view_elements = render_elements_from_surface_tree(
-                    renderer,
-                    &surface,
-                    Point::default(),
-                    output_scale,
-                    1.0,
-                    Kind::Unspecified,
-                );
-                let source_size = window
-                    .geometry()
-                    .size
-                    .to_physical_precise_round(output_scale);
-                let mut elements = Vec::new();
-                crate::render::push_view_elements_fit(
-                    &mut elements,
-                    window,
-                    view_elements,
-                    Point::default(),
-                    source_size,
-                    output_scale,
-                    Rectangle::from_size(entry_size),
-                    !geometry.entry.primary(),
-                    None,
-                    self.blur_config,
-                );
-                return elements;
-            }
+            let view_elements = render_elements_from_surface_tree(
+                renderer,
+                &surface,
+                Point::default(),
+                output_scale,
+                1.0,
+                Kind::Unspecified,
+            );
+            let source_size = window
+                .geometry()
+                .size
+                .to_physical_precise_round(output_scale);
+            let mut elements = Vec::new();
+            crate::render::push_view_elements_fit(
+                &mut elements,
+                window,
+                view_elements,
+                Point::default(),
+                source_size,
+                output_scale,
+                Rectangle::from_size(entry_size),
+                !geometry.entry.primary(),
+                None,
+                self.blur_config,
+            );
+            return elements;
         }
 
         self.render_plain_entry_for_screen_cast(renderer, geometry, output_scale, entry_size)
@@ -741,5 +690,54 @@ impl Ewm {
         }
 
         self.casting.casts = casts;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn output_cast_cursor_location_matches_visibility_and_output_geometry(
+            output_x in -2_000i32..=2_000,
+            output_y in -2_000i32..=2_000,
+            output_w in 1i32..=4_000,
+            output_h in 1i32..=4_000,
+            local_x in -1_000i32..=5_000,
+            local_y in -1_000i32..=5_000,
+            scale_milli in 250i32..=4_000,
+            include_cursor in any::<bool>(),
+        ) {
+            let output_pos = Point::from((output_x, output_y));
+            let output_size = Size::from((output_w, output_h));
+            let output_scale = Scale::from(f64::from(scale_milli) / 1_000.0);
+            let pointer_location = (
+                f64::from(output_x + local_x),
+                f64::from(output_y + local_y),
+            );
+
+            let inside_output =
+                (0..output_w).contains(&local_x) && (0..output_h).contains(&local_y);
+            let expected = if include_cursor && inside_output {
+                Point::from((f64::from(local_x), f64::from(local_y)))
+                    .to_physical_precise_round(output_scale)
+            } else {
+                Point::default()
+            };
+
+            prop_assert_eq!(
+                output_cast_cursor_location(
+                    pointer_location,
+                    output_pos,
+                    output_size,
+                    output_scale,
+                    include_cursor,
+                ),
+                expected,
+            );
+        }
     }
 }

@@ -304,12 +304,11 @@ pub fn handle_keyboard_event(
         state.ewm.hide_cursor_for_typing();
     }
 
-    if !is_press {
-        if let Some(action) =
+    if !is_press
+        && let Some(action) =
             handle_held_intercept(state, &keyboard, keycode, key_state, serial, time)
-        {
-            return action;
-        }
+    {
+        return action;
     }
 
     // Handle locked state: only allow VT switch, forward everything else to lock surface
@@ -368,12 +367,12 @@ pub fn handle_keyboard_event(
     let fullscreen_active = fullscreen_entry.is_some();
 
     // Undo temporary redirects before forwarding into fullscreen surfaces.
-    if let Some((entry_id, surface_id)) = fullscreen_entry {
-        if state.ewm.focused_surface_id() != surface_id {
-            state
-                .ewm
-                .set_focus_entry(entry_id, "fullscreen_focus_redirect", true);
-        }
+    if let Some((entry_id, surface_id)) = fullscreen_entry
+        && state.ewm.focused_surface_id() != surface_id
+    {
+        state
+            .ewm
+            .set_focus_entry(entry_id, "fullscreen_focus_redirect", true);
     }
 
     state.sync_keyboard_focus();
@@ -382,12 +381,11 @@ pub fn handle_keyboard_event(
     if is_press && focus_on_emacs {
         state.ewm.record_emacs_keyboard_activity();
     }
-    if is_press {
-        if let Some(action) =
+    if is_press
+        && let Some(action) =
             handle_held_intercept(state, &keyboard, keycode, key_state, serial, time)
-        {
-            return action;
-        }
+    {
+        return action;
     }
 
     // During keyboard capture, Emacs needs Latin keysyms for keybinding
@@ -1092,10 +1090,10 @@ fn active_constraint(
             return None;
         }
         // Constraint does not apply if not within region.
-        if let Some(region) = constraint.region() {
-            if !region.contains(pos_within_surface.to_i32_round()) {
-                return None;
-            }
+        if let Some(region) = constraint.region()
+            && !region.contains(pos_within_surface.to_i32_round())
+        {
+            return None;
         }
         match &*constraint {
             PointerConstraint::Locked(_) => Some(ActiveConstraint::Locked),
@@ -1267,12 +1265,12 @@ pub fn handle_pointer_motion_absolute<B: InputBackend>(
     }
 
     // Handle confined pointer: prevent leaving the surface/region.
-    if let Some((focus_surface, region)) = &pointer_confined {
-        if confined_motion_prevented(state, focus_surface, region.as_ref(), pos) {
-            pointer.frame(state);
-            notify_pointer_activity(state);
-            return true;
-        }
+    if let Some((focus_surface, region)) = &pointer_confined
+        && confined_motion_prevented(state, focus_surface, region.as_ref(), pos)
+    {
+        pointer.frame(state);
+        notify_pointer_activity(state);
+        return true;
     }
 
     let (under, focus_changed) = state.ewm.update_pointer_focus_for_motion(pos);
@@ -1576,11 +1574,11 @@ pub fn handle_gesture_swipe_update<B: InputBackend>(
     }
     // Swiping up always opens the overview, whatever the scroll direction setting.
     let uninverted_dy = dy;
-    if let Some(dev) = (&event.device() as &dyn std::any::Any).downcast_ref::<libinput::Device>() {
-        if dev.config_scroll_natural_scroll_enabled() {
-            dx = -dx;
-            dy = -dy;
-        }
+    if let Some(dev) = (&event.device() as &dyn std::any::Any).downcast_ref::<libinput::Device>()
+        && dev.config_scroll_natural_scroll_enabled()
+    {
+        dx = -dx;
+        dy = -dy;
     }
     let timestamp = std::time::Duration::from_micros(event.time().micros());
 
@@ -1871,15 +1869,15 @@ fn compute_tablet_position<B: InputBackend<Device = libinput::Device>>(
     let size = transform.invert().transform_size(target_geo.size);
     let mut pos = transform.transform_point_in(event.position_transformed(size), &size.to_f64());
 
-    if mapped.is_some() {
-        if let Some(tablet_ratio) = device.size().map(|(w, h)| w / h) {
-            // This code does the same thing as mutter with "keep aspect ratio" enabled.
-            let ratio = tablet_ratio / (size.w as f64 / size.h as f64);
-            if ratio > 1. {
-                pos.x *= ratio;
-            } else {
-                pos.y /= ratio;
-            }
+    if mapped.is_some()
+        && let Some(tablet_ratio) = device.size().map(|(w, h)| w / h)
+    {
+        // This code does the same thing as mutter with "keep aspect ratio" enabled.
+        let ratio = tablet_ratio / (size.w as f64 / size.h as f64);
+        if ratio > 1. {
+            pos.x *= ratio;
+        } else {
+            pos.y /= ratio;
         }
     }
 

@@ -614,8 +614,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for ClientState {
 
 /// Anonymous file-backed shared memory, zero-filled on `ftruncate`.
 fn create_memfd(size: usize) -> OwnedFd {
-    use std::ffi::CStr;
-    let name = CStr::from_bytes_with_nul(b"ewm-test-shm\0").unwrap();
+    let name = c"ewm-test-shm";
     let fd = unsafe { libc::memfd_create(name.as_ptr(), 0) };
     if fd < 0 {
         panic!("memfd_create failed: {}", std::io::Error::last_os_error());

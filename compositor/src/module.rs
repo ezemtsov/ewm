@@ -803,7 +803,7 @@ fn init_logging() {
 
 fn cursor_config(theme: Option<String>, size: i64) -> Result<CursorConfig> {
     if theme.as_ref().is_some_and(|theme| theme.is_empty()) {
-        return Err(anyhow!("cursor theme must not be empty").into());
+        return Err(anyhow!("cursor theme must not be empty"));
     }
 
     let size = u8::try_from(size)
@@ -1601,7 +1601,7 @@ fn overview_module(action: String) -> Result<()> {
         "toggle" => OverviewAction::Toggle,
         "open" => OverviewAction::Open,
         "close" => OverviewAction::Close,
-        other => return Err(anyhow!("unknown overview action: {other}").into()),
+        other => return Err(anyhow!("unknown overview action: {other}")),
     };
     push_command(ModuleCommand::Overview { action });
     Ok(())

@@ -415,24 +415,22 @@ pub fn collect_render_elements_for_output(
     }
 
     // DnD icon renders above everything except the cursor.
-    if include_layers {
-        if let Some(dnd_icon) = ewm.dnd_icon.as_ref() {
-            let (pointer_x, pointer_y) = ewm.cursor_location();
-            let icon_pos = Point::from((
-                pointer_x + dnd_icon.offset.x as f64 - output_pos.x as f64,
-                pointer_y + dnd_icon.offset.y as f64 - output_pos.y as f64,
-            ));
-            let icon_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                render_elements_from_surface_tree(
-                    renderer,
-                    &dnd_icon.surface,
-                    icon_pos.to_physical_precise_round(scale),
-                    scale,
-                    1.,
-                    Kind::ScanoutCandidate,
-                );
-            elements.extend(icon_elements.into_iter().map(EwmRenderElement::Surface));
-        }
+    if include_layers && let Some(dnd_icon) = ewm.dnd_icon.as_ref() {
+        let (pointer_x, pointer_y) = ewm.cursor_location();
+        let icon_pos = Point::from((
+            pointer_x + dnd_icon.offset.x as f64 - output_pos.x as f64,
+            pointer_y + dnd_icon.offset.y as f64 - output_pos.y as f64,
+        ));
+        let icon_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+            render_elements_from_surface_tree(
+                renderer,
+                &dnd_icon.surface,
+                icon_pos.to_physical_precise_round(scale),
+                scale,
+                1.,
+                Kind::ScanoutCandidate,
+            );
+        elements.extend(icon_elements.into_iter().map(EwmRenderElement::Surface));
     }
 
     // If the session is locked, draw the lock surface.
@@ -1307,7 +1305,7 @@ fn render_screencopy_elements(
     size: Size<i32, Physical>,
     output_scale: Scale<f64>,
     output_transform: Transform,
-    elements: &[impl RenderElement<GlesRenderer> + Element],
+    elements: &[impl RenderElement<GlesRenderer>],
 ) -> anyhow::Result<Option<SyncPoint>> {
     match screencopy.buffer() {
         ScreencopyBuffer::Dmabuf(dmabuf) => render_to_dmabuf(

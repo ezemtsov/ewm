@@ -222,10 +222,10 @@ impl OutputManagementState {
             CurrentModeChange::None => {}
             CurrentModeChange::Set(new_index) => {
                 for client in self.clients.values() {
-                    if let Some((head, modes)) = client.heads.get(&change.output_name) {
-                        if let Some(new_mode) = modes.get(new_index) {
-                            head.current_mode(new_mode);
-                        }
+                    if let Some((head, modes)) = client.heads.get(&change.output_name)
+                        && let Some(new_mode) = modes.get(new_index)
+                    {
+                        head.current_mode(new_mode);
                     }
                 }
             }
@@ -830,7 +830,6 @@ where
                         zwlr_output_configuration_head_v1::Error::InvalidAdaptiveSyncState,
                         "unknown adaptive sync value",
                     );
-                    return;
                 }
                 // ewm doesn't support VRR; valid requests are accepted as no-ops.
             }
@@ -985,10 +984,10 @@ fn send_new_head<D>(
     if new_head.version() >= zwlr_output_head_v1::EVT_MODEL_SINCE {
         new_head.model(head_state.model.clone());
     }
-    if new_head.version() >= zwlr_output_head_v1::EVT_SERIAL_NUMBER_SINCE {
-        if let Some(serial) = &head_state.serial_number {
-            new_head.serial_number(serial.clone());
-        }
+    if new_head.version() >= zwlr_output_head_v1::EVT_SERIAL_NUMBER_SINCE
+        && let Some(serial) = &head_state.serial_number
+    {
+        new_head.serial_number(serial.clone());
     }
     if new_head.version() >= zwlr_output_head_v1::EVT_ADAPTIVE_SYNC_SINCE {
         new_head.adaptive_sync(zwlr_output_head_v1::AdaptiveSyncState::Disabled);

@@ -749,17 +749,13 @@ impl InterceptedKey {
 /// keyboard focus stays on the client surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum InterceptDispatch {
+    #[default]
     Keyboard,
     Command,
     /// Translate to a different key delivered to a non-Emacs surface.
     Translate(TranslateTarget),
-}
-
-impl Default for InterceptDispatch {
-    fn default() -> Self {
-        Self::Keyboard
-    }
 }
 
 fn key_binding_matches(
@@ -1651,19 +1647,19 @@ impl Ewm {
     fn prune_dangling_focus(&mut self) {
         for frame in self.frame_set.all_frames_mut() {
             frame.validate_fullscreen();
-            if let Some(sel) = frame.selected_entry_id {
-                if !frame.entries.iter().any(|entry| entry.id == sel) {
-                    frame.selected_entry_id = None;
-                }
+            if let Some(sel) = frame.selected_entry_id
+                && !frame.entries.iter().any(|entry| entry.id == sel)
+            {
+                frame.selected_entry_id = None;
             }
         }
         for space in self.floating_spaces.values_mut() {
             for frame in &mut space.frames {
                 frame.validate_fullscreen();
-                if let Some(sel) = frame.selected_entry_id {
-                    if !frame.entries.iter().any(|entry| entry.id == sel) {
-                        frame.selected_entry_id = None;
-                    }
+                if let Some(sel) = frame.selected_entry_id
+                    && !frame.entries.iter().any(|entry| entry.id == sel)
+                {
+                    frame.selected_entry_id = None;
                 }
             }
         }
@@ -1817,12 +1813,11 @@ impl Ewm {
         let output_name = output.name();
 
         // Cancel pending estimated-VBlank timers
-        if let Some(output_state) = self.output_state.remove(output) {
-            if let RedrawState::WaitingForEstimatedVBlank(token)
+        if let Some(output_state) = self.output_state.remove(output)
+            && let RedrawState::WaitingForEstimatedVBlank(token)
             | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = output_state.redraw_state
-            {
-                self.loop_handle.remove(token);
-            }
+        {
+            self.loop_handle.remove(token);
         }
 
         self.check_lock_on_output_removed();
@@ -2299,17 +2294,17 @@ impl Ewm {
         }
         // For multi-view surfaces, prefer the focused output's active frame so remote
         // focus requests (xdg_activation, foreign_toplevel, unlock) don't jump outputs.
-        if let Some(out) = self.get_focused_output() {
-            if let Some(strip) = self.frame_set.mapped_strip(&out) {
-                let idx = strip.active_idx();
-                if strip.frames.get(idx).is_some_and(|frame| {
-                    frame
-                        .entries
-                        .iter()
-                        .any(|entry| entry.surface_id() == Some(surface_id))
-                }) {
-                    return Some((out, idx));
-                }
+        if let Some(out) = self.get_focused_output()
+            && let Some(strip) = self.frame_set.mapped_strip(&out)
+        {
+            let idx = strip.active_idx();
+            if strip.frames.get(idx).is_some_and(|frame| {
+                frame
+                    .entries
+                    .iter()
+                    .any(|entry| entry.surface_id() == Some(surface_id))
+            }) {
+                return Some((out, idx));
             }
         }
         // Fall back to visible frames in canonical output order.
@@ -2384,11 +2379,11 @@ impl Ewm {
         }
 
         let name = Self::workspace_name_from_rename(name);
-        if let Some(name) = &name {
-            if self.workspace_name_taken(name, frame_surface_id) {
-                warn!("rename_workspace: workspace name {:?} already exists", name,);
-                return false;
-            }
+        if let Some(name) = &name
+            && self.workspace_name_taken(name, frame_surface_id)
+        {
+            warn!("rename_workspace: workspace name {:?} already exists", name,);
+            return false;
         }
 
         let Some(frame) = self.frame_set.frame_mut(frame_surface_id) else {
@@ -2561,11 +2556,11 @@ impl Ewm {
         let zoom = self.overview.zoom();
         let progress = self.overview.progress().unwrap_or(0.0);
         self.set_focus_frame_from_pointer(target, "overview", pos_in_frame);
-        if progress > 0.01 {
-            if let Some(strip) = self.frame_set.mapped_strip_mut(output_name) {
-                strip.view_offset = strip::ViewOffset::Static(0.0);
-                strip.overview_shift = (strip.view_pos() - prev_view_pos) * zoom / progress;
-            }
+        if progress > 0.01
+            && let Some(strip) = self.frame_set.mapped_strip_mut(output_name)
+        {
+            strip.view_offset = strip::ViewOffset::Static(0.0);
+            strip.overview_shift = (strip.view_pos() - prev_view_pos) * zoom / progress;
         }
         self.with_overview(|overview| overview.close());
         self.queue_redraw_all();
@@ -3631,7 +3626,7 @@ impl Ewm {
         pre: &HashSet<u64>,
         post: &HashSet<u64>,
     ) {
-        for &id in pre.difference(&post) {
+        for &id in pre.difference(post) {
             if let (Some(out), Some(window)) = (output, self.id_windows.get(&id)) {
                 self.leave_output_for_window(window, out);
             }
@@ -3739,10 +3734,10 @@ impl Ewm {
     ) -> Vec<OutputLayoutSnapshot> {
         let mut output_names = vec![output_name.to_string()];
         for migration in migrations {
-            if let Some(prev_name) = &migration.prev_output {
-                if !output_names.iter().any(|name| name == prev_name) {
-                    output_names.push(prev_name.clone());
-                }
+            if let Some(prev_name) = &migration.prev_output
+                && !output_names.iter().any(|name| name == prev_name)
+            {
+                output_names.push(prev_name.clone());
             }
         }
         output_names
@@ -3798,10 +3793,10 @@ impl Ewm {
             let Some(window) = self.id_windows.get(&migration.id) else {
                 continue;
             };
-            if let Some(prev_name) = migration.prev_output.as_deref() {
-                if let Some(prev_output) = self.mapped_output_by_name(prev_name) {
-                    self.leave_output_for_window(window, prev_output);
-                }
+            if let Some(prev_name) = migration.prev_output.as_deref()
+                && let Some(prev_output) = self.mapped_output_by_name(prev_name)
+            {
+                self.leave_output_for_window(window, prev_output);
             }
             self.enter_output_for_window(window, target_output);
         }
@@ -3886,10 +3881,10 @@ impl Ewm {
         }
         self.prune_dangling_focus();
         self.focus_any_frame_if_unfocused("frame_set_move");
-        if let Some(id) = prev_src_active {
-            if frame_ids.contains(&id) {
-                self.queue_event(Event::FrameHidden { id });
-            }
+        if let Some(id) = prev_src_active
+            && frame_ids.contains(&id)
+        {
+            self.queue_event(Event::FrameHidden { id });
         }
         self.reconcile_active_for_output(src_name, prev_src_active);
         self.reconcile_active_for_output(dst_name, prev_dst_active);
@@ -4072,10 +4067,10 @@ impl Ewm {
             self.reconcile_active_for_output(&output_name, None);
         }
         self.restore_last_active_frame(&output_name);
-        if self.focused_frame_id == 0 {
-            if let Some(id) = self.active_frame_surface_id(&output_name) {
-                self.set_focus_frame(id, focus_reason, false);
-            }
+        if self.focused_frame_id == 0
+            && let Some(id) = self.active_frame_surface_id(&output_name)
+        {
+            self.set_focus_frame(id, focus_reason, false);
         }
         self.focus_any_frame_if_unfocused(focus_reason);
     }
@@ -4240,10 +4235,8 @@ impl Ewm {
             return false;
         };
         let changed = f(space);
-        if changed {
-            if let Some(output) = self.find_mapped_output(&output_name) {
-                self.queue_redraw(&output);
-            }
+        if changed && let Some(output) = self.find_mapped_output(&output_name) {
+            self.queue_redraw(&output);
         }
         changed
     }
@@ -4676,10 +4669,10 @@ impl Ewm {
         let current = self.output_at(pos).cloned();
         let prev = self.pointer_output.take();
 
-        if let Some(ref prev) = prev {
-            if current.as_ref() != Some(prev) {
-                self.queue_redraw(prev);
-            }
+        if let Some(ref prev) = prev
+            && current.as_ref() != Some(prev)
+        {
+            self.queue_redraw(prev);
         }
         if let Some(ref output) = current {
             self.queue_redraw(output);
@@ -5310,10 +5303,10 @@ impl Ewm {
                     .frames
                     .iter()
                     .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
-            if strip.animations_ongoing() || any_open_fade {
-                if let Some(state) = self.output_state.get_mut(output) {
-                    state.unfinished_animations_remain = true;
-                }
+            if (strip.animations_ongoing() || any_open_fade)
+                && let Some(state) = self.output_state.get_mut(output)
+            {
+                state.unfinished_animations_remain = true;
             }
         }
         if let Some(space) = self.floating_spaces.get(&output.name()) {
@@ -5325,10 +5318,10 @@ impl Ewm {
                     .frames
                     .iter()
                     .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
-            if space.animations_ongoing() || any_open_fade {
-                if let Some(state) = self.output_state.get_mut(output) {
-                    state.unfinished_animations_remain = true;
-                }
+            if (space.animations_ongoing() || any_open_fade)
+                && let Some(state) = self.output_state.get_mut(output)
+            {
+                state.unfinished_animations_remain = true;
             }
         }
         if !self.cursor_hide.is_hidden
@@ -5336,10 +5329,9 @@ impl Ewm {
             && self
                 .cursor_manager
                 .is_current_cursor_animated(output.current_scale().integer_scale())
+            && let Some(state) = self.output_state.get_mut(output)
         {
-            if let Some(state) = self.output_state.get_mut(output) {
-                state.unfinished_animations_remain = true;
-            }
+            state.unfinished_animations_remain = true;
         }
 
         // Check lock confirmation requirements
@@ -5399,25 +5391,25 @@ impl Ewm {
         drop(layer_map);
 
         // Update lock surfaces
-        if let Some(output_state) = self.output_state.get(output) {
-            if let Some(ref lock_surface) = output_state.lock_surface {
-                with_surface_tree_downward(
-                    lock_surface.wl_surface(),
-                    (),
-                    |_, _, _| TraversalAction::DoChildren(()),
-                    |surface, states, _| {
-                        update_surface_primary_scanout_output(
-                            surface,
-                            output,
-                            states,
-                            None,
-                            render_element_states,
-                            |_, _, output, _| output,
-                        );
-                    },
-                    |_, _, _| true,
-                );
-            }
+        if let Some(output_state) = self.output_state.get(output)
+            && let Some(ref lock_surface) = output_state.lock_surface
+        {
+            with_surface_tree_downward(
+                lock_surface.wl_surface(),
+                (),
+                |_, _, _| TraversalAction::DoChildren(()),
+                |surface, states, _| {
+                    update_surface_primary_scanout_output(
+                        surface,
+                        output,
+                        states,
+                        None,
+                        render_element_states,
+                        |_, _, output, _| output,
+                    );
+                },
+                |_, _, _| true,
+            );
         }
 
         if let CursorImageStatus::Surface(surface) = self.cursor_manager.cursor_image() {
@@ -5499,22 +5491,22 @@ impl Ewm {
         }
         drop(layer_map);
 
-        if let Some(output_state) = self.output_state.get(output) {
-            if let Some(ref lock_surface) = output_state.lock_surface {
-                send_dmabuf_feedback_surface_tree(
-                    lock_surface.wl_surface(),
-                    output,
-                    |_, _| Some(output.clone()),
-                    |surface, _| {
-                        select_dmabuf_feedback(
-                            surface,
-                            render_element_states,
-                            &feedback.render,
-                            &feedback.scanout,
-                        )
-                    },
-                );
-            }
+        if let Some(output_state) = self.output_state.get(output)
+            && let Some(ref lock_surface) = output_state.lock_surface
+        {
+            send_dmabuf_feedback_surface_tree(
+                lock_surface.wl_surface(),
+                output,
+                |_, _| Some(output.clone()),
+                |surface, _| {
+                    select_dmabuf_feedback(
+                        surface,
+                        render_element_states,
+                        &feedback.render,
+                        &feedback.scanout,
+                    )
+                },
+            );
         }
 
         if let Some(icon) = self.dnd_icon.as_ref() {
@@ -5596,21 +5588,21 @@ impl Ewm {
         drop(layer_map);
 
         // Collect from lock surface
-        if let Some(output_state) = self.output_state.get(output) {
-            if let Some(ref lock_surface) = output_state.lock_surface {
-                take_presentation_feedback_surface_tree(
-                    lock_surface.wl_surface(),
-                    &mut feedback,
-                    surface_primary_scanout_output,
-                    |surface, _| {
-                        surface_presentation_feedback_flags_from_states(
-                            surface,
-                            None,
-                            render_element_states,
-                        )
-                    },
-                );
-            }
+        if let Some(output_state) = self.output_state.get(output)
+            && let Some(ref lock_surface) = output_state.lock_surface
+        {
+            take_presentation_feedback_surface_tree(
+                lock_surface.wl_surface(),
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    surface_presentation_feedback_flags_from_states(
+                        surface,
+                        None,
+                        render_element_states,
+                    )
+                },
+            );
         }
 
         if let Some(icon) = self.dnd_icon.as_ref() {
@@ -5670,10 +5662,11 @@ impl Ewm {
                 .get_or_insert(SurfaceFrameThrottlingState::default);
             let mut last_sent_at = frame_throttling_state.last_sent_at.borrow_mut();
 
-            if let Some((last_output, last_sequence)) = &*last_sent_at {
-                if last_output == output && *last_sequence == sequence {
-                    return None;
-                }
+            if let Some((last_output, last_sequence)) = &*last_sent_at
+                && last_output == output
+                && *last_sequence == sequence
+            {
+                return None;
             }
 
             *last_sent_at = Some((output.clone(), sequence));
@@ -5702,16 +5695,16 @@ impl Ewm {
         }
         drop(layer_map);
 
-        if let Some(output_state) = self.output_state.get(output) {
-            if let Some(ref lock_surface) = output_state.lock_surface {
-                send_frames_surface_tree(
-                    lock_surface.wl_surface(),
-                    output,
-                    frame_callback_time,
-                    FRAME_CALLBACK_THROTTLE,
-                    &should_send,
-                );
-            }
+        if let Some(output_state) = self.output_state.get(output)
+            && let Some(ref lock_surface) = output_state.lock_surface
+        {
+            send_frames_surface_tree(
+                lock_surface.wl_surface(),
+                output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                &should_send,
+            );
         }
 
         if let Some(icon) = self.dnd_icon.as_ref() {
@@ -6141,13 +6134,13 @@ impl Ewm {
     pub fn focus_layer_surface_if_on_demand(&mut self, surface: Option<DesktopLayerSurface>) {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
-        if let Some(surface) = surface {
-            if surface.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand {
-                if self.layer_shell_on_demand_focus.as_ref() != Some(&surface) {
-                    self.layer_shell_on_demand_focus = Some(surface);
-                }
-                return;
+        if let Some(surface) = surface
+            && surface.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand
+        {
+            if self.layer_shell_on_demand_focus.as_ref() != Some(&surface) {
+                self.layer_shell_on_demand_focus = Some(surface);
             }
+            return;
         }
 
         // Something else got clicked, clear on-demand layer-shell focus
@@ -6165,29 +6158,29 @@ impl Ewm {
         // Helper: find exclusive focus on a layer
         let excl_on_layer = |output: &Output, layer: Layer| -> Option<WlSurface> {
             let map = layer_map_for_output(output);
-            let result = map.layers_on(layer).find_map(|surface| {
+
+            map.layers_on(layer).find_map(|surface| {
                 if surface.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
                 {
                     Some(surface.wl_surface().clone())
                 } else {
                     None
                 }
-            });
-            result
+            })
         };
 
         // Helper: check if on-demand focus is on a layer
         let on_demand_on_layer = |output: &Output, layer: Layer| -> Option<WlSurface> {
             let on_demand = self.layer_shell_on_demand_focus.as_ref()?;
             let map = layer_map_for_output(output);
-            let result = map.layers_on(layer).find_map(|surface| {
+
+            map.layers_on(layer).find_map(|surface| {
                 if surface == on_demand {
                     Some(surface.wl_surface().clone())
                 } else {
                     None
                 }
-            });
-            result
+            })
         };
 
         // Check all outputs (typically just one for EWM)
@@ -6576,12 +6569,11 @@ impl Ewm {
             }
 
             // 2. Top layer, only before windows when not fullscreen
-            if !above_top_layer {
-                if let Some(result) =
+            if !above_top_layer
+                && let Some(result) =
                     self.layer_surface_under(output, Layer::Top, pos_within_output, geo.loc)
-                {
-                    return Some(result);
-                }
+            {
+                return Some(result);
             }
         }
 
@@ -6599,12 +6591,11 @@ impl Ewm {
         if let (Some(output), Some(geo)) = (output, output_geo) {
             let pos_within_output = pos - geo.loc.to_f64();
 
-            if above_top_layer {
-                if let Some(result) =
+            if above_top_layer
+                && let Some(result) =
                     self.layer_surface_under(output, Layer::Top, pos_within_output, geo.loc)
-                {
-                    return Some(result);
-                }
+            {
+                return Some(result);
             }
 
             // Bottom and background layers are zoomed away behind the overview backdrop.
@@ -6709,10 +6700,10 @@ impl Ewm {
         let cursor_point = Point::from((px as i32, py as i32));
 
         for output in &self.sorted_outputs {
-            if let Some(geo) = self.space.output_geometry(output) {
-                if geo.contains(cursor_point) {
-                    return Some(output.name());
-                }
+            if let Some(geo) = self.space.output_geometry(output)
+                && geo.contains(cursor_point)
+            {
+                return Some(output.name());
             }
         }
         None
@@ -6969,10 +6960,8 @@ impl Ewm {
         if let Some(state) = self.output_state.get_mut(output) {
             state.resize_lock_buffer((output_size.w as i32, output_size.h as i32));
             state.resize_backdrops((output_size.w as i32, output_size.h as i32));
-            if is_locked {
-                if let Some(lock_surface) = &state.lock_surface {
-                    configure_lock_surface(lock_surface, output);
-                }
+            if is_locked && let Some(lock_surface) = &state.lock_surface {
+                configure_lock_surface(lock_surface, output);
             }
         }
 
@@ -7448,19 +7437,19 @@ impl Ewm {
         };
 
         let output = self.output_for_popup(&popup);
-        if let PopupKind::Xdg(ref xdg_popup) = popup {
-            if !xdg_popup.is_initial_configure_sent() {
-                if let Some(output) = output.as_ref() {
-                    let scale = output.current_scale();
-                    let transform = output.current_transform();
-                    smithay::wayland::compositor::with_states(surface, |data| {
-                        crate::utils::send_scale_transform(surface, data, scale, transform);
-                    });
-                }
-                xdg_popup
-                    .send_configure()
-                    .expect("initial configure failed");
+        if let PopupKind::Xdg(ref xdg_popup) = popup
+            && !xdg_popup.is_initial_configure_sent()
+        {
+            if let Some(output) = output.as_ref() {
+                let scale = output.current_scale();
+                let transform = output.current_transform();
+                smithay::wayland::compositor::with_states(surface, |data| {
+                    crate::utils::send_scale_transform(surface, data, scale, transform);
+                });
             }
+            xdg_popup
+                .send_configure()
+                .expect("initial configure failed");
         }
 
         if let Some(output) = output {
@@ -7595,18 +7584,16 @@ impl Ewm {
         }
 
         // Resize Emacs frames to fill their working area
-        if let Some(ref output_name) = frame_output.filter(|_| !frame_is_floating) {
-            if let Some(working_area) = self
+        if let Some(ref output_name) = frame_output.filter(|_| !frame_is_floating)
+            && let Some(working_area) = self
                 .mapped_output_by_name(output_name)
                 .map(|o| self.get_working_area(o))
-            {
-                if let Some(t) = window.toplevel() {
-                    t.with_pending_state(|state| {
-                        state.size = Some(working_area.size);
-                    });
-                    t.send_configure();
-                }
-            }
+            && let Some(t) = window.toplevel()
+        {
+            t.with_pending_state(|state| {
+                state.size = Some(working_area.size);
+            });
+            t.send_configure();
         }
 
         self.surface_info.insert(
@@ -8040,24 +8027,24 @@ impl CompositorHandler for State {
         }
 
         // DnD icon surface: update offset from buffer delta and redraw.
-        if let Some(icon) = &self.ewm.dnd_icon {
-            if icon.surface == root {
-                if surface == &icon.surface {
-                    let dnd_icon = self.ewm.dnd_icon.as_mut().unwrap();
-                    smithay::wayland::compositor::with_states(&dnd_icon.surface, |states| {
-                        let delta = states
-                            .cached_state
-                            .get::<smithay::wayland::compositor::SurfaceAttributes>()
-                            .current()
-                            .buffer_delta
-                            .take()
-                            .unwrap_or_default();
-                        dnd_icon.offset += delta;
-                    });
-                }
-                self.ewm.queue_redraw_all();
-                return;
+        if let Some(icon) = &self.ewm.dnd_icon
+            && icon.surface == root
+        {
+            if surface == &icon.surface {
+                let dnd_icon = self.ewm.dnd_icon.as_mut().unwrap();
+                smithay::wayland::compositor::with_states(&dnd_icon.surface, |states| {
+                    let delta = states
+                        .cached_state
+                        .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                        .current()
+                        .buffer_delta
+                        .take()
+                        .unwrap_or_default();
+                    dnd_icon.offset += delta;
+                });
             }
+            self.ewm.queue_redraw_all();
+            return;
         }
 
         // Surface type dispatch order:
@@ -8234,12 +8221,12 @@ impl SelectionHandler for State {
         source: Option<SelectionSource>,
         _seat: Seat<Self>,
     ) {
-        if ty == SelectionTarget::Clipboard {
-            if let Some(source) = &source {
-                let mime_types = source.mime_types();
-                if mime_types.iter().any(|m| m.contains("text")) {
-                    self.read_client_selection_to_emacs();
-                }
+        if ty == SelectionTarget::Clipboard
+            && let Some(source) = &source
+        {
+            let mime_types = source.mime_types();
+            if mime_types.iter().any(|m| m.contains("text")) {
+                self.read_client_selection_to_emacs();
             }
         }
     }
@@ -8951,11 +8938,11 @@ impl SessionLockHandler for State {
         self.ewm.keyboard_focus = None;
 
         // Restore focus to the surface that was focused before locking
-        if let Some(id) = self.ewm.pre_lock_focus.take() {
-            if self.ewm.id_windows.contains_key(&id) {
-                info!("Restoring focus to surface {} after unlock", id);
-                self.ewm.set_focus(id, false, "unlock");
-            }
+        if let Some(id) = self.ewm.pre_lock_focus.take()
+            && self.ewm.id_windows.contains_key(&id)
+        {
+            info!("Restoring focus to surface {} after unlock", id);
+            self.ewm.set_focus(id, false, "unlock");
         }
         self.sync_keyboard_focus();
 
@@ -9313,16 +9300,15 @@ impl State {
 
         if let (Some(output), Some(old_geo)) = (&output, old_geo) {
             let point = Point::from((pos.x as i32, pos.y as i32));
-            if old_geo.contains(point) {
-                if let Some(new_geo) = self.ewm.space.output_geometry(output) {
-                    if old_geo != new_geo {
-                        let rel_x = (pos.x - old_geo.loc.x as f64) / old_geo.size.w as f64;
-                        let rel_y = (pos.y - old_geo.loc.y as f64) / old_geo.size.h as f64;
-                        let new_x = new_geo.loc.x as f64 + rel_x * new_geo.size.w as f64;
-                        let new_y = new_geo.loc.y as f64 + rel_y * new_geo.size.h as f64;
-                        self.warp_pointer(new_x, new_y);
-                    }
-                }
+            if old_geo.contains(point)
+                && let Some(new_geo) = self.ewm.space.output_geometry(output)
+                && old_geo != new_geo
+            {
+                let rel_x = (pos.x - old_geo.loc.x as f64) / old_geo.size.w as f64;
+                let rel_y = (pos.y - old_geo.loc.y as f64) / old_geo.size.h as f64;
+                let new_x = new_geo.loc.x as f64 + rel_x * new_geo.size.w as f64;
+                let new_y = new_geo.loc.y as f64 + rel_y * new_geo.size.h as f64;
+                self.warp_pointer(new_x, new_y);
             }
         }
     }
@@ -9358,14 +9344,11 @@ impl State {
             None
         };
 
-        if !locked {
-            if let Some(surface) = &self.ewm.layer_shell_on_demand_focus {
-                let good = surface.alive()
-                    && surface.cached_state().keyboard_interactivity
-                        == KeyboardInteractivity::OnDemand;
-                if !good {
-                    self.ewm.layer_shell_on_demand_focus = None;
-                }
+        if !locked && let Some(surface) = &self.ewm.layer_shell_on_demand_focus {
+            let good = surface.alive()
+                && surface.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand;
+            if !good {
+                self.ewm.layer_shell_on_demand_focus = None;
             }
         }
 
@@ -9563,7 +9546,7 @@ impl State {
         );
 
         // Process pending early imports
-        let pending_imports: Vec<_> = self.ewm.pending_early_imports.drain(..).collect();
+        let pending_imports: Vec<_> = std::mem::take(&mut self.ewm.pending_early_imports);
         for surface in pending_imports {
             self.backend.early_import(&surface);
         }
@@ -9632,11 +9615,11 @@ impl State {
         use module::ModuleCommand;
         match cmd {
             ModuleCommand::Close { id } => {
-                if let Some(window) = self.ewm.id_windows.get(&id) {
-                    if let Some(toplevel) = window.toplevel() {
-                        toplevel.send_close();
-                        info!("Close surface {} (sent close request)", id);
-                    }
+                if let Some(window) = self.ewm.id_windows.get(&id)
+                    && let Some(toplevel) = window.toplevel()
+                {
+                    toplevel.send_close();
+                    info!("Close surface {} (sent close request)", id);
                 }
             }
             ModuleCommand::FocusOutputDirection { dx, dy } => {
@@ -10051,10 +10034,10 @@ impl State {
                         warn!("error reading client selection: {e:?}");
                         return;
                     }
-                    if let Ok(text) = String::from_utf8(buf) {
-                        if !text.is_empty() {
-                            let _ = tx.send(Event::SelectionChanged { text });
-                        }
+                    if let Ok(text) = String::from_utf8(buf)
+                        && !text.is_empty()
+                    {
+                        let _ = tx.send(Event::SelectionChanged { text });
                     }
                 });
             }
@@ -10697,7 +10680,7 @@ mod tests {
                 .iter()
                 .copied()
                 .filter(|name| {
-                    fix.ewm_ref().frame_set.mapped_strip(*name)
+                    fix.ewm_ref().frame_set.mapped_strip(name)
                         .is_some_and(|strip| {
                             strip.surface_entries().any(|entry| {
                                 entry.surface_id() == Some(surface_id) && entry.primary()
@@ -10740,11 +10723,10 @@ mod tests {
                     .find(|idx| membership & (1 << idx) != 0)
                     .unwrap();
                 let removed_name = PROP_HEADS[removed_idx];
-                if let Some(strip) = fix.ewm().frame_set.mapped_strip_mut(removed_name) {
-                    if let Some(frame) = strip.frames.first_mut() {
+                if let Some(strip) = fix.ewm().frame_set.mapped_strip_mut(removed_name)
+                    && let Some(frame) = strip.frames.first_mut() {
                         frame.entries.clear();
                     }
-                }
                 fix.ewm().refresh_mapped_cast_outputs();
                 prop_assert!(!fix
                     .ewm_ref()
