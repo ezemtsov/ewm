@@ -357,14 +357,6 @@ impl Frame {
         }
     }
 
-    pub fn clear_fullscreen_for_surface(&mut self, surface_id: u64) -> Option<FullscreenEntry> {
-        if self.surface_fullscreen(surface_id) {
-            self.fullscreen.take()
-        } else {
-            None
-        }
-    }
-
     pub fn validate_fullscreen(&mut self) -> Option<FullscreenEntry> {
         let fullscreen = self.fullscreen?;
         if self.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id) {

@@ -382,11 +382,8 @@ pub fn handle_keyboard_event(
     let fullscreen_entry = focused_entry_id.and_then(|entry_id| {
         state
             .ewm
-            .frame_set
-            .mapped_strips()
-            .values()
-            .flat_map(|s| s.frames.iter())
-            .find(|f| f.surface_id == focused_frame_id)
+            .frame_location(focused_frame_id)
+            .map(|location| location.frame)
             .filter(|f| f.entry_fullscreen(entry_id))
             .and_then(|f| {
                 f.entry_surface_id(entry_id)

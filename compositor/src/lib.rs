@@ -1941,20 +1941,6 @@ impl Ewm {
         self.queue_surface_request(surface, |id| Event::Minimize { id });
     }
 
-    fn set_fullscreen_for_surface(
-        &mut self,
-        surface: &WlSurface,
-        output: Option<WlOutput>,
-        fullscreen: bool,
-    ) {
-        if let Some(id) = self.surface_id(surface) {
-            let output_name = output
-                .and_then(|output| self.output_from_resource(&output))
-                .map(|output| output.name());
-            self.set_surface_fullscreen_on_output(id, output_name.as_deref(), fullscreen);
-        }
-    }
-
     fn queue_maximize_request_for_surface(&mut self, surface: &WlSurface) {
         self.queue_surface_request(surface, |id| Event::MaximizeRequest { id });
     }
@@ -2889,8 +2875,7 @@ impl Ewm {
         frame_idx: usize,
         entry: &LayoutEntry,
     ) -> Rectangle<i32, Logical> {
-        let fullscreen = Self::layout_entry_is_fullscreen(strip, frame_idx, entry);
-        if fullscreen {
+        if Self::layout_entry_is_fullscreen(strip, frame_idx, entry) {
             if entry.primary() {
                 let window_size = entry
                     .surface_id()
@@ -2903,11 +2888,7 @@ impl Ewm {
                     window_size,
                 );
             }
-
-            return Rectangle::new(
-                Point::from((output_geo.loc.x, output_geo.loc.y)),
-                Size::from((entry.w as i32, entry.h as i32)),
-            );
+            return Rectangle::new(output_geo.loc, Size::from((entry.w as i32, entry.h as i32)));
         }
 
         let frame_dx = strip.screen_x_of_frame(frame_idx).round() as i32;
@@ -2948,18 +2929,13 @@ impl Ewm {
     }
 
     fn layout_entry_location_fullscreen(&self, location: LayoutEntryLocation<'_>) -> bool {
-        if location.floating {
-            return self
-                .floating_spaces
-                .get(location.output_name)
-                .and_then(|space| space.frames.get(location.frame_idx))
-                .is_some_and(|frame| frame.entry_fullscreen(location.entry.id));
-        }
-        self.frame_set
-            .mapped_strip(location.output_name)
-            .is_some_and(|strip| {
-                Self::layout_entry_is_fullscreen(strip, location.frame_idx, location.entry)
-            })
+        !location.floating
+            && self
+                .frame_set
+                .mapped_strip(location.output_name)
+                .is_some_and(|strip| {
+                    Self::layout_entry_is_fullscreen(strip, location.frame_idx, location.entry)
+                })
     }
 
     /// On-screen origins of every layout view of `surface_id`, one per entry.
@@ -3078,7 +3054,6 @@ impl Ewm {
                 if !predicate(entry) {
                     continue;
                 }
-                let fullscreen = frame.entry_fullscreen(entry.id);
                 let rect = Rectangle::new(
                     Point::from((
                         output_geo.loc.x + frame_rect.loc.x as i32 + entry.x,
@@ -3089,7 +3064,7 @@ impl Ewm {
                 if Self::rect_contains_f64(rect, pos) {
                     return Some(LayoutEntryHit {
                         entry,
-                        fullscreen,
+                        fullscreen: false,
                         rect,
                         output_size: output_geo.size,
                     });
@@ -3330,12 +3305,6 @@ impl Ewm {
                     .iter()
                     .any(|frame| frame.surface_fullscreen(id))
             })
-            || self.floating_spaces.values().any(|space| {
-                space
-                    .frames
-                    .iter()
-                    .any(|frame| frame.surface_fullscreen(id))
-            })
     }
 
     fn surface_has_primary_entry(&self, id: u64) -> bool {
@@ -3375,97 +3344,28 @@ impl Ewm {
         }
     }
 
-    fn fullscreen_entry_id_for_surface(&self, id: u64) -> Option<LayoutEntryId> {
-        self.focused_entry_for_surface(id)
-            .or_else(|| self.layout_entry_for_surface(id, LayoutEntry::primary))
-            .or_else(|| self.layout_entry_for_surface(id, |_| true))
-            .map(|location| location.entry.id)
-    }
-
-    fn fullscreen_entry_id_for_surface_on_output(
-        &self,
-        id: u64,
-        output_name: Option<&str>,
-    ) -> Option<LayoutEntryId> {
-        output_name
-            .and_then(|name| self.frame_set.mapped_strip(name))
-            .and_then(|strip| {
-                strip
-                    .surface_entries_with_frame()
-                    .find(|(_, entry)| entry.surface_id() == Some(id))
-                    .map(|(_, entry)| entry.id)
-            })
-            .or_else(|| {
-                output_name
-                    .and_then(|name| self.floating_spaces.get(name))
-                    .and_then(|space| {
-                        space
-                            .surface_entries_with_frame()
-                            .find(|(_, entry)| entry.surface_id() == Some(id))
-                            .map(|(_, entry)| entry.id)
-                    })
-            })
-            .or_else(|| self.fullscreen_entry_id_for_surface(id))
-    }
-
     pub fn set_layout_entry_fullscreen(
         &mut self,
         entry_id: LayoutEntryId,
         fullscreen: bool,
     ) -> Option<u64> {
-        let mut target_surface = None;
-        let mut cleared_surfaces = Vec::new();
-
-        for frame in self.frame_set.all_frames_mut() {
-            target_surface = frame.entry_surface_id(entry_id);
-            if target_surface.is_none() {
-                continue;
-            }
-            if fullscreen {
-                if let Some((previous, _next)) = frame.set_fullscreen_entry(entry_id) {
-                    cleared_surfaces.extend(previous.map(|fullscreen| fullscreen.surface_id));
-                }
-            } else {
-                cleared_surfaces.extend(
-                    frame
-                        .clear_fullscreen_entry(entry_id)
-                        .map(|fullscreen| fullscreen.surface_id),
-                );
-            }
-            break;
-        }
-        if target_surface.is_none() {
-            'found_floating: for space in self.floating_spaces.values_mut() {
-                for frame in &mut space.frames {
-                    target_surface = frame.entry_surface_id(entry_id);
-                    if target_surface.is_none() {
-                        continue;
-                    }
-                    if fullscreen {
-                        if let Some((previous, _next)) = frame.set_fullscreen_entry(entry_id) {
-                            cleared_surfaces
-                                .extend(previous.map(|fullscreen| fullscreen.surface_id));
-                        }
-                    } else {
-                        cleared_surfaces.extend(
-                            frame
-                                .clear_fullscreen_entry(entry_id)
-                                .map(|fullscreen| fullscreen.surface_id),
-                        );
-                    }
-                    break 'found_floating;
-                }
-            }
-        }
-
-        let target_surface = target_surface?;
+        let frame = self
+            .frame_set
+            .all_frames_mut()
+            .find(|frame| frame.entry_surface_id(entry_id).is_some())?;
+        let target_surface = frame.entry_surface_id(entry_id)?;
+        let cleared = if fullscreen {
+            frame
+                .set_fullscreen_entry(entry_id)
+                .and_then(|(previous, _)| previous)
+        } else {
+            frame.clear_fullscreen_entry(entry_id)
+        };
         self.refresh_primary_assignments();
-        cleared_surfaces.sort_unstable();
-        cleared_surfaces.dedup();
-        for surface_id in cleared_surfaces {
-            if !self.surface_has_primary_entry(surface_id) {
-                self.configure_surface_fullscreen_state(surface_id, false);
-            }
+        if let Some(cleared) = cleared
+            && !self.surface_has_primary_entry(cleared.surface_id)
+        {
+            self.configure_surface_fullscreen_state(cleared.surface_id, false);
         }
         if !self.surface_has_primary_entry(target_surface) {
             self.configure_surface_fullscreen_state(target_surface, fullscreen);
@@ -3473,59 +3373,11 @@ impl Ewm {
         Some(target_surface)
     }
 
-    pub fn set_surface_fullscreen(&mut self, id: u64, fullscreen: bool) {
-        self.set_surface_fullscreen_on_output(id, None, fullscreen);
-    }
-
-    pub fn set_surface_fullscreen_on_output(
-        &mut self,
-        id: u64,
-        output_name: Option<&str>,
-        fullscreen: bool,
-    ) {
-        if fullscreen {
-            if let Some(entry_id) = self.fullscreen_entry_id_for_surface_on_output(id, output_name)
-            {
-                self.set_layout_entry_fullscreen(entry_id, true);
-            } else {
-                self.configure_surface_fullscreen_state(id, true);
-            }
-        } else {
-            self.clear_surface_fullscreen(id);
-        }
-    }
-
     pub fn toggle_layout_entry_fullscreen(&mut self, entry_id: LayoutEntryId) {
         let fullscreen = self
             .layout_entry_for_id(entry_id)
             .is_some_and(|location| self.layout_entry_location_fullscreen(location));
         self.set_layout_entry_fullscreen(entry_id, !fullscreen);
-    }
-
-    pub fn toggle_surface_fullscreen(&mut self, id: u64) {
-        if let Some(entry_id) = self.fullscreen_entry_id_for_surface(id) {
-            self.toggle_layout_entry_fullscreen(entry_id);
-        } else {
-            self.configure_surface_fullscreen_state(id, true);
-        }
-    }
-
-    fn clear_surface_fullscreen(&mut self, id: u64) {
-        let mut cleared = false;
-        for frame in self.frame_set.all_frames_mut() {
-            cleared |= frame.clear_fullscreen_for_surface(id).is_some();
-        }
-        for space in self.floating_spaces.values_mut() {
-            for frame in &mut space.frames {
-                cleared |= frame.clear_fullscreen_for_surface(id).is_some();
-            }
-        }
-        if cleared {
-            self.refresh_primary_assignments();
-        }
-        if !self.surface_has_primary_entry(id) {
-            self.configure_surface_fullscreen_state(id, false);
-        }
     }
 
     /// True iff the active frame has a fullscreen entry covering the Top layer.
@@ -4372,8 +4224,7 @@ impl Ewm {
         for (oname, space) in &self.floating_spaces {
             for frame in &space.frames {
                 for entry in frame.entries.iter().filter(|entry| entry.surface.is_some()) {
-                    let fullscreen = frame.entry_fullscreen(entry.id);
-                    let area = Self::layout_entry_area(output_sizes, oname, entry, fullscreen);
+                    let area = Self::layout_entry_area(output_sizes, oname, entry, false);
                     let Some(surface_id) = entry.surface_id() else {
                         continue;
                     };
@@ -4435,8 +4286,6 @@ impl Ewm {
             }
             if let Some(space) = self.floating_spaces.get_mut(&oname) {
                 for frame in &mut space.frames {
-                    let fullscreen_entry_id =
-                        frame.fullscreen.map(|fullscreen| fullscreen.entry_id);
                     for entry in frame
                         .entries
                         .iter_mut()
@@ -4446,9 +4295,7 @@ impl Ewm {
                             continue;
                         };
                         let dominated = best_area.get(&surface_id).copied().unwrap_or(0);
-                        let fullscreen = fullscreen_entry_id == Some(entry.id);
-                        if Self::layout_entry_area(output_sizes, &oname, entry, fullscreen)
-                            == dominated
+                        if Self::layout_entry_area(output_sizes, &oname, entry, false) == dominated
                             && assigned.insert(surface_id)
                         {
                             entry.set_primary(true);
@@ -8444,16 +8291,14 @@ impl XdgShellHandler for State {
         surface.send_repositioned(token);
     }
 
-    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
         self.ewm
-            .set_fullscreen_for_surface(surface.wl_surface(), output, true);
-        self.refresh_pointer_after_layout();
+            .queue_surface_request(surface.wl_surface(), |id| Event::FullscreenRequest { id });
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         self.ewm
-            .set_fullscreen_for_surface(surface.wl_surface(), None, false);
-        self.refresh_pointer_after_layout();
+            .queue_surface_request(surface.wl_surface(), |id| Event::UnfullscreenRequest { id });
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
@@ -8738,16 +8583,14 @@ impl ForeignToplevelHandler for State {
         }
     }
 
-    fn set_fullscreen(&mut self, wl_surface: WlSurface, wl_output: Option<WlOutput>) {
+    fn set_fullscreen(&mut self, wl_surface: WlSurface, _wl_output: Option<WlOutput>) {
         self.ewm
-            .set_fullscreen_for_surface(&wl_surface, wl_output, true);
-        self.refresh_pointer_after_layout();
+            .queue_surface_request(&wl_surface, |id| Event::FullscreenRequest { id });
     }
 
     fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
         self.ewm
-            .set_fullscreen_for_surface(&wl_surface, None, false);
-        self.refresh_pointer_after_layout();
+            .queue_surface_request(&wl_surface, |id| Event::UnfullscreenRequest { id });
     }
 
     fn set_maximized(&mut self, wl_surface: WlSurface) {
@@ -9812,6 +9655,10 @@ impl State {
                 self.ewm.toggle_layout_entry_fullscreen(entry_id);
                 self.refresh_pointer_after_layout();
             }
+            ModuleCommand::SetFullscreen { entry_id, on } => {
+                self.ewm.set_layout_entry_fullscreen(entry_id, on);
+                self.refresh_pointer_after_layout();
+            }
             ModuleCommand::ConfigureInput { configs } => {
                 info!("Input config updated: {} entries", configs.len());
 
@@ -10759,21 +10606,21 @@ mod tests {
         fix.ewm()
             .queue_minimize_request_for_surface(&server_surface);
         fix.ewm()
-            .set_fullscreen_for_surface(&server_surface, None, true);
-        assert!(fix.ewm_ref().is_surface_fullscreen(surface_id));
+            .queue_surface_request(&server_surface, |id| Event::FullscreenRequest { id });
         fix.ewm()
-            .set_fullscreen_for_surface(&server_surface, None, false);
-        assert!(!fix.ewm_ref().is_surface_fullscreen(surface_id));
+            .queue_surface_request(&server_surface, |id| Event::UnfullscreenRequest { id });
         fix.ewm()
             .queue_maximize_request_for_surface(&server_surface);
         fix.ewm()
             .queue_unmaximize_request_for_surface(&server_surface);
 
         let events = fix.drain_events();
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 5);
         assert!(matches!(&events[0], Event::Minimize { id } if *id == surface_id));
-        assert!(matches!(&events[1], Event::MaximizeRequest { id } if *id == surface_id));
-        assert!(matches!(&events[2], Event::UnmaximizeRequest { id } if *id == surface_id));
+        assert!(matches!(&events[1], Event::FullscreenRequest { id } if *id == surface_id));
+        assert!(matches!(&events[2], Event::UnfullscreenRequest { id } if *id == surface_id));
+        assert!(matches!(&events[3], Event::MaximizeRequest { id } if *id == surface_id));
+        assert!(matches!(&events[4], Event::UnmaximizeRequest { id } if *id == surface_id));
     }
 
     #[test]

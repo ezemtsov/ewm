@@ -459,6 +459,10 @@ pub enum ModuleCommand {
     ToggleFullscreen {
         entry_id: LayoutEntryId,
     },
+    SetFullscreen {
+        entry_id: LayoutEntryId,
+        on: bool,
+    },
     /// Configure input devices (unified)
     ConfigureInput {
         configs: Vec<crate::input::InputConfigEntry>,
@@ -1033,6 +1037,18 @@ fn close_module(id: i64) -> Result<()> {
 fn toggle_fullscreen_module(entry_id: i64) -> Result<()> {
     if let Some(entry_id) = NonZeroU64::new(entry_id.max(0) as u64) {
         push_command(ModuleCommand::ToggleFullscreen { entry_id });
+    }
+    Ok(())
+}
+
+/// Set compositor-owned fullscreen for ENTRY-ID to ON.
+#[defun]
+fn set_fullscreen_module(entry_id: i64, on: Value<'_>) -> Result<()> {
+    if let Some(entry_id) = NonZeroU64::new(entry_id.max(0) as u64) {
+        push_command(ModuleCommand::SetFullscreen {
+            entry_id,
+            on: on.is_not_nil(),
+        });
     }
     Ok(())
 }

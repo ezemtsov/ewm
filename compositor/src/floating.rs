@@ -395,14 +395,10 @@ impl FloatingSpace {
             order.insert(new_frame.surface_id);
             if let Some(idx) = self.idx_of(new_frame.surface_id) {
                 let preserved_workspace_name = std::mem::take(&mut self.frames[idx].workspace_name);
-                let preserved_fullscreen = self.frames[idx].fullscreen;
                 let prev_size = self.data[idx].size();
                 let was_auto = self.frames[idx].floating_pos.is_none();
                 let preserved_pos = self.data[idx].pos;
                 new_frame.floating_pos = (!was_auto).then_some(preserved_pos);
-                new_frame.fullscreen = preserved_fullscreen.filter(|fullscreen| {
-                    new_frame.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id)
-                });
                 self.frames[idx] = new_frame;
                 if self.frames[idx].workspace_name.is_none() {
                     self.frames[idx].workspace_name = preserved_workspace_name;
@@ -437,7 +433,6 @@ impl FloatingSpace {
             if !order.contains(&frame.surface_id) {
                 frame.entries.clear();
                 frame.selected_entry_id = None;
-                frame.fullscreen = None;
                 // Persist only an already-explicit position; leave auto frames auto.
                 if frame.floating_pos.is_some() {
                     frame.floating_pos = Some(data.pos);

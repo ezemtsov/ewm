@@ -48,11 +48,6 @@ enum Op {
         entry_slot: usize,
         on: bool,
     },
-    SetSurfaceFullscreen {
-        surface_id: u64,
-        output: Option<usize>,
-        on: bool,
-    },
     DestroySurface(u64),
 }
 
@@ -131,10 +126,6 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
     })
 }
 
-fn output_option_strategy() -> impl Strategy<Value = Option<usize>> {
-    prop_oneof![Just(None), (0..OUTPUTS.len()).prop_map(Some)]
-}
-
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         1 => (0..OUTPUTS.len()).prop_map(Op::AddOutput),
@@ -146,13 +137,6 @@ fn op_strategy() -> impl Strategy<Value = Op> {
             |(frame_idx, entry_slot, on)| Op::SetEntryFullscreen {
                 frame_idx,
                 entry_slot,
-                on,
-            },
-        ),
-        3 => (surface_strategy(), output_option_strategy(), any::<bool>()).prop_map(
-            |(surface_id, output, on)| Op::SetSurfaceFullscreen {
-                surface_id,
-                output,
                 on,
             },
         ),
@@ -354,38 +338,6 @@ fn apply_op(fix: &mut Fixture, op: &Op) -> Result<(), TestCaseError> {
                     after.iter().all(|selection| selection.entry_id != entry_id),
                     "set_layout_entry_fullscreen({:?}, false) left that entry selected: {:?}",
                     entry_id,
-                    after,
-                );
-            }
-        }
-        Op::SetSurfaceFullscreen {
-            surface_id,
-            output,
-            on,
-        } => {
-            let output_name = output.map(|idx| OUTPUTS[idx]);
-            fix.ewm()
-                .set_surface_fullscreen_on_output(*surface_id, output_name, *on);
-            let after = all_fullscreen_selections(fix);
-
-            if *on {
-                prop_assert!(
-                    after
-                        .difference(&before)
-                        .all(|selection| selection.surface_id == *surface_id),
-                    "set_surface_fullscreen({}, true) created unrelated selection(s): before={:?} after={:?}",
-                    surface_id,
-                    before,
-                    after,
-                );
-            } else {
-                assert_no_new_selection(&before, &after, op)?;
-                prop_assert!(
-                    after
-                        .iter()
-                        .all(|selection| selection.surface_id != *surface_id),
-                    "set_surface_fullscreen({}, false) left selection(s): {:?}",
-                    surface_id,
                     after,
                 );
             }

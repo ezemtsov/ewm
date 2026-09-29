@@ -272,6 +272,50 @@ pub fn render_cursor_elements(
     }
 }
 
+/// A fullscreen view at `origin`: the surface, then the black backdrop behind it.
+#[allow(clippy::too_many_arguments)]
+fn push_fullscreen_view(
+    content: &mut Vec<ContentRenderElement>,
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    entry: &crate::LayoutEntry,
+    alpha: f32,
+    origin: Point<i32, Physical>,
+    output_size: Size<i32, Logical>,
+    backdrop: Option<&SolidColorBuffer>,
+    scale: Scale<f64>,
+    blur_config: Blur,
+) {
+    let geometry = window.geometry().size;
+    let constrain = Rectangle::new(origin, output_size.to_physical_precise_round(scale));
+    let source_size: Size<i32, Physical> = geometry.to_physical_precise_round(scale);
+    // Primary: native size, centered. Non-primary: uniform stretch to fill the output.
+    let loc = if entry.primary() {
+        let (ox, oy) = crate::fullscreen_center_offset(geometry, output_size);
+        Point::from((ox, oy)).to_physical_precise_round(scale) + origin
+    } else {
+        origin
+    };
+    let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
+    push_view_elements_fit(
+        content,
+        window,
+        view_elements,
+        loc,
+        source_size,
+        scale,
+        constrain,
+        !entry.primary(),
+        Some(entry.id.get() as usize),
+        blur_config,
+    );
+    if let Some(backdrop) = backdrop {
+        let bg =
+            SolidColorRenderElement::from_buffer(backdrop, origin, scale, 1.0, Kind::Unspecified);
+        content.push(ContentRenderElement::SolidColor(bg));
+    }
+}
+
 /// Push constrained (rescale + crop) render elements into the element list.
 ///
 /// Shared pipeline for all view rendering: fullscreen primary/non-primary
@@ -581,6 +625,10 @@ pub fn collect_render_elements_for_output(
     let view_size =
         Size::<f64, Logical>::from((working_area.size.w as f64, working_area.size.h as f64));
     let strip_viewport = geometry.strip_viewport(working_area);
+    let backdrop = ewm
+        .output_state
+        .get(output)
+        .map(|state| &state.fullscreen_backdrop);
     if let Some(space) = ewm.floating_spaces.get_mut(&output.name()) {
         let id_windows = &ewm.id_windows;
         let focused_entry_id = ewm.focused_entry_id;
@@ -712,84 +760,18 @@ pub fn collect_render_elements_for_output(
                         entry_alpha *= a.value() as f32;
                     }
                     if entry_fullscreen {
-                        // Fullscreen: surface + backdrop at output origin, bypassing working area.
-                        // Elements are front-to-back: surface first, then backdrop behind it.
-                        let output_logical_size = ewm
-                            .space
-                            .output_geometry(output)
-                            .map(|g| g.size)
-                            .unwrap_or_default();
-                        let output_physical: Size<i32, Physical> =
-                            output_logical_size.to_physical_precise_round(scale);
-                        let constrain = Rectangle::new(frame_offset, output_physical);
-
-                        if entry.primary() {
-                            // Primary: native size, centered, crop to output bounds.
-                            let (offset_x, offset_y) = crate::fullscreen_center_offset(
-                                window.geometry().size,
-                                output_logical_size,
-                            );
-                            let loc_physical: Point<i32, Physical> =
-                                Point::from((offset_x, offset_y)).to_physical_precise_round(scale)
-                                    + frame_offset;
-                            let view_elements = render_window_without_popups(
-                                window,
-                                renderer,
-                                loc_physical,
-                                scale,
-                                entry_alpha,
-                            );
-                            let source_size: Size<i32, Physical> =
-                                window.geometry().size.to_physical_precise_round(scale);
-                            push_view_elements_fit(
-                                &mut content,
-                                window,
-                                view_elements,
-                                loc_physical,
-                                source_size,
-                                scale,
-                                constrain,
-                                false,
-                                Some(entry.id.get() as usize),
-                                blur_config,
-                            );
-                        } else {
-                            // Non-primary: uniform stretch to fill output, crop overflow.
-                            let loc_physical: Point<i32, Physical> = frame_offset;
-                            let view_elements = render_window_without_popups(
-                                window,
-                                renderer,
-                                loc_physical,
-                                scale,
-                                entry_alpha,
-                            );
-                            let source_size: Size<i32, Physical> =
-                                window.geometry().size.to_physical_precise_round(scale);
-                            push_view_elements_fit(
-                                &mut content,
-                                window,
-                                view_elements,
-                                loc_physical,
-                                source_size,
-                                scale,
-                                constrain,
-                                true,
-                                Some(entry.id.get() as usize),
-                                blur_config,
-                            );
-                        }
-
-                        // Black backdrop covering full output (behind surface)
-                        if let Some(state) = ewm.output_state.get(output) {
-                            let bg = SolidColorRenderElement::from_buffer(
-                                &state.fullscreen_backdrop,
-                                frame_offset,
-                                scale,
-                                1.0,
-                                Kind::Unspecified,
-                            );
-                            content.push(ContentRenderElement::SolidColor(bg));
-                        }
+                        push_fullscreen_view(
+                            &mut content,
+                            renderer,
+                            window,
+                            entry,
+                            entry_alpha,
+                            frame_offset,
+                            output_size,
+                            backdrop,
+                            scale,
+                            blur_config,
+                        );
                         continue;
                     }
 

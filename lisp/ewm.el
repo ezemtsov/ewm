@@ -51,6 +51,7 @@
 (declare-function ewm-workspace-rename-module "ewm-core")
 (declare-function ewm-workspace-mark-urgent-module "ewm-core")
 (declare-function ewm-toggle-fullscreen-module "ewm-core")
+(declare-function ewm-set-fullscreen-module "ewm-core")
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-get-frame-origin "ewm-core")
@@ -275,7 +276,6 @@ Single source of truth for frame ordering on each output's strip.")
 `ewm--assign-surface-to-frame' uses it to pair `new' events with
 in-flight frames in creation order.")
 
-
 (defvar ewm--output-info nil
   "Alist of (CONNECTOR-NAME . EVENT-ALIST) for currently connected outputs.
 Each value is the full output_detected event alist, including make, model,
@@ -430,6 +430,8 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ('activate_workspace (ewm--handle-activate-workspace body))
       ('maximize_request (ewm--handle-maximize-request body))
       ('unmaximize_request (ewm--handle-unmaximize-request body))
+      ('fullscreen_request (ewm--handle-fullscreen-request body))
+      ('unfullscreen_request (ewm--handle-unfullscreen-request body))
       ('bell (ewm--handle-bell body))
       ('idle_state_changed (ewm--handle-idle-state-changed body))
       ('environment (ewm--handle-environment body))
@@ -589,6 +591,16 @@ No-op: tiling layout already manages window sizes."
   "Handle unmaximize request EVENT.
 No-op: tiling layout has no maximized state to restore."
   nil)
+
+(defun ewm--handle-fullscreen-request (event)
+  "Fullscreen the surface for EVENT, grounding a floating one first."
+  (ewm--with-surface-buffer-from-event event
+    (ewm--fullscreen (current-buffer) t)))
+
+(defun ewm--handle-unfullscreen-request (event)
+  "Leave fullscreen for the surface in EVENT, floating a grounded one back."
+  (ewm--with-surface-buffer-from-event event
+    (ewm--fullscreen (current-buffer) nil)))
 
 (defcustom ewm-bell-function #'ewm-bell-ding
   "Function called when a client rings the system bell.
@@ -942,12 +954,6 @@ of inactivity.  Useful for video playback or presentations."
   "Like `previous-buffer', but only among surface buffers."
   (interactive)
   (ewm--cycle-surface-buffer #'previous-buffer))
-
-(defun ewm-toggle-fullscreen ()
-  "Toggle fullscreen for the current layout view."
-  (interactive)
-  (when-let* ((entry-id (window-parameter nil 'ewm-entry-id)))
-    (ewm-toggle-fullscreen-module entry-id)))
 
 (defun ewm-get-window-info (&optional id)
   "Return window info alist (id app title pid) for surface ID.
@@ -1379,14 +1385,13 @@ selected frame\", which can change during pgtk's internal close handling."
   "Make a floating frame from ALIST and `pop-up-frame-alist', or nil."
   (when-let* ((output (or (alist-get 'ewm-output alist)
                           (frame-parameter nil 'ewm-output))))
-    (let ((origin (frame-parameter nil 'ewm-surface-id)))
-      (ewm--create-floating-frame-for-output
-       output
-       ;; Stay hidden until fitted so only the final size is ever rendered.
-       `((visibility . nil)
-         ,@(and origin `((ewm-floating-origin-frame-id . ,origin)))
-         ,@pop-up-frame-alist)
-       (alist-get 'ewm-position alist)))))
+    (ewm--create-floating-frame-for-output
+     output
+     ;; Hidden until fitted.
+     `((visibility . nil)
+       ,@pop-up-frame-alist
+       (ewm-floating-origin-frame-id . ,(frame-parameter nil 'ewm-surface-id)))
+     (alist-get 'ewm-position alist))))
 
 (defvar ewm--inhibit-floating nil
   "Non-nil makes `ewm-display-buffer-floating' decline, so attach cannot re-float.")
@@ -1402,14 +1407,28 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
       (when-let* ((window (display-buffer-pop-up-frame
                            buffer (cons '(inhibit-switch-frame . t) alist)))
                   (frame (window-frame window)))
-        (when-let* ((size (or (alist-get 'ewm-size alist)
-                              (buffer-local-value 'ewm-surface-size buffer))))
-          (ewm--fit-floating-frame frame (car size) (cdr size)))
-        (make-frame-visible frame)
+        (let ((size (or (alist-get 'ewm-size alist)
+                        (buffer-local-value 'ewm-surface-size buffer))))
+          (when size (ewm--fit-floating-frame frame (car size) (cdr size)))
+          (make-frame-visible frame)
+          (when size
+            ;; Hidden, the window only estimated its mode-line height.
+            (redisplay t)
+            (ewm--fit-floating-frame frame (car size) (cdr size))))
         window))))
 
 (defvar ewm-floating-popout-scale 0.9
   "Fraction of the source window a popped-out floating frame occupies.")
+
+(defun ewm--float-buffer (buffer frame size pos)
+  "Pop BUFFER off FRAME into a float of client body SIZE at output-relative POS."
+  (pop-to-buffer buffer `(ewm-display-buffer-floating
+                          (inhibit-same-window . t)
+                          (ewm-output . ,(frame-parameter frame 'ewm-output))
+                          (pop-up-frame-parameters
+                           (ewm-floating-origin-frame-id
+                            . ,(frame-parameter frame 'ewm-surface-id)))
+                          (ewm-size . ,size) (ewm-position . ,pos))))
 
 (defun ewm--floating-detach-selected-buffer (frame)
   "Detach FRAME's selected buffer into a floating frame centered over its tile."
@@ -1428,12 +1447,9 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
     (pcase-let ((`(,fx . ,fy) (ewm--get-frame-origin frame))
                 (`(,ox . ,oy) (ewm--get-output-origin
                                (frame-parameter frame 'ewm-output))))
-      (pop-to-buffer (window-buffer source-window)
-                     `(ewm-display-buffer-floating
-                       (inhibit-same-window . t)
-                       (ewm-size . (,fw . ,fh))
-                       (ewm-position . (,(+ (nth 0 rect) (- fx ox) (/ (- w fw) 2))
-                                        . ,(+ (nth 1 rect) (- fy oy) (/ (- h fh) 2)))))))
+      (ewm--float-buffer (window-buffer source-window) frame (cons fw fh)
+                         (cons (+ (nth 0 rect) (- fx ox) (/ (- w fw) 2))
+                               (+ (nth 1 rect) (- fy oy) (/ (- h fh) 2)))))
     ;; Reclaim the tile once the buffer has left for a float.
     (when (and (window-live-p source-window)
                (frame-parameter (window-frame (selected-window)) 'ewm-floating))
@@ -1442,24 +1458,28 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
             (delete-window source-window)
           (quit-window nil source-window))))))
 
+(defun ewm--absorb-floating (floating-frame target action)
+  "Move FLOATING-FRAME's buffer into tiled TARGET, a window or frame, via ACTION."
+  (let ((buffer (window-buffer (frame-selected-window floating-frame))))
+    (delete-frame floating-frame t)
+    (if (windowp target)
+        (select-window target)
+      (select-frame-set-input-focus target))
+    ;; pop-to-buffer lets Emacs reuse or split the target window on its own.
+    (let ((ewm--inhibit-floating t))
+      (pop-to-buffer buffer action))
+    (ewm-layout--refresh)))
+
 (defun ewm--floating-attach-selected-buffer (floating-frame)
   "Absorb FLOATING-FRAME's buffer into the tiled window under its center."
-  (let* ((buffer (window-buffer (frame-selected-window floating-frame)))
-         (sid (frame-parameter floating-frame 'ewm-surface-id))
+  (let* ((sid (frame-parameter floating-frame 'ewm-surface-id))
          (entry-id (and sid (ewm-entry-under-floating-center-module sid)))
-         (window (and entry-id (ewm--find-window-by-entry-id entry-id)))
-         (fallback (unless window (ewm--floating-return-frame floating-frame))))
-    (unless (or window fallback)
+         (target (or (and entry-id (ewm--find-window-by-entry-id entry-id))
+                     (ewm--floating-return-frame floating-frame))))
+    (unless target
       (user-error "No tiled frame on output %s"
                   (frame-parameter floating-frame 'ewm-output)))
-    (delete-frame floating-frame t)
-    ;; pop-to-buffer lets Emacs reuse or split the target window on its own.
-    (if (window-live-p window)
-        (select-window window)
-      (select-frame-set-input-focus fallback))
-    (let ((ewm--inhibit-floating t))
-      (pop-to-buffer buffer))
-    (ewm-layout--refresh)))
+    (ewm--absorb-floating floating-frame target nil)))
 
 (defun ewm-floating-toggle ()
   "Toggle the selected buffer between tiled and floating frame placement."
@@ -1469,6 +1489,50 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
         (ewm--floating-attach-selected-buffer frame)
       (ewm--floating-detach-selected-buffer frame))))
 
+(defvar-local ewm--floating-restore nil
+  "Where a grounded buffer floats back to on unfullscreen, as (SIZE . POSITION).")
+
+(defun ewm--floating-geometry (frame)
+  "Client body size and output-relative position of floating FRAME."
+  (pcase-let ((`(,_ ,_ ,w ,h) (ewm--window-body-pixel-rect (frame-selected-window frame)))
+              (`(,fx . ,fy) (ewm--get-frame-origin frame))
+              (`(,ox . ,oy) (ewm--get-output-origin (frame-parameter frame 'ewm-output))))
+    (cons (cons w h) (cons (- fx ox) (- fy oy)))))
+
+(defun ewm--float-back (buffer)
+  "Float BUFFER back to `ewm--floating-restore' and quit its tiled window."
+  (pcase-let ((`(,size . ,pos) (buffer-local-value 'ewm--floating-restore buffer))
+              (window (get-buffer-window buffer t)))
+    (with-current-buffer buffer (setq ewm--floating-restore nil))
+    (ewm--float-buffer buffer (window-frame window) size pos)
+    ;; Dropping the surface ends its fullscreen.
+    (quit-restore-window window)))
+
+(defun ewm--fullscreen (buffer on)
+  "Set BUFFER's view fullscreen to ON.
+A floating buffer is grounded into the active frame and floats back after."
+  (when-let* ((window (get-buffer-window buffer t))
+              (frame (window-frame window)))
+    (cond
+     ((and on (frame-parameter frame 'ewm-floating))
+      (with-current-buffer buffer
+        (setq ewm--floating-restore (ewm--floating-geometry frame)))
+      (ewm--absorb-floating frame
+                            (ewm-output-active-frame (frame-parameter frame 'ewm-output))
+                            '(display-buffer-same-window display-buffer-pop-up-window))
+      (ewm--fullscreen buffer t))
+     ((and (not on) (buffer-local-value 'ewm--floating-restore buffer))
+      (ewm--float-back buffer))
+     ((window-parameter window 'ewm-entry-id)
+      (ewm-set-fullscreen-module (window-parameter window 'ewm-entry-id) on)))))
+
+(defun ewm-toggle-fullscreen ()
+  "Toggle fullscreen for the current view, grounding a floating one first."
+  (interactive)
+  (cond ((or ewm--floating-restore (frame-parameter nil 'ewm-floating))
+         (ewm--fullscreen (current-buffer) (not ewm--floating-restore)))
+        ((window-parameter nil 'ewm-entry-id)
+         (ewm-toggle-fullscreen-module (window-parameter nil 'ewm-entry-id)))))
 
 (defun ewm-frame-close ()
   "Close the focused frame; the compositor refocuses a same-output neighbour."

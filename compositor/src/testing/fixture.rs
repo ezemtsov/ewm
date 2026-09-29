@@ -536,6 +536,10 @@ impl Fixture {
         crate::module::set_intercepted_keys_for_test(keys);
     }
 
+    pub fn set_fullscreen(&mut self, entry_id: crate::LayoutEntryId, on: bool) {
+        self.handle_module_command(crate::module::ModuleCommand::SetFullscreen { entry_id, on });
+    }
+
     pub fn clear_keyboard_capture(&mut self) {
         crate::module::clear_keyboard_capture_holders();
         self.state.sync_keyboard_focus();

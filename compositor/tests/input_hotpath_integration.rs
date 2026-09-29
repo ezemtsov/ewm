@@ -201,9 +201,10 @@ impl Harness {
         }
 
         self.fix.apply_output_layout_command(HEAD, vec![frame]);
-        self.fix
-            .ewm()
-            .set_surface_fullscreen(self.app_id, matches!(mode, FocusMode::FullscreenApp));
+        self.fix.ewm().set_layout_entry_fullscreen(
+            self.app_entry_id,
+            matches!(mode, FocusMode::FullscreenApp),
+        );
         match mode {
             FocusMode::EmbeddedApp | FocusMode::FullscreenApp => {
                 self.fix

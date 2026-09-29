@@ -1,95 +1,39 @@
-# Per-Window Fullscreen (Wayland Surfaces)
+# Fullscreen
 
-## Overview
+Fullscreen is compositor-owned presentation state, not layout input. Emacs
+keeps its windows as they are and the compositor draws the selected view over
+the whole output. Layout refreshes, migrations and output changes may keep or
+clear a selection but never create one (`tests/fullscreen_proptest.rs`).
 
-Fullscreen is a per-window declarative layout property. Emacs is the authority:
-client fullscreen requests become events that Emacs handles by setting
-`ewm-fullscreen` on the window parameter. The compositor renders fullscreen
-surfaces at full output size with a black backdrop, defers the Top layer behind
-them, and expands the input hit area to the full output.
+## Requests
 
-Currently only Wayland surfaces support fullscreen (`ewm-toggle-fullscreen`
-requires `ewm-surface-id`). Emacs buffer fullscreen (distraction-free mode for
-non-surface buffers) is not yet implemented.
+- Client: `xdg_toplevel.set_fullscreen` and the foreign-toplevel request reach
+  Emacs as `fullscreen_request` and `unfullscreen_request` events. The
+  compositor changes nothing on its own, and the requested output is ignored
+  (`tests/fullscreen_request_integration.rs`).
+- Emacs: `ewm--fullscreen` selects the buffer's entry through
+  `ewm-set-fullscreen-module`. `ewm-toggle-fullscreen` (`s-f`) toggles a tiled
+  view through `ewm-toggle-fullscreen-module`.
+- Only tiled frames host a selection. A floating buffer is grounded first: it
+  takes over the active frame's selected window and the entry is selected.
+  Leaving fullscreen floats it back to its saved geometry and restores the
+  window's previous buffer, dropping the selection.
 
-## Data Flow
+## Presentation
 
-```
-Client (e.g. Firefox)
-  -> xdg_toplevel.set_fullscreen
-    -> Compositor pushes FullscreenRequest event to Emacs
-      -> Emacs sets ewm-fullscreen window parameter
-        -> ewm-layout--refresh sends LayoutEntry with :fullscreen t
-          -> Compositor apply_output_layout configures surface at full output size
-            -> Renderer draws backdrop + centered surface, defers Top layer
-```
+- Configure: the primary view is configured at the output's logical size with
+  `XdgToplevelState::Fullscreen` (`configure_primary`).
+- Render: `push_fullscreen_view` draws a primary view at native size centered
+  on the output and a non-primary view stretched to fill it, over a black
+  backdrop. The Top layer is deferred behind it (`render_above_top_layer`).
+- Input: hit-testing uses `layout_entry_rect`, so pointer positions map to
+  the fullscreen view rather than the hosting frame. Intercepted keys without
+  `allow_fullscreen` are forwarded to the fullscreen surface.
+- Foreign toplevel state follows `is_surface_fullscreen`.
 
-Unfullscreen follows the reverse path. The user can also toggle with `s-f`
-(`ewm-toggle-fullscreen`).
+## Not implemented
 
-## Compositor
-
-### LayoutEntry
-
-`fullscreen: bool` field on `LayoutEntry` (serde default = false). When true:
-
-- **apply_output_layout**: Primary fullscreen entries get configured at full
-  output logical size with `XdgToplevelState::Fullscreen` (not `Maximized`).
-  Primary computation uses output size (not entry dimensions) for area
-  calculation.
-
-- **Rendering** (`render.rs`): Fullscreen entries get a black
-  `SolidColorBuffer` backdrop at output origin. Primary entries render at
-  native size, centered via `fullscreen_center_offset()`. The Top layer is
-  deferred behind fullscreen surfaces (waybar disappears).
-
-- **Input**: `layout_surface_under()` expands the hit area to the full output.
-  Pointer mapping is 1:1 for primary entries (with centering offset).
-
-- **Foreign toplevel**: `WindowInfo.is_fullscreen` drives
-  `zwlr_foreign_toplevel_handle_v1::State::Fullscreen`.
-
-### XDG Shell Handlers
-
-- `fullscreen_request()`: Pushes `Event::FullscreenRequest { id, output }` to
-  Emacs. Does NOT immediately configure; waits for Emacs layout update.
-- `unfullscreen_request()`: Pushes `Event::UnfullscreenRequest { id }`.
-
-### Intercepted Keys
-
-`InterceptedKey` has `allow_fullscreen: bool`. The compositor uses this to
-gate fullscreen keys through to Emacs even during fullscreen.
-
-## Emacs
-
-### Event Handlers (`ewm.el`)
-
-- `ewm--handle-fullscreen-request`: Sets `ewm-fullscreen` window parameter on
-  all windows showing the buffer on the target frame, refreshes layout.
-- `ewm--handle-unfullscreen-request`: Clears `ewm-fullscreen` on the focused
-  frame only (other outputs stay fullscreen), refreshes layout.
-
-### Toggle Command
-
-`ewm-toggle-fullscreen` (`s-f`): Toggles the `ewm-fullscreen` window parameter
-and refreshes layout. Guarded by `ewm-surface-id`, so only works for Wayland
-surfaces.
-
-### Layout (`ewm-layout.el`)
-
-`ewm-layout--make-output-view` reads the `ewm-fullscreen` window parameter and
-includes `:fullscreen t` or `:fullscreen :false` in the layout entry plist sent
-to the compositor.
-
-## Future: Emacs Buffer Fullscreen
-
-Extending `s-f` to work on regular Emacs buffers (non-surface) would provide a
-universal distraction-free mode. Key challenges:
-
-- The Emacs frame must cover the full output (compositor side, straightforward)
-- The minibuffer must be hidden or inaccessible (Emacs architectural constraint)
-- Window configuration must be restored exactly on exit
-- Frame-output parity enforcement must accommodate auxiliary frames
-
-Possible approaches include creating an auxiliary frame with `(minibuffer . nil)`
-or using compositor-level cropping to hide the minibuffer line.
+- A request made before the surface has a window is dropped, so a client that
+  asks for fullscreen before mapping is placed as usual.
+- Fullscreen for Emacs buffers, a distraction-free mode, is a separate design:
+  the minibuffer and frame-output parity both stand in the way.
