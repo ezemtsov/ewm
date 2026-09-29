@@ -152,7 +152,7 @@ pub fn set_updates_frozen(widget_ptr: usize, frozen: bool) -> Result<()> {
         );
         if frozen {
             (api.freeze)(gdk_window);
-            (api.set_data)(widget, key, std::ptr::dangling_mut::<c_void>());
+            (api.set_data)(widget, key, std::ptr::without_provenance_mut(1));
         } else {
             (api.thaw)(gdk_window);
             (api.set_data)(widget, key, std::ptr::null_mut());

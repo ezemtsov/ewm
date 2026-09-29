@@ -754,9 +754,8 @@ impl InterceptedKey {
 /// Emacs's command loop read the following key sequence. Command delivery
 /// executes the resolved Emacs binding through the event pipe, so Wayland
 /// keyboard focus stays on the client surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
-#[derive(Default)]
 pub enum InterceptDispatch {
     #[default]
     Keyboard,

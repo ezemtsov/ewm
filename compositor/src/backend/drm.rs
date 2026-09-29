@@ -1790,15 +1790,14 @@ impl DrmBackendState {
         let lid_state_changed = self.refresh_lid_state_from_acpi();
         let changed = self.scan_all_device_connectors(ewm);
 
-        // Signal Emacs that output topology is settled so it can
-        // re-sync layout, focus, and frame-output parity.
-        if self.lid_supported
+        let lid_handled = self.lid_supported
             && (lid_state_changed
                 || (changed && self.lid_closed)
                 || self.closed_lid_settle_timer.is_some())
-            && self.apply_lid_policy(ewm, LidPolicyReason::Hotplug)
-        {
-        } else if changed {
+            && self.apply_lid_policy(ewm, LidPolicyReason::Hotplug);
+        // Signal Emacs that output topology is settled so it can
+        // re-sync layout, focus, and frame-output parity.
+        if changed && !lid_handled {
             ewm.queue_event(crate::event::Event::OutputsComplete);
         }
     }
