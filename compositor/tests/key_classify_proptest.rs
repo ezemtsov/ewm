@@ -16,7 +16,7 @@
 //!       forwards (Emacs is the focused client). Independent of the flag
 //!       and of fullscreen.
 
-use ewm_core::input::{KeyAction, classify_key};
+use ewm_core::input::{KeyAction, KeyInput, KeyRouting, classify_key};
 use ewm_core::{InterceptDispatch, InterceptedKey, TranslateTarget};
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
@@ -84,8 +84,18 @@ fn keysym_strategy() -> impl Strategy<Value = u32> {
     0x41u32..=0x5a
 }
 
-/// Thin call-site helper so each proptest doesn't restate the 10-arg
-/// `classify_key` signature with `keysym, keysym, Keysym::from(keysym)`.
+/// A non-modifier key whose raw and modified keysyms are both `keysym`.
+fn key_input(is_press: bool, keysym: u32, mods: &ModifiersState) -> KeyInput<'_> {
+    KeyInput {
+        is_press,
+        keysym_raw: keysym,
+        modified: Keysym::from(keysym),
+        mods,
+        changes_modifiers: false,
+    }
+}
+
+/// Thin call-site helper so each proptest can state the routing inline.
 fn classify(
     intercepted_keys: &[InterceptedKey],
     text_input: bool,
@@ -94,17 +104,15 @@ fn classify(
     is_press: bool,
     keysym: u32,
 ) -> KeyAction {
-    classify_key(
-        intercepted_keys,
-        text_input,
+    let routing = KeyRouting {
+        text_input_intercept: text_input,
         focus_on_emacs,
         fullscreen_active,
-        is_press,
-        keysym,
-        keysym,
-        Keysym::from(keysym),
-        &ModifiersState::default(),
-        false,
+    };
+    classify_key(
+        intercepted_keys,
+        routing,
+        key_input(is_press, keysym, &ModifiersState::default()),
     )
 }
 
@@ -247,16 +255,19 @@ proptest! {
         shift in any::<bool>(),
         logo in any::<bool>(),
     ) {
-        let mut mods = ModifiersState::default();
-        mods.ctrl = ctrl;
-        mods.alt = alt;
-        mods.shift = shift;
-        mods.logo = logo;
+        let mods = ModifiersState {
+            ctrl,
+            alt,
+            shift,
+            logo,
+            ..Default::default()
+        };
         let keysym = keysyms::KEY_a + letter;
-        let action = classify_key(
-            &[], true, false, false, true,
-            keysym, keysym, Keysym::from(keysym), &mods, false,
-        );
+        let routing = KeyRouting {
+            text_input_intercept: true,
+            ..Default::default()
+        };
+        let action = classify_key(&[], routing, key_input(true, keysym, &mods));
         let expected = char::from_u32(u32::from(b'a') + letter).unwrap().to_string();
 
         prop_assert_eq!(action, text_input_action(keysym, Some(expected), &mods));
@@ -280,17 +291,19 @@ proptest! {
         key_changes_modifiers in any::<bool>(),
     ) {
         prop_assume!(focus_on_emacs || key_changes_modifiers);
+        let routing = KeyRouting {
+            text_input_intercept: true,
+            focus_on_emacs,
+            fullscreen_active: false,
+        };
+        let mods = ModifiersState::default();
         let action = classify_key(
             &[],
-            true,
-            focus_on_emacs,
-            false,
-            true,
-            keysym,
-            keysym,
-            Keysym::from(keysym),
-            &ModifiersState::default(),
-            key_changes_modifiers,
+            routing,
+            KeyInput {
+                changes_modifiers: key_changes_modifiers,
+                ..key_input(true, keysym, &mods)
+            },
         );
 
         prop_assert_eq!(action, KeyAction::Forward);

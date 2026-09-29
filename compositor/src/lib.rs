@@ -110,7 +110,7 @@ use std::time::{Duration, Instant};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
-use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
+use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState, TextInputKey};
 use serde::{Deserialize, Serialize};
 use smithay::backend::input::{InputTime, KeyState, TabletToolDescriptor};
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
@@ -728,16 +728,23 @@ impl InterceptedKey {
     /// etc.) where Emacs encodes the character directly rather than
     /// decomposing it into base-key + Shift.
     pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
-        key_binding_matches(
-            self.keysym,
-            self.ctrl,
-            self.alt,
-            self.shift,
-            self.logo,
-            raw_keysym,
-            modified_keysym,
-            mods,
-        )
+        let raw_match = self.keysym == raw_keysym
+            || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
+                && self.keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
+
+        if raw_match {
+            return self.ctrl == mods.ctrl
+                && self.alt == mods.alt
+                && (self.shift == mods.shift
+                    || (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym))
+                && self.logo == mods.logo;
+        }
+
+        if raw_keysym != modified_keysym && self.keysym == modified_keysym {
+            return self.ctrl == mods.ctrl && self.alt == mods.alt && self.logo == mods.logo;
+        }
+
+        false
     }
 }
 
@@ -756,34 +763,6 @@ pub enum InterceptDispatch {
     Command,
     /// Translate to a different key delivered to a non-Emacs surface.
     Translate(TranslateTarget),
-}
-
-fn key_binding_matches(
-    keysym: u32,
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    logo: bool,
-    raw_keysym: u32,
-    modified_keysym: u32,
-    mods: &ModifiersState,
-) -> bool {
-    let raw_match = keysym == raw_keysym
-        || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
-            && keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
-
-    if raw_match {
-        return ctrl == mods.ctrl
-            && alt == mods.alt
-            && (shift == mods.shift || (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym))
-            && logo == mods.logo;
-    }
-
-    if raw_keysym != modified_keysym && keysym == modified_keysym {
-        return ctrl == mods.ctrl && alt == mods.alt && logo == mods.logo;
-    }
-
-    false
 }
 
 /// Target key delivered to a non-Emacs surface in place of a matched key:
@@ -5955,28 +5934,9 @@ impl Ewm {
             .configure_repeat(&self.loop_handle, rate, delay);
     }
 
-    pub(crate) fn start_text_input_repeat(
-        &mut self,
-        keycode: u32,
-        keysym: u32,
-        utf8: Option<String>,
-        surface_id: u64,
-        ctrl: bool,
-        alt: bool,
-        shift: bool,
-        logo: bool,
-    ) {
-        self.im_repeat.start_text_input_repeat(
-            &self.loop_handle,
-            keycode,
-            keysym,
-            utf8,
-            surface_id,
-            ctrl,
-            alt,
-            shift,
-            logo,
-        );
+    pub(crate) fn start_text_input_repeat(&mut self, key: TextInputKey) {
+        self.im_repeat
+            .start_text_input_repeat(&self.loop_handle, key);
     }
 
     pub(crate) fn start_command_repeat(&mut self, keycode: u32, key: String) {
@@ -9472,7 +9432,7 @@ impl State {
         self.ewm.reset_idle_timer();
 
         match repeat {
-            InterceptRepeat::TextInput {
+            InterceptRepeat::TextInput(TextInputKey {
                 keycode,
                 keysym,
                 utf8,
@@ -9481,7 +9441,7 @@ impl State {
                 alt,
                 shift,
                 logo,
-            } => {
+            }) => {
                 self.ewm.queue_event(Event::Key {
                     keycode,
                     keysym,

@@ -1365,9 +1365,12 @@ fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// (SURFACE-ID TEXT CURSOR ANCHOR) as handed to Lisp.
+type SurroundingList = (u64, String, u32, u32);
+
 /// Surrounding text of the active field as (SURFACE-ID TEXT CURSOR ANCHOR), or nil.
 #[defun]
-fn text_input_surrounding_module() -> Result<Lisp<Option<(u64, String, u32, u32)>>> {
+fn text_input_surrounding_module() -> Result<Lisp<Option<SurroundingList>>> {
     let snapshot = text_input_surrounding().lock().unwrap().clone();
     Ok(Lisp(
         snapshot.map(|s| (s.surface_id, s.text, s.cursor, s.anchor)),

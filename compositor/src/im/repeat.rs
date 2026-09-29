@@ -127,13 +127,13 @@ mod tests {
                 assert_eq!(held.get(k), Some(&HeldKeyOwner::Command));
             }
             (
-                Some(InterceptRepeat::TextInput {
+                Some(InterceptRepeat::TextInput(TextInputKey {
                     keycode,
                     keysym,
                     utf8,
                     surface_id,
                     ..
-                }),
+                })),
                 Some(RepeatModel::TextInput(k)),
             ) => {
                 assert_eq!(keycode, k);
@@ -183,14 +183,16 @@ mod tests {
                     Op::StartTextRepeat(key) if held.get(&key) == Some(&HeldKeyOwner::TextInput) => {
                         state.start_text_input_repeat(
                             &handle,
-                            key,
-                            100 + key,
-                            Some(format!("u{key}")),
-                            1000 + u64::from(key),
-                            false,
-                            false,
-                            false,
-                            false,
+                            TextInputKey {
+                                keycode: key,
+                                keysym: 100 + key,
+                                utf8: Some(format!("u{key}")),
+                                surface_id: 1000 + u64::from(key),
+                                ctrl: false,
+                                alt: false,
+                                shift: false,
+                                logo: false,
+                            },
                         );
                         if repeat_enabled {
                             repeat = Some(RepeatModel::TextInput(key));
@@ -220,29 +222,32 @@ mod tests {
     }
 }
 
+/// A key intercepted for text input, re-sent to Emacs on every repeat tick.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct TextInputKey {
+    pub keycode: u32,
+    pub keysym: u32,
+    pub utf8: Option<String>,
+    pub surface_id: u64,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub logo: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum InterceptRepeat {
-    TextInput {
-        keycode: u32,
-        keysym: u32,
-        utf8: Option<String>,
-        surface_id: u64,
-        ctrl: bool,
-        alt: bool,
-        shift: bool,
-        logo: bool,
-    },
-    Command {
-        keycode: u32,
-        key: String,
-    },
+    TextInput(TextInputKey),
+    Command { keycode: u32, key: String },
 }
 
 impl InterceptRepeat {
     fn keycode(&self) -> u32 {
         match self {
-            Self::TextInput { keycode, .. } | Self::Command { keycode, .. } => *keycode,
+            Self::TextInput(TextInputKey { keycode, .. }) | Self::Command { keycode, .. } => {
+                *keycode
+            }
         }
     }
 }
@@ -316,31 +321,8 @@ impl InterceptRepeatState {
         self.debug_assert_invariants();
     }
 
-    pub fn start_text_input_repeat(
-        &mut self,
-        loop_handle: &LoopHandle<State>,
-        keycode: u32,
-        keysym: u32,
-        utf8: Option<String>,
-        surface_id: u64,
-        ctrl: bool,
-        alt: bool,
-        shift: bool,
-        logo: bool,
-    ) {
-        self.start_repeat(
-            loop_handle,
-            InterceptRepeat::TextInput {
-                keycode,
-                keysym,
-                utf8,
-                surface_id,
-                ctrl,
-                alt,
-                shift,
-                logo,
-            },
-        );
+    pub fn start_text_input_repeat(&mut self, loop_handle: &LoopHandle<State>, key: TextInputKey) {
+        self.start_repeat(loop_handle, InterceptRepeat::TextInput(key));
     }
 
     pub fn start_command_repeat(
@@ -484,10 +466,7 @@ impl InterceptRepeatState {
         matches!(
             (repeat, owner),
             (InterceptRepeat::Command { .. }, Some(HeldKeyOwner::Command))
-                | (
-                    InterceptRepeat::TextInput { .. },
-                    Some(HeldKeyOwner::TextInput)
-                )
+                | (InterceptRepeat::TextInput(_), Some(HeldKeyOwner::TextInput))
         )
     }
 }

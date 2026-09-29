@@ -32,7 +32,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
 
 use crate::frame_click_grab::FrameClickGrab;
-use crate::im::repeat::HeldKeyOwner;
+use crate::im::repeat::{HeldKeyOwner, TextInputKey};
 use crate::{
     InterceptDispatch, InterceptedKey, State, SurfaceHit, TranslateTarget, module, tracy_span,
 };
@@ -102,21 +102,50 @@ fn intercepted_key_action(ik: &InterceptedKey, keysym_raw: u32) -> KeyAction {
     }
 }
 
+/// Compositor state that decides where a key goes, resolved by the caller.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyRouting {
+    /// The focused surface has an active text input that Emacs serves.
+    pub text_input_intercept: bool,
+    pub focus_on_emacs: bool,
+    pub fullscreen_active: bool,
+}
+
+/// The key event being classified.
+#[derive(Debug, Clone, Copy)]
+pub struct KeyInput<'a> {
+    pub is_press: bool,
+    /// Layout-independent keysym of the physical key.
+    pub keysym_raw: u32,
+    /// Keysym after XKB applied the current modifiers.
+    pub modified: Keysym,
+    pub mods: &'a ModifiersState,
+    /// The key is itself a modifier: pressing it changed `mods`.
+    pub changes_modifiers: bool,
+}
+
 /// Pure classification of a keyboard event. Reads no compositor state; the
-/// caller resolves `focus_on_emacs` / `fullscreen_active` upstream and
-/// applies side effects downstream. Releases always Forward.
+/// caller resolves the `KeyRouting` upstream and applies side effects
+/// downstream. Releases always Forward.
 pub fn classify_key(
     intercepted_keys: &[InterceptedKey],
-    text_input_intercept: bool,
-    focus_on_emacs: bool,
-    fullscreen_active: bool,
-    is_press: bool,
-    keysym_raw: u32,
-    modified_raw: u32,
-    modified: Keysym,
-    mods: &ModifiersState,
-    key_changes_modifiers: bool,
+    routing: KeyRouting,
+    key: KeyInput<'_>,
 ) -> KeyAction {
+    let KeyRouting {
+        text_input_intercept,
+        focus_on_emacs,
+        fullscreen_active,
+    } = routing;
+    let KeyInput {
+        is_press,
+        keysym_raw,
+        modified,
+        mods,
+        changes_modifiers: key_changes_modifiers,
+    } = key;
+    let modified_raw = modified.raw();
+
     if !is_press {
         return KeyAction::Forward;
     }
@@ -409,6 +438,11 @@ pub fn handle_keyboard_event(
     // and the first key after activation isn't forwarded raw.
     let text_input_intercept = state.ewm.text_input_intercept
         && state.ewm.active_text_input_surface_id() == Some(focused_surface_id);
+    let routing = KeyRouting {
+        text_input_intercept,
+        focus_on_emacs,
+        fullscreen_active,
+    };
 
     // Use input_intercept + explicit input_forward so we can translate keys
     // (resolve a different keycode/modifiers) between the two steps.
@@ -422,15 +456,14 @@ pub fn handle_keyboard_event(
                 .raw();
             classify_key(
                 &intercepted_keys,
-                text_input_intercept,
-                focus_on_emacs,
-                fullscreen_active,
-                is_press,
-                keysym_raw,
-                modified.raw(),
-                modified,
-                mods,
-                mods_before != *mods,
+                routing,
+                KeyInput {
+                    is_press,
+                    keysym_raw,
+                    modified,
+                    mods,
+                    changes_modifiers: mods_before != *mods,
+                },
             )
         });
     if let Some(saved) = prefix_saved_layout {
@@ -495,16 +528,16 @@ pub fn handle_keyboard_event(
         } => {
             state.ewm.begin_key_hold(keycode, HeldKeyOwner::TextInput);
             if key_repeats(state, keycode) {
-                state.ewm.start_text_input_repeat(
+                state.ewm.start_text_input_repeat(TextInputKey {
                     keycode,
                     keysym,
-                    utf8.clone(),
-                    focused_surface_id,
+                    utf8: utf8.clone(),
+                    surface_id: focused_surface_id,
                     ctrl,
                     alt,
                     shift,
                     logo,
-                );
+                });
             }
             state.ewm.queue_event(crate::Event::Key {
                 keycode,

@@ -74,13 +74,18 @@ pub fn set_style(css: &str) -> Result<()> {
     Ok(())
 }
 
+type GetWindowFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
+type WindowFn = unsafe extern "C" fn(*mut c_void);
+type GetDataFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
+type SetDataFn = unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void);
+
 /// Cached function pointers for the freeze/thaw path; resolved once on first use.
 struct FreezeApi {
-    get_window: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    freeze: unsafe extern "C" fn(*mut c_void),
-    thaw: unsafe extern "C" fn(*mut c_void),
-    get_data: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
-    set_data: unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void),
+    get_window: GetWindowFn,
+    freeze: WindowFn,
+    thaw: WindowFn,
+    get_data: GetDataFn,
+    set_data: SetDataFn,
 }
 
 unsafe impl Sync for FreezeApi {}
@@ -99,11 +104,26 @@ fn freeze_api() -> Result<&'static FreezeApi> {
         // we never close it so the resolved pointers stay valid for the process lifetime.
         (|| -> Result<FreezeApi> {
             Ok(FreezeApi {
-                get_window: std::mem::transmute(sym(lib, c"gtk_widget_get_window")?),
-                freeze: std::mem::transmute(sym(lib, c"gdk_window_freeze_updates")?),
-                thaw: std::mem::transmute(sym(lib, c"gdk_window_thaw_updates")?),
-                get_data: std::mem::transmute(sym(lib, c"g_object_get_data")?),
-                set_data: std::mem::transmute(sym(lib, c"g_object_set_data")?),
+                get_window: std::mem::transmute::<*mut c_void, GetWindowFn>(sym(
+                    lib,
+                    c"gtk_widget_get_window",
+                )?),
+                freeze: std::mem::transmute::<*mut c_void, WindowFn>(sym(
+                    lib,
+                    c"gdk_window_freeze_updates",
+                )?),
+                thaw: std::mem::transmute::<*mut c_void, WindowFn>(sym(
+                    lib,
+                    c"gdk_window_thaw_updates",
+                )?),
+                get_data: std::mem::transmute::<*mut c_void, GetDataFn>(sym(
+                    lib,
+                    c"g_object_get_data",
+                )?),
+                set_data: std::mem::transmute::<*mut c_void, SetDataFn>(sym(
+                    lib,
+                    c"g_object_set_data",
+                )?),
             })
         })()
         .ok()

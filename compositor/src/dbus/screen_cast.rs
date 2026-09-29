@@ -177,13 +177,16 @@ impl ScreenCast {
     }
 }
 
+/// Streams of a session, each with the D-Bus interface it is exported under.
+type SessionStreams = Vec<(Stream, InterfaceRef<Stream>)>;
+
 /// Session interface
 #[derive(Clone)]
 pub struct Session {
     id: CastSessionId,
     outputs: Arc<Mutex<Vec<OutputInfo>>>,
     to_compositor: Sender<ScreenCastToCompositor>,
-    streams: Arc<Mutex<Vec<(Stream, InterfaceRef<Stream>)>>>,
+    streams: Arc<Mutex<SessionStreams>>,
     stopped: Arc<AtomicBool>,
 }
 
