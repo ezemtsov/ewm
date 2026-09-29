@@ -97,7 +97,9 @@ impl FromStr for Modeline {
     type Err = String;
 
     /// Parse the X11 modeline form:
-    /// `clock hdisplay hsync_start hsync_end htotal vdisplay vsync_start vsync_end vtotal +hsync +vsync`
+    /// ```text
+    /// clock hdisplay hsync_start hsync_end htotal vdisplay vsync_start vsync_end vtotal +hsync +vsync
+    /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         fn u16_field(v: Option<&str>, what: &str) -> Result<u16, String> {
             v.ok_or_else(|| format!("modeline: missing {what}"))?

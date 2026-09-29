@@ -34,7 +34,6 @@ use smithay::wayland::{Dispatch2, GlobalDispatch2, dmabuf, shm};
 use tracing::trace;
 
 use crate::protocols::EmptyData;
-
 pub use crate::utils::get_monotonic_time;
 
 const VERSION: u32 = 3;
