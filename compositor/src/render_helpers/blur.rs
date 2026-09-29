@@ -59,20 +59,22 @@ struct BlurProgramInternal {
 }
 
 unsafe fn compile_program(gl: &ffi::Gles2, src: &str) -> Result<BlurProgramInternal, GlesError> {
-    let program = unsafe { link_program(gl, include_str!("shaders/blur.vert"), src)? };
+    unsafe {
+        let program = link_program(gl, include_str!("shaders/blur.vert"), src)?;
 
-    let vert = c"vert";
-    let tex = c"tex";
-    let half_pixel = c"half_pixel";
-    let offset = c"offset";
+        let vert = c"vert";
+        let tex = c"tex";
+        let half_pixel = c"half_pixel";
+        let offset = c"offset";
 
-    Ok(BlurProgramInternal {
-        program,
-        uniform_tex: gl.GetUniformLocation(program, tex.as_ptr()),
-        uniform_half_pixel: gl.GetUniformLocation(program, half_pixel.as_ptr()),
-        uniform_offset: gl.GetUniformLocation(program, offset.as_ptr()),
-        attrib_vert: gl.GetAttribLocation(program, vert.as_ptr()),
-    })
+        Ok(BlurProgramInternal {
+            program,
+            uniform_tex: gl.GetUniformLocation(program, tex.as_ptr()),
+            uniform_half_pixel: gl.GetUniformLocation(program, half_pixel.as_ptr()),
+            uniform_offset: gl.GetUniformLocation(program, offset.as_ptr()),
+            attrib_vert: gl.GetAttribLocation(program, vert.as_ptr()),
+        })
+    }
 }
 
 impl BlurProgram {

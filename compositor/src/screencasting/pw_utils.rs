@@ -1133,42 +1133,48 @@ impl Cast {
 
 /// Mark a buffer as corrupted and queue it back to avoid starving PipeWire's pool.
 unsafe fn return_unused_buffer(stream: &StreamRc, buf: NonNull<pw_buffer>) {
-    let buf = buf.as_ptr();
-    let spa_buf = (*buf).buffer;
-    let chunk = (*(*spa_buf).datas).chunk;
-    // Some consumers check for size == 0 instead of the CORRUPTED flag.
-    (*chunk).size = 0;
-    (*chunk).flags = SPA_CHUNK_FLAG_CORRUPTED as i32;
+    unsafe {
+        let buf = buf.as_ptr();
+        let spa_buf = (*buf).buffer;
+        let chunk = (*(*spa_buf).datas).chunk;
+        // Some consumers check for size == 0 instead of the CORRUPTED flag.
+        (*chunk).size = 0;
+        (*chunk).flags = SPA_CHUNK_FLAG_CORRUPTED as i32;
 
-    if let Some(header) = find_meta_header(spa_buf) {
-        let header = header.as_ptr();
-        (*header).flags = SPA_META_HEADER_FLAG_CORRUPTED;
+        if let Some(header) = find_meta_header(spa_buf) {
+            let header = header.as_ptr();
+            (*header).flags = SPA_META_HEADER_FLAG_CORRUPTED;
+        }
+
+        stream.queue_raw_buffer(buf);
     }
-
-    stream.queue_raw_buffer(buf);
 }
 
 /// Mark buffer as successfully rendered with sequence metadata.
 unsafe fn mark_buffer_as_good(spa_buf: *mut spa_buffer, sequence: &mut u64) {
-    let chunk = (*(*spa_buf).datas).chunk;
-    // OBS checks for size != 0 as a workaround, so set to 1.
-    (*chunk).size = 1;
-    (*chunk).flags = SPA_CHUNK_FLAG_NONE as i32;
+    unsafe {
+        let chunk = (*(*spa_buf).datas).chunk;
+        // OBS checks for size != 0 as a workaround, so set to 1.
+        (*chunk).size = 1;
+        (*chunk).flags = SPA_CHUNK_FLAG_NONE as i32;
 
-    *sequence = sequence.wrapping_add(1);
-    if let Some(header) = find_meta_header(spa_buf) {
-        let header = header.as_ptr();
-        (*header).pts = crate::utils::get_monotonic_time().as_nanos() as i64;
-        (*header).flags = 0;
-        (*header).seq = *sequence;
-        (*header).dts_offset = 0;
+        *sequence = sequence.wrapping_add(1);
+        if let Some(header) = find_meta_header(spa_buf) {
+            let header = header.as_ptr();
+            (*header).pts = crate::utils::get_monotonic_time().as_nanos() as i64;
+            (*header).flags = 0;
+            (*header).seq = *sequence;
+            (*header).dts_offset = 0;
+        }
     }
 }
 
 /// Find the SPA_META_Header in a spa_buffer.
 unsafe fn find_meta_header(buffer: *mut spa_buffer) -> Option<NonNull<spa_meta_header>> {
-    let p = spa_buffer_find_meta_data(buffer, SPA_META_Header, size_of::<spa_meta_header>()).cast();
-    NonNull::new(p)
+    unsafe {
+        let p = spa_buffer_find_meta_data(buffer, SPA_META_Header, size_of::<spa_meta_header>()).cast();
+        NonNull::new(p)
+    }
 }
 
 /// Create video format parameters with available modifiers.

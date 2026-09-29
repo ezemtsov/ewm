@@ -14,9 +14,11 @@ use anyhow::{anyhow, ensure, Context as _, Result};
 const PRIORITY: u32 = 600;
 
 unsafe fn sym(lib: *mut c_void, name: &CStr) -> Result<*mut c_void> {
-    let p = libc::dlsym(lib, name.as_ptr());
-    ensure!(!p.is_null(), "missing GTK symbol: {name:?}");
-    Ok(p)
+    unsafe {
+        let p = libc::dlsym(lib, name.as_ptr());
+        ensure!(!p.is_null(), "missing GTK symbol: {name:?}");
+        Ok(p)
+    }
 }
 
 /// Install a CSS provider on the default screen at application priority.

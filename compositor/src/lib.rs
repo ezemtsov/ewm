@@ -9285,7 +9285,7 @@ impl State {
 
         self.backend.apply_output_config(&mut self.ewm, output_name);
 
-        if let (Some(ref output), Some(old_geo)) = (&output, old_geo) {
+        if let (Some(output), Some(old_geo)) = (&output, old_geo) {
             let point = Point::from((pos.x as i32, pos.y as i32));
             if old_geo.contains(point) {
                 if let Some(new_geo) = self.ewm.space.output_geometry(output) {

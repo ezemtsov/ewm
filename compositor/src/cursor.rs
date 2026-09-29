@@ -55,8 +55,13 @@ impl CursorConfig {
     }
 
     pub fn apply_env(&self) {
-        env::set_var("XCURSOR_THEME", &self.theme);
-        env::set_var("XCURSOR_SIZE", self.size.to_string());
+        // SAFETY: only the compositor thread writes these variables, at startup and on
+        // cursor config reloads. Other Emacs threads that read the environment
+        // concurrently are a pre-existing hazard of running in-process.
+        unsafe {
+            env::set_var("XCURSOR_THEME", &self.theme);
+            env::set_var("XCURSOR_SIZE", self.size.to_string());
+        }
     }
 
     fn loadable_env_theme(var: &str) -> Option<String> {
@@ -400,8 +405,11 @@ impl CursorManager {
 
     /// Set the common XCURSOR env variables.
     fn ensure_env(theme: &str, size: u8) {
-        env::set_var("XCURSOR_THEME", theme);
-        env::set_var("XCURSOR_SIZE", size.to_string());
+        // SAFETY: see `CursorConfig::apply_env`.
+        unsafe {
+            env::set_var("XCURSOR_THEME", theme);
+            env::set_var("XCURSOR_SIZE", size.to_string());
+        }
     }
 
     fn fallback_cursor() -> XCursor {
@@ -537,6 +545,8 @@ mod tests {
 
     use super::*;
 
+    /// Serializes tests that mutate the process environment; the `unsafe` env calls in
+    /// this module are only sound while this lock is held.
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -559,9 +569,9 @@ mod tests {
         fn drop(&mut self) {
             for (name, value) in &self.0 {
                 if let Some(value) = value {
-                    env::set_var(name, value);
+                    unsafe { env::set_var(name, value) };
                 } else {
-                    env::remove_var(name);
+                    unsafe { env::remove_var(name) };
                 }
             }
         }
@@ -618,8 +628,8 @@ mod tests {
         let root = TempThemeRoot::new();
         make_cursor_theme(root.path(), "EnvTheme", "default");
         make_cursor_theme(root.path(), "OtherTheme", "default");
-        env::set_var("XCURSOR_PATH", root.path());
-        env::set_var("XCURSOR_THEME", "EnvTheme");
+        unsafe { env::set_var("XCURSOR_PATH", root.path()) };
+        unsafe { env::set_var("XCURSOR_THEME", "EnvTheme") };
 
         let config = CursorConfig::resolve(None, 24);
 
@@ -632,8 +642,8 @@ mod tests {
         let _env = EnvRestore::capture(&["XCURSOR_PATH", "XCURSOR_THEME"]);
         let root = TempThemeRoot::new();
         make_cursor_theme(root.path(), "LoadableTheme", "default");
-        env::set_var("XCURSOR_PATH", root.path());
-        env::set_var("XCURSOR_THEME", "default");
+        unsafe { env::set_var("XCURSOR_PATH", root.path()) };
+        unsafe { env::set_var("XCURSOR_THEME", "default") };
 
         let config = CursorConfig::resolve(None, 24);
 
@@ -646,8 +656,8 @@ mod tests {
         let _env = EnvRestore::capture(&["XCURSOR_PATH", "XCURSOR_THEME"]);
         let root = TempThemeRoot::new();
         make_cursor_theme(root.path(), "EnvTheme", "default");
-        env::set_var("XCURSOR_PATH", root.path());
-        env::set_var("XCURSOR_THEME", "EnvTheme");
+        unsafe { env::set_var("XCURSOR_PATH", root.path()) };
+        unsafe { env::set_var("XCURSOR_THEME", "EnvTheme") };
 
         let config = CursorConfig::resolve(Some("MissingTheme".to_owned()), 24);
 
@@ -670,8 +680,8 @@ mod tests {
     fn explicit_cursor_config_overrides_ambient_environment() {
         let _guard = env_lock().lock().unwrap();
         let _env = EnvRestore::capture(&["XCURSOR_THEME", "XCURSOR_SIZE"]);
-        env::set_var("XCURSOR_THEME", "AmbientTheme");
-        env::set_var("XCURSOR_SIZE", "12");
+        unsafe { env::set_var("XCURSOR_THEME", "AmbientTheme") };
+        unsafe { env::set_var("XCURSOR_SIZE", "12") };
 
         let manager = CursorManager::new("ConfiguredTheme", 37);
 
