@@ -5,7 +5,7 @@ EAPI=8
 
 RUST_MIN_VER="1.88.0"
 
-inherit cargo elisp-common git-r3 systemd
+inherit cargo elisp-common git-r3 systemd toolchain-funcs
 
 DESCRIPTION="Modern, fast Linux desktop environment based on Emacs"
 HOMEPAGE="https://codeberg.org/ezemtsov/ewm"
@@ -51,6 +51,19 @@ src_unpack() {
 }
 
 src_configure() {
+	# libdisplay-info-sys 0.3 (via smithay) rejects libdisplay-info >= 0.4,
+	# which its v0_3 bindings build against fine.  A "<0.4" dep would downgrade
+	# a library mesa and wlroots share, so shim the version for this build.
+	if ! $(tc-getPKG_CONFIG) --max-version=0.3.99 libdisplay-info; then
+		local pcdir
+		pcdir=$($(tc-getPKG_CONFIG) --variable=pcfiledir libdisplay-info) || die
+		mkdir -p "${T}"/pkgconfig || die
+		sed -e 's/^Version:.*/Version: 0.3.99/' \
+			"${pcdir}"/libdisplay-info.pc \
+			> "${T}"/pkgconfig/libdisplay-info.pc || die
+		export PKG_CONFIG_PATH="${T}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+	fi
+
 	local myfeatures=( $(usev screencast) )
 	cargo_src_configure --frozen
 }
