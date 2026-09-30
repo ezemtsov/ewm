@@ -64,6 +64,13 @@ src_configure() {
 		export PKG_CONFIG_PATH="${T}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 	fi
 
+	# libEGL and libwayland-client are dlopen()ed, so --as-needed drops them;
+	# link them explicitly, as nix/default.nix and the Arch PKGBUILD do.
+	RUSTFLAGS+=" -C link-arg=-Wl,--push-state,--no-as-needed"
+	RUSTFLAGS+=" -C link-arg=-lEGL -C link-arg=-lwayland-client"
+	RUSTFLAGS+=" -C link-arg=-Wl,--pop-state"
+	export RUSTFLAGS
+
 	local myfeatures=( $(usev screencast) )
 	cargo_src_configure --frozen
 }
