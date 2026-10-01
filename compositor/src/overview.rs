@@ -70,6 +70,7 @@ pub struct Overview {
     progress: Option<Progress>,
     zoom: f64,
     pub backdrop_color: [f32; 4],
+    pub background_color: [f32; 4],
     clock: AnimationsClock,
 }
 
@@ -80,6 +81,7 @@ impl Overview {
             progress: None,
             zoom: DEFAULT_ZOOM,
             backdrop_color: DEFAULT_BACKDROP_COLOR,
+            background_color: DEFAULT_BACKGROUND_COLOR,
             clock,
         }
     }

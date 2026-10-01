@@ -64,6 +64,7 @@
 (declare-function ewm-set-unfocused-alpha "ewm-core")
 (declare-function ewm-set-animations-enabled "ewm-core")
 (declare-function ewm-configure-overview-module "ewm-core" (zoom red green blue))
+(declare-function ewm-configure-background-module "ewm-core" (red green blue))
 (declare-function ewm-configure-blur-module "ewm-core"
                   (on passes offset noise saturation))
 (declare-function ewm-overview-module "ewm-core" (action))
@@ -752,7 +753,7 @@ Similar to `exwm-workspace-rename-buffer'."
   (ewm--apply-user-config "ewm-output-config" #'ewm--apply-output-config)
   ;; For pgtk, CSS goes in before any frame is created so the GTK widget
   ;; background is set on the first wl_surface commit.
-  (ewm--apply-gtk-bg-css)
+  (ewm--apply-background)
   (let (created)
     (dolist (output (ewm-get-active-outputs))
       (unless (ewm--strip-frames output)
@@ -883,16 +884,19 @@ Select the Nth Emacs frame on the requested output (1-based index)."
       (`(,(and (pred integerp) secs) . ,(and (pred stringp) cmd))
        (ewm-configure-idle-module secs cmd)))))
 
+(defun ewm--color-rgb (color)
+  "COLOR as red, green and blue in 0.0..1.0, or nil for an unknown spec."
+  ;; `tty-color-standard-values' parses names and hex specs without a display.
+  (when-let* ((rgb (tty-color-standard-values (tty-color-canonicalize color))))
+    (mapcar (lambda (c) (/ c 65535.0)) rgb)))
+
 (defun ewm--send-overview-config ()
   "Send overview zoom and backdrop color to the compositor."
   (when (ewm--compositor-active-p)
-    ;; `tty-color-standard-values' parses names and hex specs without a display.
-    (let ((rgb (or (tty-color-standard-values
-                   (tty-color-canonicalize ewm-overview-backdrop-color))
-                   (tty-color-standard-values
+    (let ((rgb (or (ewm--color-rgb ewm-overview-backdrop-color)
+                   (ewm--color-rgb
                     (eval (car (get 'ewm-overview-backdrop-color 'standard-value)) t)))))
-      (apply #'ewm-configure-overview-module (float ewm-overview-zoom)
-             (mapcar (lambda (c) (/ c 65535.0)) rgb)))))
+      (apply #'ewm-configure-overview-module (float ewm-overview-zoom) rgb))))
 
 (defun ewm--send-blur-config ()
   "Send blur settings to the compositor."
@@ -1748,7 +1752,7 @@ The compositor runs as a thread within the Emacs process."
               (run-with-idle-timer 0 nil #'ewm-notify-initialized-module)
             (add-hook 'emacs-startup-hook #'ewm-notify-initialized-module))
           ;; Graphical frames now have the real theme background.
-          (ewm--apply-gtk-bg-css)
+          (ewm--apply-background)
           (setq started t))
       (unless started
         (ewm--stop-compositor)
@@ -1767,15 +1771,16 @@ The compositor runs as a thread within the Emacs process."
 
 (declare-function ewm-gtk-set-style "ewm-core")
 
-(defun ewm--apply-gtk-bg-css (&rest _)
-  "Push the default face background to GTK; falls back to black pre-graphical (bug#53232)."
-  (when (ewm--gtk-backed-p)
-    (let* ((live (face-attribute 'default :background))
-           (bg (if (and (stringp live) (not (string-prefix-p "unspecified" live)))
-                   live
-                 "#000000")))
+(defun ewm--apply-background (&rest _)
+  "Push the default face background to the compositor and GTK."
+  (let* ((live (face-attribute 'default :background))
+         (bg (and (stringp live) (not (string-prefix-p "unspecified" live)) live)))
+    (when-let* ((rgb (and bg (ewm--compositor-active-p) (ewm--color-rgb bg))))
+      (apply #'ewm-configure-background-module rgb))
+    (when (ewm--gtk-backed-p)
+      ;; Black before the first graphical frame, when the face is unspecified (bug#53232).
       (condition-case err
-          (ewm-gtk-set-style (format "window { background-color: %s; }" bg))
+          (ewm-gtk-set-style (format "window { background-color: %s; }" (or bg "#000000")))
         (error (message "EWM: ewm-gtk-set-style failed: %s" err))))))
 
 ;;; Process spawning with activation tokens
@@ -1846,8 +1851,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (add-function :override interprogram-paste-function #'ignore)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
   (add-hook 'delete-frame-functions #'ewm--on-delete-frame)
-  (when (ewm--gtk-backed-p)
-    (add-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css))
+  (add-hook 'enable-theme-functions #'ewm--apply-background)
   (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion)
   (add-hook 'kill-emacs-hook #'ewm--stop-compositor t))
 
@@ -1868,7 +1872,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (remove-hook 'delete-frame-functions #'ewm--on-delete-frame)
   (remove-hook 'after-init-hook #'ewm--send-intercept-keys)
   (remove-hook 'emacs-startup-hook #'ewm-notify-initialized-module)
-  (remove-hook 'enable-theme-functions #'ewm--apply-gtk-bg-css)
+  (remove-hook 'enable-theme-functions #'ewm--apply-background)
   (advice-remove 'delete-frame #'ewm--prevent-frame-deletion)
   (remove-hook 'kill-emacs-hook #'ewm--stop-compositor))
 

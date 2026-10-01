@@ -408,6 +408,8 @@ pub struct OutputState {
     pub fullscreen_backdrop: SolidColorBuffer,
     /// Fill of the output behind its frames.
     pub background: SolidColorBuffer,
+    /// Panel exclusive zones, painted in the fill colour.
+    pub bands: [SolidColorBuffer; 4],
     /// Backdrop behind the zoomed-out output in the overview.
     pub overview_backdrop: SolidColorBuffer,
     /// Shadow under the zoomed-out output in the overview.
@@ -429,6 +431,7 @@ impl OutputState {
             frame_callback_sequence: 0,
             fullscreen_backdrop: SolidColorBuffer::new(size, [0.0, 0.0, 0.0, 1.0]),
             background: SolidColorBuffer::new(size, overview::DEFAULT_BACKGROUND_COLOR),
+            bands: Default::default(),
             overview_backdrop: SolidColorBuffer::new(size, overview::DEFAULT_BACKDROP_COLOR),
             overview_shadow: floating_shadow::Shadow::new(overview::shadow_config(f64::from(
                 size.1,
@@ -9749,6 +9752,10 @@ impl State {
             } => {
                 self.ewm.overview.set_zoom(zoom);
                 self.ewm.overview.backdrop_color = backdrop_color;
+                self.ewm.queue_redraw_all();
+            }
+            ModuleCommand::ConfigureBackground { color } => {
+                self.ewm.overview.background_color = color;
                 self.ewm.queue_redraw_all();
             }
             ModuleCommand::SetIdleInhibited { inhibited } => {

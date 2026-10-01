@@ -523,6 +523,10 @@ pub enum ModuleCommand {
         zoom: f64,
         backdrop_color: [f32; 4],
     },
+    /// Fill colour behind the frames.
+    ConfigureBackground {
+        color: [f32; 4],
+    },
     /// Slide every frame off its output, or bring them back.
     HideToggle,
     /// Set manual idle inhibition (from Emacs)
@@ -1652,15 +1656,29 @@ fn hide_toggle_module() -> Result<()> {
     Ok(())
 }
 
+/// Opaque colour from RED, GREEN and BLUE in 0.0..=1.0.
+fn rgb(red: f64, green: f64, blue: f64) -> [f32; 4] {
+    let channel = |value: f64| value.clamp(0.0, 1.0) as f32;
+    [channel(red), channel(green), channel(blue), 1.0]
+}
+
 /// Configure the overview (module mode).
 /// ZOOM scales the strip when zoomed out; RED, GREEN and BLUE in 0.0..=1.0
 /// colour the backdrop behind it.
 #[defun]
 fn configure_overview_module(zoom: f64, red: f64, green: f64, blue: f64) -> Result<()> {
-    let channel = |value: f64| value.clamp(0.0, 1.0) as f32;
     push_command(ModuleCommand::ConfigureOverview {
         zoom,
-        backdrop_color: [channel(red), channel(green), channel(blue), 1.0],
+        backdrop_color: rgb(red, green, blue),
+    });
+    Ok(())
+}
+
+/// Colour the fill behind the frames (module mode). RED, GREEN and BLUE in 0.0..=1.0.
+#[defun]
+fn configure_background_module(red: f64, green: f64, blue: f64) -> Result<()> {
+    push_command(ModuleCommand::ConfigureBackground {
+        color: rgb(red, green, blue),
     });
     Ok(())
 }

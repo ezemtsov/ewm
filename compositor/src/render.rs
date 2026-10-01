@@ -879,6 +879,20 @@ pub fn collect_render_elements_for_output(
 
     elements.extend(content.drain(..).map(slid));
 
+    // Paint panel exclusive zones in the fill colour.
+    let background_color = ewm.overview.background_color;
+    let backdrop_color = ewm.overview.backdrop_color;
+    if let Some(state) = ewm.output_state.get_mut(output) {
+        let zones = Rectangle::from_size(output_size).subtract_rect(working_area);
+        for (buffer, zone) in state.bands.iter_mut().zip(zones) {
+            buffer.update(zone.size, background_color);
+            let loc = zone.loc.to_physical_precise_round(scale);
+            content.push(ContentRenderElement::SolidColor(
+                SolidColorRenderElement::from_buffer(buffer, loc, scale, 1., Kind::Unspecified),
+            ));
+        }
+    }
+
     // Bottom layer
     content.append(&mut bottom_elems);
 
@@ -887,9 +901,9 @@ pub fn collect_render_elements_for_output(
 
     // Output fill behind everything on it; in the overview also the shadow and the backdrop.
     let overview_progress = ewm.overview.progress();
-    let backdrop_color = ewm.overview.backdrop_color;
     let mut backdrop = None;
     if let Some(state) = ewm.output_state.get_mut(output) {
+        state.background.set_color(background_color);
         content.push(ContentRenderElement::SolidColor(solid(
             &state.background,
             scale,
