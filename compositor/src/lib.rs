@@ -110,7 +110,7 @@ use std::time::{Duration, Instant};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
-use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState, TextInputKey};
+use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
 use serde::{Deserialize, Serialize};
 use smithay::backend::input::{InputTime, KeyState, TabletToolDescriptor};
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
@@ -714,6 +714,8 @@ pub struct InterceptedKey {
     pub dispatch: InterceptDispatch,
     #[serde(default)]
     pub repeat: bool,
+    /// Applies only while this surface has focus, or everywhere when `None`.
+    pub surface: Option<u64>,
 }
 
 impl InterceptedKey {
@@ -760,27 +762,6 @@ pub enum InterceptDispatch {
     #[default]
     Keyboard,
     Command,
-    /// Translate to a different key delivered to a non-Emacs surface.
-    Translate(TranslateTarget),
-}
-
-/// Target key delivered to a non-Emacs surface in place of a matched key:
-/// a keysym plus the modifiers the surface should see.
-///
-/// Example: Super+c is matched and Ctrl+c (clipboard copy) is delivered; or
-/// Ctrl+j delivers Down. When Emacs has focus the matched key works normally
-/// via `ewm-mode-map`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-pub struct TranslateTarget {
-    pub keysym: u32,
-    #[serde(default)]
-    pub ctrl: bool,
-    #[serde(default)]
-    pub alt: bool,
-    #[serde(default)]
-    pub shift: bool,
-    #[serde(rename = "super", default)]
-    pub logo: bool,
 }
 
 /// DnD icon surface attached to the pointer during a drag operation.
@@ -5780,14 +5761,8 @@ impl Ewm {
             .configure_repeat(&self.loop_handle, rate, delay);
     }
 
-    pub(crate) fn start_text_input_repeat(&mut self, key: TextInputKey) {
-        self.im_repeat
-            .start_text_input_repeat(&self.loop_handle, key);
-    }
-
-    pub(crate) fn start_command_repeat(&mut self, keycode: u32, key: String) {
-        self.im_repeat
-            .start_command_repeat(&self.loop_handle, keycode, key);
+    pub(crate) fn start_repeat(&mut self, repeat: InterceptRepeat) {
+        self.im_repeat.start_repeat(&self.loop_handle, repeat);
     }
 
     pub(crate) fn cancel_command_repeat(&mut self) {
@@ -7073,7 +7048,7 @@ impl Ewm {
                 "output": cursor_output,
                 "image": self.cursor_manager.debug_state(cursor_scale),
             },
-            "intercepted_keys": module::get_intercepted_keys(),
+            "intercepted_keys": *module::intercepted_keys().read().unwrap(),
             "emacs_pid": self.emacs_pid,
             "text_input_intercept": self.text_input_intercept,
             "text_input_active": self.im_text_input.is_active(),
@@ -9237,20 +9212,17 @@ impl State {
         if self.ewm.active_text_input_surface_id() != Some(surface_id) {
             return;
         }
-        let keyboard = self.ewm.keyboard.clone();
-        self.sync_keyboard_focus();
-        crate::input::forward_with_modifiers(self, &keyboard, (ctrl, alt, shift, logo), |state| {
-            for key_state in [KeyState::Pressed, KeyState::Released] {
-                keyboard.input_forward(
-                    state,
-                    keycode.into(),
-                    key_state,
-                    SERIAL_COUNTER.next_serial(),
-                    InputTime::now(),
-                    false,
-                );
+        crate::input::tap_key(self, keycode, (ctrl, alt, shift, logo));
+    }
+
+    /// Deliver `repeat` once, on the press and again on each repeat tick.
+    fn deliver_intercept(&mut self, repeat: InterceptRepeat) {
+        match repeat {
+            InterceptRepeat::TextInput(key) => self.ewm.queue_event(Event::Key(key)),
+            InterceptRepeat::Command { key, .. } => {
+                self.ewm.queue_event(Event::InterceptedCommand { key })
             }
-        });
+        }
     }
 
     pub(crate) fn on_intercept_repeat_timer(&mut self, keycode: u32) {
@@ -9264,37 +9236,11 @@ impl State {
         self.ewm.notify_activity();
         self.ewm.reset_idle_timer();
 
-        match repeat {
-            InterceptRepeat::TextInput(TextInputKey {
-                keycode,
-                keysym,
-                utf8,
-                surface_id,
-                ctrl,
-                alt,
-                shift,
-                logo,
-            }) => {
-                self.ewm.queue_event(Event::Key {
-                    keycode,
-                    keysym,
-                    utf8,
-                    surface_id,
-                    ctrl,
-                    alt,
-                    shift,
-                    logo,
-                });
-            }
-            InterceptRepeat::Command { key, .. } => {
-                if module::get_keyboard_capture() {
-                    self.ewm.cancel_command_repeat();
-                    return;
-                }
-                self.ewm.queue_event(Event::InterceptedCommand { key });
-            }
+        if matches!(repeat, InterceptRepeat::Command { .. }) && module::get_keyboard_capture() {
+            self.ewm.cancel_command_repeat();
+            return;
         }
-
+        self.deliver_intercept(repeat);
         self.ewm.reschedule_intercept_repeat(keycode);
     }
 
@@ -9550,6 +9496,21 @@ impl State {
                 logo,
             } => {
                 self.forward_text_input_key(surface_id, keycode, ctrl, alt, shift, logo);
+            }
+            ModuleCommand::SendKey { surface_id, keys } => {
+                if surface_id.is_none_or(|id| id == self.ewm.focused_surface_id()) {
+                    for key in keys {
+                        let Some(code) = key
+                            .key
+                            .keysym()
+                            .and_then(|k| self.ewm.keyboard.keycode_for_keysym(k))
+                        else {
+                            continue;
+                        };
+                        let mods = (key.ctrl, key.alt, key.shift, key.logo);
+                        crate::input::tap_key(self, code.raw(), mods);
+                    }
+                }
             }
             ModuleCommand::TextInputIntercept { enabled } => {
                 if self.ewm.text_input_intercept != enabled {

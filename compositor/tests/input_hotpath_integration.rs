@@ -3,7 +3,7 @@
 use ewm_core::input::KeyboardAction;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
-use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, TranslateTarget};
+use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId};
 use smithay::input::keyboard::keysyms;
 use smithay::utils::Size;
 
@@ -25,7 +25,6 @@ type Binding = (&'static str, u32, bool, bool, bool);
 const CTRL_X: Binding = ("C-x", keysyms::KEY_x, true, false, false);
 const META_X: Binding = ("M-x", keysyms::KEY_x, false, true, false);
 const FULLSCREEN_P: Binding = ("fullscreen-p", keysyms::KEY_p, false, false, true);
-const PLAIN_X_TO_CTRL: (u32, &str) = (keysyms::KEY_x, "ctrl");
 
 #[derive(Clone, Copy)]
 enum FocusMode {
@@ -96,31 +95,7 @@ fn intercepted((key, keysym, ctrl, alt, allow_fullscreen): Binding) -> Intercept
         allow_fullscreen,
         dispatch: InterceptDispatch::Keyboard,
         repeat: false,
-    }
-}
-
-fn translated((keysym, target_mod): (u32, &str)) -> InterceptedKey {
-    let mut target = TranslateTarget {
-        keysym,
-        ..Default::default()
-    };
-    match target_mod {
-        "ctrl" => target.ctrl = true,
-        "alt" => target.alt = true,
-        "shift" => target.shift = true,
-        "super" => target.logo = true,
-        _ => {}
-    }
-    InterceptedKey {
-        keysym,
-        key: String::new(),
-        ctrl: false,
-        alt: false,
-        shift: false,
-        logo: false,
-        allow_fullscreen: false,
-        dispatch: InterceptDispatch::Translate(target),
-        repeat: false,
+        surface: None,
     }
 }
 
@@ -229,12 +204,6 @@ impl Harness {
         self
     }
 
-    fn emulations(&mut self, emulations: &[(u32, &str)]) -> &mut Self {
-        self.fix
-            .set_intercepted_keys(emulations.iter().copied().map(translated).collect());
-        self
-    }
-
     fn clear_capture(&mut self) -> &mut Self {
         self.fix.clear_keyboard_capture();
         self
@@ -264,17 +233,6 @@ impl Harness {
         self.expect_keyboard_focus(Target::App);
         assert_eq!(self.fix.focused_surface_id(), logical_focus);
         self
-    }
-
-    fn hold_emulated(&mut self, key: u32) -> &mut Self {
-        self.expect_keyboard_focus(Target::App);
-        assert_eq!(self.fix.keyboard_key(key, true), KeyboardAction::Translated);
-        assert_eq!(self.fix.keyboard_key(key, true), KeyboardAction::Translated);
-        assert_eq!(
-            self.fix.keyboard_key(key, false),
-            KeyboardAction::Translated
-        );
-        self.expect_keyboard_focus(Target::App)
     }
 
     fn chord(&mut self, modifier: u32, key: u32, action: KeyboardAction) -> &mut Self {
@@ -361,40 +319,6 @@ impl Harness {
     }
 }
 
-// A key translated with modifiers must resync the focused client back to the
-// live modifier state; otherwise the client stays latched at the target mods
-// and later events (e.g. mouse clicks) report a phantom modifier.
-#[test]
-fn translated_key_restores_client_modifier_state() {
-    let mut h = Harness::new();
-    h.focus(FocusMode::EmbeddedApp)
-        .emulations(&[(keysyms::KEY_x, "super")]);
-    let _ = h.app.drain_events(); // discard the focus-enter events
-
-    h.tap(KEY_X, KeyboardAction::Translated);
-    h.pump();
-
-    let depressed: Vec<u32> = h
-        .app
-        .drain_events()
-        .into_iter()
-        .filter_map(|event| match event {
-            ClientEvent::KeyboardModifiers { depressed, .. } => Some(depressed),
-            _ => None,
-        })
-        .collect();
-
-    assert!(
-        depressed.iter().any(|&d| d != 0),
-        "the translate must advertise its target modifier: {depressed:?}",
-    );
-    assert_eq!(
-        depressed.last().copied(),
-        Some(0),
-        "client left latched at modifiers {depressed:?} after a translated key",
-    );
-}
-
 #[test]
 fn keyboard_hotpath_guarantees_for_embedded_and_fullscreen_surfaces() {
     use FocusMode::{EmacsBuffer, EmbeddedApp, FullscreenApp};
@@ -418,11 +342,6 @@ fn keyboard_hotpath_guarantees_for_embedded_and_fullscreen_surfaces() {
             ],
         )
         .expect_exact(Emacs, &[])
-        .emulations(&[PLAIN_X_TO_CTRL])
-        .hold_emulated(KEY_X)
-        .expect_exact(App, &[down(KEY_X), down(KEY_X), up(KEY_X)])
-        .expect_exact(Emacs, &[])
-        .emulations(&[])
         .bindings(&[CTRL_X, META_X])
         .chord(KEY_LEFTCTRL, KEY_X, RedirectToEmacs)
         .expect_capture(true)

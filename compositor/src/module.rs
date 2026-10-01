@@ -56,9 +56,7 @@ use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
-use crate::{
-    FocusId, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, TranslateTarget,
-};
+use crate::{FocusId, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId};
 
 // Shared State (read by Emacs, written by compositor)
 
@@ -188,18 +186,8 @@ pub(crate) fn peek_pending_active_frame_closes() -> Vec<u64> {
 /// Intercepted keys (synchronous to avoid race during startup)
 static INTERCEPTED_KEYS: OnceLock<RwLock<Vec<InterceptedKey>>> = OnceLock::new();
 
-fn intercepted_keys() -> &'static RwLock<Vec<InterceptedKey>> {
+pub(crate) fn intercepted_keys() -> &'static RwLock<Vec<InterceptedKey>> {
     INTERCEPTED_KEYS.get_or_init(|| RwLock::new(Vec::new()))
-}
-
-/// Get intercepted keys (called by compositor during input handling).
-pub fn get_intercepted_keys() -> Vec<InterceptedKey> {
-    intercepted_keys().read().unwrap().clone()
-}
-
-#[doc(hidden)]
-pub fn set_intercepted_keys_for_test(keys: Vec<InterceptedKey>) {
-    *intercepted_keys().write().unwrap() = keys;
 }
 
 /// Emacs currently needs Wayland keyboard focus for command-loop input.
@@ -410,6 +398,10 @@ pub enum ModuleCommand {
     },
     TextInputIntercept {
         enabled: bool,
+    },
+    SendKey {
+        surface_id: Option<u64>,
+        keys: Vec<ChordSpec>,
     },
     KeyboardCaptureChanged {
         active: bool,
@@ -1250,16 +1242,16 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
 }
 
 /// A key as Emacs names it: a character code or a key name like `left`.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum KeyName {
+pub enum KeyName {
     Code(u32),
     Name(String),
 }
 
 impl KeyName {
     /// The keysym, `None` when libxkbcommon knows no such name.
-    fn keysym(&self) -> Option<xkb::Keysym> {
+    pub fn keysym(&self) -> Option<xkb::Keysym> {
         let keysym = match self {
             KeyName::Code(code) => xkb::utf32_to_keysym(*code),
             KeyName::Name(name) => resolve_keysym_from_name(name),
@@ -1294,10 +1286,9 @@ struct KeySpec {
     #[serde(default)]
     fullscreen: bool,
     dispatch: Option<Dispatch>,
-    /// Delivered to non-Emacs surfaces as this key instead of going to Emacs.
-    translate: Option<TranslateSpec>,
     #[serde(default)]
     repeat: bool,
+    surface: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1307,18 +1298,19 @@ enum Dispatch {
     Command,
 }
 
-#[derive(Deserialize)]
+/// A key with the modifiers a client should see it under, as Lisp names it.
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct TranslateSpec {
-    key: KeyName,
+pub struct ChordSpec {
+    pub key: KeyName,
     #[serde(default)]
-    ctrl: bool,
+    pub ctrl: bool,
     #[serde(default)]
-    alt: bool,
+    pub alt: bool,
     #[serde(default)]
-    shift: bool,
+    pub shift: bool,
     #[serde(rename = "super", default)]
-    logo: bool,
+    pub logo: bool,
 }
 
 impl KeySpec {
@@ -1329,22 +1321,9 @@ impl KeySpec {
             tracing::warn!("Could not resolve keysym for key {key}, skipping");
             return None;
         };
-        let dispatch = match (self.translate, self.dispatch) {
-            (Some(target), _) => {
-                let Some(keysym) = target.key.keysym() else {
-                    tracing::warn!("Could not resolve :translate target keysym, skipping binding");
-                    return None;
-                };
-                InterceptDispatch::Translate(TranslateTarget {
-                    keysym: keysym.raw(),
-                    ctrl: target.ctrl,
-                    alt: target.alt,
-                    shift: target.shift,
-                    logo: target.logo,
-                })
-            }
-            (None, Some(Dispatch::Command)) => InterceptDispatch::Command,
-            (None, _) => InterceptDispatch::Keyboard,
+        let dispatch = match self.dispatch {
+            Some(Dispatch::Command) => InterceptDispatch::Command,
+            _ => InterceptDispatch::Keyboard,
         };
         Some(InterceptedKey {
             keysym: keysym.raw(),
@@ -1356,15 +1335,39 @@ impl KeySpec {
             allow_fullscreen: self.fullscreen,
             dispatch,
             repeat: self.repeat,
+            surface: self.surface,
         })
     }
+}
+
+fn resolve_keys(specs: Vec<KeySpec>) -> Vec<InterceptedKey> {
+    specs.into_iter().filter_map(KeySpec::resolve).collect()
+}
+
+/// Parse one printed Lisp form as `T`.
+fn from_lisp<T: serde::de::DeserializeOwned>(text: &str) -> T {
+    let payload = elisp::read(text)
+        .next()
+        .expect("a payload")
+        .expect("a readable payload");
+    elisp::serde::from_value(&payload).expect("the expected shape")
+}
+
+pub(crate) fn intercepted_keys_from_lisp(text: &str) -> Vec<InterceptedKey> {
+    resolve_keys(from_lisp(text))
+}
+
+/// The command `ewm-send-key-module` would push for a printed `[surface-id keys]`.
+pub(crate) fn send_key_from_lisp(text: &str) -> ModuleCommand {
+    let (surface_id, keys) = from_lisp(text);
+    ModuleCommand::SendKey { surface_id, keys }
 }
 
 /// Set intercepted keys from KEYS, a vector of `KeySpec` plists.
 #[defun]
 fn intercept_keys_module(keys: Lisp<Vec<KeySpec>>) -> Result<()> {
-    let keys: Vec<InterceptedKey> = keys.0.into_iter().filter_map(KeySpec::resolve).collect();
-    tracing::info!("Intercepted keys set ({} keys)", keys.len());
+    let keys = resolve_keys(keys.0);
+    tracing::debug!("Intercepted keys set ({} keys)", keys.len());
     *intercepted_keys().write().unwrap() = keys;
     Ok(())
 }
@@ -1427,6 +1430,16 @@ fn text_input_forward_key_module(
     Ok(())
 }
 
+/// Tap KEYS on SURFACE-ID, or on the focused surface when nil, while it has focus.
+#[defun]
+fn send_key_module(surface_id: Lisp<Option<u64>>, keys: Lisp<Vec<ChordSpec>>) -> Result<()> {
+    push_command(ModuleCommand::SendKey {
+        surface_id: surface_id.0,
+        keys: keys.0,
+    });
+    Ok(())
+}
+
 /// Enable/disable text input interception (module mode).
 #[defun]
 fn text_input_intercept_module(enabled: Value<'_>) -> Result<()> {
@@ -1456,6 +1469,12 @@ fn keyboard_capture_end_module(token: i64) -> Result<bool> {
         push_keyboard_capture_changed();
     }
     Ok(removed)
+}
+
+/// Whether Emacs holds the keyboard.
+#[defun]
+fn keyboard_capture_active_module() -> Result<bool> {
+    Ok(get_keyboard_capture())
 }
 
 /// Clear compositor-owned keyboard capture created by a keyboard redirect.

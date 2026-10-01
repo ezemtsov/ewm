@@ -533,7 +533,15 @@ impl Fixture {
     }
 
     pub fn set_intercepted_keys(&mut self, keys: Vec<crate::InterceptedKey>) {
-        crate::module::set_intercepted_keys_for_test(keys);
+        *crate::module::intercepted_keys().write().unwrap() = keys;
+    }
+
+    pub fn set_intercepted_keys_from_lisp(&mut self, payload: &str) {
+        self.set_intercepted_keys(crate::module::intercepted_keys_from_lisp(payload));
+    }
+
+    pub fn send_key_from_lisp(&mut self, payload: &str) {
+        self.handle_module_command(crate::module::send_key_from_lisp(payload));
     }
 
     pub fn set_fullscreen(&mut self, entry_id: crate::LayoutEntryId, on: bool) {

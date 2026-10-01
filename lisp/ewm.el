@@ -482,7 +482,8 @@ order, which `ewm-frame-new' may have reordered in the strip."
       (ewm-surface-mode)
       (setq-local ewm-surface-id id)
       (setq-local ewm-surface-app app)
-      (setq-local ewm-surface-pid pid))))
+      (setq-local ewm-surface-pid pid)
+      (ewm--update-app))))
 
 (defun ewm--handle-new-surface (event)
   "Handle new surface EVENT.
@@ -653,6 +654,13 @@ Called by shell hooks via emacsclient."
     (with-current-buffer buf
       (setq default-directory (file-name-as-directory cwd)))))
 
+(defcustom ewm-update-app-hook nil
+  "Normal hook run when a surface's app id is set or changes.
+Similar to `exwm-update-class-hook'. The current buffer is the surface
+buffer when this runs. See `ewm-surface-emulate-keys' for per-app keys."
+  :type 'hook
+  :group 'ewm)
+
 (defcustom ewm-update-title-hook nil
   "Normal hook run when a surface's title is updated.
 Similar to `exwm-update-title-hook'.
@@ -660,17 +668,26 @@ The current buffer is the surface buffer when this runs."
   :type 'hook
   :group 'ewm)
 
+(defun ewm--update-app ()
+  "Run `ewm-update-app-hook' from a fresh table, resending keys if one was local."
+  (let ((local (local-variable-p 'ewm-surface-emulate-keys)))
+    (kill-local-variable 'ewm-surface-emulate-keys)
+    (save-current-buffer (run-hooks 'ewm-update-app-hook))
+    (when (or local (local-variable-p 'ewm-surface-emulate-keys))
+      (ewm--send-intercept-keys))))
+
 (defun ewm--handle-title-update (event)
   "Refresh app/title on the surface buffer for EVENT."
   (let ((app (alist-get 'app event))
         (title (alist-get 'title event)))
     (ewm--with-surface-buffer-from-event event
-      ;; No app_id from the client; keep the comm-derived name.
-      (unless (member app '(nil ""))
-        (setq-local ewm-surface-app app))
-      (setq-local ewm-surface-title title)
-      (ewm--rename-buffer)
-      (run-hooks 'ewm-update-title-hook))))
+      ;; No app_id from the client keeps the comm-derived name.
+      (let ((app-changed (not (member app (list nil "" ewm-surface-app)))))
+        (when app-changed (setq-local ewm-surface-app app))
+        (setq-local ewm-surface-title title)
+        (ewm--rename-buffer)
+        (when app-changed (ewm--update-app))
+        (run-hooks 'ewm-update-title-hook)))))
 
 (defun ewm--handle-output-detected (event)
   "Record a newly detected output."

@@ -8,12 +8,14 @@
 ;; Input handling for EWM including key interception, mouse-follows-focus,
 ;; and keyboard layout configuration.
 ;;
-;; The compositor intercepts keys from two sources:
+;; The compositor intercepts keys from three sources:
 ;;
 ;; 1. `ewm-mode-map' - All bindings in this keymap are intercepted.
 ;;    Override defaults with use-package :bind (:map ewm-mode-map ...).
 ;; 2. `ewm-intercept-prefixes' - Extra keys to intercept, plus keys that
 ;;    should also be intercepted while a client is fullscreen.
+;; 3. `ewm-surface-emulate-keys' - Key entries are intercepted as commands
+;;    and `ewm-surface-emulate' sends the mapped keys to the client.
 ;;
 ;; Example:
 ;;   (use-package ewm
@@ -88,6 +90,8 @@ Override individual bindings with `use-package':
   :bind (:map ewm-mode-map (\"s-d\" . my-launcher))")
 
 (declare-function ewm-intercept-keys-module "ewm-core")
+(declare-function ewm-send-key-module "ewm-core" (surface-id keys))
+(declare-function ewm-keyboard-capture-active-module "ewm-core")
 (declare-function ewm-configure-input-module "ewm-core")
 (declare-function ewm-keyboard-capture-begin-module "ewm-core" (reason))
 (declare-function ewm-keyboard-capture-end-module "ewm-core" (token))
@@ -124,6 +128,9 @@ Override individual bindings with `use-package':
 (defvar ewm--module-mode)
 (defvar ewm-mouse-follows-focus)
 (defvar ewm--mff-last-window)
+(defvar ewm--surfaces)
+(defvar ewm-surface-id)
+(defvar ewm-surface-mode-map)
 
 (defgroup ewm-input nil
   "EWM input handling."
@@ -138,8 +145,7 @@ Override individual bindings with `use-package':
 (defun ewm-input--set-intercept-config (sym val)
   "Set SYM to VAL and refresh compositor key interception."
   (set-default sym val)
-  (when (bound-and-true-p ewm--module-mode)
-    (ewm--send-intercept-keys)))
+  (ewm--send-intercept-keys))
 
 ;;; Libinput device configuration
 
@@ -243,13 +249,12 @@ Set with `setopt' (or `:custom' in `use-package'):
 (defcustom ewm-surface-emulate-keys
   '((kill-ring-save . "C-c")
     (yank . "C-v"))
-  "Surface equivalents of Emacs commands, as (COMMAND . KEY) entries.
-When a non-Emacs surface has focus, a key bound to COMMAND in
-`ewm-mode-map' is delivered to the surface as KEY instead of running
-COMMAND (e.g. s-v bound to `yank' pastes with C-v in Firefox).
-Rebinding the key in `ewm-mode-map' to another command ends the
-emulation."
-  :type '(alist :key-type function :value-type string)
+  "Keys a client receives in place of what was typed, as (FROM . KEYS) entries.
+FROM is a command or a single key, KEYS a key description Emacs sends with
+`ewm-send-key' instead. A surface buffer's local value adds entries for
+that surface only, see `ewm-update-app-hook'."
+  :type '(alist :key-type (choice function string character)
+                :value-type string)
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
   :group 'ewm-input)
@@ -403,6 +408,9 @@ warps from packages that temporarily switch windows internally
       (ewm-input--command-key-active-p)
       (ewm-input--prefix-key-active-p)))
 
+(defvar ewm--pending-keys nil
+  "Sends waiting for Emacs to release the keyboard, newest first.")
+
 (defun ewm-input--set-keyboard-capture (enabled &optional clear-redirect)
   "Synchronize Lisp command-loop capture.
 When CLEAR-REDIRECT is non-nil, also clear compositor-owned keyboard
@@ -420,7 +428,10 @@ redirect capture."
       (when (and (bound-and-true-p ewm--module-mode) (> token 0))
         (ewm-keyboard-capture-end-module token))))
     (when (and clear-redirect (not enabled) (bound-and-true-p ewm--module-mode))
-      (ewm-keyboard-redirect-capture-clear-module))))
+      (ewm-keyboard-redirect-capture-clear-module)
+      (dolist (send (nreverse ewm--pending-keys))
+        (apply #'ewm-send-key-module send))
+      (setq ewm--pending-keys nil))))
 
 (defun ewm-input--sync-keyboard-capture ()
   "Synchronize compositor keyboard capture with current Emacs input state."
@@ -429,6 +440,33 @@ redirect capture."
               (or ewm-input--keyboard-capture-token
                   (ewm-input--keyboard-capture-start-allowed-p)))))
     (ewm-input--set-keyboard-capture capture-active (not capture-active))))
+
+(defun ewm-send-key (key &optional surface-id)
+  "Send KEY, a key description, to SURFACE-ID or the current surface buffer's.
+Nil for both means the focused surface. Waits while Emacs holds the keyboard."
+  (let ((send (list (or surface-id ewm-surface-id)
+                    (seq-keep #'ewm--event-key-spec (key-parse key)))))
+    (if (ewm-keyboard-capture-active-module)
+        (push send ewm--pending-keys)
+      (apply #'ewm-send-key-module send))))
+
+(defun ewm-surface-emulate ()
+  "Send the keys `ewm-surface-emulate-keys' maps the typed key or command to."
+  (interactive)
+  (let* ((keys (this-command-keys-vector))
+         (event (and (= (length keys) 1) (aref keys 0)))
+         (command (unless (eq this-original-command 'ewm-surface-emulate)
+                    this-original-command))
+         (target (cl-loop for (from . to)
+                          in (append ewm-surface-emulate-keys
+                                     (default-value 'ewm-surface-emulate-keys))
+                          when (if (symbolp from)
+                                   (eq from command)
+                                 (and event (eq (ewm--key-event from) event)))
+                          return to)))
+    (cond (target (ewm-send-key target))
+          (command (call-interactively command))
+          (t (ewm-send-key (key-description keys))))))
 
 (defun ewm-input--keyboard-capture-on ()
   "Enable compositor keyboard capture for foreground Emacs input."
@@ -563,46 +601,78 @@ VALUE is the ASCII code or special-key name; flags are t or nil."
             :shift (and (memq 'shift mods) t)
             :super (and (memq 'super mods) t)))))
 
+(defun ewm--key-event (key)
+  "Return the event KEY names, a character or one-key sequence, else nil."
+  (cond ((integerp key) key)
+        ((stringp key)
+         (let ((seq (key-parse key)))
+           (and (= (length seq) 1) (aref seq 0))))))
+
+(defun ewm--intercept-spec (event &rest props)
+  "Return the compositor intercept spec plist for EVENT with PROPS, or nil."
+  (when-let* ((key-spec (ewm--event-key-spec event)))
+    `(,@key-spec :description ,(key-description (vector event)) ,@props)))
+
 (defun ewm--event-to-intercept-spec (event &optional fullscreen dispatch)
   "Return EVENT's compositor intercept spec plist, or nil."
-  (when-let* ((key-spec (ewm--event-key-spec event)))
-    `(,@key-spec
-      :description ,(key-description (vector event))
-      :fullscreen ,(and fullscreen t)
-      :dispatch ,(or dispatch (ewm--event-dispatch event))
-      :repeat ,(and (ewm--event-repeat-p event) t)
-      ,@(when-let* ((key (alist-get (ewm--event-mode-binding event)
-                                    ewm-surface-emulate-keys)))
-          (list :translate (ewm--event-key-spec (aref (key-parse key) 0)))))))
+  (ewm--intercept-spec event
+                       :fullscreen (and fullscreen t)
+                       :dispatch (or dispatch (ewm--event-dispatch event))
+                       :repeat (and (ewm--event-repeat-p event) t)))
 
 (defun ewm--parse-intercept-entry (entry)
-  "Parse ENTRY from `ewm-intercept-prefixes'.
-Returns (event . fullscreen-p) or nil."
+  "Parse ENTRY from `ewm-intercept-prefixes' into (event . fullscreen-p), or nil."
   (let* ((fullscreen (and (listp entry) (memq :fullscreen entry)))
-         (key (if fullscreen (car entry) entry)))
-    (cond
-     ((integerp key) (cons key (and fullscreen t)))
-     ((stringp key) (cons (aref (key-parse key) 0) (and fullscreen t))))))
+         (event (ewm--key-event (if fullscreen (car entry) entry))))
+    (and event (cons event (and fullscreen t)))))
+
+(defun ewm--emulation-specs (table &optional surface)
+  "Return command intercepts for TABLE's key entries, scoped to SURFACE when given.
+Every entry also runs as `ewm-surface-emulate' in surface buffers."
+  (cl-loop for (from . _) in table
+           for event = (ewm--key-event from)
+           if (symbolp from)
+           do (define-key ewm-surface-mode-map (vector 'remap from) #'ewm-surface-emulate)
+           else if event
+           do (define-key ewm-surface-mode-map (vector event) #'ewm-surface-emulate)
+           and collect (ewm--intercept-spec event :dispatch "command" :repeat t
+                                            :surface surface)
+           else
+           do (display-warning
+               'ewm (format "ewm-surface-emulate-keys: %S is not a single key or command" from))))
+
+(defun ewm--emulation-tables ()
+  "Return (SURFACE . TABLE) for each surface's own table, then (nil . default)."
+  (nconc (cl-loop for buf being the hash-values of ewm--surfaces using (hash-keys surface)
+                  when (and (buffer-live-p buf)
+                            (local-variable-p 'ewm-surface-emulate-keys buf))
+                  collect (cons surface (buffer-local-value 'ewm-surface-emulate-keys buf)))
+         (list (cons nil (default-value 'ewm-surface-emulate-keys)))))
 
 (defun ewm--send-intercept-keys ()
-  "Send `ewm-intercept-prefixes' and `ewm-mode-map' keys to the compositor."
-  (ewm-input--install-xf86-key-aliases)
-  (let* ((prefixes (delq nil (mapcar #'ewm--parse-intercept-entry
-                                    ewm-intercept-prefixes)))
-         (fullscreen-events (mapcar #'car (cl-remove-if-not #'cdr prefixes)))
-         events specs)
-    (map-keymap (lambda (event binding)
-                  (when (ewm--live-binding-p binding)
-                    (push event events)))
-                ewm-mode-map)
-    (dolist (event (delete-dups (append (mapcar #'car prefixes)
-                                       (nreverse events))))
-      (when-let* ((spec (ewm--event-to-intercept-spec
-                         event
-                         (memq event fullscreen-events)
-                         (ewm--event-dispatch event (assq event prefixes)))))
-        (push spec specs)))
-    (ewm-intercept-keys-module (vconcat (nreverse specs)))))
+  "Send emulations, prefix and `ewm-mode-map' keys to the compositor.
+Emulations go first, since the compositor takes the first match."
+  (when (bound-and-true-p ewm--module-mode)
+    (ewm-input--install-xf86-key-aliases)
+    (let* ((prefixes (delq nil (mapcar #'ewm--parse-intercept-entry
+                                      ewm-intercept-prefixes)))
+           (fullscreen-events (mapcar #'car (cl-remove-if-not #'cdr prefixes)))
+           events specs)
+      (map-keymap (lambda (event binding)
+                    (when (ewm--live-binding-p binding)
+                      (push event events)))
+                  ewm-mode-map)
+      (dolist (event (delete-dups (append (mapcar #'car prefixes)
+                                         (nreverse events))))
+        (when-let* ((spec (ewm--event-to-intercept-spec
+                           event
+                           (memq event fullscreen-events)
+                           (ewm--event-dispatch event (assq event prefixes)))))
+          (push spec specs)))
+      (ewm-intercept-keys-module
+       (vconcat (cl-loop for (surface . table) in (ewm--emulation-tables)
+                         nconc (ewm--emulation-specs table surface))
+                (nreverse specs))))))
 
 (defun ewm--handle-intercepted-command (event)
   "Queue intercepted EVENT for normal Emacs command processing."

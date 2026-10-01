@@ -14,16 +14,13 @@ use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 
 use crate::State;
+use crate::event::TextInputKey;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum HeldKeyOwner {
     KeyboardRedirect,
     Command,
     TextInput,
-    Translate {
-        keycode: u32,
-        target: crate::TranslateTarget,
-    },
 }
 
 impl HeldKeyOwner {
@@ -32,7 +29,6 @@ impl HeldKeyOwner {
             Self::KeyboardRedirect => "keyboard_redirect",
             Self::Command => "command",
             Self::TextInput => "text_input",
-            Self::Translate { .. } => "translate",
         }
     }
 }
@@ -51,7 +47,6 @@ mod tests {
         KeyboardRedirect,
         Command,
         TextInput,
-        Translate,
     }
 
     impl OwnerSeed {
@@ -60,10 +55,6 @@ mod tests {
                 Self::KeyboardRedirect => HeldKeyOwner::KeyboardRedirect,
                 Self::Command => HeldKeyOwner::Command,
                 Self::TextInput => HeldKeyOwner::TextInput,
-                Self::Translate => HeldKeyOwner::Translate {
-                    keycode: 0,
-                    target: crate::TranslateTarget::default(),
-                },
             }
         }
     }
@@ -94,7 +85,6 @@ mod tests {
             Just(OwnerSeed::KeyboardRedirect),
             Just(OwnerSeed::Command),
             Just(OwnerSeed::TextInput),
-            Just(OwnerSeed::Translate),
         ]
     }
 
@@ -175,15 +165,15 @@ mod tests {
                         }
                     }
                     Op::StartCommandRepeat(key) if held.get(&key) == Some(&HeldKeyOwner::Command) => {
-                        state.start_command_repeat(&handle, key, format!("key-{key}"));
+                        state.start_repeat(&handle, InterceptRepeat::Command { keycode: key, key: format!("key-{key}") });
                         if repeat_enabled {
                             repeat = Some(RepeatModel::Command(key));
                         }
                     }
                     Op::StartTextRepeat(key) if held.get(&key) == Some(&HeldKeyOwner::TextInput) => {
-                        state.start_text_input_repeat(
+                        state.start_repeat(
                             &handle,
-                            TextInputKey {
+                            InterceptRepeat::TextInput(TextInputKey {
                                 keycode: key,
                                 keysym: 100 + key,
                                 utf8: Some(format!("u{key}")),
@@ -192,7 +182,7 @@ mod tests {
                                 alt: false,
                                 shift: false,
                                 logo: false,
-                            },
+                            }),
                         );
                         if repeat_enabled {
                             repeat = Some(RepeatModel::TextInput(key));
@@ -222,19 +212,6 @@ mod tests {
     }
 }
 
-/// A key intercepted for text input, re-sent to Emacs on every repeat tick.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct TextInputKey {
-    pub keycode: u32,
-    pub keysym: u32,
-    pub utf8: Option<String>,
-    pub surface_id: u64,
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub logo: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum InterceptRepeat {
@@ -243,11 +220,18 @@ pub(crate) enum InterceptRepeat {
 }
 
 impl InterceptRepeat {
-    fn keycode(&self) -> u32 {
+    pub(crate) fn keycode(&self) -> u32 {
         match self {
             Self::TextInput(TextInputKey { keycode, .. }) | Self::Command { keycode, .. } => {
                 *keycode
             }
+        }
+    }
+
+    pub(crate) fn owner(&self) -> HeldKeyOwner {
+        match self {
+            Self::TextInput(_) => HeldKeyOwner::TextInput,
+            Self::Command { .. } => HeldKeyOwner::Command,
         }
     }
 }
@@ -319,19 +303,6 @@ impl InterceptRepeatState {
             self.clear_repeat(loop_handle);
         }
         self.debug_assert_invariants();
-    }
-
-    pub fn start_text_input_repeat(&mut self, loop_handle: &LoopHandle<State>, key: TextInputKey) {
-        self.start_repeat(loop_handle, InterceptRepeat::TextInput(key));
-    }
-
-    pub fn start_command_repeat(
-        &mut self,
-        loop_handle: &LoopHandle<State>,
-        keycode: u32,
-        key: String,
-    ) {
-        self.start_repeat(loop_handle, InterceptRepeat::Command { keycode, key });
     }
 
     pub fn cancel_command_repeat(&mut self, loop_handle: &LoopHandle<State>) {
@@ -409,7 +380,7 @@ impl InterceptRepeatState {
             .is_some_and(|repeat| repeat.keycode() == keycode)
     }
 
-    fn start_repeat(&mut self, loop_handle: &LoopHandle<State>, repeat: InterceptRepeat) {
+    pub fn start_repeat(&mut self, loop_handle: &LoopHandle<State>, repeat: InterceptRepeat) {
         if self.repeat_rate <= 0 {
             self.clear_repeat(loop_handle);
             self.debug_assert_invariants();
@@ -417,8 +388,8 @@ impl InterceptRepeatState {
         }
 
         let keycode = repeat.keycode();
-        let owner_kind = self.held.get(&keycode).map(HeldKeyOwner::debug_kind);
-        let owner_matches = Self::repeat_owner_matches(&repeat, self.held.get(&keycode));
+        let owner = self.held.get(&keycode);
+        let owner_matches = owner == Some(&repeat.owner());
         debug_assert!(
             owner_matches,
             "intercept repeat started without matching held key owner"
@@ -426,7 +397,7 @@ impl InterceptRepeatState {
         if !owner_matches {
             tracing::warn!(
                 ?repeat,
-                ?owner_kind,
+                ?owner,
                 "ignored intercept repeat without matching held key owner"
             );
             self.clear_repeat(loop_handle);
@@ -452,7 +423,7 @@ impl InterceptRepeatState {
             let owner = self.held.get(&repeat.keycode());
             debug_assert!(owner.is_some(), "active intercept repeat without held key");
             debug_assert!(
-                Self::repeat_owner_matches(repeat, owner),
+                owner == Some(&repeat.owner()),
                 "active intercept repeat owner mismatch"
             );
             debug_assert!(
@@ -460,13 +431,5 @@ impl InterceptRepeatState {
                 "repeat active while repeat is disabled"
             );
         }
-    }
-
-    fn repeat_owner_matches(repeat: &InterceptRepeat, owner: Option<&HeldKeyOwner>) -> bool {
-        matches!(
-            (repeat, owner),
-            (InterceptRepeat::Command { .. }, Some(HeldKeyOwner::Command))
-                | (InterceptRepeat::TextInput(_), Some(HeldKeyOwner::TextInput))
-        )
     }
 }

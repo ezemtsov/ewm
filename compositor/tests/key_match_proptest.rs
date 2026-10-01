@@ -44,6 +44,7 @@ fn intercepted(keysym: u32, flags: Flags) -> InterceptedKey {
         allow_fullscreen: false,
         dispatch: InterceptDispatch::Keyboard,
         repeat: false,
+        surface: None,
     }
 }
 

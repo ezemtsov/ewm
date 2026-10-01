@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
-use ewm_core::event::{Event, OutputInfo, OutputMode};
+use ewm_core::event::{Event, OutputInfo, OutputMode, TextInputKey};
 
 const VARIANTS: usize = 35;
 
@@ -27,7 +27,7 @@ fn variant(event: &Event) -> usize {
         Event::TextInputDeactivated => 13,
         Event::TextInputReplaced { .. } => 14,
         Event::TextInputReplaceDropped { .. } => 15,
-        Event::Key { .. } => 16,
+        Event::Key(_) => 16,
         Event::InterceptedCommand { .. } => 17,
         Event::WorkingArea { .. } => 18,
         Event::OutputConfigChanged { .. } => 19,
@@ -138,7 +138,7 @@ fn every_event() -> Vec<Event> {
         Event::TextInputDeactivated,
         Event::TextInputReplaced { surface_id: 7 },
         Event::TextInputReplaceDropped { surface_id: 7 },
-        Event::Key {
+        Event::Key(TextInputKey {
             keycode: 38,
             keysym: 0x61,
             utf8: Some("a".into()),
@@ -147,8 +147,8 @@ fn every_event() -> Vec<Event> {
             alt: false,
             shift: false,
             logo: false,
-        },
-        Event::Key {
+        }),
+        Event::Key(TextInputKey {
             keycode: 36,
             keysym: 0xff0d,
             utf8: None,
@@ -157,7 +157,7 @@ fn every_event() -> Vec<Event> {
             alt: false,
             shift: false,
             logo: false,
-        },
+        }),
         Event::InterceptedCommand { key: "s-d".into() },
         Event::WorkingArea {
             output: "eDP-1".into(),

@@ -43,6 +43,8 @@
 (require 'ewm-input)
 
 (defvar ewm--module-mode)
+(defvar ewm--surfaces (make-hash-table :test 'eql))
+(defvar ewm-surface-mode-map (make-sparse-keymap))
 (defvar ewm-input--keyboard-capture-token)
 (defvar ewm-input-tests--focused-id 2)
 (defvar ewm-input-tests--focused-frame-id 2)
@@ -99,8 +101,7 @@
     (should-not (plist-get spec :fullscreen))
     (should (equal (plist-get spec :description) "a"))
     (should (equal (plist-get spec :dispatch) "command"))
-    (should-not (plist-get spec :repeat))
-    (should-not (plist-get spec :translate))))
+    (should-not (plist-get spec :repeat))))
 
 (ert-deftest ewm-input-tests/spec-fullscreen-flag ()
   "`fullscreen=t' lifts :fullscreen in the plist."
@@ -120,23 +121,6 @@
   "Special keys (symbol base) carry their name as :key."
   (let ((spec (ewm--event-to-intercept-spec 'XF86AudioMute)))
     (should (equal (plist-get spec :key) "XF86AudioMute"))))
-
-(ert-deftest ewm-input-tests/spec-translate-follows-command ()
-  "Any key bound to an emulated command gets its surface translation."
-  (let ((ewm-mode-map (make-sparse-keymap)))
-    (define-key ewm-mode-map (kbd "s-y") #'yank)
-    (let ((target (plist-get (ewm--event-to-intercept-spec ?\s-y) :translate)))
-      (should (equal (plist-get target :key) ?v))
-      (should (eq (plist-get target :ctrl) t))
-      (should-not (plist-get target :super)))))
-
-(ert-deftest ewm-input-tests/spec-rebound-key-drops-translate ()
-  "Rebinding s-v in `ewm-mode-map' sends it to Emacs, not as C-v."
-  (let ((ewm-mode-map (make-sparse-keymap)))
-    (define-key ewm-mode-map (kbd "s-v") #'forward-char)
-    (let ((spec (ewm--event-to-intercept-spec ?\s-v)))
-      (should (equal (plist-get spec :dispatch) "command"))
-      (should-not (plist-get spec :translate)))))
 
 (ert-deftest ewm-input-tests/spec-keymap-prefix-dispatch ()
   "Keymap prefixes request keyboard dispatch."
@@ -183,7 +167,8 @@
 
 (ert-deftest ewm-input-tests/send-intercept-keys-has-runtime-dispatch-contract ()
   "The actual module payload keeps M-x keyboard-routed and media command-routed."
-  (let ((ewm-intercept-prefixes
+  (let ((ewm--module-mode t)
+        (ewm-intercept-prefixes
          '(?\M-x ?\C-u ("<AudioLowerVolume>" :fullscreen)
            ("<Print>" :fullscreen) "<Print>"))
         captured)

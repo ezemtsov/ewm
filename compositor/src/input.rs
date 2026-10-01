@@ -5,7 +5,8 @@
 //!
 //! # Design Invariants
 //!
-//! 1. **Key interception**: Emacs provides intercepted keys via `ewm-intercept-keys-module`.
+//! 1. **Key interception**: Emacs provides intercepted keys via `ewm-intercept-keys-module`. The
+//!    first match wins, and a surface-scoped entry matches only while that surface has focus.
 //!    Matching uses raw Latin keysyms; delivery uses temporary keyboard focus or command events.
 //!
 //! 2. **Focus synchronization**: Keyboard focus is derived from logical focus and capture state
@@ -26,16 +27,15 @@
 use serde::Deserialize;
 use smithay::backend::input::KeyState;
 use smithay::input::keyboard::{
-    FilterResult, KeyboardHandle, Keycode, Keysym, ModifiersState, keysyms, xkb,
+    FilterResult, KeyboardHandle, KeyboardTarget, Keysym, ModifiersState, keysyms, xkb,
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
 
+use crate::event::TextInputKey;
 use crate::frame_click_grab::FrameClickGrab;
-use crate::im::repeat::{HeldKeyOwner, TextInputKey};
-use crate::{
-    InterceptDispatch, InterceptedKey, State, SurfaceHit, TranslateTarget, module, tracy_span,
-};
+use crate::im::repeat::{HeldKeyOwner, InterceptRepeat};
+use crate::{InterceptDispatch, InterceptedKey, State, SurfaceHit, module, tracy_span};
 
 fn notify_activity(state: &mut State) {
     state.ewm.notify_activity();
@@ -63,8 +63,6 @@ fn key_repeats(state: &mut State, keycode: u32) -> bool {
 pub enum KeyAction {
     /// Forward to focused client as-is
     Forward,
-    /// Translate to a different key and forward it to the focused client.
-    Translate(TranslateTarget),
     /// Redirect to Emacs through Wayland keyboard focus.
     KeyboardRedirect(u32),
     /// Execute an Emacs command binding without moving Wayland keyboard focus.
@@ -98,7 +96,6 @@ fn intercepted_key_action(ik: &InterceptedKey, keysym_raw: u32) -> KeyAction {
             key: ik.key.clone(),
             repeat: ik.repeat,
         },
-        InterceptDispatch::Translate(target) => KeyAction::Translate(target),
     }
 }
 
@@ -109,6 +106,7 @@ pub struct KeyRouting {
     pub text_input_intercept: bool,
     pub focus_on_emacs: bool,
     pub fullscreen_active: bool,
+    pub focused_surface_id: u64,
 }
 
 /// The key event being classified.
@@ -136,6 +134,7 @@ pub fn classify_key(
         text_input_intercept,
         focus_on_emacs,
         fullscreen_active,
+        focused_surface_id,
     } = routing;
     let KeyInput {
         is_press,
@@ -154,18 +153,15 @@ pub fn classify_key(
         return KeyAction::VtSwitch(vt);
     }
 
-    if let Some(ik) = intercepted_keys
-        .iter()
-        .find(|ik| ik.matches(keysym_raw, modified_raw, mods))
-    {
+    if let Some(ik) = intercepted_keys.iter().find(|ik| {
+        ik.surface.is_none_or(|s| s == focused_surface_id)
+            && ik.matches(keysym_raw, modified_raw, mods)
+    }) {
         if focus_on_emacs {
             return KeyAction::Forward;
         }
-        let action = intercepted_key_action(ik, keysym_raw);
-        // Translation always applies to surfaces (like clipboard emulation);
-        // keyboard/command redirects respect fullscreen.
-        if matches!(action, KeyAction::Translate(_)) || !fullscreen_active || ik.allow_fullscreen {
-            return action;
+        if !fullscreen_active || ik.allow_fullscreen {
+            return intercepted_key_action(ik, keysym_raw);
         }
         return KeyAction::Forward;
     }
@@ -199,8 +195,6 @@ pub enum KeyboardAction {
     TextInputIntercepted,
     /// VT switch requested (Ctrl+Alt+F1-F12)
     ChangeVt(i32),
-    /// Key was translated to a different key and forwarded to the client.
-    Translated,
 }
 
 fn handle_held_intercept(
@@ -208,36 +202,16 @@ fn handle_held_intercept(
     keyboard: &KeyboardHandle<State>,
     keycode: u32,
     key_state: KeyState,
-    serial: smithay::utils::Serial,
     time: InputTime,
 ) -> Option<KeyboardAction> {
     let owner = state.ewm.held_key_owner(keycode)?;
     let release = key_state == KeyState::Released;
 
-    if release
-        || matches!(
-            owner,
-            HeldKeyOwner::KeyboardRedirect | HeldKeyOwner::Translate { .. }
-        )
-    {
+    if release || owner == HeldKeyOwner::KeyboardRedirect {
         let (_, mods_changed) =
             keyboard.input_intercept(state, keycode.into(), key_state, |_, _, _| {});
-        match &owner {
-            HeldKeyOwner::KeyboardRedirect => {
-                state.send_intercept_key_to_emacs(keycode, key_state, time, mods_changed);
-            }
-            HeldKeyOwner::Translate { keycode, target } => {
-                forward_translate(
-                    state,
-                    keyboard,
-                    Keycode::new(*keycode),
-                    key_state,
-                    serial,
-                    time,
-                    target,
-                );
-            }
-            _ => {}
+        if owner == HeldKeyOwner::KeyboardRedirect {
+            state.send_intercept_key_to_emacs(keycode, key_state, time, mods_changed);
         }
     }
 
@@ -251,69 +225,57 @@ fn handle_held_intercept(
         HeldKeyOwner::KeyboardRedirect => KeyboardAction::RedirectToEmacs,
         HeldKeyOwner::Command => KeyboardAction::CommandIntercepted,
         HeldKeyOwner::TextInput => KeyboardAction::TextInputIntercepted,
-        HeldKeyOwner::Translate { .. } => KeyboardAction::Translated,
     })
 }
 
-/// Find a keycode that produces `keysym` in the active layout, or None.
-fn resolve_keycode(
-    state: &mut State,
-    keyboard: &KeyboardHandle<State>,
-    keysym: u32,
-) -> Option<Keycode> {
-    keyboard.with_xkb_state(state, |context| {
-        let xkb = context.xkb().lock().unwrap();
-        let layout = xkb.active_layout();
-        // The borrowed keymap is used only inside Smithay's XKB callback.
-        let keymap = unsafe { xkb.keymap() };
-        (keymap.min_keycode().raw()..=keymap.max_keycode().raw())
-            .map(Keycode::new)
-            .find(|&kc| {
-                xkb.raw_syms_for_key_in_layout(kc, layout)
-                    .iter()
-                    .any(|sym| sym.raw() == keysym)
-            })
-    })
-}
-
-/// Run `forward` with `(ctrl, alt, shift, logo)` advertised as the held
-/// modifiers, then restore and re-advertise the live modifier state so the
-/// client isn't left latched at the target.
-pub(crate) fn forward_with_modifiers(
+/// Advertise `modifiers` to the focus without touching the keyboard's own state.
+fn advertise_modifiers(
     state: &mut State,
     keyboard: &KeyboardHandle<State>,
     (ctrl, alt, shift, logo): (bool, bool, bool, bool),
-    forward: impl FnOnce(&mut State),
 ) {
-    let saved = keyboard.modifier_state();
-    let mut target = saved;
-    target.ctrl = ctrl;
-    target.alt = alt;
-    target.shift = shift;
-    target.logo = logo;
-    keyboard.set_modifier_state(target);
-    keyboard.advertise_modifier_state(state);
-    forward(&mut *state);
-    keyboard.set_modifier_state(saved);
-    keyboard.advertise_modifier_state(state);
+    let mut mods = keyboard.modifier_state();
+    mods.ctrl = ctrl;
+    mods.alt = alt;
+    mods.shift = shift;
+    mods.logo = logo;
+    mods.serialized = keyboard.with_xkb_state(state, |context| {
+        let xkb = context.xkb().lock().unwrap();
+        // The borrowed state is used only inside Smithay's XKB callback.
+        mods.serialize_back(unsafe { xkb.state() })
+    });
+    if let Some(focus) = keyboard.current_focus() {
+        let seat = state.ewm.seat.clone();
+        focus.modifiers(&seat, state, mods, SERIAL_COUNTER.next_serial());
+    }
 }
 
-/// Forward `keycode` to the focused surface with the target's modifiers.
-fn forward_translate(
-    state: &mut State,
-    keyboard: &KeyboardHandle<State>,
-    keycode: Keycode,
-    key_state: KeyState,
-    serial: smithay::utils::Serial,
-    time: InputTime,
-    target: &TranslateTarget,
-) {
-    forward_with_modifiers(
-        state,
-        keyboard,
-        (target.ctrl, target.alt, target.shift, target.logo),
-        |state| keyboard.input_forward(state, keycode, key_state, serial, time, false),
-    );
+/// Hold the key of `repeat` for its owner, deliver it, and arm repeats if `repeats`.
+fn intercept(state: &mut State, repeat: InterceptRepeat, repeats: bool) {
+    state.ewm.begin_key_hold(repeat.keycode(), repeat.owner());
+    if repeats {
+        state.ewm.start_repeat(repeat.clone());
+    }
+    state.deliver_intercept(repeat);
+}
+
+/// Tap `keycode` on the focus under `mods`, then re-advertise the live ones.
+pub(crate) fn tap_key(state: &mut State, keycode: u32, mods: (bool, bool, bool, bool)) {
+    let keyboard = state.ewm.keyboard.clone();
+    state.sync_keyboard_focus();
+    advertise_modifiers(state, &keyboard, mods);
+    for key_state in [KeyState::Pressed, KeyState::Released] {
+        let serial = SERIAL_COUNTER.next_serial();
+        keyboard.input_forward(
+            state,
+            keycode.into(),
+            key_state,
+            serial,
+            InputTime::now(),
+            false,
+        );
+    }
+    keyboard.advertise_modifier_state(state);
 }
 
 /// Process a keyboard key event and return the compositor action taken.
@@ -334,8 +296,7 @@ pub fn handle_keyboard_event(
     }
 
     if !is_press
-        && let Some(action) =
-            handle_held_intercept(state, &keyboard, keycode, key_state, serial, time)
+        && let Some(action) = handle_held_intercept(state, &keyboard, keycode, key_state, time)
     {
         return action;
     }
@@ -408,8 +369,7 @@ pub fn handle_keyboard_event(
         state.ewm.record_emacs_keyboard_activity();
     }
     if is_press
-        && let Some(action) =
-            handle_held_intercept(state, &keyboard, keycode, key_state, serial, time)
+        && let Some(action) = handle_held_intercept(state, &keyboard, keycode, key_state, time)
     {
         return action;
     }
@@ -428,7 +388,6 @@ pub fn handle_keyboard_event(
             None
         };
 
-    let intercepted_keys = crate::module::get_intercepted_keys();
     let focused_surface_id = state.ewm.focused_surface_id();
     // Gate on smithay's synchronous active-text-input state, not the relay's
     // lagging `is_active()` echo, so the relay stays off the per-key hot path
@@ -439,11 +398,11 @@ pub fn handle_keyboard_event(
         text_input_intercept,
         focus_on_emacs,
         fullscreen_active,
+        focused_surface_id,
     };
 
-    // Use input_intercept + explicit input_forward so we can translate keys
-    // (resolve a different keycode/modifiers) between the two steps.
     let mods_before = keyboard.modifier_state();
+    let intercepted_keys = module::intercepted_keys().read().unwrap();
     let (action, mods_changed) =
         keyboard.input_intercept(state, keycode.into(), key_state, |_, mods, handle| {
             let modified = handle.modified_sym();
@@ -482,70 +441,26 @@ pub fn handle_keyboard_event(
             }
         }
 
-        KeyAction::Translate(target) => {
-            // Resolve the target keycode once; the hold reuses it for repeats
-            // and release rather than rescanning the keymap each event.
-            if let Some(target_keycode) = resolve_keycode(state, &keyboard, target.keysym) {
-                state.ewm.begin_key_hold(
-                    keycode,
-                    HeldKeyOwner::Translate {
-                        keycode: target_keycode.raw(),
-                        target,
-                    },
-                );
-                forward_translate(
-                    state,
-                    &keyboard,
-                    target_keycode,
-                    key_state,
-                    serial,
-                    time,
-                    &target,
-                );
-                tracing::debug!(
-                    "translate: keycode={} -> keysym=0x{:x} surface={}",
-                    keycode,
-                    target.keysym,
-                    state.ewm.focused_surface_id()
-                );
-            } else {
-                tracing::warn!("translate: no keycode for keysym 0x{:x}", target.keysym);
-            }
-            notify_activity(state);
-            return KeyboardAction::Translated;
-        }
-
         KeyAction::TextInput {
             keysym,
-            ref utf8,
+            utf8,
             ctrl,
             alt,
             shift,
             logo,
         } => {
-            state.ewm.begin_key_hold(keycode, HeldKeyOwner::TextInput);
-            if key_repeats(state, keycode) {
-                state.ewm.start_text_input_repeat(TextInputKey {
-                    keycode,
-                    keysym,
-                    utf8: utf8.clone(),
-                    surface_id: focused_surface_id,
-                    ctrl,
-                    alt,
-                    shift,
-                    logo,
-                });
-            }
-            state.ewm.queue_event(crate::Event::Key {
+            let repeat = InterceptRepeat::TextInput(TextInputKey {
                 keycode,
                 keysym,
-                utf8: utf8.clone(),
+                utf8,
                 surface_id: focused_surface_id,
                 ctrl,
                 alt,
                 shift,
                 logo,
             });
+            let repeats = key_repeats(state, keycode);
+            intercept(state, repeat, repeats);
             notify_activity(state);
             return KeyboardAction::TextInputIntercepted;
         }
@@ -577,7 +492,7 @@ pub fn handle_keyboard_event(
             return KeyboardAction::RedirectToEmacs;
         }
 
-        KeyAction::Command { ref key, repeat } => {
+        KeyAction::Command { key, repeat } => {
             tracing::info!(
                 "intercept_command: keycode={} key={} from surface {}",
                 keycode,
@@ -585,13 +500,7 @@ pub fn handle_keyboard_event(
                 state.ewm.focused_surface_id()
             );
 
-            state.ewm.begin_key_hold(keycode, HeldKeyOwner::Command);
-            if repeat {
-                state.ewm.start_command_repeat(keycode, key.clone());
-            }
-            state
-                .ewm
-                .queue_event(crate::Event::InterceptedCommand { key: key.clone() });
+            intercept(state, InterceptRepeat::Command { keycode, key }, repeat);
             notify_activity(state);
             return KeyboardAction::CommandIntercepted;
         }

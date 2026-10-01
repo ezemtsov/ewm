@@ -17,7 +17,7 @@
 //!       and of fullscreen.
 
 use ewm_core::input::{KeyAction, KeyInput, KeyRouting, classify_key};
-use ewm_core::{InterceptDispatch, InterceptedKey, TranslateTarget};
+use ewm_core::{InterceptDispatch, InterceptedKey};
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
@@ -52,28 +52,7 @@ fn ik_with_dispatch_and_repeat(
         allow_fullscreen,
         dispatch,
         repeat,
-    }
-}
-
-fn ik_translate(keysym: u32, target: TranslateTarget) -> InterceptedKey {
-    InterceptedKey {
-        keysym,
-        key: format!("key-{keysym}"),
-        ctrl: false,
-        alt: false,
-        shift: false,
-        logo: false,
-        allow_fullscreen: false,
-        dispatch: InterceptDispatch::Translate(target),
-        repeat: false,
-    }
-}
-
-fn ctrl_target(keysym: u32) -> TranslateTarget {
-    TranslateTarget {
-        keysym,
-        ctrl: true,
-        ..Default::default()
+        surface: None,
     }
 }
 
@@ -108,6 +87,7 @@ fn classify(
         text_input_intercept: text_input,
         focus_on_emacs,
         fullscreen_active,
+        focused_surface_id: 0,
     };
     classify_key(
         intercepted_keys,
@@ -194,7 +174,7 @@ proptest! {
     ) {
         let keysym = keysyms::KEY_XF86Switch_VT_1 + vt - 1;
         let action = classify(
-            &[ik_translate(keysym, ctrl_target(keysym))],
+            &[ik(keysym, false)],
             text_input,
             focus_on_emacs,
             fullscreen_active,
@@ -202,33 +182,6 @@ proptest! {
             keysym,
         );
         prop_assert_eq!(action, KeyAction::VtSwitch(vt as i32));
-    }
-
-    #[test]
-    fn translate_applies_when_focus_is_outside_emacs(keysym in keysym_strategy()) {
-        let target = ctrl_target(keysym);
-        let action = classify(
-            &[ik_translate(keysym, target)],
-            false,
-            false,
-            false,
-            true,
-            keysym,
-        );
-        prop_assert_eq!(action, KeyAction::Translate(target));
-    }
-
-    #[test]
-    fn translate_defers_when_emacs_already_has_focus(keysym in keysym_strategy()) {
-        let action = classify(
-            &[ik_translate(keysym, ctrl_target(keysym))],
-            false,
-            true,
-            false,
-            true,
-            keysym,
-        );
-        prop_assert_eq!(action, KeyAction::Forward);
     }
 
     #[test]
@@ -295,6 +248,7 @@ proptest! {
             text_input_intercept: true,
             focus_on_emacs,
             fullscreen_active: false,
+            focused_surface_id: 0,
         };
         let mods = ModifiersState::default();
         let action = classify_key(

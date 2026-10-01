@@ -44,6 +44,19 @@ pub struct WorkingAreaInfo {
     pub height: i32,
 }
 
+/// A key intercepted for text input, re-sent to Emacs on every repeat tick.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TextInputKey {
+    pub keycode: u32,
+    pub keysym: u32,
+    pub utf8: Option<String>,
+    pub surface_id: u64,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub logo: bool,
+}
+
 /// Events sent from compositor to Emacs.
 ///
 /// Reaches Lisp as `(variant . body)`: a struct variant is an alist, a unit variant the bare
@@ -122,16 +135,7 @@ pub enum Event {
     TextInputReplaceDropped { surface_id: u64 },
     /// Intercepted key; `keycode`/`surface_id` let Lisp forward it back to the client.
     #[serde(rename = "key")]
-    Key {
-        keycode: u32,
-        keysym: u32,
-        utf8: Option<String>,
-        surface_id: u64,
-        ctrl: bool,
-        alt: bool,
-        shift: bool,
-        logo: bool,
-    },
+    Key(TextInputKey),
     /// Intercepted Emacs command key. Lisp replays this through its keymaps.
     #[serde(rename = "intercepted-command")]
     InterceptedCommand { key: String },
