@@ -110,9 +110,13 @@ render_elements! {
     BackgroundEffect=FramebufferEffectElement,
 }
 
-/// An output-sized solid colour at the output origin.
-fn solid(buffer: &SolidColorBuffer, scale: Scale<f64>) -> SolidColorRenderElement {
-    SolidColorRenderElement::from_buffer(buffer, (0, 0), scale, 1., Kind::Unspecified)
+/// A solid colour buffer drawn at `loc`.
+fn solid(
+    buffer: &SolidColorBuffer,
+    loc: impl Into<Point<i32, Physical>>,
+    scale: Scale<f64>,
+) -> SolidColorRenderElement {
+    SolidColorRenderElement::from_buffer(buffer, loc, scale, 1., Kind::Unspecified)
 }
 
 /// Render layer surfaces on a specific layer to element list.
@@ -310,9 +314,9 @@ fn push_fullscreen_view(
         blur_config,
     );
     if let Some(backdrop) = backdrop {
-        let bg =
-            SolidColorRenderElement::from_buffer(backdrop, origin, scale, 1.0, Kind::Unspecified);
-        content.push(ContentRenderElement::SolidColor(bg));
+        content.push(ContentRenderElement::SolidColor(solid(
+            backdrop, origin, scale,
+        )));
     }
 }
 
@@ -402,7 +406,8 @@ pub(crate) fn push_view_elements_fit<
 /// 2. Overlay layer
 /// 3. Top layer and layer-shell popups
 /// 4. Zoomed by the overview: window popups, floating frames, views, frames (these four also slide
-///    off when hidden), bottom and background layers, the output fill and the overview shadow
+///    off when hidden), panel exclusive zones in the fill colour, bottom and background layers, the
+///    output fill and the overview shadow
 /// 5. Overview backdrop (lowest z-order)
 ///
 /// Parameters:
@@ -496,6 +501,7 @@ pub fn collect_render_elements_for_output(
         // Draw the solid color background.
         elements.push(EwmRenderElement::SolidColor(solid(
             &state.lock_color_buffer,
+            (0, 0),
             scale,
         )));
 
@@ -879,37 +885,27 @@ pub fn collect_render_elements_for_output(
 
     elements.extend(content.drain(..).map(slid));
 
-    // Paint panel exclusive zones in the fill colour.
-    let background_color = ewm.overview.background_color;
-    let backdrop_color = ewm.overview.backdrop_color;
+    // Panel exclusive zones in the fill colour, the wallpaper layers, then the output fill.
+    // The overview adds its shadow and backdrop.
+    let mut backdrop = None;
     if let Some(state) = ewm.output_state.get_mut(output) {
+        let background_color = ewm.overview.background_color;
         let zones = Rectangle::from_size(output_size).subtract_rect(working_area);
         for (buffer, zone) in state.bands.iter_mut().zip(zones) {
             buffer.update(zone.size, background_color);
             let loc = zone.loc.to_physical_precise_round(scale);
-            content.push(ContentRenderElement::SolidColor(
-                SolidColorRenderElement::from_buffer(buffer, loc, scale, 1., Kind::Unspecified),
-            ));
+            content.push(ContentRenderElement::SolidColor(solid(buffer, loc, scale)));
         }
-    }
-
-    // Bottom layer
-    content.append(&mut bottom_elems);
-
-    // Background layer
-    content.append(&mut bg_elems);
-
-    // Output fill behind everything on it; in the overview also the shadow and the backdrop.
-    let overview_progress = ewm.overview.progress();
-    let mut backdrop = None;
-    if let Some(state) = ewm.output_state.get_mut(output) {
+        content.append(&mut bottom_elems);
+        content.append(&mut bg_elems);
         state.background.set_color(background_color);
         content.push(ContentRenderElement::SolidColor(solid(
             &state.background,
+            (0, 0),
             scale,
         )));
 
-        if let Some(progress) = overview_progress {
+        if let Some(progress) = ewm.overview.progress() {
             state.overview_shadow.update_render_elements(
                 output_size.to_f64(),
                 true,
@@ -922,9 +918,12 @@ pub fn collect_render_elements_for_output(
                 .render(renderer, Point::from((0., 0.)), &mut |shadow| {
                     content.push(ContentRenderElement::Shadow(shadow));
                 });
-            state.overview_backdrop.set_color(backdrop_color);
+            state
+                .overview_backdrop
+                .set_color(ewm.overview.backdrop_color);
             backdrop = Some(EwmRenderElement::SolidColor(solid(
                 &state.overview_backdrop,
+                (0, 0),
                 scale,
             )));
         }
