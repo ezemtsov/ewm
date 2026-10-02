@@ -3881,6 +3881,8 @@ impl Ewm {
             self.reconcile_active_for_output(&output_name, None);
         }
         self.restore_last_active_frame(&output_name);
+        // Frames coming back may hold a surface whose activation waited for them.
+        self.focus_pending_activation_surfaces();
         if self.focused_frame_id == 0
             && let Some(id) = self.active_frame_surface_id(&output_name)
         {
