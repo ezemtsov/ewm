@@ -578,11 +578,12 @@ without lisp asking (e.g. compositor-driven destroy)."
     (bury-buffer)))
 
 (defun ewm--handle-activate-surface (event)
-  "Show the surface named by activation EVENT in the focused frame."
+  "Show the surface named by activation EVENT tiled on the focused output."
   (ewm--with-surface-buffer-from-event event
-    (ewm--place-or-defer (current-buffer) nil nil
+    (ewm--place-or-defer (current-buffer) nil
                          (frame-parameter (ignore-errors (ewm--focused-frame))
-                                          'ewm-surface-id))))
+                                          'ewm-output)
+                         nil)))
 
 (defun ewm--handle-maximize-request (_event)
   "Handle maximize request EVENT.
