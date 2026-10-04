@@ -509,6 +509,12 @@ impl Fixture {
         crate::input::handle_touch_down::<TestInputBackend>(&mut self.state, event);
     }
 
+    /// Lift the finger.
+    pub fn touch_up(&mut self) {
+        let event = TestAbsoluteEvent::default();
+        crate::input::handle_touch_up::<TestInputBackend>(&mut self.state, event);
+    }
+
     /// Absolute pointer motion to fractions (`x`, `y`) of a device bound to `output`.
     pub fn pointer_motion_absolute(&mut self, output: &str, x: f64, y: f64) {
         let device = TestDevice {

@@ -83,6 +83,10 @@
 //!       layout entries have no attached Wayland surfaces still resolves the
 //!       entry entry id and focuses that entry, while keyboard routing remains
 //!       on the frame surface.
+//!
+//! T1  - A press focuses what is under it. After a `Tap` or a button press at
+//!       `p`, the layout entry under `p` when it landed becomes
+//!       `focused_entry_id`. A press on nothing leaves focus untouched.
 
 use std::collections::{HashMap, HashSet};
 
@@ -204,6 +208,11 @@ enum Op {
     },
     /// Start a DnD from the app toplevel; a no-op unless a button is held.
     StartDnd,
+    /// Finger down and up at fractions of the touchscreen, which maps onto the first output.
+    Tap {
+        fx: f64,
+        fy: f64,
+    },
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -229,6 +238,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         any::<bool>().prop_map(|on| Op::SetFocusFollowsMouse { on }),
         any::<bool>().prop_map(|on| Op::SetDragSource { on }),
         Just(Op::StartDnd),
+        (0.0f64..1.0, 0.0f64..1.0).prop_map(|(fx, fy)| Op::Tap { fx, fy }),
     ]
 }
 
@@ -259,7 +269,12 @@ struct Harness {
     pointer_hit_after_button: Option<SurfaceKey>,
     pointer_grabbed_after_button: bool,
     dnd_active: bool,
-    focused_entry_before_warp: Option<LayoutEntryId>,
+    /// `focused_entry_id` before the last op.
+    focused_entry_before_op: Option<LayoutEntryId>,
+    /// Layout entry under the last press, sampled before it landed.
+    entry_under_press: Option<LayoutEntryId>,
+    /// Whether any surface was under the last press.
+    hit_under_press: bool,
 }
 
 impl Harness {
@@ -299,7 +314,9 @@ impl Harness {
             pointer_hit_after_button: None,
             pointer_grabbed_after_button: false,
             dnd_active: false,
-            focused_entry_before_warp: None,
+            focused_entry_before_op: None,
+            entry_under_press: None,
+            hit_under_press: false,
         };
         // Drain setup events into the harness so the first op starts clean.
         let setup_events = h.client.drain_events();
@@ -392,6 +409,7 @@ impl Harness {
 }
 
 fn apply_op(h: &mut Harness, op: &Op) {
+    h.focused_entry_before_op = h.fix.ewm_ref().focused_entry_id;
     match *op {
         Op::AddOutput(i) => {
             let (name, w, height) = OUTPUTS[i];
@@ -476,7 +494,6 @@ fn apply_op(h: &mut Harness, op: &Op) {
             };
             h.pointer_entry_id_before_warp = entry_id;
             h.pointer_surface_id_before_warp = surface_id;
-            h.focused_entry_before_warp = h.fix.ewm_ref().focused_entry_id;
             h.fix.pointer_motion_to(x as f64, y as f64);
         }
         Op::ProgrammaticWarpPointer { x, y } => {
@@ -493,6 +510,9 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.fix.warp_pointer(x as f64, y as f64);
         }
         Op::PointerButton { pressed } => {
+            if pressed {
+                note_press(h, Point::from(h.fix.ewm_ref().pointer_location()));
+            }
             h.pointer_focus_at_button = {
                 let ewm = h.fix.ewm_ref();
                 ewm.pointer_focus
@@ -514,6 +534,13 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.pointer_hit_after_button = hit;
             h.pointer_grabbed_after_button = grabbed;
             h.dnd_active &= grabbed;
+        }
+        Op::Tap { fx, fy } => {
+            if let Some(p) = tap_point(h, fx, fy) {
+                note_press(h, p);
+            }
+            h.fix.touch_down(fx, fy);
+            h.fix.touch_up();
         }
         Op::StartDnd => {
             // Needs a held button; a second start supersedes the first grab.
@@ -853,7 +880,7 @@ fn check_d1(h: &Harness) -> Result<(), TestCaseError> {
     }
     prop_assert_eq!(
         h.fix.ewm_ref().focused_entry_id,
-        h.focused_entry_before_warp,
+        h.focused_entry_before_op,
         "D1: a drag must not move focus",
     );
     Ok(())
@@ -1264,6 +1291,47 @@ fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+/// Where a tap at fractions of the touchscreen lands: the first output, untransformed.
+fn tap_point(h: &Harness, fx: f64, fy: f64) -> Option<Point<f64, Logical>> {
+    let ewm = h.fix.ewm_ref();
+    let geo = ewm.space.output_geometry(ewm.sorted_outputs.first()?)?;
+    Some(geo.loc.to_f64() + Point::from((fx * geo.size.w as f64, fy * geo.size.h as f64)))
+}
+
+/// Sample what a press at `p` will land on, before it lands.
+fn note_press(h: &mut Harness, p: Point<f64, Logical>) {
+    let (entry, hit) = {
+        let ewm = h.fix.ewm_ref();
+        (
+            ewm.layout_entry_id_under(p),
+            ewm.surface_under_point(p).is_some(),
+        )
+    };
+    h.entry_under_press = entry;
+    h.hit_under_press = hit;
+}
+
+/// T1 after a tap or a button press at `p`.
+fn check_t1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
+    let focused = h.fix.ewm_ref().focused_entry_id;
+    match h.entry_under_press {
+        Some(entry_id) => prop_assert_eq!(
+            focused,
+            Some(entry_id),
+            "T1: a press at {:?} must focus the entry under it",
+            p,
+        ),
+        None if !h.hit_under_press => prop_assert_eq!(
+            focused,
+            h.focused_entry_before_op,
+            "T1: a press on nothing at {:?} must leave focus alone",
+            p,
+        ),
+        None => {}
+    }
+    Ok(())
+}
+
 fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError> {
     let events = h.client.drain_events();
     h.fold_events(&events);
@@ -1295,6 +1363,15 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
             check_p3(h, &events, pressed)?;
             check_p5(h, pressed)?;
             check_l3_current(h)?;
+            if pressed {
+                check_t1(h, Point::from(h.fix.ewm_ref().pointer_location()))?;
+            }
+        }
+        Op::Tap { fx, fy } => {
+            if let Some(p) = tap_point(h, fx, fy) {
+                check_t1(h, p)?;
+                check_n1(h, p)?;
+            }
         }
         _ => {}
     }

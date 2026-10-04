@@ -1260,7 +1260,8 @@ fn focus_pending_drop(state: &mut State) {
 
 /// Click-to-focus at `pos`: layer surfaces get on-demand focus, else the frame under.
 fn focus_target_at(state: &mut State, pos: Point<f64, Logical>, source: &str) {
-    if state.ewm.is_locked() {
+    // Under a popup grab an outside press dismisses the popup instead
+    if state.ewm.is_locked() || state.ewm.popup_grab.is_some() {
         return;
     }
     let layer_under = state.ewm.layer_under_point(pos);
@@ -1294,7 +1295,11 @@ fn focus_target_at(state: &mut State, pos: Point<f64, Logical>, source: &str) {
 
 /// A click on moved-away content picks an overview frame and brings hidden frames back.
 fn content_click_at(state: &mut State, pos: Point<f64, Logical>) {
-    if state.ewm.frames_in_place() || state.ewm.layer_under_point(pos).is_some() {
+    if state.ewm.is_locked()
+        || state.ewm.popup_grab.is_some()
+        || state.ewm.frames_in_place()
+        || state.ewm.layer_under_point(pos).is_some()
+    {
         return;
     }
     if state.ewm.overview.is_active() {
@@ -1420,23 +1425,15 @@ pub(crate) fn handle_pointer_button_state(
         return;
     }
 
-    if button_state == ButtonState::Pressed
-        && button_code == BTN_LEFT
-        && !state.ewm.is_locked()
-        && state.ewm.popup_grab.is_none()
-    {
-        content_click_at(state, state.ewm.pointer_location().into());
-    }
-
-    // A popup grab owns input routing: skip click-to-focus so an outside click
-    // dismisses the menu instead of re-focusing under it.
-    if state.ewm.popup_grab.is_none() {
-        if button_state == ButtonState::Pressed {
-            focus_pointer_target(state, "click");
+    if button_state == ButtonState::Pressed {
+        let pos = state.ewm.pointer_location().into();
+        if button_code == BTN_LEFT {
+            content_click_at(state, pos);
         }
-        // Sync keyboard focus before forwarding, so the right surface gets keys.
-        state.sync_keyboard_focus();
+        focus_target_at(state, pos, "click");
     }
+    // Sync keyboard focus before forwarding
+    state.sync_keyboard_focus();
 
     pointer.button(
         state,
@@ -1754,7 +1751,12 @@ where
             .lock_surface_focus()
             .map(|s| (s, (0.0, 0.0).into()))
     } else {
-        content_click_at(state, pos);
+        // Only the first finger presses
+        if !touch.is_grabbed() {
+            content_click_at(state, pos);
+            focus_target_at(state, pos, "touch");
+            state.sync_keyboard_focus();
+        }
         state.ewm.surface_under_point(pos)
     };
 

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Device, DeviceCapability, Event, InputBackend, InputTime,
-    PointerMotionAbsoluteEvent, TouchDownEvent, TouchEvent, TouchSlot, UnusedEvent,
+    PointerMotionAbsoluteEvent, TouchDownEvent, TouchEvent, TouchSlot, TouchUpEvent, UnusedEvent,
 };
 use smithay::output::Output;
 
@@ -90,6 +90,7 @@ impl TouchEvent<TestInputBackend> for TestAbsoluteEvent {
 }
 
 impl TouchDownEvent<TestInputBackend> for TestAbsoluteEvent {}
+impl TouchUpEvent<TestInputBackend> for TestAbsoluteEvent {}
 impl PointerMotionAbsoluteEvent<TestInputBackend> for TestAbsoluteEvent {}
 
 pub struct TestInputBackend;
@@ -113,7 +114,7 @@ impl InputBackend for TestInputBackend {
     type GestureHoldEndEvent = UnusedEvent;
 
     type TouchDownEvent = TestAbsoluteEvent;
-    type TouchUpEvent = UnusedEvent;
+    type TouchUpEvent = TestAbsoluteEvent;
     type TouchMotionEvent = UnusedEvent;
     type TouchCancelEvent = UnusedEvent;
     type TouchFrameEvent = UnusedEvent;

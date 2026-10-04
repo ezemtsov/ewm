@@ -9106,6 +9106,11 @@ impl State {
     pub fn sync_keyboard_focus(&mut self) {
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
+        // A popup grab owns the keyboard until refresh_popup_grab clears it
+        if self.ewm.popup_grab.is_some() {
+            return;
+        }
+
         let locked = self.ewm.is_locked();
         let lock_surface = if locked {
             self.ewm.lock_surface_focus()
@@ -9138,9 +9143,7 @@ impl State {
                 .map(|s| s.into_owned())
         });
 
-        // A popup grab owns the keyboard; driving focus here would fight it and
-        // dismiss the menu.  `refresh_popup_grab` clears the grab on dismissal.
-        if self.ewm.popup_grab.is_none() && self.ewm.keyboard_focus != new_focus {
+        if self.ewm.keyboard_focus != new_focus {
             self.ewm.keyboard_focus = new_focus.clone();
             let keyboard = self.ewm.keyboard.clone();
             keyboard.set_focus(self, new_focus, SERIAL_COUNTER.next_serial());
