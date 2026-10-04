@@ -3232,9 +3232,9 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                     tablet_seat.add_wp_tablet(&state.ewm.display_handle, &desc);
                 }
                 if device.has_capability(smithay::reexports::input::DeviceCapability::Touch)
-                    && state.ewm.touch.is_none()
+                    && state.ewm.seat.get_touch().is_none()
                 {
-                    state.ewm.touch = Some(state.ewm.seat.add_touch());
+                    state.ewm.seat.add_touch();
                 }
                 if let Backend::Drm(drm) = &mut state.backend {
                     drm.libinput_devices.insert(device.clone());
@@ -3332,7 +3332,6 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                         })
                     {
                         state.ewm.seat.remove_touch();
-                        state.ewm.touch = None;
                     }
                 }
             }

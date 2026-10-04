@@ -5,11 +5,15 @@
 
 mod client;
 mod fixture;
+mod input;
 
 #[cfg(feature = "testing-layer-shell")]
 pub use client::LayerSurface;
 pub use client::{ClientEvent, ClientState as TestClientState, Popup, TestClient, Toplevel};
 pub use fixture::Fixture;
+
+/// Two wl_fixed steps of 1/256 px.
+pub const WL_FIXED_TOLERANCE: f64 = 1.0 / 128.0;
 
 /// Record that `id` was the active frame when a close began.
 ///

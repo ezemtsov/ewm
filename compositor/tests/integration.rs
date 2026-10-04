@@ -4,11 +4,12 @@
 
 use ewm_core::backend::{closest_representable_scale, int_to_transform, transform_to_int};
 use ewm_core::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, TestClient};
+use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE};
 use ewm_core::utils::output_size;
 use ewm_core::{Event, LayoutEntry, LayoutEntryId, OutputConfig};
 use proptest::prelude::*;
-use smithay::utils::{Logical, Point, Size};
+use smithay::output::Output;
+use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
 use wayland_client::Proxy as _;
 
 const CASES: u32 = 24;
@@ -49,6 +50,68 @@ fn frame_with_entry_at(
         move_anim: None,
         floating_pos: None,
     }
+}
+
+/// A frame whose single entry covers `size` from the output origin.
+fn frame_covering(
+    frame_id: u64,
+    entry_id: LayoutEntryId,
+    surface_id: u64,
+    size: Size<i32, Logical>,
+) -> Frame {
+    let mut frame = frame_with_entry(frame_id, entry_id, surface_id);
+    frame.width = f64::from(size.w);
+    frame.height = f64::from(size.h);
+    frame.entries[0].w = size.w as u32;
+    frame.entries[0].h = size.h as u32;
+    frame
+}
+
+/// Add Virtual-1 with the given mode, scale and transform index.
+fn add_configured_output(
+    fixture: &mut Fixture,
+    width: i32,
+    height: i32,
+    scale_milli: i32,
+    transform_idx: i32,
+) -> Output {
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            scale: Some(f64::from(scale_milli) / 1_000.0),
+            transform: Some(int_to_transform(transform_idx)),
+            ..Default::default()
+        },
+    );
+    fixture.add_output("Virtual-1", width, height);
+    fixture
+        .ewm_ref()
+        .space
+        .outputs()
+        .find(|o| o.name() == "Virtual-1")
+        .unwrap()
+        .clone()
+}
+
+/// Check `pos` is fraction (`fx`, `fy`) of the panel through the renderer's `to_buffer`.
+fn assert_on_panel(
+    pos: Point<f64, Logical>,
+    geo: Rectangle<i32, Logical>,
+    transform: Transform,
+    fx: f64,
+    fy: f64,
+) -> Result<(), TestCaseError> {
+    let geo = geo.to_f64();
+    let local = Rectangle::new(pos - geo.loc, Size::from((0.0, 0.0)));
+    let panel = local.to_buffer(1.0, transform.invert(), &geo.size).loc;
+    let native = transform.invert().transform_size(geo.size);
+    let expected = Point::<f64, Logical>::from((fx * native.w, fy * native.h));
+    prop_assert!(
+        (panel.x - expected.x).abs() < WL_FIXED_TOLERANCE
+            && (panel.y - expected.y).abs() < WL_FIXED_TOLERANCE,
+        "{pos:?} maps to panel {panel:?}, expected {expected:?} under {transform:?}"
+    );
+    Ok(())
 }
 
 fn entry_fullscreen(fixture: &Fixture, output: &str, entry_id: LayoutEntryId) -> Option<bool> {
@@ -134,24 +197,7 @@ proptest! {
         let scale = f64::from(scale_milli) / 1_000.0;
         let transform = int_to_transform(transform_idx);
         let mut fixture = Fixture::new().expect("Failed to create fixture");
-
-        fixture.ewm().output_config.insert(
-            "Virtual-1".to_string(),
-            OutputConfig {
-                scale: Some(scale),
-                transform: Some(transform),
-                ..Default::default()
-            },
-        );
-        fixture.add_output("Virtual-1", width, height);
-
-        let output = fixture
-            .ewm_ref()
-            .space
-            .outputs()
-            .find(|o| o.name() == "Virtual-1")
-            .unwrap()
-            .clone();
+        let output = add_configured_output(&mut fixture, width, height, scale_milli, transform_idx);
         let expected_scale = closest_representable_scale(scale);
 
         prop_assert!((output.current_scale().fractional_scale() - expected_scale).abs() < 1e-10);
@@ -164,6 +210,69 @@ proptest! {
             .unwrap();
         prop_assert!((info.scale - expected_scale).abs() < 1e-10);
         prop_assert_eq!(info.transform, transform_to_int(transform));
+    }
+
+    /// A touch reaches the client at the same panel point under any transform and scale.
+    #[test]
+    fn touch_lands_on_the_panel(
+        width in 640i32..=3840,
+        height in 480i32..=2160,
+        scale_milli in 750i32..=3_000,
+        transform_idx in 0i32..=7,
+        fx in 0.0f64..1.0,
+        fy in 0.0f64..1.0,
+    ) {
+        let mut fixture = Fixture::new().expect("Failed to create fixture");
+        let output = add_configured_output(&mut fixture, width, height, scale_milli, transform_idx);
+        let geo = fixture.ewm_ref().space.output_geometry(&output).unwrap();
+        let transform = output.current_transform();
+
+        let mut client = fixture.new_client().expect("Failed to create client");
+        fixture.roundtrip(&mut client);
+        let toplevel = fixture.open_toplevel(&mut client, "touch", geo.size);
+        let surface_id = fixture
+            .find_surface_id(&client, &toplevel.surface)
+            .expect("server did not assign a surface id");
+        fixture.apply_output_layout_command(
+            "Virtual-1",
+            vec![frame_covering(100, nz(1), surface_id, geo.size)],
+        );
+        fixture.roundtrip(&mut client);
+        client.drain_events();
+
+        fixture.touch_down(fx, fy);
+        fixture.roundtrip(&mut client);
+
+        let (surface, x, y) = client
+            .drain_events()
+            .into_iter()
+            .find_map(|event| match event {
+                ClientEvent::TouchDown { surface, x, y } => Some((surface, x, y)),
+                _ => None,
+            })
+            .ok_or_else(|| TestCaseError::fail("client received no wl_touch.down"))?;
+        prop_assert_eq!(surface, toplevel.surface);
+        assert_on_panel(Point::from((x, y)) + geo.loc.to_f64(), geo, transform, fx, fy)?;
+    }
+
+    /// An absolute pointer bound to an output lands on that output's panel.
+    #[test]
+    fn absolute_pointer_lands_on_its_panel(
+        width in 640i32..=3840,
+        height in 480i32..=2160,
+        scale_milli in 750i32..=3_000,
+        transform_idx in 0i32..=7,
+        fx in 0.0f64..1.0,
+        fy in 0.0f64..1.0,
+    ) {
+        let mut fixture = Fixture::new().expect("Failed to create fixture");
+        let output = add_configured_output(&mut fixture, width, height, scale_milli, transform_idx);
+        let geo = fixture.ewm_ref().space.output_geometry(&output).unwrap();
+        let transform = output.current_transform();
+
+        fixture.pointer_motion_absolute("Virtual-1", fx, fy);
+
+        assert_on_panel(fixture.ewm_ref().pointer_location().into(), geo, transform, fx, fy)?;
     }
 
     #[test]

@@ -17,6 +17,7 @@ use crate::backend::{Backend, HeadlessBackend};
 use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 use crate::testing::TestClient;
+use crate::testing::input::{TestAbsoluteEvent, TestDevice, TestInputBackend};
 use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 
 /// Test fixture for integration testing
@@ -52,7 +53,9 @@ impl Fixture {
         let display_handle = display.handle();
 
         // Create compositor state with headless backend
-        let ewm = Ewm::new(display_handle, event_loop.handle(), false, cursor_config);
+        let mut ewm = Ewm::new(display_handle, event_loop.handle(), false, cursor_config);
+        // Headless stands in for a touchscreen too
+        ewm.seat.add_touch();
         let backend = Backend::Headless(HeadlessBackend::new());
 
         let state = State { backend, ewm };
@@ -494,6 +497,25 @@ impl Fixture {
     /// Warp the pointer to an absolute position.
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
         self.state.warp_pointer(x, y);
+    }
+
+    /// Touch down at fractions (`x`, `y`) of the touchscreen.
+    pub fn touch_down(&mut self, x: f64, y: f64) {
+        let event = TestAbsoluteEvent {
+            x,
+            y,
+            ..Default::default()
+        };
+        crate::input::handle_touch_down::<TestInputBackend>(&mut self.state, event);
+    }
+
+    /// Absolute pointer motion to fractions (`x`, `y`) of a device bound to `output`.
+    pub fn pointer_motion_absolute(&mut self, output: &str, x: f64, y: f64) {
+        let device = TestDevice {
+            output: self.state.ewm.find_mapped_output(output),
+        };
+        let event = TestAbsoluteEvent { device, x, y };
+        crate::input::handle_pointer_motion_absolute::<TestInputBackend>(&mut self.state, event);
     }
 
     /// Send pointer motion to an absolute position through the compositor's

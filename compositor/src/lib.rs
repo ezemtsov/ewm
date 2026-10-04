@@ -136,7 +136,6 @@ use smithay::input::pointer::{
     ClickGrab, CursorImageStatus, CursorImageSurfaceData, PointerHandle,
 };
 use smithay::input::tablet::TabletSeatHandler;
-use smithay::input::touch::TouchHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{self, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
@@ -807,8 +806,6 @@ pub struct Ewm {
     pub pointer: PointerHandle<State>,
     /// Cached keyboard handle (avoids repeated get_keyboard().unwrap() on hot paths)
     pub keyboard: KeyboardHandle<State>,
-    /// Cached touch handle, present only while a touch-capable device exists.
-    pub touch: Option<TouchHandle<State>>,
     pub tablet_cursor_location: Option<Point<f64, Logical>>,
 
     // Surface tracking
@@ -1455,7 +1452,6 @@ impl Ewm {
             seat,
             pointer,
             keyboard,
-            touch: None,
             tablet_cursor_location: None,
             next_surface_id: 1,
             window_ids: HashMap::new(),
@@ -6503,7 +6499,7 @@ impl Ewm {
     }
 
     /// Find a mapped output by name.
-    fn mapped_output_by_name(&self, name: &str) -> Option<&Output> {
+    pub(crate) fn mapped_output_by_name(&self, name: &str) -> Option<&Output> {
         self.sorted_outputs
             .iter()
             .find(|output| output.name() == name)

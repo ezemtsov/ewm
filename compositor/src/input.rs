@@ -562,8 +562,8 @@ pub fn release_all_keys(state: &mut State) {
 // Pointer event handling
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputTime,
-    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, ProximityState,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, Event, InputBackend,
+    InputTime, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, ProximityState,
     TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent, TabletToolTipEvent,
     TabletToolTipState,
 };
@@ -663,6 +663,7 @@ pub enum DeviceType {
     Trackpoint,
     Keyboard,
     Tablet,
+    Touch,
 }
 
 pub const DEFAULT_KEYBOARD_REPEAT_DELAY: i32 = 200;
@@ -702,7 +703,7 @@ pub struct InputConfigEntry {
     pub xkb_layouts: Option<String>,
     pub xkb_variants: Option<String>,
     pub xkb_options: Option<String>,
-    // Tablet-specific settings
+    // Tablet and touch settings
     pub calibration_matrix: Option<[f32; 6]>,
     pub map_to_output: Option<String>,
     #[serde(deserialize_with = "elisp::serde::present")]
@@ -724,13 +725,18 @@ pub fn effective_keyboard_repeat(configs: &[InputConfigEntry]) -> (i32, i32) {
 
 /// Detect the type of a libinput device.
 ///
+/// - Tablet: has TabletTool capability
+/// - Touch: has Touch capability
 /// - Touchpad: `config_tap_finger_count() > 0`
 /// - Trackball/trackpoint: udev properties `ID_INPUT_TRACKBALL` / `ID_INPUT_POINTINGSTICK`
 /// - Mouse: has Pointer capability and is not touchpad/trackball/trackpoint
-/// - Tablet: has TabletTool capability
 fn detect_device_type(device: &libinput::Device) -> Option<DeviceType> {
     if device.has_capability(libinput::DeviceCapability::TabletTool) {
         return Some(DeviceType::Tablet);
+    }
+
+    if device.has_capability(libinput::DeviceCapability::Touch) {
+        return Some(DeviceType::Touch);
     }
 
     if device.config_tap_finger_count() > 0 {
@@ -1180,11 +1186,14 @@ pub fn handle_pointer_motion<B: InputBackend>(
 pub fn handle_pointer_motion_absolute<B: InputBackend>(
     state: &mut State,
     event: B::PointerMotionAbsoluteEvent,
-) -> bool {
+) -> bool
+where
+    B::Device: InputDevice,
+{
     tracy_span!("handle_pointer_motion_absolute");
     state.ewm.clear_tablet_cursor();
-    let output_size = state.ewm.output_size;
-    let pos = event.position_transformed(output_size);
+    let pos = compute_absolute_location(state, &event, None)
+        .unwrap_or_else(|| event.position_transformed(state.ewm.output_size));
 
     let pointer = state.ewm.pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
@@ -1665,15 +1674,79 @@ pub fn handle_pointer_axis<B: InputBackend>(state: &mut State, event: B::Pointer
     notify_activity(state);
 }
 
+/// Input backends whose devices may be bound to one output.
+pub trait InputDevice {
+    fn output(&self) -> Option<&Output> {
+        None
+    }
+}
+
+impl InputDevice for libinput::Device {}
+
+/// Absolute event position in global space, through the output's transform.
+fn compute_absolute_location<B: InputBackend>(
+    state: &State,
+    event: &impl AbsolutePositionEvent<B>,
+    fallback_output: Option<&Output>,
+) -> Option<Point<f64, Logical>>
+where
+    B::Device: InputDevice,
+{
+    let device = event.device();
+    let output = device.output().or(fallback_output)?;
+    let output_geo = state.ewm.space.output_geometry(output)?;
+    let transform = output.current_transform();
+    let size = transform.invert().transform_size(output_geo.size);
+    Some(
+        transform.transform_point_in(event.position_transformed(size), &size.to_f64())
+            + output_geo.loc.to_f64(),
+    )
+}
+
+/// The output a device's :map-to-output names, resolved through the input config cascade.
+fn configured_output<'a>(
+    state: &'a State,
+    device_cfg: Option<&InputConfigEntry>,
+    type_cfg: Option<&InputConfigEntry>,
+) -> Option<&'a Output> {
+    device_cfg
+        .and_then(|c| c.map_to_output.as_deref())
+        .or_else(|| type_cfg.and_then(|c| c.map_to_output.as_deref()))
+        .and_then(|name| state.ewm.mapped_output_by_name(name))
+}
+
+/// The output a touchscreen maps onto, the first output by default.
+fn output_for_touch<'a>(state: &'a State, device_name: &str) -> Option<&'a Output> {
+    let (device_cfg, type_cfg) =
+        lookup_configs(&state.ewm.input_configs, device_name, DeviceType::Touch);
+    configured_output(state, device_cfg, type_cfg).or_else(|| state.ewm.first_output())
+}
+
+/// Touch event position in global space: output mapping and the output transform.
+fn compute_touch_location<B: InputBackend>(
+    state: &State,
+    event: &impl AbsolutePositionEvent<B>,
+) -> Option<Point<f64, Logical>>
+where
+    B::Device: InputDevice,
+{
+    let fallback = output_for_touch(state, &event.device().name());
+    compute_absolute_location(state, event, fallback)
+}
+
 /// Handle a touch-down event: a new finger contact on the screen.
-pub fn handle_touch_down<B: InputBackend>(state: &mut State, event: B::TouchDownEvent) {
+pub fn handle_touch_down<B: InputBackend>(state: &mut State, event: B::TouchDownEvent)
+where
+    B::Device: InputDevice,
+{
     use smithay::backend::input::{Event, TouchEvent};
-    let output_size = state.ewm.output_size;
-    let pos = event.position_transformed(output_size);
-    let serial = SERIAL_COUNTER.next_serial();
-    let Some(touch) = state.ewm.touch.clone() else {
+    let Some(touch) = state.ewm.seat.get_touch() else {
         return;
     };
+    let Some(pos) = compute_touch_location(state, &event) else {
+        return;
+    };
+    let serial = SERIAL_COUNTER.next_serial();
 
     let focus = if state.ewm.is_locked() {
         state
@@ -1699,11 +1772,15 @@ pub fn handle_touch_down<B: InputBackend>(state: &mut State, event: B::TouchDown
 }
 
 /// Handle a touch-motion event: a finger moved while in contact.
-pub fn handle_touch_motion<B: InputBackend>(state: &mut State, event: B::TouchMotionEvent) {
+pub fn handle_touch_motion<B: InputBackend>(state: &mut State, event: B::TouchMotionEvent)
+where
+    B::Device: InputDevice,
+{
     use smithay::backend::input::{Event, TouchEvent};
-    let output_size = state.ewm.output_size;
-    let pos = event.position_transformed(output_size);
-    let Some(touch) = state.ewm.touch.clone() else {
+    let Some(touch) = state.ewm.seat.get_touch() else {
+        return;
+    };
+    let Some(pos) = compute_touch_location(state, &event) else {
         return;
     };
 
@@ -1732,7 +1809,7 @@ pub fn handle_touch_motion<B: InputBackend>(state: &mut State, event: B::TouchMo
 pub fn handle_touch_up<B: InputBackend>(state: &mut State, event: B::TouchUpEvent) {
     use smithay::backend::input::{Event, TouchEvent};
     let serial = SERIAL_COUNTER.next_serial();
-    let Some(touch) = state.ewm.touch.clone() else {
+    let Some(touch) = state.ewm.seat.get_touch() else {
         return;
     };
 
@@ -1750,7 +1827,7 @@ pub fn handle_touch_up<B: InputBackend>(state: &mut State, event: B::TouchUpEven
 
 /// Handle a touch-cancel event: the touch sequence was interrupted.
 pub fn handle_touch_cancel<B: InputBackend>(state: &mut State, _event: B::TouchCancelEvent) {
-    let Some(touch) = state.ewm.touch.clone() else {
+    let Some(touch) = state.ewm.seat.get_touch() else {
         return;
     };
     touch.cancel(state);
@@ -1758,7 +1835,7 @@ pub fn handle_touch_cancel<B: InputBackend>(state: &mut State, _event: B::TouchC
 
 /// Handle a touch-frame event: end of a logical group of touch events.
 pub fn handle_touch_frame<B: InputBackend>(state: &mut State, _event: B::TouchFrameEvent) {
-    let Some(touch) = state.ewm.touch.clone() else {
+    let Some(touch) = state.ewm.seat.get_touch() else {
         return;
     };
     touch.frame(state);
@@ -1767,18 +1844,15 @@ pub fn handle_touch_frame<B: InputBackend>(state: &mut State, _event: B::TouchFr
 // Tablet event handling
 
 /// The output a tablet maps onto, resolved through the input config cascade.
-fn output_for_tablet(state: &State, device: &libinput::Device) -> Option<Output> {
+fn output_for_tablet<'a>(state: &'a State, device: &libinput::Device) -> Option<&'a Output> {
     let (device_cfg, type_cfg) =
         lookup_configs(&state.ewm.input_configs, &device.name(), DeviceType::Tablet);
 
     if resolve!(device_cfg, type_cfg, map_to_focused_output, false) {
         let name = state.ewm.active_output()?;
-        state.ewm.find_mapped_output(&name)
+        state.ewm.mapped_output_by_name(&name)
     } else {
-        let map_to_output = device_cfg
-            .and_then(|c| c.map_to_output.as_deref())
-            .or_else(|| type_cfg.and_then(|c| c.map_to_output.as_deref()));
-        map_to_output.and_then(|name| state.ewm.find_mapped_output(name))
+        configured_output(state, device_cfg, type_cfg)
     }
 }
 
@@ -1789,7 +1863,7 @@ fn compute_tablet_position<B: InputBackend<Device = libinput::Device>>(
 ) -> Option<Point<f64, Logical>> {
     let device = event.device();
     let mapped = output_for_tablet(state, &device);
-    let (target_geo, transform) = match &mapped {
+    let (target_geo, transform) = match mapped {
         Some(output) => (
             state.ewm.space.output_geometry(output)?,
             output.current_transform(),
@@ -1802,7 +1876,7 @@ fn compute_tablet_position<B: InputBackend<Device = libinput::Device>>(
     };
 
     // FIXME: the 1 px margin should come from the output under the clamped position.
-    let scale_output = mapped.as_ref().or_else(|| state.ewm.first_output())?;
+    let scale_output = mapped.or_else(|| state.ewm.first_output())?;
     let px = 1. / scale_output.current_scale().fractional_scale();
 
     let size = transform.invert().transform_size(target_geo.size);

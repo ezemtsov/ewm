@@ -12,7 +12,7 @@ use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::utils::{Logical, Rectangle, Size};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region, wl_registry, wl_seat,
-    wl_shm, wl_shm_pool, wl_surface,
+    wl_shm, wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::{
@@ -54,6 +54,11 @@ pub enum ClientEvent {
     PointerButton {
         button: u32,
         pressed: bool,
+    },
+    TouchDown {
+        surface: wl_surface::WlSurface,
+        x: f64,
+        y: f64,
     },
     KeyboardKey {
         key: u32,
@@ -112,6 +117,7 @@ pub struct ClientState {
     pub shm: Option<wl_shm::WlShm>,
     pub seat: Option<wl_seat::WlSeat>,
     pub pointer: Option<wl_pointer::WlPointer>,
+    pub touch: Option<wl_touch::WlTouch>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub text_input_manager: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3>,
     pub input_method_manager: Option<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>,
@@ -510,9 +516,27 @@ impl Dispatch<wl_seat::WlSeat, ()> for ClientState {
             if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
                 state.pointer = Some(seat.get_pointer(qh, ()));
             }
+            if caps.contains(wl_seat::Capability::Touch) && state.touch.is_none() {
+                state.touch = Some(seat.get_touch(qh, ()));
+            }
             if caps.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
                 state.keyboard = Some(seat.get_keyboard(qh, ()));
             }
+        }
+    }
+}
+
+impl Dispatch<wl_touch::WlTouch, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &wl_touch::WlTouch,
+        event: wl_touch::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_touch::Event::Down { surface, x, y, .. } = event {
+            state.events.push(ClientEvent::TouchDown { surface, x, y });
         }
     }
 }

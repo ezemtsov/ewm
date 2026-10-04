@@ -27,6 +27,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::server::{
 use zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 
+use crate::input::InputDevice;
 use crate::protocols::EmptyData;
 
 const VERSION: u32 = 2;
@@ -63,10 +64,6 @@ impl VirtualPointer {
         self.data().seat.as_ref()
     }
 
-    pub fn output(&self) -> Option<&Output> {
-        self.data().output.as_ref()
-    }
-
     fn finish_axis_frame(&self) -> Option<AxisFrame> {
         self.data().axis_frame.lock().unwrap().take()
     }
@@ -99,6 +96,12 @@ impl Device for VirtualPointer {
 
     fn syspath(&self) -> Option<std::path::PathBuf> {
         None
+    }
+}
+
+impl InputDevice for VirtualPointer {
+    fn output(&self) -> Option<&Output> {
+        self.data().output.as_ref()
     }
 }
 

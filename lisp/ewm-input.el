@@ -153,7 +153,7 @@ Override individual bindings with `use-package':
   "Input device configuration alist.
 Each entry is (KEY . PROPS) where KEY is:
   - A symbol for type defaults: `touchpad', `mouse', `trackball',
-    `trackpoint', `keyboard', `tablet'
+    `trackpoint', `keyboard', `tablet', `touch'
   - A string for device-specific overrides (exact device name)
 
 PROPS is a plist of settings (omitted properties use device defaults):
@@ -186,6 +186,12 @@ PROPS is a plist of settings (omitted properties use device defaults):
   :map-to-focused-output BOOL - Map onto the focused output instead;
                                 takes precedence over :map-to-output
   Without a mapping the tablet covers all outputs together.
+
+  Touch:
+  :calibration-matrix LIST - Six numbers, libinput calibration matrix
+  :map-to-output STRING - Output name the touchscreen maps onto
+  Without a mapping the touchscreen follows the first output, with
+  its transform and scale.
 
 Device-specific entries override type defaults for matching settings.
 
