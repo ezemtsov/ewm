@@ -655,6 +655,23 @@ Every entry also runs as `ewm-surface-emulate' in surface buffers."
                   collect (cons surface (buffer-local-value 'ewm-surface-emulate-keys buf)))
          (list (cons nil (default-value 'ewm-surface-emulate-keys)))))
 
+(defun ewm--mode-map-events ()
+  "Single-key events bound to live commands in `ewm-mode-map'."
+  (let (events)
+    (map-keymap
+     (lambda (event binding)
+       ;; Meta keys live under the ESC prefix, so descend and re-apply meta.
+       (if (and (eq event meta-prefix-char) (keymapp binding))
+           (map-keymap
+            (lambda (ev b)
+              (when (and (not (keymapp b)) (ewm--live-binding-p b))
+                (push (event-apply-modifier ev 'meta 27 "M-") events)))
+            binding)
+         (when (ewm--live-binding-p binding)
+           (push event events))))
+     ewm-mode-map)
+    (nreverse events)))
+
 (defun ewm--send-intercept-keys ()
   "Send emulations, prefix and `ewm-mode-map' keys to the compositor.
 Emulations go first, since the compositor takes the first match."
@@ -663,13 +680,9 @@ Emulations go first, since the compositor takes the first match."
     (let* ((prefixes (delq nil (mapcar #'ewm--parse-intercept-entry
                                       ewm-intercept-prefixes)))
            (fullscreen-events (mapcar #'car (cl-remove-if-not #'cdr prefixes)))
-           events specs)
-      (map-keymap (lambda (event binding)
-                    (when (ewm--live-binding-p binding)
-                      (push event events)))
-                  ewm-mode-map)
+           specs)
       (dolist (event (delete-dups (append (mapcar #'car prefixes)
-                                         (nreverse events))))
+                                         (ewm--mode-map-events))))
         (when-let* ((spec (ewm--event-to-intercept-spec
                            event
                            (memq event fullscreen-events)

@@ -21,9 +21,12 @@ const APP0: usize = 1;
 const APP1: usize = 2;
 
 // XKB keycodes use the evdev code plus 8. Wayland key events report evdev codes.
+const KEY_W: u32 = 17 + 8;
+const KEY_Y: u32 = 21 + 8;
 const KEY_LEFTCTRL: u32 = 29 + 8;
 const KEY_A: u32 = 30 + 8;
 const KEY_N: u32 = 49 + 8;
+const KEY_LEFTALT: u32 = 56 + 8;
 const KEY_HOME: u32 = 102 + 8;
 const KEY_END: u32 = 107 + 8;
 const KEY_DELETE: u32 = 111 + 8;
@@ -284,6 +287,33 @@ fn emacs_sends_the_mapped_keys_for_both_entry_kinds() {
         wire,
         [tapped(0, KEY_END, 0), tapped(0, KEY_DELETE, 0)].concat()
     );
+}
+
+/// Command keys in `ewm-mode-map` reach Emacs as themselves, Meta (which lives
+/// under the ESC prefix, the half that regressed) included.
+#[test]
+fn mode_map_command_keys_are_intercepted() {
+    let mut h = Harness::new();
+    h.load_lisp(
+        r#"(keymap-set ewm-mode-map "M-w" #'kill-ring-save)
+           (keymap-set ewm-mode-map "C-y" #'yank)
+           (setopt ewm-surface-emulate-keys '((kill-ring-save . "C-c") (yank . "C-v")))"#,
+    );
+    h.fix.enable_event_capture();
+    for (modifier, key, name) in [(KEY_LEFTALT, KEY_W, "M-w"), (KEY_LEFTCTRL, KEY_Y, "C-y")] {
+        assert_eq!(h.fix.keyboard_key(modifier, true), Forward);
+        assert_eq!(h.fix.keyboard_key(key, true), CommandIntercepted);
+        assert_eq!(h.fix.keyboard_key(key, false), CommandIntercepted);
+        assert_eq!(h.fix.keyboard_key(modifier, false), Forward);
+        // Emacs gets the key itself, not a mangled ESC sequence.
+        let events = h.fix.drain_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::InterceptedCommand { key } if key == name)),
+            "{name} not handed to Emacs: {events:?}"
+        );
+    }
 }
 
 /// `ewm-send-key` taps each key of a sequence on the surface it names while that
