@@ -15,10 +15,9 @@ use crate::utils::get_monotonic_time;
 use crate::{FocusId, LayoutEntry, LayoutEntryId};
 
 /// Shared "snap to target" toggle threaded into every `ViewAnimation` and
-/// `Strip`.  Cloning is an `Arc` bump.  When the flag is set, animations
+/// `Strip`. Cloning is an `Arc` bump. When the flag is set, animations
 /// report `is_done = true` and `value = target`, so the next `advance` tick
-/// drops them.  Modelled on niri's `Clock::should_complete_instantly`; the
-/// inner primitive is `AtomicBool` (rather than niri's `Cell`) so that
+/// drops them. The inner primitive is `AtomicBool` so that
 /// `Frame`/`ViewAnimation` stay `Send` for the cross-thread command queue.
 #[derive(Debug, Default, Clone)]
 pub struct AnimationsClock {

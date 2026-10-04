@@ -8,7 +8,7 @@ use smithay::backend::input::{
 };
 use smithay::output::Output;
 
-use crate::input::InputDevice;
+use crate::input::EwmInputDevice;
 
 /// A touchscreen or absolute pointer, optionally bound to one output.
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
@@ -41,7 +41,7 @@ impl Device for TestDevice {
     }
 }
 
-impl InputDevice for TestDevice {
+impl EwmInputDevice for TestDevice {
     fn output(&self) -> Option<&Output> {
         self.output.as_ref()
     }

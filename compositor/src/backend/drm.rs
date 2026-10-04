@@ -35,7 +35,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{debug, error, info, trace, warn};
 
-use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait};
 #[cfg(feature = "screencast")]
 use smithay::utils::Size;
 use smithay::{
@@ -51,7 +50,6 @@ use smithay::{
             exporter::gbm::GbmFramebufferExporter,
         },
         egl::{EGLDevice, EGLDisplay},
-        input::{Event, InputEvent, KeyboardKeyEvent},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             ImportDma, ImportEgl,
@@ -95,7 +93,6 @@ use crate::{
         map_initial_output,
     },
     cursor::{CursorConfig, CursorTextureCache},
-    input::{KeyboardAction, apply_libinput_settings, handle_keyboard_event},
     render::{collect_render_elements_for_output, process_screencopies_for_output},
     vblank_throttle::VBlankThrottle,
 };
@@ -840,8 +837,6 @@ pub struct DrmBackendState {
     logind: Option<LogindState>,
     /// Token for session notifier - must be removed before session drops
     session_notifier_token: Option<RegistrationToken>,
-    /// Connected libinput devices for re-applying configuration on change
-    libinput_devices: std::collections::HashSet<smithay::reexports::input::Device>,
     /// Primary KMS node and render node. Set once DRM initialization succeeds.
     primary_node: Option<DrmNode>,
     primary_render_node: Option<DrmNode>,
@@ -1150,13 +1145,6 @@ impl DrmBackendState {
             }
         } else {
             warn!("Cannot change VT: no session");
-        }
-    }
-
-    /// Re-apply libinput settings to all connected devices.
-    pub fn reapply_libinput_config(&mut self, configs: &[crate::input::InputConfigEntry]) {
-        for mut device in self.libinput_devices.iter().cloned() {
-            crate::input::apply_libinput_settings(&mut device, configs);
         }
     }
 
@@ -3004,7 +2992,6 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
         loop_handle: Some(event_loop.handle()),
         cursor_texture_cache: CursorTextureCache::default(),
         display_handle: None, // Set during initialize_drm
-        libinput_devices: std::collections::HashSet::new(),
         primary_node: None,
         primary_render_node: None,
         gpu_manager: None,
@@ -3217,127 +3204,13 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     // Register libinput with event loop (using shared input handlers)
     let libinput_backend = LibinputInputBackend::new(libinput);
     info!("Registering libinput backend with event loop...");
-    let _libinput_token = event_loop.handle().insert_source(
-        libinput_backend,
-        move |mut event, _, state| match event {
-            InputEvent::DeviceAdded { ref mut device } => {
-                apply_libinput_settings(device, &state.ewm.input_configs);
-                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletTool) {
-                    if device.size().is_none() {
-                        warn!("tablet tool device has no size");
-                    }
-
-                    let tablet_seat = state.ewm.seat.tablet_seat();
-                    let desc = TabletDescriptor::from(&*device);
-                    tablet_seat.add_wp_tablet(&state.ewm.display_handle, &desc);
-                }
-                if device.has_capability(smithay::reexports::input::DeviceCapability::Touch)
-                    && state.ewm.seat.get_touch().is_none()
-                {
-                    state.ewm.seat.add_touch();
-                }
-                if let Backend::Drm(drm) = &mut state.backend {
-                    drm.libinput_devices.insert(device.clone());
-                }
-            }
-            InputEvent::Keyboard { event: kb_event } => {
-                let action = handle_keyboard_event(
-                    state,
-                    kb_event.key_code().into(),
-                    kb_event.state(),
-                    Event::time(&kb_event),
-                );
-                if let KeyboardAction::ChangeVt(vt) = action {
-                    state.backend.change_vt(vt);
-                }
-            }
-            InputEvent::PointerMotion { event } => {
-                crate::input::handle_pointer_motion::<LibinputInputBackend>(state, event);
-                state.ewm.queue_redraw_for_pointer();
-            }
-            InputEvent::PointerMotionAbsolute { event } => {
-                crate::input::handle_pointer_motion_absolute::<LibinputInputBackend>(state, event);
-                state.ewm.queue_redraw_for_pointer();
-            }
-            InputEvent::PointerButton { event } => {
-                crate::input::handle_pointer_button::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::PointerAxis { event } => {
-                crate::input::handle_pointer_axis::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::GestureSwipeBegin { event } => {
-                crate::input::handle_gesture_swipe_begin::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::GestureSwipeUpdate { event } => {
-                crate::input::handle_gesture_swipe_update::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::GestureSwipeEnd { event } => {
-                crate::input::handle_gesture_swipe_end::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TouchDown { event } => {
-                crate::input::handle_touch_down::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TouchMotion { event } => {
-                crate::input::handle_touch_motion::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TouchUp { event } => {
-                crate::input::handle_touch_up::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TouchCancel { event } => {
-                crate::input::handle_touch_cancel::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TouchFrame { event } => {
-                crate::input::handle_touch_frame::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TabletToolAxis { event } => {
-                crate::input::handle_tablet_tool_axis::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TabletToolTip { event } => {
-                crate::input::handle_tablet_tool_tip::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TabletToolProximity { event } => {
-                crate::input::handle_tablet_tool_proximity::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::TabletToolButton { event } => {
-                crate::input::handle_tablet_tool_button::<LibinputInputBackend>(state, event);
-            }
-            InputEvent::SwitchToggle { event } => {
-                use smithay::backend::input::{
-                    Switch, SwitchState, SwitchToggleEvent as SwitchEvt,
-                };
-                if SwitchEvt::<LibinputInputBackend>::switch(&event) == Some(Switch::Lid) {
-                    let is_closed =
-                        SwitchEvt::<LibinputInputBackend>::state(&event) == SwitchState::On;
-                    info!("Lid {}", if is_closed { "closed" } else { "opened" });
-                    state.handle_lid_state(is_closed);
-                }
-            }
-            InputEvent::DeviceRemoved { ref device } => {
-                if device.has_capability(smithay::reexports::input::DeviceCapability::TabletTool) {
-                    let tablet_seat = state.ewm.seat.tablet_seat();
-                    let desc = TabletDescriptor::from(device);
-                    tablet_seat.remove_tablet(&desc);
-                    if tablet_seat.count_tablets() == 0 {
-                        tablet_seat.clear_tools();
-                    }
-                }
-                let was_touch =
-                    device.has_capability(smithay::reexports::input::DeviceCapability::Touch);
-                if let Backend::Drm(drm) = &mut state.backend {
-                    drm.libinput_devices.remove(device);
-                    if was_touch
-                        && !drm.libinput_devices.iter().any(|device| {
-                            device
-                                .has_capability(smithay::reexports::input::DeviceCapability::Touch)
-                        })
-                    {
-                        state.ewm.seat.remove_touch();
-                    }
-                }
-            }
-            _ => {}
-        },
-    )?;
+    let _libinput_token =
+        event_loop
+            .handle()
+            .insert_source(libinput_backend, move |mut event, _, state| {
+                state.process_libinput_event(&mut event);
+                state.process_input_event(event);
+            })?;
 
     info!("EWM DRM backend started (waiting for session activation)");
     info!("VT switching: Ctrl+Alt+F1-F7");
@@ -3414,7 +3287,7 @@ mod tests {
         })
     }
 
-    // Expected values cross-checked against niri's snapshots and the `cvt` utility.
+    // Expected values cross-checked against the `cvt` utility.
     #[test]
     fn cvt_mode_matches_reference() {
         let m = calculate_mode_cvt(1920, 1080, 60.0);

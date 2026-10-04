@@ -467,15 +467,6 @@ impl Backend {
         }
     }
 
-    /// Re-apply libinput configuration to all connected devices.
-    /// No-op for headless backend.
-    pub fn reapply_libinput_config(&mut self, configs: &[crate::input::InputConfigEntry]) {
-        match self {
-            Backend::Drm(drm) => drm.reapply_libinput_config(configs),
-            Backend::Headless(_) => {}
-        }
-    }
-
     /// Clear all DRM surfaces (sets DPMS off, disables planes).
     /// The next `queue_frame` will re-enable automatically.
     /// No-op for headless backend.

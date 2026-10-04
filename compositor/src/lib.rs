@@ -33,10 +33,7 @@ pub mod dbus;
 pub mod dbus_screensaver;
 pub mod event;
 pub mod floating;
-mod floating_move_grab;
-mod floating_resize_grab;
 mod floating_shadow;
-mod frame_click_grab;
 pub mod frame_clock;
 pub mod gtk;
 pub mod handlers;
@@ -112,7 +109,7 @@ pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
 use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
 use serde::{Deserialize, Serialize};
-use smithay::backend::input::{InputTime, KeyState, TabletToolDescriptor};
+use smithay::backend::input::{InputEvent, InputTime, KeyState, TabletToolDescriptor};
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
 use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
 use smithay::backend::renderer::element::{
@@ -885,6 +882,8 @@ pub struct Ewm {
 
     // Libinput device configuration
     pub input_configs: Vec<input::InputConfigEntry>,
+    /// Connected libinput devices, for re-applying configuration on change
+    pub libinput_devices: std::collections::HashSet<smithay::reexports::input::Device>,
 
     // PID for matching Emacs-owned wl_surfaces in `new_toplevel` (vs external
     // applications); is-this-an-emacs-frame queries derive from strip membership.
@@ -1491,6 +1490,7 @@ impl Ewm {
             blur_config: shadow_style::Blur::default(),
             pointer_entry_id: None,
             input_configs: Vec::new(),
+            libinput_devices: std::collections::HashSet::new(),
             emacs_pid: None,
             gesture: input::GestureState::default(),
             output_state: HashMap::new(),
@@ -6419,9 +6419,9 @@ impl Ewm {
         self.pointer
             .with_grab(|_, grab| {
                 grab.is::<ClickGrab<State>>()
-                    || grab.is::<frame_click_grab::FrameClickGrab>()
-                    || grab.is::<floating_move_grab::MoveGrab>()
-                    || grab.is::<floating_resize_grab::ResizeGrab>()
+                    || grab.is::<input::frame_click_grab::FrameClickGrab>()
+                    || grab.is::<input::floating_move_grab::MoveGrab>()
+                    || grab.is::<input::floating_resize_grab::ResizeGrab>()
             })
             .unwrap_or(false)
     }
@@ -8153,21 +8153,21 @@ impl VirtualPointerHandler for State {
     }
 
     fn on_virtual_pointer_motion(&mut self, event: VirtualPointerMotionEvent) {
-        crate::input::handle_pointer_motion::<VirtualPointerInputBackend>(self, event);
-        self.ewm.queue_redraw_for_pointer();
+        self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerMotion { event });
     }
 
     fn on_virtual_pointer_motion_absolute(&mut self, event: VirtualPointerMotionAbsoluteEvent) {
-        crate::input::handle_pointer_motion_absolute::<VirtualPointerInputBackend>(self, event);
-        self.ewm.queue_redraw_for_pointer();
+        self.process_input_event(
+            InputEvent::<VirtualPointerInputBackend>::PointerMotionAbsolute { event },
+        );
     }
 
     fn on_virtual_pointer_button(&mut self, event: VirtualPointerButtonEvent) {
-        crate::input::handle_pointer_button::<VirtualPointerInputBackend>(self, event);
+        self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerButton { event });
     }
 
     fn on_virtual_pointer_axis(&mut self, event: VirtualPointerAxisEvent) {
-        crate::input::handle_pointer_axis::<VirtualPointerInputBackend>(self, event);
+        self.process_input_event(InputEvent::<VirtualPointerInputBackend>::PointerAxis { event });
     }
 }
 
@@ -8955,7 +8955,7 @@ impl State {
     pub fn warp_pointer(&mut self, x: f64, y: f64) {
         let pointer = self.ewm.pointer.clone();
         // A grab or constraint owns the pointer; a warp would teleport it.
-        if pointer.is_grabbed() || input::active_constraint_for_focus(self, &pointer).is_some() {
+        if pointer.is_grabbed() || self.active_constraint_for_focus(&pointer).is_some() {
             return;
         }
         let pos = Point::from((x, y));
@@ -9216,7 +9216,7 @@ impl State {
         if self.ewm.active_text_input_surface_id() != Some(surface_id) {
             return;
         }
-        crate::input::tap_key(self, keycode, (ctrl, alt, shift, logo));
+        self.tap_key(keycode, (ctrl, alt, shift, logo));
     }
 
     /// Deliver `repeat` once, on the press and again on each repeat tick.
@@ -9512,7 +9512,7 @@ impl State {
                             continue;
                         };
                         let mods = (key.ctrl, key.alt, key.shift, key.logo);
-                        crate::input::tap_key(self, code.raw(), mods);
+                        self.tap_key(code.raw(), mods);
                     }
                 }
             }
@@ -9642,8 +9642,9 @@ impl State {
                     });
 
                 self.ewm.input_configs = configs;
-                self.backend
-                    .reapply_libinput_config(&self.ewm.input_configs);
+                for mut device in self.ewm.libinput_devices.iter().cloned() {
+                    input::apply_libinput_settings(&mut device, &self.ewm.input_configs);
+                }
 
                 // Apply the same effective repeat settings to Wayland clients
                 // and intercepted command/text-input repeat.

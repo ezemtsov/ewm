@@ -506,13 +506,13 @@ impl Fixture {
             y,
             ..Default::default()
         };
-        crate::input::handle_touch_down::<TestInputBackend>(&mut self.state, event);
+        self.state.on_touch_down::<TestInputBackend>(event);
     }
 
     /// Lift the finger.
     pub fn touch_up(&mut self) {
         let event = TestAbsoluteEvent::default();
-        crate::input::handle_touch_up::<TestInputBackend>(&mut self.state, event);
+        self.state.on_touch_up::<TestInputBackend>(event);
     }
 
     /// Absolute pointer motion to fractions (`x`, `y`) of a device bound to `output`.
@@ -521,7 +521,8 @@ impl Fixture {
             output: self.state.ewm.find_mapped_output(output),
         };
         let event = TestAbsoluteEvent { device, x, y };
-        crate::input::handle_pointer_motion_absolute::<TestInputBackend>(&mut self.state, event);
+        self.state
+            .on_pointer_motion_absolute::<TestInputBackend>(event);
     }
 
     /// Send pointer motion to an absolute position through the compositor's
@@ -597,12 +598,8 @@ impl Fixture {
         } else {
             KeyState::Released
         };
-        crate::input::handle_keyboard_event(
-            &mut self.state,
-            keycode,
-            state,
-            InputTime::from_millis(0),
-        )
+        self.state
+            .on_keyboard(keycode, state, InputTime::from_millis(0))
     }
 
     /// Send a pointer button event at the seat's current pointer focus.
@@ -613,12 +610,8 @@ impl Fixture {
         } else {
             ButtonState::Released
         };
-        crate::input::handle_pointer_button_state(
-            &mut self.state,
-            state,
-            button,
-            InputTime::from_millis(0),
-        );
+        self.state
+            .pointer_button(state, button, InputTime::from_millis(0));
     }
 
     /// Start mirroring `queue_event` into a per-Ewm buffer.

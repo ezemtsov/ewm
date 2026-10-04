@@ -27,7 +27,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::server::{
 use zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 
-use crate::input::InputDevice;
+use crate::input::EwmInputDevice;
 use crate::protocols::EmptyData;
 
 const VERSION: u32 = 2;
@@ -99,7 +99,7 @@ impl Device for VirtualPointer {
     }
 }
 
-impl InputDevice for VirtualPointer {
+impl EwmInputDevice for VirtualPointer {
     fn output(&self) -> Option<&Output> {
         self.data().output.as_ref()
     }
