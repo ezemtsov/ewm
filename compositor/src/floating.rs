@@ -6,8 +6,8 @@ use smithay::input::pointer::CursorIcon;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::LayoutEntry;
-use crate::animation::{Animation, Curve};
-use crate::strip::{DEFAULT_ANIM_DURATION, Frame};
+use crate::animation::{Animation, Spring};
+use crate::strip::Frame;
 
 /// By how many logical pixels command-driven floating frame moves nudge frames.
 pub const DIRECTIONAL_MOVE_PX: f64 = 50.0;
@@ -243,13 +243,7 @@ impl Data {
     }
 
     pub fn set_move_anim(&mut self, from_x: f64, clock: crate::animation::Clock) {
-        self.move_anim = Some(Animation::ease(
-            clock,
-            from_x,
-            0.0,
-            DEFAULT_ANIM_DURATION,
-            Curve::EaseOutCubic,
-        ));
+        self.move_anim = Some(Animation::spring(clock, Spring::new(from_x, 0.0, 0.)));
     }
 
     pub fn advance(&mut self) {

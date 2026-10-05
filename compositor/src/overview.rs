@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::animation::{Animation, Clock, Spring, SpringParams};
+use crate::animation::{Animation, Clock, Spring};
 use crate::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
 use crate::strip::SwipeTracker;
 
@@ -136,7 +136,7 @@ impl Overview {
         let to = if self.open { 1. } else { 0. };
         self.progress = Some(Progress::Animation(Animation::spring(
             self.clock.clone(),
-            open_close_spring(from, to, 0.),
+            Spring::new(from, to, 0.),
         )));
     }
 
@@ -188,7 +188,7 @@ impl Overview {
         self.open = target == 1.;
         self.progress = Some(Progress::Animation(Animation::spring(
             self.clock.clone(),
-            open_close_spring(gesture.value, target, velocity),
+            Spring::new(gesture.value, target, velocity),
         )));
         true
     }
@@ -200,16 +200,6 @@ impl Overview {
         {
             self.progress = self.open.then_some(Progress::Open);
         }
-    }
-}
-
-/// Critically damped, so the zoom only overshoots when a swipe throws it.
-fn open_close_spring(from: f64, to: f64, initial_velocity: f64) -> Spring {
-    Spring {
-        from,
-        to,
-        initial_velocity,
-        params: SpringParams::new(1., 800., 0.0001),
     }
 }
 

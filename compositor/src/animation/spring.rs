@@ -37,6 +37,24 @@ impl SpringParams {
     }
 }
 
+/// Critically damped and brisk, the one spring every slide runs on.
+impl Default for SpringParams {
+    fn default() -> Self {
+        Self::new(1., 800., 0.0001)
+    }
+}
+
+impl Spring {
+    pub fn new(from: f64, to: f64, initial_velocity: f64) -> Self {
+        Self {
+            from,
+            to,
+            initial_velocity,
+            params: SpringParams::default(),
+        }
+    }
+}
+
 impl Spring {
     pub fn value_at(&self, t: Duration) -> f64 {
         self.oscillate(t.as_secs_f64())

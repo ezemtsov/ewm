@@ -8,12 +8,9 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::animation::{Animation, Clock, Curve};
+use crate::animation::{Animation, Clock, Spring};
 use crate::floating::SizeFracPoint;
 use crate::{FocusId, LayoutEntry, LayoutEntryId};
-
-/// Default duration for view-offset slides between frames.
-pub const DEFAULT_ANIM_DURATION: Duration = Duration::from_millis(250);
 
 /// Fade-in duration for a surface's first buffer-bearing commit.
 pub const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
@@ -321,6 +318,11 @@ impl Strip {
     /// Activate frame `idx` (clamped); re-anchors and animates `view_offset`
     /// so the active frame ends up centered on the viewport.
     pub fn set_active(&mut self, idx: usize) {
+        self.set_active_with_velocity(idx, 0.);
+    }
+
+    /// `set_active` for a released swipe: the slide starts at `velocity` logical px per second.
+    fn set_active_with_velocity(&mut self, idx: usize, velocity: f64) {
         if self.frames.is_empty() {
             self.active_idx = 0;
             self.view_offset = ViewOffset::Static(0.0);
@@ -336,12 +338,9 @@ impl Strip {
         self.view_offset = if cur.abs() < f64::EPSILON {
             ViewOffset::Static(0.0)
         } else {
-            ViewOffset::Animation(Animation::ease(
+            ViewOffset::Animation(Animation::spring(
                 self.clock.clone(),
-                cur,
-                0.0,
-                DEFAULT_ANIM_DURATION,
-                Curve::EaseOutCubic,
+                Spring::new(cur, 0.0, velocity),
             ))
         };
     }
@@ -383,17 +382,14 @@ impl Strip {
 
     /// Animate `view_offset` from its current value to `target`. Collapses to
     /// `Static(target)` if the delta is already zero.
-    pub fn animate_view_offset(&mut self, target: f64, duration: Duration) {
+    pub fn animate_view_offset(&mut self, target: f64) {
         let from = self.view_offset.current();
         if (from - target).abs() < f64::EPSILON {
             self.view_offset = ViewOffset::Static(target);
         } else {
-            self.view_offset = ViewOffset::Animation(Animation::ease(
+            self.view_offset = ViewOffset::Animation(Animation::spring(
                 self.clock.clone(),
-                from,
-                target,
-                duration,
-                Curve::EaseOutCubic,
+                Spring::new(from, target, 0.),
             ));
         }
     }
@@ -588,13 +584,7 @@ impl Strip {
             (&mut self.frames[..idx], -offset)
         };
         for f in slide {
-            f.move_anim = Some(Animation::ease(
-                clock.clone(),
-                from,
-                0.0,
-                DEFAULT_ANIM_DURATION,
-                Curve::EaseOutCubic,
-            ));
+            f.move_anim = Some(Animation::spring(clock.clone(), Spring::new(from, 0.0, 0.)));
         }
     }
 
@@ -647,12 +637,13 @@ impl Strip {
         g.current = g.anchor + g.tracker.pos() * norm;
     }
 
-    /// End the gesture: project velocity to a settled position and snap to the nearest column.
+    /// End the gesture: snap to the column nearest the projected stop, keeping the swipe's speed.
     pub fn gesture_end(&mut self, working_w: f64) {
         let ViewOffset::Gesture(g) = &self.view_offset else {
             return;
         };
         let norm = working_w / VIEW_GESTURE_WORKING_AREA_MOVEMENT;
+        let velocity = g.tracker.velocity() * norm;
         let projected = g.anchor + g.tracker.projected_end_pos() * norm;
         let target_view = self.column_x(self.active_idx) + projected;
         let snap = (0..self.frames.len())
@@ -662,7 +653,7 @@ impl Strip {
                 da.total_cmp(&db)
             })
             .unwrap_or(self.active_idx);
-        self.set_active(snap);
+        self.set_active_with_velocity(snap, velocity);
     }
 
     /// Drop frame `idx`; surviving neighbours slide in to close the gap.
@@ -836,12 +827,11 @@ mod tests {
         fn animate_view_offset_uses_static_only_for_zero_distance(
             current in -2_000i32..=2_000,
             target in -2_000i32..=2_000,
-            duration_ms in 1u64..=10_000,
         ) {
             let mut strip = strip_with(vec![100.0], 0.0, 0);
             strip.view_offset = ViewOffset::Static(f64::from(current));
 
-            strip.animate_view_offset(f64::from(target), Duration::from_millis(duration_ms));
+            strip.animate_view_offset(f64::from(target));
 
             prop_assert_eq!(strip.view_offset.target(), f64::from(target));
             if current == target {

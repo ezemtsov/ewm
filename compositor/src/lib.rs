@@ -2535,7 +2535,7 @@ impl Ewm {
             // A closed overview showed no shift, so there is nothing to carry over.
             if let Some(progress) = progress.filter(|_| shift != 0.0) {
                 strip.view_offset.offset(-shift * progress / zoom);
-                strip.animate_view_offset(0.0, strip::DEFAULT_ANIM_DURATION);
+                strip.animate_view_offset(0.0);
             }
         }
     }
@@ -2621,12 +2621,9 @@ impl Ewm {
             return;
         }
         let hidden = !self.frames_hidden();
-        self.hide = strip::ViewOffset::Animation(animation::Animation::ease(
+        self.hide = strip::ViewOffset::Animation(animation::Animation::spring(
             self.animations_clock.clone(),
-            self.hide.current(),
-            if hidden { 1. } else { 0. },
-            strip::DEFAULT_ANIM_DURATION,
-            animation::Curve::EaseOutCubic,
+            animation::Spring::new(self.hide.current(), if hidden { 1. } else { 0. }, 0.),
         ));
         self.queue_event(Event::Hide { hidden });
         self.queue_redraw_all();
