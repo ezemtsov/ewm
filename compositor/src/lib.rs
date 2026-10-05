@@ -1595,7 +1595,7 @@ impl Ewm {
             frame.detach_surface(id);
         }
         for space in self.floating_spaces.values_mut() {
-            for frame in &mut space.frames {
+            for frame in space.frames_mut() {
                 frame.detach_surface(id);
             }
         }
@@ -1614,7 +1614,7 @@ impl Ewm {
             }
         }
         for space in self.floating_spaces.values_mut() {
-            for frame in &mut space.frames {
+            for frame in space.frames_mut() {
                 frame.validate_fullscreen();
                 if let Some(sel) = frame.selected_entry_id
                     && !frame.entries.iter().any(|entry| entry.id == sel)
@@ -1689,7 +1689,7 @@ impl Ewm {
         let removed_floating = self
             .floating_spaces
             .get_mut(&out)
-            .and_then(|space| space.remove_frame(id).map(|_| space.frames.is_empty()));
+            .and_then(|space| space.remove_frame(id).map(|_| space.frames().is_empty()));
         if let Some(empty) = removed_floating {
             if empty {
                 self.floating_spaces.remove(&out);
@@ -1936,7 +1936,7 @@ impl Ewm {
         if location.floating {
             self.floating_spaces
                 .get(location.output_name)?
-                .frames
+                .frames()
                 .get(location.frame_idx)
         } else {
             self.frame_set
@@ -1976,7 +1976,7 @@ impl Ewm {
         }
         for (output_name, space) in &self.floating_spaces {
             if let Some((frame_idx, frame)) = space
-                .frames
+                .frames()
                 .iter()
                 .enumerate()
                 .find(|(_, frame)| frame.surface_id == frame_surface_id)
@@ -2128,7 +2128,7 @@ impl Ewm {
             .chain(
                 self.floating_spaces
                     .values()
-                    .flat_map(|space| space.frames.iter()),
+                    .flat_map(|space| space.frames().iter()),
             )
             .find(|f| f.focus_id == focus_id)
             .map(|f| f.surface_id)
@@ -2270,7 +2270,7 @@ impl Ewm {
             .or_else(|| {
                 self.floating_spaces.iter().find_map(|(name, space)| {
                     space
-                        .frames
+                        .frames()
                         .iter()
                         .position(|frame| {
                             frame
@@ -2881,7 +2881,7 @@ impl Ewm {
         let output_geo = self.space.output_geometry(output)?;
         if location.floating {
             let space = self.floating_spaces.get(location.output_name)?;
-            let frame = space.frames.get(location.frame_idx)?;
+            let frame = space.frames().get(location.frame_idx)?;
             let (_, data) = space.frame_with_data(frame.surface_id)?;
             let loc = data.logical_pos();
             return Some(Point::from((
@@ -3896,12 +3896,8 @@ impl Ewm {
         let Some(space) = self.floating_spaces.get_mut(output_name) else {
             return;
         };
-        if let Some(idx) = space
-            .frames
-            .iter()
-            .position(|frame| frame.surface_id == frame_id)
-        {
-            selected = Some(space.frames[idx].selected_entry_id);
+        if let Some(idx) = space.idx_of(frame_id) {
+            selected = Some(space.frames()[idx].selected_entry_id);
             space.activate_frame(frame_id);
         }
 
@@ -4174,7 +4170,7 @@ impl Ewm {
             }
         }
         for (oname, space) in &self.floating_spaces {
-            for frame in &space.frames {
+            for frame in space.frames() {
                 for entry in frame.entries.iter().filter(|entry| entry.surface.is_some()) {
                     let area = Self::layout_entry_area(output_sizes, oname, entry, false);
                     let Some(surface_id) = entry.surface_id() else {
@@ -4237,7 +4233,7 @@ impl Ewm {
                 }
             }
             if let Some(space) = self.floating_spaces.get_mut(&oname) {
-                for frame in &mut space.frames {
+                for frame in space.frames_mut() {
                     for entry in frame
                         .entries
                         .iter_mut()
@@ -4311,7 +4307,7 @@ impl Ewm {
             let Some(space) = self.floating_spaces.get(&oname) else {
                 continue;
             };
-            for frame in &space.frames {
+            for frame in space.frames() {
                 for entry in frame.entries.iter().filter(|entry| entry.primary()) {
                     self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
                 }
@@ -5095,7 +5091,7 @@ impl Ewm {
                 .filter_map(LayoutEntry::surface_id)
                 .any(|surface_id| self.surface_open_anims.contains_key(&surface_id))
                 || space
-                    .frames
+                    .frames()
                     .iter()
                     .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
             if (space.animations_ongoing() || any_open_fade)
@@ -5521,7 +5517,7 @@ impl Ewm {
             .chain(
                 self.floating_spaces
                     .values()
-                    .flat_map(|space| space.frames.iter().map(|frame| frame.surface_id)),
+                    .flat_map(|space| space.frames().iter().map(|frame| frame.surface_id)),
             )
             // Hidden frames have slid off their outputs too.
             .filter(|_| !self.frames_hidden())
@@ -5532,7 +5528,7 @@ impl Ewm {
             .chain(
                 self.floating_spaces
                     .values()
-                    .flat_map(|space| space.frames.iter().map(|frame| frame.surface_id)),
+                    .flat_map(|space| space.frames().iter().map(|frame| frame.surface_id)),
             )
             .filter(|id| !visible.contains(id))
             .collect()
@@ -6600,7 +6596,7 @@ impl Ewm {
             let Some(output_geo) = self.space.output_geometry(output) else {
                 continue;
             };
-            for frame in &space.frames {
+            for frame in space.frames() {
                 if frame.surface_id == 0 {
                     continue;
                 }
@@ -6978,7 +6974,7 @@ impl Ewm {
             })
             .chain(self.floating_spaces.iter().flat_map(|(out, space)| {
                 space
-                    .frames
+                    .frames()
                     .iter()
                     .map(move |f| (f.surface_id, out.to_string()))
             }))

@@ -260,7 +260,7 @@ impl Data {
 /// Floating Emacs frames in top-to-bottom order.
 #[derive(Debug, serde::Serialize)]
 pub struct FloatingSpace {
-    pub frames: Vec<Frame>,
+    frames: Vec<Frame>,
     #[serde(skip)]
     data: Vec<Data>,
     active_frame_id: Option<u64>,
@@ -285,6 +285,14 @@ impl FloatingSpace {
             working_area,
             clock,
         }
+    }
+
+    pub fn frames(&self) -> &[Frame] {
+        &self.frames
+    }
+
+    pub fn frames_mut(&mut self) -> &mut [Frame] {
+        &mut self.frames
     }
 
     pub fn working_area(&self) -> Rectangle<f64, Logical> {
