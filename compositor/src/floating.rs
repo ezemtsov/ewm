@@ -6,7 +6,8 @@ use smithay::input::pointer::CursorIcon;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::LayoutEntry;
-use crate::strip::{DEFAULT_ANIM_DURATION, Frame, ViewAnimation};
+use crate::animation::{Animation, Curve};
+use crate::strip::{DEFAULT_ANIM_DURATION, Frame};
 
 /// By how many logical pixels command-driven floating frame moves nudge frames.
 pub const DIRECTIONAL_MOVE_PX: f64 = 50.0;
@@ -105,7 +106,7 @@ pub struct Data {
     /// Working area used for conversions.
     working_area: Rectangle<f64, Logical>,
 
-    move_anim: Option<ViewAnimation>,
+    move_anim: Option<Animation>,
 
     shadow: crate::floating_shadow::Shadow,
 }
@@ -238,23 +239,21 @@ impl Data {
     }
 
     pub fn move_offset(&self) -> Point<f64, Logical> {
-        Point::from((
-            self.move_anim.as_ref().map_or(0.0, ViewAnimation::value),
-            0.0,
-        ))
+        Point::from((self.move_anim.as_ref().map_or(0.0, Animation::value), 0.0))
     }
 
     pub fn set_move_anim(&mut self, from_x: f64, clock: crate::animation::Clock) {
-        self.move_anim = Some(ViewAnimation::new(
+        self.move_anim = Some(Animation::ease(
             clock,
             from_x,
             0.0,
             DEFAULT_ANIM_DURATION,
+            Curve::EaseOutCubic,
         ));
     }
 
     pub fn advance(&mut self) {
-        if self.move_anim.as_ref().is_some_and(ViewAnimation::is_done) {
+        if self.move_anim.as_ref().is_some_and(Animation::is_done) {
             self.move_anim = None;
         }
     }

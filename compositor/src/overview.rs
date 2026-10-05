@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::animation::Clock;
+use crate::animation::{Animation, Clock, Curve};
 use crate::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
-use crate::strip::{DEFAULT_ANIM_DURATION, SwipeTracker, ViewAnimation};
+use crate::strip::{DEFAULT_ANIM_DURATION, SwipeTracker};
 
 /// Touchpad travel in unaccelerated units for a full open or close.
 const GESTURE_MOVEMENT: f64 = 300.;
@@ -51,7 +51,7 @@ impl RubberBand {
 
 #[derive(Debug)]
 enum Progress {
-    Animation(ViewAnimation),
+    Animation(Animation),
     Gesture(Gesture),
     Open,
 }
@@ -119,11 +119,12 @@ impl Overview {
         self.open = !self.open;
         let from = self.progress().unwrap_or(0.);
         let to = if self.open { 1. } else { 0. };
-        self.progress = Some(Progress::Animation(ViewAnimation::new(
+        self.progress = Some(Progress::Animation(Animation::ease(
             self.clock.clone(),
             from,
             to,
             DEFAULT_ANIM_DURATION,
+            Curve::EaseOutCubic,
         )));
     }
 
@@ -169,11 +170,12 @@ impl Overview {
         let pos = gesture.tracker.projected_end_pos() / GESTURE_MOVEMENT;
         let target = (gesture.start + pos).clamp(0., 1.).round();
         self.open = target == 1.;
-        self.progress = Some(Progress::Animation(ViewAnimation::new(
+        self.progress = Some(Progress::Animation(Animation::ease(
             self.clock.clone(),
             gesture.value,
             target,
             DEFAULT_ANIM_DURATION,
+            Curve::EaseOutCubic,
         )));
         true
     }

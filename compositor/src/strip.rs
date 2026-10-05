@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::animation::Clock;
+use crate::animation::{Animation, Clock, Curve};
 use crate::floating::SizeFracPoint;
 use crate::{FocusId, LayoutEntry, LayoutEntryId};
 
@@ -79,74 +79,6 @@ impl SwipeTracker {
     }
 }
 
-/// Ease-out-cubic interpolation between two scalar view offsets.
-#[derive(Debug, Clone)]
-pub struct ViewAnimation {
-    from: f64,
-    to: f64,
-    start: Duration,
-    duration: Duration,
-    clock: Clock,
-}
-
-impl ViewAnimation {
-    pub fn new(clock: Clock, from: f64, to: f64, duration: Duration) -> Self {
-        let start = clock.now();
-        Self::new_at(clock, start, from, to, duration)
-    }
-
-    /// Animation whose ramp begins after `delay`; `value()` stays at `from` until then.
-    pub fn delayed(clock: Clock, delay: Duration, from: f64, to: f64, duration: Duration) -> Self {
-        let start = clock.now() + delay;
-        Self::new_at(clock, start, from, to, duration)
-    }
-
-    fn new_at(clock: Clock, start: Duration, from: f64, to: f64, duration: Duration) -> Self {
-        Self {
-            from,
-            to,
-            start,
-            duration,
-            clock,
-        }
-    }
-
-    pub fn target(&self) -> f64 {
-        self.to
-    }
-
-    /// Shift both endpoints by `delta` so the running animation re-anchors without jumping.
-    pub fn offset(&mut self, delta: f64) {
-        self.from += delta;
-        self.to += delta;
-    }
-
-    pub fn value(&self) -> f64 {
-        if self.clock.should_complete_instantly() {
-            return self.to;
-        }
-        self.value_at(self.clock.now())
-    }
-
-    pub fn is_done(&self) -> bool {
-        if self.clock.should_complete_instantly() {
-            return true;
-        }
-        self.is_done_at(self.clock.now())
-    }
-
-    fn value_at(&self, now: Duration) -> f64 {
-        let elapsed = now.saturating_sub(self.start);
-        let t = (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0);
-        let eased = 1.0 - (1.0 - t).powi(3);
-        self.from + (self.to - self.from) * eased
-    }
-
-    fn is_done_at(&self, now: Duration) -> bool {
-        now.saturating_sub(self.start) >= self.duration
-    }
-}
-
 /// In-progress touchpad swipe; `current = anchor + tracker.pos()` to avoid drift.
 #[derive(Debug, Clone)]
 pub struct ViewGesture {
@@ -159,7 +91,7 @@ pub struct ViewGesture {
 #[derive(Debug, Clone)]
 pub enum ViewOffset {
     Static(f64),
-    Animation(ViewAnimation),
+    Animation(Animation),
     Gesture(ViewGesture),
 }
 
@@ -183,7 +115,7 @@ impl ViewOffset {
     pub fn target(&self) -> f64 {
         match self {
             ViewOffset::Static(o) => *o,
-            ViewOffset::Animation(a) => a.target(),
+            ViewOffset::Animation(a) => a.to(),
             ViewOffset::Gesture(g) => g.current,
         }
     }
@@ -201,7 +133,7 @@ impl ViewOffset {
         if let ViewOffset::Animation(a) = self
             && a.is_done()
         {
-            *self = ViewOffset::Static(a.target());
+            *self = ViewOffset::Static(a.to());
         }
     }
 
@@ -246,7 +178,7 @@ pub struct Frame {
     /// Selected entry's id (keyboard focus target when frame is focused).
     pub selected_entry_id: Option<LayoutEntryId>,
     #[serde(skip)]
-    pub move_anim: Option<ViewAnimation>,
+    pub move_anim: Option<Animation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floating_pos: Option<SizeFracPoint>,
 }
@@ -276,7 +208,7 @@ impl Frame {
     }
 
     pub fn move_offset(&self) -> f64 {
-        self.move_anim.as_ref().map_or(0.0, ViewAnimation::value)
+        self.move_anim.as_ref().map_or(0.0, Animation::value)
     }
 
     pub fn entry_surface_id(&self, entry_id: LayoutEntryId) -> Option<u64> {
@@ -404,11 +336,12 @@ impl Strip {
         self.view_offset = if cur.abs() < f64::EPSILON {
             ViewOffset::Static(0.0)
         } else {
-            ViewOffset::Animation(ViewAnimation::new(
+            ViewOffset::Animation(Animation::ease(
                 self.clock.clone(),
                 cur,
                 0.0,
                 DEFAULT_ANIM_DURATION,
+                Curve::EaseOutCubic,
             ))
         };
     }
@@ -455,11 +388,12 @@ impl Strip {
         if (from - target).abs() < f64::EPSILON {
             self.view_offset = ViewOffset::Static(target);
         } else {
-            self.view_offset = ViewOffset::Animation(ViewAnimation::new(
+            self.view_offset = ViewOffset::Animation(Animation::ease(
                 self.clock.clone(),
                 from,
                 target,
                 duration,
+                Curve::EaseOutCubic,
             ));
         }
     }
@@ -468,7 +402,7 @@ impl Strip {
     pub fn advance(&mut self) {
         self.view_offset.advance();
         for f in &mut self.frames {
-            if f.move_anim.as_ref().is_some_and(ViewAnimation::is_done) {
+            if f.move_anim.as_ref().is_some_and(Animation::is_done) {
                 f.move_anim = None;
             }
         }
@@ -654,11 +588,12 @@ impl Strip {
             (&mut self.frames[..idx], -offset)
         };
         for f in slide {
-            f.move_anim = Some(ViewAnimation::new(
+            f.move_anim = Some(Animation::ease(
                 clock.clone(),
                 from,
                 0.0,
                 DEFAULT_ANIM_DURATION,
+                Curve::EaseOutCubic,
             ));
         }
     }
@@ -882,60 +817,6 @@ mod tests {
                 prop_assert_eq!(w, expected_w);
                 prop_assert_eq!(h, view.h);
             }
-        }
-
-        #[test]
-        fn view_animation_value_follows_ease_out_cubic(
-            from in -1_000i32..=1_000,
-            to in -1_000i32..=1_000,
-            duration_ms in 1u64..=10_000,
-            elapsed_ms in 0u64..=20_000,
-        ) {
-            let start = Duration::from_secs(10);
-            let duration = Duration::from_millis(duration_ms);
-            let sample = start + Duration::from_millis(elapsed_ms);
-            let from = f64::from(from);
-            let to = f64::from(to);
-            let animation = ViewAnimation::new_at(
-                Clock::default(),
-                start,
-                from,
-                to,
-                duration,
-            );
-            let t = (elapsed_ms as f64 / duration_ms as f64).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - t).powi(3);
-            let expected = from + (to - from) * eased;
-
-            prop_assert!((animation.value_at(sample) - expected).abs() < 1e-9);
-            prop_assert_eq!(animation.is_done_at(sample), elapsed_ms >= duration_ms);
-        }
-
-        #[test]
-        fn view_animation_offset_translates_samples(
-            from in -1_000i32..=1_000,
-            to in -1_000i32..=1_000,
-            delta in -1_000i32..=1_000,
-            duration_ms in 1u64..=10_000,
-            elapsed_ms in 0u64..=20_000,
-        ) {
-            let start = Duration::from_secs(10);
-            let duration = Duration::from_millis(duration_ms);
-            let sample = start + Duration::from_millis(elapsed_ms);
-            let delta = f64::from(delta);
-            let mut animation = ViewAnimation::new_at(
-                Clock::default(),
-                start,
-                f64::from(from),
-                f64::from(to),
-                duration,
-            );
-            let before = animation.value_at(sample);
-
-            animation.offset(delta);
-
-            prop_assert!((animation.value_at(sample) - (before + delta)).abs() < 1e-9);
-            prop_assert_eq!(animation.target(), f64::from(to) + delta);
         }
 
         #[test]

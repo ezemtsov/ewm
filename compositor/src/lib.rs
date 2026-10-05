@@ -819,7 +819,7 @@ pub struct Ewm {
     pub frame_set: FrameSet,
     /// Per-output floating Emacs frame spaces, attached to the output's strip/workspace.
     pub floating_spaces: HashMap<String, floating::FloatingSpace>,
-    /// Clock every `ViewAnimation` under this `Ewm` reads. Frozen at the target
+    /// Clock every `Animation` under this `Ewm` reads. Frozen at the target
     /// presentation time during a redraw.
     pub animations_clock: animation::Clock,
     /// Zoomed-out strip view shared by all outputs.
@@ -830,7 +830,7 @@ pub struct Ewm {
     pub surface_outputs: HashMap<u64, HashSet<String>>,
     /// Per-surface open-fade, seeded on the first buffer-bearing commit.
     /// Entries GC'd in `advance_animations` once finished or surface gone.
-    pub surface_open_anims: HashMap<u64, strip::ViewAnimation>,
+    pub surface_open_anims: HashMap<u64, animation::Animation>,
     /// Toplevels that haven't yet committed a buffer. One-shot gate for
     /// seeding `surface_open_anims`: drained on the unmapped->mapped
     /// transition so the fade starts exactly once per surface lifetime.
@@ -2621,11 +2621,12 @@ impl Ewm {
             return;
         }
         let hidden = !self.frames_hidden();
-        self.hide = strip::ViewOffset::Animation(strip::ViewAnimation::new(
+        self.hide = strip::ViewOffset::Animation(animation::Animation::ease(
             self.animations_clock.clone(),
             self.hide.current(),
             if hidden { 1. } else { 0. },
             strip::DEFAULT_ANIM_DURATION,
+            animation::Curve::EaseOutCubic,
         ));
         self.queue_event(Event::Hide { hidden });
         self.queue_redraw_all();
@@ -7872,13 +7873,14 @@ impl CompositorHandler for State {
             if crate::utils::is_mapped(&root_surface) && self.ewm.unmapped_surfaces.remove(&id) {
                 self.ewm.surface_open_anims.insert(
                     id,
-                    strip::ViewAnimation::delayed(
+                    animation::Animation::ease(
                         self.ewm.animations_clock.clone(),
-                        std::time::Duration::from_millis(16),
                         0.0,
                         1.0,
                         strip::OPEN_ANIM_DURATION,
-                    ),
+                        animation::Curve::EaseOutCubic,
+                    )
+                    .delayed(std::time::Duration::from_millis(16)),
                 );
 
                 // Placement is final at map: min/max hints are known, so decide once.
