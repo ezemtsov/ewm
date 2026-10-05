@@ -137,8 +137,13 @@ fn click_on_zoomed_neighbour_activates_it_and_closes() {
         frame_with_entry(10, 1, 100),
         frame_with_entry(11, 2, 101),
     ]);
-    let neighbour_focus_id =
-        fix.ewm_ref().frame_set.mapped_strip(OUTPUT).unwrap().frames[1].focus_id;
+    let neighbour_focus_id = fix
+        .ewm_ref()
+        .frame_set
+        .mapped_strip(OUTPUT)
+        .unwrap()
+        .frames()[1]
+        .focus_id;
     fix.ewm().overview_toggle();
     fix.enable_event_capture();
 
@@ -187,7 +192,12 @@ fn click_on_backdrop_is_ignored() {
 #[test]
 fn overview_hides_top_layer_deferral_for_fullscreen() {
     let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
-    fix.ewm().frame_set.mapped_strip_mut(OUTPUT).unwrap().frames[0].set_fullscreen_entry(nz(1));
+    fix.ewm()
+        .frame_set
+        .mapped_strip_mut(OUTPUT)
+        .unwrap()
+        .frames_mut()[0]
+        .set_fullscreen_entry(nz(1));
     let output = fix
         .ewm_ref()
         .space

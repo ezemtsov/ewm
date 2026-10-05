@@ -299,8 +299,8 @@ impl Frame {
 /// `active_idx`.
 #[derive(Debug, serde::Serialize)]
 pub struct Strip {
-    pub frames: Vec<Frame>,
-    pub gap: f64,
+    frames: Vec<Frame>,
+    gap: f64,
     active_idx: usize,
     #[serde(skip)]
     view_offset: ViewOffset,
@@ -366,6 +366,55 @@ impl Strip {
         } else {
             0.0
         }
+    }
+
+    pub fn frames(&self) -> &[Frame] {
+        &self.frames
+    }
+
+    pub fn frames_mut(&mut self) -> &mut [Frame] {
+        &mut self.frames
+    }
+
+    pub fn index_of(&self, surface_id: u64) -> Option<usize> {
+        self.frames.iter().position(|f| f.surface_id == surface_id)
+    }
+
+    pub fn push_frame(&mut self, frame: Frame) {
+        self.frames.push(frame);
+    }
+
+    pub fn append_frames(&mut self, frames: impl IntoIterator<Item = Frame>) {
+        self.frames.extend(frames);
+    }
+
+    /// Insert at `idx`, keeping the active frame active.
+    pub fn insert_frame(&mut self, idx: usize, frame: Frame) {
+        let was_empty = self.frames.is_empty();
+        self.frames.insert(idx, frame);
+        if !was_empty && idx <= self.active_idx {
+            self.set_active(self.active_idx + 1);
+        }
+    }
+
+    /// Take every frame out, leaving an empty strip.
+    pub fn take_frames(&mut self) -> Vec<Frame> {
+        let frames = mem::take(&mut self.frames);
+        self.set_active(0);
+        frames
+    }
+
+    /// Pull out the frames `take` selects; the active frame stays active when it stays.
+    pub fn drain_frames(&mut self, take: impl FnMut(&Frame) -> bool) -> Vec<Frame> {
+        let active_id = self.active_frame().map(|f| f.surface_id);
+        let (taken, kept): (Vec<_>, Vec<_>) =
+            mem::take(&mut self.frames).into_iter().partition(take);
+        self.frames = kept;
+        let idx = active_id
+            .and_then(|id| self.index_of(id))
+            .unwrap_or(self.active_idx);
+        self.set_active(idx);
+        taken
     }
 
     pub fn view_offset(&self) -> &ViewOffset {

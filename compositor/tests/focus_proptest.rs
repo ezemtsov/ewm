@@ -206,7 +206,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             if !already_present {
                 let clock = fix.ewm().animations_clock.clone();
                 let strip = fix.ewm().frame_set.ensure_mapped_strip(output_name, clock);
-                strip.frames.push(Frame::new(surface_id));
+                strip.push_frame(Frame::new(surface_id));
             }
             let do_auto_focus = fix.ewm().focused_surface_id() == 0;
             if do_auto_focus {
@@ -258,14 +258,14 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             if output_mapped && let Some(strip) = fix.ewm_ref().frame_set.mapped_strip(dest) {
                 for id in &placed {
                     assert!(
-                        strip.frames.iter().any(|f| f.surface_id == *id),
+                        strip.frames().iter().any(|f| f.surface_id == *id),
                         "invariant 11: frame {} missing from {} after layout",
                         id,
                         dest,
                     );
                 }
                 let subseq: Vec<u64> = strip
-                    .frames
+                    .frames()
                     .iter()
                     .map(|f| f.surface_id)
                     .filter(|id| placed.contains(id))
@@ -325,7 +325,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             let prev_focused = fix.ewm_ref().focused_frame_id;
             let expected_same_output_refocus = if prev_focused == id {
                 fix.ewm_ref().lookup_frame(id).and_then(|(output, idx)| {
-                    let frames = &fix.ewm_ref().frame_set.mapped_strip(&output)?.frames;
+                    let frames = &fix.ewm_ref().frame_set.mapped_strip(&output)?.frames();
                     if idx + 1 < frames.len() {
                         Some(frames[idx + 1].surface_id)
                     } else if idx > 0 {
@@ -528,7 +528,7 @@ fn expected_surface_outputs(fix: &Fixture) -> HashMap<u64, HashSet<String>> {
 fn install_strip(fix: &mut Fixture, output: &str, ids: &[u64]) {
     let clock = fix.ewm().animations_clock.clone();
     let strip = fix.ewm().frame_set.ensure_mapped_strip(output, clock);
-    strip.frames = ids.iter().copied().map(Frame::new).collect();
+    strip.append_frames(ids.iter().copied().map(Frame::new));
     strip.set_active(0);
 }
 
@@ -658,7 +658,7 @@ proptest! {
         let omitted = fix
             .ewm_ref()
             .frame_set.mapped_strip(OUTPUTS[0])
-            .and_then(|strip| strip.frames.iter().find(|frame| frame.surface_id == 100))
+            .and_then(|strip| strip.frames().iter().find(|frame| frame.surface_id == 100))
             .unwrap();
         prop_assert!(omitted.entries.is_empty());
         prop_assert_eq!(omitted.selected_entry_id, None);
@@ -708,13 +708,13 @@ fn assert_invariants(fix: &Fixture) {
     // and never a homeless frame.
     if ewm.focused_frame_id != 0 {
         for strip in ewm.frame_set.mapped_strips().values() {
-            let active_id = strip.frames.get(strip.active_idx()).map(|f| f.surface_id);
+            let active_id = strip.active_frame().map(|f| f.surface_id);
             if active_id == Some(ewm.focused_frame_id) {
                 continue;
             }
             assert!(
                 !strip
-                    .frames
+                    .frames()
                     .iter()
                     .any(|f| f.surface_id == ewm.focused_frame_id),
                 "invariant 4: focused frame {} present in a strip but not its active frame",
@@ -750,7 +750,7 @@ fn assert_invariants(fix: &Fixture) {
         .frame_set
         .mapped_strips()
         .values()
-        .any(|strip| !strip.frames.is_empty());
+        .any(|strip| !strip.frames().is_empty());
     assert_eq!(
         any_frame,
         ewm.focused_frame_id != 0,
@@ -879,7 +879,7 @@ proptest! {
 
             for (out_name, strip) in fix.ewm_ref().frame_set.mapped_strips() {
                 let active = strip.active_frame().map(|f| f.surface_id);
-                for frame in &strip.frames {
+                for frame in strip.frames() {
                     let id = frame.surface_id;
                     let expected: i32 = if mapped_outputs.contains(out_name.as_str())
                         && active == Some(id)
@@ -1046,7 +1046,7 @@ fn nav_build(setup: &NavSetup) -> Fixture {
             .frame_set
             .ensure_mapped_strip(&setup.output_name(i), clock.clone());
         for f in 0..setup.frames_per_output[i] {
-            strip.frames.push(Frame::new(setup.frame_id(i, f)));
+            strip.push_frame(Frame::new(setup.frame_id(i, f)));
         }
     }
 

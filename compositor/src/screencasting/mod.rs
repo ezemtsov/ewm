@@ -102,7 +102,7 @@ impl Ewm {
         let output_geo = self.space.output_geometry(&output)?;
         let working_area = self.get_working_area(&output);
         let strip = self.frame_set.mapped_strip(location.output_name)?;
-        let frame = strip.frames.get(location.frame_idx)?;
+        let frame = strip.frames().get(location.frame_idx)?;
         let frame_dx = strip.screen_x_of_frame(location.frame_idx) as i32;
         let frame_origin = Point::from((
             output_geo.loc.x + working_area.loc.x + frame_dx,

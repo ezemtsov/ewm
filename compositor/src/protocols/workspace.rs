@@ -348,7 +348,7 @@ fn desired_workspace_snapshot(
         };
         groups.push(output_name.clone());
 
-        for (idx, frame) in strip.frames.iter().enumerate() {
+        for (idx, frame) in strip.frames().iter().enumerate() {
             let key = frame.surface_id;
             let name = frame_workspace_name(frame, idx);
             let id = frame.workspace_name.clone();
@@ -920,7 +920,7 @@ mod tests {
 
     fn strip_with_ids(start: u64, len: usize, raw_active_idx: usize) -> Strip {
         let mut strip = Strip::new(Clock::default());
-        strip.frames = (0..len).map(|idx| Frame::new(start + idx as u64)).collect();
+        strip.append_frames((0..len).map(|idx| Frame::new(start + idx as u64)));
         if len > 0 {
             strip.set_active(raw_active_idx % len);
         }

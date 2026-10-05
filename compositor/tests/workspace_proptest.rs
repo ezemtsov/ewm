@@ -47,22 +47,22 @@ fn op_strategy() -> impl Strategy<Value = Op> {
 fn apply_op(strip: &mut Strip, op: &Op) {
     match op {
         Op::InsertAfterActive(sid) => {
-            if strip.frames.iter().any(|f| f.surface_id == *sid) {
+            if strip.frames().iter().any(|f| f.surface_id == *sid) {
                 return;
             }
-            let prev_len = strip.frames.len();
+            let prev_len = strip.frames().len();
             let prev_active_idx = strip.active_idx();
             let pos = if prev_len == 0 {
                 0
             } else {
                 prev_active_idx + 1
             };
-            strip.frames.insert(pos, Frame::new(*sid));
+            strip.insert_frame(pos, Frame::new(*sid));
             strip.set_active(pos);
 
             assert_eq!(strip.active_idx(), pos, "I8: new frame must be active");
-            assert_eq!(strip.frames[pos].surface_id, *sid, "I8: new frame at pos");
-            assert_eq!(strip.frames.len(), prev_len + 1);
+            assert_eq!(strip.frames()[pos].surface_id, *sid, "I8: new frame at pos");
+            assert_eq!(strip.frames().len(), prev_len + 1);
             if prev_len > 0 {
                 assert_eq!(
                     pos,
@@ -73,26 +73,26 @@ fn apply_op(strip: &mut Strip, op: &Op) {
         }
 
         Op::CloseAt(slot) => {
-            if *slot >= strip.frames.len() {
+            if *slot >= strip.frames().len() {
                 return;
             }
-            let prev_len = strip.frames.len();
+            let prev_len = strip.frames().len();
             let prev_active_idx = strip.active_idx();
             let prev_active_sid = strip.active_frame().map(|f| f.surface_id);
             let was_active = *slot == prev_active_idx;
             let expected_new_active_sid = if !was_active {
                 prev_active_sid
             } else if *slot + 1 < prev_len {
-                Some(strip.frames[*slot + 1].surface_id)
+                Some(strip.frames()[*slot + 1].surface_id)
             } else if *slot > 0 {
-                Some(strip.frames[*slot - 1].surface_id)
+                Some(strip.frames()[*slot - 1].surface_id)
             } else {
                 None
             };
 
             strip.remove_frame_at(*slot);
 
-            assert_eq!(strip.frames.len(), prev_len - 1);
+            assert_eq!(strip.frames().len(), prev_len - 1);
             assert_eq!(
                 strip.active_frame().map(|f| f.surface_id),
                 expected_new_active_sid,
@@ -104,17 +104,17 @@ fn apply_op(strip: &mut Strip, op: &Op) {
         }
 
         Op::MoveSelected(delta) => {
-            if strip.frames.is_empty() {
+            if strip.frames().is_empty() {
                 return;
             }
             let i = strip.active_idx();
             let j = match i.checked_add_signed(*delta as isize) {
-                Some(j) if j < strip.frames.len() => j,
+                Some(j) if j < strip.frames().len() => j,
                 _ => return,
             };
-            let prev_active_sid = strip.frames[i].surface_id;
-            let prev_neighbour_sid = strip.frames[j].surface_id;
-            strip.frames.swap(i, j);
+            let prev_active_sid = strip.frames()[i].surface_id;
+            let prev_neighbour_sid = strip.frames()[j].surface_id;
+            strip.frames_mut().swap(i, j);
             strip.set_active(j);
 
             assert_eq!(
@@ -124,17 +124,19 @@ fn apply_op(strip: &mut Strip, op: &Op) {
                 delta,
             );
             assert_eq!(
-                strip.frames[i].surface_id, prev_neighbour_sid,
+                strip.frames()[i].surface_id,
+                prev_neighbour_sid,
                 "I11: previous neighbour must be at slot {} (delta={})",
-                i, delta,
+                i,
+                delta,
             );
         }
 
         Op::Focus(slot) => {
-            if *slot >= strip.frames.len() {
+            if *slot >= strip.frames().len() {
                 return;
             }
-            let target_sid = strip.frames[*slot].surface_id;
+            let target_sid = strip.frames()[*slot].surface_id;
             strip.set_active(*slot);
             assert_eq!(
                 strip.active_frame().map(|f| f.surface_id),
@@ -147,17 +149,17 @@ fn apply_op(strip: &mut Strip, op: &Op) {
 
 /// Structural invariants that must hold between any two ops.
 fn assert_structural(strip: &Strip) {
-    if strip.frames.is_empty() {
+    if strip.frames().is_empty() {
         return;
     }
     assert!(
-        strip.active_idx() < strip.frames.len(),
+        strip.active_idx() < strip.frames().len(),
         "active_idx={} out of bounds for {} frames",
         strip.active_idx(),
-        strip.frames.len(),
+        strip.frames().len(),
     );
     let mut seen = HashSet::new();
-    for f in &strip.frames {
+    for f in strip.frames() {
         assert!(
             seen.insert(f.surface_id),
             "duplicate surface_id {} in strip",
@@ -187,7 +189,7 @@ proptest! {
         let active_idx = raw_active_idx % len;
         let ids = (0..len).map(|i| 10 + i as u64).collect::<Vec<_>>();
         let mut strip = Strip::new(Clock::default());
-        strip.frames = ids.iter().copied().map(Frame::new).collect();
+        strip.append_frames(ids.iter().copied().map(Frame::new));
         strip.set_active(active_idx);
 
         let expected_ids = ids
@@ -206,13 +208,13 @@ proptest! {
         strip.remove_active_frame_at(destroy_idx);
 
         prop_assert_eq!(
-            strip.frames.iter().map(|f| f.surface_id).collect::<Vec<_>>(),
+            strip.frames().iter().map(|f| f.surface_id).collect::<Vec<_>>(),
             expected_ids,
         );
         prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), expected_active);
-        if destroy_idx < strip.frames.len() {
+        if destroy_idx < strip.frames().len() {
             prop_assert!(
-                strip.frames[destroy_idx].move_anim.is_some(),
+                strip.frames()[destroy_idx].move_anim.is_some(),
                 "right neighbor should slide into destroyed active slot",
             );
         }

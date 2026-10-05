@@ -379,7 +379,7 @@ impl Harness {
             .values()
             .any(|strip| {
                 strip
-                    .frames
+                    .frames()
                     .iter()
                     .any(|frame| frame.surface_id == self.frame_sid)
             })
@@ -742,7 +742,7 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
         .flat_map(|(name, strip)| {
             let active_idx = strip.active_idx();
             strip
-                .frames
+                .frames()
                 .get(active_idx)
                 .into_iter()
                 .flat_map(move |frame| {
@@ -811,7 +811,7 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
                 continue;
             }
             let entry_fullscreen = strip
-                .frames
+                .frames()
                 .get(frame_idx)
                 .is_some_and(|frame| frame.entry_fullscreen(entry.id));
             // Geometry follows the frame-owned fullscreen selection, with no
@@ -908,7 +908,7 @@ fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, Layout
             continue;
         };
         let working_area = ewm.get_working_area(output);
-        for (frame_idx, frame) in strip.frames.iter().enumerate() {
+        for (frame_idx, frame) in strip.frames().iter().enumerate() {
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
             for entry in &frame.entries {
                 if entry.surface_id().is_some() {
@@ -1208,7 +1208,7 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
             let in_active = frame_idx == active_idx;
             let fullscreen = strip
-                .frames
+                .frames()
                 .get(frame_idx)
                 .is_some_and(|frame| frame.entry_fullscreen(entry.id));
             let Some(rect) = visible_entry_rect(
@@ -1235,7 +1235,7 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
 fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     for (name, strip) in ewm.frame_set.mapped_strips() {
-        for (frame_idx, frame) in strip.frames.iter().enumerate() {
+        for (frame_idx, frame) in strip.frames().iter().enumerate() {
             let count = usize::from(frame.fullscreen.is_some());
             prop_assert!(
                 count <= 1,

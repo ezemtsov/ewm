@@ -119,7 +119,7 @@ fn entry_fullscreen(fixture: &Fixture, output: &str, entry_id: LayoutEntryId) ->
         .ewm_ref()
         .frame_set
         .mapped_strip(output)?
-        .frames
+        .frames()
         .iter()
         .find(|frame| frame.entries.iter().any(|entry| entry.id == entry_id))
         .map(|frame| frame.entry_fullscreen(entry_id))
@@ -442,7 +442,7 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
         .frame_set
         .mapped_strip("Virtual-1")
         .unwrap()
-        .frames[1]
+        .frames()[1]
         .focus_id;
     fixture.pointer_motion_to(640.0, 360.0);
     fixture.enable_event_capture();
@@ -758,7 +758,7 @@ fn strip_ids(fixture: &Fixture, output: &str) -> Vec<u64> {
         .ewm_ref()
         .frame_set
         .mapped_strip(output)
-        .map(|strip| strip.frames.iter().map(|f| f.surface_id).collect())
+        .map(|strip| strip.frames().iter().map(|f| f.surface_id).collect())
         .unwrap_or_default()
 }
 

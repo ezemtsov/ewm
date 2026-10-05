@@ -1168,14 +1168,14 @@ impl FrameSet {
     pub fn all_frames(&self) -> impl Iterator<Item = &strip::Frame> {
         self.mapped
             .values()
-            .flat_map(|strip| strip.frames.iter())
+            .flat_map(|strip| strip.frames().iter())
             .chain(self.homeless.iter())
     }
 
     fn all_frames_mut(&mut self) -> impl Iterator<Item = &mut strip::Frame> {
         self.mapped
             .values_mut()
-            .flat_map(|strip| strip.frames.iter_mut())
+            .flat_map(|strip| strip.frames_mut().iter_mut())
             .chain(self.homeless.iter_mut())
     }
 
@@ -1207,7 +1207,7 @@ impl FrameSet {
         let Some(mut strip) = self.mapped.remove(output_name) else {
             return;
         };
-        self.homeless.append(&mut strip.frames);
+        self.homeless.extend(strip.take_frames());
     }
 
     fn remember_last_active(&mut self, identity: &str, frame_id: Option<u64>) {
@@ -1646,7 +1646,7 @@ impl Ewm {
                 if let Some(id) = self
                     .frame_set
                     .mapped_strip(&name)
-                    .and_then(|strip| strip.frames.first())
+                    .and_then(|strip| strip.frames().first())
                     .map(|frame| frame.surface_id)
                 {
                     self.set_focus_frame(id, reason, false);
@@ -1941,7 +1941,7 @@ impl Ewm {
         } else {
             self.frame_set
                 .mapped_strip(location.output_name)?
-                .frames
+                .frames()
                 .get(location.frame_idx)
         }
     }
@@ -1961,7 +1961,7 @@ impl Ewm {
     fn frame_location(&self, frame_surface_id: u64) -> Option<FrameLocation<'_>> {
         for (output_name, strip) in self.frame_set.mapped_strips() {
             if let Some((frame_idx, frame)) = strip
-                .frames
+                .frames()
                 .iter()
                 .enumerate()
                 .find(|(_, frame)| frame.surface_id == frame_surface_id)
@@ -2005,7 +2005,7 @@ impl Ewm {
     pub(crate) fn introspect_windows(&self) -> HashMap<u64, dbus::WindowProperties> {
         let mut windows = HashMap::new();
         for (output_name, strip) in self.mapped_output_strips() {
-            for (frame_idx, frame) in strip.frames.iter().enumerate() {
+            for (frame_idx, frame) in strip.frames().iter().enumerate() {
                 let workspace_name =
                     crate::protocols::workspace::frame_workspace_name(frame, frame_idx);
                 let frame_props = self
@@ -2058,7 +2058,7 @@ impl Ewm {
         self.frame_set
             .mapped_strip(output_name)
             .into_iter()
-            .flat_map(|s| s.frames.iter().map(|f| f.surface_id))
+            .flat_map(|s| s.frames().iter().map(|f| f.surface_id))
             .filter(|&id| id != 0)
     }
 
@@ -2124,7 +2124,7 @@ impl Ewm {
     /// Frame surface_id whose focus id matches.
     pub fn frame_with_focus_id(&self, focus_id: FocusId) -> Option<u64> {
         self.mapped_output_strips()
-            .flat_map(|(_, strip)| strip.frames.iter())
+            .flat_map(|(_, strip)| strip.frames().iter())
             .chain(
                 self.floating_spaces
                     .values()
@@ -2244,7 +2244,7 @@ impl Ewm {
             && let Some(strip) = self.frame_set.mapped_strip(&out)
         {
             let idx = strip.active_idx();
-            if strip.frames.get(idx).is_some_and(|frame| {
+            if strip.frames().get(idx).is_some_and(|frame| {
                 frame
                     .entries
                     .iter()
@@ -2257,7 +2257,7 @@ impl Ewm {
         self.mapped_output_strips()
             .find_map(|(name, strip)| {
                 strip
-                    .frames
+                    .frames()
                     .iter()
                     .position(|frame| {
                         frame
@@ -2384,7 +2384,7 @@ impl Ewm {
         };
         let prev_idx = strip.active_idx();
         let prev_active_id = strip.active_frame().map(|f| f.surface_id);
-        let frames_len = strip.frames.len();
+        let frames_len = strip.frames().len();
         let prev_offset = strip.view_offset().current();
         strip.set_active(new_idx);
         let active_changed = strip.active_idx() != prev_idx;
@@ -2495,7 +2495,7 @@ impl Ewm {
         let Some(strip) = self.frame_set.mapped_strip(output_name) else {
             return;
         };
-        let Some(target) = strip.frames.get(idx).map(|frame| frame.surface_id) else {
+        let Some(target) = strip.frames().get(idx).map(|frame| frame.surface_id) else {
             return;
         };
         let prev_view_pos = strip.view_pos();
@@ -2557,7 +2557,7 @@ impl Ewm {
             .flat_map(|strip| {
                 let active = strip.active_frame().map(|f| f.surface_id);
                 strip
-                    .frames
+                    .frames()
                     .iter()
                     .map(|f| f.surface_id)
                     .filter(move |id| Some(*id) != active)
@@ -2634,7 +2634,7 @@ impl Ewm {
             .map(|f| f.surface_id);
         let target = self.frame_set.mapped_strip_mut(output_name).and_then(|s| {
             s.gesture_end(working_w);
-            s.frames.get(s.active_idx()).map(|f| f.surface_id)
+            s.active_frame().map(|f| f.surface_id)
         });
         self.reconcile_active_for_output(output_name, prev_active_id);
         // A swipe that snaps back changes nothing; don't refocus.
@@ -2837,7 +2837,7 @@ impl Ewm {
         entry: &LayoutEntry,
     ) -> bool {
         strip
-            .frames
+            .frames()
             .get(frame_idx)
             .is_some_and(|frame| frame.entry_fullscreen(entry.id))
     }
@@ -3214,7 +3214,7 @@ impl Ewm {
         }
         let strip = self.frame_set.mapped_strip(&output.name())?;
 
-        for (frame_idx, frame) in strip.frames.iter().enumerate() {
+        for (frame_idx, frame) in strip.frames().iter().enumerate() {
             let rect = Self::frame_rect(output_geo, working_area, strip, frame_idx, frame);
             if !Self::rect_contains_f64(rect, pos) {
                 continue;
@@ -3276,7 +3276,7 @@ impl Ewm {
             .map(|(_, strip)| strip)
             .any(|strip| {
                 strip
-                    .frames
+                    .frames()
                     .iter()
                     .any(|frame| frame.surface_fullscreen(id))
             })
@@ -3567,11 +3567,7 @@ impl Ewm {
                 // `remove_frame_at` adjusts `active_idx` and seeds the
                 // slide-in animation on surviving neighbours; plain
                 // `retain` would leave `active_idx` stale.
-                if let Some(idx) = prev_strip
-                    .frames
-                    .iter()
-                    .position(|frame| frame.surface_id == migration.id)
-                {
+                if let Some(idx) = prev_strip.index_of(migration.id) {
                     prev_strip.remove_frame_at(idx);
                 }
             }
@@ -3623,25 +3619,12 @@ impl Ewm {
         let prev_src_active = self.active_frame_surface_id(src_name);
         let prev_dst_active = self.active_frame_surface_id(dst_name);
 
-        let mut moved = Vec::new();
-        if let Some(src_strip) = self.frame_set.mapped_strip_mut(src_name) {
-            let src_active_id = src_strip.active_frame().map(|frame| frame.surface_id);
-            let kept;
-            (moved, kept) = src_strip
-                .frames
-                .drain(..)
-                .partition(|frame| frame_ids.contains(&frame.surface_id));
-            src_strip.frames = kept;
-            let active_idx = src_active_id
-                .and_then(|id| {
-                    src_strip
-                        .frames
-                        .iter()
-                        .position(|frame| frame.surface_id == id)
-                })
-                .unwrap_or_else(|| src_strip.active_idx());
-            src_strip.set_active(active_idx);
-        }
+        let moved = self
+            .frame_set
+            .mapped_strip_mut(src_name)
+            .map_or_else(Vec::new, |src_strip| {
+                src_strip.drain_frames(|frame| frame_ids.contains(&frame.surface_id))
+            });
         if moved.is_empty() {
             return false;
         }
@@ -3653,8 +3636,8 @@ impl Ewm {
 
         let clock = self.animations_clock.clone();
         let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock);
-        let insert_at = dst_strip.frames.len();
-        dst_strip.frames.append(&mut moved);
+        let insert_at = dst_strip.frames().len();
+        dst_strip.append_frames(moved);
         if let Some(focused_idx) = moved_ids
             .iter()
             .position(|id| *id == self.focused_frame_id)
@@ -3719,7 +3702,7 @@ impl Ewm {
             .mapped_strip(output_name)
             .map(|strip| {
                 strip
-                    .frames
+                    .frames()
                     .iter()
                     .map(|frame| frame.surface_id)
                     .collect::<Vec<_>>()
@@ -3754,7 +3737,7 @@ impl Ewm {
             .filter(|(src_name, _)| src_name.as_str() != output_name)
             .filter_map(|(src_name, strip)| {
                 let frame_ids = strip
-                    .frames
+                    .frames()
                     .iter()
                     .filter(|frame| {
                         self.frame_set
@@ -3776,7 +3759,7 @@ impl Ewm {
 
     /// Adopt every homeless frame onto a newly mapped output.
     fn adopt_homeless_frames(&mut self, dst_name: &str) -> bool {
-        let mut moved = self.frame_set.take_homeless_frames();
+        let moved = self.frame_set.take_homeless_frames();
         if moved.is_empty() {
             return false;
         }
@@ -3790,8 +3773,8 @@ impl Ewm {
 
         let clock = self.animations_clock.clone();
         let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock);
-        let insert_at = dst_strip.frames.len();
-        dst_strip.frames.append(&mut moved);
+        let insert_at = dst_strip.frames().len();
+        dst_strip.append_frames(moved);
         if insert_at == 0 {
             dst_strip.set_active(0);
         }
@@ -3844,17 +3827,13 @@ impl Ewm {
         };
         // The focused frame stays active; focus continuity wins.
         if strip
-            .frames
+            .frames()
             .iter()
             .any(|frame| frame.surface_id == focused_frame_id)
         {
             return;
         }
-        let Some(idx) = strip
-            .frames
-            .iter()
-            .position(|frame| frame.surface_id == frame_id)
-        else {
+        let Some(idx) = strip.index_of(frame_id) else {
             return;
         };
         strip.set_active(idx);
@@ -3890,15 +3869,11 @@ impl Ewm {
         let Some(strip) = self.frame_set.mapped_strip_mut(output_name) else {
             return;
         };
-        if let Some(new_idx) = strip
-            .frames
-            .iter()
-            .position(|frame| frame.surface_id == frame_id)
-        {
+        if let Some(new_idx) = strip.index_of(frame_id) {
             strip.set_active(new_idx);
-            selected = Some(strip.frames[new_idx].selected_entry_id);
-        } else if !strip.frames.is_empty() {
-            let clamped = strip.active_idx().min(strip.frames.len() - 1);
+            selected = Some(strip.frames()[new_idx].selected_entry_id);
+        } else if !strip.frames().is_empty() {
+            let clamped = strip.active_idx().min(strip.frames().len() - 1);
             strip.set_active(clamped);
         }
 
@@ -4183,7 +4158,7 @@ impl Ewm {
         let mut best_area: HashMap<u64, u64> = HashMap::new();
         for (oname, strip) in self.mapped_output_strips() {
             let active_idx = strip.active_idx();
-            let Some(frame) = strip.frames.get(active_idx) else {
+            let Some(frame) = strip.frames().get(active_idx) else {
                 continue;
             };
             for entry in frame.entries.iter().filter(|entry| entry.surface.is_some()) {
@@ -4240,7 +4215,7 @@ impl Ewm {
             let oname = output.name();
             if let Some(strip) = self.frame_set.mapped_strip_mut(&oname) {
                 let active_idx = strip.active_idx();
-                let Some(frame) = strip.frames.get_mut(active_idx) else {
+                let Some(frame) = strip.frames_mut().get_mut(active_idx) else {
                     continue;
                 };
                 let fullscreen_entry_id = frame.fullscreen.map(|fullscreen| fullscreen.entry_id);
@@ -4324,7 +4299,7 @@ impl Ewm {
                 continue;
             };
             let active_idx = strip.active_idx();
-            let Some(frame) = strip.frames.get(active_idx) else {
+            let Some(frame) = strip.frames().get(active_idx) else {
                 continue;
             };
             for entry in frame.entries.iter().filter(|entry| entry.primary()) {
@@ -5105,7 +5080,7 @@ impl Ewm {
                 .filter_map(LayoutEntry::surface_id)
                 .any(|surface_id| self.surface_open_anims.contains_key(&surface_id))
                 || strip
-                    .frames
+                    .frames()
                     .iter()
                     .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
             if (strip.animations_ongoing() || any_open_fade)
@@ -6145,7 +6120,7 @@ impl Ewm {
         if let Some(id) = prev_active_id {
             // Skip if the frame was destroyed -- the lisp side already handled it.
             // The overview keeps every frame visible.
-            if !self.overview.is_active() && strip.frames.iter().any(|f| f.surface_id == id) {
+            if !self.overview.is_active() && strip.frames().iter().any(|f| f.surface_id == id) {
                 self.queue_event(Event::FrameHidden { id });
             }
         }
@@ -6997,7 +6972,7 @@ impl Ewm {
             .mapped_strips()
             .iter()
             .flat_map(|(out, s)| {
-                s.frames
+                s.frames()
                     .iter()
                     .map(move |f| (f.surface_id, out.to_string()))
             })
@@ -7347,7 +7322,7 @@ impl Ewm {
                 } else {
                     let clock = self.animations_clock.clone();
                     let strip = self.frame_set.ensure_mapped_strip(output_name, clock);
-                    strip.frames.push(crate::strip::Frame::new(id));
+                    strip.push_frame(crate::strip::Frame::new(id));
                 }
             }
         }
@@ -10144,7 +10119,7 @@ mod tests {
         fix.ewm_ref()
             .frame_set
             .mapped_strip(name)
-            .map(|strip| strip.frames.iter().map(|f| f.surface_id).collect())
+            .map(|strip| strip.frames().iter().map(|f| f.surface_id).collect())
             .unwrap_or_default()
     }
 
@@ -10239,9 +10214,9 @@ mod tests {
 
     fn strip_with_frame_ids(ids: Vec<u64>, active_idx: usize) -> strip::Strip {
         let mut strip = strip::Strip::new(animation::Clock::default());
-        strip.frames = ids.into_iter().map(strip::Frame::new).collect();
-        if !strip.frames.is_empty() {
-            strip.set_active(active_idx % strip.frames.len());
+        strip.append_frames(ids.into_iter().map(strip::Frame::new));
+        if !strip.frames().is_empty() {
+            strip.set_active(active_idx % strip.frames().len());
         }
         strip
     }
@@ -10356,7 +10331,7 @@ mod tests {
                         nz(3_000 + idx as u64),
                         surface_id,
                     );
-                    strip.frames.push(frame);
+                    strip.push_frame(frame);
                     fix.ewm().frame_set.insert_mapped_strip((*name).to_string(), strip);
                 }
             }
@@ -10433,7 +10408,7 @@ mod tests {
                     entry_w,
                     entry_h,
                 ));
-                strip.frames.push(frame);
+                strip.push_frame(frame);
                 fix.ewm().frame_set.insert_mapped_strip((*name).to_string(), strip);
             }
 
@@ -10500,7 +10475,7 @@ mod tests {
                     .unwrap();
                 let removed_name = PROP_HEADS[removed_idx];
                 if let Some(strip) = fix.ewm().frame_set.mapped_strip_mut(removed_name)
-                    && let Some(frame) = strip.frames.first_mut() {
+                    && let Some(frame) = strip.frames_mut().first_mut() {
                         frame.entries.clear();
                     }
                 fix.ewm().refresh_mapped_cast_outputs();
@@ -10650,9 +10625,7 @@ mod tests {
         let surface_id = 42;
 
         let mut strip = strip::Strip::new(animation::Clock::default());
-        strip
-            .frames
-            .push(frame_with_entry(100, entry_id, surface_id));
+        strip.push_frame(frame_with_entry(100, entry_id, surface_id));
         fix.ewm()
             .frame_set
             .insert_mapped_strip(HEAD_A.to_string(), strip);

@@ -214,7 +214,7 @@ fn mapped_fullscreen_surfaces(fix: &Fixture) -> HashSet<u64> {
         .frame_set
         .mapped_strips()
         .values()
-        .flat_map(|strip| strip.frames.iter())
+        .flat_map(|strip| strip.frames().iter())
         .filter_map(|frame| frame.fullscreen.map(|fullscreen| fullscreen.surface_id))
         .collect()
 }
