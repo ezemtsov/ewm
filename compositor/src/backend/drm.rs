@@ -1212,6 +1212,24 @@ impl DrmBackendState {
 }
 
 impl DrmBackendState {
+    /// Clear the DRM surface of an output (DPMS off). The surface is kept, so
+    /// enabling the output again re-enables it on the next queue_frame.
+    fn power_off_output(&mut self, output: &Output) {
+        let Some((node, crtc)) = self.find_output_device(output) else {
+            return;
+        };
+        let Some(surface) = self
+            .devices
+            .get_mut(&node)
+            .and_then(|device| device.surfaces.get_mut(&crtc))
+        else {
+            return;
+        };
+        if let Err(err) = surface.compositor.clear() {
+            warn!("Error clearing DRM surface for {}: {:?}", output.name(), err);
+        }
+    }
+
     /// Apply output configuration for a live output.
     ///
     /// Resolves the final state for mode, scale, transform, and position,
@@ -1233,6 +1251,7 @@ impl DrmBackendState {
         if !config.enabled {
             info!("Disabled output {}", output_name);
             ewm.disable_output(&output);
+            self.power_off_output(&output);
             return;
         }
 
@@ -1335,6 +1354,11 @@ impl DrmBackendState {
         let Some((node, crtc)) = self.find_output_device(output) else {
             return super::RenderResult::Skipped;
         };
+        // A disabled output keeps its DRM surface. Rendering to it would
+        // re-enable the surface through queue_frame, so skip it.
+        if ewm.space.output_geometry(output).is_none() {
+            return super::RenderResult::Skipped;
+        }
         let Some(device) = self.devices.get(&node) else {
             return super::RenderResult::Skipped;
         };
@@ -2153,6 +2177,12 @@ impl DrmBackendState {
             );
         } else {
             info!("Output {} connected but disabled by config", connector_name);
+            // Keep the output off until it is enabled.
+            if let Some(surface) = device.surfaces.get_mut(&crtc) {
+                if let Err(err) = surface.compositor.clear() {
+                    warn!("Error clearing DRM surface for {}: {:?}", connector_name, err);
+                }
+            }
         }
 
         let physical_size = connector.size().unwrap_or((0, 0));
