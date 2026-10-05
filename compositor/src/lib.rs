@@ -2385,7 +2385,7 @@ impl Ewm {
         let prev_idx = strip.active_idx();
         let prev_active_id = strip.active_frame().map(|f| f.surface_id);
         let frames_len = strip.frames.len();
-        let prev_offset = strip.view_offset.current();
+        let prev_offset = strip.view_offset().current();
         strip.set_active(new_idx);
         let active_changed = strip.active_idx() != prev_idx;
         if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2396,7 +2396,7 @@ impl Ewm {
                 strip.active_idx(),
                 frames_len,
                 prev_offset,
-                strip.view_offset.current(),
+                strip.view_offset().current(),
             );
         }
 
@@ -2428,7 +2428,7 @@ impl Ewm {
         let shift = self
             .frame_set
             .mapped_strip(&output.name())
-            .map_or(0.0, |strip| strip.overview_shift)
+            .map_or(0.0, strip::Strip::overview_shift)
             * progress;
         overview::Geometry::new(size, scale, self.overview.zoom(), shift)
     }
@@ -2505,8 +2505,7 @@ impl Ewm {
         if progress > 0.01
             && let Some(strip) = self.frame_set.mapped_strip_mut(output_name)
         {
-            strip.view_offset = strip::ViewOffset::Static(0.0);
-            strip.overview_shift = (strip.view_pos() - prev_view_pos) * zoom / progress;
+            strip.carry_slide_as_overview_shift(prev_view_pos, zoom, progress);
         }
         self.with_overview(|overview| overview.close());
         self.queue_redraw_all();
@@ -2532,12 +2531,7 @@ impl Ewm {
         let progress = self.overview.progress();
         let zoom = self.overview.zoom();
         for strip in self.frame_set.mapped_strips_mut() {
-            let shift = mem::take(&mut strip.overview_shift);
-            // A closed overview showed no shift, so there is nothing to carry over.
-            if let Some(progress) = progress.filter(|_| shift != 0.0) {
-                strip.view_offset.offset(-shift * progress / zoom);
-                strip.view_offset.animate_to(strip.clock.clone(), 0.0, 0.);
-            }
+            strip.bake_overview_shift(progress, zoom);
         }
     }
 
@@ -10772,7 +10766,8 @@ mod tests {
                 vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
             );
             let strip = fix.ewm().frame_set.mapped_strip_mut(HEAD_A).unwrap();
-            strip.view_offset = strip::ViewOffset::Static(offset);
+            strip.gesture_begin();
+            strip.gesture_update(offset, Duration::ZERO, strip::VIEW_GESTURE_WORKING_AREA_MOVEMENT);
             let expected = (strip.column_x(1) - strip.view_pos()).round() as i32;
 
             prop_assert_eq!(

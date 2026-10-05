@@ -4,6 +4,7 @@
 //! left edge is `column_x(active_idx) + view_offset.current()`.
 
 use std::collections::{HashMap, VecDeque};
+use std::mem;
 use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
@@ -302,12 +303,12 @@ pub struct Strip {
     pub gap: f64,
     active_idx: usize,
     #[serde(skip)]
-    pub view_offset: ViewOffset,
+    view_offset: ViewOffset,
     /// Screen x shift per unit of overview progress after snapping onto a picked frame.
     #[serde(skip)]
-    pub overview_shift: f64,
+    overview_shift: f64,
     #[serde(skip)]
-    pub clock: Clock,
+    clock: Clock,
 }
 
 impl Strip {
@@ -367,6 +368,14 @@ impl Strip {
         }
     }
 
+    pub fn view_offset(&self) -> &ViewOffset {
+        &self.view_offset
+    }
+
+    pub fn overview_shift(&self) -> f64 {
+        self.overview_shift
+    }
+
     /// Strip-relative viewport left edge.
     pub fn view_pos(&self) -> f64 {
         self.column_x(self.active_idx) + self.view_offset.current()
@@ -382,6 +391,22 @@ impl Strip {
     /// Strip-relative viewport left edge once any in-flight animation settles.
     pub fn target_view_pos(&self) -> f64 {
         self.column_x(self.active_idx) + self.view_offset.target()
+    }
+
+    /// Drop the slide a pick started and let the zoom carry the jump from `prev_view_pos`.
+    pub fn carry_slide_as_overview_shift(&mut self, prev_view_pos: f64, zoom: f64, progress: f64) {
+        self.view_offset = ViewOffset::Static(0.0);
+        self.overview_shift = (self.view_pos() - prev_view_pos) * zoom / progress;
+    }
+
+    /// Turn a leftover overview shift back into a slide before the zoom changes course.
+    pub fn bake_overview_shift(&mut self, progress: Option<f64>, zoom: f64) {
+        let shift = mem::take(&mut self.overview_shift);
+        // A closed overview showed no shift, so there is nothing to carry over.
+        if let Some(progress) = progress.filter(|_| shift != 0.0) {
+            self.view_offset.offset(-shift * progress / zoom);
+            self.view_offset.animate_to(self.clock.clone(), 0.0, 0.);
+        }
     }
 
     /// Drive the state machine forward; settles finished animations.

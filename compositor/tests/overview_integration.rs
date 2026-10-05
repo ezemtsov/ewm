@@ -149,10 +149,10 @@ fn click_on_zoomed_neighbour_activates_it_and_closes() {
     assert!(!fix.ewm_ref().overview.is_open());
     let strip = fix.ewm_ref().frame_set.mapped_strip(OUTPUT).unwrap();
     assert!(
-        strip.view_offset.is_static(),
+        strip.view_offset().is_static(),
         "the strip snaps onto the picked frame"
     );
-    assert_eq!(strip.view_offset.current(), 0.0);
+    assert_eq!(strip.view_offset().current(), 0.0);
     // Pointer focus with the click mapped into the frame, so Emacs does not warp the pointer.
     assert!(fix.drain_events().iter().any(|event| matches!(
         event,
