@@ -70,6 +70,10 @@ impl Animation {
         self
     }
 
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
+
     pub fn is_done(&self) -> bool {
         if self.clock.should_complete_instantly() {
             return true;

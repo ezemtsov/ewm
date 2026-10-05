@@ -44,6 +44,7 @@ fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> 
         selected_entry_id: Some(entry_id),
         move_anim: None,
         floating_pos: None,
+        close_snapshot: None,
     }
 }
 

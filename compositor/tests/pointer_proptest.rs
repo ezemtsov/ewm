@@ -453,6 +453,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
                     selected_entry_id: Some(nz(1 + i as u64)),
                     move_anim: None,
                     floating_pos: None,
+                    close_snapshot: None,
                 })
                 .collect();
             h.fix.ewm().apply_output_layout(name, frames);
@@ -615,6 +616,7 @@ fn apply_multi_entry_layout(
             selected_entry_id,
             move_anim: None,
             floating_pos: None,
+            close_snapshot: None,
         }],
     );
     for i in 0..n_entries {
@@ -668,6 +670,7 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
             selected_entry_id: None,
             move_anim: None,
             floating_pos: None,
+            close_snapshot: None,
         }],
     );
     settle_strip_animations(h);
@@ -703,6 +706,7 @@ fn apply_split_client_layout(h: &mut Harness, output: usize) {
             selected_entry_id: Some(nz(50_001)),
             move_anim: None,
             floating_pos: None,
+            close_snapshot: None,
         }],
     );
 }

@@ -205,7 +205,7 @@ proptest! {
             Some(ids[destroy_idx - 1])
         };
 
-        strip.remove_active_frame_at(destroy_idx);
+        strip.close_active_frame_at(destroy_idx);
 
         prop_assert_eq!(
             strip.frames().iter().map(|f| f.surface_id).collect::<Vec<_>>(),

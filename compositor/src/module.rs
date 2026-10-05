@@ -170,10 +170,6 @@ pub(crate) fn take_pending_active_frame_close(id: u64) -> bool {
     pending_active_frame_closes().lock().unwrap().remove(&id)
 }
 
-pub(crate) fn has_pending_active_frame_close(id: u64) -> bool {
-    pending_active_frame_closes().lock().unwrap().contains(&id)
-}
-
 pub(crate) fn peek_pending_active_frame_closes() -> Vec<u64> {
     pending_active_frame_closes()
         .lock()

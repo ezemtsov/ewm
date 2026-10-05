@@ -30,6 +30,11 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // Toolkits that destroy without unmapping still hold the buffer here.
+        if let Some(id) = self.ewm.surface_id(surface.wl_surface()) {
+            self.store_close_snapshots(&[id]);
+        }
+
         // Defer: event sends from resource destructors abort on a dying client.
         self.ewm.loop_handle.insert_idle(move |state| {
             let ewm = &mut state.ewm;

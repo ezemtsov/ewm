@@ -28,6 +28,7 @@
 
 pub mod animation;
 pub mod backend;
+pub mod closing_frame;
 pub mod cursor;
 #[cfg(feature = "screencast")]
 pub mod dbus;
@@ -2792,6 +2793,10 @@ impl Ewm {
         }
         if let Some(space) = self.floating_spaces.get_mut(&output.name()) {
             space.advance();
+            // A space kept only for a close fade goes once the fade has.
+            if space.frames().is_empty() && space.closing_frames().is_empty() {
+                self.floating_spaces.remove(&output.name());
+            }
         }
         let id_windows = &self.id_windows;
         self.surface_open_anims
@@ -4860,6 +4865,7 @@ impl Ewm {
         let is_emacs = self.emacs_pid.is_some_and(|pid| client_pid == pid as i32);
         if is_emacs {
             info!("Surface {} is an Emacs surface", id);
+            handlers::add_frame_unmap_pre_commit_hook(surface.wl_surface());
         } else {
             self.unmapped_surfaces.insert(id);
         }
@@ -5825,6 +5831,30 @@ impl State {
         shared.active_frames = active_frames;
     }
 
+    /// Bake close snapshots for the frames among `ids` that have none yet.
+    fn store_close_snapshots(&mut self, ids: &[u64]) {
+        let ewm = &mut self.ewm;
+        if ewm.animations_clock.should_complete_instantly() {
+            return;
+        }
+        let ids: Vec<u64> = ids
+            .iter()
+            .copied()
+            .filter(|&id| {
+                ewm.frame_location(id)
+                    .is_some_and(|location| location.frame.close_snapshot.is_none())
+            })
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.backend.with_renderer(|renderer, _, _| {
+            for id in ids {
+                ewm.store_frame_close_snapshot(renderer, id);
+            }
+        });
+    }
+
     /// Handle a module command (from Emacs via dynamic module).
     pub(crate) fn handle_module_command(&mut self, cmd: module::ModuleCommand) {
         tracy_span!("handle_module_command");
@@ -6080,10 +6110,24 @@ impl State {
                 debug!("Selection set from Emacs");
             }
             ModuleCommand::OutputLayout { output, frames } => {
+                let current = self
+                    .ewm
+                    .frame_set
+                    .mapped_strip(&output)
+                    .map_or(&[][..], |s| s.frames());
+                let dropped = strip::dropped_frame_ids(current, &frames);
+                self.store_close_snapshots(&dropped);
                 self.ewm.apply_output_layout(&output, frames);
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::FloatingLayout { output, frames } => {
+                let current = self
+                    .ewm
+                    .floating_spaces
+                    .get(&output)
+                    .map_or(&[][..], |s| s.frames());
+                let dropped = strip::dropped_frame_ids(current, &frames);
+                self.store_close_snapshots(&dropped);
                 self.ewm.apply_floating_layout(&output, frames);
                 self.refresh_pointer_after_layout();
             }

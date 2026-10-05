@@ -5,7 +5,8 @@ use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    CompositorClientState, CompositorHandler, CompositorState, is_sync_subsurface,
+    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
+    add_pre_commit_hook, is_sync_subsurface, with_states,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
@@ -13,6 +14,19 @@ use crate::{
     Event, OPEN_ANIM_DURATION, State, animation, client_state, compute_open_floating,
     natural_open_size, surface_root,
 };
+
+/// Bake an Emacs frame's close snapshot on the commit that unmaps it.
+pub(crate) fn add_frame_unmap_pre_commit_hook(surface: &WlSurface) {
+    add_pre_commit_hook::<State, _>(surface, |state, _dh, surface| {
+        let unmapping = with_states(surface, |states| {
+            let mut guard = states.cached_state.get::<SurfaceAttributes>();
+            matches!(guard.pending().buffer, Some(BufferAssignment::Removed))
+        });
+        if unmapping && let Some(id) = state.ewm.surface_id(surface) {
+            state.store_close_snapshots(&[id]);
+        }
+    });
+}
 
 // Buffer handling
 impl BufferHandler for State {

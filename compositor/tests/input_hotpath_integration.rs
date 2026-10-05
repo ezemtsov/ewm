@@ -81,6 +81,7 @@ fn frame_with_entry(
         selected_entry_id: Some(entry_id),
         move_anim: None,
         floating_pos: None,
+        close_snapshot: None,
     }
 }
 

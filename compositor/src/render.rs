@@ -48,6 +48,7 @@ use smithay::wayland::shell::wlr_layer::Layer;
 use smithay::wayland::shm;
 use tracing::warn;
 
+use crate::closing_frame::FrameSnapshot;
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
 use crate::render_helpers::background_effect;
@@ -91,6 +92,7 @@ render_elements! {
     SolidColor=SolidColorRenderElement,
     Shadow=crate::render_helpers::shadow::ShadowRenderElement,
     BackgroundEffect=FramebufferEffectElement,
+    ClosingFrame=crate::texture::TextureRenderElement<GlesTexture>,
 }
 
 /// Content scaled about the output origin, then moved into place.
@@ -642,6 +644,12 @@ pub fn collect_render_elements_for_output(
         let unfocused_alpha = ewm.unfocused_alpha;
         let surface_open_anims = &ewm.surface_open_anims;
 
+        // Draw the closing frames on top of the other frames.
+        for closing in space.closing_frames().iter().rev() {
+            let elem = closing.render(closing.pos());
+            content.push(ContentRenderElement::ClosingFrame(elem));
+        }
+
         for (frame, data, frame_rect) in space.frames_with_render_geo_mut() {
             for entry in frame
                 .entries
@@ -881,6 +889,12 @@ pub fn collect_render_elements_for_output(
                 blur_config,
             );
         }
+
+        // Draw the closing frames beneath the other frames.
+        for (closing, pos) in strip.closing_frames_with_render_pos() {
+            let elem = closing.render(pos + working_area.loc.to_f64());
+            content.push(ContentRenderElement::ClosingFrame(elem));
+        }
     }
 
     elements.extend(content.drain(..).map(slid));
@@ -932,6 +946,101 @@ pub fn collect_render_elements_for_output(
     elements.extend(backdrop);
 
     (elements, cursor_elements)
+}
+
+/// `frame`'s views at the frame origin, without blur.
+fn render_frame_views(
+    content: &mut Vec<ContentRenderElement>,
+    renderer: &mut GlesRenderer,
+    ewm: &Ewm,
+    frame: &crate::strip::Frame,
+    scale: Scale<f64>,
+) {
+    let no_blur = Blur {
+        off: true,
+        ..Blur::default()
+    };
+    for entry in &frame.entries {
+        let Some(surface_id) = entry.surface_id() else {
+            continue;
+        };
+        let Some(window) = ewm.id_windows.get(&surface_id) else {
+            continue;
+        };
+        let alpha = if ewm.focused_entry_id == Some(entry.id) {
+            1.0
+        } else {
+            ewm.unfocused_alpha
+        };
+        let loc: Point<i32, Physical> =
+            Point::from((entry.x, entry.y)).to_physical_precise_round(scale);
+        let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
+        let entry_size: Size<i32, Physical> =
+            Size::from((entry.w as i32, entry.h as i32)).to_physical_precise_round(scale);
+        let source_size: Size<i32, Physical> =
+            window.geometry().size.to_physical_precise_round(scale);
+        push_view_elements_fit(
+            content,
+            window,
+            view_elements,
+            loc,
+            source_size,
+            scale,
+            Rectangle::new(loc, entry_size),
+            !entry.primary(),
+            None,
+            no_blur,
+        );
+    }
+}
+
+/// Frame `id` with its views baked to a texture for its close animation.
+pub fn render_frame_snapshot(
+    ewm: &mut Ewm,
+    renderer: &mut GlesRenderer,
+    id: u64,
+) -> Option<FrameSnapshot> {
+    tracy_span!("render_frame_snapshot");
+
+    let location = ewm.frame_location(id)?;
+    let scale = Scale::from(ewm.output_scale(location.output_name));
+
+    let mut content: Vec<ContentRenderElement> = Vec::new();
+    render_frame_views(&mut content, renderer, ewm, location.frame, scale);
+    // Like the live pass, no frame surface or shadow before the frame has shown a buffer.
+    if let Some(window) = ewm.id_windows.get(&id)
+        && window
+            .wl_surface()
+            .is_some_and(|surface| crate::utils::is_mapped(&surface))
+    {
+        let elements =
+            render_window_without_popups(window, renderer, Point::from((0, 0)), scale, 1.);
+        content.extend(elements.into_iter().map(ContentRenderElement::Surface));
+        if let Some((_, data)) = ewm
+            .floating_spaces
+            .values_mut()
+            .find_map(|space| space.frame_with_data_mut(id))
+        {
+            let focused = ewm.focused_frame_id == id;
+            let size = data.size();
+            let shadow = data.shadow_mut();
+            shadow.update_render_elements(size, focused, CornerRadius::default(), scale.x, 1.);
+            shadow.render(renderer, Point::from((0., 0.)), &mut |shadow| {
+                content.push(ContentRenderElement::Shadow(shadow));
+            });
+        }
+    }
+    if content.is_empty() {
+        return None;
+    }
+
+    match FrameSnapshot::new(renderer, &content, scale) {
+        Ok(snapshot) => Some(snapshot),
+        Err(err) => {
+            warn!("error rendering frame snapshot: {err:?}");
+            None
+        }
+    }
 }
 
 /// Render one popup placement into `elements`.
@@ -1093,6 +1202,36 @@ pub fn render_to_dmabuf(
     );
     let mut target = renderer.bind(&mut dmabuf).context("error binding dmabuf")?;
     render_elements_impl(renderer, &mut target, size, scale, transform, elements)
+}
+
+/// Bounding box of `elements` in physical pixels.
+fn encompassing_geo(
+    scale: Scale<f64>,
+    elements: impl Iterator<Item = impl Element>,
+) -> Rectangle<i32, Physical> {
+    elements
+        .map(|ele| ele.geometry(scale))
+        .reduce(|a, b| a.merge(b))
+        .unwrap_or_default()
+}
+
+/// Render `elements` into a texture just large enough to hold them, returning its geometry.
+pub fn render_to_encompassing_texture(
+    renderer: &mut GlesRenderer,
+    scale: Scale<f64>,
+    transform: Transform,
+    fourcc: Fourcc,
+    elements: &[impl RenderElement<GlesRenderer>],
+) -> anyhow::Result<(GlesTexture, SyncPoint, Rectangle<i32, Physical>)> {
+    let geo = encompassing_geo(scale, elements.iter());
+    let elements = elements.iter().rev().map(|ele| {
+        RelocateRenderElement::from_element(ele, geo.loc.upscale(-1), Relocate::Relative)
+    });
+
+    let (texture, sync_point) =
+        render_to_texture(renderer, geo.size, scale, transform, fourcc, elements)?;
+
+    Ok((texture, sync_point, geo))
 }
 
 /// Render elements into a fresh `GlesTexture`.

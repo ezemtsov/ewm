@@ -49,6 +49,7 @@ fn frame_with_entry_at(
         selected_entry_id: Some(entry_id),
         move_anim: None,
         floating_pos: None,
+        close_snapshot: None,
     }
 }
 

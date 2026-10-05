@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::mem;
 
+use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::utils::under_from_surface_tree;
 use smithay::desktop::{Window, WindowSurfaceType};
 use smithay::output::Output;
@@ -285,6 +286,16 @@ impl Ewm {
         }
     }
 
+    /// Bake frame `id`'s close snapshot.
+    pub(crate) fn store_frame_close_snapshot(&mut self, renderer: &mut GlesRenderer, id: u64) {
+        let Some(snapshot) = crate::render::render_frame_snapshot(self, renderer, id) else {
+            return;
+        };
+        if let Some(frame) = self.frame_mut(id) {
+            frame.close_snapshot = Some(snapshot);
+        }
+    }
+
     /// Drop the Emacs frame `id` from whichever strip holds it.
     pub(crate) fn remove_emacs_frame_from_strip(&mut self, id: u64, active_close: bool) {
         self.frame_set.forget_frame_home(id);
@@ -295,10 +306,11 @@ impl Ewm {
             return;
         };
         let pre_entries = self.strip_entries(&out);
-        let removed_floating = self
-            .floating_spaces
-            .get_mut(&out)
-            .and_then(|space| space.remove_frame(id).map(|_| space.frames().is_empty()));
+        let removed_floating = self.floating_spaces.get_mut(&out).and_then(|space| {
+            space
+                .close_frame(id)
+                .map(|_| space.frames().is_empty() && space.closing_frames().is_empty())
+        });
         if let Some(empty) = removed_floating {
             if empty {
                 self.floating_spaces.remove(&out);
@@ -310,9 +322,9 @@ impl Ewm {
         if let Some(strip) = self.frame_set.mapped_strip_mut(&out) {
             prev_active_id = strip.active_frame().map(|f| f.surface_id);
             if active_close {
-                strip.remove_active_frame_at(idx);
+                strip.close_active_frame_at(idx);
             } else {
-                strip.remove_frame_at(idx);
+                strip.close_frame_at(idx);
             }
         }
         self.reconcile_output_entries(&out, &pre_entries);
@@ -395,6 +407,15 @@ impl Ewm {
             }
         }
         None
+    }
+
+    /// Mutable lookup across strips, the homeless pool and floating spaces.
+    pub(crate) fn frame_mut(&mut self, frame_surface_id: u64) -> Option<&mut strip::Frame> {
+        self.frame_set.frame_mut(frame_surface_id).or_else(|| {
+            self.floating_spaces
+                .values_mut()
+                .find_map(|space| space.frame_mut(frame_surface_id))
+        })
     }
 
     pub(crate) fn mapped_output_strips(&self) -> impl Iterator<Item = (&str, &strip::Strip)> {
@@ -1876,7 +1897,7 @@ impl Ewm {
         let snapshots = self.output_layout_snapshots(output_name, &migrations);
         self.remove_migrated_frames_from_sources(&migrations, &snapshots);
 
-        // Omitted frames keep their chrome until Wayland destroy arrives, but
+        // Omitted frames keep their slot until Wayland destroy arrives, but
         // their layout entries are cleared by `merge_layout_frames`.
         let clock = self.animations_clock.clone();
         let focused_surface = self.focused_surface_id();
@@ -1884,7 +1905,7 @@ impl Ewm {
         let strip_entry = self
             .frame_set
             .ensure_mapped_strip(output_name, clock, scale);
-        strip_entry.merge_layout_frames(frames, module::has_pending_active_frame_close);
+        strip_entry.merge_layout_frames(frames);
         self.sync_focus_after_layout_merge(output_name, focused_surface);
 
         self.reconcile_entry_snapshots(&snapshots);

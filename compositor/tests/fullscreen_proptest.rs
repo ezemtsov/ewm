@@ -176,6 +176,7 @@ fn to_frame(spec: &FrameSpec) -> Frame {
         selected_entry_id: spec.selected_entry_id,
         move_anim: None,
         floating_pos: None,
+        close_snapshot: None,
     }
 }
 

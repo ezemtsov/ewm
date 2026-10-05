@@ -6,6 +6,7 @@ use smithay::input::pointer::CursorIcon;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
+use crate::closing_frame::{CLOSE_ANIM_DURATION, ClosingFrame};
 use crate::strip::Frame;
 use crate::{LayoutEntry, slide_spring};
 
@@ -273,6 +274,8 @@ pub struct FloatingSpace {
     working_area: Rectangle<f64, Logical>,
     #[serde(skip)]
     clock: Clock,
+    #[serde(skip)]
+    closing_frames: Vec<ClosingFrame>,
 }
 
 impl FloatingSpace {
@@ -285,6 +288,7 @@ impl FloatingSpace {
             interactive_resize: None,
             working_area,
             clock,
+            closing_frames: Vec::new(),
         }
     }
 
@@ -330,16 +334,22 @@ impl FloatingSpace {
             .map(|pos| Data::scale_by_working_area(self.working_area, pos))
     }
 
-    pub fn remove_frame(&mut self, id: u64) -> Option<Frame> {
+    /// Drop frame `id`, fading it out where it stood.
+    pub fn close_frame(&mut self, id: u64) -> Option<Frame> {
         let idx = self.idx_of(id)?;
         self.interactive_move = self.interactive_move.filter(|move_| move_.frame_id != id);
         self.interactive_resize = self
             .interactive_resize
             .filter(|resize| resize.frame_id != id);
-        self.data.remove(idx);
-        let frame = self.frames.remove(idx);
+        let data = self.data.remove(idx);
+        let mut frame = self.frames.remove(idx);
         if self.active_frame_id == Some(id) {
             self.active_frame_id = self.frames.first().map(|frame| frame.surface_id);
+        }
+        if let Some(snapshot) = frame.close_snapshot.take() {
+            let anim = Animation::ease(self.clock.clone(), 0., 1., CLOSE_ANIM_DURATION);
+            self.closing_frames
+                .push(ClosingFrame::new(snapshot, data.render_pos(), anim));
         }
         Some(frame)
     }
@@ -676,10 +686,16 @@ impl FloatingSpace {
         for data in &mut self.data {
             data.advance();
         }
+        self.closing_frames
+            .retain(ClosingFrame::are_animations_ongoing);
     }
 
     pub fn animations_ongoing(&self) -> bool {
-        self.data.iter().any(Data::animations_ongoing)
+        self.data.iter().any(Data::animations_ongoing) || !self.closing_frames.is_empty()
+    }
+
+    pub fn closing_frames(&self) -> &[ClosingFrame] {
+        &self.closing_frames
     }
 }
 

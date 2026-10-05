@@ -10,6 +10,7 @@ use std::time::Duration;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
+use crate::closing_frame::{CLOSE_ANIM_DURATION, ClosingFrame, FrameSnapshot};
 use crate::floating::SizeFracPoint;
 use crate::{FocusId, LayoutEntry, LayoutEntryId, slide_spring};
 
@@ -200,6 +201,8 @@ pub struct Frame {
     pub move_anim: Option<Animation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floating_pos: Option<SizeFracPoint>,
+    #[serde(skip)]
+    pub close_snapshot: Option<FrameSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -223,6 +226,7 @@ impl Frame {
             selected_entry_id: None,
             move_anim: None,
             floating_pos: None,
+            close_snapshot: None,
         }
     }
 
@@ -305,6 +309,15 @@ impl Frame {
     }
 }
 
+/// Frames in `current` that `layout` leaves out.
+pub fn dropped_frame_ids(current: &[Frame], layout: &[Frame]) -> Vec<u64> {
+    current
+        .iter()
+        .map(|frame| frame.surface_id)
+        .filter(|&id| !layout.iter().any(|frame| frame.surface_id == id))
+        .collect()
+}
+
 /// Per-output strip of frames laid out left-to-right; `set_active` is the sole mutator of
 /// `active_idx`.
 #[derive(Debug, serde::Serialize)]
@@ -321,6 +334,8 @@ pub struct Strip {
     scale: f64,
     #[serde(skip)]
     clock: Clock,
+    #[serde(skip)]
+    closing_frames: Vec<ClosingFrame>,
 }
 
 impl Strip {
@@ -333,6 +348,7 @@ impl Strip {
             overview_shift: 0.0,
             scale: 1.0,
             clock,
+            closing_frames: Vec::new(),
         }
     }
 
@@ -352,17 +368,21 @@ impl Strip {
 
     /// `set_active` for a released swipe: the slide starts at `velocity` logical px per second.
     fn set_active_with_velocity(&mut self, idx: usize, velocity: f64) {
+        self.set_active_from_view_pos(idx, self.view_pos(), velocity);
+    }
+
+    /// Activate frame `idx` with the viewport still at `view_pos`, then slide it into place.
+    fn set_active_from_view_pos(&mut self, idx: usize, view_pos: f64, velocity: f64) {
         if self.frames.is_empty() {
             self.active_idx = 0;
             self.view_offset = ViewOffset::Static(0.0);
             return;
         }
-        let idx = idx.min(self.frames.len() - 1);
-        let delta = self.column_x(self.active_idx) - self.column_x(idx);
+        self.active_idx = idx.min(self.frames.len() - 1);
+        let delta = view_pos - self.view_pos();
         if delta != 0.0 {
             self.view_offset.offset(delta);
         }
-        self.active_idx = idx;
         self.view_offset
             .animate_to(self.clock.clone(), 0.0, velocity, 1. / self.scale);
     }
@@ -484,10 +504,24 @@ impl Strip {
                 f.move_anim = None;
             }
         }
+        self.closing_frames
+            .retain(ClosingFrame::are_animations_ongoing);
     }
 
     pub fn animations_ongoing(&self) -> bool {
-        self.view_offset.is_animation_ongoing() || self.frames.iter().any(|f| f.move_anim.is_some())
+        self.view_offset.is_animation_ongoing()
+            || self.frames.iter().any(|f| f.move_anim.is_some())
+            || !self.closing_frames.is_empty()
+    }
+
+    /// Closing frames with their screen-space origin, newest first.
+    pub fn closing_frames_with_render_pos(
+        &self,
+    ) -> impl Iterator<Item = (&ClosingFrame, Point<f64, Logical>)> {
+        self.closing_frames
+            .iter()
+            .rev()
+            .map(|closing| (closing, closing.pos() - Point::from((self.view_pos(), 0.))))
     }
 
     /// `(idx, &Frame, screen_rect)` for frames whose rect intersects the screen-space
@@ -571,16 +605,10 @@ impl Strip {
     /// Merge a fresh Emacs layout into this strip.
     ///
     /// Existing frames are updated in place so their move animations survive.
-    /// Frames omitted by the layout are kept until their Wayland destroy arrives,
-    /// but their layout entries are cleared because views belong to the latest
-    /// layout declaration.
-    /// Pending active-close frames omitted by a racing layout refresh keep their
-    /// old slot, so destroy-time refocus still uses the slot the user closed.
-    pub fn merge_layout_frames(
-        &mut self,
-        frames: Vec<Frame>,
-        mut is_pending_active_close: impl FnMut(u64) -> bool,
-    ) {
+    /// Frames omitted by the layout keep their slot until their Wayland destroy
+    /// arrives, but their layout entries are cleared because views belong to the
+    /// latest layout declaration.
+    pub fn merge_layout_frames(&mut self, frames: Vec<Frame>) {
         let old_frame_positions: HashMap<u64, usize> = self
             .frames
             .iter()
@@ -624,14 +652,12 @@ impl Strip {
         self.frames
             .sort_by_key(|frame| order.get(&frame.surface_id).copied().unwrap_or(usize::MAX));
 
-        let mut closing_frames = old_frame_positions
+        let mut omitted_frames = old_frame_positions
             .iter()
-            .filter_map(|(&id, &idx)| {
-                (!order.contains_key(&id) && is_pending_active_close(id)).then_some((id, idx))
-            })
+            .filter_map(|(&id, &idx)| (!order.contains_key(&id)).then_some((id, idx)))
             .collect::<Vec<_>>();
-        closing_frames.sort_by_key(|&(_, idx)| idx);
-        for (id, old_idx) in closing_frames {
+        omitted_frames.sort_by_key(|&(_, idx)| idx);
+        for (id, old_idx) in omitted_frames {
             if let Some(pos) = self.frames.iter().position(|frame| frame.surface_id == id) {
                 let frame = self.frames.remove(pos);
                 self.frames.insert(old_idx.min(self.frames.len()), frame);
@@ -654,9 +680,9 @@ impl Strip {
     }
 
     /// Seed `move_anim` on neighbours of `frames[idx]` so they slide in to fill the gap.
-    fn seed_remove_animation_from(&mut self, idx: usize, anchor_idx: usize) {
+    fn seed_remove_animation_from(&mut self, idx: usize, anchor_idx: usize) -> Option<Animation> {
         if idx >= self.frames.len() || self.clock.should_complete_instantly() {
-            return;
+            return None;
         }
         let clock = self.clock.clone();
         let offset = self.stride(&self.frames[idx]);
@@ -665,10 +691,14 @@ impl Strip {
         } else {
             (&mut self.frames[..idx], -offset)
         };
+        if slide.is_empty() {
+            return None;
+        }
         let slide_in = Animation::new(clock, from, 0.0, 0., slide_spring());
         for f in slide {
             f.move_anim = Some(slide_in.clone());
         }
+        Some(slide_in)
     }
 
     fn active_idx_after_removal(&self, idx: usize, focus: RemovalFocus) -> usize {
@@ -680,9 +710,14 @@ impl Strip {
         }
     }
 
-    fn remove_frame_at_with_focus(&mut self, idx: usize, focus: RemovalFocus) {
+    /// Remove frame `idx`, returning it with the slide its neighbours make into the gap.
+    fn remove_frame_at_with_focus(
+        &mut self,
+        idx: usize,
+        focus: RemovalFocus,
+    ) -> Option<(Frame, Option<Animation>)> {
         if idx >= self.frames.len() {
-            return;
+            return None;
         }
 
         let anchor_idx = match focus {
@@ -691,9 +726,33 @@ impl Strip {
         };
         let new_active = self.active_idx_after_removal(idx, focus);
 
-        self.seed_remove_animation_from(idx, anchor_idx);
-        self.frames.remove(idx);
-        self.set_active(new_active);
+        // The anchor's side stays still, so past the gap the view moves with it.
+        let mut view_pos = self.view_pos();
+        if anchor_idx > idx {
+            view_pos -= self.stride(&self.frames[idx]);
+        }
+        let slide = self.seed_remove_animation_from(idx, anchor_idx);
+        let frame = self.frames.remove(idx);
+        self.set_active_from_view_pos(new_active, view_pos, 0.);
+        Some((frame, slide))
+    }
+
+    /// Remove a closed frame and fade its snapshot out where it stood.
+    fn close_frame_at_with_focus(&mut self, idx: usize, focus: RemovalFocus) {
+        let screen_x = self.screen_x_of_frame(idx);
+        let Some((frame, slide)) = self.remove_frame_at_with_focus(idx, focus) else {
+            return;
+        };
+        let Some(snapshot) = frame.close_snapshot else {
+            return;
+        };
+        // In strip coordinates as they are after the removal.
+        let pos = Point::from((screen_x + self.view_pos(), 0.));
+        // Fade only after the neighbours have slid in over it.
+        let delay = slide.map_or(Duration::ZERO, |slide| slide.duration());
+        let anim = Animation::ease(self.clock.clone(), 0., 1., CLOSE_ANIM_DURATION).delayed(delay);
+        self.closing_frames
+            .push(ClosingFrame::new(snapshot, pos, anim));
     }
 
     /// Begin a touchpad-driven view-offset gesture.
@@ -745,14 +804,19 @@ impl Strip {
         self.remove_frame_at_with_focus(idx, RemovalFocus::CurrentActive);
     }
 
-    /// Drop frame `idx` using active-close semantics, regardless of the
+    /// `remove_frame_at` for a frame that closed, fading it out.
+    pub fn close_frame_at(&mut self, idx: usize) {
+        self.close_frame_at_with_focus(idx, RemovalFocus::CurrentActive);
+    }
+
+    /// Close frame `idx` using active-close semantics, regardless of the
     /// strip's current `active_idx`.
     ///
     /// Used when close intent was captured before a later focus relay changed
     /// `active_idx`: the destroyed slot chooses the right neighbour if present,
     /// otherwise the left neighbour.
-    pub fn remove_active_frame_at(&mut self, idx: usize) {
-        self.remove_frame_at_with_focus(idx, RemovalFocus::RemovedSlot);
+    pub fn close_active_frame_at(&mut self, idx: usize) {
+        self.close_frame_at_with_focus(idx, RemovalFocus::RemovedSlot);
     }
 }
 
@@ -788,6 +852,7 @@ mod tests {
                     selected_entry_id: None,
                     move_anim: None,
                     floating_pos: None,
+                    close_snapshot: None,
                 })
                 .collect(),
             gap,
@@ -796,6 +861,7 @@ mod tests {
             overview_shift: 0.0,
             scale: 1.0,
             clock: Clock::default(),
+            closing_frames: Vec::new(),
         }
     }
 
@@ -947,7 +1013,27 @@ mod tests {
         }
 
         #[test]
-        fn merge_layout_preserves_pending_active_close_slot(
+        fn removal_keeps_the_active_frame_still(
+            widths in prop::collection::vec(1.0f64..MAX_WIDTH as f64, 2..=MAX_FRAMES),
+            gap in 0.0f64..MAX_GAP as f64,
+            raw_active in 0usize..MAX_FRAMES,
+            raw_remove in 0usize..MAX_FRAMES,
+        ) {
+            let len = widths.len();
+            let active = raw_active % len;
+            let idx = raw_remove % len;
+            prop_assume!(idx != active);
+            let mut strip = strip_with(widths, gap, active);
+            let before = strip.screen_x_of_frame(active);
+
+            strip.remove_frame_at(idx);
+
+            let after = strip.screen_x_of_frame(if idx < active { active - 1 } else { active });
+            prop_assert!((after - before).abs() <= 1. / strip.scale);
+        }
+
+        #[test]
+        fn merge_layout_preserves_omitted_frame_slot(
             len in 1usize..=MAX_FRAMES,
             raw_close_idx in 0usize..MAX_FRAMES,
         ) {
@@ -962,7 +1048,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let mut strip = strip_with_ids(&ids);
 
-            strip.merge_layout_frames(layout, |id| id == closing_id);
+            strip.merge_layout_frames(layout);
 
             prop_assert_eq!(frame_ids(&strip), ids);
         }
