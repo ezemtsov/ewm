@@ -1,6 +1,6 @@
 # ewm - Emacs Wayland Manager
 
-![ewm screenshot](docs/diagrams/ewm-showcase.png)
+<video src="https://codeberg.org/ezemtsov/ewm/raw/branch/master/docs/showcase/ewm-showcase.mp4" autoplay loop muted playsinline controls></video>
 
 ewm is a modern, fast Linux desktop environment written in Rust, based on [Smithay](https://github.com/Smithay/smithay), and running as a dynamic module inside of your emacs session. Graphical applications appear as normal emacs buffers, and are managed with the same commands, keybindings, and workflows as the rest of your configuration.
 
