@@ -19,6 +19,9 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
     self, ExtBackgroundEffectManagerV1,
 };
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1;
+use wayland_protocols::ext::session_lock::v1::client::{
+    ext_session_lock_manager_v1, ext_session_lock_v1,
+};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
 };
@@ -101,6 +104,8 @@ pub enum ClientEvent {
     BackgroundEffectCapabilities {
         flags: WEnum<ext_background_effect_manager_v1::Capability>,
     },
+    SessionLocked,
+    SessionLockFinished,
 }
 
 pub struct TestClient {
@@ -124,6 +129,7 @@ pub struct ClientState {
     pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
     pub kde_decoration_manager: Option<OrgKdeKwinServerDecorationManager>,
     pub background_effect_manager: Option<ExtBackgroundEffectManagerV1>,
+    pub session_lock_manager: Option<ext_session_lock_manager_v1::ExtSessionLockManagerV1>,
     #[cfg(feature = "testing-layer-shell")]
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     /// `wl_output` protocol id -> server-advertised name.
@@ -190,6 +196,16 @@ impl TestClient {
 
     pub fn has_keyboard(&self) -> bool {
         self.state.keyboard.is_some()
+    }
+
+    /// Request the session lock. The answer arrives as `SessionLocked` or
+    /// `SessionLockFinished`.
+    pub fn lock_session(&self) -> ext_session_lock_v1::ExtSessionLockV1 {
+        self.state
+            .session_lock_manager
+            .as_ref()
+            .expect("ext_session_lock_manager_v1 not bound; roundtrip the registry first")
+            .lock(&self.qh(), ())
     }
 
     fn compositor(&self) -> &wl_compositor::WlCompositor {
@@ -477,6 +493,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.kde_decoration_manager = Some(registry.bind(name, version, qh, ()));
         } else if interface == ExtBackgroundEffectManagerV1::interface().name {
             state.background_effect_manager = Some(registry.bind(name, version, qh, ()));
+        } else if interface
+            == ext_session_lock_manager_v1::ExtSessionLockManagerV1::interface().name
+        {
+            state.session_lock_manager = Some(registry.bind(name, version, qh, ()));
         }
         #[cfg(feature = "testing-layer-shell")]
         if interface == zwlr_layer_shell_v1::ZwlrLayerShellV1::interface().name {
@@ -779,6 +799,26 @@ wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_manager_v3::Zw
 wayland_client::delegate_noop!(ClientState: ignore xdg_system_bell_v1::XdgSystemBellV1);
 wayland_client::delegate_noop!(ClientState: ignore wl_region::WlRegion);
 wayland_client::delegate_noop!(ClientState: ignore ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1);
+wayland_client::delegate_noop!(ClientState: ignore ext_session_lock_manager_v1::ExtSessionLockManagerV1);
+
+impl Dispatch<ext_session_lock_v1::ExtSessionLockV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &ext_session_lock_v1::ExtSessionLockV1,
+        event: ext_session_lock_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_session_lock_v1::Event::Locked => state.events.push(ClientEvent::SessionLocked),
+            ext_session_lock_v1::Event::Finished => {
+                state.events.push(ClientEvent::SessionLockFinished)
+            }
+            _ => {}
+        }
+    }
+}
 
 impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientState {
     fn event(
