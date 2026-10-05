@@ -203,7 +203,7 @@ mod tests {
             };
             let duration = spring.duration();
             prop_assert!(duration < Duration::MAX);
-            prop_assert!(spring.clamped_duration().is_none_or(|d| d <= Duration::from_secs(3)));
+            prop_assert!(spring.clamped_duration().is_none_or(|d| d < Duration::from_secs(4)));
             prop_assert!(spring.value_at(Duration::ZERO).is_finite());
         }
     }

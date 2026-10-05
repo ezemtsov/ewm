@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8c6dc42b499d28e02dff82d3b95da3683f9fd8a99c3aaba30bdc315254ed024c # shrinks to damping_ratio = 6.268035415937293, stiffness = 1569.7243775792472, from = 1.8081704760451986, to = 0.0, initial_velocity = 0.0
