@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::animation::{Animation, Clock, Curve};
+use crate::animation::{Animation, Clock, Spring, SpringParams};
 use crate::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
-use crate::strip::{DEFAULT_ANIM_DURATION, SwipeTracker};
+use crate::strip::SwipeTracker;
 
 /// Touchpad travel in unaccelerated units for a full open or close.
 const GESTURE_MOVEMENT: f64 = 300.;
@@ -41,11 +41,26 @@ impl RubberBand {
         (1. - (1. / (x * c / d + 1.))) * d
     }
 
+    pub fn derivative(&self, x: f64) -> f64 {
+        let c = self.stiffness;
+        let d = self.limit;
+        c * d * d / (c * x + d).powi(2)
+    }
+
     pub fn clamp(&self, min: f64, max: f64, x: f64) -> f64 {
         let clamped = x.clamp(min, max);
         let sign = if x < clamped { -1. } else { 1. };
         let diff = (x - clamped).abs();
         clamped + sign * self.band(diff)
+    }
+
+    pub fn clamp_derivative(&self, min: f64, max: f64, x: f64) -> f64 {
+        if min <= x && x <= max {
+            return 1.;
+        }
+        let clamped = x.clamp(min, max);
+        let diff = (x - clamped).abs();
+        self.derivative(diff)
     }
 }
 
@@ -119,12 +134,9 @@ impl Overview {
         self.open = !self.open;
         let from = self.progress().unwrap_or(0.);
         let to = if self.open { 1. } else { 0. };
-        self.progress = Some(Progress::Animation(Animation::ease(
+        self.progress = Some(Progress::Animation(Animation::spring(
             self.clock.clone(),
-            from,
-            to,
-            DEFAULT_ANIM_DURATION,
-            Curve::EaseOutCubic,
+            open_close_spring(from, to, 0.),
         )));
     }
 
@@ -161,21 +173,22 @@ impl Overview {
         Some(true)
     }
 
-    /// Settle to whichever end the projected swipe is closer to.
+    /// Settle to whichever end the projected swipe is closer to, keeping its speed.
     pub fn gesture_end(&mut self) -> bool {
         let Some(Progress::Gesture(gesture)) = &mut self.progress else {
             return false;
         };
         gesture.tracker.push(0., self.clock.now());
+        let mut velocity = gesture.tracker.velocity() / GESTURE_MOVEMENT;
+        let current_pos = gesture.tracker.pos() / GESTURE_MOVEMENT;
         let pos = gesture.tracker.projected_end_pos() / GESTURE_MOVEMENT;
         let target = (gesture.start + pos).clamp(0., 1.).round();
+        // Inside the rubber band only the speed that showed on screen carries over.
+        velocity *= GESTURE_RUBBER_BAND.clamp_derivative(0., 1., gesture.start + current_pos);
         self.open = target == 1.;
-        self.progress = Some(Progress::Animation(Animation::ease(
+        self.progress = Some(Progress::Animation(Animation::spring(
             self.clock.clone(),
-            gesture.value,
-            target,
-            DEFAULT_ANIM_DURATION,
-            Curve::EaseOutCubic,
+            open_close_spring(gesture.value, target, velocity),
         )));
         true
     }
@@ -187,6 +200,16 @@ impl Overview {
         {
             self.progress = self.open.then_some(Progress::Open);
         }
+    }
+}
+
+/// Critically damped, so the zoom only overshoots when a swipe throws it.
+fn open_close_spring(from: f64, to: f64, initial_velocity: f64) -> Spring {
+    Spring {
+        from,
+        to,
+        initial_velocity,
+        params: SpringParams::new(1., 800., 0.0001),
     }
 }
 
