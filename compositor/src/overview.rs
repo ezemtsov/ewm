@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::animation::Clock;
 use crate::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
-use crate::strip::{AnimationsClock, DEFAULT_ANIM_DURATION, SwipeTracker, ViewAnimation};
-use crate::utils::get_monotonic_time;
+use crate::strip::{DEFAULT_ANIM_DURATION, SwipeTracker, ViewAnimation};
 
 /// Touchpad travel in unaccelerated units for a full open or close.
 const GESTURE_MOVEMENT: f64 = 300.;
@@ -71,11 +71,11 @@ pub struct Overview {
     zoom: f64,
     pub backdrop_color: [f32; 4],
     pub background_color: [f32; 4],
-    clock: AnimationsClock,
+    clock: Clock,
 }
 
 impl Overview {
-    pub fn new(clock: AnimationsClock) -> Self {
+    pub fn new(clock: Clock) -> Self {
         Self {
             open: false,
             progress: None,
@@ -165,7 +165,7 @@ impl Overview {
         let Some(Progress::Gesture(gesture)) = &mut self.progress else {
             return false;
         };
-        gesture.tracker.push(0., get_monotonic_time());
+        gesture.tracker.push(0., self.clock.now());
         let pos = gesture.tracker.projected_end_pos() / GESTURE_MOVEMENT;
         let target = (gesture.start + pos).clamp(0., 1.).round();
         self.open = target == 1.;
@@ -271,7 +271,7 @@ mod tests {
     use super::*;
 
     fn overview() -> Overview {
-        let clock = AnimationsClock::default();
+        let clock = Clock::default();
         clock.set_complete_instantly(true);
         Overview::new(clock)
     }

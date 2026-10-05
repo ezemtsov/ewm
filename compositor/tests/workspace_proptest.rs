@@ -14,7 +14,8 @@
 
 use std::collections::HashSet;
 
-use ewm_core::strip::{AnimationsClock, Frame, Strip};
+use ewm_core::animation::Clock;
+use ewm_core::strip::{Frame, Strip};
 use proptest::prelude::*;
 
 const SID_RANGE: std::ops::RangeInclusive<u64> = 1..=8;
@@ -168,7 +169,7 @@ fn assert_structural(strip: &Strip) {
 proptest! {
     #[test]
     fn workspace_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..MAX_OPS)) {
-        let mut strip = Strip::new(AnimationsClock::default());
+        let mut strip = Strip::new(Clock::default());
         assert_structural(&strip);
         for op in &ops {
             apply_op(&mut strip, op);
@@ -185,7 +186,7 @@ proptest! {
         let destroy_idx = raw_destroy_idx % len;
         let active_idx = raw_active_idx % len;
         let ids = (0..len).map(|i| 10 + i as u64).collect::<Vec<_>>();
-        let mut strip = Strip::new(AnimationsClock::default());
+        let mut strip = Strip::new(Clock::default());
         strip.frames = ids.iter().copied().map(Frame::new).collect();
         strip.set_active(active_idx);
 

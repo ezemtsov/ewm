@@ -514,7 +514,7 @@ pub enum ModuleCommand {
     ConfigureBlur {
         config: crate::shadow_style::Blur,
     },
-    /// Flip the `AnimationsClock` shared by every `ViewAnimation`.
+    /// Flip the animation `Clock` shared by every `ViewAnimation`.
     ConfigureAnimations {
         enabled: bool,
     },

@@ -4,35 +4,13 @@
 //! left edge is `column_x(active_idx) + view_offset.current()`.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::animation::Clock;
 use crate::floating::SizeFracPoint;
-use crate::utils::get_monotonic_time;
 use crate::{FocusId, LayoutEntry, LayoutEntryId};
-
-/// Shared "snap to target" toggle threaded into every `ViewAnimation` and
-/// `Strip`. Cloning is an `Arc` bump. When the flag is set, animations
-/// report `is_done = true` and `value = target`, so the next `advance` tick
-/// drops them. The inner primitive is `AtomicBool` so that
-/// `Frame`/`ViewAnimation` stay `Send` for the cross-thread command queue.
-#[derive(Debug, Default, Clone)]
-pub struct AnimationsClock {
-    inner: Arc<AtomicBool>,
-}
-
-impl AnimationsClock {
-    pub fn complete_instantly(&self) -> bool {
-        self.inner.load(Ordering::Relaxed)
-    }
-
-    pub fn set_complete_instantly(&self, value: bool) {
-        self.inner.store(value, Ordering::Relaxed);
-    }
-}
 
 /// Default duration for view-offset slides between frames.
 pub const DEFAULT_ANIM_DURATION: Duration = Duration::from_millis(250);
@@ -108,32 +86,22 @@ pub struct ViewAnimation {
     to: f64,
     start: Duration,
     duration: Duration,
-    clock: AnimationsClock,
+    clock: Clock,
 }
 
 impl ViewAnimation {
-    pub fn new(clock: AnimationsClock, from: f64, to: f64, duration: Duration) -> Self {
-        Self::new_at(clock, get_monotonic_time(), from, to, duration)
+    pub fn new(clock: Clock, from: f64, to: f64, duration: Duration) -> Self {
+        let start = clock.now();
+        Self::new_at(clock, start, from, to, duration)
     }
 
     /// Animation whose ramp begins after `delay`; `value()` stays at `from` until then.
-    pub fn delayed(
-        clock: AnimationsClock,
-        delay: Duration,
-        from: f64,
-        to: f64,
-        duration: Duration,
-    ) -> Self {
-        Self::new_at(clock, get_monotonic_time() + delay, from, to, duration)
+    pub fn delayed(clock: Clock, delay: Duration, from: f64, to: f64, duration: Duration) -> Self {
+        let start = clock.now() + delay;
+        Self::new_at(clock, start, from, to, duration)
     }
 
-    fn new_at(
-        clock: AnimationsClock,
-        start: Duration,
-        from: f64,
-        to: f64,
-        duration: Duration,
-    ) -> Self {
+    fn new_at(clock: Clock, start: Duration, from: f64, to: f64, duration: Duration) -> Self {
         Self {
             from,
             to,
@@ -154,17 +122,17 @@ impl ViewAnimation {
     }
 
     pub fn value(&self) -> f64 {
-        if self.clock.complete_instantly() {
+        if self.clock.should_complete_instantly() {
             return self.to;
         }
-        self.value_at(get_monotonic_time())
+        self.value_at(self.clock.now())
     }
 
     pub fn is_done(&self) -> bool {
-        if self.clock.complete_instantly() {
+        if self.clock.should_complete_instantly() {
             return true;
         }
-        self.is_done_at(get_monotonic_time())
+        self.is_done_at(self.clock.now())
     }
 
     fn value_at(&self, now: Duration) -> f64 {
@@ -399,11 +367,11 @@ pub struct Strip {
     #[serde(skip)]
     pub overview_shift: f64,
     #[serde(skip)]
-    pub clock: AnimationsClock,
+    pub clock: Clock,
 }
 
 impl Strip {
-    pub fn new(clock: AnimationsClock) -> Self {
+    pub fn new(clock: Clock) -> Self {
         Self {
             frames: Vec::new(),
             gap: 0.0,
@@ -816,12 +784,12 @@ mod tests {
             active_idx,
             view_offset: ViewOffset::default(),
             overview_shift: 0.0,
-            clock: AnimationsClock::default(),
+            clock: Clock::default(),
         }
     }
 
     fn strip_with_ids(ids: &[u64]) -> Strip {
-        let mut strip = Strip::new(AnimationsClock::default());
+        let mut strip = Strip::new(Clock::default());
         strip.frames = ids.iter().copied().map(Frame::new).collect();
         strip
     }
@@ -929,7 +897,7 @@ mod tests {
             let from = f64::from(from);
             let to = f64::from(to);
             let animation = ViewAnimation::new_at(
-                AnimationsClock::default(),
+                Clock::default(),
                 start,
                 from,
                 to,
@@ -956,7 +924,7 @@ mod tests {
             let sample = start + Duration::from_millis(elapsed_ms);
             let delta = f64::from(delta);
             let mut animation = ViewAnimation::new_at(
-                AnimationsClock::default(),
+                Clock::default(),
                 start,
                 f64::from(from),
                 f64::from(to),

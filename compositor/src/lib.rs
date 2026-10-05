@@ -26,6 +26,7 @@
 //! 6. **Rendering state is per-output**: Each output advances independently through its redraw
 //!    state machine.
 
+pub mod animation;
 pub mod backend;
 pub mod cursor;
 #[cfg(feature = "screencast")]
@@ -818,9 +819,9 @@ pub struct Ewm {
     pub frame_set: FrameSet,
     /// Per-output floating Emacs frame spaces, attached to the output's strip/workspace.
     pub floating_spaces: HashMap<String, floating::FloatingSpace>,
-    /// Shared "complete instantly" toggle threaded into every `ViewAnimation`
-    /// constructed under this `Ewm`.  Flipped by `ConfigureAnimations`.
-    pub animations_clock: strip::AnimationsClock,
+    /// Clock every `ViewAnimation` under this `Ewm` reads. Frozen at the target
+    /// presentation time during a redraw.
+    pub animations_clock: animation::Clock,
     /// Zoomed-out strip view shared by all outputs.
     pub overview: overview::Overview,
     /// Frames' slide off the top of every output: 0 in place, 1 fully off.
@@ -1144,7 +1145,7 @@ impl FrameSet {
     pub fn ensure_mapped_strip(
         &mut self,
         output_name: &str,
-        clock: strip::AnimationsClock,
+        clock: animation::Clock,
     ) -> &mut strip::Strip {
         self.mapped
             .entry(output_name.to_string())
@@ -1431,7 +1432,7 @@ impl Ewm {
             })
             .expect("failed to register worker event source");
 
-        let animations_clock = strip::AnimationsClock::default();
+        let animations_clock = animation::Clock::default();
 
         Self {
             stop_signal: None,
@@ -5056,6 +5057,9 @@ impl Ewm {
             debug_assert!(state.redraw_state.is_render_queued());
             state.frame_clock.next_presentation_time()
         };
+
+        // Freeze the clock at the target time.
+        self.animations_clock.set(target_presentation_time);
 
         // Sweep finished animations so render-path flag reflects live ones.
         self.advance_animations(output);
@@ -9335,6 +9339,8 @@ impl State {
             tracing::warn!("Failed to flush Wayland clients: {e}");
         }
 
+        // Clear the time so it's fetched afresh next iteration.
+        self.ewm.animations_clock.clear();
         self.ewm.notified_activity_this_iteration = false;
     }
 
@@ -10238,7 +10244,7 @@ mod tests {
     }
 
     fn strip_with_frame_ids(ids: Vec<u64>, active_idx: usize) -> strip::Strip {
-        let mut strip = strip::Strip::new(strip::AnimationsClock::default());
+        let mut strip = strip::Strip::new(animation::Clock::default());
         strip.frames = ids.into_iter().map(strip::Frame::new).collect();
         if !strip.frames.is_empty() {
             strip.set_active(active_idx % strip.frames.len());
@@ -10350,7 +10356,7 @@ mod tests {
 
             for (idx, name) in PROP_HEADS.iter().enumerate() {
                 if selected.contains(name) {
-                    let mut strip = strip::Strip::new(strip::AnimationsClock::default());
+                    let mut strip = strip::Strip::new(animation::Clock::default());
                     let frame = frame_with_entry(
                         2_000 + idx as u64,
                         nz(3_000 + idx as u64),
@@ -10415,7 +10421,7 @@ mod tests {
                 if membership & (1 << idx) == 0 {
                     continue;
                 }
-                let mut strip = strip::Strip::new(strip::AnimationsClock::default());
+                let mut strip = strip::Strip::new(animation::Clock::default());
                 let surface_entry_id = nz(5_000 + idx as u64);
                 let plain_entry_id = nz(6_000 + idx as u64);
                 let mut frame = frame_with_entry(
@@ -10649,7 +10655,7 @@ mod tests {
         let entry_id = nz(3001);
         let surface_id = 42;
 
-        let mut strip = strip::Strip::new(strip::AnimationsClock::default());
+        let mut strip = strip::Strip::new(animation::Clock::default());
         strip
             .frames
             .push(frame_with_entry(100, entry_id, surface_id));

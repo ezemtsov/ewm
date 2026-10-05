@@ -912,13 +912,14 @@ mod tests {
     use smithay::output::{PhysicalProperties, Subpixel};
 
     use super::*;
-    use crate::strip::{AnimationsClock, Frame};
+    use crate::animation::Clock;
+    use crate::strip::Frame;
 
     const HEAD_A: &str = "HEAD-A";
     const HEAD_B: &str = "HEAD-B";
 
     fn strip_with_ids(start: u64, len: usize, raw_active_idx: usize) -> Strip {
-        let mut strip = Strip::new(AnimationsClock::default());
+        let mut strip = Strip::new(Clock::default());
         strip.frames = (0..len).map(|idx| Frame::new(start + idx as u64)).collect();
         if len > 0 {
             strip.set_active(raw_active_idx % len);

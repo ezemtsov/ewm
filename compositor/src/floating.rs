@@ -244,7 +244,7 @@ impl Data {
         ))
     }
 
-    pub fn set_move_anim(&mut self, from_x: f64, clock: crate::strip::AnimationsClock) {
+    pub fn set_move_anim(&mut self, from_x: f64, clock: crate::animation::Clock) {
         self.move_anim = Some(ViewAnimation::new(
             clock,
             from_x,
@@ -278,14 +278,11 @@ pub struct FloatingSpace {
     #[serde(skip)]
     working_area: Rectangle<f64, Logical>,
     #[serde(skip)]
-    clock: crate::strip::AnimationsClock,
+    clock: crate::animation::Clock,
 }
 
 impl FloatingSpace {
-    pub fn new(
-        working_area: Rectangle<f64, Logical>,
-        clock: crate::strip::AnimationsClock,
-    ) -> Self {
+    pub fn new(working_area: Rectangle<f64, Logical>, clock: crate::animation::Clock) -> Self {
         Self {
             frames: Vec::new(),
             data: Vec::new(),
@@ -687,11 +684,11 @@ impl FloatingSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::strip::AnimationsClock;
+    use crate::animation::Clock;
 
     fn test_space() -> FloatingSpace {
         let working_area = Rectangle::new(Point::from((0., 0.)), Size::from((1200., 800.)));
-        FloatingSpace::new(working_area, AnimationsClock::default())
+        FloatingSpace::new(working_area, Clock::default())
     }
 
     fn test_frame(id: u64) -> Frame {
