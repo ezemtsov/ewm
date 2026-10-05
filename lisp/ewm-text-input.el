@@ -16,9 +16,29 @@
 (declare-function ewm-text-input-surrounding-module "ewm-core")
 (declare-function ewm-text-input-forward-key-module "ewm-core")
 (declare-function ewm-text-input-intercept-module "ewm-core")
+(declare-function ewm-configure-text-input-module "ewm-core")
 (declare-function ewm-get-focused-id "ewm-core")
 
 (defvar ewm--surfaces)
+(defvar ewm--module-mode)
+(defvar ewm-text-input-provider)
+
+(defun ewm-text-input--send-provider ()
+  "Tell the compositor who serves client text input."
+  (when (bound-and-true-p ewm--module-mode)
+    (ewm-configure-text-input-module ewm-text-input-provider)))
+
+(defcustom ewm-text-input-provider 'emacs
+  "Who serves text input for Wayland clients.
+`emacs' routes client text fields through Emacs input methods.
+`external' leaves the seat to an input method such as fcitx5 or
+ibus, which then serves Emacs frames as well."
+  :type '(choice (const :tag "Emacs input methods" emacs)
+                 (const :tag "External input method (fcitx5, ibus)" external))
+  :set (lambda (sym val)
+         (set-default sym val)
+         (ewm-text-input--send-provider))
+  :group 'ewm)
 
 (defvar ewm-text-input--composing nil
   "Surface id whose input method is reading keys, else nil.")

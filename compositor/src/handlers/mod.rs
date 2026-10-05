@@ -8,6 +8,7 @@ use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
 
 use smithay::backend::input::{InputEvent, TabletToolDescriptor};
+use smithay::desktop::{PopupKind, PopupManager};
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, DndTarget};
 use smithay::input::pointer::{CursorImageStatus, PointerHandle};
 use smithay::input::tablet::TabletSeatHandler;
@@ -85,8 +86,7 @@ impl SeatHandler for State {
         set_primary_focus(&self.ewm.display_handle, seat, client);
 
         // Update text_input focus for input method support
-        let surface_id = focused.and_then(|s| self.ewm.surface_id(s));
-        self.ewm.update_text_input_focus(focused, surface_id);
+        self.ewm.update_text_input_focus(focused);
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
@@ -242,22 +242,40 @@ impl smithay::wayland::output::OutputHandler for State {
     }
 }
 
-// Input Method (allows Emacs to act as input method)
+// Input Method (the relay or an external input method such as fcitx5)
 impl InputMethodHandler for State {
-    fn new_popup(&mut self, _surface: IMPopupSurface) {
-        // Input method popups not supported yet
+    fn new_popup(&mut self, surface: IMPopupSurface) {
+        let popup = PopupKind::InputMethod(surface);
+        if let Some(output) = self.ewm.output_for_popup(&popup) {
+            let scale = output.current_scale();
+            let transform = output.current_transform();
+            let wl_surface = popup.wl_surface();
+            smithay::wayland::compositor::with_states(wl_surface, |data| {
+                crate::utils::send_scale_transform(wl_surface, data, scale, transform);
+            });
+        }
+        self.ewm.unconstrain_popup(&popup);
+        if let Err(err) = self.ewm.popups.track_popup(popup) {
+            warn!("error tracking input method popup: {err:?}");
+        }
     }
 
-    fn dismiss_popup(&mut self, _surface: IMPopupSurface) {
-        // Input method popups not supported yet
+    fn dismiss_popup(&mut self, surface: IMPopupSurface) {
+        if let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) {
+            let _ = PopupManager::dismiss_popup(&parent, &PopupKind::InputMethod(surface));
+        }
     }
 
-    fn popup_repositioned(&mut self, _surface: IMPopupSurface) {
-        // Input method popups not supported yet
+    fn popup_repositioned(&mut self, surface: IMPopupSurface) {
+        self.ewm.unconstrain_popup(&PopupKind::InputMethod(surface));
     }
 
-    fn parent_geometry(&self, _parent: &WlSurface) -> Rectangle<i32, smithay::utils::Logical> {
-        Rectangle::default()
+    fn parent_geometry(&self, parent: &WlSurface) -> Rectangle<i32, smithay::utils::Logical> {
+        self.ewm
+            .surface_id(parent)
+            .and_then(|id| self.ewm.id_windows.get(&id))
+            .map(|window| window.geometry())
+            .unwrap_or_default()
     }
 }
 

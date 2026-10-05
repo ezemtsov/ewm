@@ -49,6 +49,7 @@
 (ewm-test--stub ewm-im-commit-module (_text _surface-id) nil)
 (ewm-test--stub ewm-im-preedit-module (_text _surface-id) nil)
 (ewm-test--stub ewm-text-input-intercept-module (_enabled) nil)
+(ewm-test--stub ewm-configure-text-input-module (_provider) nil)
 (ewm-test--stub ewm-get-focused-id () nil)
 (ewm-test--stub ewm-get-focused-frame-id () 0)
 (provide 'ewm-core)

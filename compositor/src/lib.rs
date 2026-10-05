@@ -887,6 +887,9 @@ pub struct Ewm {
     // Deduplicates relay activate/deactivate events and holds commits queued
     // during the client's disable->enable gap.
     pub im_text_input: im::text_input::TextInputCommitState,
+    pub text_input_provider: im::TextInputProvider,
+    // Relay client and its event source, connected while Emacs is the provider.
+    im_relay: Option<(Client, RegistrationToken)>,
 
     // Popup manager for XDG popups
     pub popups: PopupManager,
@@ -1126,7 +1129,7 @@ impl Ewm {
         // Initialize text input for input method support
         let text_input_state = TextInputManagerState::new::<State>(&display_handle);
 
-        // Initialize input method manager (allows Emacs to act as input method)
+        // Input method manager (the relay or an external input method such as fcitx5)
         let input_method_state =
             InputMethodManagerState::new::<State, _>(&display_handle, |_| true);
 
@@ -1286,6 +1289,8 @@ impl Ewm {
             virtual_pointer_state,
             text_input_intercept: false,
             im_text_input: im::text_input::TextInputCommitState::default(),
+            text_input_provider: im::TextInputProvider::default(),
+            im_relay: None,
             popups: PopupManager::default(),
             popup_grab: None,
             dnd_icon: None,
@@ -1351,21 +1356,38 @@ impl Ewm {
     }
 
     /// Connect the input method relay over a socketpair of our own.
-    pub fn connect_im_relay(&mut self) {
+    fn connect_im_relay(&mut self) {
+        if self.im_relay.is_some() {
+            return;
+        }
         let (server_end, client_end) =
             UnixStream::pair().expect("failed to create IM relay socketpair");
         // Socketpair peer credentials are our own.
-        self.display_handle
+        let client = self
+            .display_handle
             .insert_client(server_end, Arc::new(ClientState::default()))
             .expect("failed to insert IM relay client");
         let channel = im::relay::connect(client_end);
-        self.loop_handle
+        let source = self
+            .loop_handle
             .insert_source(channel, |event, _, state| {
                 if let smithay::reexports::calloop::channel::Event::Msg(event) = event {
                     state.handle_im_event(event);
                 }
             })
             .expect("failed to register IM relay event source");
+        self.im_relay = Some((client, source));
+    }
+
+    /// Disconnect the relay so an external input method can take the seat.
+    fn disconnect_im_relay(&mut self) {
+        let Some((client, source)) = self.im_relay.take() else {
+            return;
+        };
+        self.loop_handle.remove(source);
+        self.display_handle
+            .backend_handle()
+            .kill_client(client.id(), DisconnectReason::ConnectionClosed);
     }
 
     pub(crate) fn output_exists(&self, output: &Output) -> bool {
@@ -3908,13 +3930,21 @@ impl Ewm {
 
     /// Update text_input focus for input method support.
     ///
-    /// Emacs surfaces and None both clear text_input (leave + set_focus(None)),
-    /// causing the client to disable. Commits that arrive during the resulting
-    /// disable->enable gap are queued in `im_text_input` and drained on the
-    /// next `ImEvent::Activated` for the same surface.
-    pub fn update_text_input_focus(&self, surface: Option<&WlSurface>, surface_id: Option<u64>) {
-        let is_emacs = surface_id.is_some_and(|id| self.is_emacs_frame(id));
-        im::text_input::update_focus(&self.seat, surface, is_emacs);
+    /// With Emacs as the provider, Emacs surfaces clear text_input like None
+    /// does (leave + set_focus(None)), causing the client to disable. Commits
+    /// that arrive during the resulting disable->enable gap are queued in
+    /// `im_text_input` and drained on the next `ImEvent::Activated` for the
+    /// same surface. An external input method serves Emacs frames too.
+    pub fn update_text_input_focus(&self, surface: Option<&WlSurface>) {
+        let surface = match self.text_input_provider {
+            im::TextInputProvider::Emacs => surface.filter(|surface| {
+                !self
+                    .surface_id(surface)
+                    .is_some_and(|id| self.is_emacs_frame(id))
+            }),
+            im::TextInputProvider::External => surface,
+        };
+        im::text_input::update_focus(&self.seat, surface);
     }
 
     fn active_text_input_surface_id(&self) -> Option<u64> {
@@ -6031,6 +6061,9 @@ impl State {
                     self.ewm.text_input_intercept = enabled;
                 }
             }
+            ModuleCommand::ConfigureTextInput { provider } => {
+                self.set_text_input_provider(provider);
+            }
             ModuleCommand::KeyboardCaptureChanged { active } => {
                 trace!("Keyboard capture changed: active={}", active);
                 if active {
@@ -6353,6 +6386,21 @@ impl State {
             drm.lid_closed = is_closed;
             drm.on_lid_state_changed(&mut self.ewm);
         }
+    }
+
+    /// Hand the seat's input method slot to the relay or to an external client.
+    fn set_text_input_provider(&mut self, provider: im::TextInputProvider) {
+        self.ewm.text_input_provider = provider;
+        match provider {
+            im::TextInputProvider::Emacs => self.ewm.connect_im_relay(),
+            im::TextInputProvider::External => {
+                self.ewm.disconnect_im_relay();
+                self.handle_im_event(im::relay::ImEvent::Deactivated);
+            }
+        }
+        // Emacs frames join or leave text-input focus with the provider.
+        self.ewm
+            .update_text_input_focus(self.ewm.keyboard_focus.as_ref());
     }
 
     /// Handle one IM relay activate/deactivate event. Delivered by the calloop

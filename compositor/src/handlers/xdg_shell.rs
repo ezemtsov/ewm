@@ -15,9 +15,9 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::{Event, Ewm, State};
+use crate::{Event, Ewm, State, im};
 
 // XDG Shell
 impl XdgShellHandler for State {
@@ -45,8 +45,9 @@ impl XdgShellHandler for State {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        self.ewm.unconstrain_popup(&surface);
-        if let Err(err) = self.ewm.popups.track_popup(PopupKind::Xdg(surface)) {
+        let popup = PopupKind::Xdg(surface);
+        self.ewm.unconstrain_popup(&popup);
+        if let Err(err) = self.ewm.popups.track_popup(popup) {
             warn!("error tracking popup: {err:?}");
         }
     }
@@ -116,7 +117,7 @@ impl XdgShellHandler for State {
             state.geometry = positioner.get_geometry();
             state.positioner = positioner;
         });
-        self.ewm.unconstrain_popup(&surface);
+        self.ewm.unconstrain_popup(&PopupKind::Xdg(surface.clone()));
         surface.send_repositioned(token);
     }
 
@@ -305,69 +306,80 @@ impl Ewm {
 
     /// Unconstrain a popup's position to keep it within screen bounds.
     ///
-    /// For window popups, computes the target from the layout entry position
-    /// (not window.geometry()) so centering offsets and CSD geometry don't
-    /// affect placement.  For layer-shell popups, uses the output bounds
-    /// adjusted for the layer surface position and non-exclusive zone.
-    pub fn unconstrain_popup(&self, popup: &PopupSurface) {
-        let popup_kind = PopupKind::Xdg(popup.clone());
-        let Ok(root) = find_popup_root_surface(&popup_kind) else {
+    /// Dispatches to the window or layer-shell path by the popup's root surface.
+    pub fn unconstrain_popup(&self, popup: &PopupKind) {
+        let Ok(root) = find_popup_root_surface(popup) else {
             return;
         };
 
-        // Window popup path
         if let Some(id) = self.surface_id(&root) {
-            let raw_target = if self.is_emacs_frame(id) {
-                self.frame_popup_target_rect(id)
-            } else {
-                self.popup_target_rect(id)
-            }
-            .unwrap_or_else(|| Rectangle::from_size(self.output_size));
-            let toplevel_coords = get_popup_toplevel_coords(&popup_kind);
-            let mut target = raw_target;
-            target.loc -= toplevel_coords;
-
-            popup.with_pending_state(|state| {
-                let result = unconstrain_with_padding(state.positioner, target);
-                info!(
-                    "unconstrain_popup: id={} raw_target={:?} \
-                     toplevel_coords={:?} target={:?} \
-                     positioner.rect={:?} positioner.size={:?} \
-                     result={:?}",
-                    id,
-                    raw_target,
-                    toplevel_coords,
-                    target,
-                    state.positioner.anchor_rect,
-                    state.positioner.rect_size,
-                    result,
-                );
-                state.geometry = result;
-            });
-            return;
+            self.unconstrain_window_popup(popup, id);
+        } else if let Some((output, layer)) = self.layer_for_root(&root) {
+            self.unconstrain_layer_shell_popup(popup, &layer, &output);
         }
+    }
 
-        // Layer-shell popup path
-        if let Some((output, layer)) = self.layer_for_root(&root) {
-            let map = layer_map_for_output(&output);
-            let Some(layer_geo) = map.layer_geometry(&layer) else {
-                return;
-            };
-            let output_geo = self
-                .space
-                .output_geometry(&output)
-                .unwrap_or_else(|| Rectangle::from_size(self.output_size));
+    /// Place a window (or Emacs frame) popup within its working area.
+    ///
+    /// The target comes from the layout entry position (not window.geometry())
+    /// so centering offsets and CSD geometry don't affect placement.
+    fn unconstrain_window_popup(&self, popup: &PopupKind, id: u64) {
+        let mut target = if self.is_emacs_frame(id) {
+            self.frame_popup_target_rect(id)
+        } else {
+            self.popup_target_rect(id)
+        }
+        .unwrap_or_else(|| Rectangle::from_size(self.output_size));
+        target.loc -= get_popup_toplevel_coords(popup);
 
-            let mut target = Rectangle::from_size(output_geo.size);
-            if matches!(layer.layer(), Layer::Background | Layer::Bottom) {
-                target = map.non_exclusive_zone();
-            }
-            target.loc -= layer_geo.loc;
-            target.loc -= get_popup_toplevel_coords(&popup_kind);
+        self.position_popup_within_rect(popup, target, true);
+    }
 
-            popup.with_pending_state(|state| {
-                state.geometry = state.positioner.get_unconstrained_geometry(target);
-            });
+    /// Place a layer-shell popup within the output, within the non-exclusive
+    /// zone for background and bottom layers.
+    fn unconstrain_layer_shell_popup(
+        &self,
+        popup: &PopupKind,
+        layer: &DesktopLayerSurface,
+        output: &Output,
+    ) {
+        let map = layer_map_for_output(output);
+        let Some(layer_geo) = map.layer_geometry(layer) else {
+            return;
+        };
+        let output_geo = self
+            .space
+            .output_geometry(output)
+            .unwrap_or_else(|| Rectangle::from_size(self.output_size));
+
+        let mut target = Rectangle::from_size(output_geo.size);
+        if matches!(layer.layer(), Layer::Background | Layer::Bottom) {
+            target = map.non_exclusive_zone();
+        }
+        target.loc -= layer_geo.loc;
+        target.loc -= get_popup_toplevel_coords(popup);
+
+        // No padding for layer-shell popups: it's not needed and unexpected.
+        self.position_popup_within_rect(popup, target, false);
+    }
+
+    /// Position a popup within `target` (geometry-local): an XDG popup through
+    /// its positioner, an input method popup below its text cursor.
+    fn position_popup_within_rect(
+        &self,
+        popup: &PopupKind,
+        target: Rectangle<i32, Logical>,
+        padding: bool,
+    ) {
+        match popup {
+            PopupKind::Xdg(popup) => popup.with_pending_state(|state| {
+                state.geometry = if padding {
+                    unconstrain_with_padding(state.positioner, target)
+                } else {
+                    state.positioner.get_unconstrained_geometry(target)
+                };
+            }),
+            PopupKind::InputMethod(popup) => im::popup::place(popup, target),
         }
     }
 
@@ -380,19 +392,23 @@ impl Ewm {
         };
 
         let output = self.output_for_popup(&popup);
-        if let PopupKind::Xdg(ref xdg_popup) = popup
-            && !xdg_popup.is_initial_configure_sent()
-        {
-            if let Some(output) = output.as_ref() {
-                let scale = output.current_scale();
-                let transform = output.current_transform();
-                smithay::wayland::compositor::with_states(surface, |data| {
-                    crate::utils::send_scale_transform(surface, data, scale, transform);
-                });
+        match &popup {
+            PopupKind::Xdg(xdg_popup) => {
+                if !xdg_popup.is_initial_configure_sent() {
+                    if let Some(output) = output.as_ref() {
+                        let scale = output.current_scale();
+                        let transform = output.current_transform();
+                        smithay::wayland::compositor::with_states(surface, |data| {
+                            crate::utils::send_scale_transform(surface, data, scale, transform);
+                        });
+                    }
+                    xdg_popup
+                        .send_configure()
+                        .expect("initial configure failed");
+                }
             }
-            xdg_popup
-                .send_configure()
-                .expect("initial configure failed");
+            // Its size may change on any commit.
+            PopupKind::InputMethod(_) => self.unconstrain_popup(&popup),
         }
 
         if let Some(output) = output {

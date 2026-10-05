@@ -2948,15 +2948,12 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     let socket_name_str = socket_name.to_string_lossy().to_string();
     info!("Wayland socket: {:?}", socket_name);
 
-    let mut ewm = Ewm::new(
+    let ewm = Ewm::new(
         display_handle.clone(),
         event_loop.handle(),
         true,
         cursor_config.clone(),
     );
-
-    // Connect input method relay to ourselves
-    ewm.connect_im_relay();
 
     // Find primary GPU: env override or udev detection
     let gpu_path = match std::env::var("EWM_RENDER_DEVICE") {

@@ -1852,6 +1852,7 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (ewm--send-idle-config)
   (ewm--send-cursor-config)
   (ewm--send-cursor-hide-config)
+  (ewm-text-input--send-provider)
   (ewm-set-unfocused-alpha (float ewm-unfocused-alpha))
   (ewm-set-animations-enabled ewm-animations-enabled)
   (ewm--send-overview-config)

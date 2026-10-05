@@ -569,6 +569,10 @@ impl Fixture {
         self.state.handle_module_command(command);
     }
 
+    pub fn set_text_input_provider(&mut self, provider: crate::im::TextInputProvider) {
+        self.handle_module_command(crate::module::ModuleCommand::ConfigureTextInput { provider });
+    }
+
     pub fn set_intercepted_keys(&mut self, keys: Vec<crate::InterceptedKey>) {
         *crate::module::intercepted_keys().write().unwrap() = keys;
     }

@@ -11,8 +11,9 @@
 | Preedit (composing text) | `text_input_v3` | Done | The input method's buffer text, mirrored while it composes |
 | Content type hints | `text_input_v3` | TODO | Auto-disable intercept for password fields |
 | Surrounding text | `text_input_v3` | TODO | Selection access for cut/copy in surface buffers |
-| Delete surrounding text | `input_method_v2` | TODO | Cut in surface buffers |
-| Input popup surface | `input_method_v2` | TODO | Candidate window positioned at client cursor |
+| Delete surrounding text | `input_method_v2` | TODO | Cut in surface buffers, backspace during composition |
+| Input popup surface | `input_method_v2` | Done | Candidate window below the client cursor |
+| External input methods | `input_method_v2` | Done | `ewm-text-input-provider` hands the seat to fcitx5 or ibus |
 
 ### Priority
 
@@ -31,9 +32,26 @@ injecting synthetic Ctrl+X/C keypresses.
 
 ## Overview
 
-EWM provides full input method support:
+EWM provides:
 - **XKB Layout Switching**: Multiple keyboard layouts with hardware/software switching
 - **Text Input Protocol**: Emacs input methods work in external Wayland apps (Firefox, terminals)
+- **External input methods**: fcitx5 or ibus can take the seat instead of Emacs
+
+## Provider
+
+The seat has one `input_method_v2` slot. `ewm-text-input-provider` says who
+holds it:
+
+- `emacs` (default): the relay below holds the slot and Emacs input methods
+  serve client text fields. Emacs frames stay out of text-input focus so
+  Emacs's own GTK input context never reaches the relay.
+- `external`: the relay is disconnected (or never connected) and an input
+  method such as fcitx5 binds the slot. Emacs frames get text-input focus
+  like any client, so the same input method serves Emacs through GTK's
+  Wayland input context.
+
+The Emacs-side text input relay (activation events, `ewm-edit`, intercept)
+only works with the `emacs` provider.
 
 ## XKB Keyboard Layouts
 
@@ -195,3 +213,4 @@ Key interception only occurs when:
 1. Text input is active (app requested it)
 2. An Emacs input method is enabled
 3. The focused surface is not Emacs (Emacs handles its own input)
+4. `ewm-text-input-provider` is `emacs`

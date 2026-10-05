@@ -80,8 +80,9 @@ impl WlrLayerShellHandler for State {
         _parent: smithay::wayland::shell::wlr_layer::LayerSurface,
         popup: smithay::wayland::shell::xdg::PopupSurface,
     ) {
+        let popup = PopupKind::Xdg(popup);
         self.ewm.unconstrain_popup(&popup);
-        if let Err(err) = self.ewm.popups.track_popup(PopupKind::Xdg(popup)) {
+        if let Err(err) = self.ewm.popups.track_popup(popup) {
             warn!("error tracking popup: {err:?}");
         }
     }

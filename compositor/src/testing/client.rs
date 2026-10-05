@@ -85,6 +85,7 @@ pub enum ClientEvent {
         surface: wl_surface::WlSurface,
         output: wl_output::WlOutput,
     },
+    TextInputEnter,
     TextInputCommitString {
         text: Option<String>,
     },
@@ -95,6 +96,8 @@ pub enum ClientEvent {
     TextInputDone {
         serial: u32,
     },
+    InputMethodActivate,
+    InputMethodUnavailable,
     KdeDecorationDefaultMode {
         mode: WEnum<org_kde_kwin_server_decoration_manager::Mode>,
     },
@@ -830,6 +833,9 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientState {
         _: &QueueHandle<Self>,
     ) {
         match event {
+            zwp_text_input_v3::Event::Enter { .. } => {
+                state.events.push(ClientEvent::TextInputEnter)
+            }
             zwp_text_input_v3::Event::CommitString { text } => state
                 .events
                 .push(ClientEvent::TextInputCommitString { text }),
@@ -850,6 +856,26 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for ClientState {
     }
 }
 wayland_client::delegate_noop!(ClientState: ignore zwp_input_method_manager_v2::ZwpInputMethodManagerV2);
-wayland_client::delegate_noop!(ClientState: ignore zwp_input_method_v2::ZwpInputMethodV2);
+
+impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &zwp_input_method_v2::ZwpInputMethodV2,
+        event: zwp_input_method_v2::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_input_method_v2::Event::Activate => {
+                state.events.push(ClientEvent::InputMethodActivate)
+            }
+            zwp_input_method_v2::Event::Unavailable => {
+                state.events.push(ClientEvent::InputMethodUnavailable)
+            }
+            _ => {}
+        }
+    }
+}
 #[cfg(feature = "testing-layer-shell")]
 wayland_client::delegate_noop!(ClientState: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);

@@ -66,6 +66,7 @@ use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_cons
 use tracing::{info, warn};
 
 use crate::event::TextInputKey;
+use crate::im::TextInputProvider;
 use crate::im::repeat::{HeldKeyOwner, InterceptRepeat};
 use crate::{InterceptDispatch, InterceptedKey, State, SurfaceHit, module, tracy_span};
 
@@ -515,8 +516,10 @@ impl State {
         let focused_surface_id = self.ewm.focused_surface_id();
         // Gate on smithay's synchronous active-text-input state, not the relay's
         // lagging `is_active()` echo, so the relay stays off the per-key hot path
-        // and the first key after activation isn't forwarded raw.
+        // and the first key after activation isn't forwarded raw. An external
+        // input method owns the keys, whatever Lisp asked for.
         let text_input_intercept = self.ewm.text_input_intercept
+            && self.ewm.text_input_provider == TextInputProvider::Emacs
             && self.ewm.active_text_input_surface_id() == Some(focused_surface_id);
         let routing = KeyRouting {
             text_input_intercept,

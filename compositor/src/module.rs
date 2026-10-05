@@ -53,6 +53,7 @@ use smithay::input::keyboard::{keysyms, xkb};
 use smithay::reexports::calloop::LoopSignal;
 
 use crate::cursor::CursorConfig;
+use crate::im::TextInputProvider;
 use crate::strip::Frame;
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
@@ -398,6 +399,9 @@ pub enum ModuleCommand {
     },
     TextInputIntercept {
         enabled: bool,
+    },
+    ConfigureTextInput {
+        provider: TextInputProvider,
     },
     SendKey {
         surface_id: Option<u64>,
@@ -1463,6 +1467,15 @@ fn send_key_module(surface_id: Lisp<Option<u64>>, keys: Lisp<Vec<ChordSpec>>) ->
 fn text_input_intercept_module(enabled: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::TextInputIntercept {
         enabled: enabled.is_not_nil(),
+    });
+    Ok(())
+}
+
+/// Set who serves client text input: `emacs' or `external'.
+#[defun]
+fn configure_text_input_module(provider: Lisp<TextInputProvider>) -> Result<()> {
+    push_command(ModuleCommand::ConfigureTextInput {
+        provider: provider.0,
     });
     Ok(())
 }

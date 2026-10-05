@@ -30,7 +30,7 @@ pub enum ImEvent {
 
 /// Spawn the relay thread on STREAM and return the calloop channel carrying its
 /// activate/deactivate events. The detached thread owns the Wayland connection
-/// backing the input_method_v2 instance for the process lifetime.
+/// backing the input_method_v2 instance until the server kills the client.
 pub fn connect(stream: UnixStream) -> Channel<ImEvent> {
     let (event_tx, event_rx) = channel();
 
@@ -62,7 +62,7 @@ fn run_relay(
 
     loop {
         if let Err(e) = queue.blocking_dispatch(&mut state) {
-            tracing::warn!("IM relay dispatch error: {}", e);
+            tracing::info!("IM relay disconnected: {}", e);
             break;
         }
     }
@@ -140,7 +140,9 @@ impl Dispatch<ZwpInputMethodV2, ()> for RelayState {
                     anchor,
                 });
             }
-            Event::Unavailable => tracing::warn!("IM relay: unavailable"),
+            Event::Unavailable => {
+                tracing::warn!("IM relay: unavailable, another input method owns the seat")
+            }
             _ => {}
         }
     }

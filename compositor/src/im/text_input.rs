@@ -205,19 +205,17 @@ impl TextInputCommitState {
     }
 }
 
-pub fn update_focus<D: SeatHandler + 'static>(
-    seat: &Seat<D>,
-    surface: Option<&WlSurface>,
-    is_emacs: bool,
-) {
+pub fn update_focus<D: SeatHandler + 'static>(seat: &Seat<D>, surface: Option<&WlSurface>) {
     let text_input = seat.text_input();
-
-    if is_emacs || surface.is_none() {
-        text_input.leave();
-        text_input.set_focus(None);
-    } else if let Some(surface) = surface {
-        text_input.set_focus(Some(surface.clone()));
-        text_input.enter();
+    match surface {
+        Some(surface) => {
+            text_input.set_focus(Some(surface.clone()));
+            text_input.enter();
+        }
+        None => {
+            text_input.leave();
+            text_input.set_focus(None);
+        }
     }
 }
 
