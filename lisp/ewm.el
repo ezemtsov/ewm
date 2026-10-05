@@ -167,7 +167,7 @@ When non-nil, warps the pointer to the center of the focused window."
   "Whether cross-frame slide and surface open-fade animations play.
 Set to nil to snap in-flight animations to target and skip easing on
 new ones.  Toggling is live -- the compositor flips the shared
-`Clock' and the next frame settles."
+animation clock and the next frame settles."
   :type 'boolean
   :group 'ewm
   :set (lambda (sym val)

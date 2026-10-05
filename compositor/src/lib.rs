@@ -7878,7 +7878,7 @@ impl CompositorHandler for State {
                         1.0,
                         OPEN_ANIM_DURATION,
                     )
-                    .delayed(std::time::Duration::from_millis(16)),
+                    .delayed(Duration::from_millis(16)),
                 );
 
                 // Placement is final at map: min/max hints are known, so decide once.

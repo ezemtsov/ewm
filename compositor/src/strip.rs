@@ -143,8 +143,12 @@ impl ViewOffset {
         }
     }
 
-    /// Spring from the live offset to `target`, or snap when already there.
+    /// Spring from the live offset to `target`, keeping a slide already bound there.
     pub fn animate_to(&mut self, clock: Clock, target: f64, velocity: f64) {
+        if !matches!(self, ViewOffset::Gesture(_)) && (self.target() - target).abs() < f64::EPSILON
+        {
+            return;
+        }
         let from = self.current();
         *self = if (from - target).abs() < f64::EPSILON {
             ViewOffset::Static(target)
@@ -828,6 +832,25 @@ mod tests {
                 prop_assert!(offset.is_animation_ongoing());
                 prop_assert!(!offset.is_static());
             }
+        }
+
+        #[test]
+        fn animate_to_keeps_a_slide_already_bound_there(
+            from in -2_000i32..=2_000,
+            target in -2_000i32..=2_000,
+            elapsed_ms in 1u64..=400,
+        ) {
+            let start = Duration::from_secs(10);
+            let clock = Clock::with_time(start);
+            let reference = Animation::new(clock.clone(), f64::from(from), f64::from(target), 0.);
+            let mut offset = ViewOffset::Static(f64::from(from));
+            offset.animate_to(clock.clone(), f64::from(target), 0.);
+
+            clock.set(start + Duration::from_millis(elapsed_ms));
+            offset.animate_to(clock.clone(), f64::from(target), 0.);
+            clock.set(start + Duration::from_millis(elapsed_ms * 2));
+
+            prop_assert_eq!(offset.current(), reference.value());
         }
 
         #[test]

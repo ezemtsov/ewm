@@ -6,7 +6,7 @@ use smithay::input::pointer::CursorIcon;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::LayoutEntry;
-use crate::animation::Animation;
+use crate::animation::{Animation, Clock};
 use crate::strip::Frame;
 
 /// By how many logical pixels command-driven floating frame moves nudge frames.
@@ -242,7 +242,7 @@ impl Data {
         Point::from((self.move_anim.as_ref().map_or(0.0, Animation::value), 0.0))
     }
 
-    pub fn set_move_anim(&mut self, from_x: f64, clock: crate::animation::Clock) {
+    pub fn set_move_anim(&mut self, from_x: f64, clock: Clock) {
         self.move_anim = Some(Animation::new(clock, from_x, 0.0, 0.));
     }
 
@@ -271,11 +271,11 @@ pub struct FloatingSpace {
     #[serde(skip)]
     working_area: Rectangle<f64, Logical>,
     #[serde(skip)]
-    clock: crate::animation::Clock,
+    clock: Clock,
 }
 
 impl FloatingSpace {
-    pub fn new(working_area: Rectangle<f64, Logical>, clock: crate::animation::Clock) -> Self {
+    pub fn new(working_area: Rectangle<f64, Logical>, clock: Clock) -> Self {
         Self {
             frames: Vec::new(),
             data: Vec::new(),
@@ -677,7 +677,6 @@ impl FloatingSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::animation::Clock;
 
     fn test_space() -> FloatingSpace {
         let working_area = Rectangle::new(Point::from((0., 0.)), Size::from((1200., 800.)));
