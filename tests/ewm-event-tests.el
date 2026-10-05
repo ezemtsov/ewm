@@ -47,6 +47,7 @@
 (ewm-test--stub ewm-keyboard-capture-end-module (_token) t)
 (ewm-test--stub ewm-keyboard-redirect-capture-clear-module () nil)
 (ewm-test--stub ewm-im-commit-module (_text _surface-id) nil)
+(ewm-test--stub ewm-im-preedit-module (_text _surface-id) nil)
 (ewm-test--stub ewm-text-input-intercept-module (_enabled) nil)
 (ewm-test--stub ewm-get-focused-id () nil)
 (ewm-test--stub ewm-get-focused-frame-id () 0)

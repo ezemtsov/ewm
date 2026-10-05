@@ -6175,6 +6175,10 @@ impl Ewm {
         im::text_input::commit_active(&self.seat, text)
     }
 
+    fn preedit_active_text_input(&self, text: String) {
+        im::text_input::preedit_active(&self.seat, text)
+    }
+
     fn replace_active_text_input(&self, before: u32, after: u32, text: String) -> bool {
         im::text_input::replace_active(&self.seat, before, after, text)
     }
@@ -9452,6 +9456,11 @@ impl State {
 
                 // Apply the config (adjusts pointer if geometry changed)
                 self.apply_output_config_for(&name);
+            }
+            ModuleCommand::ImPreedit { text, surface_id } => {
+                if self.ewm.active_text_input_surface_id() == Some(surface_id) {
+                    self.ewm.preedit_active_text_input(text);
+                }
             }
             ModuleCommand::ImCommit { text, surface_id } => {
                 let active_surface_id = self.ewm.active_text_input_surface_id();

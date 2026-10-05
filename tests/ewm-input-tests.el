@@ -43,6 +43,7 @@
 (require 'ewm-input)
 
 (defvar ewm--module-mode)
+(defvar ewm-text-input--composing)
 (defvar ewm--surfaces (make-hash-table :test 'eql))
 (defvar ewm-surface-mode-map (make-sparse-keymap))
 (defvar ewm-input--keyboard-capture-token)
@@ -334,6 +335,18 @@
     (should (equal calls '((:begin "command-loop"))))
     (should (equal ewm-input--keyboard-capture-token 42))))
 
+(ert-deftest ewm-input-tests/keyboard-capture-on-denies-client-field-composition ()
+  "An input method reading for a client field must not pull the keyboard to Emacs."
+  (ewm-input-tests--with-capture-state (nil 'execute-extended-command)
+    (let ((ewm-input-tests--focused-id 2)
+          (ewm-input-tests--focused-frame-id 2)
+          (ewm-text-input--composing 2))
+      (cl-letf (((symbol-function 'this-command-keys-vector)
+                 (lambda () (kbd "M-x"))))
+        (ewm-input--keyboard-capture-on)))
+    (should-not calls)
+    (should-not ewm-input--keyboard-capture-token)))
+
 (ert-deftest ewm-input-tests/keyboard-capture-on-allows-intercepted-command ()
   "A queued EWM command has normal command-key provenance for capture."
   (ewm-input-tests--with-capture-state (nil 'ewm-launch-app)
@@ -375,6 +388,30 @@ capture transition back into a layout send fails here."
     (ewm-input--set-keyboard-capture nil t)
     (should (equal calls '(:clear-redirect)))
     (should-not ewm-input--keyboard-capture-token)))
+
+(ert-deftest ewm-input-tests/in-selected-window-defers-while-composing ()
+  "While a client field composes, the advice must not re-route to another buffer."
+  (let ((ewm-text-input--composing 7) called)
+    (with-temp-buffer                     ; the window's buffer
+      (let ((win-buf (current-buffer)))
+        (with-temp-buffer                 ; a buffer distinct from the window's
+          (cl-letf (((symbol-function 'window-buffer) (lambda (&optional _) win-buf)))
+            (ewm-input--in-selected-window (lambda (k) (setq called k) (list k)) ?a)))))
+    (should (eq called ?a))))
+
+(ert-deftest ewm-input-tests/in-selected-window-routes-to-window-buffer ()
+  "With no composition and a stale current-buffer, use the selected window's method."
+  (let ((ewm-text-input--composing nil) routed)
+    (with-temp-buffer                     ; the window's buffer
+      (let ((win-buf (current-buffer)))
+        (setq-local current-input-method "x")
+        (setq-local input-method-function
+                    (lambda (k) (setq routed (cons k (current-buffer))) (list k)))
+        (with-temp-buffer                 ; a stale current buffer
+          (cl-letf (((symbol-function 'window-buffer) (lambda (&optional _) win-buf)))
+            (ewm-input--in-selected-window
+             (lambda (_k) (error "must not translate in the wrong buffer")) ?z)))
+        (should (equal routed (cons ?z win-buf)))))))
 
 (provide 'ewm-input-tests)
 ;;; ewm-input-tests.el ends here

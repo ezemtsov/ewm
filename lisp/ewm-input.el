@@ -131,6 +131,7 @@ Override individual bindings with `use-package':
 (defvar ewm--surfaces)
 (defvar ewm-surface-id)
 (defvar ewm-surface-mode-map)
+(defvar ewm-text-input--composing)
 
 (defgroup ewm-input nil
   "EWM input handling."
@@ -409,10 +410,12 @@ warps from packages that temporarily switch windows internally
 
 (defun ewm-input--keyboard-capture-start-allowed-p ()
   "Return non-nil when a new compositor keyboard-capture lease may start."
-  (or (not (bound-and-true-p ewm--module-mode))
-      (ewm-input--emacs-frame-focused-p)
-      (ewm-input--command-key-active-p)
-      (ewm-input--prefix-key-active-p)))
+  ;; A client-field input method reads keys the compositor already intercepts.
+  (and (not (bound-and-true-p ewm-text-input--composing))
+       (or (not (bound-and-true-p ewm--module-mode))
+           (ewm-input--emacs-frame-focused-p)
+           (ewm-input--command-key-active-p)
+           (ewm-input--prefix-key-active-p))))
 
 (defvar ewm--pending-keys nil
   "Sends waiting for Emacs to release the keyboard, newest first.")
@@ -516,11 +519,12 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
 ;; first key after a focus change is read against the previous buffer's input
 ;; method. Apply the selected window's instead, at both `read-char' entry
 ;; points: the global default and an :around advice on `quail-input-method'.
+;; The text-input handler names its surface buffer itself and is left alone.
 
 (defun ewm-input--in-selected-window (orig key)
   "Translate KEY through the selected window's input method, else ORIG."
   (let ((buf (window-buffer (selected-window))))
-    (if (eq buf (current-buffer))
+    (if (or (bound-and-true-p ewm-text-input--composing) (eq buf (current-buffer)))
         (funcall orig key)
       (with-current-buffer buf
         (if current-input-method (funcall input-method-function key) (list key))))))

@@ -11,6 +11,7 @@
 ;;; Code:
 
 (declare-function ewm-im-commit-module "ewm-core")
+(declare-function ewm-im-preedit-module "ewm-core")
 (declare-function ewm-text-input-replace-module "ewm-core")
 (declare-function ewm-text-input-surrounding-module "ewm-core")
 (declare-function ewm-text-input-forward-key-module "ewm-core")
@@ -18,6 +19,15 @@
 (declare-function ewm-get-focused-id "ewm-core")
 
 (defvar ewm--surfaces)
+
+(defvar ewm-text-input--composing nil
+  "Surface id whose input method is reading keys, else nil.")
+
+(defvar ewm-text-input--raw nil
+  "Compositor keys queued for the input method, oldest first.")
+
+(defvar ewm-text-input--preedit ""
+  "Text last shown as preedit for the composing field.")
 
 (defvar ewm-text-input-activated-hook nil
   "Hook run when a client text field becomes active.
@@ -39,11 +49,20 @@ Called when a client's text field gains focus."
   "Handle text-input-deactivated event from compositor.
 Called when a client's text field loses focus."
   (setq ewm-text-input--client-active nil)
+  (when ewm-text-input--composing
+    ;; Stop the input method. Its text dies with the field.
+    (setq ewm-text-input--composing nil)
+    (setq unread-command-events
+          (nconc unread-command-events (list '(no-record . ewm-text-input-abort)))))
   (run-hooks 'ewm-text-input-deactivated-hook))
 
 (defun ewm-im-commit (text surface-id)
   "Commit TEXT to the client text field on SURFACE-ID."
   (ewm-im-commit-module text surface-id))
+
+(defun ewm-im-preedit (text surface-id)
+  "Show TEXT as the composing text in the client field on SURFACE-ID."
+  (ewm-im-preedit-module text surface-id))
 
 (defun ewm-text-input-replace (text surface-id)
   "Replace the whole content of the field on SURFACE-ID with TEXT."
@@ -63,23 +82,6 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
        surface-id keycode
        (alist-get 'ctrl event) (alist-get 'alt event)
        (alist-get 'shift event) (alist-get 'logo event)))))
-
-(defun ewm-text-input--translate-char (char &optional input-method)
-  "Translate CHAR through INPUT-METHOD if provided.
-If INPUT-METHOD is nil, uses the current buffer's `current-input-method'.
-For quail-based input methods, looks up the translation directly."
-  (let ((im (or input-method current-input-method)))
-    (if (and im (fboundp 'quail-lookup-key))
-        (let ((current-input-method im))
-          (activate-input-method im)
-          (let ((result (quail-lookup-key (string char))))
-            (cond
-             ((and (consp result) (integerp (car result)))
-              ;; Quail returns (charcode) - convert to string
-              (string (car result)))
-             ((stringp result) result)
-             (t (string char)))))
-      (string char))))
 
 (define-minor-mode ewm-text-input-mode
   "Mode-line indicator for active Wayland text-input relay."
@@ -126,21 +128,121 @@ For quail-based input methods, looks up the translation directly."
   "Enable or disable text input key interception."
   (ewm-text-input-intercept-module enabled))
 
+;;; Composition
+
+;; A text key runs the surface buffer's input method in the command loop,
+;; exwm-xim style.
+
+(defconst ewm-text-input--keysym-events
+  '((#xff08 . backspace) (#xff09 . tab) (#xff0d . return) (#xff1b . escape)
+    (#xffff . delete) (#xff50 . home) (#xff51 . left) (#xff52 . up)
+    (#xff53 . right) (#xff54 . down) (#xff55 . prior) (#xff56 . next)
+    (#xff57 . end) (#xff63 . insert) (#xff8d . kp-enter) (#xfe20 . iso-lefttab))
+  "Emacs events for the non-text keysyms an input method may want.")
+
+(defun ewm-text-input--event (key)
+  "Return the Emacs event for compositor KEY, or nil for keys Emacs cannot name."
+  (let* ((utf8 (alist-get 'utf8 key))
+         (base (if utf8
+                   (string-to-char utf8)
+                 (alist-get (alist-get 'keysym key) ewm-text-input--keysym-events)))
+         (mods (append (and (alist-get 'ctrl key) '(control))
+                       (and (alist-get 'alt key) '(meta))
+                       (and (alist-get 'logo key) '(super))
+                       (and (symbolp base) (alist-get 'shift key) '(shift)))))
+    (and base (event-convert-list (append mods (list base))))))
+
+(defun ewm-text-input--text-p (event)
+  "Non-nil for an EVENT an input method reads as text."
+  (and (characterp event) (>= event ?\s) (/= event 127)))
+
+(defun ewm-text-input--pending-p ()
+  "Non-nil when a queued text key has yet to start its input method."
+  (seq-some (lambda (event) (eq (car-safe event) 'ewm-text-input-key))
+            unread-command-events))
+
 (defun ewm--handle-key (event)
-  "Handle key EVENT from the compositor during text-input interception.
-Commit the IM translation to the client, else forward the key unchanged."
+  "Queue compositor key EVENT for the surface's input method, else forward it."
   (let* ((surface-id (alist-get 'surface_id event))
-         (utf8 (alist-get 'utf8 event))
-         (shortcut (or (alist-get 'ctrl event)
-                       (alist-get 'alt event)
-                       (alist-get 'logo event)))
+         (key (ewm-text-input--event event))
          (surface-buf (and (numberp surface-id) (> surface-id 0)
                            (gethash surface-id ewm--surfaces))))
-    (if (and utf8 (not shortcut) (buffer-live-p surface-buf))
-        (with-current-buffer surface-buf
-          (ewm-im-commit (ewm-text-input--translate-char (string-to-char utf8))
-                         surface-id))
-      (ewm-text-input--forward-key event))))
+    (cond
+     ;; Keys may arrive before the command loop starts the first composition.
+     ((or ewm-text-input--composing (ewm-text-input--pending-p))
+      (when key
+        (setq ewm-text-input--raw (nconc ewm-text-input--raw (list event)))
+        (setq unread-command-events
+              (nconc unread-command-events (list (cons 'no-record key))))))
+     ((and (ewm-text-input--text-p key) (buffer-live-p surface-buf))
+      (setq unread-command-events
+            (nconc unread-command-events
+                   (list (list 'ewm-text-input-key surface-id key)))))
+     (t (ewm-text-input--forward-key event)))))
+
+(defun ewm-text-input--preedit-sync (_window)
+  "Before a redisplay, show the client what the input method composed so far."
+  (when-let* ((surface-id ewm-text-input--composing)
+              (buf (gethash surface-id ewm--surfaces))
+              ((buffer-live-p buf)))
+    (let ((text (with-current-buffer buf
+                  (buffer-substring-no-properties (point-min) (point-max)))))
+      (unless (equal text ewm-text-input--preedit)
+        (setq ewm-text-input--preedit text)
+        (ewm-im-preedit text surface-id)))))
+
+(defun ewm-text-input--input (surface-id key)
+  "Give KEY to SURFACE-ID's input method and commit what it makes of it."
+  (when-let* ((buf (gethash surface-id ewm--surfaces))
+              ((buffer-live-p buf)))
+    (with-current-buffer buf
+      (let ((ewm-text-input--composing surface-id)
+            (ewm-text-input--preedit "")
+            ;; The method's scratch text is preedit, not an insertion to commit.
+            (after-change-functions nil)
+            ;; Quail may compose under with-silent-modifications, so after-change misses it.
+            (pre-redisplay-functions
+             (cons #'ewm-text-input--preedit-sync pre-redisplay-functions))
+            (text ""))
+        ;; A prior composition cut short could have left scratch text.
+        (erase-buffer)
+        (unwind-protect
+            (let ((result (funcall (or input-method-function #'list) key)))
+              ;; Nil once the field deactivated under the input method.
+              (when ewm-text-input--composing
+                (setq text (concat (seq-filter #'characterp result)))))
+          ;; A commit replaces the preedit.
+          (if (string-empty-p text)
+              (unless (string-empty-p ewm-text-input--preedit)
+                (ewm-im-preedit "" surface-id))
+            (ewm-im-commit text surface-id)))))))
+
+(defun ewm-text-input--raw-key (event)
+  "Pop the queued compositor keys up to EVENT's and return that key, or nil."
+  (while (and ewm-text-input--raw
+              (not (eql (ewm-text-input--event (car ewm-text-input--raw)) event)))
+    (pop ewm-text-input--raw))
+  (pop ewm-text-input--raw))
+
+(defun ewm-text-input--drain (surface-id)
+  "Type the keys the input method handed back into SURFACE-ID's client."
+  (while (eq (car-safe (car unread-command-events)) 'no-record)
+    (let ((ev (cdr (pop unread-command-events))))
+      ;; Abort and C-g are the method's own, with no pressed key to forward.
+      (cond ((memq ev '(ewm-text-input-abort ?\C-g)))
+            ((ewm-text-input--text-p ev) (ewm-text-input--input surface-id ev))
+            (t (when-let* ((raw (ewm-text-input--raw-key ev)))
+                 (ewm-text-input--forward-key raw))))))
+  (setq ewm-text-input--raw nil))
+
+(defun ewm-text-input--compose ()
+  "Run the input method for `last-input-event', then type back what it hands over."
+  (interactive)
+  (pcase-let ((`(,_ ,surface-id ,key) last-input-event))
+    (ewm-text-input--input surface-id key)
+    (ewm-text-input--drain surface-id)))
+
+(define-key special-event-map [ewm-text-input-key] #'ewm-text-input--compose)
 
 ;;; Edit a field's content in an Emacs buffer.
 

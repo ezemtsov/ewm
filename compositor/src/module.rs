@@ -384,6 +384,10 @@ pub enum ModuleCommand {
         text: String,
         surface_id: u64,
     },
+    ImPreedit {
+        text: String,
+        surface_id: u64,
+    },
     TextInputReplace {
         text: String,
         surface_id: u64,
@@ -1382,6 +1386,16 @@ fn intercept_keys_module(keys: Lisp<Vec<KeySpec>>) -> Result<()> {
 #[defun]
 fn im_commit_module(text: String, surface_id: i64) -> Result<()> {
     push_command(ModuleCommand::ImCommit {
+        text,
+        surface_id: surface_id as u64,
+    });
+    Ok(())
+}
+
+/// Show TEXT as the composing text of the field on SURFACE-ID.
+#[defun]
+fn im_preedit_module(text: String, surface_id: i64) -> Result<()> {
+    push_command(ModuleCommand::ImPreedit {
         text,
         surface_id: surface_id as u64,
     });

@@ -1,6 +1,7 @@
 //! Text-input focus helpers and surface-aware commit gating.
 
 use smithay::input::{Seat, SeatHandler};
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::ZwpTextInputV3;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::text_input::TextInputSeat;
 
@@ -233,17 +234,33 @@ where
     active_surface_id
 }
 
-pub fn commit_active<D: SeatHandler + 'static>(seat: &Seat<D>, text: String) {
+/// Run `f` on the active text input and send `done`. False when none is active.
+fn send_active<D: SeatHandler + 'static>(seat: &Seat<D>, f: impl FnOnce(&ZwpTextInputV3)) -> bool {
     let text_input = seat.text_input();
-    let mut text = Some(text);
+    let mut f = Some(f);
     let mut delivered = false;
     text_input.with_active_text_input(|ti, _surface| {
-        ti.commit_string(text.take());
+        if let Some(f) = f.take() {
+            f(ti);
+        }
         delivered = true;
     });
     if delivered {
         text_input.done(false);
     }
+    delivered
+}
+
+pub fn commit_active<D: SeatHandler + 'static>(seat: &Seat<D>, text: String) {
+    send_active(seat, |ti| ti.commit_string(Some(text)));
+}
+
+/// Show `text` as the active field's preedit, caret at its end, or clear it when empty.
+pub fn preedit_active<D: SeatHandler + 'static>(seat: &Seat<D>, text: String) {
+    let cursor = text.len() as i32;
+    send_active(seat, |ti| {
+        ti.preedit_string((!text.is_empty()).then_some(text), cursor, cursor)
+    });
 }
 
 pub fn replace_active<D: SeatHandler + 'static>(
@@ -252,18 +269,8 @@ pub fn replace_active<D: SeatHandler + 'static>(
     after: u32,
     text: String,
 ) -> bool {
-    let text_input = seat.text_input();
-    let mut payload = Some((before, after, text));
-    let mut delivered = false;
-    text_input.with_active_text_input(|ti, _surface| {
-        if let Some((before, after, text)) = payload.take() {
-            ti.delete_surrounding_text(before, after);
-            ti.commit_string(Some(text));
-        }
-        delivered = true;
-    });
-    if delivered {
-        text_input.done(false);
-    }
-    delivered
+    send_active(seat, |ti| {
+        ti.delete_surrounding_text(before, after);
+        ti.commit_string(Some(text));
+    })
 }

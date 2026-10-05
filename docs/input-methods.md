@@ -8,17 +8,13 @@
 | Key interception | `text_input_v3` | Done | Printable keys routed to Emacs for IM translation |
 | Activate/deactivate | `input_method_v2` | Done | Relay thread forwards events to Emacs |
 | XKB layout switching | core Wayland | Done | Multi-layout with temporary reset for intercepts |
-| Preedit (composing text) | `text_input_v3` | TODO | Inline composition preview in client (CJK essential) |
+| Preedit (composing text) | `text_input_v3` | Done | The input method's buffer text, mirrored while it composes |
 | Content type hints | `text_input_v3` | TODO | Auto-disable intercept for password fields |
 | Surrounding text | `text_input_v3` | TODO | Selection access for cut/copy in surface buffers |
-| Delete surrounding text | `input_method_v2` | TODO | Cut in surface buffers, backspace during composition |
+| Delete surrounding text | `input_method_v2` | TODO | Cut in surface buffers |
 | Input popup surface | `input_method_v2` | TODO | Candidate window positioned at client cursor |
 
 ### Priority
-
-**Preedit** is the most impactful missing feature. It's required for proper
-CJK input (Japanese, Chinese, Korean) in external apps. Without it, composing
-characters only appear in Emacs's echo area, not inline in the client text field.
 
 **Surrounding text + delete** together enable clipboard operations (cut/copy)
 in surface buffers via the protocol rather than synthetic keypresses:
@@ -150,9 +146,18 @@ Application                    Compositor                      Emacs
 Commits are applied directly on the compositor thread via `TextInputHandle`,
 avoiding cross-thread serial races. If the client is in a disable->enable gap
 (e.g., after focus returned from the minibuffer), commits are queued and
-drained on the next Activated event for the same surface. Lisp translates
-intercepted keys inside the focused surface buffer, so buffer-local input
-methods cannot leak between surfaces.
+drained on the next Activated event for the same surface.
+
+Lisp runs the surface buffer's own input method in the command loop, so
+buffer-local input methods cannot leak between surfaces and multi-key
+sequences compose the way they do in Emacs. A text key queues an
+`ewm-text-input-key` special event. Its handler calls `input-method-function`
+in the surface buffer, where the method reads the keys the compositor keeps
+intercepting from `unread-command-events` and shows its guidance in the echo
+area. The text it composes in the buffer is mirrored to the client as preedit.
+When it returns, the result is committed and the keys it handed back are typed
+into the client (text through the method again, other keys replayed by keycode).
+A field deactivating mid-composition aborts it.
 
 ### Module Interface
 
@@ -162,13 +167,14 @@ methods cannot leak between surfaces.
 |-------|--------|---------|
 | `text-input-activated` | - | Text field focused in client |
 | `text-input-deactivated` | - | Text field unfocused |
-| `key` | `keysym`, `utf8` | Key press in text field |
+| `key` | `keysym`, `utf8`, `keycode`, modifiers | Key press in text field |
 
 **Emacs -> Compositor (module functions):**
 
 ```elisp
-(ewm-im-commit-module text surface-id)   ; Insert text into focused field
-(ewm-text-input-intercept-module enable) ; Enable/disable key interception
+(ewm-im-commit-module text surface-id)           ; Insert text into focused field
+(ewm-im-preedit-module text surface-id)          ; Show composing text, caret at its end
+(ewm-text-input-intercept-module enable)         ; Enable/disable key interception
 ```
 
 ### Usage
