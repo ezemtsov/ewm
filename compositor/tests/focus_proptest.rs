@@ -205,7 +205,10 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             }
             if !already_present {
                 let clock = fix.ewm().animations_clock.clone();
-                let strip = fix.ewm().frame_set.ensure_mapped_strip(output_name, clock);
+                let strip = fix
+                    .ewm()
+                    .frame_set
+                    .ensure_mapped_strip(output_name, clock, 1.);
                 strip.push_frame(Frame::new(surface_id));
             }
             let do_auto_focus = fix.ewm().focused_surface_id() == 0;
@@ -527,7 +530,7 @@ fn expected_surface_outputs(fix: &Fixture) -> HashMap<u64, HashSet<String>> {
 
 fn install_strip(fix: &mut Fixture, output: &str, ids: &[u64]) {
     let clock = fix.ewm().animations_clock.clone();
-    let strip = fix.ewm().frame_set.ensure_mapped_strip(output, clock);
+    let strip = fix.ewm().frame_set.ensure_mapped_strip(output, clock, 1.);
     strip.append_frames(ids.iter().copied().map(Frame::new));
     strip.set_active(0);
 }
@@ -831,7 +834,7 @@ fn ensure_strips(fix: &mut Fixture) {
     for name in OUTPUTS {
         if is_output_mapped(fix, name) {
             let clock = fix.ewm().animations_clock.clone();
-            fix.ewm().frame_set.ensure_mapped_strip(name, clock);
+            fix.ewm().frame_set.ensure_mapped_strip(name, clock, 1.);
         }
     }
 }
@@ -1041,10 +1044,10 @@ fn nav_build(setup: &NavSetup) -> Fixture {
 
     let clock = fix.ewm().animations_clock.clone();
     for i in 0..setup.n() {
-        let strip = fix
-            .ewm()
-            .frame_set
-            .ensure_mapped_strip(&setup.output_name(i), clock.clone());
+        let strip =
+            fix.ewm()
+                .frame_set
+                .ensure_mapped_strip(&setup.output_name(i), clock.clone(), 1.);
         for f in 0..setup.frames_per_output[i] {
             strip.push_frame(Frame::new(setup.frame_id(i, f)));
         }

@@ -91,10 +91,14 @@ impl FrameSet {
         &mut self,
         output_name: &str,
         clock: animation::Clock,
+        scale: f64,
     ) -> &mut strip::Strip {
-        self.mapped
+        let strip = self
+            .mapped
             .entry(output_name.to_string())
-            .or_insert_with(|| strip::Strip::new(clock))
+            .or_insert_with(|| strip::Strip::new(clock));
+        strip.update_config(scale);
+        strip
     }
 
     pub fn insert_mapped_strip(
@@ -1552,7 +1556,8 @@ impl Ewm {
             .collect::<Vec<_>>();
 
         let clock = self.animations_clock.clone();
-        let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock);
+        let scale = self.output_scale(dst_name);
+        let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock, scale);
         let insert_at = dst_strip.frames().len();
         dst_strip.append_frames(moved);
         if let Some(focused_idx) = moved_ids
@@ -1689,7 +1694,8 @@ impl Ewm {
             .collect::<Vec<_>>();
 
         let clock = self.animations_clock.clone();
-        let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock);
+        let scale = self.output_scale(dst_name);
+        let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock, scale);
         let insert_at = dst_strip.frames().len();
         dst_strip.append_frames(moved);
         if insert_at == 0 {
@@ -1874,7 +1880,10 @@ impl Ewm {
         // their layout entries are cleared by `merge_layout_frames`.
         let clock = self.animations_clock.clone();
         let focused_surface = self.focused_surface_id();
-        let strip_entry = self.frame_set.ensure_mapped_strip(output_name, clock);
+        let scale = self.output_scale(output_name);
+        let strip_entry = self
+            .frame_set
+            .ensure_mapped_strip(output_name, clock, scale);
         strip_entry.merge_layout_frames(frames, module::has_pending_active_frame_close);
         self.sync_focus_after_layout_merge(output_name, focused_surface);
 

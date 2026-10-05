@@ -65,18 +65,18 @@ fn click(fix: &mut Fixture, x: f64, y: f64) {
 #[test]
 fn open_close_toggle_track_state_and_zoom() {
     let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
-    let ewm = fix.ewm();
-    assert!(!ewm.overview.is_open());
-    assert_eq!(ewm.overview.zoom(), 1.0);
+    assert!(!fix.ewm_ref().overview.is_open());
+    assert_eq!(fix.ewm_ref().overview.zoom(), 1.0);
 
-    ewm.overview_toggle();
-    assert!(ewm.overview.is_open());
-    assert_eq!(ewm.overview.zoom(), 0.5);
-    assert!(!ewm.overview_open(), "open is a no-op while open");
+    fix.ewm().overview_toggle();
+    fix.dispatch();
+    assert!(fix.ewm_ref().overview.is_open());
+    assert_eq!(fix.ewm_ref().overview.zoom(), 0.5);
+    assert!(!fix.ewm().overview_open(), "open is a no-op while open");
 
-    assert!(ewm.overview_close());
-    assert!(!ewm.overview.is_open());
-    assert!(!ewm.overview_close(), "close is a no-op while closed");
+    assert!(fix.ewm().overview_close());
+    assert!(!fix.ewm_ref().overview.is_open());
+    assert!(!fix.ewm().overview_close(), "close is a no-op while closed");
     fix.dispatch_roundtrip(2);
     assert_eq!(fix.ewm_ref().overview.zoom(), 1.0);
 }
@@ -145,6 +145,7 @@ fn click_on_zoomed_neighbour_activates_it_and_closes() {
         .frames()[1]
         .focus_id;
     fix.ewm().overview_toggle();
+    fix.dispatch();
     fix.enable_event_capture();
 
     // Frame 1 starts at strip x 1920; at zoom 0.5 about the output centre that is screen x 1440.
@@ -170,6 +171,7 @@ fn click_on_zoomed_neighbour_activates_it_and_closes() {
 fn click_on_empty_zoomed_output_closes_without_switching() {
     let mut fix = fixture(vec![frame(10, 800.0), frame(11, 800.0)]);
     fix.ewm().overview_toggle();
+    fix.dispatch();
 
     // Strip x 1840 is past the second frame; on screen that is x 1400, inside the zoomed output.
     click(&mut fix, 1400.0, 540.0);
@@ -182,6 +184,7 @@ fn click_on_empty_zoomed_output_closes_without_switching() {
 fn click_on_backdrop_is_ignored() {
     let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
     fix.ewm().overview_toggle();
+    fix.dispatch();
 
     click(&mut fix, 100.0, 100.0);
 

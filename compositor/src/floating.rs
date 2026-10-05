@@ -5,9 +5,9 @@ use std::iter::zip;
 use smithay::input::pointer::CursorIcon;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::LayoutEntry;
 use crate::animation::{Animation, Clock};
 use crate::strip::Frame;
+use crate::{LayoutEntry, slide_spring};
 
 /// By how many logical pixels command-driven floating frame moves nudge frames.
 pub const DIRECTIONAL_MOVE_PX: f64 = 50.0;
@@ -243,7 +243,8 @@ impl Data {
     }
 
     pub fn set_move_anim(&mut self, from_x: f64, clock: Clock) {
-        self.move_anim = Some(Animation::new(clock, from_x, 0.0, 0.));
+        self.move_anim = (!clock.should_complete_instantly())
+            .then(|| Animation::new(clock, from_x, 0.0, 0., slide_spring()));
     }
 
     pub fn advance(&mut self) {

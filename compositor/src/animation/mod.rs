@@ -26,13 +26,18 @@ enum Kind {
 }
 
 impl Animation {
-    /// Critically damped and brisk, the one spring every slide runs on.
-    pub fn new(clock: Clock, from: f64, to: f64, initial_velocity: f64) -> Self {
+    pub fn new(
+        clock: Clock,
+        from: f64,
+        to: f64,
+        initial_velocity: f64,
+        params: SpringParams,
+    ) -> Self {
         let spring = Spring {
             from,
             to,
             initial_velocity,
-            params: SpringParams::new(1., 800., 0.0001),
+            params,
         };
         Self::spring(clock, spring)
     }
@@ -74,14 +79,16 @@ impl Animation {
     }
 
     pub fn value_at(&self, at: Duration) -> f64 {
-        // Snap even before the first tick.
-        if self.clock.should_complete_instantly() {
+        if at <= self.start_time {
+            // Return from when at == start_time so that when the animations are off, the behavior
+            // within a single event loop cycle (i.e. no time had passed since the start of an
+            // animation) matches the behavior when the animations are on.
+            return self.from;
+        } else if self.start_time + self.duration <= at {
             return self.to;
         }
 
-        if at <= self.start_time {
-            return self.from;
-        } else if self.start_time + self.duration <= at {
+        if self.clock.should_complete_instantly() {
             return self.to;
         }
 

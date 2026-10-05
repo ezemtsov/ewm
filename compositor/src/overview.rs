@@ -13,6 +13,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
 use crate::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
+use crate::slide_spring;
 use crate::strip::SwipeTracker;
 
 /// Touchpad travel in unaccelerated units for a full open or close.
@@ -139,6 +140,7 @@ impl Overview {
             from,
             to,
             0.,
+            slide_spring(),
         )));
     }
 
@@ -193,6 +195,7 @@ impl Overview {
             gesture.value,
             target,
             velocity,
+            slide_spring(),
         )));
         true
     }

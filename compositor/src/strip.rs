@@ -11,7 +11,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
 use crate::floating::SizeFracPoint;
-use crate::{FocusId, LayoutEntry, LayoutEntryId};
+use crate::{FocusId, LayoutEntry, LayoutEntryId, slide_spring};
 
 /// Touchpad swipe distance mapping to one working-area-width of strip movement.
 pub const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.0;
@@ -144,18 +144,28 @@ impl ViewOffset {
         }
     }
 
-    /// Spring from the live offset to `target`, keeping a slide already bound there.
-    pub fn animate_to(&mut self, clock: Clock, target: f64, velocity: f64) {
-        if !matches!(self, ViewOffset::Gesture(_)) && (self.target() - target).abs() < f64::EPSILON
-        {
+    /// Spring from the live offset to `target`, keeping a slide already bound within `pixel` of it.
+    pub fn animate_to(&mut self, clock: Clock, target: f64, velocity: f64, pixel: f64) {
+        if clock.should_complete_instantly() {
+            *self = ViewOffset::Static(target);
             return;
         }
+        if !matches!(self, ViewOffset::Gesture(_)) {
+            // Already there or bound there: only absorb the rounding.
+            let to_diff = target - self.target();
+            if to_diff.abs() < pixel {
+                self.offset(to_diff);
+                return;
+            }
+        }
         let from = self.current();
-        *self = if (from - target).abs() < f64::EPSILON {
-            ViewOffset::Static(target)
-        } else {
-            ViewOffset::Animation(Animation::new(clock, from, target, velocity))
-        };
+        *self = ViewOffset::Animation(Animation::new(
+            clock,
+            from,
+            target,
+            velocity,
+            slide_spring(),
+        ));
     }
 }
 
@@ -308,6 +318,8 @@ pub struct Strip {
     #[serde(skip)]
     overview_shift: f64,
     #[serde(skip)]
+    scale: f64,
+    #[serde(skip)]
     clock: Clock,
 }
 
@@ -319,8 +331,13 @@ impl Strip {
             active_idx: 0,
             view_offset: ViewOffset::default(),
             overview_shift: 0.0,
+            scale: 1.0,
             clock,
         }
+    }
+
+    pub fn update_config(&mut self, scale: f64) {
+        self.scale = scale;
     }
 
     pub fn active_idx(&self) -> usize {
@@ -347,7 +364,7 @@ impl Strip {
         }
         self.active_idx = idx;
         self.view_offset
-            .animate_to(self.clock.clone(), 0.0, velocity);
+            .animate_to(self.clock.clone(), 0.0, velocity, 1. / self.scale);
     }
 
     /// X position of frame `idx` relative to the strip origin.
@@ -454,7 +471,8 @@ impl Strip {
         // A closed overview showed no shift, so there is nothing to carry over.
         if let Some(progress) = progress.filter(|_| shift != 0.0) {
             self.view_offset.offset(-shift * progress / zoom);
-            self.view_offset.animate_to(self.clock.clone(), 0.0, 0.);
+            self.view_offset
+                .animate_to(self.clock.clone(), 0.0, 0., 1. / self.scale);
         }
     }
 
@@ -637,7 +655,7 @@ impl Strip {
 
     /// Seed `move_anim` on neighbours of `frames[idx]` so they slide in to fill the gap.
     fn seed_remove_animation_from(&mut self, idx: usize, anchor_idx: usize) {
-        if idx >= self.frames.len() {
+        if idx >= self.frames.len() || self.clock.should_complete_instantly() {
             return;
         }
         let clock = self.clock.clone();
@@ -647,7 +665,7 @@ impl Strip {
         } else {
             (&mut self.frames[..idx], -offset)
         };
-        let slide_in = Animation::new(clock, from, 0.0, 0.);
+        let slide_in = Animation::new(clock, from, 0.0, 0., slide_spring());
         for f in slide {
             f.move_anim = Some(slide_in.clone());
         }
@@ -776,6 +794,7 @@ mod tests {
             active_idx,
             view_offset: ViewOffset::default(),
             overview_shift: 0.0,
+            scale: 1.0,
             clock: Clock::default(),
         }
     }
@@ -896,7 +915,7 @@ mod tests {
         ) {
             let mut offset = ViewOffset::Static(f64::from(current));
 
-            offset.animate_to(Clock::default(), f64::from(target), 0.);
+            offset.animate_to(Clock::default(), f64::from(target), 0., 1.);
 
             prop_assert_eq!(offset.target(), f64::from(target));
             if current == target {
@@ -916,12 +935,12 @@ mod tests {
         ) {
             let start = Duration::from_secs(10);
             let clock = Clock::with_time(start);
-            let reference = Animation::new(clock.clone(), f64::from(from), f64::from(target), 0.);
+            let reference = Animation::new(clock.clone(), f64::from(from), f64::from(target), 0., slide_spring());
             let mut offset = ViewOffset::Static(f64::from(from));
-            offset.animate_to(clock.clone(), f64::from(target), 0.);
+            offset.animate_to(clock.clone(), f64::from(target), 0., 1.);
 
             clock.set(start + Duration::from_millis(elapsed_ms));
-            offset.animate_to(clock.clone(), f64::from(target), 0.);
+            offset.animate_to(clock.clone(), f64::from(target), 0., 1.);
             clock.set(start + Duration::from_millis(elapsed_ms * 2));
 
             prop_assert_eq!(offset.current(), reference.value());

@@ -726,6 +726,11 @@ const TITLE_EVENT_MAX_STALE: Duration = Duration::from_millis(1000);
 /// Fade-in duration for a surface's first buffer-bearing commit.
 const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
 
+/// Critically damped and brisk, the one spring every slide runs on.
+pub fn slide_spring() -> animation::SpringParams {
+    animation::SpringParams::new(1., 800., 0.0001)
+}
+
 // Coalesces compositor -> Lisp title notifications only. `surface_info`
 // remains exact and is updated before anything reaches this queue.
 struct PendingTitleEvent {
@@ -1993,6 +1998,7 @@ impl Ewm {
             self.animations_clock.clone(),
             if hidden { 1. } else { 0. },
             0.,
+            f64::EPSILON,
         );
         self.queue_event(Event::Hide { hidden });
         self.queue_redraw_all();
@@ -4456,6 +4462,12 @@ impl Ewm {
     /// backend-agnostic bookkeeping: scale notification, lock buffer resize,
     /// screencast size, recalculation, working areas, event to Emacs, and
     /// output management state.
+    /// Fractional scale of the mapped output `output_name`, or 1 when it is not mapped.
+    pub fn output_scale(&self, output_name: &str) -> f64 {
+        self.mapped_output_by_name(output_name)
+            .map_or(1., |output| output.current_scale().fractional_scale())
+    }
+
     pub fn output_config_changed(&mut self, output: &Output, became_mapped: bool) {
         let output_name = output.name();
         let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
@@ -4466,6 +4478,9 @@ impl Ewm {
         let current_transform = output.current_transform();
         let current_geo = self.space.output_geometry(output).unwrap_or_default();
         self.sync_sorted_outputs();
+        if let Some(strip) = self.frame_set.mapped_strip_mut(&output_name) {
+            strip.update_config(current_scale);
+        }
 
         // Notify existing surfaces of scale/transform change
         self.send_scale_transform_to_output_surfaces(output);
@@ -4917,7 +4932,10 @@ impl Ewm {
                     }
                 } else {
                     let clock = self.animations_clock.clone();
-                    let strip = self.frame_set.ensure_mapped_strip(output_name, clock);
+                    let scale = self.output_scale(output_name);
+                    let strip = self
+                        .frame_set
+                        .ensure_mapped_strip(output_name, clock, scale);
                     strip.push_frame(crate::strip::Frame::new(id));
                 }
             }
