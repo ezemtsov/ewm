@@ -2394,8 +2394,7 @@ impl Ewm {
         }
     }
 
-    /// Deactivate all monitors (e.g., lid closed with no external display).
-    /// Prevents rendering while screens are off.
+    /// Monitors off. Redraws keep settling, the backend is skipped.
     pub fn deactivate_monitors(&mut self) {
         if self.monitors_active {
             info!("Monitors deactivated");
@@ -2403,8 +2402,7 @@ impl Ewm {
         }
     }
 
-    /// Reactivate monitors (e.g., lid opened, or session resume).
-    /// Queues redraws for all outputs.
+    /// Monitors on. The next queued frame re-enables each CRTC.
     pub fn activate_monitors(&mut self) {
         if !self.monitors_active {
             info!("Monitors activated");
@@ -2748,10 +2746,6 @@ impl Ewm {
     pub fn redraw_queued_outputs(&mut self, backend: &mut backend::Backend) {
         tracy_span!("redraw_queued_outputs");
 
-        if !self.monitors_active {
-            return;
-        }
-
         // Use while-let with find() so outputs queued during
         // rendering (e.g., by VBlank handlers) are picked up in the same pass.
         while let Some(output) = self
@@ -2766,9 +2760,6 @@ impl Ewm {
 
     /// Return the next output needing a redraw, preferring `prefer` if queued.
     fn next_queued_redraw(&self, prefer: Option<&str>) -> Option<Output> {
-        if !self.monitors_active {
-            return None;
-        }
         let needs_redraw = |s: &OutputState| s.redraw_state.is_render_queued();
         if let Some(name) = prefer {
             let found = self
@@ -2839,8 +2830,15 @@ impl Ewm {
         let output_infos = backend.output_info_list(&self.sorted_outputs);
         self.refresh_output_management(&output_infos);
 
-        // Render via backend
-        let res = backend.render(self, output, target_presentation_time);
+        // Inactive monitors have no framebuffer and a disabled output keeps
+        // its surface off, so neither shows anything. Skip the backend and
+        // let them satisfy the lock as if rendered.
+        let dark = !self.monitors_active || self.space.output_geometry(output).is_none();
+        let res = if dark {
+            backend::RenderResult::Skipped
+        } else {
+            backend.render(self, output, target_presentation_time)
+        };
 
         // Handle state transitions based on render result
         let is_locked = self.is_locked();
@@ -2861,7 +2859,7 @@ impl Ewm {
             // Update lock render state on every successful render.
             // Setting both Locked and Unlocked prevents stale state if
             // the session transitions between locked and unlocked.
-            if res != backend::RenderResult::Skipped {
+            if res != backend::RenderResult::Skipped || dark {
                 state.lock_render_state = if is_locked {
                     LockRenderState::Locked
                 } else {
@@ -2916,7 +2914,7 @@ impl Ewm {
         }
 
         // Check lock confirmation requirements
-        if res != backend::RenderResult::Skipped {
+        if res != backend::RenderResult::Skipped || dark {
             self.check_lock_complete();
         } else {
             self.abort_lock_on_render_failure();

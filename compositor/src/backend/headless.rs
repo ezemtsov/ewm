@@ -42,6 +42,8 @@ pub struct HeadlessBackend {
     /// Virtual outputs indexed by name
     outputs: HashMap<String, VirtualOutput>,
     output_infos: OutputInfos,
+    /// Renders per output, for tests that watch the redraw loop.
+    render_counts: HashMap<String, u32>,
 }
 
 impl Default for HeadlessBackend {
@@ -56,11 +58,16 @@ impl HeadlessBackend {
         Self {
             outputs: HashMap::new(),
             output_infos: OutputInfos::default(),
+            render_counts: HashMap::new(),
         }
     }
 
     pub(crate) fn output_infos(&self) -> OutputInfos {
         self.output_infos.clone()
+    }
+
+    pub fn render_count(&self, output: &str) -> u32 {
+        self.render_counts.get(output).copied().unwrap_or(0)
     }
 
     /// Add a virtual output with the given name and size. The serial defaults
@@ -184,6 +191,7 @@ impl HeadlessBackend {
         }
 
         debug!("Headless render for output {}", name);
+        *self.render_counts.entry(name).or_default() += 1;
 
         super::RenderResult::Submitted
     }

@@ -139,7 +139,7 @@ fn popup_commit_queues_redraw_for_owning_output() {
     );
 
     assert_eq!(output_redraw_state(&fix, OUTPUT), "Idle");
-    fix.ewm().monitors_active = false;
+    let renders = fix.render_count(OUTPUT);
 
     let buffer = client.create_shm_buffer(Size::<i32, Logical>::from((80, 80)));
     popup.surface.attach(Some(&buffer), 0, 0);
@@ -148,7 +148,7 @@ fn popup_commit_queues_redraw_for_owning_output() {
     popup.surface.commit();
     fix.roundtrip(&mut client);
 
-    assert_eq!(output_redraw_state(&fix, OUTPUT), "Queued");
+    assert!(fix.render_count(OUTPUT) > renders);
 }
 
 #[test]

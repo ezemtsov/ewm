@@ -447,6 +447,14 @@ impl Fixture {
             .output_info_list(&self.state.ewm.sorted_outputs)
     }
 
+    /// Headless renders of OUTPUT so far.
+    pub fn render_count(&self, output: &str) -> u32 {
+        let Backend::Headless(headless) = &self.state.backend else {
+            unreachable!("test fixture always uses the headless backend");
+        };
+        headless.render_count(output)
+    }
+
     pub fn debug_state(&self) -> serde_json::Value {
         self.state.ewm.debug_state(&self.output_info_list())
     }

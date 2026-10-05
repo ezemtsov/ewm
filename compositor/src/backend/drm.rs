@@ -1226,7 +1226,11 @@ impl DrmBackendState {
             return;
         };
         if let Err(err) = surface.compositor.clear() {
-            warn!("Error clearing DRM surface for {}: {:?}", output.name(), err);
+            warn!(
+                "Error clearing DRM surface for {}: {:?}",
+                output.name(),
+                err
+            );
         }
     }
 
@@ -1354,11 +1358,6 @@ impl DrmBackendState {
         let Some((node, crtc)) = self.find_output_device(output) else {
             return super::RenderResult::Skipped;
         };
-        // A disabled output keeps its DRM surface. Rendering to it would
-        // re-enable the surface through queue_frame, so skip it.
-        if ewm.space.output_geometry(output).is_none() {
-            return super::RenderResult::Skipped;
-        }
         let Some(device) = self.devices.get(&node) else {
             return super::RenderResult::Skipped;
         };
@@ -2180,7 +2179,10 @@ impl DrmBackendState {
             // Keep the output off until it is enabled.
             if let Some(surface) = device.surfaces.get_mut(&crtc) {
                 if let Err(err) = surface.compositor.clear() {
-                    warn!("Error clearing DRM surface for {}: {:?}", connector_name, err);
+                    warn!(
+                        "Error clearing DRM surface for {}: {:?}",
+                        connector_name, err
+                    );
                 }
             }
         }
