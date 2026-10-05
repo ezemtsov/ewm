@@ -180,6 +180,13 @@ impl State {
         &mut self,
         event: InputEvent<B>,
     ) {
+        // Power on monitors if they were off. Only then does the event
+        // count as activity.
+        if !self.ewm.monitors_active && should_activate_monitors(&event) {
+            self.ewm.activate_monitors();
+            self.notify_activity();
+        }
+
         match event {
             InputEvent::DeviceAdded { device } => self.on_device_added(device),
             InputEvent::DeviceRemoved { device } => self.on_device_removed(device),
@@ -272,6 +279,10 @@ impl State {
     }
 
     fn notify_activity(&mut self) {
+        // Only a waking event counts while monitors are off.
+        if !self.ewm.monitors_active {
+            return;
+        }
         self.ewm.notify_activity();
         self.ewm.reset_idle_timer();
     }
@@ -1626,6 +1637,28 @@ impl State {
             .and_then(|c| c.map_to_output.as_deref())
             .or_else(|| type_cfg.and_then(|c| c.map_to_output.as_deref()))
             .and_then(|name| self.ewm.mapped_output_by_name(name))
+    }
+}
+
+/// Input that powers monitors back on. Releases, gesture ends and device
+/// changes don't count, so a power-off bind survives its own release.
+fn should_activate_monitors<I: InputBackend>(event: &InputEvent<I>) -> bool {
+    match event {
+        InputEvent::Keyboard { event } if event.state() == KeyState::Pressed => true,
+        InputEvent::PointerButton { event } if event.state() == ButtonState::Pressed => true,
+        InputEvent::PointerMotion { .. }
+        | InputEvent::PointerMotionAbsolute { .. }
+        | InputEvent::PointerAxis { .. }
+        | InputEvent::GestureSwipeBegin { .. }
+        | InputEvent::GesturePinchBegin { .. }
+        | InputEvent::GestureHoldBegin { .. }
+        | InputEvent::TouchDown { .. }
+        | InputEvent::TouchMotion { .. }
+        | InputEvent::TabletToolAxis { .. }
+        | InputEvent::TabletToolProximity { .. }
+        | InputEvent::TabletToolTip { .. }
+        | InputEvent::TabletToolButton { .. } => true,
+        _ => false,
     }
 }
 

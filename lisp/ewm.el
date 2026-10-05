@@ -58,6 +58,8 @@
 (declare-function ewm-entry-under-floating-center-module "ewm-core")
 (declare-function ewm--find-window-by-entry-id "ewm-focus")
 (declare-function ewm-configure-cursor-module "ewm-core")
+(declare-function ewm-power-off-monitors-module "ewm-core")
+(declare-function ewm-power-on-monitors-module "ewm-core")
 (declare-function ewm-start "ewm-core" (cursor-theme cursor-size))
 (declare-function ewm-list-xdg-apps "ewm-core")
 (declare-function ewm-set-focus-follows-mouse "ewm-core")
@@ -957,6 +959,16 @@ of inactivity.  Useful for video playback or presentations."
   "Lock the session via loginctl."
   (interactive)
   (start-process "loginctl" nil "loginctl" "lock-session"))
+
+(defun ewm-power-off-monitors ()
+  "Power off all monitors until a key press, pointer motion or session unlock."
+  (interactive)
+  (ewm-power-off-monitors-module))
+
+(defun ewm-power-on-monitors ()
+  "Power all monitors back on."
+  (interactive)
+  (ewm-power-on-monitors-module))
 
 (defun ewm--cycle-surface-buffer (command)
   "Run buffer-navigation COMMAND with a surface-only filter."

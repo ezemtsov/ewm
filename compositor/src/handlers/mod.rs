@@ -580,7 +580,9 @@ impl SessionLockHandler for State {
 
         self.ewm.queue_redraw_all();
 
-        // Restart idle timer after unlock
+        // Monitors on, so unlocking from a fingerprint reader lights the screen.
+        self.ewm.activate_monitors();
+        self.ewm.notify_activity();
         self.ewm.reset_idle_timer();
 
         info!("Session unlocked");

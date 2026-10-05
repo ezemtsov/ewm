@@ -537,6 +537,10 @@ pub enum ModuleCommand {
     SetIdleInhibited {
         inhibited: bool,
     },
+    /// Monitors off until a waking input, unlock or `PowerOnMonitors`
+    PowerOffMonitors,
+    /// Monitors back on
+    PowerOnMonitors,
     /// Client init done; force-resend wl_keyboard.enter (PGTK drops the
     /// pre-roundtrip one).
     Initialized,
@@ -1707,6 +1711,20 @@ fn set_idle_inhibited(inhibited: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::SetIdleInhibited {
         inhibited: inhibited.is_not_nil(),
     });
+    Ok(())
+}
+
+/// Power off all monitors (module mode).
+#[defun]
+fn power_off_monitors_module() -> Result<()> {
+    push_command(ModuleCommand::PowerOffMonitors);
+    Ok(())
+}
+
+/// Power all monitors back on (module mode).
+#[defun]
+fn power_on_monitors_module() -> Result<()> {
+    push_command(ModuleCommand::PowerOnMonitors);
     Ok(())
 }
 

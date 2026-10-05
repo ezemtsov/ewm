@@ -2176,15 +2176,18 @@ impl DrmBackendState {
             );
         } else {
             info!("Output {} connected but disabled by config", connector_name);
-            // Keep the output off until it is enabled.
-            if let Some(surface) = device.surfaces.get_mut(&crtc) {
-                if let Err(err) = surface.compositor.clear() {
-                    warn!(
-                        "Error clearing DRM surface for {}: {:?}",
-                        connector_name, err
-                    );
-                }
-            }
+        }
+
+        // Stay off when disabled, or when monitors are off and this is one
+        // replugging itself after powering down.
+        if (!is_enabled || !ewm.monitors_active)
+            && let Some(surface) = device.surfaces.get_mut(&crtc)
+            && let Err(err) = surface.compositor.clear()
+        {
+            warn!(
+                "Error clearing DRM surface for {}: {:?}",
+                connector_name, err
+            );
         }
 
         let physical_size = connector.size().unwrap_or((0, 0));

@@ -6242,6 +6242,11 @@ impl State {
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;
             }
+            ModuleCommand::PowerOffMonitors => {
+                self.ewm.deactivate_monitors();
+                self.backend.clear_all_surfaces();
+            }
+            ModuleCommand::PowerOnMonitors => self.ewm.activate_monitors(),
 
             ModuleCommand::Initialized => {
                 // Force-resend keyboard.enter; PGTK silently dropped the
