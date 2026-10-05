@@ -2215,3 +2215,6 @@ impl Ewm {
             .is_some_and(|s| s.animations_ongoing())
     }
 }
+
+#[cfg(test)]
+mod tests;
