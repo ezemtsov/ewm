@@ -8,12 +8,9 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::animation::{Animation, Clock, Spring};
+use crate::animation::{Animation, Clock};
 use crate::floating::SizeFracPoint;
 use crate::{FocusId, LayoutEntry, LayoutEntryId};
-
-/// Fade-in duration for a surface's first buffer-bearing commit.
-pub const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
 
 /// Touchpad swipe distance mapping to one working-area-width of strip movement.
 pub const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.0;
@@ -144,6 +141,16 @@ impl ViewOffset {
                 g.anchor += delta;
             }
         }
+    }
+
+    /// Spring from the live offset to `target`, or snap when already there.
+    pub fn animate_to(&mut self, clock: Clock, target: f64, velocity: f64) {
+        let from = self.current();
+        *self = if (from - target).abs() < f64::EPSILON {
+            ViewOffset::Static(target)
+        } else {
+            ViewOffset::Animation(Animation::new(clock, from, target, velocity))
+        };
     }
 }
 
@@ -334,15 +341,8 @@ impl Strip {
             self.view_offset.offset(delta);
         }
         self.active_idx = idx;
-        let cur = self.view_offset.current();
-        self.view_offset = if cur.abs() < f64::EPSILON {
-            ViewOffset::Static(0.0)
-        } else {
-            ViewOffset::Animation(Animation::spring(
-                self.clock.clone(),
-                Spring::new(cur, 0.0, velocity),
-            ))
-        };
+        self.view_offset
+            .animate_to(self.clock.clone(), 0.0, velocity);
     }
 
     /// X position of frame `idx` relative to the strip origin.
@@ -378,20 +378,6 @@ impl Strip {
     /// Strip-relative viewport left edge once any in-flight animation settles.
     pub fn target_view_pos(&self) -> f64 {
         self.column_x(self.active_idx) + self.view_offset.target()
-    }
-
-    /// Animate `view_offset` from its current value to `target`. Collapses to
-    /// `Static(target)` if the delta is already zero.
-    pub fn animate_view_offset(&mut self, target: f64) {
-        let from = self.view_offset.current();
-        if (from - target).abs() < f64::EPSILON {
-            self.view_offset = ViewOffset::Static(target);
-        } else {
-            self.view_offset = ViewOffset::Animation(Animation::spring(
-                self.clock.clone(),
-                Spring::new(from, target, 0.),
-            ));
-        }
     }
 
     /// Drive the state machine forward; settles finished animations.
@@ -583,8 +569,9 @@ impl Strip {
         } else {
             (&mut self.frames[..idx], -offset)
         };
+        let slide_in = Animation::new(clock, from, 0.0, 0.);
         for f in slide {
-            f.move_anim = Some(Animation::spring(clock.clone(), Spring::new(from, 0.0, 0.)));
+            f.move_anim = Some(slide_in.clone());
         }
     }
 
@@ -639,9 +626,10 @@ impl Strip {
 
     /// End the gesture: snap to the column nearest the projected stop, keeping the swipe's speed.
     pub fn gesture_end(&mut self, working_w: f64) {
-        let ViewOffset::Gesture(g) = &self.view_offset else {
+        let ViewOffset::Gesture(g) = &mut self.view_offset else {
             return;
         };
+        g.tracker.push(0., self.clock.now());
         let norm = working_w / VIEW_GESTURE_WORKING_AREA_MOVEMENT;
         let velocity = g.tracker.velocity() * norm;
         let projected = g.anchor + g.tracker.projected_end_pos() * norm;
@@ -824,22 +812,21 @@ mod tests {
         }
 
         #[test]
-        fn animate_view_offset_uses_static_only_for_zero_distance(
+        fn animate_to_uses_static_only_for_zero_distance(
             current in -2_000i32..=2_000,
             target in -2_000i32..=2_000,
         ) {
-            let mut strip = strip_with(vec![100.0], 0.0, 0);
-            strip.view_offset = ViewOffset::Static(f64::from(current));
+            let mut offset = ViewOffset::Static(f64::from(current));
 
-            strip.animate_view_offset(f64::from(target));
+            offset.animate_to(Clock::default(), f64::from(target), 0.);
 
-            prop_assert_eq!(strip.view_offset.target(), f64::from(target));
+            prop_assert_eq!(offset.target(), f64::from(target));
             if current == target {
-                prop_assert!(strip.view_offset.is_static());
-                prop_assert_eq!(strip.view_offset.current(), f64::from(current));
+                prop_assert!(offset.is_static());
+                prop_assert_eq!(offset.current(), f64::from(current));
             } else {
-                prop_assert!(strip.view_offset.is_animation_ongoing());
-                prop_assert!(!strip.view_offset.is_static());
+                prop_assert!(offset.is_animation_ongoing());
+                prop_assert!(!offset.is_static());
             }
         }
 

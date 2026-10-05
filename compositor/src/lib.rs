@@ -773,6 +773,8 @@ pub struct DndIcon {
 
 const TITLE_EVENT_IDLE_FLUSH_DELAY: Duration = Duration::from_millis(500);
 const TITLE_EVENT_MAX_STALE: Duration = Duration::from_millis(1000);
+/// Fade-in duration for a surface's first buffer-bearing commit.
+const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
 
 // Coalesces compositor -> Lisp title notifications only. `surface_info`
 // remains exact and is updated before anything reaches this queue.
@@ -819,8 +821,7 @@ pub struct Ewm {
     pub frame_set: FrameSet,
     /// Per-output floating Emacs frame spaces, attached to the output's strip/workspace.
     pub floating_spaces: HashMap<String, floating::FloatingSpace>,
-    /// Clock every `Animation` under this `Ewm` reads. Frozen at the target
-    /// presentation time during a redraw.
+    /// Clock every `Animation` reads, frozen at the target presentation time per redraw.
     pub animations_clock: animation::Clock,
     /// Zoomed-out strip view shared by all outputs.
     pub overview: overview::Overview,
@@ -2535,7 +2536,7 @@ impl Ewm {
             // A closed overview showed no shift, so there is nothing to carry over.
             if let Some(progress) = progress.filter(|_| shift != 0.0) {
                 strip.view_offset.offset(-shift * progress / zoom);
-                strip.animate_view_offset(0.0);
+                strip.view_offset.animate_to(strip.clock.clone(), 0.0, 0.);
             }
         }
     }
@@ -2621,10 +2622,11 @@ impl Ewm {
             return;
         }
         let hidden = !self.frames_hidden();
-        self.hide = strip::ViewOffset::Animation(animation::Animation::spring(
+        self.hide.animate_to(
             self.animations_clock.clone(),
-            animation::Spring::new(self.hide.current(), if hidden { 1. } else { 0. }, 0.),
-        ));
+            if hidden { 1. } else { 0. },
+            0.,
+        );
         self.queue_event(Event::Hide { hidden });
         self.queue_redraw_all();
     }
@@ -7874,8 +7876,7 @@ impl CompositorHandler for State {
                         self.ewm.animations_clock.clone(),
                         0.0,
                         1.0,
-                        strip::OPEN_ANIM_DURATION,
-                        animation::Curve::EaseOutCubic,
+                        OPEN_ANIM_DURATION,
                     )
                     .delayed(std::time::Duration::from_millis(16)),
                 );

@@ -11,12 +11,13 @@ const UNSET: u64 = u64::MAX;
 /// Shareable lazy clock.
 ///
 /// The clock will fetch the time once and then retain it until explicitly cleared with
-/// [`Clock::clear`]. Atomics keep it `Send` for frames crossing the command queue.
+/// [`Clock::clear`].
 #[derive(Debug, Clone)]
 pub struct Clock {
     inner: Arc<Inner>,
 }
 
+/// Atomics keep the clock `Send` for frames crossing the command queue.
 #[derive(Debug)]
 struct Inner {
     time: AtomicU64,
@@ -79,7 +80,7 @@ impl Clock {
 }
 
 fn nanos(time: Duration) -> u64 {
-    u64::try_from(time.as_nanos()).map_or(UNSET - 1, |n| n.min(UNSET - 1))
+    time.as_nanos().min(u128::from(UNSET - 1)) as u64
 }
 
 #[cfg(test)]

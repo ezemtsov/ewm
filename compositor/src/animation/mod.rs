@@ -1,5 +1,5 @@
 //! Ported from niri's `animation/mod.rs`, without the config-driven constructors, the
-//! deceleration kind and the cubic bezier curve.
+//! deceleration kind, the clamped duration and every curve but ease-out-cubic.
 
 use std::time::Duration;
 
@@ -14,10 +14,6 @@ pub struct Animation {
     from: f64,
     to: f64,
     duration: Duration,
-    /// Time until the animation first reaches `to`.
-    ///
-    /// Best effort; not always exactly precise.
-    clamped_duration: Duration,
     start_time: Duration,
     clock: Clock,
     kind: Kind,
@@ -25,47 +21,41 @@ pub struct Animation {
 
 #[derive(Debug, Clone, Copy)]
 enum Kind {
-    Easing { curve: Curve },
+    Easing,
     Spring(Spring),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Curve {
-    Linear,
-    EaseOutQuad,
-    EaseOutCubic,
-    EaseOutExpo,
-}
-
 impl Animation {
-    pub fn ease(clock: Clock, from: f64, to: f64, duration: Duration, curve: Curve) -> Self {
-        let kind = Kind::Easing { curve };
+    /// Critically damped and brisk, the one spring every slide runs on.
+    pub fn new(clock: Clock, from: f64, to: f64, initial_velocity: f64) -> Self {
+        let spring = Spring {
+            from,
+            to,
+            initial_velocity,
+            params: SpringParams::new(1., 800., 0.0001),
+        };
+        Self::spring(clock, spring)
+    }
 
+    pub fn ease(clock: Clock, from: f64, to: f64, duration: Duration) -> Self {
         Self {
             from,
             to,
             duration,
-            // Our current curves never overshoot.
-            clamped_duration: duration,
             start_time: clock.now(),
             clock,
-            kind,
+            kind: Kind::Easing,
         }
     }
 
     pub fn spring(clock: Clock, spring: Spring) -> Self {
-        let duration = spring.duration();
-        let clamped_duration = spring.clamped_duration().unwrap_or(duration);
-        let kind = Kind::Spring(spring);
-
         Self {
             from: spring.from,
             to: spring.to,
-            duration,
-            clamped_duration,
+            duration: spring.duration(),
             start_time: clock.now(),
             clock,
-            kind,
+            kind: Kind::Spring(spring),
         }
     }
 
@@ -83,16 +73,8 @@ impl Animation {
         self.clock.now() >= self.start_time + self.duration
     }
 
-    pub fn is_clamped_done(&self) -> bool {
-        if self.clock.should_complete_instantly() {
-            return true;
-        }
-
-        self.clock.now() >= self.start_time + self.clamped_duration
-    }
-
     pub fn value_at(&self, at: Duration) -> f64 {
-        // Snap even a just-started animation: Emacs reads positions between redraws.
+        // Snap even before the first tick.
         if self.clock.should_complete_instantly() {
             return self.to;
         }
@@ -106,11 +88,9 @@ impl Animation {
         let passed = at.saturating_sub(self.start_time);
 
         match self.kind {
-            Kind::Easing { curve } => {
-                let passed = passed.as_secs_f64();
-                let total = self.duration.as_secs_f64();
-                let x = (passed / total).clamp(0., 1.);
-                curve.y(x) * (self.to - self.from) + self.from
+            Kind::Easing => {
+                let x = (passed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0., 1.);
+                (1. - (1. - x).powi(3)) * (self.to - self.from) + self.from
             }
             Kind::Spring(spring) => {
                 let value = spring.value_at(passed);
@@ -132,23 +112,8 @@ impl Animation {
         self.value_at(self.clock.now())
     }
 
-    /// Returns a value that stops at the target value after first reaching it.
-    ///
-    /// Best effort; not always exactly precise.
-    pub fn clamped_value(&self) -> f64 {
-        if self.is_clamped_done() {
-            return self.to;
-        }
-
-        self.value()
-    }
-
     pub fn to(&self) -> f64 {
         self.to
-    }
-
-    pub fn from(&self) -> f64 {
-        self.from
     }
 
     pub fn offset(&mut self, offset: f64) {
@@ -158,17 +123,6 @@ impl Animation {
         if let Kind::Spring(spring) = &mut self.kind {
             spring.from += offset;
             spring.to += offset;
-        }
-    }
-}
-
-impl Curve {
-    pub fn y(self, x: f64) -> f64 {
-        match self {
-            Curve::Linear => x,
-            Curve::EaseOutQuad => 1. - (1. - x).powi(2),
-            Curve::EaseOutCubic => 1. - (1. - x).powi(3),
-            Curve::EaseOutExpo => 1. - 2f64.powf(-10. * x),
         }
     }
 }
@@ -192,7 +146,7 @@ mod tests {
             let from = f64::from(from);
             let to = f64::from(to);
             let clock = Clock::with_time(start);
-            let animation = Animation::ease(clock.clone(), from, to, duration, Curve::EaseOutCubic);
+            let animation = Animation::ease(clock.clone(), from, to, duration);
             clock.set(start + Duration::from_millis(elapsed_ms));
             let t = (elapsed_ms as f64 / duration_ms as f64).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - t).powi(3);
@@ -214,13 +168,7 @@ mod tests {
             let duration = Duration::from_millis(duration_ms);
             let delta = f64::from(delta);
             let clock = Clock::with_time(start);
-            let mut animation = Animation::ease(
-                clock.clone(),
-                f64::from(from),
-                f64::from(to),
-                duration,
-                Curve::EaseOutCubic,
-            );
+            let mut animation = Animation::ease(clock.clone(), f64::from(from), f64::from(to), duration);
             clock.set(start + Duration::from_millis(elapsed_ms));
             let before = animation.value();
 

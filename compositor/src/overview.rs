@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::animation::{Animation, Clock, Spring};
+use crate::animation::{Animation, Clock};
 use crate::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
 use crate::strip::SwipeTracker;
 
@@ -134,9 +134,11 @@ impl Overview {
         self.open = !self.open;
         let from = self.progress().unwrap_or(0.);
         let to = if self.open { 1. } else { 0. };
-        self.progress = Some(Progress::Animation(Animation::spring(
+        self.progress = Some(Progress::Animation(Animation::new(
             self.clock.clone(),
-            Spring::new(from, to, 0.),
+            from,
+            to,
+            0.,
         )));
     }
 
@@ -186,9 +188,11 @@ impl Overview {
         // Inside the rubber band only the speed that showed on screen carries over.
         velocity *= GESTURE_RUBBER_BAND.clamp_derivative(0., 1., gesture.start + current_pos);
         self.open = target == 1.;
-        self.progress = Some(Progress::Animation(Animation::spring(
+        self.progress = Some(Progress::Animation(Animation::new(
             self.clock.clone(),
-            Spring::new(gesture.value, target, velocity),
+            gesture.value,
+            target,
+            velocity,
         )));
         true
     }

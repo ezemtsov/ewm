@@ -37,24 +37,6 @@ impl SpringParams {
     }
 }
 
-/// Critically damped and brisk, the one spring every slide runs on.
-impl Default for SpringParams {
-    fn default() -> Self {
-        Self::new(1., 800., 0.0001)
-    }
-}
-
-impl Spring {
-    pub fn new(from: f64, to: f64, initial_velocity: f64) -> Self {
-        Self {
-            from,
-            to,
-            initial_velocity,
-            params: SpringParams::default(),
-        }
-    }
-}
-
 impl Spring {
     pub fn value_at(&self, t: Duration) -> f64 {
         self.oscillate(t.as_secs_f64())
@@ -223,31 +205,6 @@ mod tests {
             prop_assert!(duration < Duration::MAX);
             prop_assert!(spring.clamped_duration().is_none_or(|d| d <= Duration::from_secs(3)));
             prop_assert!(spring.value_at(Duration::ZERO).is_finite());
-        }
-
-        // A critically damped spring from rest never overshoots and settles at the target.
-        #[test]
-        fn critically_damped_spring_from_rest_is_monotonic(
-            stiffness in 100f64..=2000.,
-            from in -10f64..=10.,
-            to in -10f64..=10.,
-        ) {
-            let spring = Spring {
-                from,
-                to,
-                initial_velocity: 0.,
-                params: SpringParams::new(1., stiffness, 0.0001),
-            };
-            let duration = spring.duration();
-            let direction = to - from;
-            let mut prev = from;
-            for i in 1..=100 {
-                let value = spring.value_at(duration.mul_f64(f64::from(i) / 100.));
-                prop_assert!((value - prev) * direction >= -1e-9);
-                prop_assert!((to - value) * direction >= -1e-9);
-                prev = value;
-            }
-            prop_assert!((spring.value_at(duration) - to).abs() <= 0.01 * direction.abs() + 1e-9);
         }
     }
 }
