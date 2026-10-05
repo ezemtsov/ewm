@@ -1,31 +1,25 @@
-# EWM - Emacs Wayland Manager
+# ewm - Emacs Wayland Manager
 
-![EWM Screenshot](docs/diagrams/ewm-showcase.png)
+![ewm screenshot](docs/diagrams/ewm-showcase.png)
 
-EWM is a modern, fast Linux desktop environment based on Emacs. It is written in Rust, built on [Smithay](https://github.com/Smithay/smithay), and runs as a dynamic module inside an Emacs session. Wayland applications appear as Emacs buffers, which means graphical windows can be managed with the same commands, keybindings, and workflows as the rest of Emacs.
+ewm is a modern, fast Linux desktop environment written in Rust, based on [Smithay](https://github.com/Smithay/smithay), and running as a dynamic module inside of your emacs session. Graphical applications appear as normal emacs buffers, and are managed with the same commands, keybindings, and workflows as the rest of your configuration.
 
-The ultimate goal of EWM is to let power users be bottlenecked by their own thinking, not by the tools they use. Computers should never stand in our way. EWM is built around the idea that window management, application launching, navigation, text input, and system control should be fast, deterministic, programmable, and composable.
+The main goal of ewm is to offer a distraction-free working environment, optimized for keyboard input. Most emacs actions do not require visual feedback: once a command sequence is learned, it can be executed blindly through deterministic key presses. Over time this creates a huge productivity boost, with virtually no skill cap. The only missing piece with emacs was graphical windows, and ewm solves that by making Wayland windows part of the Emacs environment itself.
 
-Years ago I tried Emacs and became obsessed with how elegant and powerful the flow was. Most Emacs actions do not require visual feedback: once a command sequence is learned, it can be executed blindly through deterministic key presses. Over time this creates a huge productivity boost, with virtually no skill cap. The only missing piece was graphical windows. EWM solves that by making Wayland windows part of the Emacs environment itself.
+## quick start
 
-## Approach
+Launch apps with `s-d`. See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for full setup, configuration, and NixOS instructions.
 
-EWM was bootstrapped with LLM assistance. Today, coding agents are used mainly to compare EWM against [niri](https://github.com/YaLTeR/niri) and catch divergences from proven Smithay compositor patterns before they become correctness, performance, or reliability issues. This feedback loop is a major reason EWM could be built quickly while still becoming fast and reliable enough for daily use.
-
-## Quick Start
-
-For local testing, use the helper script:
+For local development and testing, I use the helper script, started from inside `nix-shell`:
 
 ```bash
 cd compositor
 ./test.sh
 ```
 
-The script builds EWM with screencast support, sets `EWM_MODULE_PATH`, and starts Emacs with `--fg-daemon=vt2`. Pass an init directory as the only argument when you need one, for example `./test.sh /etc/nixos/emacs`. The named daemon is intentional: plain `--fg-daemon` uses the default Emacs server socket and can conflict with an existing Emacs daemon. Connect to this session with `emacsclient --socket-name=vt2`.
+The script builds ewm with screencast support, sets `EWM_MODULE_PATH`, and starts Emacs with `--fg-daemon=vt2`. Pass an init directory as the only argument when you need one, for example `./test.sh /etc/nixos/emacs`. The named daemon is intentional: plain `--fg-daemon` uses the default Emacs server socket and can conflict with an existing Emacs daemon. Connect to this session with `emacsclient --socket-name=vt2`.
 
-Launch apps with `s-d`. See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) for full setup, configuration, and NixOS instructions.
-
-## Current Features
+## current features
 
 - Wayland applications as regular Emacs buffers
 - Emacs-native window management, focus, keybindings, and fullscreen
@@ -35,20 +29,26 @@ Launch apps with `s-d`. See the [wiki](https://codeberg.org/ezemtsov/ewm/wiki) f
 - Input methods and keyboard configuration integrated with Emacs
 - External app launching through XDG desktop entries
 
-## Known Limitations
+## known limitations
 
 - GPU selection is automatic (no override)
 - Must run from TTY (no nested mode)
 
-## Inspirations
+## inspirations
 
 - **[EXWM](https://github.com/ch11ng/exwm)** (Emacs side): Buffer-per-window model, prefix key interception, automatic focus management
 - **[niri](https://github.com/YaLTeR/niri)** (Compositor side): Backend architecture, Smithay patterns, DRM abstraction
 
-## Community
+## approach
+
+Writing a Wayland compositor from scratch is a staggering amount of work. I wanted to switch from EXWM as soon as possible, so the initial bootstrap was done with a bunch of agentic tools, which helped a lot in reverse-engineering the brilliant niri codebase and surgically extracting the pieces relevant to ewm. Today, coding agents are used mainly to compare ewm against [niri](https://github.com/YaLTeR/niri) and other relevant references to catch divergences from proven Smithay compositor patterns before they become correctness, performance, or reliability issues. This feedback loop is a major reason ewm could be built quickly while still becoming fast and reliable enough for daily use.
+
+For people who are strictly against LLMs and prefer to keep their hands completely clean, I highly recommend checking out another take on a Wayland-based emacs compositor from my great friend tazjin: [reka](https://code.tvl.fyi/about/tools/emacs-pkgs/reka). It's based on River, so at a small cost in features it helped to contain the complexity enough to write everything by hand in a relatively short time.
+
+## community
 
 Join the Matrix room: [#ewm:matrix.org](https://matrix.to/#/#ewm:matrix.org)
 
-## License
+## license
 
-GPL-3.0
+GPL-3.0-or-later
