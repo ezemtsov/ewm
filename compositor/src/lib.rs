@@ -2492,17 +2492,21 @@ impl Ewm {
 
     /// Refresh the idle inhibition state.
     ///
-    /// Combines three sources of idle inhibition:
-    /// 1. **FDO ScreenSaver D-Bus**: Firefox, Chrome, and other apps use
+    /// Combines four sources of idle inhibition:
+    /// 1. **Manual toggle**: `ewm-idle-inhibit-mode` in Emacs.
+    /// 2. **FDO ScreenSaver D-Bus**: Firefox, Chrome, and other apps use
     ///    `org.freedesktop.ScreenSaver.Inhibit()` to prevent screensaver.
-    /// 2. **Wayland idle-inhibit protocol**: Video players create `zwp_idle_inhibitor_v1` on their
+    /// 3. **Wayland idle-inhibit protocol**: Video players create `zwp_idle_inhibitor_v1` on their
     ///    surface.
-    /// 3. **Fullscreen heuristic**: A fullscreen surface that is currently focused is treated as an
+    /// 4. **Fullscreen heuristic**: A fullscreen surface that is currently focused is treated as an
     ///    idle inhibitor (covers video players and games that don't implement the protocol).
     ///
     /// For Wayland protocol inhibitors, only visible surfaces count
-    /// (checked via `surface_primary_scanout_output`).  This prevents a
+    /// (checked via `surface_primary_scanout_output`). This prevents a
     /// minimized/hidden app from keeping the screen awake.
+    ///
+    /// While the session is locked only the lock surface is visible, so only its
+    /// own protocol inhibitor counts and the other sources wait for the unlock.
     ///
     /// The result is propagated to both the ext-idle-notify protocol (for
     /// swayidle) and the native idle timeout (monitor blanking/command).
@@ -2512,16 +2516,17 @@ impl Ewm {
         // Clean up dead surfaces
         self.idle_inhibiting_surfaces.retain(|s| s.is_alive());
 
-        let is_inhibited = self.manual_idle_inhibited
-            || self
-                .is_fdo_idle_inhibited
-                .load(std::sync::atomic::Ordering::SeqCst)
+        let is_inhibited = (!self.is_locked()
+            && (self.manual_idle_inhibited
+                || self
+                    .is_fdo_idle_inhibited
+                    .load(std::sync::atomic::Ordering::SeqCst)))
+            || self.fullscreen_surface_inhibits_idle()
             || self.idle_inhibiting_surfaces.iter().any(|surface| {
                 with_states(surface, |states| {
                     surface_primary_scanout_output(surface, states).is_some()
                 })
-            })
-            || self.fullscreen_surface_inhibits_idle();
+            });
 
         if is_inhibited != self.idle_is_inhibited {
             info!(
@@ -2553,7 +2558,7 @@ impl Ewm {
     /// A visible fullscreen surface on any output inhibits idle.
     /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
     fn fullscreen_surface_inhibits_idle(&self) -> bool {
-        !self.frames_hidden() && self.layout.any_active_fullscreen()
+        !self.is_locked() && !self.frames_hidden() && self.layout.any_active_fullscreen()
     }
 
     /// Kill idle child process (e.g., on lid close).
