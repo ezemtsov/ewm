@@ -1224,19 +1224,24 @@ impl Ewm {
             })
     }
 
-    fn surface_has_primary_entry(&self, id: u64) -> bool {
+    /// The views of `id` in active frames and floating frames, with their output.
+    pub(crate) fn surface_views(&self, id: u64) -> impl Iterator<Item = (&str, &LayoutEntry)> {
         self.mapped_output_strips()
-            .map(|(_, strip)| strip)
-            .any(|strip| {
+            .flat_map(|(name, strip)| {
                 strip
                     .active_surface_entries()
-                    .any(|entry| entry.surface_id() == Some(id) && entry.primary())
+                    .map(move |entry| (name, entry))
             })
-            || self.floating_spaces.values().any(|space| {
+            .chain(self.floating_spaces.iter().flat_map(|(name, space)| {
                 space
                     .surface_entries()
-                    .any(|entry| entry.surface_id() == Some(id) && entry.primary())
-            })
+                    .map(move |entry| (name.as_str(), entry))
+            }))
+            .filter(move |(_, entry)| entry.surface_id() == Some(id))
+    }
+
+    fn surface_has_primary_entry(&self, id: u64) -> bool {
+        self.surface_views(id).any(|(_, entry)| entry.primary())
     }
 
     fn configure_surface_fullscreen_state(&self, id: u64, fullscreen: bool) {
@@ -1327,6 +1332,14 @@ impl Ewm {
             entries.extend(space.surface_entries().filter_map(LayoutEntry::surface_id));
         }
         entries
+    }
+
+    /// Whether `id` shows on output `name`, as a view or as an Emacs frame.
+    pub(crate) fn surface_on_output(&self, id: u64, name: &str) -> bool {
+        self.surface_outputs
+            .get(&id)
+            .is_some_and(|names| names.contains(name))
+            || self.emacs_frame_output(id) == Some(name)
     }
 
     fn surface_outputs_for(&self, output_name: &str) -> HashSet<u64> {
@@ -2071,6 +2084,77 @@ impl Ewm {
         self.assign_primary_entries(&output_sizes, &best_area);
         self.refresh_mapped_cast_outputs();
         self.configure_primary_entries();
+    }
+
+    fn configure_primary_entries(&self) {
+        for output in &self.sorted_outputs {
+            let Some(strip) = self.frame_set.mapped_strip(&output.name()) else {
+                continue;
+            };
+            let active_idx = strip.active_idx();
+            let Some(frame) = strip.frames().get(active_idx) else {
+                continue;
+            };
+            for entry in frame.entries.iter().filter(|entry| entry.primary()) {
+                self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
+            }
+        }
+        for output in &self.sorted_outputs {
+            let oname = output.name();
+            let Some(space) = self.floating_spaces.get(&oname) else {
+                continue;
+            };
+            for frame in space.frames() {
+                for entry in frame.entries.iter().filter(|entry| entry.primary()) {
+                    self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
+                }
+            }
+        }
+    }
+
+    fn configure_primary(&self, output: &Output, fullscreen: bool, entry: &LayoutEntry) {
+        let Some(surface_id) = entry.surface_id() else {
+            return;
+        };
+        let Some(window) = self.id_windows.get(&surface_id) else {
+            return;
+        };
+        window.with_surfaces(|s, data| {
+            crate::utils::send_scale_transform(
+                s,
+                data,
+                output.current_scale(),
+                output.current_transform(),
+            );
+        });
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        let new_size = if fullscreen {
+            let s = crate::utils::output_size(output);
+            (s.w as i32, s.h as i32).into()
+        } else {
+            (entry.w as i32, entry.h as i32).into()
+        };
+        let changed = toplevel.with_pending_state(|state| {
+            let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
+            let was_maximized = state.states.contains(XdgToplevelState::Maximized);
+            let changed = state.size != Some(new_size)
+                || was_fullscreen != fullscreen
+                || was_maximized == fullscreen;
+            state.size = Some(new_size);
+            if fullscreen {
+                state.states.set(XdgToplevelState::Fullscreen);
+                state.states.unset(XdgToplevelState::Maximized);
+            } else {
+                state.states.set(XdgToplevelState::Maximized);
+                state.states.unset(XdgToplevelState::Fullscreen);
+            }
+            changed
+        });
+        if changed {
+            toplevel.send_configure();
+        }
     }
 
     fn output_sizes_by_name(&self) -> HashMap<String, (u64, u64)> {

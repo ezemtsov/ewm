@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -10,10 +8,7 @@ use smithay::wayland::compositor::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
-use crate::{
-    Event, OPEN_ANIM_DURATION, State, animation, client_state, compute_open_floating,
-    natural_open_size, surface_root,
-};
+use crate::{Event, State, client_state, compute_open_floating, natural_open_size, surface_root};
 
 /// Bake an Emacs frame's close snapshot on the commit that unmaps it.
 pub(crate) fn add_frame_unmap_pre_commit_hook(surface: &WlSurface) {
@@ -143,20 +138,15 @@ impl CompositorHandler for State {
             // Title before Mapped, so placement rules see a title set on the mapping commit.
             self.ewm.check_surface_info_changes(surface);
 
-            // unmapped->mapped transition: seed the open-fade once. The
-            // 16ms delay holds alpha at 0 for one vblank so the empty/white
-            // initial buffer some clients ship is rendered invisibly.
-            if crate::utils::is_mapped(&root_surface) && self.ewm.unmapped_surfaces.remove(&id) {
-                self.ewm.surface_open_anims.insert(
-                    id,
-                    animation::Animation::ease(
-                        self.ewm.animations_clock.clone(),
-                        0.0,
-                        1.0,
-                        OPEN_ANIM_DURATION,
-                    )
-                    .delayed(Duration::from_millis(16)),
-                );
+            // An app window's first buffer: fade it in and let Lisp place it.
+            let newly_mapped = crate::utils::is_mapped(&root_surface)
+                && self
+                    .ewm
+                    .surfaces
+                    .get_mut(&id)
+                    .is_some_and(|surface| surface.mark_mapped() && !surface.emacs);
+            if newly_mapped {
+                self.ewm.start_open_fade(id);
 
                 // Placement is final at map: min/max hints are known, so decide once.
                 let (open_floating, parent) = self

@@ -3,58 +3,19 @@
 
 use std::time::Duration;
 
-use anyhow::Context as _;
-use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::element::{Kind, RenderElement};
-use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
-use smithay::utils::{Logical, Point, Scale, Transform};
+use smithay::backend::renderer::gles::GlesTexture;
+use smithay::utils::{Logical, Point};
 
+use crate::State;
 use crate::animation::Animation;
-use crate::render::render_to_encompassing_texture;
-use crate::texture::{TextureBuffer, TextureRenderElement};
+use crate::snapshot::Snapshot;
+use crate::texture::TextureRenderElement;
 
 pub const CLOSE_ANIM_DURATION: Duration = Duration::from_millis(150);
 
-/// A frame's contents baked to a texture while they were still mapped.
-#[derive(Debug, Clone)]
-pub struct FrameSnapshot {
-    /// Contents of the frame.
-    buffer: TextureBuffer<GlesTexture>,
-
-    /// How much the texture should be offset.
-    buffer_offset: Point<f64, Logical>,
-}
-
-impl FrameSnapshot {
-    pub fn new<E: RenderElement<GlesRenderer>>(
-        renderer: &mut GlesRenderer,
-        elements: &[E],
-        scale: Scale<f64>,
-    ) -> anyhow::Result<Self> {
-        crate::tracy_span!("FrameSnapshot::new");
-
-        let (texture, _sync_point, geo) = render_to_encompassing_texture(
-            renderer,
-            scale,
-            Transform::Normal,
-            Fourcc::Abgr8888,
-            elements,
-        )
-        .context("error rendering to texture")?;
-
-        let buffer =
-            TextureBuffer::from_texture(renderer, texture, scale, Transform::Normal, Vec::new());
-
-        Ok(Self {
-            buffer,
-            buffer_offset: geo.loc.to_f64().to_logical(scale),
-        })
-    }
-}
-
 #[derive(Debug)]
 pub struct ClosingFrame {
-    snapshot: FrameSnapshot,
+    snapshot: Snapshot,
     pos: Point<f64, Logical>,
 
     /// The closing animation.
@@ -62,7 +23,7 @@ pub struct ClosingFrame {
 }
 
 impl ClosingFrame {
-    pub fn new(snapshot: FrameSnapshot, pos: Point<f64, Logical>, anim: Animation) -> Self {
+    pub fn new(snapshot: Snapshot, pos: Point<f64, Logical>, anim: Animation) -> Self {
         Self {
             snapshot,
             pos,
@@ -80,13 +41,33 @@ impl ClosingFrame {
 
     /// `location` is where the frame origin lands on the output.
     pub fn render(&self, location: Point<f64, Logical>) -> TextureRenderElement<GlesTexture> {
-        TextureRenderElement::from_texture_buffer(
-            self.snapshot.buffer.clone(),
-            location + self.snapshot.buffer_offset,
-            1. - self.anim.value() as f32,
-            None,
-            None,
-            Kind::Unspecified,
-        )
+        self.snapshot
+            .render(location, 1. - self.anim.value() as f32)
+    }
+}
+
+impl State {
+    /// Bake close snapshots for the frames among `ids` that have none yet.
+    pub(crate) fn store_close_snapshots(&mut self, ids: &[u64]) {
+        let ewm = &mut self.ewm;
+        if ewm.animations_clock.should_complete_instantly() {
+            return;
+        }
+        let ids: Vec<u64> = ids
+            .iter()
+            .copied()
+            .filter(|&id| {
+                ewm.frame_location(id)
+                    .is_some_and(|location| location.frame.close_snapshot.is_none())
+            })
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.backend.with_renderer(|renderer, _, _| {
+            for id in ids {
+                ewm.store_frame_close_snapshot(renderer, id);
+            }
+        });
     }
 }

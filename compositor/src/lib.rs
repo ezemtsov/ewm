@@ -51,7 +51,9 @@ mod render_helpers;
 #[cfg(feature = "screencast")]
 pub mod screencasting;
 mod shadow_style;
+pub mod snapshot;
 pub mod strip;
+pub mod surface;
 pub mod texture;
 pub mod tracy;
 pub mod utils;
@@ -724,9 +726,6 @@ pub struct DndIcon {
 
 const TITLE_EVENT_IDLE_FLUSH_DELAY: Duration = Duration::from_millis(500);
 const TITLE_EVENT_MAX_STALE: Duration = Duration::from_millis(1000);
-/// Fade-in duration for a surface's first buffer-bearing commit.
-const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
-
 /// Critically damped and brisk, the one spring every slide runs on.
 pub fn slide_spring() -> animation::SpringParams {
     animation::SpringParams::new(1., 800., 0.0001)
@@ -785,13 +784,8 @@ pub struct Ewm {
     pub hide: strip::ViewOffset,
     /// Reverse index: surface_id -> set of output names it appears on
     pub surface_outputs: HashMap<u64, HashSet<String>>,
-    /// Per-surface open-fade, seeded on the first buffer-bearing commit.
-    /// Entries GC'd in `advance_animations` once finished or surface gone.
-    pub surface_open_anims: HashMap<u64, animation::Animation>,
-    /// Toplevels that haven't yet committed a buffer. One-shot gate for
-    /// seeding `surface_open_anims`: drained on the unmapped->mapped
-    /// transition so the fade starts exactly once per surface lifetime.
-    pub unmapped_surfaces: HashSet<u64>,
+    /// Every toplevel's compositor-side state, from creation to destruction.
+    pub surfaces: HashMap<u64, surface::SurfaceState>,
     /// App surfaces that requested attention.
     ///
     /// ext-workspace urgency is derived from this set and the frame layout.
@@ -1250,8 +1244,7 @@ impl Ewm {
             hide: strip::ViewOffset::default(),
             animations_clock,
             surface_outputs: HashMap::new(),
-            surface_open_anims: HashMap::new(),
-            unmapped_surfaces: HashSet::new(),
+            surfaces: HashMap::new(),
             urgent_surfaces: HashSet::new(),
             urgent_workspaces: HashSet::new(),
             pending_activation_surfaces: HashSet::new(),
@@ -2117,77 +2110,6 @@ impl Ewm {
         }
     }
 
-    fn configure_primary_entries(&self) {
-        for output in &self.sorted_outputs {
-            let Some(strip) = self.frame_set.mapped_strip(&output.name()) else {
-                continue;
-            };
-            let active_idx = strip.active_idx();
-            let Some(frame) = strip.frames().get(active_idx) else {
-                continue;
-            };
-            for entry in frame.entries.iter().filter(|entry| entry.primary()) {
-                self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
-            }
-        }
-        for output in &self.sorted_outputs {
-            let oname = output.name();
-            let Some(space) = self.floating_spaces.get(&oname) else {
-                continue;
-            };
-            for frame in space.frames() {
-                for entry in frame.entries.iter().filter(|entry| entry.primary()) {
-                    self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
-                }
-            }
-        }
-    }
-
-    fn configure_primary(&self, output: &Output, fullscreen: bool, entry: &LayoutEntry) {
-        let Some(surface_id) = entry.surface_id() else {
-            return;
-        };
-        let Some(window) = self.id_windows.get(&surface_id) else {
-            return;
-        };
-        window.with_surfaces(|s, data| {
-            crate::utils::send_scale_transform(
-                s,
-                data,
-                output.current_scale(),
-                output.current_transform(),
-            );
-        });
-        let Some(toplevel) = window.toplevel() else {
-            return;
-        };
-        let new_size = if fullscreen {
-            let s = crate::utils::output_size(output);
-            (s.w as i32, s.h as i32).into()
-        } else {
-            (entry.w as i32, entry.h as i32).into()
-        };
-        let changed = toplevel.with_pending_state(|state| {
-            let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
-            let was_maximized = state.states.contains(XdgToplevelState::Maximized);
-            let changed = state.size != Some(new_size)
-                || was_fullscreen != fullscreen
-                || was_maximized == fullscreen;
-            state.size = Some(new_size);
-            if fullscreen {
-                state.states.set(XdgToplevelState::Fullscreen);
-                state.states.unset(XdgToplevelState::Maximized);
-            } else {
-                state.states.set(XdgToplevelState::Maximized);
-                state.states.unset(XdgToplevelState::Fullscreen);
-            }
-            changed
-        });
-        if changed {
-            toplevel.send_configure();
-        }
-    }
-
     /// Queue a redraw for all outputs
     pub fn queue_redraw_all(&mut self) {
         for state in self.output_state.values_mut() {
@@ -2201,23 +2123,15 @@ impl Ewm {
     /// Emacs frames redraw their assigned output. Untracked surfaces
     /// fall back to redrawing all outputs.
     pub fn queue_redraw_for_surface(&mut self, id: u64) {
-        let outputs: Vec<_> = if let Some(names) = self.surface_outputs.get(&id) {
-            self.space
-                .outputs()
-                .filter(|o| names.contains(&o.name()))
-                .cloned()
-                .collect()
-        } else if let Some(name) = self.emacs_frame_output(id) {
-            let name = name.to_string();
-            self.space
-                .outputs()
-                .filter(|o| o.name() == name)
-                .cloned()
-                .collect()
-        } else {
+        let outputs: Vec<_> = self
+            .space
+            .outputs()
+            .filter(|o| self.surface_on_output(id, &o.name()))
+            .cloned()
+            .collect();
+        if outputs.is_empty() {
             return self.queue_redraw_all();
-        };
-
+        }
         for output in outputs {
             self.queue_redraw(&output);
         }
@@ -2820,9 +2734,9 @@ impl Ewm {
                 self.floating_spaces.remove(&output.name());
             }
         }
-        let id_windows = &self.id_windows;
-        self.surface_open_anims
-            .retain(|id, a| !a.is_done() && id_windows.contains_key(id));
+        for surface in self.surfaces.values_mut() {
+            surface.advance();
+        }
     }
 
     /// Orchestrate a single output redraw.
@@ -2900,35 +2814,23 @@ impl Ewm {
             state.unfinished_animations_remain =
                 self.overview.is_animating() || self.hide.is_animation_ongoing();
         }
-        if let Some(strip) = self.frame_set.mapped_strip(&output.name()) {
-            let any_open_fade = strip
-                .surface_entries()
-                .filter_map(LayoutEntry::surface_id)
-                .any(|surface_id| self.surface_open_anims.contains_key(&surface_id))
-                || strip
-                    .frames()
-                    .iter()
-                    .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
-            if (strip.animations_ongoing() || any_open_fade)
-                && let Some(state) = self.output_state.get_mut(output)
-            {
-                state.unfinished_animations_remain = true;
-            }
-        }
-        if let Some(space) = self.floating_spaces.get(&output.name()) {
-            let any_open_fade = space
-                .surface_entries()
-                .filter_map(LayoutEntry::surface_id)
-                .any(|surface_id| self.surface_open_anims.contains_key(&surface_id))
-                || space
-                    .frames()
-                    .iter()
-                    .any(|f| self.surface_open_anims.contains_key(&f.surface_id));
-            if (space.animations_ongoing() || any_open_fade)
-                && let Some(state) = self.output_state.get_mut(output)
-            {
-                state.unfinished_animations_remain = true;
-            }
+        let name = output.name();
+        let any_fade = self
+            .surfaces
+            .iter()
+            .any(|(&id, surface)| surface.is_animating() && self.surface_on_output(id, &name));
+        let layout_animating = self
+            .frame_set
+            .mapped_strip(&name)
+            .is_some_and(|strip| strip.animations_ongoing())
+            || self
+                .floating_spaces
+                .get(&name)
+                .is_some_and(|space| space.animations_ongoing());
+        if (any_fade || layout_animating)
+            && let Some(state) = self.output_state.get_mut(output)
+        {
+            state.unfinished_animations_remain = true;
         }
         if !self.cursor_hide.is_hidden
             && self.pointer_is_on_output(output)
@@ -3823,7 +3725,10 @@ impl Ewm {
         // Pre-map titles feed placement rules, so they are never debounced.
         if first_title
             || app_changed
-            || self.unmapped_surfaces.contains(&id)
+            || self
+                .surfaces
+                .get(&id)
+                .is_some_and(|surface| !surface.mapped)
             || self.focused_surface_id() == id
         {
             self.discard_pending_title_event(id);
@@ -4896,8 +4801,6 @@ impl Ewm {
         if is_emacs {
             info!("Surface {} is an Emacs surface", id);
             handlers::add_frame_unmap_pre_commit_hook(surface.wl_surface());
-        } else {
-            self.unmapped_surfaces.insert(id);
         }
 
         let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
@@ -4934,6 +4837,8 @@ impl Ewm {
         let window = Window::new_wayland_window(surface);
         self.window_ids.insert(window.clone(), id);
         self.id_windows.insert(id, window.clone());
+        self.surfaces
+            .insert(id, surface::SurfaceState::new(is_emacs));
 
         debug!(
             "new_toplevel id={} is_emacs={} pending_output={:?} floating={} target_output={:?} pending_queue_after_take={:?}",
@@ -5082,6 +4987,7 @@ impl Ewm {
         if let Some(window) = self.id_windows.remove(&id) {
             self.window_ids.remove(&window);
         }
+        self.surfaces.remove(&id);
         self.urgent_surfaces.remove(&id);
         self.urgent_workspaces.remove(&id);
         self.pending_activation_surfaces.remove(&id);
@@ -5859,30 +5765,6 @@ impl State {
         shared.pointer_location = self.ewm.pointer_location();
         shared.frame_origins = frame_origins;
         shared.active_frames = active_frames;
-    }
-
-    /// Bake close snapshots for the frames among `ids` that have none yet.
-    fn store_close_snapshots(&mut self, ids: &[u64]) {
-        let ewm = &mut self.ewm;
-        if ewm.animations_clock.should_complete_instantly() {
-            return;
-        }
-        let ids: Vec<u64> = ids
-            .iter()
-            .copied()
-            .filter(|&id| {
-                ewm.frame_location(id)
-                    .is_some_and(|location| location.frame.close_snapshot.is_none())
-            })
-            .collect();
-        if ids.is_empty() {
-            return;
-        }
-        self.backend.with_renderer(|renderer, _, _| {
-            for id in ids {
-                ewm.store_frame_close_snapshot(renderer, id);
-            }
-        });
     }
 
     /// Handle a module command (from Emacs via dynamic module).

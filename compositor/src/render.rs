@@ -48,14 +48,17 @@ use smithay::wayland::shell::wlr_layer::Layer;
 use smithay::wayland::shm;
 use tracing::warn;
 
-use crate::closing_frame::FrameSnapshot;
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
 use crate::render_helpers::background_effect;
 use crate::render_helpers::framebuffer_effect::FramebufferEffectElement;
 use crate::render_helpers::zoom::ZoomRenderElement;
 use crate::shadow_style::{BackgroundEffect, Blur, CornerRadius};
-use crate::{Ewm, State, tracy_span};
+use crate::snapshot::Snapshot;
+use crate::surface::SurfaceState;
+use crate::texture::TextureRenderElement;
+use crate::utils::fill_scale;
+use crate::{Ewm, LayoutEntry, State, tracy_span};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
 /// per surface via `window_popup_placements`; smithay's `Window::render_elements`
@@ -92,7 +95,7 @@ render_elements! {
     SolidColor=SolidColorRenderElement,
     Shadow=crate::render_helpers::shadow::ShadowRenderElement,
     BackgroundEffect=FramebufferEffectElement,
-    ClosingFrame=crate::texture::TextureRenderElement<GlesTexture>,
+    Texture=TextureRenderElement<GlesTexture>,
 }
 
 /// Content scaled about the output origin, then moved into place.
@@ -107,7 +110,7 @@ render_elements! {
     Constrained=ConstrainedRenderElement,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     SolidColor=SolidColorRenderElement,
-    Texture=crate::texture::TextureRenderElement<GlesTexture>,
+    Texture=TextureRenderElement<GlesTexture>,
     Zoomed=ZoomedRenderElement,
     BackgroundEffect=FramebufferEffectElement,
 }
@@ -295,7 +298,7 @@ fn push_fullscreen_view(
     let geometry = window.geometry().size;
     let constrain = Rectangle::new(origin, output_size.to_physical_precise_round(scale));
     let source_size: Size<i32, Physical> = geometry.to_physical_precise_round(scale);
-    // Primary: native size, centered. Non-primary: uniform stretch to fill the output.
+    // Primary: native size, centered. Secondary: uniform stretch to fill the output.
     let loc = if entry.primary() {
         let (ox, oy) = crate::fullscreen_center_offset(geometry, output_size);
         Point::from((ox, oy)).to_physical_precise_round(scale) + origin
@@ -324,8 +327,8 @@ fn push_fullscreen_view(
 
 /// Push constrained (rescale + crop) render elements into the element list.
 ///
-/// Shared pipeline for all view rendering: fullscreen primary/non-primary
-/// and normal primary/non-primary.
+/// Shared pipeline for all view rendering: fullscreen primary/secondary
+/// and normal primary/secondary.
 pub(crate) fn push_constrained<E: From<ConstrainedRenderElement>>(
     elements: &mut Vec<E>,
     view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
@@ -340,6 +343,37 @@ pub(crate) fn push_constrained<E: From<ConstrainedRenderElement>>(
             .map(|e| RescaleRenderElement::from_element(e, loc, element_scale))
             .filter_map(|e| CropRenderElement::from_element(e, output_scale, constrain))
             .map(E::from),
+    );
+}
+
+/// A view of `window` in `entry` at `loc`, native when primary and fill-scaled otherwise,
+/// cropped to the entry since clients may render larger than configured.
+#[allow(clippy::too_many_arguments)]
+fn push_entry_view(
+    content: &mut Vec<ContentRenderElement>,
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    entry: &LayoutEntry,
+    loc: Point<i32, Physical>,
+    alpha: f32,
+    scale: Scale<f64>,
+    blur_config: Blur,
+) {
+    let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
+    let entry_size = Size::from((entry.w as i32, entry.h as i32)).to_physical_precise_round(scale);
+    let constrain = Rectangle::new(loc, entry_size);
+    let source_size = window.geometry().size.to_physical_precise_round(scale);
+    push_view_elements_fit(
+        content,
+        window,
+        view_elements,
+        loc,
+        source_size,
+        scale,
+        constrain,
+        !entry.primary(),
+        Some(entry.id.get() as usize),
+        blur_config,
     );
 }
 
@@ -360,15 +394,12 @@ pub(crate) fn push_view_elements_fit<
     blur_config: Blur,
 ) {
     let element_scale = if fill {
-        if source_size.w <= 0 || source_size.h <= 0 {
-            return;
-        }
-        Scale::from(f64::max(
-            constrain.size.w as f64 / source_size.w as f64,
-            constrain.size.h as f64 / source_size.h as f64,
-        ))
+        fill_scale(source_size, constrain.size)
     } else {
-        Scale::from(1.0)
+        Some(Scale::from(1.0))
+    };
+    let Some(element_scale) = element_scale else {
+        return;
     };
 
     push_constrained(
@@ -642,12 +673,12 @@ pub fn collect_render_elements_for_output(
         let focused_entry_id = ewm.focused_entry_id;
         let focused_frame_id = ewm.focused_frame_id;
         let unfocused_alpha = ewm.unfocused_alpha;
-        let surface_open_anims = &ewm.surface_open_anims;
+        let surfaces = &ewm.surfaces;
 
         // Draw the closing frames on top of the other frames.
         for closing in space.closing_frames().iter().rev() {
             let elem = closing.render(closing.pos());
-            content.push(ContentRenderElement::ClosingFrame(elem));
+            content.push(ContentRenderElement::Texture(elem));
         }
 
         for (frame, data, frame_rect) in space.frames_with_render_geo_mut() {
@@ -660,39 +691,23 @@ pub fn collect_render_elements_for_output(
                 if let Some(window) = id_windows.get(&surface_id) {
                     let is_focused = focused_entry_id == Some(entry.id);
                     let mut entry_alpha = if is_focused { 1.0 } else { unfocused_alpha };
-                    if let Some(a) = surface_open_anims.get(&surface_id) {
-                        entry_alpha *= a.value() as f32;
-                    }
+                    entry_alpha *= surfaces
+                        .get(&surface_id)
+                        .map_or(1., SurfaceState::open_alpha);
                     let location = Point::from((
                         frame_rect.loc.x + entry.x as f64,
                         frame_rect.loc.y + entry.y as f64,
                     ));
                     let loc_physical: Point<i32, Physical> =
                         location.to_physical_precise_round(scale);
-                    let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                        render_window_without_popups(
-                            window,
-                            renderer,
-                            loc_physical,
-                            scale,
-                            entry_alpha,
-                        );
-                    let entry_size: Size<i32, Physical> =
-                        Size::from((entry.w as i32, entry.h as i32))
-                            .to_physical_precise_round(scale);
-                    let constrain = Rectangle::new(loc_physical, entry_size);
-                    let source_size: Size<i32, Physical> =
-                        window.geometry().size.to_physical_precise_round(scale);
-                    push_view_elements_fit(
+                    push_entry_view(
                         &mut content,
+                        renderer,
                         window,
-                        view_elements,
+                        entry,
                         loc_physical,
-                        source_size,
+                        entry_alpha,
                         scale,
-                        constrain,
-                        !entry.primary(),
-                        Some(entry.id.get() as usize),
                         blur_config,
                     );
                 }
@@ -709,10 +724,9 @@ pub fn collect_render_elements_for_output(
             {
                 continue;
             }
-            let frame_alpha = surface_open_anims
+            let frame_alpha = surfaces
                 .get(&frame.surface_id)
-                .map(|a| a.value() as f32)
-                .unwrap_or(1.0);
+                .map_or(1., SurfaceState::open_alpha);
             let frame_offset: Point<i32, Physical> =
                 frame_rect.loc.to_physical_precise_round(scale);
             let view_elements =
@@ -770,9 +784,10 @@ pub fn collect_render_elements_for_output(
                     } else {
                         ewm.unfocused_alpha
                     };
-                    if let Some(a) = ewm.surface_open_anims.get(&surface_id) {
-                        entry_alpha *= a.value() as f32;
-                    }
+                    entry_alpha *= ewm
+                        .surfaces
+                        .get(&surface_id)
+                        .map_or(1., SurfaceState::open_alpha);
                     if entry_fullscreen {
                         push_fullscreen_view(
                             &mut content,
@@ -795,57 +810,16 @@ pub fn collect_render_elements_for_output(
                         Point::from((working_area.loc.x + entry.x, working_area.loc.y + entry.y));
                     let loc_physical: Point<i32, Physical> =
                         location.to_physical_precise_round(scale) + frame_offset;
-                    let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                        render_window_without_popups(
-                            window,
-                            renderer,
-                            loc_physical,
-                            scale,
-                            entry_alpha,
-                        );
-                    let entry_size: Size<i32, Physical> =
-                        Size::from((entry.w as i32, entry.h as i32))
-                            .to_physical_precise_round(scale);
-
-                    // Crop to entry bounds. Clients may render larger than configured
-                    // (e.g. Electron apps with a minimum window size).
-                    let constrain = Rectangle::new(loc_physical, entry_size);
-
-                    if entry.primary() {
-                        // Primary view: render at native size, crop to entry.
-                        let source_size: Size<i32, Physical> =
-                            window.geometry().size.to_physical_precise_round(scale);
-                        push_view_elements_fit(
-                            &mut content,
-                            window,
-                            view_elements,
-                            loc_physical,
-                            source_size,
-                            scale,
-                            constrain,
-                            false,
-                            Some(entry.id.get() as usize),
-                            blur_config,
-                        );
-                    } else {
-                        // Non-primary view: stretch buffer to fill entry bounds, then crop.
-                        // Uses uniform scale (fill): pick the larger factor to fully cover
-                        // the entry, preserving aspect ratio. The crop trims overflow.
-                        let source_size: Size<i32, Physical> =
-                            window.geometry().size.to_physical_precise_round(scale);
-                        push_view_elements_fit(
-                            &mut content,
-                            window,
-                            view_elements,
-                            loc_physical,
-                            source_size,
-                            scale,
-                            constrain,
-                            true,
-                            Some(entry.id.get() as usize),
-                            blur_config,
-                        );
-                    }
+                    push_entry_view(
+                        &mut content,
+                        renderer,
+                        window,
+                        entry,
+                        loc_physical,
+                        entry_alpha,
+                        scale,
+                        blur_config,
+                    );
                 }
             }
         }
@@ -869,10 +843,9 @@ pub fn collect_render_elements_for_output(
             let frame_offset_emacs: Point<i32, Physical> =
                 frame_rect.loc.to_physical_precise_round(scale);
             let frame_alpha = ewm
-                .surface_open_anims
+                .surfaces
                 .get(&frame.surface_id)
-                .map(|a| a.value() as f32)
-                .unwrap_or(1.0);
+                .map_or(1., SurfaceState::open_alpha);
             let frame_loc = working_area_loc_physical + frame_offset_emacs;
             let view_elements =
                 render_window_without_popups(window, renderer, frame_loc, scale, frame_alpha);
@@ -893,7 +866,7 @@ pub fn collect_render_elements_for_output(
         // Draw the closing frames beneath the other frames.
         for (closing, pos) in strip.closing_frames_with_render_pos() {
             let elem = closing.render(pos + working_area.loc.to_f64());
-            content.push(ContentRenderElement::ClosingFrame(elem));
+            content.push(ContentRenderElement::Texture(elem));
         }
     }
 
@@ -999,7 +972,7 @@ pub fn render_frame_snapshot(
     ewm: &mut Ewm,
     renderer: &mut GlesRenderer,
     id: u64,
-) -> Option<FrameSnapshot> {
+) -> Option<Snapshot> {
     tracy_span!("render_frame_snapshot");
 
     let location = ewm.frame_location(id)?;
@@ -1030,17 +1003,7 @@ pub fn render_frame_snapshot(
             });
         }
     }
-    if content.is_empty() {
-        return None;
-    }
-
-    match FrameSnapshot::new(renderer, &content, scale) {
-        Ok(snapshot) => Some(snapshot),
-        Err(err) => {
-            warn!("error rendering frame snapshot: {err:?}");
-            None
-        }
-    }
+    Snapshot::new(renderer, &content, scale)
 }
 
 /// Render one popup placement into `elements`.

@@ -10,8 +10,9 @@ use std::time::Duration;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
-use crate::closing_frame::{CLOSE_ANIM_DURATION, ClosingFrame, FrameSnapshot};
+use crate::closing_frame::{CLOSE_ANIM_DURATION, ClosingFrame};
 use crate::floating::SizeFracPoint;
+use crate::snapshot::Snapshot;
 use crate::{FocusId, LayoutEntry, LayoutEntryId, slide_spring};
 
 /// Touchpad swipe distance mapping to one working-area-width of strip movement.
@@ -202,7 +203,7 @@ pub struct Frame {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floating_pos: Option<SizeFracPoint>,
     #[serde(skip)]
-    pub close_snapshot: Option<FrameSnapshot>,
+    pub close_snapshot: Option<Snapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
