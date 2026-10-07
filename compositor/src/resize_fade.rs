@@ -18,12 +18,20 @@ const RESIZE_FADE_DURATION: Duration = Duration::from_millis(150);
 /// Size changes up to this many logical pixels snap without a fade.
 const RESIZE_FADE_THRESHOLD: i32 = 10;
 
+/// A view still showing the old contents until they fade, as it was.
+#[derive(Debug)]
+pub(crate) struct FadingView {
+    entry: LayoutEntryId,
+    rect: Rectangle<i32, Logical>,
+    /// Drawn at native size, as a primary view is.
+    pub(crate) native: bool,
+}
+
 /// What the answer to a size-changing configure will fade, fixed when it goes out.
 #[derive(Debug)]
 pub struct PendingResize {
-    /// The secondary views still showing the old contents, as they are.
-    entries: Vec<(LayoutEntryId, Rectangle<i32, Logical>)>,
-    /// The highest resolution any of them draws the old contents at, capped at their own.
+    views: Vec<FadingView>,
+    /// The highest resolution any view draws the old contents at, capped at their own.
     scale: f64,
 }
 
@@ -32,8 +40,7 @@ pub struct ResizeFade {
     snapshot: Snapshot,
     /// Alpha of the old contents, 1 down to 0.
     anim: Animation,
-    /// The views that fade, as they were.
-    entries: Vec<(LayoutEntryId, Rectangle<i32, Logical>)>,
+    views: Vec<FadingView>,
 }
 
 impl ResizeFade {
@@ -41,8 +48,11 @@ impl ResizeFade {
         self.anim.is_done()
     }
 
-    pub(crate) fn covers(&self, entry: &LayoutEntry) -> bool {
-        self.entries.contains(&(entry.id, entry.rect()))
+    /// The fading view `entry` still shows, if any.
+    pub(crate) fn view(&self, entry: &LayoutEntry) -> Option<&FadingView> {
+        self.views
+            .iter()
+            .find(|view| view.entry == entry.id && view.rect == entry.rect())
     }
 
     pub(crate) fn size(&self) -> Size<f64, Logical> {
@@ -60,7 +70,7 @@ impl ResizeFade {
 }
 
 impl Ewm {
-    /// What a configure of `id` to `size` will fade, less the views `moved` this layout.
+    /// What a configure of `id` to `size` will fade, less the secondary views `moved` this layout.
     pub(crate) fn pending_resize(
         &self,
         id: u64,
@@ -74,20 +84,30 @@ impl Ewm {
         if (size.w - old.w).abs().max((size.h - old.h).abs()) <= RESIZE_FADE_THRESHOLD {
             return None;
         }
-        let mut entries = Vec::new();
+        let mut views = Vec::new();
         let mut scale = 0f64;
         for (output, entry) in self
             .surface_views(id)
-            .filter(|(_, entry)| !entry.primary() && !moved.contains(&entry.id))
+            .filter(|(_, entry)| entry.primary() || !moved.contains(&entry.id))
         {
             let rect = entry.rect();
-            let Some(fill) = fill_scale(old, rect.size) else {
-                continue;
+            let native = entry.primary();
+            let drawn = if native {
+                1.
+            } else {
+                let Some(fill) = fill_scale(old, rect.size) else {
+                    continue;
+                };
+                fill.x.min(1.)
             };
-            entries.push((entry.id, rect));
-            scale = scale.max(fill.x.min(1.) * self.output_scale(output));
+            views.push(FadingView {
+                entry: entry.id,
+                rect,
+                native,
+            });
+            scale = scale.max(drawn * self.output_scale(output));
         }
-        (!entries.is_empty()).then_some(PendingResize { entries, scale })
+        (!views.is_empty()).then_some(PendingResize { views, scale })
     }
 }
 
@@ -114,7 +134,7 @@ impl State {
                 surface.resize = Some(ResizeFade {
                     snapshot,
                     anim,
-                    entries: pending.entries,
+                    views: pending.views,
                 });
             }
         });

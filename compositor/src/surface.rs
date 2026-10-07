@@ -14,7 +14,7 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::animation::Animation;
-use crate::resize_fade::{PendingResize, ResizeFade};
+use crate::resize_fade::{FadingView, PendingResize, ResizeFade};
 use crate::{Ewm, LayoutEntry, handlers};
 
 const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
@@ -163,12 +163,13 @@ impl SurfaceState {
         self.open.as_ref().map_or(1., |anim| anim.value() as f32)
     }
 
-    /// The resize fade `entry` still shows, if any.
-    pub(crate) fn resize_fade_for(&self, entry: &LayoutEntry) -> Option<&ResizeFade> {
-        if entry.primary() {
-            return None;
-        }
-        self.resize.as_ref().filter(|fade| fade.covers(entry))
+    /// The resize fade `entry` still shows, and how it drew the old contents, if any.
+    pub(crate) fn resize_fade_for(
+        &self,
+        entry: &LayoutEntry,
+    ) -> Option<(&ResizeFade, &FadingView)> {
+        let fade = self.resize.as_ref()?;
+        Some((fade, fade.view(entry)?))
     }
 }
 

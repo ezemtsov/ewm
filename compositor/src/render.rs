@@ -303,15 +303,22 @@ fn push_fullscreen_view(
     let window = &surface.window;
     let geometry = window.geometry().size;
     let constrain = Rectangle::new(origin, output_size.to_physical_precise_round(scale));
-    push_resize_fade(content, surface, entry, constrain, scale, alpha);
     let source_size: Size<i32, Physical> = geometry.to_physical_precise_round(scale);
     // Primary: native size, centered. Secondary: uniform stretch to fill the output.
-    let loc = if entry.primary() {
-        let (ox, oy) = crate::fullscreen_center_offset(geometry, output_size);
+    let centered = |size: Size<i32, Logical>| {
+        let (ox, oy) = crate::fullscreen_center_offset(size, output_size);
         Point::from((ox, oy)).to_physical_precise_round(scale) + origin
+    };
+    let loc = if entry.primary() {
+        centered(geometry)
     } else {
         origin
     };
+    // The old contents sat centered by their own size.
+    let fade_loc = surface
+        .resize_fade_for(entry)
+        .map_or(loc, |(fade, _)| centered(fade.size().to_i32_round()));
+    push_resize_fade(content, surface, entry, fade_loc, constrain, scale, alpha);
     let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
     push_view_elements_fit(
         content,
@@ -356,27 +363,33 @@ pub(crate) fn push_constrained<I, E>(
     );
 }
 
-/// The old contents of a secondary view mid-resize, fill-scaled like the buffer and fading out.
+/// The old contents of a view mid-resize, drawn as the view drew them and fading out.
 fn push_resize_fade(
     content: &mut Vec<ContentRenderElement>,
     surface: &SurfaceState,
     entry: &LayoutEntry,
+    loc: Point<i32, Physical>,
     constrain: Rectangle<i32, Physical>,
     output_scale: Scale<f64>,
     alpha: f32,
 ) {
-    let Some(fade) = surface.resize_fade_for(entry) else {
+    let Some((fade, view)) = surface.resize_fade_for(entry) else {
         return;
     };
-    let source = fade.size().to_physical_precise_round(output_scale);
-    let Some(element_scale) = fill_scale(source, constrain.size) else {
-        return;
+    let (location, element_scale) = if view.native {
+        (loc, Scale::from(1.))
+    } else {
+        let source = fade.size().to_physical_precise_round(output_scale);
+        let Some(fill) = fill_scale(source, constrain.size) else {
+            return;
+        };
+        (constrain.loc, fill)
     };
-    let elem = fade.render(constrain.loc.to_f64().to_logical(output_scale), alpha);
+    let elem = fade.render(location.to_f64().to_logical(output_scale), alpha);
     push_constrained(
         content,
         [elem],
-        constrain.loc,
+        location,
         element_scale,
         output_scale,
         constrain,
@@ -400,7 +413,7 @@ fn push_entry_view(
     let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
     let entry_size = entry.rect().size.to_physical_precise_round(scale);
     let constrain = Rectangle::new(loc, entry_size);
-    push_resize_fade(content, surface, entry, constrain, scale, alpha);
+    push_resize_fade(content, surface, entry, loc, constrain, scale, alpha);
     let source_size = window.geometry().size.to_physical_precise_round(scale);
     push_view_elements_fit(
         content,
