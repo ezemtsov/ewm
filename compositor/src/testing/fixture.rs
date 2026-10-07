@@ -311,7 +311,7 @@ impl Fixture {
         use smithay::wayland::seat::WaylandFocus;
         use wayland_client::Proxy as _;
         let target = client_surface.id().protocol_id();
-        self.state.ewm.id_windows.iter().find_map(|(&id, window)| {
+        self.state.ewm.windows().find_map(|(id, window)| {
             let server_surface = window.wl_surface()?;
             (server_surface.id().protocol_id() == target).then_some(())?;
             let server_client_id = self
@@ -355,7 +355,11 @@ impl Fixture {
             self.state.ewm.pointer.is_grabbed(),
             "start_drag needs a held button"
         );
-        let source = self.state.ewm.id_windows[&sid]
+        let source = self
+            .state
+            .ewm
+            .window(sid)
+            .unwrap()
             .wl_surface()
             .unwrap()
             .into_owned();
@@ -499,7 +503,7 @@ impl Fixture {
 
     /// Check if a surface with the given ID exists
     pub fn has_surface(&self, id: u64) -> bool {
-        self.state.ewm.id_windows.contains_key(&id)
+        self.state.ewm.surfaces.contains_key(&id)
     }
 
     /// Warp the pointer to an absolute position.

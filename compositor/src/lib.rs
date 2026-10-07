@@ -773,8 +773,6 @@ pub struct Ewm {
 
     // Surface tracking
     next_surface_id: u64,
-    pub window_ids: HashMap<Window, u64>,
-    pub id_windows: HashMap<u64, Window>,
     surface_info: HashMap<u64, SurfaceInfo>,
     pending_title_events: HashMap<u64, PendingTitleEvent>,
     title_flush_timer_token: Option<RegistrationToken>,
@@ -1240,8 +1238,6 @@ impl Ewm {
             keyboard,
             tablet_cursor_location: None,
             next_surface_id: 1,
-            window_ids: HashMap::new(),
-            id_windows: HashMap::new(),
             surface_info: HashMap::new(),
             pending_title_events: HashMap::new(),
             title_flush_timer_token: None,
@@ -1495,12 +1491,10 @@ impl Ewm {
     /// This replaces Space::refresh(). We manage output enter/leave explicitly
     /// rather than relying on automatic spatial overlap detection.
     pub fn cleanup_dead_windows(&mut self) -> bool {
-        // Clean dead layout surfaces from id_windows
         let dead_ids: Vec<u64> = self
-            .id_windows
-            .iter()
-            .filter(|(_, w)| !w.alive())
-            .map(|(&id, _)| id)
+            .windows()
+            .filter(|(_, window)| !window.alive())
+            .map(|(id, _)| id)
             .collect();
         let removed_any = !dead_ids.is_empty();
         for id in dead_ids {
@@ -2875,7 +2869,7 @@ impl Ewm {
         render_element_states: &RenderElementStates,
     ) {
         // Update windows (all windows, including layout surfaces not in Space)
-        for window in self.id_windows.values() {
+        for (_, window) in self.windows() {
             window.with_surfaces(|surface, states| {
                 update_surface_primary_scanout_output(
                     surface,
@@ -2975,7 +2969,7 @@ impl Ewm {
         feedback: &backend::drm::SurfaceDmabufFeedback,
         render_element_states: &RenderElementStates,
     ) {
-        for window in self.id_windows.values() {
+        for (_, window) in self.windows() {
             window.send_dmabuf_feedback(
                 output,
                 |_, _| Some(output.clone()),
@@ -3072,7 +3066,7 @@ impl Ewm {
         let mut feedback = OutputPresentationFeedback::new(output);
 
         // Collect from windows
-        for window in self.id_windows.values() {
+        for (_, window) in self.windows() {
             window.take_presentation_feedback(
                 &mut feedback,
                 surface_primary_scanout_output,
@@ -3191,7 +3185,7 @@ impl Ewm {
 
         let frame_callback_time = crate::protocols::screencopy::get_monotonic_time();
 
-        for window in self.id_windows.values() {
+        for (_, window) in self.windows() {
             window.send_frame(
                 output,
                 frame_callback_time,
@@ -3294,8 +3288,8 @@ impl Ewm {
 
         let frame_callback_time = crate::protocols::screencopy::get_monotonic_time();
 
-        for (id, window) in self.id_windows.iter() {
-            if hidden_emacs_ids.contains(id) {
+        for (id, window) in self.windows() {
+            if hidden_emacs_ids.contains(&id) {
                 continue;
             }
             window.send_frame(
@@ -3366,9 +3360,8 @@ impl Ewm {
         use smithay::wayland::seat::WaylandFocus;
 
         let windows: Vec<WindowInfo> = self
-            .id_windows
-            .iter()
-            .filter_map(|(&id, window)| {
+            .windows()
+            .filter_map(|(id, window)| {
                 let surface = window.wl_surface()?.into_owned();
                 let info = self.surface_info.get(&id)?;
                 let output = self.find_surface_output(id);
@@ -3490,7 +3483,7 @@ impl Ewm {
 
     pub(crate) fn emacs_surface_for_focused_output(&self) -> Option<WlSurface> {
         self.get_emacs_surface_for_focused_output()
-            .and_then(|id| self.id_windows.get(&id))
+            .and_then(|id| self.window(id))
             .and_then(|window| window.wl_surface())
             .map(|surface| surface.into_owned())
     }
@@ -3692,7 +3685,7 @@ impl Ewm {
             }
             // Exclusive Bottom/Background (only when no toplevel has focus)
             let focused = self.focused_surface_id();
-            if focused == 0 || !self.id_windows.contains_key(&focused) {
+            if focused == 0 || !self.surfaces.contains_key(&focused) {
                 if let Some(s) = excl_on_layer(output, Layer::Bottom) {
                     return Some(s);
                 }
@@ -3880,15 +3873,6 @@ impl Ewm {
         if self.replace_active_text_input(r.before, r.after, r.text) {
             self.queue_event(Event::TextInputReplaced { surface_id });
         }
-    }
-
-    /// Get surface ID from a WlSurface
-    pub fn surface_id(&self, surface: &WlSurface) -> Option<u64> {
-        self.id_windows.iter().find_map(|(&id, window)| {
-            window
-                .wl_surface()
-                .and_then(|ws| (*ws == *surface).then_some(id))
-        })
     }
 
     /// Find the Output at a global logical position.
@@ -4507,7 +4491,7 @@ impl Ewm {
         // Notify declared surfaces on this output
         if let Some(strip) = self.frame_set.mapped_strip(&output.name()) {
             for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
-                if let Some(window) = self.id_windows.get(&surface_id) {
+                if let Some(window) = self.window(surface_id) {
                     self.set_preferred_scale_transform(window, output);
                 }
             }
@@ -4515,7 +4499,7 @@ impl Ewm {
 
         // Emacs frames aren't in `space`; notify them via the strip.
         for id in self.emacs_frames_on(&output.name()) {
-            if let Some(window) = self.id_windows.get(&id) {
+            if let Some(window) = self.window(id) {
                 self.set_preferred_scale_transform(window, output);
             }
         }
@@ -4562,7 +4546,7 @@ impl Ewm {
         let output_name = output.name();
 
         for id in self.emacs_frames_on(&output_name) {
-            let Some(window) = self.id_windows.get(&id) else {
+            let Some(window) = self.window(id) else {
                 continue;
             };
             if let Some(toplevel) = window.toplevel() {
@@ -4680,8 +4664,6 @@ impl Ewm {
 
     /// Build the JSON object shown by `ewm-show-state`.
     pub fn debug_state(&self, output_infos: &[OutputInfo]) -> serde_json::Value {
-        let mut id_window_keys: Vec<u64> = self.id_windows.keys().copied().collect();
-        id_window_keys.sort_unstable();
         let mut urgent_surfaces: Vec<u64> = self.urgent_surfaces.iter().copied().collect();
         urgent_surfaces.sort_unstable();
         let mut urgent_workspaces: Vec<u64> = self.urgent_workspaces.iter().copied().collect();
@@ -4733,7 +4715,6 @@ impl Ewm {
             "focused_surface_id": self.focused_surface_id(),
             "focused_frame_id": self.focused_frame_id,
             "focused_entry_id": self.focused_entry_id,
-            "id_windows": id_window_keys,
             "urgent_surfaces": urgent_surfaces,
             "urgent_workspaces": urgent_workspaces,
             "outputs": output_infos,
@@ -4809,7 +4790,6 @@ impl Ewm {
         if is_emacs {
             info!("Surface {} is an Emacs surface", id);
         }
-        handlers::add_toplevel_pre_commit_hook(surface.wl_surface(), id);
 
         let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -4842,11 +4822,9 @@ impl Ewm {
         });
         surface.send_configure();
 
-        let window = Window::new_wayland_window(surface);
-        self.window_ids.insert(window.clone(), id);
-        self.id_windows.insert(id, window.clone());
-        self.surfaces
-            .insert(id, surface::SurfaceState::new(is_emacs));
+        let record = surface::SurfaceState::new(id, surface, is_emacs);
+        let window = record.window.clone();
+        self.surfaces.insert(id, record);
 
         debug!(
             "new_toplevel id={} is_emacs={} pending_output={:?} floating={} target_output={:?} pending_queue_after_take={:?}",
@@ -4974,27 +4952,13 @@ impl Ewm {
         );
     }
 
-    /// Handle toplevel destroyed from XdgShellHandler.
-    pub fn handle_toplevel_destroyed(&mut self, surface: ToplevelSurface) -> Option<u64> {
-        let Some(id) = self.surface_id(surface.wl_surface()) else {
-            // Every toplevel gets an id in handle_new_toplevel.
-            warn!("destroyed toplevel missing from id_windows");
-            return None;
-        };
-        self.handle_toplevel_destroyed_by_id(id)
-    }
-
-    /// Drop a toplevel by surface id; same cleanup as the surface-typed entry
-    /// point, but reachable from integration tests without a real toplevel.
+    /// Drop toplevel `id`, returning the frame to refocus.
     pub fn handle_toplevel_destroyed_by_id(&mut self, id: u64) -> Option<u64> {
         let was_focused = self.focused_frame_id == id;
         let close_was_active = module::take_pending_active_frame_close(id);
         let active_close = was_focused || close_was_active;
         let output = self.surface_output_name(id).map(str::to_owned);
 
-        if let Some(window) = self.id_windows.remove(&id) {
-            self.window_ids.remove(&window);
-        }
         self.surfaces.remove(&id);
         self.urgent_surfaces.remove(&id);
         self.urgent_workspaces.remove(&id);
@@ -5559,8 +5523,7 @@ impl State {
                 return Some(surface);
             }
             let id = ewm.focused_surface_id();
-            ewm.id_windows
-                .get(&id)
+            ewm.window(id)
                 .and_then(|w| w.wl_surface())
                 .map(|s| s.into_owned())
         });
@@ -5782,7 +5745,7 @@ impl State {
         use module::ModuleCommand;
         match cmd {
             ModuleCommand::Close { id } => {
-                if let Some(window) = self.ewm.id_windows.get(&id)
+                if let Some(window) = self.ewm.window(id)
                     && let Some(toplevel) = window.toplevel()
                 {
                     toplevel.send_close();

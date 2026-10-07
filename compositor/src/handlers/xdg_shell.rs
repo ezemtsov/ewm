@@ -9,7 +9,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle, Size};
 use smithay::wayland::compositor::{
-    BufferAssignment, SurfaceAttributes, add_pre_commit_hook, with_states,
+    BufferAssignment, HookId, SurfaceAttributes, add_pre_commit_hook, with_states,
 };
 use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
 use smithay::wayland::shell::wlr_layer::Layer;
@@ -24,7 +24,7 @@ use tracing::warn;
 use crate::{Event, Ewm, State, im};
 
 /// Snapshot a frame on the commit that unmaps it, or fade a view on the one answering a configure.
-pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) {
+pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> HookId {
     add_pre_commit_hook::<State, _>(surface, move |state, _dh, surface| {
         let (removed, attached, acked) = with_states(surface, |states| {
             let mut attributes = states.cached_state.get::<SurfaceAttributes>();
@@ -43,7 +43,7 @@ pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) {
             // An ack without a buffer leaves the resize pending for the commit that brings one.
             state.start_resize_fade(id, serial);
         }
-    });
+    })
 }
 
 // XDG Shell
@@ -57,15 +57,19 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // Every toplevel gets an id in handle_new_toplevel.
+        let Some(id) = self.ewm.surface_id(surface.wl_surface()) else {
+            warn!("destroyed toplevel has no record");
+            return;
+        };
         // Toolkits that destroy without unmapping still hold the buffer here.
-        if let Some(id) = self.ewm.surface_id(surface.wl_surface()) {
-            self.store_close_snapshots(&[id]);
-        }
+        self.store_close_snapshots(&[id]);
 
-        // Defer: event sends from resource destructors abort on a dying client.
+        // Defer: event sends from resource destructors abort on a dying client. The id is
+        // taken now, since the client may back a new toplevel with this surface before then.
         self.ewm.loop_handle.insert_idle(move |state| {
             let ewm = &mut state.ewm;
-            if let Some(refocus_id) = ewm.handle_toplevel_destroyed(surface) {
+            if let Some(refocus_id) = ewm.handle_toplevel_destroyed_by_id(id) {
                 ewm.set_focus_frame(refocus_id, "toplevel_destroyed", true);
             }
         });

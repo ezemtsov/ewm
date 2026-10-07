@@ -226,14 +226,14 @@ sends `output.enter()`/`output.leave()` + scale/transform for each change:
 // In apply_output_layout():
 // Surfaces added to this output get enter + scale
 for &id in &added {
-    if let Some(window) = self.id_windows.get(&id) {
+    if let Some(window) = self.window(id) {
         output.enter(&surface);
         send_scale_transform(surface, data, scale, transform);
     }
 }
 // Surfaces removed from this output get leave
 for &id in &removed {
-    if let Some(window) = self.id_windows.get(&id) {
+    if let Some(window) = self.window(id) {
         output.leave(&surface);
     }
 }

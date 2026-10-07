@@ -1,19 +1,33 @@
 //! Compositor-side state of one toplevel, from creation to destruction.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use smithay::desktop::Window;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Serial;
+use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
+use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::animation::Animation;
 use crate::resize_fade::{PendingResize, ResizeFade};
-use crate::{Ewm, LayoutEntry};
+use crate::{Ewm, LayoutEntry, handlers};
 
 const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
 /// Holds alpha at 0 for one vblank so the empty first buffer some clients ship never shows.
 const OPEN_ANIM_DELAY: Duration = Duration::from_millis(16);
 
-#[derive(Debug, Default)]
+/// The id of the toplevel a wl_surface backs, 0 between toplevels.
+struct SurfaceId(AtomicU64);
+
+#[derive(Debug)]
 pub struct SurfaceState {
+    /// The tag this record holds on its wl_surface.
+    id: u64,
+    pub window: Window,
+    /// Watches commits for the close snapshot and the resize fade.
+    hook: HookId,
     /// An Emacs frame rather than an app window.
     pub emacs: bool,
     /// Whether a buffer has ever been committed.
@@ -27,10 +41,25 @@ pub struct SurfaceState {
 }
 
 impl SurfaceState {
-    pub(crate) fn new(emacs: bool) -> Self {
+    pub(crate) fn new(id: u64, toplevel: ToplevelSurface, emacs: bool) -> Self {
+        let surface = toplevel.wl_surface();
+        with_states(surface, |states| {
+            states
+                .data_map
+                .get_or_insert_threadsafe(|| SurfaceId(AtomicU64::new(0)))
+                .0
+                .store(id, Ordering::Relaxed);
+        });
+        let hook = handlers::add_toplevel_pre_commit_hook(surface, id);
         Self {
+            id,
+            window: Window::new_wayland_window(toplevel),
+            hook,
             emacs,
-            ..Self::default()
+            mapped: false,
+            open: None,
+            pending_resizes: Vec::new(),
+            resize: None,
         }
     }
 
@@ -80,7 +109,47 @@ impl SurfaceState {
     }
 }
 
+impl Drop for SurfaceState {
+    fn drop(&mut self) {
+        let Some(surface) = self.window.wl_surface() else {
+            return;
+        };
+        with_states(&surface, |states| {
+            // A newer toplevel on the same wl_surface keeps its own tag.
+            if let Some(tag) = states.data_map.get::<SurfaceId>() {
+                let _ = tag
+                    .0
+                    .compare_exchange(self.id, 0, Ordering::Relaxed, Ordering::Relaxed);
+            }
+        });
+        remove_pre_commit_hook(&surface, &self.hook);
+    }
+}
+
 impl Ewm {
+    /// The window of toplevel `id`.
+    pub fn window(&self, id: u64) -> Option<&Window> {
+        self.surfaces.get(&id).map(|surface| &surface.window)
+    }
+
+    /// Every toplevel's window, by id.
+    pub fn windows(&self) -> impl Iterator<Item = (u64, &Window)> {
+        self.surfaces
+            .iter()
+            .map(|(&id, surface)| (id, &surface.window))
+    }
+
+    /// The toplevel `surface` backs, if one does.
+    pub fn surface_id(&self, surface: &WlSurface) -> Option<u64> {
+        with_states(surface, |states| {
+            states
+                .data_map
+                .get::<SurfaceId>()
+                .map(|tag| tag.0.load(Ordering::Relaxed))
+        })
+        .filter(|&id| id != 0)
+    }
+
     /// Fade surface `id` in from its first buffer.
     pub(crate) fn start_open_fade(&mut self, id: u64) {
         let Some(surface) = self.surfaces.get_mut(&id) else {

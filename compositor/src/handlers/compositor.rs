@@ -118,7 +118,7 @@ impl CompositorHandler for State {
 
         // 3. Find the window that owns this root surface
         if let Some(id) = self.ewm.surface_id(&root_surface) {
-            if let Some(window) = self.ewm.id_windows.get(&id) {
+            if let Some(window) = self.ewm.window(id) {
                 window.on_commit();
             }
             // Title before Mapped, so placement rules see a title set on the mapping commit.
@@ -137,8 +137,7 @@ impl CompositorHandler for State {
                 // Placement is final at map: min/max hints are known, so decide once.
                 let (open_floating, parent) = self
                     .ewm
-                    .id_windows
-                    .get(&id)
+                    .window(id)
                     .and_then(|window| window.toplevel())
                     .map(|toplevel| (compute_open_floating(toplevel), toplevel.parent()))
                     .unwrap_or((false, None));
@@ -154,8 +153,7 @@ impl CompositorHandler for State {
                     .map(|o| self.ewm.get_working_area(o));
                 let (width, height) = self
                     .ewm
-                    .id_windows
-                    .get(&id)
+                    .window(id)
                     .and_then(natural_open_size)
                     .filter(|s| working_area.is_none_or(|wa| s.w < wa.size.w && s.h < wa.size.h))
                     .map(|s| (s.w as f64, s.h as f64))

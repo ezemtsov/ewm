@@ -165,8 +165,7 @@ fn surface_preferred_scale(fixture: &Fixture, surface_id: u64) -> Option<f64> {
 
     let surface = fixture
         .ewm_ref()
-        .id_windows
-        .get(&surface_id)?
+        .window(surface_id)?
         .wl_surface()?
         .into_owned();
     with_states(&surface, |data| {

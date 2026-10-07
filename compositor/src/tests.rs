@@ -269,8 +269,7 @@ fn surface_request_helpers_queue_expected_events_and_update_fullscreen() {
 
     let server_surface = fix
         .ewm_ref()
-        .id_windows
-        .get(&surface_id)
+        .window(surface_id)
         .and_then(|window| window.wl_surface())
         .unwrap()
         .into_owned();

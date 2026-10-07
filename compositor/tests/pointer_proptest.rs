@@ -31,7 +31,7 @@
 //!       change -- nothing to compare.
 //!
 //! PP1 - Single popup placement per popup. For every popup parented to a
-//!       toplevel S currently in `id_windows`, `collect_popup_placements`
+//!       toplevel S currently tracked, `collect_popup_placements`
 //!       emits exactly one placement before output culling, anchored to S's
 //!       focused-or-primary view origin. S may sit off-screen, e.g. a frame
 //!       the strip scrolled away from.
@@ -822,8 +822,7 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
             // AND against the client's committed XDG state.
             let origin = if entry_fullscreen && entry.primary() {
                 let window_size = ewm
-                    .id_windows
-                    .get(&entry.surface_id().expect("surface-backed entry"))
+                    .window(entry.surface_id().expect("surface-backed entry"))
                     .map(|w| w.geometry().size)
                     .unwrap_or_default();
                 let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
@@ -1160,8 +1159,7 @@ fn visible_entry_rect(
         }
         if entry.primary() {
             let window_size = ewm
-                .id_windows
-                .get(&entry.surface_id()?)
+                .window(entry.surface_id()?)
                 .map(|w| w.geometry().size)
                 .unwrap_or_default();
             let (cx, cy) = fullscreen_center_offset(window_size, output_geo.size);
@@ -1264,7 +1262,7 @@ fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
 
 fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    for (sid, window) in &ewm.id_windows {
+    for (sid, window) in ewm.windows() {
         let Some(parent_surface) = window.wl_surface() else {
             continue;
         };

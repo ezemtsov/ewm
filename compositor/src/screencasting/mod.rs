@@ -358,7 +358,7 @@ impl Ewm {
         output_scale: Scale<f64>,
         entry_size: Size<i32, Physical>,
     ) -> Vec<EwmRenderElement> {
-        let Some(frame_window) = self.id_windows.get(&geometry.frame_surface_id) else {
+        let Some(frame_window) = self.window(geometry.frame_surface_id) else {
             return Vec::new();
         };
         let Some(surface) = frame_window.wl_surface() else {
@@ -401,7 +401,7 @@ impl Ewm {
         if let Some(window) = geometry
             .entry
             .surface_id()
-            .and_then(|surface_id| self.id_windows.get(&surface_id))
+            .and_then(|surface_id| self.window(surface_id))
             && let Some(surface) = window.wl_surface()
         {
             let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =

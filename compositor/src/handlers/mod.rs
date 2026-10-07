@@ -273,7 +273,7 @@ impl InputMethodHandler for State {
     fn parent_geometry(&self, parent: &WlSurface) -> Rectangle<i32, smithay::utils::Logical> {
         self.ewm
             .surface_id(parent)
-            .and_then(|id| self.ewm.id_windows.get(&id))
+            .and_then(|id| self.ewm.window(id))
             .map(|window| window.geometry())
             .unwrap_or_default()
     }
@@ -384,7 +384,7 @@ impl XdgActivationHandler for State {
                     info!("xdg_activation: granted for surface {}", id);
                 }
             } else {
-                debug!("xdg_activation: surface not found in window_ids");
+                debug!("xdg_activation: surface is not a toplevel");
             }
         } else {
             debug!(
@@ -431,7 +431,7 @@ impl ForeignToplevelHandler for State {
 
     fn close(&mut self, wl_surface: WlSurface) {
         if let Some(id) = self.ewm.surface_id(&wl_surface) {
-            let Some(window) = self.ewm.id_windows.get(&id) else {
+            let Some(window) = self.ewm.window(id) else {
                 return;
             };
             if let Some(toplevel) = window.toplevel() {
@@ -590,7 +590,7 @@ impl SessionLockHandler for State {
 
         // Restore focus to the surface that was focused before locking
         if let Some(id) = self.ewm.pre_lock_focus.take()
-            && self.ewm.id_windows.contains_key(&id)
+            && self.ewm.surfaces.contains_key(&id)
         {
             info!("Restoring focus to surface {} after unlock", id);
             self.ewm.set_focus(id, false, "unlock");

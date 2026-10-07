@@ -760,7 +760,8 @@ impl Ewm {
         &self,
         window: &Window,
     ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
-        let id = self.window_ids.get(window).copied()?;
+        let surface = window.wl_surface()?;
+        let id = self.surface_id(&surface)?;
         if !self.surface_outputs.contains_key(&id) {
             return self.emacs_frame_origin(id);
         }
@@ -793,7 +794,7 @@ impl Ewm {
             if entry.primary() {
                 let window_size = entry
                     .surface_id()
-                    .and_then(|surface_id| self.id_windows.get(&surface_id))
+                    .and_then(|surface_id| self.window(surface_id))
                     .map(|window| window.geometry().size)
                     .unwrap_or_default();
                 let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
@@ -1106,7 +1107,7 @@ impl Ewm {
         hit: LayoutEntryHit<'_>,
     ) -> Option<SurfaceHit> {
         let entry = hit.entry;
-        let window = self.id_windows.get(&entry.surface_id()?)?;
+        let window = self.window(entry.surface_id()?)?;
         let window_geo = window.geometry();
         let pointer_scale =
             Self::pointer_scale_for_entry(entry, hit.fullscreen, window_geo.size, hit.output_size);
@@ -1141,7 +1142,7 @@ impl Ewm {
                 if !Self::rect_contains_f64(rect, pos) {
                     continue;
                 }
-                let Some(window) = self.id_windows.get(&frame.surface_id) else {
+                let Some(window) = self.window(frame.surface_id) else {
                     continue;
                 };
                 let window_origin: Point<f64, Logical> =
@@ -1161,7 +1162,7 @@ impl Ewm {
             if !Self::rect_contains_f64(rect, pos) {
                 continue;
             }
-            let Some(window) = self.id_windows.get(&frame.surface_id) else {
+            let Some(window) = self.window(frame.surface_id) else {
                 continue;
             };
             let window_origin: Point<f64, Logical> =
@@ -1245,7 +1246,7 @@ impl Ewm {
     }
 
     fn configure_surface_fullscreen_state(&self, id: u64, fullscreen: bool) {
-        let Some(window) = self.id_windows.get(&id) else {
+        let Some(window) = self.window(id) else {
             return;
         };
         let Some(toplevel) = window.toplevel() else {
@@ -1373,7 +1374,7 @@ impl Ewm {
     fn leave_emacs_frames_on_output(&self, output: &Output) {
         let output_name = output.name();
         for id in self.emacs_frames_on(&output_name) {
-            if let Some(window) = self.id_windows.get(&id) {
+            if let Some(window) = self.window(id) {
                 self.leave_output_for_window(window, output);
             }
         }
@@ -1387,7 +1388,7 @@ impl Ewm {
         post: &HashSet<u64>,
     ) {
         for &id in pre.difference(post) {
-            if let (Some(out), Some(window)) = (output, self.id_windows.get(&id)) {
+            if let (Some(out), Some(window)) = (output, self.window(id)) {
                 self.leave_output_for_window(window, out);
             }
             if let Some(outputs) = self.surface_outputs.get_mut(&id) {
@@ -1398,8 +1399,8 @@ impl Ewm {
             }
         }
         for &id in post.difference(pre) {
-            let Some(window) = self.id_windows.get(&id) else {
-                warn!("reconcile_output_entries: surface {} not in id_windows", id);
+            let Some(window) = self.window(id) else {
+                warn!("reconcile_output_entries: surface {} has no window", id);
                 continue;
             };
             if let Some(out) = output {
@@ -1546,7 +1547,7 @@ impl Ewm {
         migrations: &[FrameMigration],
     ) {
         for migration in migrations {
-            let Some(window) = self.id_windows.get(&migration.id) else {
+            let Some(window) = self.window(migration.id) else {
                 continue;
             };
             if let Some(prev_name) = migration.prev_output.as_deref()
@@ -2024,7 +2025,7 @@ impl Ewm {
     }
 
     fn configure_floating_frame_size(&self, id: u64, size: Size<i32, Logical>) {
-        let Some(window) = self.id_windows.get(&id) else {
+        let Some(window) = self.window(id) else {
             return;
         };
         let Some(toplevel) = window.toplevel() else {
@@ -2156,7 +2157,7 @@ impl Ewm {
         entry: &LayoutEntry,
     ) -> Option<(Size<i32, Logical>, Serial)> {
         let surface_id = entry.surface_id()?;
-        let window = self.id_windows.get(&surface_id)?;
+        let window = self.window(surface_id)?;
         window.with_surfaces(|s, data| {
             crate::utils::send_scale_transform(
                 s,

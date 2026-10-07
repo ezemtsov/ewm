@@ -291,8 +291,7 @@ pub fn render_cursor_elements(
 fn push_fullscreen_view(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
-    window: &smithay::desktop::Window,
-    surface: Option<&SurfaceState>,
+    surface: &SurfaceState,
     entry: &crate::LayoutEntry,
     alpha: f32,
     origin: Point<i32, Physical>,
@@ -301,11 +300,10 @@ fn push_fullscreen_view(
     scale: Scale<f64>,
     blur_config: Blur,
 ) {
+    let window = &surface.window;
     let geometry = window.geometry().size;
     let constrain = Rectangle::new(origin, output_size.to_physical_precise_round(scale));
-    if let Some(surface) = surface {
-        push_resize_fade(content, surface, entry, constrain, scale, alpha);
-    }
+    push_resize_fade(content, surface, entry, constrain, scale, alpha);
     let source_size: Size<i32, Physical> = geometry.to_physical_precise_round(scale);
     // Primary: native size, centered. Secondary: uniform stretch to fill the output.
     let loc = if entry.primary() {
@@ -385,26 +383,24 @@ fn push_resize_fade(
     );
 }
 
-/// A view of `window` in `entry` at `loc`, native when primary and fill-scaled otherwise,
+/// A view of `surface` in `entry` at `loc`, native when primary and fill-scaled otherwise,
 /// cropped to the entry since clients may render larger than configured.
 #[allow(clippy::too_many_arguments)]
 fn push_entry_view(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
-    window: &smithay::desktop::Window,
-    surface: Option<&SurfaceState>,
+    surface: &SurfaceState,
     entry: &LayoutEntry,
     loc: Point<i32, Physical>,
     alpha: f32,
     scale: Scale<f64>,
     blur_config: Blur,
 ) {
+    let window = &surface.window;
     let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
     let entry_size = entry.rect().size.to_physical_precise_round(scale);
     let constrain = Rectangle::new(loc, entry_size);
-    if let Some(surface) = surface {
-        push_resize_fade(content, surface, entry, constrain, scale, alpha);
-    }
+    push_resize_fade(content, surface, entry, constrain, scale, alpha);
     let source_size = window.geometry().size.to_physical_precise_round(scale);
     push_view_elements_fit(
         content,
@@ -712,7 +708,6 @@ pub fn collect_render_elements_for_output(
         .get(output)
         .map(|state| &state.fullscreen_backdrop);
     if let Some(space) = ewm.floating_spaces.get_mut(&output.name()) {
-        let id_windows = &ewm.id_windows;
         let focused_entry_id = ewm.focused_entry_id;
         let focused_frame_id = ewm.focused_frame_id;
         let unfocused_alpha = ewm.unfocused_alpha;
@@ -731,11 +726,10 @@ pub fn collect_render_elements_for_output(
                 .filter(|entry| entry.surface_id().is_some())
             {
                 let surface_id = entry.surface_id().expect("surface-backed entry");
-                if let Some(window) = id_windows.get(&surface_id) {
-                    let surface = surfaces.get(&surface_id);
+                if let Some(surface) = surfaces.get(&surface_id) {
                     let is_focused = focused_entry_id == Some(entry.id);
                     let mut entry_alpha = if is_focused { 1.0 } else { unfocused_alpha };
-                    entry_alpha *= surface.map_or(1., SurfaceState::open_alpha);
+                    entry_alpha *= surface.open_alpha();
                     let location = Point::from((
                         frame_rect.loc.x + entry.x as f64,
                         frame_rect.loc.y + entry.y as f64,
@@ -745,7 +739,6 @@ pub fn collect_render_elements_for_output(
                     push_entry_view(
                         &mut content,
                         renderer,
-                        window,
                         surface,
                         entry,
                         loc_physical,
@@ -756,7 +749,10 @@ pub fn collect_render_elements_for_output(
                 }
             }
 
-            let Some(window) = id_windows.get(&frame.surface_id) else {
+            let Some(window) = surfaces
+                .get(&frame.surface_id)
+                .map(|surface| &surface.window)
+            else {
                 continue;
             };
             // A frame created hidden (sized, then shown) has no buffer yet; skip it
@@ -819,7 +815,7 @@ pub fn collect_render_elements_for_output(
                 if above_top_layer && !entry_fullscreen && in_active_frame {
                     continue;
                 }
-                if let Some(window) = ewm.id_windows.get(&surface_id) {
+                if let Some(surface) = ewm.surfaces.get(&surface_id) {
                     // Fullscreen forced opaque so the backdrop doesn't bleed through.
                     let is_focused = ewm.focused_entry_id == Some(entry.id);
                     let mut entry_alpha = if entry_fullscreen || is_focused {
@@ -827,13 +823,11 @@ pub fn collect_render_elements_for_output(
                     } else {
                         ewm.unfocused_alpha
                     };
-                    let surface = ewm.surfaces.get(&surface_id);
-                    entry_alpha *= surface.map_or(1., SurfaceState::open_alpha);
+                    entry_alpha *= surface.open_alpha();
                     if entry_fullscreen {
                         push_fullscreen_view(
                             &mut content,
                             renderer,
-                            window,
                             surface,
                             entry,
                             entry_alpha,
@@ -855,7 +849,6 @@ pub fn collect_render_elements_for_output(
                     push_entry_view(
                         &mut content,
                         renderer,
-                        window,
                         surface,
                         entry,
                         loc_physical,
@@ -880,7 +873,7 @@ pub fn collect_render_elements_for_output(
             .to_physical_precise_round(scale);
     if let Some(strip) = strip {
         for (_, frame, frame_rect) in strip.frames_with_render_geo(view_size, strip_viewport) {
-            let Some(window) = ewm.id_windows.get(&frame.surface_id) else {
+            let Some(window) = ewm.window(frame.surface_id) else {
                 continue;
             };
             let frame_offset_emacs: Point<i32, Physical> =
@@ -980,7 +973,7 @@ fn render_frame_views(
         let Some(surface_id) = entry.surface_id() else {
             continue;
         };
-        let Some(window) = ewm.id_windows.get(&surface_id) else {
+        let Some(window) = ewm.window(surface_id) else {
             continue;
         };
         let alpha = if ewm.focused_entry_id == Some(entry.id) {
@@ -1023,7 +1016,7 @@ pub fn render_frame_snapshot(
     let mut content: Vec<ContentRenderElement> = Vec::new();
     render_frame_views(&mut content, renderer, ewm, location.frame, scale);
     // Like the live pass, no frame surface or shadow before the frame has shown a buffer.
-    if let Some(window) = ewm.id_windows.get(&id)
+    if let Some(window) = ewm.window(id)
         && window
             .wl_surface()
             .is_some_and(|surface| crate::utils::is_mapped(&surface))
@@ -1139,7 +1132,7 @@ pub fn window_popup_placements(
 ) -> Vec<PopupPlacement> {
     use smithay::wayland::seat::WaylandFocus;
     let mut placements = Vec::new();
-    for window in ewm.id_windows.values() {
+    for (_, window) in ewm.windows() {
         let Some(surface) = window.wl_surface() else {
             continue;
         };

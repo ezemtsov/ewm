@@ -70,7 +70,7 @@ impl Ewm {
         if self.animations_clock.should_complete_instantly() {
             return None;
         }
-        let old = self.id_windows.get(&id)?.geometry().size;
+        let old = self.window(id)?.geometry().size;
         if (size.w - old.w).abs().max((size.h - old.h).abs()) <= RESIZE_FADE_THRESHOLD {
             return None;
         }
@@ -105,12 +105,11 @@ impl State {
         if surface.is_animating() || ewm.animations_clock.should_complete_instantly() {
             return;
         }
-        let Some(window) = ewm.id_windows.get(&id) else {
-            return;
-        };
         let clock = ewm.animations_clock.clone();
         self.backend.with_renderer(|renderer, _, _| {
-            if let Some(snapshot) = render_view_snapshot(window, renderer, pending.scale.into()) {
+            if let Some(snapshot) =
+                render_view_snapshot(&surface.window, renderer, pending.scale.into())
+            {
                 let anim = Animation::linear(clock, 1., 0., RESIZE_FADE_DURATION);
                 surface.resize = Some(ResizeFade {
                     snapshot,
