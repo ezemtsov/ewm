@@ -392,7 +392,7 @@ slot of their strip:
   queued exposes accumulate but the draw signal doesn't fire.  Thaw
   schedules one catch-up paint.
 - The compositor emits `Event::FrameShown` / `Event::FrameHidden` on every
-  strip-active transition (`activate_frame`, `apply_output_layout`,
+  strip-active transition (`activate_frame`, `apply_layout`,
   `remove_emacs_frame_from_strip`, gesture-swipe-end, and new toplevel
   insertion).  Each call site snapshots the active id before the
   mutation and compares after, so the compositor doesn't carry any

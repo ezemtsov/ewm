@@ -4812,6 +4812,7 @@ impl Ewm {
             .as_ref()
             .is_some_and(|pending| pending.floating);
         let frame_pos = pending_frame.as_ref().and_then(|pending| pending.pos);
+        let frame_after = pending_frame.as_ref().and_then(|pending| pending.after);
         let target_output = frame_output.clone().or_else(|| self.active_output());
 
         surface.with_pending_state(|state| {
@@ -4841,31 +4842,14 @@ impl Ewm {
         );
 
         if is_emacs {
-            // Eager-insert into the target strip so `is_emacs_frame(id)`,
-            // `set_focus_frame(id)`, etc. work immediately -- before Emacs's
-            // first layout-refresh arrives.  Layout-refresh later updates fields
-            // (name, width, surfaces, selected_entry_id) via MERGE semantics.
+            // Place the frame now so `is_emacs_frame(id)`, `set_focus_frame(id)`,
+            // etc. work before Emacs's first layout arrives. That layout only
+            // fills in contents (name, width, entries, selected_entry_id).
             if let Some(output_name) = target_output.as_deref() {
                 if frame_is_floating {
-                    if let Some(space) = self.ensure_floating_space_for_output(output_name) {
-                        let mut frame = crate::strip::Frame::new(id);
-                        frame.width = floating::DEFAULT_FRAME_WIDTH;
-                        frame.height = floating::DEFAULT_FRAME_HEIGHT;
-                        frame.floating_pos = frame_pos.map(|(x, y)| {
-                            floating::Data::logical_to_size_frac_in_working_area(
-                                space.working_area(),
-                                Point::from((x, y)),
-                            )
-                        });
-                        space.add_frame(frame);
-                    }
+                    self.place_new_floating_frame(id, output_name, frame_pos.map(Point::from));
                 } else {
-                    let clock = self.animations_clock.clone();
-                    let scale = self.output_scale(output_name);
-                    let strip = self
-                        .frame_set
-                        .ensure_mapped_strip(output_name, clock, scale);
-                    strip.push_frame(crate::strip::Frame::new(id));
+                    self.place_new_frame(id, output_name, frame_after);
                 }
             }
         }
@@ -4913,9 +4897,9 @@ impl Ewm {
             output: target_output.clone().filter(|_| is_emacs),
             pid: client_pid,
         });
-        // Eager-inserted new emacs frames land at the strip's end and aren't
-        // the active slot; tell lisp so it can freeze them.  Emitted after
-        // Event::New so ewm-surface-id is already bound on the lisp side.
+        // A new emacs frame joins its strip inactive. Tell lisp so it can
+        // freeze it, after Event::New so ewm-surface-id is already bound on
+        // the lisp side.
         if is_emacs {
             let is_active = target_output
                 .as_deref()
@@ -4946,6 +4930,43 @@ impl Ewm {
             app,
             target_output.as_deref().unwrap_or("unknown")
         );
+    }
+
+    /// Put new frame `id` into `output_name`'s strip right of `after`, else at the end.
+    fn place_new_frame(&mut self, id: u64, output_name: &str, after: Option<u64>) {
+        if let Some(output) = self.mapped_output_by_name(output_name) {
+            let home = crate::utils::output_identity(output);
+            self.frame_set.remember_home_if_missing(id, &home);
+        }
+        let clock = self.animations_clock.clone();
+        let scale = self.output_scale(output_name);
+        let strip = self
+            .frame_set
+            .ensure_mapped_strip(output_name, clock, scale);
+        let frame = crate::strip::Frame::new(id);
+        match after.and_then(|after| strip.index_of(after)) {
+            Some(idx) => strip.insert_frame(idx + 1, frame),
+            None => strip.push_frame(frame),
+        }
+    }
+
+    /// Put new floating frame `id` into `output_name`'s space at `pos`, else centered.
+    fn place_new_floating_frame(
+        &mut self,
+        id: u64,
+        output_name: &str,
+        pos: Option<Point<f64, Logical>>,
+    ) {
+        let Some(space) = self.ensure_floating_space_for_output(output_name) else {
+            return;
+        };
+        let mut frame = crate::strip::Frame::new(id);
+        frame.width = floating::DEFAULT_FRAME_WIDTH;
+        frame.height = floating::DEFAULT_FRAME_HEIGHT;
+        frame.floating_pos = pos.map(|pos| {
+            floating::Data::logical_to_size_frac_in_working_area(space.working_area(), pos)
+        });
+        space.add_frame(frame);
     }
 
     /// Drop toplevel `id`, returning the frame to refocus.
@@ -5720,12 +5741,14 @@ impl State {
         }
         let frame_origins = self.ewm.frame_origins_snapshot();
         let active_frames = self.ewm.active_frames_snapshot();
+        let strip_frames = self.ewm.strip_frames_snapshot();
         let mut shared = module::shared_state().lock().unwrap();
         shared.focused_surface_id = self.ewm.focused_surface_id();
         shared.focused_frame_id = self.ewm.focused_frame_id;
         shared.pointer_location = self.ewm.pointer_location();
         shared.frame_origins = frame_origins;
         shared.active_frames = active_frames;
+        shared.strip_frames = strip_frames;
     }
 
     /// Handle a module command (from Emacs via dynamic module).
@@ -5985,26 +6008,14 @@ impl State {
                 );
                 debug!("Selection set from Emacs");
             }
-            ModuleCommand::OutputLayout { output, frames } => {
-                let current = self
-                    .ewm
-                    .frame_set
-                    .mapped_strip(&output)
-                    .map_or(&[][..], |s| s.frames());
-                let dropped = strip::dropped_frame_ids(current, &frames);
+            ModuleCommand::Layout { frames } => {
+                let dropped = strip::dropped_frame_ids(self.ewm.placed_frames(), &frames);
                 self.store_close_snapshots(&dropped);
-                self.ewm.apply_output_layout(&output, frames);
+                self.ewm.apply_layout(frames);
                 self.refresh_pointer_after_layout();
             }
-            ModuleCommand::FloatingLayout { output, frames } => {
-                let current = self
-                    .ewm
-                    .floating_spaces
-                    .get(&output)
-                    .map_or(&[][..], |s| s.frames());
-                let dropped = strip::dropped_frame_ids(current, &frames);
-                self.store_close_snapshots(&dropped);
-                self.ewm.apply_floating_layout(&output, frames);
+            ModuleCommand::SwapFrame { id, delta } => {
+                self.ewm.swap_frame(id, delta);
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::MoveFloatingFrame { id, dx, dy } => {

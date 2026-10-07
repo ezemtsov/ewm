@@ -118,8 +118,7 @@ fn ewm_state_reports_workspace_protocol_from_frame_strips() {
     fix.add_output(HEAD_A, 1600, 900);
     fix.add_output(HEAD_B, 1600, 900);
 
-    fix.ewm()
-        .apply_output_layout(HEAD_A, vec![frame(100), frame(101), frame(102)]);
+    fix.tile(HEAD_A, vec![frame(100), frame(101), frame(102)]);
     fix.ewm().set_focus_frame(101, "test", false);
     fix.dispatch();
 
@@ -129,14 +128,15 @@ fn ewm_state_reports_workspace_protocol_from_frame_strips() {
     assert_eq!(focused["output"], HEAD_A);
     assert_eq!(focused["active"], true);
 
-    fix.ewm().apply_output_layout(HEAD_B, vec![frame(101)]);
+    // Losing HEAD_A moves its frames onto HEAD_B in order. The focused one stays active.
+    fix.remove_output(HEAD_A);
     fix.dispatch();
 
     let state = fix.debug_state();
     assert_workspace_protocol_matches_strips(&state);
     let moved = workspace_for_surface(&state, 101);
     assert_eq!(moved["output"], HEAD_B);
-    assert_eq!(moved["coordinates"], json!([0, 0]));
+    assert_eq!(moved["coordinates"], json!([0, 1]));
     assert_eq!(moved["active"], true);
 }
 
@@ -146,8 +146,7 @@ fn workspace_protocol_reports_renamed_workspace_and_preserves_name_across_layout
     fix.add_output(HEAD_A, 1600, 900);
     fix.add_output(HEAD_B, 1600, 900);
 
-    fix.ewm()
-        .apply_output_layout(HEAD_A, vec![frame(100), frame(101)]);
+    fix.tile(HEAD_A, vec![frame(100), frame(101)]);
     assert!(fix.ewm().rename_workspace(Some(101), "code".to_string()));
     fix.dispatch();
 
@@ -161,8 +160,7 @@ fn workspace_protocol_reports_renamed_workspace_and_preserves_name_across_layout
 
     assert!(!fix.ewm().rename_workspace(Some(100), "CODE".to_string()));
 
-    fix.ewm()
-        .apply_output_layout(HEAD_A, vec![frame(100), frame(101)]);
+    fix.tile(HEAD_A, vec![frame(100), frame(101)]);
     fix.dispatch();
 
     let state = fix.debug_state();
@@ -170,7 +168,7 @@ fn workspace_protocol_reports_renamed_workspace_and_preserves_name_across_layout
     assert_eq!(named["id"], "code");
     assert_eq!(named["name"], "code");
 
-    fix.ewm().apply_output_layout(HEAD_B, vec![frame(101)]);
+    fix.remove_output(HEAD_A);
     fix.dispatch();
 
     let state = fix.debug_state();
@@ -185,7 +183,7 @@ fn workspace_protocol_reports_renamed_workspace_and_preserves_name_across_layout
     let state = fix.debug_state();
     let cleared = workspace_for_surface(&state, 101);
     assert_eq!(cleared["id"], Value::Null);
-    assert_eq!(cleared["name"], "1");
+    assert_eq!(cleared["name"], "2");
 }
 
 #[test]
@@ -197,7 +195,7 @@ fn workspace_protocol_reports_urgent_workspace_from_surface_attention() {
     let urgent_id = fix.open_toplevel_id(&mut client, "urgent", Size::from((400, 400)));
     let focused_id = fix.open_toplevel_id(&mut client, "focused", Size::from((400, 400)));
 
-    fix.ewm().apply_output_layout(
+    fix.tile(
         HEAD_A,
         vec![
             frame_with_surface_entry(100, 1001, urgent_id),
@@ -233,8 +231,7 @@ fn workspace_protocol_reports_urgent_workspace_from_explicit_mark() {
     let focused_id = fix.open_toplevel_id(&mut client, "focused", Size::from((400, 400)));
     let urgent_id = fix.open_toplevel_id(&mut client, "urgent", Size::from((400, 400)));
 
-    fix.ewm()
-        .apply_output_layout(HEAD_A, vec![frame(focused_id), frame(urgent_id)]);
+    fix.tile(HEAD_A, vec![frame(focused_id), frame(urgent_id)]);
     fix.ewm().set_focus_frame(focused_id, "test", false);
     assert!(fix.ewm().mark_workspace_urgent(Some(urgent_id)));
     assert!(!fix.ewm().mark_workspace_urgent(Some(focused_id)));

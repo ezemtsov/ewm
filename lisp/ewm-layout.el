@@ -11,14 +11,11 @@
 
 ;;; Code:
 
-(require 'cl-lib)
 (require 'ewm-surface)
 
-(declare-function ewm-output-layout "ewm")
-(declare-function ewm-floating-layout "ewm")
+(declare-function ewm-layout "ewm")
 
 (defvar ewm--module-mode)
-(defvar ewm--floating-frames)
 
 (defgroup ewm-layout nil
   "EWM layout and modal focus contract."
@@ -81,7 +78,7 @@ Computed deterministically so the compositor can construct the same id at
           (- bottom top))))
 
 (defun ewm-layout--build-frame-plist (frame menu-active)
-  "Plist describing FRAME for `ewm-output-layout'.
+  "Plist describing FRAME for `ewm-layout'.
 When MENU-ACTIVE is non-nil, `:selected-entry-id' is nil so the
 compositor parks keyboard focus on the frame chrome."
   (let (entries)
@@ -100,27 +97,26 @@ compositor parks keyboard focus on the frame chrome."
                (unless (window-minibuffer-p sel-win)
                  (ewm-layout--ensure-entry-id sel-win))))))
       (list :name (or (frame-parameter frame 'name) "")
-            :surface-id (or (frame-parameter frame 'ewm-surface-id) 0)
+            :surface-id (frame-parameter frame 'ewm-surface-id)
             :focus-id (ewm-layout--ensure-frame-focus-id frame)
             :selected-entry-id selected-entry-id
             :width (float (frame-pixel-width frame))
             :height (float (frame-pixel-height frame))
             :entries (vconcat (nreverse entries))))))
 
+(defun ewm-layout--managed-frames ()
+  "Frames the compositor has placed, so frames carrying a surface id."
+  (seq-filter (lambda (frame) (frame-parameter frame 'ewm-surface-id)) (frame-list)))
+
 (defun ewm-layout--send-layouts ()
-  "Send per-output frame layouts; suppress `:selected-entry-id' while modal."
+  "Declare every frame's contents, suppressing `:selected-entry-id' while modal."
   (let ((menu-active (ewm-layout--menu-active-p)))
-    (cl-flet ((send (alist fn)
-                (dolist (e alist)
-                  (funcall fn (car e)
-                           (vconcat (mapcar (lambda (f)
-                                              (ewm-layout--build-frame-plist f menu-active))
-                                            (cdr e)))))))
-      (send ewm--strips #'ewm-output-layout)
-      (send ewm--floating-frames #'ewm-floating-layout))))
+    (ewm-layout (vconcat (mapcar (lambda (frame)
+                                   (ewm-layout--build-frame-plist frame menu-active))
+                                 (ewm-layout--managed-frames))))))
 
 (defun ewm-layout--refresh ()
-  "Send current window layouts to the compositor."
+  "Send the current window layout to the compositor."
   (when ewm--module-mode
     ;; An error here would drop us from `window-state-change-hook' for good.
     (condition-case err

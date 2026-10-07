@@ -24,7 +24,8 @@
 (defmacro ewm-test--stub (name args &rest body)
   `(unless (fboundp ',name) (defun ,name ,args ,@body)))
 
-(ewm-test--stub ewm-output-layout (_output _frames) nil)
+(ewm-test--stub ewm-layout (_frames) nil)
+(ewm-test--stub ewm-get-strip-frame-ids (_output) nil)
 (ewm-test--stub ewm-init-event-channel (_process) nil)
 (defvar ewm-test--queued nil "Events the stubbed `ewm-drain-events' hands out.")
 (ewm-test--stub ewm-drain-events () (prog1 ewm-test--queued (setq ewm-test--queued nil)))

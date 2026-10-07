@@ -70,7 +70,7 @@ fn first_key_after_text_input_activation_is_intercepted() {
 
     // Focus the app surface, embedded in the emacs frame.
     let app_entry = nz(3001);
-    fix.apply_output_layout_command(HEAD, vec![frame_with_app(emacs_id, app_entry, app_id)]);
+    fix.tile_command(HEAD, vec![frame_with_app(emacs_id, app_entry, app_id)]);
     fix.ewm().set_focus_entry(app_entry, "test", false);
     fix.sync_keyboard_focus();
     pump(&mut fix, &mut emacs, &mut app);

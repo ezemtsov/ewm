@@ -143,7 +143,7 @@ Scale is sent at every surface lifecycle point:
 | Layer surface created | `new_layer_surface()` | `send_scale_transform` with output's scale |
 | Lock surface created | `configure_lock_surface()` | `send_scale_transform` with output's scale |
 | Output config changed | `apply_output_config()` | `send_scale_transform_to_output_surfaces()` |
-| Window repositioned | `OutputLayout` command | `apply_output_layout()` (output enter/leave + scale) |
+| Window repositioned | `Layout` command | `apply_layout()` (output enter/leave + scale) |
 
 ### FractionalScaleHandler
 
@@ -218,12 +218,12 @@ if let Some(output) = scale_output {
 }
 ```
 
-**2. Layout positioning** (`OutputLayout` command): When Emacs sends a per-output
-layout declaration, `apply_output_layout` diffs old vs new surface ID sets and
+**2. Layout positioning** (`Layout` command): When Emacs declares the frame
+layout, `apply_layout` diffs each output's old vs new surface ID sets and
 sends `output.enter()`/`output.leave()` + scale/transform for each change:
 
 ```rust
-// In apply_output_layout():
+// In apply_layout(), per output:
 // Surfaces added to this output get enter + scale
 for &id in &added {
     if let Some(window) = self.window(id) {
@@ -404,7 +404,7 @@ emacsclient --socket-name=vt2 -e '(ewm-configure-output "DP-1" :scale 1.5)'
 | Scale notification | `utils.rs` | `send_scale_transform()` |
 | Coordinate helpers | `utils.rs` | `to_physical_precise_round`, `round_logical_in_physical`, `output_size` |
 | Scale rounding | `backend/mod.rs` | `closest_representable_scale()` |
-| Output association | `lib.rs` | `apply_output_layout()`, `cleanup_dead_windows()` |
+| Output association | `layout/mod.rs` | `apply_layout()`, `cleanup_dead_windows()` |
 | Scale propagation | `utils.rs` | `propagate_preferred_scale()` |
 | Subsurface handler | `lib.rs` | `CompositorHandler::new_subsurface()` |
 | Popup output lookup | `lib.rs` | `output_for_popup()` |
@@ -428,6 +428,6 @@ The implementation follows niri's patterns. Key reference files in `~/git/niri/`
 
 Key divergence from niri: niri's windows are not in a global space, so
 `space.refresh()` is safe. EWM keeps windows in `Space` for hit-testing but manages
-output association explicitly via `apply_output_layout` (for layout surfaces) and
+output association explicitly via `apply_layout` (for layout surfaces) and
 direct `output.enter()` calls (for Emacs frames at creation), with
 `cleanup_dead_windows()` replacing `space.refresh()`.

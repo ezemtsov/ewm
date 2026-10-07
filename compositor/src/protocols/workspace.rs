@@ -36,15 +36,12 @@ type WorkspaceKey = u64;
 
 pub trait WorkspaceHandler {
     fn workspace_manager_state(&mut self) -> &mut WorkspaceManagerState;
-    fn activate_workspace(&mut self, output: String, frame_index: usize);
+    fn activate_workspace(&mut self, frame_surface_id: WorkspaceKey);
 }
 
 /// Queued client request, executed on Commit.
 enum Action {
-    Activate {
-        output_name: String,
-        frame_index: usize,
-    },
+    Activate(WorkspaceKey),
 }
 
 /// Per-workspace-group protocol mirror.
@@ -783,12 +780,7 @@ where
                     .unwrap_or_default();
                 for action in actions {
                     match action {
-                        Action::Activate {
-                            output_name,
-                            frame_index,
-                        } => {
-                            state.activate_workspace(output_name, frame_index);
-                        }
+                        Action::Activate(key) => state.activate_workspace(key),
                     }
                 }
             }
@@ -854,27 +846,19 @@ where
     ) {
         match request {
             ext_workspace_handle_v1::Request::Activate => {
-                // Look up the workspace by handle, then resolve its current
-                // strip position. The lisp side activates by 1-based
-                // (output, frame_index); compute it from the workspace's
-                // current `coordinates`.
                 let ps = state.workspace_manager_state();
-                let Some(ws) = ps
+                let Some(&key) = ps
                     .workspaces
-                    .values()
-                    .find(|ws| ws.instances.contains(resource))
+                    .iter()
+                    .find(|(_, ws)| ws.instances.contains(resource))
+                    .map(|(key, _)| key)
                 else {
                     return;
                 };
-                let output_name = ws.output.clone();
-                let frame_index = ws.coordinates[1] as usize + 1;
 
                 // Queue for processing on Commit.
                 if let Some(actions) = ps.instances.get_mut(&self.0) {
-                    actions.push(Action::Activate {
-                        output_name,
-                        frame_index,
-                    });
+                    actions.push(Action::Activate(key));
                 }
             }
             ext_workspace_handle_v1::Request::Deactivate

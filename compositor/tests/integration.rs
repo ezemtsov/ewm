@@ -233,7 +233,7 @@ proptest! {
         let surface_id = fixture
             .find_surface_id(&client, &toplevel.surface)
             .expect("server did not assign a surface id");
-        fixture.apply_output_layout_command(
+        fixture.tile_command(
             "Virtual-1",
             vec![frame_covering(100, nz(1), surface_id, geo.size)],
         );
@@ -360,14 +360,14 @@ fn output_layout_command_refreshes_pointer_focus() {
         .expect("server did not assign a surface id");
     let entry_id = nz(1);
 
-    fixture.apply_output_layout_command(
+    fixture.tile_command(
         "Virtual-1",
         vec![frame_with_entry_at(100, entry_id, surface_id, 0, 0)],
     );
     fixture.warp_pointer(10.0, 10.0);
     assert_eq!(fixture.pointer_focus_surface_id(), Some(surface_id));
 
-    fixture.apply_output_layout_command(
+    fixture.tile_command(
         "Virtual-1",
         vec![frame_with_entry_at(100, entry_id, surface_id, 600, 0)],
     );
@@ -404,7 +404,7 @@ fn frame_focus_switch_refreshes_stationary_pointer_after_transition() {
         .find_surface_id(&client, &second.surface)
         .expect("server did not assign second surface id");
 
-    fixture.apply_output_layout_command(
+    fixture.tile_command(
         "Virtual-1",
         vec![
             frame_with_entry(100, nz(1), first_surface_id),
@@ -429,7 +429,7 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
     let mut fixture = Fixture::new().unwrap();
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.ewm().animations_clock.set_complete_instantly(true);
-    fixture.apply_output_layout_command(
+    fixture.tile_command(
         "Virtual-1",
         vec![
             frame_with_entry(10, nz(1), 100),
@@ -512,7 +512,7 @@ fn strip_swipe_with_the_pointer_on_another_output_warps_like_a_key() {
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
     fixture.ewm().animations_clock.set_complete_instantly(true);
-    fixture.apply_output_layout_command(
+    fixture.tile_command(
         "Virtual-1",
         vec![
             frame_with_entry(10, nz(1), 100),
@@ -645,12 +645,8 @@ fn disabling_focused_output_migrates_focused_frame_to_mapped_output() {
     let mut fixture = Fixture::new().expect("Failed to create fixture");
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
-    fixture
-        .ewm()
-        .apply_output_layout("Virtual-1", vec![Frame::new(100)]);
-    fixture
-        .ewm()
-        .apply_output_layout("Virtual-2", vec![Frame::new(200)]);
+    fixture.tile("Virtual-1", vec![Frame::new(100)]);
+    fixture.tile("Virtual-2", vec![Frame::new(200)]);
     fixture.ewm().set_focus_frame(100, "test", false);
 
     fixture.ewm().output_config.insert(
@@ -672,13 +668,9 @@ fn disabling_output_migrates_entries_to_mapped_output() {
     fixture.add_output("Virtual-1", 1280, 720);
     fixture.add_output("Virtual-2", 1280, 720);
     let disabled_frame = frame_with_entry(100, nz(1), 1);
-    fixture
-        .ewm()
-        .apply_output_layout("Virtual-1", vec![disabled_frame]);
+    fixture.tile("Virtual-1", vec![disabled_frame]);
     fixture.ewm().set_layout_entry_fullscreen(nz(1), true);
-    fixture
-        .ewm()
-        .apply_output_layout("Virtual-2", vec![Frame::new(200)]);
+    fixture.tile("Virtual-2", vec![Frame::new(200)]);
     fixture.ewm().set_focus_frame(200, "test", false);
 
     fixture.ewm().output_config.insert(
@@ -709,12 +701,8 @@ fn disabling_output_reassigns_primary_entry_to_mapped_entry() {
     let mut disabled_frame = frame_with_entry(100, nz(1), surface_id);
     disabled_frame.entries[0].w = 1000;
     disabled_frame.entries[0].h = 1000;
-    fixture
-        .ewm()
-        .apply_output_layout("Virtual-1", vec![disabled_frame]);
-    fixture
-        .ewm()
-        .apply_output_layout("Virtual-2", vec![frame_with_entry(200, nz(2), surface_id)]);
+    fixture.tile("Virtual-1", vec![disabled_frame]);
+    fixture.tile("Virtual-2", vec![frame_with_entry(200, nz(2), surface_id)]);
 
     fixture.ewm().output_config.insert(
         "Virtual-1".to_string(),
@@ -856,9 +844,7 @@ proptest! {
                 let frames = vec![(i as u64 + 1) * 10, (i as u64 + 1) * 10 + 1];
                 let connector = mint(&serial);
                 fixture.add_output_with_identity(&connector, 1280, 720, "Acme", "Panel", &serial);
-                fixture
-                    .ewm()
-                    .apply_output_layout(&connector, frames.iter().copied().map(Frame::new).collect());
+                fixture.tile(&connector, frames.iter().copied().map(Frame::new).collect());
                 Display { serial, frames, connector: Some(connector) }
             })
             .collect();
@@ -894,7 +880,7 @@ fn layout_merge_preserves_fullscreen_for_same_surface_view() {
     let surface_id = 1;
     let entry_id = nz(1);
 
-    fixture.ewm().apply_output_layout(
+    fixture.tile(
         "Virtual-1",
         vec![frame_with_entry(100, entry_id, surface_id)],
     );
@@ -904,7 +890,7 @@ fn layout_merge_preserves_fullscreen_for_same_surface_view() {
         Some(true)
     );
 
-    fixture.ewm().apply_output_layout(
+    fixture.tile(
         "Virtual-1",
         vec![frame_with_entry(100, entry_id, surface_id)],
     );
@@ -914,40 +900,12 @@ fn layout_merge_preserves_fullscreen_for_same_surface_view() {
     );
     assert!(fixture.ewm_ref().is_surface_fullscreen(surface_id));
 
-    fixture
-        .ewm()
-        .apply_output_layout("Virtual-1", vec![frame_with_entry(100, entry_id, 2)]);
+    fixture.tile("Virtual-1", vec![frame_with_entry(100, entry_id, 2)]);
     assert_eq!(
         entry_fullscreen(&fixture, "Virtual-1", entry_id),
         Some(false)
     );
     assert!(!fixture.ewm_ref().is_surface_fullscreen(surface_id));
-}
-
-#[test]
-fn migrated_frame_preserves_fullscreen_for_same_surface_view() {
-    let mut fixture = Fixture::new().expect("Failed to create fixture");
-    fixture.add_output("Virtual-1", 1280, 720);
-    fixture.add_output("Virtual-2", 1280, 720);
-
-    let surface_id = 1;
-    let entry_id = nz(1);
-
-    fixture.ewm().apply_output_layout(
-        "Virtual-1",
-        vec![frame_with_entry(100, entry_id, surface_id)],
-    );
-    fixture.ewm().set_layout_entry_fullscreen(entry_id, true);
-    fixture.ewm().apply_output_layout(
-        "Virtual-2",
-        vec![frame_with_entry(100, entry_id, surface_id)],
-    );
-
-    assert_eq!(
-        entry_fullscreen(&fixture, "Virtual-2", entry_id),
-        Some(true)
-    );
-    assert!(fixture.ewm_ref().is_surface_fullscreen(surface_id));
 }
 
 #[test]
@@ -959,8 +917,8 @@ fn output_scale_change_reassigns_fullscreen_primary_entry() {
     let surface_id = 1;
     let first = frame_with_entry(100, nz(1), surface_id);
     let second = frame_with_entry(200, nz(2), surface_id);
-    fixture.ewm().apply_output_layout("Virtual-1", vec![first]);
-    fixture.ewm().apply_output_layout("Virtual-2", vec![second]);
+    fixture.tile("Virtual-1", vec![first]);
+    fixture.tile("Virtual-2", vec![second]);
     fixture.ewm().set_layout_entry_fullscreen(nz(1), true);
     fixture.ewm().set_layout_entry_fullscreen(nz(2), true);
 
@@ -1023,28 +981,41 @@ fn migrated_layout_surfaces_receive_destination_preferred_scale() {
         .expect("server did not assign an entry surface id");
     let entry_id = nz(100);
 
-    fixture.ewm().apply_output_layout(
+    fixture.tile(
         "Virtual-1",
         vec![frame_with_entry(frame_id, entry_id, entry_surface_id)],
     );
     assert_preferred_scale(&fixture, frame_id, 1.0);
     assert_preferred_scale(&fixture, entry_surface_id, 1.0);
 
-    fixture.ewm().apply_output_layout(
-        "Virtual-2",
-        vec![frame_with_entry(frame_id, entry_id, entry_surface_id)],
-    );
-    assert_preferred_scale(&fixture, frame_id, 2.0);
-    assert_preferred_scale(&fixture, entry_surface_id, 2.0);
-
+    // Losing Virtual-1 moves the frame to Virtual-2. Getting it back brings the frame home.
     fixture.ewm().output_config.insert(
-        "Virtual-2".to_string(),
+        "Virtual-1".to_string(),
         OutputConfig {
             enabled: false,
             ..Default::default()
         },
     );
-    fixture.apply_output_config("Virtual-2");
+    fixture.apply_output_config("Virtual-1");
+    assert_eq!(
+        fixture.ewm_ref().emacs_frame_output(frame_id),
+        Some("Virtual-2")
+    );
+    assert_preferred_scale(&fixture, frame_id, 2.0);
+    assert_preferred_scale(&fixture, entry_surface_id, 2.0);
+
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+    assert_eq!(
+        fixture.ewm_ref().emacs_frame_output(frame_id),
+        Some("Virtual-1")
+    );
     assert_preferred_scale(&fixture, frame_id, 1.0);
     assert_preferred_scale(&fixture, entry_surface_id, 1.0);
 }
@@ -1066,7 +1037,7 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
         .expect("server did not assign a surface id");
     let entry_id = nz(1);
 
-    fixture.ewm().apply_output_layout(
+    fixture.tile(
         "Virtual-1",
         vec![frame_with_entry(100, entry_id, surface_id)],
     );

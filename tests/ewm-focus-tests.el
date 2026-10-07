@@ -25,8 +25,10 @@
 
 ;; The compositor dynamic module isn't loaded in the test harness; stub
 ;; the module entry points the libs would otherwise pull in.
-(unless (fboundp 'ewm-output-layout)
-  (defun ewm-output-layout (_output _frames) nil))
+(unless (fboundp 'ewm-layout)
+  (defun ewm-layout (_frames) nil))
+(unless (fboundp 'ewm-get-strip-frame-ids)
+  (defun ewm-get-strip-frame-ids (_output) nil))
 (unless (fboundp 'ewm-focus-target-module)
   (defun ewm-focus-target-module (_focus-id) nil))
 (unless (fboundp 'ewm-prepare-frame-close-module)
@@ -58,13 +60,12 @@
 (defvar ewm-focus-tests--captured nil)
 
 (defmacro ewm-focus-tests--with-captured-layouts (&rest body)
-  "Run BODY with `ewm-output-layout' rebound to record into a list.
-Returns the captures as an alist of (OUTPUT . FRAMES-VECTOR)."
+  "Run BODY with `ewm-layout' rebound to record into a list.
+Returns the captured FRAMES vectors, oldest first."
   (declare (indent 0))
   `(let ((ewm-focus-tests--captured nil))
-     (cl-letf (((symbol-function 'ewm-output-layout)
-                (lambda (output frames)
-                  (push (cons output frames) ewm-focus-tests--captured))))
+     (cl-letf (((symbol-function 'ewm-layout)
+                (lambda (frames) (push frames ewm-focus-tests--captured))))
        ,@body)
      (nreverse ewm-focus-tests--captured)))
 
@@ -111,20 +112,15 @@ The batch frame is shared; we save and restore the parameters we touch."
        (dolist (b ewm-focus-tests--scratch-buffers)
          (when (buffer-live-p b) (kill-buffer b))))))
 
-(defun ewm-focus-tests--single-frame-strip (frame)
-  "Set `ewm--strips' to a single-output strip containing FRAME."
-  (setq ewm--strips `((,ewm-focus-tests--output . (,frame))))
-  (setq ewm--module-mode t))
-
 (defun ewm-focus-tests--capture-selected-entry-id ()
-  "Set up a single-frame strip and return the layout's `:selected-entry-id'."
+  "Return the `:selected-entry-id' the batch frame's layout carries."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
-    (ewm-focus-tests--single-frame-strip f)
+    (setq ewm--module-mode t)
     (let* ((captures (ewm-focus-tests--with-captured-layouts
                        (ewm-layout--send-layouts)))
-           (frame (aref (cdr (assoc ewm-focus-tests--output captures)) 0)))
+           (frame (aref (car captures) 0)))
       (plist-get frame :selected-entry-id))))
 
 ;;;; Tests
@@ -165,12 +161,11 @@ The batch frame is shared; we save and restore the parameters we touch."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
-    (ewm-focus-tests--single-frame-strip f)
+    (setq ewm--module-mode t)
     (let* ((ewm-layout-menu-predicates (list (lambda () t)))
            (captures (ewm-focus-tests--with-captured-layouts
                        (ewm-layout--send-layouts)))
-           (entries (plist-get (aref (cdr (assoc ewm-focus-tests--output captures)) 0)
-                               :entries)))
+           (entries (plist-get (aref (car captures) 0) :entries)))
       (should (= 1 (length entries)))
       (should (eql ewm-focus-tests--surface-id
                    (plist-get (aref entries 0) :surface-id))))))
@@ -268,12 +263,12 @@ buffer; `mapped' displays and publishes it."
     (let ((captures nil)
           (created nil)
           (ewm--surfaces (make-hash-table :test 'eql))
-          (ewm--module-mode t)
-          (ewm--strips `((,ewm-focus-tests--output . (,f)))))
+          (ewm--module-mode t))
       (unwind-protect
-          (cl-letf (((symbol-function 'ewm-output-layout)
-                     (lambda (output frames)
-                       (push (cons output frames) captures))))
+          (cl-letf (((symbol-function 'ewm-layout)
+                     (lambda (frames) (push frames captures)))
+                    ((symbol-function 'ewm-get-strip-frame-ids)
+                     (lambda (_output) (list ewm-focus-tests--frame-surface-id))))
             (ewm--create-surface-buffer 80 "pinentry" 1234)
             (setq created (gethash 80 ewm--surfaces))
             (should created)
@@ -282,11 +277,10 @@ buffer; `mapped' displays and publishes it."
             (ewm--handle-mapped-surface
              `((id . 80) (open_floating . nil) (output . ,ewm-focus-tests--output)))
             (should captures)
-            (let* ((frames (cdr (car captures)))
+            (let* ((frames (car captures))
                    (frame-plist (aref frames 0))
                    (entries (plist-get frame-plist :entries))
                    (entry (aref entries 0)))
-              (should (equal (car (car captures)) ewm-focus-tests--output))
               (should (= 1 (length entries)))
               (should (eql 80 (plist-get entry :surface-id)))
               (should (eql (plist-get entry :entry-id)
@@ -371,13 +365,15 @@ buffer; `mapped' displays and publishes it."
 (ert-deftest ewm-focus/surface-target-skips-focused-floating-frame ()
   "New-surface fallback ignores a focused float and takes the shown strip frame."
   (ewm-focus-tests--with-frame f
-    (let ((ewm--strips `((,ewm-focus-tests--output . (g)))))
-      (set-frame-parameter f 'ewm-floating t)
-      (unwind-protect
-          (cl-letf (((symbol-function 'ewm--current-frame) (lambda () f)))
-            (should (eq 'g (ewm--surface-target-frame-for-output
-                            ewm-focus-tests--output))))
-        (set-frame-parameter f 'ewm-floating nil)))))
+    (set-frame-parameter f 'ewm-floating t)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ewm--current-frame) (lambda () f))
+                  ((symbol-function 'ewm-get-strip-frame-ids) (lambda (_output) '(7)))
+                  ((symbol-function 'ewm--frame-by-surface-id)
+                   (lambda (id) (and (eql id 7) 'g))))
+          (should (eq 'g (ewm--surface-target-frame-for-output
+                          ewm-focus-tests--output))))
+      (set-frame-parameter f 'ewm-floating nil))))
 
 (ert-deftest ewm-focus/floating-public-command-is-toggle ()
   "Floating exposes one interactive command: `ewm-floating-toggle'."
@@ -405,14 +401,22 @@ buffer; `mapped' displays and publishes it."
 (ert-deftest ewm-focus/output-active-frame-must-be-in-strip ()
   "`ewm-output-active-frame' returns the shown strip frame, else the first."
   (ewm-focus-tests--with-frame f
-    (let ((ewm--strips `(("A" . (g ,f)) ("B" . (g)))))
-      (cl-letf (((symbol-function 'ewm-get-active-frame-id)
-                 (lambda (_output) ewm-focus-tests--frame-surface-id)))
-        (should (eq f (ewm-output-active-frame "A")))
-        ;; The compositor names a frame that has not joined B's strip yet.
-        (should (eq 'g (ewm-output-active-frame "B")))
-        (should-not (ewm-output-active-frame "C"))
-        (should-not (ewm-output-active-frame nil))))))
+    (cl-letf (((symbol-function 'ewm-get-active-frame-id)
+               (lambda (_output) ewm-focus-tests--frame-surface-id))
+              ((symbol-function 'ewm-get-strip-frame-ids)
+               (lambda (output)
+                 (pcase output
+                   ("A" (list 7 ewm-focus-tests--frame-surface-id))
+                   ("B" '(7)))))
+              ((symbol-function 'ewm--frame-by-surface-id)
+               (lambda (id)
+                 (cond ((eql id 7) 'g)
+                       ((eql id ewm-focus-tests--frame-surface-id) f)))))
+      (should (eq f (ewm-output-active-frame "A")))
+      ;; The named active frame is not on B's strip: fall back to its first.
+      (should (eq 'g (ewm-output-active-frame "B")))
+      (should-not (ewm-output-active-frame "C"))
+      (should-not (ewm-output-active-frame nil)))))
 
 (ert-deftest ewm-focus/floating-placement-goes-through-pop-to-buffer ()
   "A compositor float is placed from its host frame with the floating action."
@@ -549,13 +553,14 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
          (called-frame nil)
          (called-force nil)
          (old-output (frame-parameter frame 'ewm-output))
-         (old-surface-id (frame-parameter frame 'ewm-surface-id))
-         (ewm--strips `((,output . (,frame)))))
+         (old-surface-id (frame-parameter frame 'ewm-surface-id)))
     (unwind-protect
         (progn
           (set-frame-parameter frame 'ewm-output output)
           (set-frame-parameter frame 'ewm-surface-id 42)
-          (cl-letf (((symbol-function 'ewm-prepare-frame-close-module)
+          (cl-letf (((symbol-function 'ewm-get-strip-frame-ids)
+                     (lambda (_output) '(42)))
+                    ((symbol-function 'ewm-prepare-frame-close-module)
                      (lambda (id) (setq prepared id))))
             (ewm--prevent-frame-deletion
              (lambda (arg force)
@@ -575,13 +580,14 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
          (prepared nil)
          (called nil)
          (old-output (frame-parameter frame 'ewm-output))
-         (old-surface-id (frame-parameter frame 'ewm-surface-id))
-         (ewm--strips `((,output . (,frame)))))
+         (old-surface-id (frame-parameter frame 'ewm-surface-id)))
     (unwind-protect
         (progn
           (set-frame-parameter frame 'ewm-output output)
           (set-frame-parameter frame 'ewm-surface-id 42)
-          (cl-letf (((symbol-function 'ewm-prepare-frame-close-module)
+          (cl-letf (((symbol-function 'ewm-get-strip-frame-ids)
+                     (lambda (_output) '(42)))
+                    ((symbol-function 'ewm-prepare-frame-close-module)
                      (lambda (id) (setq prepared id))))
             (ewm--prevent-frame-deletion
              (lambda (&rest _) (setq called t))
@@ -591,14 +597,13 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
       (set-frame-parameter frame 'ewm-output old-output)
       (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
 
-(ert-deftest ewm-focus/frame-moved-event-updates-local-strip-and-home ()
+(ert-deftest ewm-focus/frame-moved-event-updates-output-and-home ()
   "Elisp mirrors compositor-owned frame topology."
   (let* ((frame (selected-frame))
          (old-output (frame-parameter frame 'ewm-output))
          (old-home-output (frame-parameter frame 'ewm-home-output))
          (old-surface-id (frame-parameter frame 'ewm-surface-id))
-         (refresh-count 0)
-         (ewm--strips `(("eDP-1" . (,frame)))))
+         (refresh-count 0))
     (unwind-protect
         (progn
           (set-frame-parameter frame 'ewm-output "eDP-1")
@@ -613,9 +618,7 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
                (home_output . "eDP-1"))))
           (should (= refresh-count 1))
           (should (equal (frame-parameter frame 'ewm-output) "DP-2"))
-          (should (equal (frame-parameter frame 'ewm-home-output) "eDP-1"))
-          (should (equal (ewm--strip-frames "DP-2") (list frame)))
-          (should-not (ewm--strip-frames "eDP-1")))
+          (should (equal (frame-parameter frame 'ewm-home-output) "eDP-1")))
       (set-frame-parameter frame 'ewm-output old-output)
       (set-frame-parameter frame 'ewm-home-output old-home-output)
       (set-frame-parameter frame 'ewm-surface-id old-surface-id))))

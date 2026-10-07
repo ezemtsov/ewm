@@ -456,7 +456,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
                     close_snapshot: None,
                 })
                 .collect();
-            h.fix.ewm().apply_output_layout(name, frames);
+            h.fix.tile(name, frames);
             for i in 0..n_views {
                 if fullscreen_mask & (1 << i) != 0 {
                     h.fix
@@ -602,7 +602,7 @@ fn apply_multi_entry_layout(
         })
         .collect::<Vec<_>>();
     let selected_entry_id = entries.first().map(|entry| entry.id);
-    h.fix.ewm().apply_output_layout(
+    h.fix.tile(
         name,
         vec![Frame {
             name: String::new(),
@@ -656,7 +656,7 @@ fn apply_plain_entry_layout(h: &mut Harness, output: usize, n_entries: usize) {
             )
         })
         .collect::<Vec<_>>();
-    h.fix.ewm().apply_output_layout(
+    h.fix.tile(
         name,
         vec![Frame {
             name: String::new(),
@@ -681,7 +681,7 @@ fn apply_split_client_layout(h: &mut Harness, output: usize) {
     if !h.fix.has_output(name) {
         return;
     }
-    h.fix.ewm().apply_output_layout(
+    h.fix.tile(
         name,
         vec![Frame {
             name: String::new(),

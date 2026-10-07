@@ -399,9 +399,9 @@ impl FloatingSpace {
     }
 
     pub fn merge_layout_frames(&mut self, frames: Vec<Frame>) {
-        let mut order = std::collections::HashSet::new();
+        let mut named = std::collections::HashSet::new();
         for mut new_frame in frames {
-            order.insert(new_frame.surface_id);
+            named.insert(new_frame.surface_id);
             if let Some(idx) = self.idx_of(new_frame.surface_id) {
                 let preserved_workspace_name = std::mem::take(&mut self.frames[idx].workspace_name);
                 let prev_size = self.data[idx].size();
@@ -433,13 +433,11 @@ impl FloatingSpace {
                     }
                     self.data[idx].set_logical_pos(pos);
                 }
-            } else {
-                self.add_frame(new_frame);
             }
         }
 
         for (frame, data) in zip(&mut self.frames, &self.data) {
-            if !order.contains(&frame.surface_id) {
+            if !named.contains(&frame.surface_id) {
                 frame.entries.clear();
                 frame.selected_entry_id = None;
                 // Persist only an already-explicit position; leave auto frames auto.

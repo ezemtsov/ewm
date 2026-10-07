@@ -65,7 +65,7 @@ fn replace_reaches_client_as_delete_then_commit_then_done() {
 
     // Focus the app surface, embedded in the emacs frame.
     let app_entry = nz(3001);
-    fix.apply_output_layout_command(HEAD, vec![frame_with_app(emacs_id, app_entry, app_id)]);
+    fix.tile_command(HEAD, vec![frame_with_app(emacs_id, app_entry, app_id)]);
     fix.ewm().set_focus_entry(app_entry, "test", false);
     fix.sync_keyboard_focus();
     pump(&mut fix, &mut emacs, &mut app);

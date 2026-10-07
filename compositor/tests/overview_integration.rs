@@ -42,7 +42,7 @@ fn fixture(frames: Vec<Frame>) -> Fixture {
     let mut fix = Fixture::new().unwrap();
     fix.add_output(OUTPUT, WIDTH, HEIGHT);
     fix.ewm().animations_clock.set_complete_instantly(true);
-    fix.apply_output_layout_command(OUTPUT, frames);
+    fix.tile_command(OUTPUT, frames);
     fix.dispatch_roundtrip(2);
     fix
 }

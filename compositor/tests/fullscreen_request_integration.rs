@@ -53,8 +53,7 @@ fn fullscreen_request_from_a_float_is_handed_to_emacs() {
     let mut fix = Fixture::new().unwrap();
     fix.add_output(OUTPUT, 1920, 1080);
     let (mut client, top, sid) = client(&mut fix);
-    fix.ewm()
-        .apply_floating_layout(OUTPUT, vec![frame(500, vec![entry(7, sid)], Some(AT))]);
+    fix.float(OUTPUT, vec![frame(500, vec![entry(7, sid)], Some(AT))]);
     fix.roundtrip(&mut client);
     fix.enable_event_capture();
     client.drain_events();
@@ -91,7 +90,7 @@ fn tiled_selection_covers_the_output() {
     let mut tile = frame(500, vec![entry(7, sid)], None);
     tile.width = 1920.0;
     tile.height = 0.0;
-    fix.ewm().apply_output_layout(OUTPUT, vec![tile]);
+    fix.tile(OUTPUT, vec![tile]);
     fix.roundtrip(&mut client);
     client.drain_events();
     let output = fix.ewm_ref().space.outputs().next().unwrap().clone();

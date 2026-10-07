@@ -27,10 +27,9 @@ enum Op {
         output: usize,
         surface_id: u64,
     },
-    /// Apply a layout to `OUTPUTS[output]`.  If a frame in `frames` is currently
-    /// on a different output, the compositor migrates it.
+    /// Declare frame contents. Placement is the compositor's: frames the
+    /// layout names but has not placed are ignored, placed ones keep their slot.
     ApplyLayout {
-        output: usize,
         frames: Vec<FrameSpec>,
     },
     FocusView(LayoutEntryId),
@@ -131,8 +130,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0..OUTPUTS.len(), FRAME_SID_RANGE)
             .prop_map(|(output, surface_id)| Op::CreateEmacsFrame { output, surface_id }),
-        (0..OUTPUTS.len(), layout_strategy())
-            .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
+        layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
         entry_view_strategy().prop_map(Op::FocusView),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
         (0..OUTPUTS.len()).prop_map(Op::DisableOutput),
@@ -225,70 +223,43 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 );
             }
         }
-        Op::ApplyLayout { output, frames } => {
-            let dest = OUTPUTS[output];
+        Op::ApplyLayout { frames } => {
             let real: Vec<Frame> = frames.iter().map(to_frame).collect();
-            let before = strip_frame_ids(fix);
-            let placed: Vec<u64> = real
-                .iter()
-                .map(|f| f.surface_id)
-                .filter(|&id| id != 0)
-                .collect();
-            let output_mapped = is_output_mapped(fix, dest);
-            fix.ewm().apply_output_layout(dest, real);
-            // I9: apply_output_layout never drops frames.
-            let after = strip_frame_ids(fix);
-            assert!(
-                before.is_subset(&after),
-                "invariant 9: apply_output_layout dropped {:?}",
-                before.difference(&after).collect::<Vec<_>>(),
+            let before = strip_orders(fix);
+            fix.ewm().apply_layout(real.clone());
+            // I9/I11: a layout moves no frame, drops none and creates none.
+            assert_eq!(
+                strip_orders(fix),
+                before,
+                "invariant 11: apply_layout changed placement",
             );
-            // I14: apply_output_layout never creates frames except those
-            // explicitly named by the submitted layout.
-            let placed_set: HashSet<u64> = placed.iter().copied().collect();
-            let unexpected: Vec<u64> = after
-                .difference(&before)
-                .copied()
-                .filter(|id| !placed_set.contains(id))
-                .collect();
-            assert!(
-                unexpected.is_empty(),
-                "invariant 14: apply_output_layout created unexpected frame(s) {:?}",
-                unexpected,
-            );
-            // I11/I13: layout-named frames are present and in layout order
-            // when the target output is mapped.  Layouts for removed outputs
-            // are stale content updates and do not own topology.
-            if output_mapped && let Some(strip) = fix.ewm_ref().frame_set.mapped_strip(dest) {
-                for id in &placed {
-                    assert!(
-                        strip.frames().iter().any(|f| f.surface_id == *id),
-                        "invariant 11: frame {} missing from {} after layout",
-                        id,
-                        dest,
-                    );
-                }
-                let subseq: Vec<u64> = strip
-                    .frames()
-                    .iter()
-                    .map(|f| f.surface_id)
-                    .filter(|id| placed.contains(id))
-                    .collect();
+            // A frame on a strip that the layout names carries the submitted
+            // contents. Homeless frames wait for an output.
+            for frame in &real {
+                let Some(live) = fix
+                    .ewm_ref()
+                    .frame_set
+                    .mapped_strips()
+                    .values()
+                    .flat_map(|strip| strip.frames().iter())
+                    .find(|f| f.surface_id == frame.surface_id)
+                else {
+                    continue;
+                };
+                let ids = |f: &Frame| f.entries.iter().map(|e| e.id).collect::<Vec<_>>();
                 assert_eq!(
-                    subseq, placed,
-                    "invariant 13: strip order on {} doesn't match layout order",
-                    dest,
+                    ids(live),
+                    ids(frame),
+                    "layout did not replace the contents of frame {}",
+                    frame.surface_id,
                 );
             }
-            // Only a layout that reaches the compositor drains pending activations.
-            if fix.has_output(OUTPUTS[output]) {
-                for id in fix.ewm_ref().pending_activations() {
-                    assert!(
-                        !fix.ewm_ref().focus_target_ready(id),
-                        "layout left activation of {} pending although it can be focused",
-                        id,
-                    );
-                }
+            for id in fix.ewm_ref().pending_activations() {
+                assert!(
+                    !fix.ewm_ref().focus_target_ready(id),
+                    "layout left activation of {} pending although it can be focused",
+                    id,
+                );
             }
         }
         Op::FocusView(v) => {
@@ -480,6 +451,20 @@ fn strip_frame_ids(fix: &Fixture) -> HashSet<u64> {
         .collect()
 }
 
+/// Every strip's frame ids in slot order, keyed by output, plus the homeless pool.
+fn strip_orders(fix: &Fixture) -> Vec<(String, Vec<u64>)> {
+    let frame_set = &fix.ewm_ref().frame_set;
+    let ids = |frames: &[Frame]| frames.iter().map(|f| f.surface_id).collect::<Vec<_>>();
+    let mut orders: Vec<(String, Vec<u64>)> = frame_set
+        .mapped_strips()
+        .iter()
+        .map(|(name, strip)| (name.clone(), ids(strip.frames())))
+        .collect();
+    orders.sort();
+    orders.push((String::new(), ids(frame_set.homeless_frames())));
+    orders
+}
+
 fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
     all_frames(fix)
         .flat_map(|frame| frame.entries.iter().filter_map(LayoutEntry::surface_id))
@@ -627,8 +612,7 @@ proptest! {
         mark_active_frame_close(closing_id);
         fix.ewm().set_focus_frame(ids[mru_idx], "pgtk_mru", false);
         if omit_closing_frame_from_layout {
-            fix.ewm().apply_output_layout(
-                OUTPUTS[0],
+            fix.ewm().apply_layout(
                 ids.iter()
                     .copied()
                     .filter(|&id| id != closing_id)
@@ -661,11 +645,11 @@ proptest! {
         fix.add_output(OUTPUTS[0], 1920, 1080);
 
         let entry_id = entry_entry_id_for(100, entry_idx);
-        fix.ewm()
-            .apply_output_layout(OUTPUTS[0], vec![frame_with_entry(100, entry_id, surface_id)]);
+        fix.tile(OUTPUTS[0], vec![frame_with_entry(100, entry_id, surface_id)]);
+        fix.tile(OUTPUTS[0], vec![Frame::new(101)]);
 
-        fix.ewm()
-            .apply_output_layout(OUTPUTS[0], vec![Frame::new(101)]);
+        // A layout that leaves frame 100 out empties it.
+        fix.ewm().apply_layout(vec![Frame::new(101)]);
 
         let omitted = fix
             .ewm_ref()
@@ -705,8 +689,7 @@ fn assert_invariants(fix: &Fixture) {
     }
 
     // Invariant 3: a frame's surface_id appears in at most one strip or the
-    // homeless pool.  Cross-output migration in `apply_output_layout` is
-    // supposed to enforce this.
+    // homeless pool.  A compositor move takes the frame along, never a copy.
     let mut seen: HashSet<u64> = HashSet::new();
     for f in all_frames(fix) {
         assert!(
@@ -826,8 +809,7 @@ proptest! {
 /// reconcile and would break the event-balance invariant.
 fn reconcile_op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
-        (0..OUTPUTS.len(), layout_strategy())
-            .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
+        layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
         entry_view_strategy().prop_map(Op::FocusView),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
         (0..OUTPUTS.len()).prop_map(Op::DisableOutput),
@@ -838,7 +820,7 @@ fn reconcile_op_strategy() -> impl Strategy<Value = Op> {
     ]
 }
 
-/// Snapshot in `apply_output_layout` misses outputs that have no strip yet.
+/// Give every mapped output a strip so per-output reconciliation runs for it.
 fn ensure_strips(fix: &mut Fixture) {
     for name in OUTPUTS {
         if is_output_mapped(fix, name) {

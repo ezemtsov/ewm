@@ -33,8 +33,8 @@ const KEY_DELETE: u32 = 111 + 8;
 
 /// Loads the real Lisp with the module stubbed to keep the last list and key sent.
 const LISP_PRELUDE: &str = r#"(setq load-prefer-newer t)
-  (dolist (f '(ewm-output-layout ewm-focus-target-module ewm-prepare-frame-close-module
-               ewm-get-active-frame-id ewm-get-output-origin))
+  (dolist (f '(ewm-layout ewm-focus-target-module ewm-prepare-frame-close-module
+               ewm-get-active-frame-id ewm-get-strip-frame-ids ewm-get-output-origin))
     (defalias f #'ignore))
   (defvar capture nil)
   (defun ewm-keyboard-redirect-capture-clear-module () (setq capture nil))
@@ -181,7 +181,7 @@ impl Harness {
             .collect();
         let selected = (client > EMACS).then(|| entry(client - 1));
         frame.selected_entry_id = selected;
-        self.fix.apply_output_layout_command(HEAD, vec![frame]);
+        self.fix.tile_command(HEAD, vec![frame]);
         match selected {
             None => self
                 .fix

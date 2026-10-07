@@ -176,7 +176,7 @@ impl Harness {
             frame.selected_entry_id = None;
         }
 
-        self.fix.apply_output_layout_command(HEAD, vec![frame]);
+        self.fix.tile_command(HEAD, vec![frame]);
         self.fix.ewm().set_layout_entry_fullscreen(
             self.app_entry_id,
             matches!(mode, FocusMode::FullscreenApp),

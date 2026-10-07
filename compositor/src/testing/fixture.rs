@@ -571,14 +571,61 @@ impl Fixture {
         self.state.ewm.queue_redraw_for_pointer();
     }
 
-    /// Apply a layout through the same command path used by Emacs.
-    pub fn apply_output_layout_command(&mut self, output: &str, frames: Vec<Frame>) {
+    /// Put `frames` on `output`'s strip the way `new_toplevel` places Emacs
+    /// frames, then declare their contents. Frames placed already stay put.
+    pub fn tile(&mut self, output: &str, frames: Vec<Frame>) {
+        let layout = self.place(output, frames, false);
+        self.state.ewm.apply_layout(layout);
+    }
+
+    /// `tile` declaring the contents through the command path Emacs uses.
+    pub fn tile_command(&mut self, output: &str, frames: Vec<Frame>) {
+        let layout = self.place(output, frames, false);
+        self.layout_command(layout);
+    }
+
+    /// `tile` for `output`'s floating space.
+    pub fn float(&mut self, output: &str, frames: Vec<Frame>) {
+        let layout = self.place(output, frames, true);
+        self.state.ewm.apply_layout(layout);
+    }
+
+    /// Declare the layout through the same command path used by Emacs.
+    pub fn layout_command(&mut self, frames: Vec<Frame>) {
         self.state
-            .handle_module_command(crate::module::ModuleCommand::OutputLayout {
-                output: output.to_string(),
-                frames,
-            });
+            .handle_module_command(crate::module::ModuleCommand::Layout { frames });
         self.state.sync_keyboard_focus();
+    }
+
+    /// Place the unplaced frames among `frames` on `output` as `new_toplevel`
+    /// would, then return them with every other placed frame as it is: Emacs
+    /// declares them all.
+    fn place(&mut self, output: &str, frames: Vec<Frame>, floating: bool) -> Vec<Frame> {
+        let ewm = &mut self.state.ewm;
+        if ewm.mapped_output_by_name(output).is_some() {
+            for frame in &frames {
+                let id = frame.surface_id;
+                if id == 0 || ewm.is_emacs_frame(id) {
+                    continue;
+                }
+                if floating {
+                    let pos = frame.floating_pos.and_then(|pos| {
+                        let area = ewm.ensure_floating_space_for_output(output)?.working_area();
+                        Some(crate::floating::Data::scale_by_working_area(area, pos))
+                    });
+                    ewm.place_new_floating_frame(id, output, pos);
+                } else {
+                    ewm.place_new_frame(id, output, None);
+                }
+            }
+        }
+        let mut layout: Vec<Frame> = ewm
+            .placed_frames()
+            .filter(|placed| !frames.iter().any(|f| f.surface_id == placed.surface_id))
+            .cloned()
+            .collect();
+        layout.extend(frames);
+        layout
     }
 
     pub fn handle_module_command(&mut self, command: crate::module::ModuleCommand) {

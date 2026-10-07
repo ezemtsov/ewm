@@ -87,7 +87,7 @@ flowchart TB
 
     hfs --> set_param["set ewm-fullscreen<br/>per-frame"]
     set_param --> refresh_fs["ewm-layout--refresh"]
-    refresh_fs --> layout_send["ewm-output-layout -><br/>apply_output_layout"]
+    refresh_fs --> layout_send["ewm-layout -><br/>apply_layout"]
 
     hunfs --> clear_param["clear ewm-fullscreen<br/>per-frame"]
     clear_param --> refresh_unfs["ewm-layout--refresh"]

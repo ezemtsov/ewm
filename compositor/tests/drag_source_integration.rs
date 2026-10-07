@@ -57,7 +57,7 @@ fn scene() -> Scene {
         800,
         900,
     ));
-    fix.ewm().apply_output_layout(HEAD, vec![frame]);
+    fix.tile(HEAD, vec![frame]);
     fix.roundtrip(&mut frame_client);
     fix.roundtrip(&mut app_client);
     frame_client.drain_events();

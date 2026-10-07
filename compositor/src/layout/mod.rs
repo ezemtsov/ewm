@@ -10,26 +10,12 @@ use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::{
     Event, Ewm, FocusId, LayoutEntry, LayoutEntryHit, LayoutEntryId, SurfaceHit, animation,
     floating, fullscreen_center_offset, module, strip,
 };
-
-#[derive(Debug)]
-struct FrameMigration {
-    id: u64,
-    prev_output: Option<String>,
-    previous_frame: Option<strip::Frame>,
-}
-
-#[derive(Debug)]
-struct OutputLayoutSnapshot {
-    output_name: String,
-    active_frame_id: Option<u64>,
-    entry_surface_ids: HashSet<u64>,
-}
 
 #[derive(Debug)]
 pub(crate) struct EntryLocation {
@@ -182,7 +168,7 @@ impl FrameSet {
         }
     }
 
-    fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
+    pub(crate) fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
         self.home_outputs
             .entry(frame_id)
             .or_insert_with(|| home.to_string());
@@ -450,13 +436,7 @@ impl Ewm {
 
     /// Frame surface_id whose focus id matches.
     pub fn frame_with_focus_id(&self, focus_id: FocusId) -> Option<u64> {
-        self.mapped_output_strips()
-            .flat_map(|(_, strip)| strip.frames().iter())
-            .chain(
-                self.floating_spaces
-                    .values()
-                    .flat_map(|space| space.frames().iter()),
-            )
+        self.placed_frames()
             .find(|f| f.focus_id == focus_id)
             .map(|f| f.surface_id)
     }
@@ -538,6 +518,13 @@ impl Ewm {
     pub fn active_frame_surface_id(&self, output_name: &str) -> Option<u64> {
         let strip = self.frame_set.mapped_strip(output_name)?;
         strip.active_frame().map(|f| f.surface_id)
+    }
+
+    /// Strip frame surface ids per mapped output, left to right.
+    pub(crate) fn strip_frames_snapshot(&self) -> HashMap<String, Vec<u64>> {
+        self.mapped_output_strips()
+            .map(|(name, _)| (name.to_string(), self.emacs_frames_on(name).collect()))
+            .collect()
     }
 
     /// Active Emacs frame surface id per mapped output.
@@ -1450,129 +1437,17 @@ impl Ewm {
         self.reconcile_output_membership(&output_name, Some(output), &pre, &post);
     }
 
-    fn collect_frame_migrations(
-        &self,
-        output_name: &str,
-        frames: &[strip::Frame],
-    ) -> Vec<FrameMigration> {
-        frames
-            .iter()
-            .filter_map(|frame| {
-                let id = frame.surface_id;
-                if id == 0 {
-                    return None;
-                }
-                let previous = self.frame_location(id);
-                let prev_output = previous.map(|location| location.output_name.to_string());
-                if prev_output.as_deref() == Some(output_name) {
-                    return None;
-                }
-                Some(FrameMigration {
-                    id,
-                    prev_output,
-                    previous_frame: previous.map(|location| location.frame.clone()),
-                })
-            })
-            .collect()
-    }
-
-    fn preserve_migrated_frame_state(frames: &mut [strip::Frame], migrations: &[FrameMigration]) {
-        for frame in frames {
-            let Some(previous_frame) = migrations
-                .iter()
-                .find(|migration| migration.id == frame.surface_id)
-                .and_then(|migration| migration.previous_frame.as_ref())
-            else {
+    /// Move the frames' windows onto `target`, leaving `prev_output` first when given.
+    fn enter_frames_on_output(&self, target: &Output, ids: &[u64], prev_output: Option<&str>) {
+        let prev_output = prev_output.and_then(|name| self.mapped_output_by_name(name));
+        for &id in ids {
+            let Some(window) = self.window(id) else {
                 continue;
             };
-            if frame.workspace_name.is_none() {
-                frame.workspace_name = previous_frame.workspace_name.clone();
-            }
-            frame.preserve_compositor_view_state_from(previous_frame);
-        }
-    }
-
-    fn output_layout_snapshot(&self, output_name: String) -> OutputLayoutSnapshot {
-        let active_frame_id = self
-            .frame_set
-            .mapped_strip(&output_name)
-            .and_then(|strip| strip.active_frame().map(|frame| frame.surface_id));
-        let entry_surface_ids = self.strip_entries(&output_name);
-        OutputLayoutSnapshot {
-            output_name,
-            active_frame_id,
-            entry_surface_ids,
-        }
-    }
-
-    fn output_layout_snapshots(
-        &self,
-        output_name: &str,
-        migrations: &[FrameMigration],
-    ) -> Vec<OutputLayoutSnapshot> {
-        let mut output_names = vec![output_name.to_string()];
-        for migration in migrations {
-            if let Some(prev_name) = &migration.prev_output
-                && !output_names.iter().any(|name| name == prev_name)
-            {
-                output_names.push(prev_name.clone());
-            }
-        }
-        output_names
-            .into_iter()
-            .map(|name| self.output_layout_snapshot(name))
-            .collect()
-    }
-
-    fn remove_migrated_frames_from_sources(
-        &mut self,
-        migrations: &[FrameMigration],
-        snapshots: &[OutputLayoutSnapshot],
-    ) {
-        for migration in migrations {
-            let Some(prev_name) = migration.prev_output.as_deref() else {
-                continue;
-            };
-            let was_active_in_prev = snapshots.iter().any(|snapshot| {
-                snapshot.output_name == prev_name && snapshot.active_frame_id == Some(migration.id)
-            });
-            if let Some(prev_strip) = self.frame_set.mapped_strip_mut(prev_name) {
-                // `remove_frame_at` adjusts `active_idx` and seeds the
-                // slide-in animation on surviving neighbours; plain
-                // `retain` would leave `active_idx` stale.
-                if let Some(idx) = prev_strip.index_of(migration.id) {
-                    prev_strip.remove_frame_at(idx);
-                }
-            }
-            // Source reconcile skips Hidden for a frame already gone from its
-            // strip; freeze it here.
-            if was_active_in_prev && self.mapped_output_by_name(prev_name).is_some() {
-                self.queue_event(Event::FrameHidden { id: migration.id });
-            }
-        }
-    }
-
-    fn reconcile_entry_snapshots(&mut self, snapshots: &[OutputLayoutSnapshot]) {
-        for snapshot in snapshots {
-            self.reconcile_output_entries(&snapshot.output_name, &snapshot.entry_surface_ids);
-        }
-    }
-
-    fn send_frame_migration_output_events(
-        &self,
-        target_output: &Output,
-        migrations: &[FrameMigration],
-    ) {
-        for migration in migrations {
-            let Some(window) = self.window(migration.id) else {
-                continue;
-            };
-            if let Some(prev_name) = migration.prev_output.as_deref()
-                && let Some(prev_output) = self.mapped_output_by_name(prev_name)
-            {
+            if let Some(prev_output) = prev_output {
                 self.leave_output_for_window(window, prev_output);
             }
-            self.enter_output_for_window(window, target_output);
+            self.enter_output_for_window(window, target);
         }
     }
 
@@ -1626,15 +1501,7 @@ impl Ewm {
         self.reconcile_output_entries(dst_name, &pre_dst);
         let dst_output = self.find_mapped_output(dst_name);
         if let Some(dst_output) = &dst_output {
-            let migrations: Vec<FrameMigration> = moved_ids
-                .iter()
-                .map(|&id| FrameMigration {
-                    id,
-                    prev_output: Some(src_name.to_string()),
-                    previous_frame: None,
-                })
-                .collect();
-            self.send_frame_migration_output_events(dst_output, &migrations);
+            self.enter_frames_on_output(dst_output, &moved_ids, Some(src_name));
         }
 
         self.refresh_primary_assignments();
@@ -1756,15 +1623,7 @@ impl Ewm {
 
         self.reconcile_output_entries(dst_name, &pre_dst);
         if let Some(dst_output) = self.find_mapped_output(dst_name) {
-            let migrations: Vec<FrameMigration> = moved_ids
-                .iter()
-                .map(|&id| FrameMigration {
-                    id,
-                    prev_output: None,
-                    previous_frame: None,
-                })
-                .collect();
-            self.send_frame_migration_output_events(&dst_output, &migrations);
+            self.enter_frames_on_output(&dst_output, &moved_ids, None);
             self.update_frames_for_working_area(&dst_output);
         }
         self.refresh_primary_assignments();
@@ -1841,26 +1700,24 @@ impl Ewm {
     }
 
     /// Follow the focused frame's selected window after a merge, even if only its surface changed.
-    fn sync_focus_after_layout_merge(&mut self, output_name: &str, focused_surface: u64) {
+    fn sync_focus_after_merge(&mut self, output_name: &str, focused_surface: u64) {
         let frame_id = self.focused_frame_id;
-        let mut selected = None;
-
-        let Some(strip) = self.frame_set.mapped_strip_mut(output_name) else {
+        let selected = if let Some(strip) = self.frame_set.mapped_strip_mut(output_name)
+            && let Some(idx) = strip.index_of(frame_id)
+        {
+            strip.set_active(idx);
+            strip.frames()[idx].selected_entry_id
+        } else if let Some(space) = self.floating_spaces.get_mut(output_name)
+            && let Some(idx) = space.idx_of(frame_id)
+        {
+            let selected = space.frames()[idx].selected_entry_id;
+            space.activate_frame(frame_id);
+            selected
+        } else {
             return;
         };
-        if let Some(new_idx) = strip.index_of(frame_id) {
-            strip.set_active(new_idx);
-            selected = Some(strip.frames()[new_idx].selected_entry_id);
-        } else if !strip.frames().is_empty() {
-            let clamped = strip.active_idx().min(strip.frames().len() - 1);
-            strip.set_active(clamped);
-        }
-
-        let Some(new_entry) = selected else {
-            return;
-        };
-        let entry_changed = new_entry != self.focused_entry_id;
-        self.set_focus_state(frame_id, new_entry);
+        let entry_changed = selected != self.focused_entry_id;
+        self.set_focus_state(frame_id, selected);
         if entry_changed || self.focused_surface_id() != focused_surface {
             self.clear_focused_urgency();
             self.flush_pending_title_event(self.focused_surface_id());
@@ -1868,126 +1725,105 @@ impl Ewm {
         }
     }
 
-    fn sync_focus_after_floating_layout_merge(&mut self, output_name: &str, focused_surface: u64) {
-        let frame_id = self.focused_frame_id;
-        let mut selected = None;
-
-        let Some(space) = self.floating_spaces.get_mut(output_name) else {
-            return;
-        };
-        if let Some(idx) = space.idx_of(frame_id) {
-            selected = Some(space.frames()[idx].selected_entry_id);
-            space.activate_frame(frame_id);
-        }
-
-        let Some(new_entry) = selected else {
-            return;
-        };
-        let entry_changed = new_entry != self.focused_entry_id;
-        self.set_focus_state(frame_id, new_entry);
-        if entry_changed || self.focused_surface_id() != focused_surface {
-            self.clear_focused_urgency();
-            self.flush_pending_title_event(self.focused_surface_id());
-            module::record_focus(self.focused_surface_id(), "floating_layout_selected", None);
-        }
+    /// Frames on mapped outputs, strips in output order then floating spaces.
+    pub(crate) fn placed_frames(&self) -> impl Iterator<Item = &strip::Frame> {
+        self.mapped_output_strips()
+            .flat_map(|(_, strip)| strip.frames().iter())
+            .chain(
+                self.floating_spaces
+                    .values()
+                    .flat_map(|space| space.frames().iter()),
+            )
     }
 
-    /// Apply a declarative per-output layout.
-    ///
-    /// Replaces the previous layout for the given output. Surfaces removed from
-    /// this output get `wl_surface.leave`; new surfaces get `wl_surface.enter`
-    /// and scale notification.
-    pub fn apply_output_layout(&mut self, output_name: &str, mut frames: Vec<strip::Frame>) {
-        // 1. Find the output
-        let output = match self.find_mapped_output(output_name) {
-            Some(o) => o,
-            None => {
-                warn!("apply_output_layout: output '{}' not found", output_name);
-                return;
-            }
-        };
-        let current = self
-            .frame_set
-            .mapped_strip(output_name)
-            .map(strip::Strip::frames);
-        let moved = strip::moved_entry_ids(current.unwrap_or_default(), &frames);
-
-        // Only frames seeing their first home need the identity string; skip
-        // building it in the steady state where every frame already has one.
-        if frames
-            .iter()
-            .any(|f| f.surface_id != 0 && self.frame_set.home_output(f.surface_id).is_none())
-        {
-            let home_identity = crate::utils::output_identity(&output);
-            self.frame_set
-                .remember_frame_homes(&home_identity, frames.iter().map(|f| f.surface_id));
-        }
-        let migrations = self.collect_frame_migrations(output_name, &frames);
-        for frame in &mut frames {
-            frame.clear_compositor_view_state();
-        }
-        Self::preserve_migrated_frame_state(&mut frames, &migrations);
-        // Capture affected outputs before the swap; reconciliation runs after
-        // the merge against the post-merge strips so kept frames don't leak
-        // output membership, and active-frame event balance has a stable base.
-        let snapshots = self.output_layout_snapshots(output_name, &migrations);
-        self.remove_migrated_frames_from_sources(&migrations, &snapshots);
-
-        // Omitted frames keep their slot until Wayland destroy arrives, but
-        // their layout entries are cleared by `merge_layout_frames`.
-        let clock = self.animations_clock.clone();
+    /// Declare every Emacs frame's contents. Placement is ours: a frame keeps
+    /// its output and slot, one the layout leaves out keeps its slot with empty
+    /// contents until its Wayland destroy arrives, and homeless frames wait
+    /// for an output.
+    pub fn apply_layout(&mut self, frames: Vec<strip::Frame>) {
         let focused_surface = self.focused_surface_id();
-        let scale = self.output_scale(output_name);
-        let strip_entry = self
-            .frame_set
-            .ensure_mapped_strip(output_name, clock, scale);
-        strip_entry.merge_layout_frames(frames);
-        self.sync_focus_after_layout_merge(output_name, focused_surface);
+        let moved = strip::moved_entry_ids(self.placed_frames(), &frames);
+        let prev_active = self.active_frames_snapshot();
+        let outputs: Vec<(String, Output, HashSet<u64>)> = self
+            .sorted_outputs
+            .iter()
+            .map(|output| {
+                let name = output.name();
+                let entries = self.strip_entries(&name);
+                (name, output.clone(), entries)
+            })
+            .collect();
 
-        self.reconcile_entry_snapshots(&snapshots);
-        self.send_frame_migration_output_events(&output, &migrations);
+        // Route each frame to the strip or floating space holding it. Frames
+        // we do not know (not yet mapped, or already destroyed) are skipped.
+        let mut tiled: HashMap<String, Vec<strip::Frame>> = HashMap::new();
+        let mut floating: HashMap<String, Vec<strip::Frame>> = HashMap::new();
+        for frame in frames {
+            let Some(location) = self.frame_location(frame.surface_id) else {
+                continue;
+            };
+            let bucket = if location.strip.is_some() {
+                &mut tiled
+            } else {
+                &mut floating
+            };
+            bucket
+                .entry(location.output_name.to_string())
+                .or_default()
+                .push(frame);
+        }
 
+        for (name, _, _) in &outputs {
+            if let Some(strip) = self.frame_set.mapped_strip_mut(name) {
+                strip.merge_layout_frames(tiled.remove(name).unwrap_or_default());
+            }
+            if let Some(space) = self.floating_spaces.get_mut(name) {
+                space.merge_layout_frames(floating.remove(name).unwrap_or_default());
+            }
+            self.sync_focus_after_merge(name, focused_surface);
+        }
+        for name in tiled.keys().chain(floating.keys()) {
+            warn!(
+                "apply_layout: output '{}' is unmapped, its frames were not updated",
+                name
+            );
+        }
+
+        for (name, _, pre) in &outputs {
+            self.reconcile_output_entries(name, pre);
+        }
         self.refresh_primary_assignments_after_layout(&moved);
-        self.update_frames_for_working_area(&output);
+        for (_, output, _) in &outputs {
+            self.update_frames_for_working_area(output);
+        }
         self.prune_dangling_focus();
-        // Covers the race where `apply_output_layout` runs before
-        // `new_toplevel`'s auto-focus.
+        // Covers the race where the layout runs before `new_toplevel`'s auto-focus.
         self.focus_any_frame_if_unfocused("auto_focus_on_layout");
         self.focus_pending_activation_surfaces();
-
-        debug!(
-            "apply_output_layout: output '{}' with {} surface entries",
-            output_name,
-            self.strip_entries(output_name).len(),
-        );
-
-        for snapshot in snapshots {
-            self.reconcile_active_for_output(&snapshot.output_name, snapshot.active_frame_id);
+        for (name, _, _) in &outputs {
+            self.reconcile_active_for_output(name, prev_active.get(name).copied());
         }
     }
 
-    /// Apply floating frame contents for an output; Rust keeps positions and stacking.
-    pub fn apply_floating_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
-        let pre = self.strip_entries(output_name);
-        let focused_surface = self.focused_surface_id();
-        let current = self
-            .floating_spaces
-            .get(output_name)
-            .map(floating::FloatingSpace::frames);
-        let moved = strip::moved_entry_ids(current.unwrap_or_default(), &frames);
-        let Some(space) = self.ensure_floating_space_for_output(output_name) else {
-            warn!("apply_floating_layout: output '{}' not found", output_name);
+    /// Move frame `id` by `delta` slots in its strip, stopping at the strip's edge.
+    pub fn swap_frame(&mut self, id: u64, delta: i32) {
+        let Some(output_name) = self.emacs_frame_output(id).map(str::to_string) else {
             return;
         };
-        space.merge_layout_frames(frames);
-        self.sync_focus_after_floating_layout_merge(output_name, focused_surface);
-        let post = self.strip_entries(output_name);
-        let output = self.find_mapped_output(output_name);
-        self.reconcile_output_membership(output_name, output.as_ref(), &pre, &post);
-        self.refresh_primary_assignments_after_layout(&moved);
-        self.prune_dangling_focus();
-        self.focus_pending_activation_surfaces();
-        if let Some(output) = output {
+        let Some(strip) = self.frame_set.mapped_strip_mut(&output_name) else {
+            return;
+        };
+        let Some(from) = strip.index_of(id) else {
+            return;
+        };
+        let Some(to) = from
+            .checked_add_signed(delta as isize)
+            .filter(|&to| to < strip.frames().len())
+        else {
+            return;
+        };
+        strip.move_frame(from, to);
+        if let Some(output) = self.find_mapped_output(&output_name) {
             self.queue_redraw(&output);
         }
     }

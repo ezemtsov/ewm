@@ -26,11 +26,12 @@ pub fn mark_active_frame_close(id: u64) {
 }
 
 /// Queue a tiled Emacs frame for OUTPUT, as `ewm-prepare-frame` does.
-pub fn prepare_frame(output: &str) {
+pub fn prepare_frame(output: &str, after: Option<u64>) {
     crate::module::prepare_frame(crate::module::PendingFrame {
         output: output.to_owned(),
         floating: false,
         pos: None,
+        after,
     });
 }
 

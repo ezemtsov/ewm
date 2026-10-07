@@ -29,12 +29,11 @@ fn new_toplevel_skips_focused_floating_frame_for_tiled_host() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);
 
-    fix.ewm()
-        .apply_output_layout(HEAD_A, vec![frame_with_width(100, 800.0)]);
+    fix.tile(HEAD_A, vec![frame_with_width(100, 800.0)]);
 
     let floating_entry_id = nz(3001);
     let floating_entry_surface_id = 9000;
-    fix.ewm().apply_floating_layout(
+    fix.float(
         HEAD_A,
         vec![frame_with_entry(
             200,
@@ -268,8 +267,7 @@ fn surface_request_helpers_queue_expected_events_and_update_fullscreen() {
 
     let toplevel = fix.open_toplevel(&mut client, "requests", Size::from((400, 400)));
     let surface_id = fix.find_surface_id(&client, &toplevel.surface).unwrap();
-    fix.ewm()
-        .apply_output_layout(HEAD_A, vec![frame_with_entry(100, nz(3001), surface_id)]);
+    fix.tile(HEAD_A, vec![frame_with_entry(100, nz(3001), surface_id)]);
 
     let server_surface = fix
         .ewm_ref()

@@ -5,22 +5,22 @@ external panels (waybar, DankMaterialShell, noctalia, etc.) can render
 the strip and request switches.
 
 The wiring is intentionally thin: the protocol is a *mirror* of the
-strip, with one workspace handle per Emacs frame. Layout decisions
-live in lisp; the compositor's job is to keep clients consistent with
-what lisp says is true.
+strip, with one workspace handle per Emacs frame. Frame placement lives
+in the compositor. Lisp declares frame contents and asks for moves, and
+the compositor keeps clients consistent with its strips.
 
 ## Source of truth
 
 | Side  | Owns                                | Reads from        |
 |-------|-------------------------------------|-------------------|
-| lisp  | `ewm--strips` (alist `output → list of frames`) | itself |
-| rust  | `output_strips` (`HashMap<String, Strip>`)      | lisp via `apply_output_layout` |
-| protocol mirror | per-client ext-workspace handles        | rust `output_strips` |
+| rust  | `output_strips` (`HashMap<String, Strip>`)      | itself. Lisp asks via `ewm-prepare-frame` and `ewm-swap-frame` |
+| lisp  | frame contents (`ewm-layout`)                    | rust via `ewm-get-strip-frame-ids` and `ewm-get-active-frame-id` |
+| protocol mirror | per-client ext-workspace handles        | rust strips |
 
 Every other source of "frame order" is wrong. In particular:
-`frame-list` (Emacs creation order), `HashMap` iteration of
-`output_strips`, and any client's own `WindowManager.windowsets`
-append order are *not* sources of truth.
+`frame-list` (Emacs creation order), `HashMap` iteration of the strips,
+and any client's own `WindowManager.windowsets` append order are *not*
+sources of truth.
 
 ## Mapping to ext-workspace-v1
 
@@ -48,8 +48,8 @@ In the table below, `O` ranges over outputs, `k` over slot indices.
 
 | #  | Invariant                                                                                          |
 |----|----------------------------------------------------------------------------------------------------|
-| I1 | `len(ewm--strips[O])` == `len(output_strips[O].frames)` for every `O` lisp knows about.            |
-| I2 | For every `k`, `output_strips[O].frames[k].surface_id` == `(ewm--strips[O][k] |> ewm-surface-id)`. |
+| I1 | The strip is the only copy of frame order. Lisp reads it through `ewm-get-strip-frame-ids`.        |
+| I2 | A layout command changes neither a strip's frame set nor its order.                                 |
 | I3 | The mirror has exactly one workspace handle per `(O, frame.surface_id)` in `output_strips`.        |
 | I4 | A mirror workspace's `coordinates[1]` equals the slot index of its frame in `output_strips[O]`.    |
 | I5 | A mirror workspace's `name` equals `(coordinates[1] + 1)` as decimal.                              |
@@ -67,13 +67,14 @@ When more than one party could pick, exactly one of them does:
 
 | Decision                         | Owner   | Mechanism                          |
 |----------------------------------|---------|------------------------------------|
-| Frame creation, placement        | lisp    | `ewm-frame-new` → strip-insert     |
-| Strip reorder                    | lisp    | `ewm-frame-move-left/right`        |
-| Active frame on reorder          | lisp    | `select-frame-set-input-focus`     |
+| Frame creation                   | lisp    | `ewm-frame-new` → `make-frame`     |
+| Frame placement                  | rust    | `ewm-prepare-frame` names the output and the frame to insert right of. `new_toplevel` inserts |
+| Strip reorder                    | rust    | `ewm-frame-move-left/right` → `ewm-swap-frame` → `Strip::move_frame` |
+| Active frame on reorder          | rust    | the active slot follows its frame  |
 | Active frame on close (I9, I10)  | rust    | lisp passes an explicit frame to `delete-frame`; Rust applies active-close or inactive-close strip rules when that frame's toplevel is destroyed |
 | Workspace handle lifecycle       | rust    | `protocols::workspace::refresh`    |
 | Coordinate / name / state events | rust    | same                               |
-| Activate request (client click)  | rust→lisp | `Event::ActivateWorkspace { output, frame_index }`; lisp resolves via `ewm--strip-frames` (i.e. invariant I2) |
+| Activate request (client click)  | rust→lisp | `Event::ActivateWorkspace { id }` names the frame's surface id. Lisp selects that frame |
 
 Close-time focus is compositor-owned because Emacs can change selection
 and send layout refreshes before `xdg_toplevel.destroy` reaches the

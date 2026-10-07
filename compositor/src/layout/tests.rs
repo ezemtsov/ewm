@@ -25,9 +25,8 @@ fn tiled_entry_under_floating_center_hits_active_window() {
         1600,
         900,
     ));
-    fix.ewm().apply_output_layout(HEAD_A, vec![tiled]);
-    fix.ewm()
-        .apply_floating_layout(HEAD_A, vec![frame_with_entry(200, nz(3001), 9000)]);
+    fix.tile(HEAD_A, vec![tiled]);
+    fix.float(HEAD_A, vec![frame_with_entry(200, nz(3001), 9000)]);
 
     // The floating frame (200) sits over the tiled entry -> that entry wins.
     assert_eq!(
@@ -57,13 +56,12 @@ fn floating_frame_occludes_the_strip_when_hit_testing() {
         1600,
         900,
     ));
-    fix.ewm().apply_output_layout(HEAD_A, vec![tiled]);
+    fix.tile(HEAD_A, vec![tiled]);
 
     // Floating frame (400x480, centered at (600,210)) over the tiled entry;
     // its 400x400 entry leaves an 80px strip of the frame's own surface.
     let floating_entry = nz(3001);
-    fix.ewm()
-        .apply_floating_layout(HEAD_A, vec![frame_with_entry(200, floating_entry, 9000)]);
+    fix.float(HEAD_A, vec![frame_with_entry(200, floating_entry, 9000)]);
 
     let over_entry = Point::from((800.0, 400.0)); // inside the floating entry
     // The frame's own surface below its entry: the modeline and echo area --
@@ -352,7 +350,7 @@ proptest! {
 fn emacs_frame_origin_uses_screen_relative_strip_position() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);
-    fix.ewm().apply_output_layout(
+    fix.tile(
         HEAD_A,
         vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
     );
@@ -374,8 +372,7 @@ fn emacs_frame_origin_uses_screen_relative_strip_position() {
 fn emacs_frame_origin_uses_floating_position() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);
-    fix.ewm()
-        .apply_floating_layout(HEAD_A, vec![frame_with_width(200, 640.0)]);
+    fix.float(HEAD_A, vec![frame_with_width(200, 640.0)]);
 
     assert_eq!(
         fix.ewm_ref().emacs_frame_origin(200),
@@ -391,7 +388,7 @@ proptest! {
     fn emacs_frame_origin_rounds_a_sliding_frame(offset in -2000f64..=2000.) {
         let mut fix = testing::Fixture::new().unwrap();
         fix.add_output(HEAD_A, 1600, 900);
-        fix.ewm().apply_output_layout(
+        fix.tile(
             HEAD_A,
             vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
         );
@@ -404,5 +401,40 @@ proptest! {
             fix.ewm_ref().emacs_frame_origin(101),
             Some(Point::from((expected, 0))),
         );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    // A swap moves one frame past one neighbour and the focused frame stays active.
+    #[test]
+    fn swap_frame_moves_one_slot_and_keeps_focus_active(
+        len in 1usize..=6,
+        raw_focus in 0usize..6,
+        raw_from in 0usize..6,
+        left in any::<bool>(),
+    ) {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        let ids: Vec<u64> = (0..len).map(|idx| 100 + idx as u64).collect();
+        fix.tile(HEAD_A, ids.iter().map(|&id| frame_with_width(id, 800.0)).collect());
+        let focused = ids[raw_focus % len];
+        fix.ewm().set_focus_frame(focused, "test", false);
+        let from = raw_from % len;
+        let delta = if left { -1 } else { 1 };
+
+        fix.ewm().swap_frame(ids[from], delta);
+
+        let mut expected = ids.clone();
+        let to = from as i32 + delta;
+        if (0..len as i32).contains(&to) {
+            expected.swap(from, to as usize);
+        }
+        let strip = fix.ewm_ref().frame_set.mapped_strip(HEAD_A).unwrap();
+        let order: Vec<u64> = strip.frames().iter().map(|f| f.surface_id).collect();
+        prop_assert_eq!(order, expected);
+        prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(focused));
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id, focused);
     }
 }

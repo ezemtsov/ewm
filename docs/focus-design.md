@@ -78,7 +78,7 @@ makes the call and tells lisp what happened.
 ```
  ┌──────────────────────────┐  module commands  ┌──────────────────────────┐
  │           Emacs          │ ─────────────────► │        Compositor        │
- │     (lisp; Emacs main    │   OutputLayout     │      (Rust; thread       │
+ │     (lisp; Emacs main    │   Layout           │      (Rust; thread       │
  │         thread)          │   FocusView        │      inside Emacs)       │
  │                          │   FocusOutputDir   │                          │
  │   layout authority       │                    │    focus authority       │
@@ -239,23 +239,19 @@ After specific operations:
    minibuffer, transient, or read-key state, the Wayland keyboard target
    may move to Emacs but the capture command preserves the stored
    focused frame/view pair.
-9. **Applying a layout never removes a frame.**  The set of frame
-   surface_ids across all strips can grow or shuffle, but it never
-   strictly shrinks via layout.  Frames go away only through
-   `handle_toplevel_destroyed`.
+9. **Applying a layout never removes a frame.**  Frames go away only
+   through `handle_toplevel_destroyed`.
 10. **Removing an output evicts its strip.**  After `remove_output`,
    there is no strip entry for that output, and focus has hopped to
    a surviving frame if any exist.
-11. **A layout's frames end up on its destination strip.**  Every
-    frame named in `apply_output_layout(name, frames)` lives in
-    `name`'s strip after the call, even if it had to migrate.
+11. **A layout changes no frame's placement.**  `apply_layout(frames)`
+    leaves every strip's frame set and order as they were. It replaces
+    the contents of the frames it names and empties the frames it
+    leaves out. Frames enter a strip at `new_toplevel` and move only
+    through compositor operations.
 12. **Destruction is authoritative.**  After
     `handle_toplevel_destroyed`, the frame's surface_id is gone from
     every strip.
-13. **Layout order is the strip order.**  Frames named in
-    `apply_output_layout(name, frames)` appear in `name`'s strip in
-    the order they appear in `frames`; pre-existing frames absent
-    from the new layout sink to the end.
 
 The pure `resolve_keyboard_focus_target` helper (lock > layer >
 toplevel priority) is covered by a second set of properties in the

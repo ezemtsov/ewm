@@ -30,7 +30,7 @@
     (working_area (output . "eDP-1") (x . 0) (y . 32) (width . 1920) (height . 1168))
     (output_config_changed (name . "eDP-1") (width . 2880) (height . 1800) (refresh . 90000) (x . 0) (y . 0) (scale . 1.5) (transform . 0))
     (selection-changed (text . "copied"))
-    (activate_workspace (output . "eDP-1") (frame_index . 2))
+    (activate_workspace (id . 7))
     (maximize_request (id . 7))
     (unmaximize_request (id . 7))
     (fullscreen_request (id . 7))

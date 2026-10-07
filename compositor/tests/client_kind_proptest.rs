@@ -84,7 +84,7 @@ impl Harness {
 
     fn arrive(&mut self, arrival: Arrival) -> Result<(), TestCaseError> {
         if let Some(i) = arrival.pending {
-            prepare_frame(OUTPUTS[i]);
+            prepare_frame(OUTPUTS[i], None);
             self.pending.push(OUTPUTS[i]);
         }
         // A parent must come from the same client, so it is an arrival of its own.

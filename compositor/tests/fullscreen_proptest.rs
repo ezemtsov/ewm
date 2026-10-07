@@ -294,7 +294,7 @@ fn apply_op(fix: &mut Fixture, op: &Op) -> Result<(), TestCaseError> {
         }
         Op::ApplyLayout { output, frames } => {
             let frames = frames.iter().map(to_frame).collect();
-            fix.ewm().apply_output_layout(OUTPUTS[*output], frames);
+            fix.tile(OUTPUTS[*output], frames);
             let after = all_fullscreen_selections(fix);
             assert_no_new_selection(&before, &after, op)?;
         }

@@ -74,7 +74,7 @@ fn external_provider_yields_the_seat_to_an_input_method_client() {
     let emacs_id = fix.find_surface_id(&emacs, &emacs_surface.surface).unwrap();
     let app_id = fix.find_surface_id(&app, &app_surface.surface).unwrap();
     let app_entry = nz(3001);
-    fix.apply_output_layout_command(HEAD, vec![frame_with_app(emacs_id, app_entry, app_id)]);
+    fix.tile_command(HEAD, vec![frame_with_app(emacs_id, app_entry, app_id)]);
 
     // Emacs provider: the relay takes the slot and Emacs frames stay out of
     // text-input focus.

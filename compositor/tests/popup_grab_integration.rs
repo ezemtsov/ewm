@@ -47,7 +47,7 @@ fn popup_grab_routes_input_and_dismisses_on_outside_click() {
         400,
         400,
     ));
-    fix.ewm().apply_output_layout(HEAD, vec![frame]);
+    fix.tile(HEAD, vec![frame]);
     fix.roundtrip(&mut client);
 
     // A menu popup on the app toplevel, grabbed before mapping.
@@ -160,8 +160,7 @@ fn popup_grab_routes_input_and_dismisses_on_outside_click() {
         400,
         400,
     ));
-    fix.ewm()
-        .apply_output_layout(HEAD, vec![app_frame, other_frame]);
+    fix.tile(HEAD, vec![app_frame, other_frame]);
     fix.roundtrip(&mut client);
     fix.roundtrip(&mut other);
     let hit_other = fix
@@ -223,7 +222,7 @@ fn nested_submenu_popup_does_not_dismiss_the_chain() {
         400,
         400,
     ));
-    fix.ewm().apply_output_layout(HEAD, vec![frame]);
+    fix.tile(HEAD, vec![frame]);
     fix.roundtrip(&mut client);
 
     // Parent menu, grabbed.

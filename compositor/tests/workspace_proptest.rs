@@ -114,8 +114,7 @@ fn apply_op(strip: &mut Strip, op: &Op) {
             };
             let prev_active_sid = strip.frames()[i].surface_id;
             let prev_neighbour_sid = strip.frames()[j].surface_id;
-            strip.frames_mut().swap(i, j);
-            strip.set_active(j);
+            strip.move_frame(i, j);
 
             assert_eq!(
                 strip.active_frame().map(|f| f.surface_id),

@@ -36,8 +36,9 @@
 (declare-function ewm-init-event-channel "ewm-core")
 (declare-function ewm-drain-events "ewm-core")
 (declare-function ewm-set-selection-module "ewm-core")
-(declare-function ewm-output-layout-module "ewm-core")
-(declare-function ewm-floating-layout-module "ewm-core")
+(declare-function ewm-layout-module "ewm-core")
+(declare-function ewm-swap-frame-module "ewm-core")
+(declare-function ewm-get-strip-frame-ids "ewm-core")
 (declare-function ewm-close-module "ewm-core")
 (declare-function ewm-warp-pointer-module "ewm-core")
 (declare-function ewm-get-debug-state-module "ewm-core")
@@ -266,13 +267,6 @@ Let-bound in `ewm--handle-focus' to gate the Emacs-window hover branch.")
 
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to buffer.")
-
-(defvar ewm--strips nil
-  "Alist of (OUTPUT-NAME . FRAMES) -- per-output, left-to-right strip order.
-Single source of truth for frame ordering on each output's strip.")
-
-(defvar ewm--floating-frames nil
-  "Alist of (OUTPUT-NAME . FRAMES) for floating Emacs frames.")
 
 (defvar ewm--frame-seq 0
   "Monotonic counter advanced for each EWM-managed frame creation.
@@ -759,7 +753,7 @@ Similar to `exwm-workspace-rename-buffer'."
   (ewm--apply-background)
   (let (created)
     (dolist (output (ewm-get-active-outputs))
-      (unless (ewm--strip-frames output)
+      (unless (or (ewm--strip-frames output) (ewm--frame-in-flight-on-p output))
         (ewm--create-frame-for-output output)
         (setq created t)))
     (ewm--enforce-frame-output-parity)
@@ -812,15 +806,10 @@ Push the text onto the kill ring."
     (ewm-set-selection-module text)))
 
 (defun ewm--handle-activate-workspace (event)
-  "Handle activate_workspace EVENT from compositor.
-Select the Nth Emacs frame on the requested output (1-based index)."
+  "Select the Emacs frame a client asked for in activate_workspace EVENT."
   (unless (ewm-layout--menu-active-p)
-    (let* ((output (alist-get 'output event))
-           (frame-index (alist-get 'frame_index event))
-           (frames (ewm--strip-frames output))
-           (target (nth (1- frame-index) frames)))
-      (when target
-        (select-frame-set-input-focus target)))))
+    (when-let* ((target (ewm--frame-by-surface-id (alist-get 'id event))))
+      (select-frame-set-input-focus target))))
 
 ;;; Strip-visibility freeze/thaw
 ;;
@@ -836,7 +825,6 @@ Select the Nth Emacs frame on the requested output (1-based index)."
   (let ((frames (ewm--strip-frames output))
         (active (and output
                      (ewm--frame-by-surface-id (ewm-get-active-frame-id output)))))
-    ;; `ewm--strips' can lag the compositor by an event.
     (if (memq active frames) active (car frames))))
 
 (defun ewm--gtk-frame-updates (event fn)
@@ -853,7 +841,7 @@ Select the Nth Emacs frame on the requested output (1-based index)."
     (when frame
       (set-frame-parameter frame 'ewm-home-output (alist-get 'home_output event))
       (unless (equal (frame-parameter frame 'ewm-output) output)
-        (ewm--move-frame-to-output frame output)
+        (set-frame-parameter frame 'ewm-output output)
         (ewm-layout--refresh)))))
 
 ;;; Idle timeout
@@ -1013,14 +1001,10 @@ For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
                      (title . ,(frame-parameter nil 'name))
                      (pid . ,(emacs-pid))))))
 
-(defun ewm-output-layout (output frames)
-  "Set OUTPUT's frame strip to FRAMES.
-FRAMES is a vector of `ewm-layout--build-frame-plist' plists, left to right."
-  (ewm-output-layout-module output frames))
-
-(defun ewm-floating-layout (output frames)
-  "Set declarative contents for OUTPUT's floating Emacs frames."
-  (ewm-floating-layout-module output frames))
+(defun ewm-layout (frames)
+  "Declare the contents of every Emacs frame. The compositor owns placement.
+FRAMES is a vector of `ewm-layout--build-frame-plist' plists."
+  (ewm-layout-module frames))
 
 (defun ewm-workspace-rename (name &optional frame)
   "Rename FRAME's workspace to NAME.
@@ -1160,9 +1144,9 @@ ARGS is a plist with optional keys:
   :enabled    - t or nil to enable/disable the output"
   (ewm-configure-output-module name args))
 
-(defun ewm-prepare-frame (output)
-  "Tell compositor to assign next frame to OUTPUT."
-  (ewm-prepare-frame-module output))
+(defun ewm-prepare-frame (output &optional after)
+  "Tell the compositor the next frame goes on OUTPUT, right of frame id AFTER."
+  (ewm-prepare-frame-module output after))
 
 (defun ewm-prepare-floating-frame (output &optional x y)
   "Tell compositor to assign next frame as floating on OUTPUT at top-left X/Y."
@@ -1264,66 +1248,16 @@ native Wayland backend)."
        (null (frame-parameter frame 'ewm-surface-id))))
 
 (defun ewm--strip-frames (output)
-  "Return OUTPUT's strip frame list (left-to-right)."
-  (alist-get output ewm--strips nil nil #'equal))
+  "Return OUTPUT's strip frames left to right, as the compositor places them."
+  (delq nil (mapcar #'ewm--frame-by-surface-id (ewm-get-strip-frame-ids output))))
 
-(defun ewm--strip-set (output frames)
-  "Replace OUTPUT's strip with FRAMES, dropping the entry when empty."
-  (setf (alist-get output ewm--strips nil t #'equal) frames))
-
-(defun ewm--floating-frames (output)
-  "Return OUTPUT's floating frame list, top-to-bottom."
-  (alist-get output ewm--floating-frames nil nil #'equal))
-
-(defun ewm--floating-set (output frames)
-  "Replace OUTPUT's floating frame list, dropping the entry when empty."
-  (setf (alist-get output ewm--floating-frames nil t #'equal) frames))
-
-(defun ewm--floating-insert (frame output)
-  "Insert FRAME at the top of OUTPUT's floating frame stack."
-  (ewm--floating-set output (cons frame (delq frame (ewm--floating-frames output)))))
-
-(defun ewm--floating-remove (frame)
-  "Drop FRAME from its floating output stack."
-  (when-let* ((output (frame-parameter frame 'ewm-output)))
-    (ewm--floating-set output (delq frame (ewm--floating-frames output)))))
-
-(defun ewm--strip-insert (frame output &optional after)
-  "Insert FRAME into OUTPUT's strip after frame AFTER, or at the end."
-  (let* ((frames (ewm--strip-frames output))
-         (pos (and after (cl-position after frames)))
-         (at (if pos (1+ pos) (length frames))))
-    (ewm--strip-set output
-                    (append (cl-subseq frames 0 at)
-                            (list frame)
-                            (cl-subseq frames at)))))
-
-(defun ewm--strip-remove (frame)
-  "Drop FRAME from its strip."
-  (when-let* ((output (frame-parameter frame 'ewm-output)))
-    (ewm--strip-set output (delq frame (ewm--strip-frames output)))))
-
-(defun ewm--strip-swap (frame delta)
-  "Swap FRAME with its DELTA neighbor; return that neighbor or nil at the edge."
-  (when-let* ((output (frame-parameter frame 'ewm-output))
-              (frames (ewm--strip-frames output))
-              (idx (cl-position frame frames))
-              (target-idx (+ idx delta))
-              ((>= target-idx 0))
-              ((< target-idx (length frames))))
-    (cl-rotatef (nth idx frames) (nth target-idx frames))
-    (nth target-idx frames)))
-
-(defun ewm--move-frame-to-output (frame output)
-  "Move FRAME to OUTPUT's strip, updating param and membership in lockstep.
-Order matters: `ewm--strip-remove' reads `ewm-output' to find the source
-strip, so the parameter must change between the remove and the insert."
-  (ewm--strip-remove frame)
-  (ewm--floating-remove frame)
-  (set-frame-parameter frame 'ewm-output output)
-  (if (frame-parameter frame 'ewm-floating)
-      (ewm--floating-insert frame output)
-    (ewm--strip-insert frame output)))
+(defun ewm--frame-in-flight-on-p (output)
+  "Non-nil when a tiled frame bound for OUTPUT has not mapped yet."
+  (seq-some (lambda (frame)
+              (and (ewm--frame-in-flight-p frame)
+                   (not (frame-parameter frame 'ewm-floating))
+                   (equal (frame-parameter frame 'ewm-output) output)))
+            (frame-list)))
 
 (defun ewm--make-output-frame (output-name extra-params)
   "Make a managed frame on OUTPUT-NAME carrying EXTRA-PARAMS.
@@ -1336,10 +1270,9 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
 
 (defun ewm--create-frame-for-output (output-name &optional after-frame extra-params)
   "Create a frame on OUTPUT-NAME inserted after AFTER-FRAME (or appended)."
-  (ewm-prepare-frame output-name)
-  (let ((frame (ewm--make-output-frame output-name extra-params)))
-    (ewm--strip-insert frame output-name after-frame)
-    frame))
+  (ewm-prepare-frame output-name
+                     (and after-frame (frame-parameter after-frame 'ewm-surface-id)))
+  (ewm--make-output-frame output-name extra-params))
 
 (defun ewm--create-floating-frame-for-output (output-name &optional extra-params pos)
   "Create a floating frame on OUTPUT-NAME, optionally at POS (X . Y) pixels."
@@ -1349,7 +1282,6 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
                 `((ewm-floating . t) ,@extra-params (width . 80) (height . 24)))))
     ;; `quit-window' would iconify otherwise, which EWM frames cannot do.
     (set-frame-parameter frame 'auto-hide-function (lambda () (delete-frame frame)))
-    (ewm--floating-insert frame output-name)
     frame))
 
 (defun ewm--on-make-frame (frame)
@@ -1358,12 +1290,6 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
              (not (frame-parameter frame 'ewm-output)))
     (ewm--log "on-make-frame: frame=%s action=schedule-delete" frame)
     (run-at-time 0 nil (lambda () (ignore-errors (delete-frame frame))))))
-
-(defun ewm--on-delete-frame (frame &rest _)
-  "Hook for `delete-frame-functions': drop FRAME from its EWM placement."
-  (if (frame-parameter frame 'ewm-floating)
-      (ewm--floating-remove frame)
-    (ewm--strip-remove frame)))
 
 (defun ewm--prevent-frame-deletion (orig-fun &optional frame force)
   "Around advice for `delete-frame': refuse to delete the last frame of
@@ -1651,11 +1577,9 @@ number of frames on this output."
       (select-frame-set-input-focus target))))
 
 (defun ewm--frame-swap-on-output (delta)
-  "Swap the focused frame with its DELTA neighbor in the strip.
-Returns the neighbor on success, nil at the strip edge."
-  (when-let* ((target (ewm--strip-swap (ewm--focused-frame) delta)))
-    (ewm-layout--refresh)
-    target))
+  "Ask the compositor to move the focused frame DELTA slots along its strip."
+  (when-let* ((id (frame-parameter (ewm--focused-frame) 'ewm-surface-id)))
+    (ewm-swap-frame-module id delta)))
 
 (defun ewm-frame-move-left ()
   "Swap the selected frame with its left neighbor in the strip."
@@ -1864,7 +1788,6 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (add-function :override interprogram-cut-function #'ewm--interprogram-cut-function)
   (add-function :override interprogram-paste-function #'ignore)
   (add-hook 'after-make-frame-functions #'ewm--on-make-frame)
-  (add-hook 'delete-frame-functions #'ewm--on-delete-frame)
   (add-hook 'enable-theme-functions #'ewm--apply-background)
   (advice-add 'delete-frame :around #'ewm--prevent-frame-deletion)
   (add-hook 'kill-emacs-hook #'ewm--stop-compositor t))
@@ -1883,7 +1806,6 @@ This allows spawned GUI applications to request focus via xdg_activation."
   (remove-function interprogram-cut-function #'ewm--interprogram-cut-function)
   (remove-function interprogram-paste-function #'ignore)
   (remove-hook 'after-make-frame-functions #'ewm--on-make-frame)
-  (remove-hook 'delete-frame-functions #'ewm--on-delete-frame)
   (remove-hook 'after-init-hook #'ewm--send-intercept-keys)
   (remove-hook 'emacs-startup-hook #'ewm-notify-initialized-module)
   (remove-hook 'enable-theme-functions #'ewm--apply-background)

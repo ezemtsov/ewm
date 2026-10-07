@@ -470,10 +470,9 @@ impl WorkspaceHandler for State {
         &mut self.ewm.workspace_state
     }
 
-    fn activate_workspace(&mut self, output: String, frame_index: usize) {
+    fn activate_workspace(&mut self, frame_surface_id: u64) {
         self.ewm.queue_event(Event::ActivateWorkspace {
-            output,
-            frame_index,
+            id: frame_surface_id,
         });
     }
 }

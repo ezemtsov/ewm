@@ -179,10 +179,7 @@ fn every_event() -> Vec<Event> {
         Event::SelectionChanged {
             text: "copied".into(),
         },
-        Event::ActivateWorkspace {
-            output: "eDP-1".into(),
-            frame_index: 2,
-        },
+        Event::ActivateWorkspace { id: 7 },
         Event::MaximizeRequest { id: 7 },
         Event::UnmaximizeRequest { id: 7 },
         Event::FullscreenRequest { id: 7 },

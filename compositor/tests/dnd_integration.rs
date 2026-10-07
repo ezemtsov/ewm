@@ -53,7 +53,7 @@ fn scene() -> (Fixture, u64, u64, WlSurface) {
         800,
         900,
     ));
-    fix.ewm().apply_output_layout(HEAD, vec![frame]);
+    fix.tile(HEAD, vec![frame]);
     fix.roundtrip(&mut frame_client);
     fix.roundtrip(&mut app_client);
     (fix, app_sid, frame_sid, icon)

@@ -311,18 +311,22 @@ impl Frame {
 }
 
 /// Frames in `current` that `layout` leaves out.
-pub fn dropped_frame_ids(current: &[Frame], layout: &[Frame]) -> Vec<u64> {
+pub fn dropped_frame_ids<'a>(
+    current: impl Iterator<Item = &'a Frame>,
+    layout: &[Frame],
+) -> Vec<u64> {
     current
-        .iter()
         .map(|frame| frame.surface_id)
         .filter(|&id| !layout.iter().any(|frame| frame.surface_id == id))
         .collect()
 }
 
 /// Surface entries in `layout` that are new or placed differently than in `current`.
-pub fn moved_entry_ids(current: &[Frame], layout: &[Frame]) -> HashSet<LayoutEntryId> {
+pub fn moved_entry_ids<'a>(
+    current: impl Iterator<Item = &'a Frame>,
+    layout: &[Frame],
+) -> HashSet<LayoutEntryId> {
     let rects: HashMap<LayoutEntryId, Rectangle<i32, Logical>> = current
-        .iter()
         .flat_map(|frame| frame.entries.iter())
         .filter(|entry| entry.surface.is_some())
         .map(|entry| (entry.id, entry.rect()))
@@ -449,6 +453,44 @@ impl Strip {
         if !was_empty && idx <= self.active_idx {
             self.set_active(self.active_idx + 1);
         }
+    }
+
+    /// Move frame `from` to slot `to`. It and the frames it passes slide into place.
+    pub fn move_frame(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.frames.len() || to >= self.frames.len() {
+            return;
+        }
+        let view_pos = self.view_pos();
+        let active_id = self.active_frame().map(|f| f.surface_id);
+        let from_x = self.column_x(from);
+        let stride = self.stride(&self.frames[from]);
+        let frame = self.frames.remove(from);
+        self.frames.insert(to, frame);
+        if !self.clock.should_complete_instantly() {
+            let clock = self.clock.clone();
+            let slide = |f: &Frame, from: f64| {
+                Animation::new(
+                    clock.clone(),
+                    from + f.move_offset(),
+                    0.0,
+                    0.,
+                    slide_spring(),
+                )
+            };
+            let to_x = self.column_x(to);
+            let moved = &mut self.frames[to];
+            moved.move_anim = Some(slide(moved, from_x - to_x));
+            let (passed, offset) = if from < to {
+                (from..to, stride)
+            } else {
+                (to + 1..from + 1, -stride)
+            };
+            for f in &mut self.frames[passed] {
+                f.move_anim = Some(slide(f, offset));
+            }
+        }
+        let active = active_id.and_then(|id| self.index_of(id)).unwrap_or(0);
+        self.set_active_from_view_pos(active, view_pos, 0.);
     }
 
     /// Take every frame out, leaving an empty strip.
@@ -621,63 +663,37 @@ impl Strip {
 
     /// Merge a fresh Emacs layout into this strip.
     ///
-    /// Existing frames are updated in place so their move animations survive.
-    /// Frames omitted by the layout keep their slot until their Wayland destroy
-    /// arrives, but their layout entries are cleared because views belong to the
-    /// latest layout declaration.
+    /// Frames are updated in place so their slot and move animations survive.
+    /// A frame the layout leaves out keeps its slot until its Wayland destroy
+    /// arrives, but its layout entries are cleared because views belong to the
+    /// latest layout declaration. Frames not in the strip are ignored.
     pub fn merge_layout_frames(&mut self, frames: Vec<Frame>) {
-        let old_frame_positions: HashMap<u64, usize> = self
-            .frames
-            .iter()
-            .enumerate()
-            .map(|(idx, frame)| (frame.surface_id, idx))
-            .collect();
-        let order: HashMap<u64, usize> = frames
-            .iter()
-            .enumerate()
-            .map(|(idx, frame)| (frame.surface_id, idx))
-            .collect();
+        let named: HashSet<u64> = frames.iter().map(|frame| frame.surface_id).collect();
 
         for mut new_frame in frames {
-            if let Some(existing) = self
+            let Some(existing) = self
                 .frames
                 .iter_mut()
                 .find(|frame| frame.surface_id == new_frame.surface_id)
-            {
-                let preserved_anim = existing.move_anim.clone();
-                let preserved_workspace_name = existing.workspace_name.clone();
-                new_frame.clear_compositor_view_state();
-                new_frame.preserve_compositor_view_state_from(existing);
-                *existing = new_frame;
-                if existing.workspace_name.is_none() {
-                    existing.workspace_name = preserved_workspace_name;
-                }
-                existing.move_anim = preserved_anim;
-            } else {
-                self.frames.push(new_frame);
+            else {
+                continue;
+            };
+            let preserved_anim = existing.move_anim.clone();
+            let preserved_workspace_name = existing.workspace_name.clone();
+            new_frame.clear_compositor_view_state();
+            new_frame.preserve_compositor_view_state_from(existing);
+            *existing = new_frame;
+            if existing.workspace_name.is_none() {
+                existing.workspace_name = preserved_workspace_name;
             }
+            existing.move_anim = preserved_anim;
         }
 
         for frame in &mut self.frames {
-            if !order.contains_key(&frame.surface_id) {
+            if !named.contains(&frame.surface_id) {
                 frame.entries.clear();
                 frame.selected_entry_id = None;
                 frame.clear_compositor_view_state();
-            }
-        }
-
-        self.frames
-            .sort_by_key(|frame| order.get(&frame.surface_id).copied().unwrap_or(usize::MAX));
-
-        let mut omitted_frames = old_frame_positions
-            .iter()
-            .filter_map(|(&id, &idx)| (!order.contains_key(&id)).then_some((id, idx)))
-            .collect::<Vec<_>>();
-        omitted_frames.sort_by_key(|&(_, idx)| idx);
-        for (id, old_idx) in omitted_frames {
-            if let Some(pos) = self.frames.iter().position(|frame| frame.surface_id == id) {
-                let frame = self.frames.remove(pos);
-                self.frames.insert(old_idx.min(self.frames.len()), frame);
             }
         }
     }
@@ -1050,22 +1066,55 @@ mod tests {
         }
 
         #[test]
-        fn merge_layout_preserves_omitted_frame_slot(
-            len in 1usize..=MAX_FRAMES,
-            raw_close_idx in 0usize..MAX_FRAMES,
+        fn move_frame_keeps_every_frame_still_at_the_instant(
+            widths in prop::collection::vec(1.0f64..MAX_WIDTH as f64, 2..=MAX_FRAMES),
+            gap in 0.0f64..MAX_GAP as f64,
+            raw_active in 0usize..MAX_FRAMES,
+            raw_from in 0usize..MAX_FRAMES,
+            raw_to in 0usize..MAX_FRAMES,
         ) {
-            let close_idx = raw_close_idx % len;
+            let len = widths.len();
+            let mut strip = strip_with(widths, gap, raw_active % len);
+            for (idx, frame) in strip.frames.iter_mut().enumerate() {
+                frame.surface_id = 100 + idx as u64;
+            }
+            let (from, to) = (raw_from % len, raw_to % len);
+            let active_id = strip.active_frame().unwrap().surface_id;
+            let before: Vec<(u64, f64)> = (0..len)
+                .map(|idx| (strip.frames[idx].surface_id, strip.screen_x_of_frame(idx)))
+                .collect();
+
+            strip.move_frame(from, to);
+
+            prop_assert_eq!(strip.active_frame().unwrap().surface_id, active_id);
+            for (id, x) in before {
+                let idx = strip.index_of(id).unwrap();
+                prop_assert!((strip.screen_x_of_frame(idx) - x).abs() <= 1. / strip.scale);
+            }
+        }
+
+        #[test]
+        fn merge_layout_changes_neither_frame_set_nor_order(
+            len in 1usize..=MAX_FRAMES,
+            named in prop::collection::vec(any::<bool>(), MAX_FRAMES),
+            shuffle in prop::collection::vec(0usize..MAX_FRAMES, MAX_FRAMES),
+            strangers in prop::collection::vec(20_000u64..20_010, 0..3),
+        ) {
             let ids = (0..len).map(|idx| 10_000 + idx as u64).collect::<Vec<_>>();
-            let closing_id = ids[close_idx];
-            let layout = ids
+            let mut layout_ids = ids
                 .iter()
                 .copied()
-                .filter(|&id| id != closing_id)
-                .map(Frame::new)
+                .zip(&named)
+                .filter_map(|(id, &named)| named.then_some(id))
+                .chain(strangers)
                 .collect::<Vec<_>>();
+            let len = layout_ids.len();
+            for (idx, &target) in shuffle.iter().enumerate().take(len) {
+                layout_ids.swap(idx, target % len);
+            }
             let mut strip = strip_with_ids(&ids);
 
-            strip.merge_layout_frames(layout);
+            strip.merge_layout_frames(layout_ids.into_iter().map(Frame::new).collect());
 
             prop_assert_eq!(frame_ids(&strip), ids);
         }

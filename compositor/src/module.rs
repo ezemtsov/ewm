@@ -83,6 +83,7 @@ pub struct SharedState {
     pub active_outputs: Vec<ActiveOutput>,
     pub frame_origins: Vec<FrameOrigin>,
     pub active_frames: HashMap<String, u64>,
+    pub strip_frames: HashMap<String, Vec<u64>>,
 }
 
 static SHARED_STATE: OnceLock<Mutex<SharedState>> = OnceLock::new();
@@ -117,6 +118,8 @@ pub struct PendingFrame {
     pub floating: bool,
     /// Requested top-left in logical pixels; floating frames only, else centered.
     pub pos: Option<(f64, f64)>,
+    /// Strip frame to insert right of. Tiled frames only, else appended.
+    pub after: Option<u64>,
 }
 
 static PENDING_FRAMES: OnceLock<Mutex<VecDeque<PendingFrame>>> = OnceLock::new();
@@ -341,6 +344,15 @@ fn get_active_frame_id(name: String) -> Result<Option<i64>> {
     Ok(state.active_frames.get(&name).map(|id| *id as i64))
 }
 
+/// Surface ids of output NAME's strip frames, left to right.
+#[defun]
+fn get_strip_frame_ids(name: String) -> Result<Lisp<Vec<u64>>> {
+    let state = shared_state().lock().unwrap();
+    Ok(Lisp(
+        state.strip_frames.get(&name).cloned().unwrap_or_default(),
+    ))
+}
+
 /// Query a floating Emacs frame's origin for mouse-follows-focus pointer warping.
 /// Returns (x . y) cons cell, or nil if the frame is not found.
 #[defun]
@@ -429,15 +441,14 @@ pub enum ModuleCommand {
     SetSelection {
         text: String,
     },
-    /// Per-output frame strip.  Pure geometry; focus is shifted only via `FocusTarget'.
-    OutputLayout {
-        output: String,
+    /// Contents of every Emacs frame. Placement is ours. Focus moves only via `FocusTarget'.
+    Layout {
         frames: Vec<Frame>,
     },
-    /// Per-output floating Emacs frames. Rust owns placement and stacking.
-    FloatingLayout {
-        output: String,
-        frames: Vec<Frame>,
+    /// Move an Emacs frame by `delta` slots in its strip.
+    SwapFrame {
+        id: u64,
+        delta: i32,
     },
     /// Move a floating Emacs frame by a logical-pixel delta.
     MoveFloatingFrame {
@@ -936,7 +947,7 @@ struct EntrySpec {
     surface_id: Option<u64>,
 }
 
-/// One frame of a strip as Lisp spells it; entries are relative to its working area.
+/// One Emacs frame as Lisp spells it. Entries are relative to its working area.
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct FrameSpec {
@@ -979,22 +990,25 @@ fn layout_frames(frames: Lisp<Vec<FrameSpec>>) -> Vec<Frame> {
     frames.0.into_iter().filter_map(FrameSpec::frame).collect()
 }
 
-/// Set OUTPUT's strip to FRAMES, a vector of `FrameSpec` plists left to right.
+/// Declare the contents of every Emacs frame, a vector of `FrameSpec` plists.
 #[defun]
-fn output_layout_module(output: String, frames: Lisp<Vec<FrameSpec>>) -> Result<()> {
-    push_command(ModuleCommand::OutputLayout {
-        output,
+fn layout_module(frames: Lisp<Vec<FrameSpec>>) -> Result<()> {
+    push_command(ModuleCommand::Layout {
         frames: layout_frames(frames),
     });
     Ok(())
 }
 
-/// Set OUTPUT's floating Emacs frames to FRAMES; Rust keeps their positions and stacking.
+/// Move Emacs frame ID by DELTA slots in its strip.
 #[defun]
-fn floating_layout_module(output: String, frames: Lisp<Vec<FrameSpec>>) -> Result<()> {
-    push_command(ModuleCommand::FloatingLayout {
-        output,
-        frames: layout_frames(frames),
+fn swap_frame_module(id: i64, delta: i64) -> Result<()> {
+    if id <= 0 {
+        tracing::warn!("swap_frame_module: ignored invalid id {id}");
+        return Ok(());
+    }
+    push_command(ModuleCommand::SwapFrame {
+        id: id as u64,
+        delta: delta.clamp(i32::MIN.into(), i32::MAX.into()) as i32,
     });
     Ok(())
 }
@@ -1113,14 +1127,16 @@ fn warp_pointer_module(x: Lisp<f64>, y: Lisp<f64>) -> Result<()> {
     Ok(())
 }
 
-/// Prepare next frame for output (synchronous to avoid race with surface creation).
+/// Prepare the next frame for OUTPUT, right of strip frame AFTER when given
+/// (synchronous to avoid a race with surface creation).
 #[defun]
-fn prepare_frame_module(output: String) -> Result<()> {
+fn prepare_frame_module(output: String, after: Lisp<Option<u64>>) -> Result<()> {
     tracing::info!("Prepared frame for output {}", output);
     prepare_frame(PendingFrame {
         output,
         floating: false,
         pos: None,
+        after: after.0.filter(|&id| id != 0),
     });
     Ok(())
 }
@@ -1138,6 +1154,7 @@ fn prepare_floating_frame_module(
         output,
         floating: true,
         pos,
+        after: None,
     });
     Ok(())
 }

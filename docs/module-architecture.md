@@ -182,7 +182,8 @@ All `*-module` functions push to command queue:
 (ewm-focus-view-module view-id)
 (ewm-focus-output-direction-module dx dy)
 (ewm-close-module id)
-(ewm-output-layout-module output frames-vector)
+(ewm-layout-module frames-vector)
+(ewm-swap-frame-module id delta)
 (ewm-warp-pointer-module x y)
 (ewm-screenshot-module &optional path)
 (ewm-configure-output-module name x y width height refresh scale transform enabled)
@@ -238,7 +239,7 @@ module commands and pipe events, not polling.
 - `lisp/ewm.el` - Main module initialization, event dispatch
 - `lisp/ewm-focus.el` - Bidirectional focus synchronization
 - `lisp/ewm-input.el` - Input handling, intercepted keys, keyboard capture
-- `lisp/ewm-layout.el` - Per-output layout declaration and refresh
+- `lisp/ewm-layout.el` - Layout declaration and refresh
 - `lisp/ewm-surface.el` - Surface ↔ buffer mapping
 - `lisp/ewm-text-input.el` - Input method bridge
 

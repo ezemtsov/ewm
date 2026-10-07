@@ -79,8 +79,7 @@ fn destroying_real_toplevel_cleans_layout_focus_indexes_and_emits_close() {
 
     let frame_id = 100;
     let entry_id = nz(1);
-    fix.ewm()
-        .apply_output_layout(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
+    fix.tile(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
     fix.ewm().set_focus_entry(entry_id, "test", false);
     let _ = fix.drain_events();
 
@@ -128,8 +127,7 @@ fn popup_commit_queues_redraw_for_owning_output() {
 
     let frame_id = 100;
     let entry_id = nz(1);
-    fix.ewm()
-        .apply_output_layout(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
+    fix.tile(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
     fix.dispatch_roundtrip(2);
 
     let popup = fix.open_popup(
@@ -171,8 +169,7 @@ fn disconnecting_focused_toplevel_cleans_layout_focus_indexes_and_emits_close() 
 
     let frame_id = 100;
     let entry_id = nz(1);
-    fix.ewm()
-        .apply_output_layout(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
+    fix.tile(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
     fix.ewm().set_focus_entry(entry_id, "test", false);
     let _ = fix.drain_events();
 
