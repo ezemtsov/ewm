@@ -3,7 +3,7 @@
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::{Kind, RenderElement};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
-use smithay::utils::{Logical, Point, Scale, Transform};
+use smithay::utils::{Logical, Point, Scale, Size, Transform};
 use tracing::warn;
 
 use crate::render::render_to_encompassing_texture;
@@ -46,6 +46,10 @@ impl Snapshot {
             buffer,
             buffer_offset: geo.loc.to_f64().to_logical(scale),
         })
+    }
+
+    pub fn size(&self) -> Size<f64, Logical> {
+        self.buffer.logical_size()
     }
 
     /// The contents with their origin at `location`.

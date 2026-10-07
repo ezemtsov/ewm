@@ -48,6 +48,7 @@ pub mod overview;
 pub mod protocols;
 pub mod render;
 mod render_helpers;
+pub mod resize_fade;
 #[cfg(feature = "screencast")]
 pub mod screencasting;
 mod shadow_style;
@@ -550,6 +551,13 @@ impl LayoutEntry {
 
     pub fn surface_id(&self) -> Option<u64> {
         self.surface.as_ref().map(|surface| surface.surface_id)
+    }
+
+    pub fn rect(&self) -> Rectangle<i32, Logical> {
+        Rectangle::new(
+            (self.x, self.y).into(),
+            (self.w as i32, self.h as i32).into(),
+        )
     }
 
     pub fn primary(&self) -> bool {
@@ -4800,8 +4808,8 @@ impl Ewm {
         let is_emacs = self.emacs_pid.is_some_and(|pid| client_pid == pid as i32);
         if is_emacs {
             info!("Surface {} is an Emacs surface", id);
-            handlers::add_frame_unmap_pre_commit_hook(surface.wl_surface());
         }
+        handlers::add_toplevel_pre_commit_hook(surface.wl_surface(), id);
 
         let app = smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
             states

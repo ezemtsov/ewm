@@ -1,5 +1,5 @@
 //! Ported from niri's `animation/mod.rs`, without the config-driven constructors, the
-//! deceleration kind, the clamped duration and every curve but ease-out-cubic.
+//! deceleration kind, the clamped duration and every curve but linear and ease-out-cubic.
 
 use std::time::Duration;
 
@@ -21,8 +21,14 @@ pub struct Animation {
 
 #[derive(Debug, Clone, Copy)]
 enum Kind {
-    Easing,
+    Easing { curve: Curve },
     Spring(Spring),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Curve {
+    Linear,
+    EaseOutCubic,
 }
 
 impl Animation {
@@ -43,13 +49,21 @@ impl Animation {
     }
 
     pub fn ease(clock: Clock, from: f64, to: f64, duration: Duration) -> Self {
+        Self::easing(clock, from, to, duration, Curve::EaseOutCubic)
+    }
+
+    pub fn linear(clock: Clock, from: f64, to: f64, duration: Duration) -> Self {
+        Self::easing(clock, from, to, duration, Curve::Linear)
+    }
+
+    fn easing(clock: Clock, from: f64, to: f64, duration: Duration, curve: Curve) -> Self {
         Self {
             from,
             to,
             duration,
             start_time: clock.now(),
             clock,
-            kind: Kind::Easing,
+            kind: Kind::Easing { curve },
         }
     }
 
@@ -99,9 +113,9 @@ impl Animation {
         let passed = at.saturating_sub(self.start_time);
 
         match self.kind {
-            Kind::Easing => {
+            Kind::Easing { curve } => {
                 let x = (passed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0., 1.);
-                (1. - (1. - x).powi(3)) * (self.to - self.from) + self.from
+                curve.y(x) * (self.to - self.from) + self.from
             }
             Kind::Spring(spring) => {
                 let value = spring.value_at(passed);
@@ -138,6 +152,15 @@ impl Animation {
     }
 }
 
+impl Curve {
+    fn y(self, x: f64) -> f64 {
+        match self {
+            Curve::Linear => x,
+            Curve::EaseOutCubic => 1. - (1. - x).powi(3),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -146,7 +169,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn ease_out_cubic_value_follows_the_curve(
+        fn value_follows_the_curve(
             from in -1_000i32..=1_000,
             to in -1_000i32..=1_000,
             duration_ms in 1u64..=10_000,
@@ -157,14 +180,16 @@ mod tests {
             let from = f64::from(from);
             let to = f64::from(to);
             let clock = Clock::with_time(start);
-            let animation = Animation::ease(clock.clone(), from, to, duration);
+            let eased = Animation::ease(clock.clone(), from, to, duration);
+            let linear = Animation::linear(clock.clone(), from, to, duration);
             clock.set(start + Duration::from_millis(elapsed_ms));
             let t = (elapsed_ms as f64 / duration_ms as f64).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - t).powi(3);
-            let expected = from + (to - from) * eased;
+            let expected_eased = from + (to - from) * (1.0 - (1.0 - t).powi(3));
+            let expected_linear = from + (to - from) * t;
 
-            prop_assert!((animation.value() - expected).abs() < 1e-9);
-            prop_assert_eq!(animation.is_done(), elapsed_ms >= duration_ms);
+            prop_assert!((eased.value() - expected_eased).abs() < 1e-9);
+            prop_assert!((linear.value() - expected_linear).abs() < 1e-9);
+            prop_assert_eq!(eased.is_done(), elapsed_ms >= duration_ms);
         }
 
         #[test]

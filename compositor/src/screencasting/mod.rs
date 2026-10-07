@@ -11,7 +11,9 @@ pub use pw_utils::{Cast, CastSessionId, CastSizeChange, CastStreamId, PipeWire, 
 use smithay::backend::allocator::gbm::GbmDevice;
 use smithay::backend::drm::DrmDeviceFd;
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+use smithay::backend::renderer::element::surface::{
+    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
+};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::Output;
 use smithay::reexports::calloop::LoopHandle;
@@ -368,14 +370,15 @@ impl Ewm {
             geometry.frame_origin.y - geometry.entry_rect.loc.y,
         ))
         .to_physical_precise_round(output_scale);
-        let view_elements = render_elements_from_surface_tree(
-            renderer,
-            &surface,
-            render_offset,
-            output_scale,
-            1.0,
-            Kind::Unspecified,
-        );
+        let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+            render_elements_from_surface_tree(
+                renderer,
+                &surface,
+                render_offset,
+                output_scale,
+                1.0,
+                Kind::Unspecified,
+            );
         let mut elements = Vec::new();
         crate::render::push_constrained(
             &mut elements,
@@ -401,14 +404,15 @@ impl Ewm {
             .and_then(|surface_id| self.id_windows.get(&surface_id))
             && let Some(surface) = window.wl_surface()
         {
-            let view_elements = render_elements_from_surface_tree(
-                renderer,
-                &surface,
-                Point::default(),
-                output_scale,
-                1.0,
-                Kind::Unspecified,
-            );
+            let view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                render_elements_from_surface_tree(
+                    renderer,
+                    &surface,
+                    Point::default(),
+                    output_scale,
+                    1.0,
+                    Kind::Unspecified,
+                );
             let source_size = window
                 .geometry()
                 .size

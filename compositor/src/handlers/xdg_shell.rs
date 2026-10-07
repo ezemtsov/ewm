@@ -8,16 +8,43 @@ use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_k
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle, Size};
+use smithay::wayland::compositor::{
+    BufferAssignment, SurfaceAttributes, add_pre_commit_hook, with_states,
+};
 use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
 use smithay::wayland::shell::wlr_layer::Layer;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    XdgToplevelSurfaceData,
 };
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use tracing::warn;
 
 use crate::{Event, Ewm, State, im};
+
+/// Snapshot a frame on the commit that unmaps it, or fade a view on the one answering a configure.
+pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) {
+    add_pre_commit_hook::<State, _>(surface, move |state, _dh, surface| {
+        let (removed, attached, acked) = with_states(surface, |states| {
+            let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+            let buffer = &attributes.pending().buffer;
+            let removed = matches!(buffer, Some(BufferAssignment::Removed));
+            let attached = matches!(buffer, Some(BufferAssignment::NewBuffer(_)));
+            let acked = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|role| Some(role.lock().unwrap().last_acked.as_ref()?.serial));
+            (removed, attached, acked)
+        });
+        if removed {
+            state.store_close_snapshots(&[id]);
+        } else if attached && let Some(serial) = acked {
+            // An ack without a buffer leaves the resize pending for the commit that brings one.
+            state.start_resize_fade(id, serial);
+        }
+    });
+}
 
 // XDG Shell
 impl XdgShellHandler for State {

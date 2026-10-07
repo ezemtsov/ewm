@@ -8,7 +8,7 @@ use smithay::desktop::utils::under_from_surface_tree;
 use smithay::desktop::{Window, WindowSurfaceType};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
-use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, warn};
 
@@ -802,7 +802,7 @@ impl Ewm {
                     window_size,
                 );
             }
-            return Rectangle::new(output_geo.loc, Size::from((entry.w as i32, entry.h as i32)));
+            return Rectangle::new(output_geo.loc, entry.rect().size);
         }
 
         let frame_dx = strip.screen_x_of_frame(frame_idx).round() as i32;
@@ -811,7 +811,7 @@ impl Ewm {
                 output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
                 output_geo.loc.y + working_area.loc.y + entry.y,
             )),
-            Size::from((entry.w as i32, entry.h as i32)),
+            entry.rect().size,
         )
     }
 
@@ -976,7 +976,7 @@ impl Ewm {
                         output_geo.loc.x + frame_rect.loc.x as i32 + entry.x,
                         output_geo.loc.y + frame_rect.loc.y as i32 + entry.y,
                     )),
-                    Size::from((entry.w as i32, entry.h as i32)),
+                    entry.rect().size,
                 );
                 if Self::rect_contains_f64(rect, pos) {
                     return Some(LayoutEntryHit {
@@ -1888,6 +1888,11 @@ impl Ewm {
                 return;
             }
         };
+        let current = self
+            .frame_set
+            .mapped_strip(output_name)
+            .map(strip::Strip::frames);
+        let moved = strip::moved_entry_ids(current.unwrap_or_default(), &frames);
 
         // Only frames seeing their first home need the identity string; skip
         // building it in the steady state where every frame already has one.
@@ -1924,7 +1929,7 @@ impl Ewm {
         self.reconcile_entry_snapshots(&snapshots);
         self.send_frame_migration_output_events(&output, &migrations);
 
-        self.refresh_primary_assignments();
+        self.refresh_primary_assignments_after_layout(&moved);
         self.update_frames_for_working_area(&output);
         self.prune_dangling_focus();
         // Covers the race where `apply_output_layout` runs before
@@ -1947,6 +1952,11 @@ impl Ewm {
     pub fn apply_floating_layout(&mut self, output_name: &str, frames: Vec<strip::Frame>) {
         let pre = self.strip_entries(output_name);
         let focused_surface = self.focused_surface_id();
+        let current = self
+            .floating_spaces
+            .get(output_name)
+            .map(floating::FloatingSpace::frames);
+        let moved = strip::moved_entry_ids(current.unwrap_or_default(), &frames);
         let Some(space) = self.ensure_floating_space_for_output(output_name) else {
             warn!("apply_floating_layout: output '{}' not found", output_name);
             return;
@@ -1956,7 +1966,7 @@ impl Ewm {
         let post = self.strip_entries(output_name);
         let output = self.find_mapped_output(output_name);
         self.reconcile_output_membership(output_name, output.as_ref(), &pre, &post);
-        self.refresh_primary_assignments();
+        self.refresh_primary_assignments_after_layout(&moved);
         self.prune_dangling_focus();
         self.focus_pending_activation_surfaces();
         if let Some(output) = output {
@@ -2079,14 +2089,27 @@ impl Ewm {
     /// Pick each surface's primary entry (largest active-frame slot) and
     /// configure its toplevel.  Off-screen frames don't bid.
     pub(crate) fn refresh_primary_assignments(&mut self) {
+        self.refresh_primary_assignments_after_layout(&HashSet::new());
+    }
+
+    /// Like `refresh_primary_assignments`, after a layout that `moved` entries.
+    fn refresh_primary_assignments_after_layout(&mut self, moved: &HashSet<LayoutEntryId>) {
         let output_sizes = self.output_sizes_by_name();
         let best_area = self.primary_entry_areas(&output_sizes);
         self.assign_primary_entries(&output_sizes, &best_area);
         self.refresh_mapped_cast_outputs();
-        self.configure_primary_entries();
+        for (id, size, serial) in self.configure_primary_entries() {
+            if let Some(pending) = self.pending_resize(id, size, moved)
+                && let Some(surface) = self.surfaces.get_mut(&id)
+            {
+                surface.pending_resizes.push((serial, pending));
+            }
+        }
     }
 
-    fn configure_primary_entries(&self) {
+    /// Configure every primary entry, returning the configures that changed a size.
+    fn configure_primary_entries(&self) -> Vec<(u64, Size<i32, Logical>, Serial)> {
+        let mut resized = Vec::new();
         for output in &self.sorted_outputs {
             let Some(strip) = self.frame_set.mapped_strip(&output.name()) else {
                 continue;
@@ -2095,9 +2118,7 @@ impl Ewm {
             let Some(frame) = strip.frames().get(active_idx) else {
                 continue;
             };
-            for entry in frame.entries.iter().filter(|entry| entry.primary()) {
-                self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
-            }
+            self.configure_frame_primaries(output, frame, &mut resized);
         }
         for output in &self.sorted_outputs {
             let oname = output.name();
@@ -2105,20 +2126,37 @@ impl Ewm {
                 continue;
             };
             for frame in space.frames() {
-                for entry in frame.entries.iter().filter(|entry| entry.primary()) {
-                    self.configure_primary(output, frame.entry_fullscreen(entry.id), entry);
-                }
+                self.configure_frame_primaries(output, frame, &mut resized);
+            }
+        }
+        resized
+    }
+
+    fn configure_frame_primaries(
+        &self,
+        output: &Output,
+        frame: &strip::Frame,
+        resized: &mut Vec<(u64, Size<i32, Logical>, Serial)>,
+    ) {
+        for entry in frame.entries.iter().filter(|entry| entry.primary()) {
+            if let Some(id) = entry.surface_id()
+                && let Some((size, serial)) =
+                    self.configure_primary(output, frame.entry_fullscreen(entry.id), entry)
+            {
+                resized.push((id, size, serial));
             }
         }
     }
 
-    fn configure_primary(&self, output: &Output, fullscreen: bool, entry: &LayoutEntry) {
-        let Some(surface_id) = entry.surface_id() else {
-            return;
-        };
-        let Some(window) = self.id_windows.get(&surface_id) else {
-            return;
-        };
+    /// Configure `entry`'s surface, returning the size and serial when the size changed.
+    fn configure_primary(
+        &self,
+        output: &Output,
+        fullscreen: bool,
+        entry: &LayoutEntry,
+    ) -> Option<(Size<i32, Logical>, Serial)> {
+        let surface_id = entry.surface_id()?;
+        let window = self.id_windows.get(&surface_id)?;
         window.with_surfaces(|s, data| {
             crate::utils::send_scale_transform(
                 s,
@@ -2127,21 +2165,19 @@ impl Ewm {
                 output.current_transform(),
             );
         });
-        let Some(toplevel) = window.toplevel() else {
-            return;
-        };
+        let toplevel = window.toplevel()?;
         let new_size = if fullscreen {
             let s = crate::utils::output_size(output);
             (s.w as i32, s.h as i32).into()
         } else {
-            (entry.w as i32, entry.h as i32).into()
+            entry.rect().size
         };
-        let changed = toplevel.with_pending_state(|state| {
+        let (changed, size_changed) = toplevel.with_pending_state(|state| {
             let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
             let was_maximized = state.states.contains(XdgToplevelState::Maximized);
-            let changed = state.size != Some(new_size)
-                || was_fullscreen != fullscreen
-                || was_maximized == fullscreen;
+            let size_changed = state.size != Some(new_size);
+            let changed =
+                size_changed || was_fullscreen != fullscreen || was_maximized == fullscreen;
             state.size = Some(new_size);
             if fullscreen {
                 state.states.set(XdgToplevelState::Fullscreen);
@@ -2150,11 +2186,13 @@ impl Ewm {
                 state.states.set(XdgToplevelState::Maximized);
                 state.states.unset(XdgToplevelState::Fullscreen);
             }
-            changed
+            (changed, size_changed)
         });
-        if changed {
-            toplevel.send_configure();
+        if !changed {
+            return None;
         }
+        let serial = toplevel.send_configure();
+        size_changed.then_some((new_size, serial))
     }
 
     fn output_sizes_by_name(&self) -> HashMap<String, (u64, u64)> {

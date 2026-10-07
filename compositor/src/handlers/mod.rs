@@ -42,7 +42,7 @@ use smithay::wayland::xdg_activation::{
 use smithay::wayland::xdg_system_bell::XdgSystemBellHandler;
 use tracing::{debug, info, trace, warn};
 
-pub(crate) use self::compositor::add_frame_unmap_pre_commit_hook;
+pub(crate) use self::xdg_shell::add_toplevel_pre_commit_hook;
 use crate::protocols::foreign_toplevel::{ForeignToplevelHandler, ForeignToplevelManagerState};
 use crate::protocols::output_management::{OutputManagementHandler, OutputManagementState};
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};

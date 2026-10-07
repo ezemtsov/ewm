@@ -83,8 +83,13 @@ fn render_window_without_popups(
     )
 }
 
-type ConstrainedRenderElement =
-    CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>;
+render_elements! {
+    pub ViewContentElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Texture=TextureRenderElement<GlesTexture>,
+}
+
+type ConstrainedRenderElement = CropRenderElement<RescaleRenderElement<ViewContentElement>>;
 
 // Output content the overview zooms: frames, their views, floating frames,
 // window popups, the bottom/background layers and the output fill.
@@ -287,6 +292,7 @@ fn push_fullscreen_view(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
+    surface: Option<&SurfaceState>,
     entry: &crate::LayoutEntry,
     alpha: f32,
     origin: Point<i32, Physical>,
@@ -297,6 +303,9 @@ fn push_fullscreen_view(
 ) {
     let geometry = window.geometry().size;
     let constrain = Rectangle::new(origin, output_size.to_physical_precise_round(scale));
+    if let Some(surface) = surface {
+        push_resize_fade(content, surface, entry, constrain, scale, alpha);
+    }
     let source_size: Size<i32, Physical> = geometry.to_physical_precise_round(scale);
     // Primary: native size, centered. Secondary: uniform stretch to fill the output.
     let loc = if entry.primary() {
@@ -329,20 +338,50 @@ fn push_fullscreen_view(
 ///
 /// Shared pipeline for all view rendering: fullscreen primary/secondary
 /// and normal primary/secondary.
-pub(crate) fn push_constrained<E: From<ConstrainedRenderElement>>(
+pub(crate) fn push_constrained<I, E>(
     elements: &mut Vec<E>,
-    view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    view_elements: impl IntoIterator<Item = I>,
     loc: Point<i32, Physical>,
     element_scale: Scale<f64>,
     output_scale: Scale<f64>,
     constrain: Rectangle<i32, Physical>,
-) {
+) where
+    I: Into<ViewContentElement>,
+    E: From<ConstrainedRenderElement>,
+{
     elements.extend(
         view_elements
             .into_iter()
-            .map(|e| RescaleRenderElement::from_element(e, loc, element_scale))
+            .map(|e| RescaleRenderElement::from_element(e.into(), loc, element_scale))
             .filter_map(|e| CropRenderElement::from_element(e, output_scale, constrain))
             .map(E::from),
+    );
+}
+
+/// The old contents of a secondary view mid-resize, fill-scaled like the buffer and fading out.
+fn push_resize_fade(
+    content: &mut Vec<ContentRenderElement>,
+    surface: &SurfaceState,
+    entry: &LayoutEntry,
+    constrain: Rectangle<i32, Physical>,
+    output_scale: Scale<f64>,
+    alpha: f32,
+) {
+    let Some(fade) = surface.resize_fade_for(entry) else {
+        return;
+    };
+    let source = fade.size().to_physical_precise_round(output_scale);
+    let Some(element_scale) = fill_scale(source, constrain.size) else {
+        return;
+    };
+    let elem = fade.render(constrain.loc.to_f64().to_logical(output_scale), alpha);
+    push_constrained(
+        content,
+        [elem],
+        constrain.loc,
+        element_scale,
+        output_scale,
+        constrain,
     );
 }
 
@@ -353,6 +392,7 @@ fn push_entry_view(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
+    surface: Option<&SurfaceState>,
     entry: &LayoutEntry,
     loc: Point<i32, Physical>,
     alpha: f32,
@@ -360,8 +400,11 @@ fn push_entry_view(
     blur_config: Blur,
 ) {
     let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
-    let entry_size = Size::from((entry.w as i32, entry.h as i32)).to_physical_precise_round(scale);
+    let entry_size = entry.rect().size.to_physical_precise_round(scale);
     let constrain = Rectangle::new(loc, entry_size);
+    if let Some(surface) = surface {
+        push_resize_fade(content, surface, entry, constrain, scale, alpha);
+    }
     let source_size = window.geometry().size.to_physical_precise_round(scale);
     push_view_elements_fit(
         content,
@@ -689,11 +732,10 @@ pub fn collect_render_elements_for_output(
             {
                 let surface_id = entry.surface_id().expect("surface-backed entry");
                 if let Some(window) = id_windows.get(&surface_id) {
+                    let surface = surfaces.get(&surface_id);
                     let is_focused = focused_entry_id == Some(entry.id);
                     let mut entry_alpha = if is_focused { 1.0 } else { unfocused_alpha };
-                    entry_alpha *= surfaces
-                        .get(&surface_id)
-                        .map_or(1., SurfaceState::open_alpha);
+                    entry_alpha *= surface.map_or(1., SurfaceState::open_alpha);
                     let location = Point::from((
                         frame_rect.loc.x + entry.x as f64,
                         frame_rect.loc.y + entry.y as f64,
@@ -704,6 +746,7 @@ pub fn collect_render_elements_for_output(
                         &mut content,
                         renderer,
                         window,
+                        surface,
                         entry,
                         loc_physical,
                         entry_alpha,
@@ -784,15 +827,14 @@ pub fn collect_render_elements_for_output(
                     } else {
                         ewm.unfocused_alpha
                     };
-                    entry_alpha *= ewm
-                        .surfaces
-                        .get(&surface_id)
-                        .map_or(1., SurfaceState::open_alpha);
+                    let surface = ewm.surfaces.get(&surface_id);
+                    entry_alpha *= surface.map_or(1., SurfaceState::open_alpha);
                     if entry_fullscreen {
                         push_fullscreen_view(
                             &mut content,
                             renderer,
                             window,
+                            surface,
                             entry,
                             entry_alpha,
                             frame_offset,
@@ -814,6 +856,7 @@ pub fn collect_render_elements_for_output(
                         &mut content,
                         renderer,
                         window,
+                        surface,
                         entry,
                         loc_physical,
                         entry_alpha,
@@ -948,8 +991,7 @@ fn render_frame_views(
         let loc: Point<i32, Physical> =
             Point::from((entry.x, entry.y)).to_physical_precise_round(scale);
         let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
-        let entry_size: Size<i32, Physical> =
-            Size::from((entry.w as i32, entry.h as i32)).to_physical_precise_round(scale);
+        let entry_size: Size<i32, Physical> = entry.rect().size.to_physical_precise_round(scale);
         let source_size: Size<i32, Physical> =
             window.geometry().size.to_physical_precise_round(scale);
         push_view_elements_fit(
@@ -1004,6 +1046,16 @@ pub fn render_frame_snapshot(
         }
     }
     Snapshot::new(renderer, &content, scale)
+}
+
+/// `window` baked at its current size, before a resize commit replaces it.
+pub(crate) fn render_view_snapshot(
+    window: &smithay::desktop::Window,
+    renderer: &mut GlesRenderer,
+    scale: Scale<f64>,
+) -> Option<Snapshot> {
+    let elements = render_window_without_popups(window, renderer, Point::from((0, 0)), scale, 1.);
+    Snapshot::new(renderer, &elements, scale)
 }
 
 /// Render one popup placement into `elements`.
