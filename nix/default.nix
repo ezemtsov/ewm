@@ -23,7 +23,7 @@ let
     cargoLock = {
       lockFile = ./../compositor/Cargo.lock;
       outputHashes = {
-        "smithay-0.7.0" = "sha256-DUSciVTN5Ds2AYZVaGmMu7DBINRxu3CIdUCT4QCplTY=";
+        "smithay-0.7.0" = "sha256-UuA5hK8vJfn4cO5m4C7RuUF9H6uvi6MTrFpBBGbAJuk=";
         "elisp-0.0.1" = "sha256-b1rAcltoVtGWjoQYRmIZjgJ3rX8fZiVxAncEQXBP96A=";
         "elisp-emacs-0.0.1" = "sha256-b1rAcltoVtGWjoQYRmIZjgJ3rX8fZiVxAncEQXBP96A=";
       };

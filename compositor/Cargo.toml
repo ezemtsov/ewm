@@ -30,7 +30,7 @@ xcursor = "0.3.10"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"
-rev = "79bbed5e1199090d787115614847a79c76607181"
+rev = "904d3bdaf3664cb1ffe12ce7db849c47187727f6"
 default-features = false
 features = [
     "backend_drm",
@@ -48,7 +48,7 @@ features = [
 
 [dependencies.smithay-drm-extras]
 git = "https://github.com/Smithay/smithay.git"
-rev = "79bbed5e1199090d787115614847a79c76607181"
+rev = "904d3bdaf3664cb1ffe12ce7db849c47187727f6"
 default-features = false
 features = ["display-info"]
 
