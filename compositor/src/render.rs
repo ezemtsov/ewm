@@ -749,12 +749,10 @@ pub fn collect_render_elements_for_output(
                 }
             }
 
-            let Some(window) = surfaces
-                .get(&frame.surface_id)
-                .map(|surface| &surface.window)
-            else {
+            let Some(frame_surface) = surfaces.get(&frame.surface_id) else {
                 continue;
             };
+            let window = &frame_surface.window;
             // A frame created hidden (sized, then shown) has no buffer yet; skip it
             // so its shadow never draws at the placeholder size.
             if !window
@@ -763,9 +761,7 @@ pub fn collect_render_elements_for_output(
             {
                 continue;
             }
-            let frame_alpha = surfaces
-                .get(&frame.surface_id)
-                .map_or(1., SurfaceState::open_alpha);
+            let frame_alpha = frame_surface.open_alpha();
             let frame_offset: Point<i32, Physical> =
                 frame_rect.loc.to_physical_precise_round(scale);
             let view_elements =
@@ -873,15 +869,13 @@ pub fn collect_render_elements_for_output(
             .to_physical_precise_round(scale);
     if let Some(strip) = strip {
         for (_, frame, frame_rect) in strip.frames_with_render_geo(view_size, strip_viewport) {
-            let Some(window) = ewm.window(frame.surface_id) else {
+            let Some(frame_surface) = ewm.surfaces.get(&frame.surface_id) else {
                 continue;
             };
+            let window = &frame_surface.window;
             let frame_offset_emacs: Point<i32, Physical> =
                 frame_rect.loc.to_physical_precise_round(scale);
-            let frame_alpha = ewm
-                .surfaces
-                .get(&frame.surface_id)
-                .map_or(1., SurfaceState::open_alpha);
+            let frame_alpha = frame_surface.open_alpha();
             let frame_loc = working_area_loc_physical + frame_offset_emacs;
             let view_elements =
                 render_window_without_popups(window, renderer, frame_loc, scale, frame_alpha);

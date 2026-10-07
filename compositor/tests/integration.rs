@@ -1072,13 +1072,7 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
     );
     fixture.roundtrip(&mut client);
 
-    assert!(
-        fixture
-            .ewm_ref()
-            .surface_outputs
-            .get(&surface_id)
-            .is_some_and(|outputs| outputs.contains("Virtual-1"))
-    );
+    assert!(fixture.ewm_ref().surface_on_output(surface_id, "Virtual-1"));
     let events = client.drain_events();
     assert!(has_surface_enter(
         &client,
@@ -1097,13 +1091,7 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
     fixture.apply_output_config("Virtual-1");
     fixture.roundtrip(&mut client);
 
-    assert!(
-        !fixture
-            .ewm_ref()
-            .surface_outputs
-            .get(&surface_id)
-            .is_some_and(|outputs| outputs.contains("Virtual-1"))
-    );
+    assert!(!fixture.ewm_ref().surface_on_output(surface_id, "Virtual-1"));
     let events = client.drain_events();
     assert!(has_surface_leave(
         &client,
@@ -1122,13 +1110,7 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
     fixture.apply_output_config("Virtual-1");
     fixture.roundtrip(&mut client);
 
-    assert!(
-        fixture
-            .ewm_ref()
-            .surface_outputs
-            .get(&surface_id)
-            .is_some_and(|outputs| outputs.contains("Virtual-1"))
-    );
+    assert!(fixture.ewm_ref().surface_on_output(surface_id, "Virtual-1"));
     let events = client.drain_events();
     assert!(has_surface_enter(
         &client,

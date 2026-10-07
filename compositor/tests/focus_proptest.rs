@@ -434,8 +434,8 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     id,
                 );
                 assert!(
-                    !fix.ewm_ref().surface_outputs.contains_key(&id),
-                    "destroy({}) left stale surface_outputs entry",
+                    !fix.ewm_ref().surface_in_layout(id),
+                    "destroy({}) left stale output membership",
                     id,
                 );
                 let detached: HashSet<LayoutEntryId> = all_frames(fix)
@@ -522,7 +522,11 @@ fn expected_surface_outputs(fix: &Fixture) -> HashMap<u64, HashSet<String>> {
     let mut expected: HashMap<u64, HashSet<String>> = HashMap::new();
 
     for (output_name, strip) in fix.ewm_ref().frame_set.mapped_strips() {
-        for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
+        for surface_id in strip
+            .surface_entries()
+            .filter_map(LayoutEntry::surface_id)
+            .filter(|id| fix.ewm_ref().surfaces.contains_key(id))
+        {
             expected
                 .entry(surface_id)
                 .or_default()
@@ -670,7 +674,7 @@ proptest! {
             .unwrap();
         prop_assert!(omitted.entries.is_empty());
         prop_assert_eq!(omitted.selected_entry_id, None);
-        prop_assert!(!fix.ewm_ref().surface_outputs.contains_key(&surface_id));
+        prop_assert!(!fix.ewm_ref().surface_in_layout(surface_id));
     }
 }
 
@@ -797,7 +801,7 @@ fn assert_invariants(fix: &Fixture) {
     // currently contain each embedded surface. Homeless frames must not keep
     // stale wl_surface output membership.
     assert_eq!(
-        ewm.surface_outputs,
+        ewm.surface_outputs(),
         expected_surface_outputs(fix),
         "invariant 8: surface_outputs diverged from mapped strip entries",
     );

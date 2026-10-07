@@ -1,11 +1,14 @@
 //! Compositor-side state of one toplevel, from creation to destruction.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use smithay::desktop::Window;
+use smithay::output::Output;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::Serial;
+use smithay::utils::{Logical, Serial, Size};
 use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::ToplevelSurface;
@@ -47,10 +50,12 @@ pub struct SurfaceState {
     /// Activation granted before a window shows it.
     pub pending_activation: bool,
     pub pending_title: Option<PendingTitle>,
+    /// Outputs showing it as a view.
+    pub outputs: HashSet<String>,
     /// Fade-in after the first buffer.
     pub open: Option<Animation>,
     /// Resizes configured but not yet answered, oldest first.
-    pub pending_resizes: Vec<(Serial, PendingResize)>,
+    pending_resizes: Vec<(Serial, PendingResize)>,
     /// Old contents dissolving into a resized buffer.
     pub resize: Option<ResizeFade>,
 }
@@ -77,9 +82,47 @@ impl SurfaceState {
             urgent: false,
             pending_activation: false,
             pending_title: None,
+            outputs: HashSet::new(),
             open: None,
             pending_resizes: Vec::new(),
             resize: None,
+        }
+    }
+
+    /// Size the toplevel for a view on `output`, queueing `pending` to fade when the size changes.
+    pub(crate) fn configure(
+        &mut self,
+        output: &Output,
+        size: Size<i32, Logical>,
+        fullscreen: bool,
+        pending: Option<PendingResize>,
+    ) {
+        crate::utils::set_preferred_scale_transform(&self.window, output);
+        let Some(toplevel) = self.window.toplevel() else {
+            return;
+        };
+        let (changed, size_changed) = toplevel.with_pending_state(|state| {
+            let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
+            let was_maximized = state.states.contains(XdgToplevelState::Maximized);
+            let size_changed = state.size != Some(size);
+            let changed =
+                size_changed || was_fullscreen != fullscreen || was_maximized == fullscreen;
+            state.size = Some(size);
+            if fullscreen {
+                state.states.set(XdgToplevelState::Fullscreen);
+                state.states.unset(XdgToplevelState::Maximized);
+            } else {
+                state.states.set(XdgToplevelState::Maximized);
+                state.states.unset(XdgToplevelState::Fullscreen);
+            }
+            (changed, size_changed)
+        });
+        if !changed {
+            return;
+        }
+        let serial = toplevel.send_configure();
+        if size_changed && let Some(pending) = pending {
+            self.pending_resizes.push((serial, pending));
         }
     }
 

@@ -4,7 +4,7 @@
 //! in a random `Op` sequence. New invariants are appended; old numbers are
 //! never reused. Mirrors `focus_proptest`'s shape.
 //!
-//! L1  - Surface-index parity. `ewm.surface_outputs` equals the set of
+//! L1  - Surface-index parity. `ewm.surface_outputs()` equals the set of
 //!       `(surface_id, output_name)` pairs derived from
 //!       `output_strips[output].surface_entries()`.
 //!
@@ -65,7 +65,7 @@
 //!
 //! C2  - Output-membership parity. The set of output names the client
 //!       believes the toplevel is on (running `wl_surface.enter` minus
-//!       `leave`) equals `ewm.surface_outputs[sid]`.
+//!       `leave`) equals the outputs on the toplevel's record.
 //!
 //! N1  - No hit-test masking. When `surface_under_point` returns the
 //!       toplevel, the point lies inside some entry's visible rect:
@@ -722,7 +722,11 @@ fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let mut from_strips: HashMap<u64, HashSet<String>> = HashMap::new();
     for (out_name, strip) in ewm.frame_set.mapped_strips() {
-        for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
+        for surface_id in strip
+            .surface_entries()
+            .filter_map(LayoutEntry::surface_id)
+            .filter(|id| ewm.surfaces.contains_key(id))
+        {
             from_strips
                 .entry(surface_id)
                 .or_default()
@@ -731,7 +735,7 @@ fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
     }
     prop_assert_eq!(
         from_strips,
-        ewm.surface_outputs.clone(),
+        ewm.surface_outputs(),
         "L1: surface_outputs out of sync with output_strips",
     );
     Ok(())
@@ -786,7 +790,11 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
 
 fn check_c2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    let server: HashSet<String> = ewm.surface_outputs.get(&h.sid).cloned().unwrap_or_default();
+    let server: HashSet<String> = ewm
+        .surfaces
+        .get(&h.sid)
+        .map(|surface| surface.outputs.clone())
+        .unwrap_or_default();
     prop_assert_eq!(
         h.toplevel_on_outputs.clone(),
         server.clone(),

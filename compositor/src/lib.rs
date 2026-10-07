@@ -771,8 +771,6 @@ pub struct Ewm {
     pub overview: overview::Overview,
     /// Frames' slide off the top of every output: 0 in place, 1 fully off.
     pub hide: strip::ViewOffset,
-    /// Reverse index: surface_id -> set of output names it appears on
-    pub surface_outputs: HashMap<u64, HashSet<String>>,
     /// Every toplevel's compositor-side state, from creation to destruction.
     pub surfaces: HashMap<u64, surface::SurfaceState>,
 
@@ -1215,7 +1213,6 @@ impl Ewm {
             overview: overview::Overview::new(animations_clock.clone()),
             hide: strip::ViewOffset::default(),
             animations_clock,
-            surface_outputs: HashMap::new(),
             surfaces: HashMap::new(),
             output_size: Size::from((0, 0)),
             sorted_outputs: Vec::new(),
@@ -2085,10 +2082,17 @@ impl Ewm {
     /// Emacs frames redraw their assigned output. Untracked surfaces
     /// fall back to redrawing all outputs.
     pub fn queue_redraw_for_surface(&mut self, id: u64) {
+        let Some(surface) = self.surfaces.get(&id) else {
+            return self.queue_redraw_all();
+        };
+        let frame_output = surface.emacs.then(|| self.emacs_frame_output(id)).flatten();
         let outputs: Vec<_> = self
             .space
             .outputs()
-            .filter(|o| self.surface_on_output(id, &o.name()))
+            .filter(|output| {
+                let name = output.name();
+                surface.outputs.contains(&name) || frame_output == Some(name.as_str())
+            })
             .cloned()
             .collect();
         if outputs.is_empty() {
@@ -3360,7 +3364,7 @@ impl Ewm {
     /// Output name for a surface, preferring the focused layout entry when a
     /// surface appears on multiple outputs.
     fn surface_output_name(&self, surface_id: u64) -> Option<&str> {
-        if self.surface_outputs.contains_key(&surface_id) {
+        if self.surface_in_layout(surface_id) {
             if let Some(location) = self.focused_entry_for_surface(surface_id) {
                 return Some(location.output_name);
             }
@@ -3373,7 +3377,7 @@ impl Ewm {
     }
 
     fn canonical_surface_output_name(&self, surface_id: u64) -> Option<&str> {
-        let output_names = self.surface_outputs.get(&surface_id)?;
+        let output_names = &self.surfaces.get(&surface_id)?.outputs;
         self.sorted_outputs
             .iter()
             .find_map(|output| {
@@ -4468,7 +4472,7 @@ impl Ewm {
         if let Some(strip) = self.frame_set.mapped_strip(&output.name()) {
             for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
                 if let Some(window) = self.window(surface_id) {
-                    self.set_preferred_scale_transform(window, output);
+                    crate::utils::set_preferred_scale_transform(window, output);
                 }
             }
         }
@@ -4476,7 +4480,7 @@ impl Ewm {
         // Emacs frames aren't in `space`; notify them via the strip.
         for id in self.emacs_frames_on(&output.name()) {
             if let Some(window) = self.window(id) {
-                self.set_preferred_scale_transform(window, output);
+                crate::utils::set_preferred_scale_transform(window, output);
             }
         }
 
@@ -4699,7 +4703,7 @@ impl Ewm {
             },
             "homeless_frames": &self.frame_set.homeless_frames(),
             "floating_spaces": &self.floating_spaces,
-            "surface_outputs": &self.surface_outputs,
+            "surface_outputs": self.surface_outputs(),
             "focused_surface_id": self.focused_surface_id(),
             "focused_frame_id": self.focused_frame_id,
             "focused_entry_id": self.focused_entry_id,

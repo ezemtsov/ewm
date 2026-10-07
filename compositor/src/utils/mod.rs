@@ -12,6 +12,7 @@ use std::time::Duration;
 use smithay::backend::renderer::utils::{
     RendererSurfaceStateUserData, with_renderer_surface_state,
 };
+use smithay::desktop::Window;
 use smithay::output::{self, Output};
 use smithay::reexports::rustix::time::{ClockId, clock_gettime};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -84,6 +85,15 @@ pub fn output_identity(output: &Output) -> String {
 
 pub fn is_mapped(surface: &WlSurface) -> bool {
     with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
+}
+
+/// Tell `window`'s surfaces the scale and transform of `output`.
+pub fn set_preferred_scale_transform(window: &Window, output: &Output) {
+    let scale = output.current_scale();
+    let transform = output.current_transform();
+    window.with_surfaces(|surface, data| {
+        send_scale_transform(surface, data, scale, transform);
+    });
 }
 
 /// Send both integer and fractional scale + transform to a surface.

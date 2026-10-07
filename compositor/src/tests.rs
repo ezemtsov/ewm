@@ -150,16 +150,16 @@ proptest! {
         let order = order_from_keys(&order_keys);
         set_sorted_output_order(&mut fix, &order);
 
-        let surface_id = 9_000;
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
+        let surface_id = fix.open_toplevel_id(&mut client, "prop", Size::from((400, 400)));
         let selected = PROP_SURFACE_OUTPUTS
             .iter()
             .enumerate()
             .filter_map(|(idx, name)| ((membership & (1 << idx)) != 0).then_some(*name))
             .collect::<Vec<_>>();
-        fix.ewm().surface_outputs.insert(
-            surface_id,
-            selected.iter().map(|name| (*name).to_string()).collect(),
-        );
+        fix.ewm().surfaces.get_mut(&surface_id).unwrap().outputs =
+            selected.iter().map(|name| (*name).to_string()).collect();
 
         for (idx, name) in PROP_HEADS.iter().enumerate() {
             if selected.contains(name) {

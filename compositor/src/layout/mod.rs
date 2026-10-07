@@ -8,7 +8,7 @@ use smithay::desktop::utils::under_from_surface_tree;
 use smithay::desktop::{Window, WindowSurfaceType};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
-use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
 use tracing::{debug, warn};
 
@@ -198,9 +198,8 @@ impl FrameSet {
 }
 
 impl Ewm {
-    /// Detach a surface from every layout entry and the reverse index.
+    /// Detach a surface from every layout entry.
     pub(crate) fn detach_surface_from_layouts(&mut self, id: u64) {
-        self.surface_outputs.remove(&id);
         for frame in self.frame_set.all_frames_mut() {
             frame.detach_surface(id);
         }
@@ -762,7 +761,7 @@ impl Ewm {
     ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
         let surface = window.wl_surface()?;
         let id = self.surface_id(&surface)?;
-        if !self.surface_outputs.contains_key(&id) {
+        if !self.surface_in_layout(id) {
             return self.emacs_frame_origin(id);
         }
         let location = self.preferred_entry_for_surface(id)?;
@@ -858,7 +857,7 @@ impl Ewm {
 
     /// On-screen origins of every layout view of `surface_id`, one per entry.
     pub fn surface_view_origins(&self, surface_id: u64) -> Vec<Point<i32, Logical>> {
-        if !self.surface_outputs.contains_key(&surface_id) {
+        if !self.surface_in_layout(surface_id) {
             return self.emacs_frame_origin(surface_id).into_iter().collect();
         }
         let mut origins = Vec::new();
@@ -1336,30 +1335,39 @@ impl Ewm {
     }
 
     /// Whether `id` shows on output `name`, as a view or as an Emacs frame.
-    pub(crate) fn surface_on_output(&self, id: u64, name: &str) -> bool {
-        self.surface_outputs
-            .get(&id)
-            .is_some_and(|names| names.contains(name))
-            || self.emacs_frame_output(id) == Some(name)
+    pub fn surface_on_output(&self, id: u64, name: &str) -> bool {
+        let Some(surface) = self.surfaces.get(&id) else {
+            return false;
+        };
+        surface.outputs.contains(name)
+            || (surface.emacs && self.emacs_frame_output(id) == Some(name))
     }
 
-    fn surface_outputs_for(&self, output_name: &str) -> HashSet<u64> {
-        self.surface_outputs
+    /// Whether some output shows `id` as a view.
+    pub fn surface_in_layout(&self, id: u64) -> bool {
+        self.surfaces
+            .get(&id)
+            .is_some_and(|surface| !surface.outputs.is_empty())
+    }
+
+    /// The outputs showing each surface as a view.
+    pub fn surface_outputs(&self) -> HashMap<u64, HashSet<String>> {
+        self.surfaces
             .iter()
-            .filter_map(|(&id, outputs)| outputs.contains(output_name).then_some(id))
+            .filter(|(_, surface)| !surface.outputs.is_empty())
+            .map(|(&id, surface)| (id, surface.outputs.clone()))
             .collect()
     }
 
-    pub(crate) fn set_preferred_scale_transform(&self, window: &Window, output: &Output) {
-        let scale = output.current_scale();
-        let transform = output.current_transform();
-        window.with_surfaces(|surface, data| {
-            crate::utils::send_scale_transform(surface, data, scale, transform);
-        });
+    fn surface_outputs_for(&self, output_name: &str) -> HashSet<u64> {
+        self.surfaces
+            .iter()
+            .filter_map(|(&id, surface)| surface.outputs.contains(output_name).then_some(id))
+            .collect()
     }
 
     pub(crate) fn enter_output_for_window(&self, window: &Window, output: &Output) {
-        self.set_preferred_scale_transform(window, output);
+        crate::utils::set_preferred_scale_transform(window, output);
         if let Some(surface) = window.wl_surface() {
             output.enter(&surface);
         }
@@ -1391,11 +1399,8 @@ impl Ewm {
             if let (Some(out), Some(window)) = (output, self.window(id)) {
                 self.leave_output_for_window(window, out);
             }
-            if let Some(outputs) = self.surface_outputs.get_mut(&id) {
-                outputs.remove(output_name);
-                if outputs.is_empty() {
-                    self.surface_outputs.remove(&id);
-                }
+            if let Some(surface) = self.surfaces.get_mut(&id) {
+                surface.outputs.remove(output_name);
             }
         }
         for &id in post.difference(pre) {
@@ -1408,15 +1413,14 @@ impl Ewm {
             }
         }
         for &id in post {
-            self.surface_outputs
-                .entry(id)
-                .or_default()
-                .insert(output_name.to_string());
+            if let Some(surface) = self.surfaces.get_mut(&id) {
+                surface.outputs.insert(output_name.to_string());
+            }
         }
     }
 
     /// Diff `pre` (snapshot before strip mutation) against the current strip;
-    /// fire `wl_surface.enter` / `leave` and sync `surface_outputs`.
+    /// fire `wl_surface.enter` / `leave` and sync each surface's outputs.
     fn reconcile_output_entries(&mut self, output_name: &str, pre: &HashSet<u64>) {
         let output = self.find_mapped_output(output_name);
         let post = output
@@ -1912,7 +1916,7 @@ impl Ewm {
         Self::preserve_migrated_frame_state(&mut frames, &migrations);
         // Capture affected outputs before the swap; reconciliation runs after
         // the merge against the post-merge strips so kept frames don't leak
-        // `surface_outputs`, and active-frame event balance has a stable base.
+        // output membership, and active-frame event balance has a stable base.
         let snapshots = self.output_layout_snapshots(output_name, &migrations);
         self.remove_migrated_frames_from_sources(&migrations, &snapshots);
 
@@ -2099,101 +2103,41 @@ impl Ewm {
         let best_area = self.primary_entry_areas(&output_sizes);
         self.assign_primary_entries(&output_sizes, &best_area);
         self.refresh_mapped_cast_outputs();
-        for (id, size, serial) in self.configure_primary_entries() {
-            if let Some(pending) = self.pending_resize(id, size, moved)
-                && let Some(surface) = self.surfaces.get_mut(&id)
-            {
-                surface.pending_resizes.push((serial, pending));
-            }
-        }
+        self.configure_primary_entries(moved);
     }
 
-    /// Configure every primary entry, returning the configures that changed a size.
-    fn configure_primary_entries(&self) -> Vec<(u64, Size<i32, Logical>, Serial)> {
-        let mut resized = Vec::new();
+    /// Configure every primary entry's surface for its slot, noting the resizes to fade.
+    fn configure_primary_entries(&mut self, moved: &HashSet<LayoutEntryId>) {
         for output in &self.sorted_outputs {
-            let Some(strip) = self.frame_set.mapped_strip(&output.name()) else {
-                continue;
-            };
-            let active_idx = strip.active_idx();
-            let Some(frame) = strip.frames().get(active_idx) else {
-                continue;
-            };
-            self.configure_frame_primaries(output, frame, &mut resized);
-        }
-        for output in &self.sorted_outputs {
-            let oname = output.name();
-            let Some(space) = self.floating_spaces.get(&oname) else {
-                continue;
-            };
-            for frame in space.frames() {
-                self.configure_frame_primaries(output, frame, &mut resized);
+            let name = output.name();
+            let active = self
+                .frame_set
+                .mapped_strip(&name)
+                .and_then(strip::Strip::active_frame);
+            let floating = self
+                .floating_spaces
+                .get(&name)
+                .map(floating::FloatingSpace::frames)
+                .unwrap_or_default();
+            for frame in active.into_iter().chain(floating) {
+                for entry in frame.entries.iter().filter(|entry| entry.primary()) {
+                    let Some(id) = entry.surface_id() else {
+                        continue;
+                    };
+                    let fullscreen = frame.entry_fullscreen(entry.id);
+                    let size = if fullscreen {
+                        let s = crate::utils::output_size(output);
+                        (s.w as i32, s.h as i32).into()
+                    } else {
+                        entry.rect().size
+                    };
+                    let pending = self.pending_resize(id, size, moved);
+                    if let Some(surface) = self.surfaces.get_mut(&id) {
+                        surface.configure(output, size, fullscreen, pending);
+                    }
+                }
             }
         }
-        resized
-    }
-
-    fn configure_frame_primaries(
-        &self,
-        output: &Output,
-        frame: &strip::Frame,
-        resized: &mut Vec<(u64, Size<i32, Logical>, Serial)>,
-    ) {
-        for entry in frame.entries.iter().filter(|entry| entry.primary()) {
-            if let Some(id) = entry.surface_id()
-                && let Some((size, serial)) =
-                    self.configure_primary(output, frame.entry_fullscreen(entry.id), entry)
-            {
-                resized.push((id, size, serial));
-            }
-        }
-    }
-
-    /// Configure `entry`'s surface, returning the size and serial when the size changed.
-    fn configure_primary(
-        &self,
-        output: &Output,
-        fullscreen: bool,
-        entry: &LayoutEntry,
-    ) -> Option<(Size<i32, Logical>, Serial)> {
-        let surface_id = entry.surface_id()?;
-        let window = self.window(surface_id)?;
-        window.with_surfaces(|s, data| {
-            crate::utils::send_scale_transform(
-                s,
-                data,
-                output.current_scale(),
-                output.current_transform(),
-            );
-        });
-        let toplevel = window.toplevel()?;
-        let new_size = if fullscreen {
-            let s = crate::utils::output_size(output);
-            (s.w as i32, s.h as i32).into()
-        } else {
-            entry.rect().size
-        };
-        let (changed, size_changed) = toplevel.with_pending_state(|state| {
-            let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
-            let was_maximized = state.states.contains(XdgToplevelState::Maximized);
-            let size_changed = state.size != Some(new_size);
-            let changed =
-                size_changed || was_fullscreen != fullscreen || was_maximized == fullscreen;
-            state.size = Some(new_size);
-            if fullscreen {
-                state.states.set(XdgToplevelState::Fullscreen);
-                state.states.unset(XdgToplevelState::Maximized);
-            } else {
-                state.states.set(XdgToplevelState::Maximized);
-                state.states.unset(XdgToplevelState::Fullscreen);
-            }
-            (changed, size_changed)
-        });
-        if !changed {
-            return None;
-        }
-        let serial = toplevel.send_configure();
-        size_changed.then_some((new_size, serial))
     }
 
     fn output_sizes_by_name(&self) -> HashMap<String, (u64, u64)> {
