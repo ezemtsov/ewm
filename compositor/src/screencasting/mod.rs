@@ -428,6 +428,7 @@ impl Ewm {
                 Rectangle::from_size(entry_size),
                 !geometry.entry.primary(),
                 None,
+                None,
                 self.blur_config,
             );
             return elements;

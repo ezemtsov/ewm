@@ -315,11 +315,10 @@ fn push_fullscreen_view(
         origin
     };
     // The old contents sat centered by their own size.
-    let fade_loc = surface
-        .resize_fade_for(entry)
-        .map_or(loc, |(fade, _)| centered(fade.size().to_i32_round()));
-    push_resize_fade(content, surface, entry, fade_loc, constrain, scale, alpha);
-    let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
+    let fade = surface.resize_fade_for(entry);
+    let fade_loc = fade.map_or(loc, |(fade, _)| centered(fade.size().to_i32_round()));
+    let reveal = fade.map_or(1., |(fade, _)| fade.progress());
+    let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha * reveal);
     push_view_elements_fit(
         content,
         window,
@@ -330,6 +329,7 @@ fn push_fullscreen_view(
         constrain,
         !entry.primary(),
         Some(entry.id.get() as usize),
+        resize_fade_element(surface, entry, fade_loc, constrain, scale, alpha),
         blur_config,
     );
     if let Some(backdrop) = backdrop {
@@ -363,37 +363,33 @@ pub(crate) fn push_constrained<I, E>(
     );
 }
 
-/// The old contents of a view mid-resize, drawn as the view drew them and fading out.
-fn push_resize_fade(
-    content: &mut Vec<ContentRenderElement>,
+/// The old contents a view mid-resize fades in over, drawn as the view drew them.
+fn resize_fade_element(
     surface: &SurfaceState,
     entry: &LayoutEntry,
     loc: Point<i32, Physical>,
     constrain: Rectangle<i32, Physical>,
     output_scale: Scale<f64>,
     alpha: f32,
-) {
-    let Some((fade, view)) = surface.resize_fade_for(entry) else {
-        return;
-    };
+) -> Option<ConstrainedRenderElement> {
+    let (fade, view) = surface.resize_fade_for(entry)?;
     let (location, element_scale) = if view.native {
         (loc, Scale::from(1.))
     } else {
         let source = fade.size().to_physical_precise_round(output_scale);
-        let Some(fill) = fill_scale(source, constrain.size) else {
-            return;
-        };
-        (constrain.loc, fill)
+        (constrain.loc, fill_scale(source, constrain.size)?)
     };
-    let elem = fade.render(location.to_f64().to_logical(output_scale), alpha);
-    push_constrained(
-        content,
-        [elem],
-        location,
-        element_scale,
-        output_scale,
-        constrain,
-    );
+    // Under a live view at alpha * progress, the old contents sum to alpha * (1 - progress).
+    let progress = fade.progress();
+    let shown = alpha * progress;
+    let under = if shown >= 1. {
+        0.
+    } else {
+        alpha * (1. - progress) / (1. - shown)
+    };
+    let elem = fade.render(location.to_f64().to_logical(output_scale), under);
+    let elem = RescaleRenderElement::from_element(elem.into(), location, element_scale);
+    CropRenderElement::from_element(elem, output_scale, constrain)
 }
 
 /// A view of `surface` in `entry` at `loc`, native when primary and fill-scaled otherwise,
@@ -410,10 +406,12 @@ fn push_entry_view(
     blur_config: Blur,
 ) {
     let window = &surface.window;
-    let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
     let entry_size = entry.rect().size.to_physical_precise_round(scale);
     let constrain = Rectangle::new(loc, entry_size);
-    push_resize_fade(content, surface, entry, loc, constrain, scale, alpha);
+    let reveal = surface
+        .resize_fade_for(entry)
+        .map_or(1., |(fade, _)| fade.progress());
+    let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha * reveal);
     let source_size = window.geometry().size.to_physical_precise_round(scale);
     push_view_elements_fit(
         content,
@@ -425,11 +423,12 @@ fn push_entry_view(
         constrain,
         !entry.primary(),
         Some(entry.id.get() as usize),
+        resize_fade_element(surface, entry, loc, constrain, scale, alpha),
         blur_config,
     );
 }
 
-/// A view of `window` and the blur behind it, in that order.
+/// A view of `window`, the old contents `under` it, and the blur behind both, in that order.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn push_view_elements_fit<
     E: From<ConstrainedRenderElement> + From<FramebufferEffectElement>,
@@ -443,6 +442,7 @@ pub(crate) fn push_view_elements_fit<
     constrain: Rectangle<i32, Physical>,
     fill: bool,
     ns: Option<usize>,
+    under: Option<ConstrainedRenderElement>,
     blur_config: Blur,
 ) {
     let element_scale = if fill {
@@ -462,7 +462,7 @@ pub(crate) fn push_view_elements_fit<
         output_scale,
         constrain,
     );
-
+    elements.extend(under.map(E::from));
     push_view_background_effect(
         elements,
         ns,
@@ -1003,6 +1003,7 @@ fn render_frame_views(
             scale,
             Rectangle::new(loc, entry_size),
             !entry.primary(),
+            None,
             None,
             no_blur,
         );

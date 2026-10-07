@@ -1,4 +1,4 @@
-//! Old view contents fading out over the buffer that answered a resize.
+//! The buffer answering a resize fading in over the old view contents.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -38,7 +38,7 @@ pub struct PendingResize {
 #[derive(Debug)]
 pub struct ResizeFade {
     snapshot: Snapshot,
-    /// Alpha of the old contents, 1 down to 0.
+    /// How far the new contents have come in, 0 to 1.
     anim: Animation,
     views: Vec<FadingView>,
 }
@@ -59,13 +59,17 @@ impl ResizeFade {
         self.snapshot.size()
     }
 
+    /// Alpha of the new contents over the old.
+    pub(crate) fn progress(&self) -> f32 {
+        self.anim.value() as f32
+    }
+
     pub(crate) fn render(
         &self,
         location: Point<f64, Logical>,
         alpha: f32,
     ) -> TextureRenderElement<GlesTexture> {
-        self.snapshot
-            .render(location, alpha * self.anim.value() as f32)
+        self.snapshot.render(location, alpha)
     }
 }
 
@@ -130,7 +134,7 @@ impl State {
             if let Some(snapshot) =
                 render_view_snapshot(&surface.window, renderer, pending.scale.into())
             {
-                let anim = Animation::linear(clock, 1., 0., RESIZE_FADE_DURATION);
+                let anim = Animation::linear(clock, 0., 1., RESIZE_FADE_DURATION);
                 surface.resize = Some(ResizeFade {
                     snapshot,
                     anim,
