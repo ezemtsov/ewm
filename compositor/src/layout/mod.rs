@@ -1295,11 +1295,24 @@ impl Ewm {
         Some(target_surface)
     }
 
-    pub fn toggle_layout_entry_fullscreen(&mut self, entry_id: LayoutEntryId) {
-        let fullscreen = self
-            .layout_entry_for_id(entry_id)
-            .is_some_and(|location| self.layout_entry_location_fullscreen(location));
-        self.set_layout_entry_fullscreen(entry_id, !fullscreen);
+    /// Whether entry `entry_id` is fullscreen.
+    pub(crate) fn layout_entry_fullscreen(&self, entry_id: LayoutEntryId) -> bool {
+        self.layout_entry_for_id(entry_id)
+            .is_some_and(|location| self.layout_entry_location_fullscreen(location))
+    }
+
+    /// The output whose contents change when entry `entry_id` goes `fullscreen` or back.
+    pub(crate) fn fullscreen_change_output(
+        &self,
+        entry_id: LayoutEntryId,
+        fullscreen: bool,
+    ) -> Option<Output> {
+        let location = self.layout_entry_for_id(entry_id)?;
+        let output_name = location.output_name;
+        if self.layout_entry_location_fullscreen(location) == fullscreen {
+            return None;
+        }
+        self.find_mapped_output(output_name)
     }
 
     /// True iff the active frame has a fullscreen entry covering the Top layer.

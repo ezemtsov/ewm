@@ -37,6 +37,7 @@ pub mod event;
 pub mod floating;
 mod floating_shadow;
 pub mod frame_clock;
+pub mod fullscreen_fade;
 pub mod gtk;
 pub mod handlers;
 pub mod im;
@@ -399,6 +400,8 @@ pub struct OutputState {
     pub frame_callback_sequence: u32,
     /// Black backdrop for fullscreen surfaces (covers entire output)
     pub fullscreen_backdrop: SolidColorBuffer,
+    /// Old contents dissolving after a fullscreen toggle.
+    pub fullscreen_fade: Option<fullscreen_fade::FullscreenFade>,
     /// Fill of the output behind its frames.
     pub background: SolidColorBuffer,
     /// Panel exclusive zones, painted in the fill colour.
@@ -423,6 +426,7 @@ impl OutputState {
             lock_color_buffer: SolidColorBuffer::new(size, [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
             fullscreen_backdrop: SolidColorBuffer::new(size, [0.0, 0.0, 0.0, 1.0]),
+            fullscreen_fade: None,
             background: SolidColorBuffer::new(size, overview::DEFAULT_BACKGROUND_COLOR),
             bands: Default::default(),
             overview_backdrop: SolidColorBuffer::new(size, overview::DEFAULT_BACKDROP_COLOR),
@@ -2703,6 +2707,14 @@ impl Ewm {
         for surface in self.surfaces.values_mut() {
             surface.advance();
         }
+        if let Some(state) = self.output_state.get_mut(output)
+            && state
+                .fullscreen_fade
+                .as_ref()
+                .is_some_and(fullscreen_fade::FullscreenFade::is_done)
+        {
+            state.fullscreen_fade = None;
+        }
     }
 
     /// Orchestrate a single output redraw.
@@ -2793,8 +2805,8 @@ impl Ewm {
                 .floating_spaces
                 .get(&name)
                 .is_some_and(|space| space.animations_ongoing());
-        if (any_fade || layout_animating)
-            && let Some(state) = self.output_state.get_mut(output)
+        if let Some(state) = self.output_state.get_mut(output)
+            && (any_fade || layout_animating || state.fullscreen_fade.is_some())
         {
             state.unfinished_animations_remain = true;
         }
@@ -5345,7 +5357,7 @@ impl State {
         self.send_pointer_motion(pos, under);
     }
 
-    fn refresh_pointer_after_layout(&mut self) {
+    pub(crate) fn refresh_pointer_after_layout(&mut self) {
         self.refresh_pointer_after_scene_change(false);
     }
 
@@ -6004,13 +6016,10 @@ impl State {
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::ToggleFullscreen { entry_id } => {
-                self.ewm.toggle_layout_entry_fullscreen(entry_id);
-                self.refresh_pointer_after_layout();
+                let on = !self.ewm.layout_entry_fullscreen(entry_id);
+                self.set_fullscreen(entry_id, on);
             }
-            ModuleCommand::SetFullscreen { entry_id, on } => {
-                self.ewm.set_layout_entry_fullscreen(entry_id, on);
-                self.refresh_pointer_after_layout();
-            }
+            ModuleCommand::SetFullscreen { entry_id, on } => self.set_fullscreen(entry_id, on),
             ModuleCommand::ConfigureInput { configs } => {
                 info!("Input config updated: {} entries", configs.len());
 

@@ -593,6 +593,15 @@ pub fn collect_render_elements_for_output(
         return (elements, cursor_elements);
     }
 
+    // A fullscreen toggle's old contents, dissolving over the whole output.
+    if let Some(fade) = ewm
+        .output_state
+        .get(output)
+        .and_then(|state| state.fullscreen_fade.as_ref())
+    {
+        elements.push(EwmRenderElement::Texture(fade.render()));
+    }
+
     // Collect all layer elements in a tight scope to avoid holding the RefCell
     // borrow across the rest of the function. layer_map_for_output() returns
     // RefMut<LayerMap>; calling it again (e.g. via get_working_area) while
