@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7af8a42eb2c764446cb4c84ba2db29e8ecb4af9a12043a9c5d1a16c03b5c75f5 # shrinks to ops = [AddFrame { id: 8, output: 0, floating: true, after: None }, DetachOutput(0), DetachOutput(2), DetachOutput(3), DragBegin { id: 8, output: 1, px: 0.0, py: 0.0 }, DetachOutput(1)], focused = 1

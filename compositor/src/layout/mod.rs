@@ -363,6 +363,13 @@ impl Layout {
 
     /// Hold `frames` until an output maps.
     fn park(&mut self, frames: Frames) {
+        // A parked frame has no floating space, so its drag is over.
+        self.interactive_move = self.interactive_move.filter(|move_| {
+            !frames
+                .floating
+                .iter()
+                .any(|frame| frame.surface_id == move_.frame_id)
+        });
         self.homeless.tiled.extend(frames.tiled);
         self.homeless.floating.extend(frames.floating);
     }
