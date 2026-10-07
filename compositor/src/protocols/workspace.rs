@@ -10,8 +10,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::layout::Layout;
 use crate::protocols::EmptyData;
-use crate::strip::{Frame, Strip};
+use crate::strip::Frame;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
@@ -330,7 +331,7 @@ fn coordinates_bytes(coordinates: [u32; 2]) -> Vec<u8> {
 }
 
 fn desired_workspace_snapshot(
-    output_strips: &HashMap<String, Strip>,
+    layout: &Layout,
     is_urgent: &dyn Fn(u64) -> bool,
     sorted_outputs: &[Output],
 ) -> DesiredWorkspaceSnapshot {
@@ -339,7 +340,7 @@ fn desired_workspace_snapshot(
     let mut workspaces = HashMap::new();
     for output in sorted_outputs {
         let output_name = output.name();
-        let Some(strip) = output_strips.get(&output_name) else {
+        let Some(strip) = layout.strip(output) else {
             continue;
         };
         groups.push(output_name.clone());
@@ -607,20 +608,20 @@ fn notify_managers_done(workspace_state: &WorkspaceManagerState) {
     }
 }
 
-/// Refresh workspace protocol state to match `output_strips` (source of truth).
+/// Refresh workspace protocol state to match the layout's strips (source of truth).
 ///
 /// Runs every event-loop iteration. Diffs current mirrors against source of truth
 /// and sends only changed events. Creates/removes groups and workspaces as needed.
 pub fn refresh<D>(
     workspace_state: &mut WorkspaceManagerState,
-    output_strips: &HashMap<String, Strip>,
+    layout: &Layout,
     is_urgent: &dyn Fn(u64) -> bool,
     sorted_outputs: &[Output],
 ) where
     D: Dispatch<ExtWorkspaceGroupHandleV1, WrappedManager> + 'static,
     D: Dispatch<ExtWorkspaceHandleV1, WrappedManager> + 'static,
 {
-    let desired = desired_workspace_snapshot(output_strips, is_urgent, sorted_outputs);
+    let desired = desired_workspace_snapshot(layout, is_urgent, sorted_outputs);
 
     let mut changed = remove_stale_workspaces(workspace_state, &desired);
     changed |= remove_stale_groups(workspace_state, &desired);
@@ -850,8 +851,7 @@ where
                 let Some(&key) = ps
                     .workspaces
                     .iter()
-                    .find(|(_, ws)| ws.instances.contains(resource))
-                    .map(|(key, _)| key)
+                    .find_map(|(key, ws)| ws.instances.contains(resource).then_some(key))
                 else {
                     return;
                 };
@@ -879,47 +879,23 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use proptest::prelude::*;
-    use smithay::output::{PhysicalProperties, Subpixel};
 
     use super::*;
-    use crate::animation::Clock;
-    use crate::strip::Frame;
+    use crate::testing::{layout_with, strip_with_frame_ids};
 
     const HEAD_A: &str = "HEAD-A";
     const HEAD_B: &str = "HEAD-B";
 
-    fn strip_with_ids(start: u64, len: usize, raw_active_idx: usize) -> Strip {
-        let mut strip = Strip::new(Clock::default());
-        strip.append_frames((0..len).map(|idx| Frame::new(start + idx as u64)));
-        if len > 0 {
-            strip.set_active(raw_active_idx % len);
-        }
-        strip
-    }
-
-    fn output(name: &str) -> Output {
-        Output::new(
-            name.to_string(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: String::new(),
-                model: String::new(),
-                serial_number: String::new(),
-            },
-        )
-    }
-
     #[test]
     fn desired_snapshot_marks_explicit_workspace_urgent() {
-        let mut strips = HashMap::new();
-        strips.insert(HEAD_A.to_string(), strip_with_ids(100, 3, 0));
+        let layout = layout_with(vec![(
+            HEAD_A,
+            strip_with_frame_ids((100..103).collect(), 0),
+        )]);
 
-        let outputs = vec![output(HEAD_A)];
-        let snapshot = desired_workspace_snapshot(&strips, &|id| id == 101, &outputs);
+        let outputs = vec![layout.output(HEAD_A).unwrap().clone()];
+        let snapshot = desired_workspace_snapshot(&layout, &|id| id == 101, &outputs);
 
         assert!(!snapshot.workspaces.get(&100).unwrap().urgent);
         assert!(snapshot.workspaces.get(&101).unwrap().urgent);
@@ -937,22 +913,23 @@ mod tests {
             b_live in any::<bool>(),
             a_first in any::<bool>(),
         ) {
-            let mut strips = HashMap::new();
-            strips.insert(HEAD_A.to_string(), strip_with_ids(100, a_len, a_active));
-            strips.insert(HEAD_B.to_string(), strip_with_ids(200, b_len, b_active));
+            let layout = layout_with(vec![
+                (HEAD_A, strip_with_frame_ids((100..100 + a_len as u64).collect(), a_active)),
+                (HEAD_B, strip_with_frame_ids((200..200 + b_len as u64).collect(), b_active)),
+            ]);
 
             let mut outputs = Vec::new();
             if a_live {
-                outputs.push(output(HEAD_A));
+                outputs.push(layout.output(HEAD_A).unwrap().clone());
             }
             if b_live {
-                outputs.push(output(HEAD_B));
+                outputs.push(layout.output(HEAD_B).unwrap().clone());
             }
             if !a_first {
                 outputs.reverse();
             }
 
-            let snapshot = desired_workspace_snapshot(&strips, &|_| false, &outputs);
+            let snapshot = desired_workspace_snapshot(&layout, &|_| false, &outputs);
             let expected_groups = outputs
                 .iter()
                 .map(Output::name)

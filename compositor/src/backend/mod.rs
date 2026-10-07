@@ -151,9 +151,8 @@ pub(crate) fn map_output_for_config(
         .or_else(|| (!was_mapped).then(|| Point::from((ewm.output_size.w, 0))));
 
     if let Some(position) = position {
-        ewm.space.map_output(output, position);
-        output.change_current_state(None, None, None, Some(position));
-        ewm.reconcile_mapped_output_entries(output);
+        ewm.map_output(output, position);
+        ewm.reconcile_output_entries(output);
     }
     !was_mapped && ewm.space.output_geometry(output).is_some()
 }
@@ -186,8 +185,7 @@ pub(crate) fn map_initial_output(
     let enabled = config.map(|config| config.enabled).unwrap_or(true);
 
     if enabled {
-        ewm.space.map_output(output, position);
-        output.change_current_state(None, None, None, Some(position));
+        ewm.map_output(output, position);
     }
 
     (position, enabled)

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use proptest::prelude::*;
@@ -71,7 +72,7 @@ fn floating_frame_occludes_the_strip_when_hit_testing() {
     let outside = Point::from((100.0, 100.0)); // tiled area beside the float
 
     let ewm = fix.ewm_ref();
-    let on_float = Some((HEAD_A.to_string(), 200));
+    let on_float = Some(200);
     // Scene sanity: the anchors are where the geometry above puts them.
     assert_eq!(ewm.floating_frame_under(over_entry), on_float);
     assert_eq!(ewm.floating_frame_under(modeline), on_float);
@@ -95,11 +96,7 @@ fn floating_frame_occludes_the_strip_when_hit_testing() {
 }
 
 fn strip_ids(fix: &testing::Fixture, name: &str) -> Vec<u64> {
-    fix.ewm_ref()
-        .frame_set
-        .mapped_strip(name)
-        .map(|strip| strip.frames().iter().map(|f| f.surface_id).collect())
-        .unwrap_or_default()
+    fix.strip(name).frame_ids().collect()
 }
 
 #[test]
@@ -107,12 +104,8 @@ fn frames_survive_losing_every_output() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);
     fix.add_output(HEAD_B, 1280, 720);
-    fix.ewm()
-        .frame_set
-        .insert_mapped_strip(HEAD_A.to_string(), strip_with_frame_ids(vec![1, 2], 1));
-    fix.ewm()
-        .frame_set
-        .insert_mapped_strip(HEAD_B.to_string(), strip_with_frame_ids(vec![3, 4], 1));
+    fix.install_strip(HEAD_A, strip_with_frame_ids(vec![1, 2], 1));
+    fix.install_strip(HEAD_B, strip_with_frame_ids(vec![3, 4], 1));
     fix.ewm().set_focus_frame(4, "test", false);
 
     // Lid close: HEAD_A's frames migrate to HEAD_B.
@@ -121,29 +114,56 @@ fn frames_survive_losing_every_output() {
 
     // Undock with the lid closed: no fallback, all frames go homeless.
     fix.remove_output(HEAD_B);
-    assert!(fix.ewm_ref().frame_set.mapped_strips().is_empty());
-    let homeless: Vec<u64> = fix
-        .ewm_ref()
-        .frame_set
-        .homeless_frames()
-        .iter()
-        .map(|f| f.surface_id)
-        .collect();
-    assert_eq!(homeless, vec![3, 4, 1, 2]);
+    assert!(fix.ewm_ref().layout.monitors().is_empty());
+    assert_eq!(fix.ewm_ref().layout.homeless().ids(), vec![3, 4, 1, 2]);
     assert_eq!(fix.ewm_ref().focused_frame_id, 0);
 
     // Lid open: the first output to map adopts every homeless frame.
     fix.add_output(HEAD_A, 1600, 900);
     assert_eq!(strip_ids(&fix, HEAD_A), vec![3, 4, 1, 2]);
-    assert!(fix.ewm_ref().frame_set.homeless_frames().is_empty());
-    assert_eq!(fix.ewm_ref().active_frame_surface_id(HEAD_A), Some(2));
+    assert!(fix.ewm_ref().layout.homeless().tiled.is_empty());
+    assert_eq!(fix.strip(HEAD_A).active_frame_id(), Some(2));
     assert_eq!(fix.ewm_ref().focused_frame_id, 2);
 
     // Dock again: HEAD_B's frames return home with their active restored.
     fix.add_output(HEAD_B, 1280, 720);
     assert_eq!(strip_ids(&fix, HEAD_A), vec![1, 2]);
     assert_eq!(strip_ids(&fix, HEAD_B), vec![3, 4]);
-    assert_eq!(fix.ewm_ref().active_frame_surface_id(HEAD_B), Some(4));
+    assert_eq!(fix.strip(HEAD_B).active_frame_id(), Some(4));
+}
+
+#[test]
+fn floats_survive_losing_every_output() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+    fix.add_output(HEAD_B, 1280, 720);
+    fix.float(HEAD_A, vec![frame_with_width(200, 640.0)]);
+
+    // Lid close: the float moves with HEAD_A's strip onto HEAD_B.
+    fix.remove_output(HEAD_A);
+    assert_eq!(fix.ewm_ref().layout.frame_output(200), Some(HEAD_B));
+    assert!(
+        fix.ewm_ref()
+            .layout
+            .floating(&fix.output(HEAD_B))
+            .unwrap()
+            .has_frame(200)
+    );
+    // Undock with the lid closed: parked, still known.
+    fix.remove_output(HEAD_B);
+    assert_eq!(fix.ewm_ref().layout.homeless().floating.len(), 1);
+    assert!(fix.ewm_ref().layout.has_frame(200));
+
+    // Lid open: the first output to map adopts it, floating again.
+    fix.add_output(HEAD_A, 1600, 900);
+    assert!(
+        fix.ewm_ref()
+            .layout
+            .floating(&fix.output(HEAD_A))
+            .unwrap()
+            .has_frame(200)
+    );
+    assert!(fix.ewm_ref().layout.homeless().floating.is_empty());
 }
 
 proptest! {
@@ -187,7 +207,7 @@ proptest! {
             let base = 1_000 + idx as u64 * 100;
             let ids = (0..count).map(|frame_idx| base + frame_idx as u64).collect();
             let strip = strip_with_frame_ids(ids, usize::from(active_indices[idx]));
-            fix.ewm().frame_set.insert_mapped_strip((*name).to_string(), strip);
+            fix.install_strip(name, strip);
         }
 
         let first_output = order
@@ -221,8 +241,9 @@ proptest! {
             + fallback_output as u64 * 100
             + u64::from(active_indices[fallback_output] % (frame_counts[fallback_output] % 4));
 
-        fix.ewm()
-            .focus_mapped_frame_if_focused_output_unmapped(disabled_name);
+        let disabled = fix.output(disabled_name);
+        fix.ewm().layout.detach_output(&disabled, None, 0);
+        fix.ewm().refocus_if_focused_frame_parked();
         prop_assert_eq!(fix.ewm_ref().focused_frame_id, fallback_active_id);
     }
 
@@ -262,15 +283,11 @@ proptest! {
                 entry_h,
             ));
             strip.push_frame(frame);
-            fix.ewm().frame_set.insert_mapped_strip((*name).to_string(), strip);
+            fix.install_strip(name, strip);
         }
 
-        let output_sizes = PROP_HEADS
-            .iter()
-            .map(|name| ((*name).to_string(), (100, 100)))
-            .collect::<HashMap<_, _>>();
-        let best_area = fix.ewm_ref().primary_entry_areas(&output_sizes);
-        fix.ewm().assign_primary_entries(&output_sizes, &best_area);
+        let outputs = fix.ewm_ref().sorted_outputs.clone();
+        fix.ewm().layout.assign_primaries(&outputs);
 
         let expected = order
             .iter()
@@ -284,12 +301,9 @@ proptest! {
             .iter()
             .copied()
             .filter(|name| {
-                fix.ewm_ref().frame_set.mapped_strip(name)
-                    .is_some_and(|strip| {
-                        strip.surface_entries().any(|entry| {
-                            entry.surface_id() == Some(surface_id) && entry.primary()
-                        })
-                    })
+                fix.strip(name)
+                    .surface_entries()
+                    .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary())
             })
             .collect::<Vec<_>>();
 
@@ -327,10 +341,9 @@ proptest! {
                 .find(|idx| membership & (1 << idx) != 0)
                 .unwrap();
             let removed_name = PROP_HEADS[removed_idx];
-            if let Some(strip) = fix.ewm().frame_set.mapped_strip_mut(removed_name)
-                && let Some(frame) = strip.frames_mut().first_mut() {
-                    frame.entries.clear();
-                }
+            if let Some(frame) = fix.strip_mut(removed_name).frames_mut().first_mut() {
+                frame.entries.clear();
+            }
             fix.ewm().refresh_mapped_cast_outputs();
             prop_assert!(!fix
                 .ewm_ref()
@@ -392,7 +405,7 @@ proptest! {
             HEAD_A,
             vec![frame_with_width(100, 400.0), frame_with_width(101, 400.0)],
         );
-        let strip = fix.ewm().frame_set.mapped_strip_mut(HEAD_A).unwrap();
+        let strip = fix.strip_mut(HEAD_A);
         strip.gesture_begin();
         strip.gesture_update(offset, Duration::ZERO, strip::VIEW_GESTURE_WORKING_AREA_MOVEMENT);
         let expected = (strip.column_x(1) - strip.view_pos()).round() as i32;
@@ -409,7 +422,7 @@ proptest! {
 
     // A swap moves one frame past one neighbour and the focused frame stays active.
     #[test]
-    fn swap_frame_moves_one_slot_and_keeps_focus_active(
+    fn move_frame_moves_one_slot_and_keeps_focus_active(
         len in 1usize..=6,
         raw_focus in 0usize..6,
         raw_from in 0usize..6,
@@ -424,17 +437,223 @@ proptest! {
         let from = raw_from % len;
         let delta = if left { -1 } else { 1 };
 
-        fix.ewm().swap_frame(ids[from], delta);
+        fix.ewm().move_frame(ids[from], delta);
 
         let mut expected = ids.clone();
         let to = from as i32 + delta;
         if (0..len as i32).contains(&to) {
             expected.swap(from, to as usize);
         }
-        let strip = fix.ewm_ref().frame_set.mapped_strip(HEAD_A).unwrap();
-        let order: Vec<u64> = strip.frames().iter().map(|f| f.surface_id).collect();
+        let strip = fix.strip(HEAD_A);
+        let order: Vec<u64> = strip.frame_ids().collect();
         prop_assert_eq!(order, expected);
-        prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(focused));
+        prop_assert_eq!(strip.active_frame_id(), Some(focused));
         prop_assert_eq!(fix.ewm_ref().focused_frame_id, focused);
+    }
+}
+
+/// Every way the compositor moves frames around, on the bare layout.
+#[derive(Debug, Clone)]
+enum LayoutOp {
+    AddOutput(usize),
+    DetachOutput(usize),
+    AddFrame {
+        id: u64,
+        output: usize,
+        floating: bool,
+        after: Option<u64>,
+    },
+    RemoveFrame {
+        id: u64,
+        active_close: bool,
+    },
+    MoveFrame {
+        id: u64,
+        delta: i32,
+    },
+    MoveFrames {
+        src: usize,
+        dst: usize,
+        ids: Vec<u64>,
+    },
+    AdoptHomeless(usize),
+    RestoreLastActive(usize),
+    Activate(u64),
+    Merge(Vec<u64>),
+}
+
+const LAYOUT_FRAME_IDS: std::ops::RangeInclusive<u64> = 1..=8;
+
+fn layout_op() -> impl Strategy<Value = LayoutOp> {
+    let output = 0..PROP_HEADS.len();
+    let id = LAYOUT_FRAME_IDS;
+    prop_oneof![
+        1 => output.clone().prop_map(LayoutOp::AddOutput),
+        1 => output.clone().prop_map(LayoutOp::DetachOutput),
+        4 => (
+            id.clone(),
+            output.clone(),
+            any::<bool>(),
+            prop::option::of(id.clone())
+        )
+            .prop_map(|(id, output, floating, after)| LayoutOp::AddFrame {
+                id,
+                output,
+                floating,
+                after,
+            }),
+        1 => (id.clone(), any::<bool>())
+            .prop_map(|(id, active_close)| LayoutOp::RemoveFrame { id, active_close }),
+        1 => (id.clone(), -3i32..=3).prop_map(|(id, delta)| LayoutOp::MoveFrame { id, delta }),
+        1 => (
+            output.clone(),
+            output.clone(),
+            prop::collection::vec(id.clone(), 0..4)
+        )
+            .prop_map(|(src, dst, ids)| LayoutOp::MoveFrames { src, dst, ids }),
+        1 => output.clone().prop_map(LayoutOp::AdoptHomeless),
+        1 => output.prop_map(LayoutOp::RestoreLastActive),
+        1 => id.clone().prop_map(LayoutOp::Activate),
+        1 => prop::collection::vec(id, 0..6).prop_map(LayoutOp::Merge),
+    ]
+}
+
+/// `moved` sits on `dst`, with `focused` active when it came along tiled.
+fn check_landed(
+    layout: &Layout,
+    dst: &Output,
+    moved: &Moved,
+    focused: u64,
+) -> Result<(), TestCaseError> {
+    let dst_name = dst.name();
+    for &id in &moved.ids {
+        prop_assert_eq!(layout.frame_output(id), Some(dst_name.as_str()));
+    }
+    if moved.ids.contains(&focused)
+        && layout
+            .strip(dst)
+            .is_some_and(|strip| strip.index_of(focused).is_some())
+    {
+        prop_assert_eq!(layout.active_frame_id(dst), Some(focused));
+    }
+    Ok(())
+}
+
+fn apply_layout_op(
+    layout: &mut Layout,
+    outputs: &[Output],
+    live: &mut BTreeSet<u64>,
+    focused: u64,
+    op: &LayoutOp,
+) -> Result<(), TestCaseError> {
+    match *op {
+        LayoutOp::AddOutput(i) => layout.add_output(
+            outputs[i].clone(),
+            Rectangle::from_size(Size::from((1600, 900))),
+        ),
+        LayoutOp::DetachOutput(i) => {
+            let output = &outputs[i];
+            let fallback = layout.outputs().find(|other| *other != output).cloned();
+            let moved = layout.detach_output(output, fallback.as_ref(), focused);
+            prop_assert!(layout.monitor_of(output).is_none());
+            if let Some(dst) = &moved.dst {
+                check_landed(layout, dst, &moved, focused)?;
+            }
+        }
+        LayoutOp::AddFrame {
+            id,
+            output,
+            floating,
+            after,
+        } => {
+            if !live.contains(&id) && layout.monitor_of(&outputs[output]).is_some() {
+                let placement = if floating {
+                    Placement::Floating { pos: None }
+                } else {
+                    Placement::Tiled { after }
+                };
+                layout.add_frame(id, &outputs[output], placement);
+                live.insert(id);
+                prop_assert_eq!(layout.frame_output(id), Some(PROP_HEADS[output]));
+            }
+        }
+        LayoutOp::RemoveFrame { id, active_close } => {
+            layout.remove_frame(id, active_close);
+            live.remove(&id);
+            prop_assert!(!layout.has_frame(id));
+        }
+        LayoutOp::MoveFrame { id, delta } => {
+            let before = layout.frame_output(id).map(str::to_owned);
+            layout.move_frame(id, delta);
+            prop_assert_eq!(layout.frame_output(id), before.as_deref());
+        }
+        LayoutOp::MoveFrames { src, dst, ref ids } => {
+            let moved = layout.move_frames(&outputs[src], &outputs[dst], ids, focused);
+            if let Some(dst) = &moved.dst {
+                check_landed(layout, dst, &moved, focused)?;
+            }
+        }
+        LayoutOp::AdoptHomeless(i) => {
+            let moved = layout.adopt_homeless(&outputs[i], focused);
+            if let Some(dst) = &moved.dst {
+                prop_assert!(layout.homeless().ids().is_empty());
+                check_landed(layout, dst, &moved, focused)?;
+            }
+        }
+        LayoutOp::RestoreLastActive(i) => {
+            layout.restore_last_active(&outputs[i], focused);
+        }
+        LayoutOp::Activate(id) => {
+            if let Some((output, _)) = layout.activate_frame(id)
+                && layout
+                    .strip(&output)
+                    .is_some_and(|strip| strip.index_of(id).is_some())
+            {
+                prop_assert_eq!(layout.active_frame_id(&output), Some(id));
+            }
+        }
+        LayoutOp::Merge(ref ids) => {
+            let strips = layout.strip_frames_snapshot();
+            let placed = layout.frame_outputs_snapshot();
+            layout.merge_frames(ids.iter().map(|&id| strip::Frame::new(id)).collect());
+            prop_assert_eq!(layout.strip_frames_snapshot(), strips);
+            prop_assert_eq!(layout.frame_outputs_snapshot(), placed);
+        }
+    }
+    Ok(())
+}
+
+/// The layout holds exactly the `live` frames and nothing else.
+fn verify_live_frames(layout: &Layout, live: &BTreeSet<u64>) -> Result<(), TestCaseError> {
+    layout.verify_invariants();
+    let mut everywhere: Vec<u64> = layout.all_frames().map(|frame| frame.surface_id).collect();
+    everywhere.sort_unstable();
+    prop_assert_eq!(&everywhere, &live.iter().copied().collect::<Vec<_>>());
+    for id in LAYOUT_FRAME_IDS {
+        prop_assert_eq!(layout.has_frame(id), live.contains(&id));
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn layout_invariants_hold_under_any_op_sequence(
+        ops in prop::collection::vec(layout_op(), 1..40),
+        focused in LAYOUT_FRAME_IDS,
+    ) {
+        let mut layout = testing::layout_with(
+            PROP_HEADS
+                .iter()
+                .map(|name| (*name, strip::Strip::new(animation::Clock::default())))
+                .collect(),
+        );
+        let outputs: Vec<Output> = layout.outputs().cloned().collect();
+        let mut live = BTreeSet::new();
+        for op in &ops {
+            apply_layout_op(&mut layout, &outputs, &mut live, focused, op)?;
+            verify_live_frames(&layout, &live)?;
+        }
     }
 }

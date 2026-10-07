@@ -62,11 +62,11 @@ flowchart TB
     lookup --> winfound{"window<br/>found?"}
     winfound -->|Yes| selwin["select-frame +<br/>select-window"]
     winfound -->|No| popbuf["pop-to-buffer-same-window"]
-    selwin --> hooks["window hooks -><br/>send-layouts + sync-focus"]
+    selwin --> hooks["window hooks -><br/>ewm-layout--send-layouts"]
     popbuf --> hooks
     hooks --> dedup{"already<br/>focused?"}
     dedup -->|Yes| noop(["No-op"]):::safe
-    dedup -->|No| sendfocus["ewm-focus-view-module"]
+    dedup -->|No| sendfocus["ewm-focus-target-module"]
 
     hnew --> create_buf["Create buffer"]
     create_buf --> new_guard{"minibuffer<br/>active?"}:::guard
@@ -74,16 +74,16 @@ flowchart TB
     new_guard -->|No| target["select-frame for output +<br/>pop-to-buffer-same-window"]
     target --> hooks
 
-    ws_guard{"minibuffer<br/>active?"}:::guard
+    ws_guard{"menu<br/>active?"}:::guard
     ws_drop(["Dropped"]):::safe
 
     hws --> ws_guard
     ws_guard -->|Yes| ws_drop
-    ws_guard -->|No| tabswitch["tab-bar-select-tab"]
-    tabswitch --> hooks
+    ws_guard -->|No| selframe["select-frame-set-input-focus"]
+    selframe --> hooks
 
     hclose --> killbuf["kill-buffer"]:::muted
-    hout --> parity["apply-output-config +<br/>enforce parity +<br/>layout refresh +<br/>sync-focus"]:::muted
+    hout --> parity["apply-output-config +<br/>frames for empty outputs +<br/>delete stray frames +<br/>layout refresh"]:::muted
 
     hfs --> set_param["set ewm-fullscreen<br/>per-frame"]
     set_param --> refresh_fs["ewm-layout--refresh"]

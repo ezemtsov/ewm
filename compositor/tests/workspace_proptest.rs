@@ -47,7 +47,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
 fn apply_op(strip: &mut Strip, op: &Op) {
     match op {
         Op::InsertAfterActive(sid) => {
-            if strip.frames().iter().any(|f| f.surface_id == *sid) {
+            if strip.index_of(*sid).is_some() {
                 return;
             }
             let prev_len = strip.frames().len();
@@ -78,7 +78,7 @@ fn apply_op(strip: &mut Strip, op: &Op) {
             }
             let prev_len = strip.frames().len();
             let prev_active_idx = strip.active_idx();
-            let prev_active_sid = strip.active_frame().map(|f| f.surface_id);
+            let prev_active_sid = strip.active_frame_id();
             let was_active = *slot == prev_active_idx;
             let expected_new_active_sid = if !was_active {
                 prev_active_sid
@@ -94,7 +94,7 @@ fn apply_op(strip: &mut Strip, op: &Op) {
 
             assert_eq!(strip.frames().len(), prev_len - 1);
             assert_eq!(
-                strip.active_frame().map(|f| f.surface_id),
+                strip.active_frame_id(),
                 expected_new_active_sid,
                 "I9/I10: close slot {} (was_active={}, prev_active_idx={})",
                 slot,
@@ -117,7 +117,7 @@ fn apply_op(strip: &mut Strip, op: &Op) {
             strip.move_frame(i, j);
 
             assert_eq!(
-                strip.active_frame().map(|f| f.surface_id),
+                strip.active_frame_id(),
                 Some(prev_active_sid),
                 "I11: active must follow on move (delta={})",
                 delta,
@@ -138,7 +138,7 @@ fn apply_op(strip: &mut Strip, op: &Op) {
             let target_sid = strip.frames()[*slot].surface_id;
             strip.set_active(*slot);
             assert_eq!(
-                strip.active_frame().map(|f| f.surface_id),
+                strip.active_frame_id(),
                 Some(target_sid),
                 "Focus: active must point at the requested slot",
             );
@@ -207,10 +207,10 @@ proptest! {
         strip.close_active_frame_at(destroy_idx);
 
         prop_assert_eq!(
-            strip.frames().iter().map(|f| f.surface_id).collect::<Vec<_>>(),
+            strip.frame_ids().collect::<Vec<_>>(),
             expected_ids,
         );
-        prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), expected_active);
+        prop_assert_eq!(strip.active_frame_id(), expected_active);
         if destroy_idx < strip.frames().len() {
             prop_assert!(
                 strip.frames()[destroy_idx].move_anim.is_some(),

@@ -10,107 +10,406 @@ use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
-use tracing::warn;
 
 use crate::{
     Event, Ewm, FocusId, LayoutEntry, LayoutEntryHit, LayoutEntryId, SurfaceHit, animation,
     floating, fullscreen_center_offset, module, strip,
 };
 
-#[derive(Debug)]
-pub(crate) struct EntryLocation {
-    pub(crate) output: String,
-    pub(crate) frame_idx: usize,
-    pub(crate) floating: bool,
-    pub(crate) frame_surface_id: u64,
-    pub(crate) surface_id: Option<u64>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LayoutEntryLocation<'a> {
-    pub(crate) output_name: &'a str,
+    pub(crate) monitor: &'a Monitor,
     pub(crate) frame_idx: usize,
     pub(crate) floating: bool,
+    pub(crate) frame: &'a strip::Frame,
     pub(crate) entry: &'a LayoutEntry,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FrameLocation<'a> {
-    pub(crate) output_name: &'a str,
-    pub(crate) frame_idx: usize,
-    pub(crate) strip: Option<&'a strip::Strip>,
-    pub(crate) frame: &'a strip::Frame,
-}
-
-#[derive(Debug, Default)]
-pub struct FrameSet {
-    mapped: HashMap<String, strip::Strip>,
-    /// Frames with no mapped output; the next output to map adopts them all.
-    homeless: Vec<strip::Frame>,
-    /// Frame surface id -> home output identity (`output_identity`, not the
-    /// connector name), so a frame returns to its origin even when the display
-    /// re-enumerates on a different connector after a replug.
-    home_outputs: HashMap<u64, String>,
-    /// Last active frame per output identity (`output_identity`, matching
-    /// `home_outputs`), restored when the display maps again -- across a
-    /// connector rename, not just the same connector.
-    last_active: HashMap<String, u64>,
-}
-
-impl FrameSet {
-    pub fn mapped_strips(&self) -> &HashMap<String, strip::Strip> {
-        &self.mapped
+impl<'a> LayoutEntryLocation<'a> {
+    /// Whether the entry shows fullscreen.
+    pub(crate) fn fullscreen(&self) -> bool {
+        !self.floating && self.frame.entry_fullscreen(self.entry.id)
     }
 
-    pub fn homeless_frames(&self) -> &[strip::Frame] {
+    /// Whether the entry is on screen: floating, or in the strip's active frame.
+    pub(crate) fn shown(&self) -> bool {
+        self.floating || self.monitor.strip.active_idx() == self.frame_idx
+    }
+
+    fn frame_location(&self) -> FrameLocation<'a> {
+        FrameLocation {
+            monitor: self.monitor,
+            frame_idx: self.frame_idx,
+            floating: self.floating,
+            frame: self.frame,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FrameLocation<'a> {
+    pub monitor: &'a Monitor,
+    pub frame_idx: usize,
+    pub floating: bool,
+    pub frame: &'a strip::Frame,
+}
+
+impl<'a> FrameLocation<'a> {
+    /// The frame's entries at this slot.
+    fn entries(self) -> impl Iterator<Item = LayoutEntryLocation<'a>> {
+        self.frame
+            .entries
+            .iter()
+            .map(move |entry| LayoutEntryLocation {
+                monitor: self.monitor,
+                frame_idx: self.frame_idx,
+                floating: self.floating,
+                frame: self.frame,
+                entry,
+            })
+    }
+}
+
+/// Where a new frame goes on its output.
+#[derive(Debug, Clone, Copy)]
+pub enum Placement {
+    /// On the strip right of `after`, else at the end.
+    Tiled { after: Option<u64> },
+    /// In the floating space at `pos`, else centered.
+    Floating { pos: Option<Point<f64, Logical>> },
+}
+
+/// One output's frames: the strip and the floating space above it.
+#[derive(Debug)]
+pub struct Monitor {
+    output: Output,
+    name: String,
+    pub strip: strip::Strip,
+    pub floating: floating::FloatingSpace,
+    /// Working area last reported to Emacs.
+    pub working_area: Rectangle<i32, Logical>,
+}
+
+impl Monitor {
+    pub fn output(&self) -> &Output {
+        &self.output
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn has_frame(&self, id: u64) -> bool {
+        self.strip.index_of(id).is_some() || self.floating.has_frame(id)
+    }
+
+    /// Frames on this monitor, tiled then floating.
+    pub fn frames(&self) -> impl Iterator<Item = &strip::Frame> {
+        self.strip.frames().iter().chain(self.floating.frames())
+    }
+
+    fn frames_mut(&mut self) -> impl Iterator<Item = &mut strip::Frame> {
+        self.strip
+            .frames_mut()
+            .iter_mut()
+            .chain(self.floating.frames_mut().iter_mut())
+    }
+
+    fn frame_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.frames().map(|frame| frame.surface_id)
+    }
+
+    pub(crate) fn advance(&mut self) {
+        self.strip.advance();
+        self.floating.advance();
+    }
+
+    pub(crate) fn animations_ongoing(&self) -> bool {
+        self.strip.animations_ongoing() || self.floating.animations_ongoing()
+    }
+
+    /// The tiled or the floating frames with their slots.
+    fn frame_locations_in(&self, floating: bool) -> impl Iterator<Item = FrameLocation<'_>> {
+        let frames = if floating {
+            self.floating.frames()
+        } else {
+            self.strip.frames()
+        };
+        frames
+            .iter()
+            .enumerate()
+            .map(move |(frame_idx, frame)| FrameLocation {
+                monitor: self,
+                frame_idx,
+                floating,
+                frame,
+            })
+    }
+
+    /// Every frame with its slot, tiled then floating.
+    fn frame_locations(&self) -> impl Iterator<Item = FrameLocation<'_>> {
+        self.frame_locations_in(false)
+            .chain(self.frame_locations_in(true))
+    }
+
+    /// The tiled or the floating entries with their frames.
+    fn entry_locations_in(&self, floating: bool) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
+        self.frame_locations_in(floating)
+            .flat_map(FrameLocation::entries)
+    }
+
+    /// Every entry with its frame, tiled then floating.
+    fn entry_locations(&self) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
+        self.frame_locations().flat_map(FrameLocation::entries)
+    }
+}
+
+/// Tiled and floating frames together.
+#[derive(Debug, Default)]
+pub struct Frames {
+    pub tiled: Vec<strip::Frame>,
+    pub floating: Vec<strip::Frame>,
+}
+
+impl Frames {
+    fn iter(&self) -> impl Iterator<Item = &strip::Frame> {
+        self.tiled.iter().chain(&self.floating)
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut strip::Frame> {
+        self.tiled.iter_mut().chain(&mut self.floating)
+    }
+
+    pub(crate) fn ids(&self) -> Vec<u64> {
+        self.iter().map(|frame| frame.surface_id).collect()
+    }
+}
+
+/// Frames that moved, with where from, where to and the frames active before on either side.
+#[derive(Debug, Default)]
+pub(crate) struct Moved {
+    pub ids: Vec<u64>,
+    pub src: Option<Output>,
+    pub dst: Option<Output>,
+    pub src_prev_active: Option<u64>,
+    pub dst_prev_active: Option<u64>,
+}
+
+/// Where every Emacs frame is.
+#[derive(Debug)]
+pub struct Layout {
+    /// One per mapped output.
+    monitors: Vec<Monitor>,
+    /// Frames of the last output to go, adopted by the next output to map.
+    homeless: Frames,
+    /// Home display identity per frame, so a replugged display reclaims its frames.
+    home_outputs: HashMap<u64, String>,
+    /// Last active frame per display identity.
+    last_active: HashMap<String, u64>,
+    /// Clock for driving animations.
+    clock: animation::Clock,
+}
+
+impl Layout {
+    pub fn new(clock: animation::Clock) -> Self {
+        Self {
+            monitors: Vec::new(),
+            homeless: Frames::default(),
+            home_outputs: HashMap::new(),
+            last_active: HashMap::new(),
+            clock,
+        }
+    }
+
+    pub fn monitors(&self) -> &[Monitor] {
+        &self.monitors
+    }
+
+    fn monitor_idx(&self, output: &Output) -> Option<usize> {
+        self.monitors
+            .iter()
+            .position(|monitor| &monitor.output == output)
+    }
+
+    /// The mapped output called `name`.
+    pub fn output(&self, name: &str) -> Option<&Output> {
+        self.monitors
+            .iter()
+            .find(|monitor| monitor.name == name)
+            .map(Monitor::output)
+    }
+
+    pub fn monitor_of(&self, output: &Output) -> Option<&Monitor> {
+        self.monitors
+            .iter()
+            .find(|monitor| &monitor.output == output)
+    }
+
+    pub fn monitor_of_mut(&mut self, output: &Output) -> Option<&mut Monitor> {
+        self.monitors
+            .iter_mut()
+            .find(|monitor| &monitor.output == output)
+    }
+
+    pub fn strip(&self, output: &Output) -> Option<&strip::Strip> {
+        self.monitor_of(output).map(|monitor| &monitor.strip)
+    }
+
+    pub fn strip_mut(&mut self, output: &Output) -> Option<&mut strip::Strip> {
+        self.monitor_of_mut(output)
+            .map(|monitor| &mut monitor.strip)
+    }
+
+    pub fn floating(&self, output: &Output) -> Option<&floating::FloatingSpace> {
+        self.monitor_of(output).map(|monitor| &monitor.floating)
+    }
+
+    pub fn floating_mut(&mut self, output: &Output) -> Option<&mut floating::FloatingSpace> {
+        self.monitor_of_mut(output)
+            .map(|monitor| &mut monitor.floating)
+    }
+
+    pub fn outputs(&self) -> impl Iterator<Item = &Output> {
+        self.monitors.iter().map(Monitor::output)
+    }
+
+    /// Every monitor's strip with its output name.
+    pub fn strips(&self) -> impl Iterator<Item = (&str, &strip::Strip)> {
+        self.monitors
+            .iter()
+            .map(|monitor| (monitor.name.as_str(), &monitor.strip))
+    }
+
+    pub fn strips_mut(&mut self) -> impl Iterator<Item = &mut strip::Strip> {
+        self.monitors.iter_mut().map(|monitor| &mut monitor.strip)
+    }
+
+    pub fn homeless(&self) -> &Frames {
         &self.homeless
     }
 
-    pub fn mapped_strip(&self, output_name: &str) -> Option<&strip::Strip> {
-        self.mapped.get(output_name)
+    /// Add a monitor for a newly mapped output.
+    pub fn add_output(&mut self, output: Output, working_area: Rectangle<i32, Logical>) {
+        let name = output.name();
+        if self.monitor_of(&output).is_some() {
+            return;
+        }
+        let mut strip = strip::Strip::new(self.clock.clone());
+        strip.update_config(output.current_scale().fractional_scale());
+        let floating = floating::FloatingSpace::new(working_area.to_f64(), self.clock.clone());
+        self.monitors.push(Monitor {
+            output,
+            name,
+            strip,
+            floating,
+            working_area,
+        });
     }
 
-    pub fn mapped_strip_mut(&mut self, output_name: &str) -> Option<&mut strip::Strip> {
-        self.mapped.get_mut(output_name)
-    }
-
-    pub fn ensure_mapped_strip(
+    /// Drop `output`'s monitor, moving its frames to `fallback` or parking them,
+    /// and remember its active frame for the display's return.
+    pub(crate) fn detach_output(
         &mut self,
-        output_name: &str,
-        clock: animation::Clock,
-        scale: f64,
-    ) -> &mut strip::Strip {
-        let strip = self
-            .mapped
-            .entry(output_name.to_string())
-            .or_insert_with(|| strip::Strip::new(clock));
-        strip.update_config(scale);
-        strip
+        output: &Output,
+        fallback: Option<&Output>,
+        focused: u64,
+    ) -> Moved {
+        let Some(idx) = self.monitor_idx(output) else {
+            return Moved::default();
+        };
+        let mut monitor = self.monitors.remove(idx);
+        let src_prev_active = monitor.strip.active_frame_id();
+        let identity = crate::utils::output_identity(output);
+        match src_prev_active {
+            Some(id) => {
+                self.last_active.insert(identity, id);
+            }
+            None => {
+                self.last_active.remove(&identity);
+            }
+        }
+        let frames = Frames {
+            tiled: monitor.strip.take_frames(),
+            floating: monitor.floating.take_frames(),
+        };
+        let placed = match fallback.and_then(|dst| self.monitor_idx(dst)) {
+            Some(dst_idx) => self.place_frames(dst_idx, frames, focused),
+            None => {
+                let ids = frames.ids();
+                self.park(frames);
+                Moved {
+                    ids,
+                    ..Moved::default()
+                }
+            }
+        };
+        Moved {
+            src: Some(monitor.output),
+            src_prev_active,
+            ..placed
+        }
     }
 
-    pub fn insert_mapped_strip(
-        &mut self,
-        output_name: String,
-        strip: strip::Strip,
-    ) -> Option<strip::Strip> {
-        self.mapped.insert(output_name, strip)
+    /// Hold `frames` until an output maps.
+    fn park(&mut self, frames: Frames) {
+        self.homeless.tiled.extend(frames.tiled);
+        self.homeless.floating.extend(frames.floating);
     }
 
-    pub fn mapped_strips_mut(&mut self) -> impl Iterator<Item = &mut strip::Strip> {
-        self.mapped.values_mut()
+    /// Replace `output`'s strip wholesale, homing its frames there.
+    pub fn install_strip(&mut self, output: &Output, strip: strip::Strip) {
+        let home = crate::utils::output_identity(output);
+        let Some(monitor) = self.monitor_of_mut(output) else {
+            return;
+        };
+        monitor.strip = strip;
+        let ids: Vec<u64> = monitor.strip.frame_ids().collect();
+        for id in ids {
+            self.remember_home_if_missing(id, &home);
+        }
     }
 
+    /// Put new frame `id` on `output` as `placement` says.
+    pub fn add_frame(&mut self, id: u64, output: &Output, placement: Placement) {
+        let home = crate::utils::output_identity(output);
+        let Some(monitor) = self.monitor_of_mut(output) else {
+            return;
+        };
+        let mut frame = strip::Frame::new(id);
+        match placement {
+            Placement::Tiled { after } => {
+                match after.and_then(|after| monitor.strip.index_of(after)) {
+                    Some(idx) => monitor.strip.insert_frame(idx + 1, frame),
+                    None => monitor.strip.push_frame(frame),
+                }
+            }
+            Placement::Floating { pos } => {
+                frame.floating_pos = pos.map(|pos| {
+                    floating::Data::logical_to_size_frac_in_working_area(
+                        monitor.floating.working_area(),
+                        pos,
+                    )
+                });
+                monitor.floating.add_frame(frame);
+            }
+        }
+        self.remember_home_if_missing(id, &home);
+    }
+
+    /// Frames on monitors, each strip then its floating space.
+    pub(crate) fn placed_frames(&self) -> impl Iterator<Item = &strip::Frame> {
+        self.monitors.iter().flat_map(Monitor::frames)
+    }
+
+    /// Placed frames, then the parked ones.
     pub fn all_frames(&self) -> impl Iterator<Item = &strip::Frame> {
-        self.mapped
-            .values()
-            .flat_map(|strip| strip.frames().iter())
-            .chain(self.homeless.iter())
+        self.placed_frames().chain(self.homeless.iter())
     }
 
     fn all_frames_mut(&mut self) -> impl Iterator<Item = &mut strip::Frame> {
-        self.mapped
-            .values_mut()
-            .flat_map(|strip| strip.frames_mut().iter_mut())
+        self.monitors
+            .iter_mut()
+            .flat_map(Monitor::frames_mut)
             .chain(self.homeless.iter_mut())
     }
 
@@ -119,326 +418,305 @@ impl FrameSet {
             .find(|frame| frame.surface_id == frame_surface_id)
     }
 
-    fn is_homeless(&self, frame_surface_id: u64) -> bool {
+    /// Frame ids on `output`, tiled then floating.
+    pub fn is_homeless(&self, frame_surface_id: u64) -> bool {
         self.homeless
             .iter()
             .any(|frame| frame.surface_id == frame_surface_id)
     }
 
-    /// Take every homeless frame for adoption by a newly mapped output.
-    fn take_homeless_frames(&mut self) -> Vec<strip::Frame> {
-        mem::take(&mut self.homeless)
+    fn monitor_of_frame_mut(&mut self, id: u64) -> Option<&mut Monitor> {
+        self.monitors
+            .iter_mut()
+            .find(|monitor| monitor.has_frame(id))
     }
 
-    fn remove_homeless_frame(&mut self, frame_surface_id: u64) -> bool {
-        let len = self.homeless.len();
+    /// Run `tiled` or `floating` on whichever container holds frame `id`. Returns
+    /// its output and the strip frame that was active before.
+    fn with_frame_container(
+        &mut self,
+        id: u64,
+        tiled: impl FnOnce(&mut strip::Strip, usize),
+        floating: impl FnOnce(&mut floating::FloatingSpace),
+    ) -> Option<(Output, Option<u64>)> {
+        let monitor = self.monitor_of_frame_mut(id)?;
+        let prev_active = monitor.strip.active_frame_id();
+        match monitor.strip.index_of(id) {
+            Some(idx) => tiled(&mut monitor.strip, idx),
+            None => floating(&mut monitor.floating),
+        }
+        Some((monitor.output.clone(), prev_active))
+    }
+
+    /// Drop frame `id` from wherever it is. For a placed frame, returns its
+    /// output and the frame its strip had active.
+    pub(crate) fn remove_frame(
+        &mut self,
+        id: u64,
+        active_close: bool,
+    ) -> Option<(Output, Option<u64>)> {
+        self.home_outputs.remove(&id);
+        self.homeless.tiled.retain(|frame| frame.surface_id != id);
         self.homeless
-            .retain(|frame| frame.surface_id != frame_surface_id);
-        self.homeless.len() != len
+            .floating
+            .retain(|frame| frame.surface_id != id);
+        self.with_frame_container(
+            id,
+            |strip, idx| {
+                if active_close {
+                    strip.close_active_frame_at(idx);
+                } else {
+                    strip.close_frame_at(idx);
+                }
+            },
+            |space| {
+                space.close_frame(id);
+            },
+        )
     }
 
-    /// Park a mapped strip's frames in the homeless pool.
-    fn pool_mapped_strip(&mut self, output_name: &str) {
-        let Some(mut strip) = self.mapped.remove(output_name) else {
-            return;
+    /// Put `frames` on monitor `idx`, keeping `focused` active if it is among them.
+    fn place_frames(&mut self, idx: usize, frames: Frames, focused: u64) -> Moved {
+        let ids = frames.ids();
+        let monitor = &mut self.monitors[idx];
+        let dst_prev_active = monitor.strip.active_frame_id();
+        let insert_at = monitor.strip.frames().len();
+        let focused_idx = frames
+            .tiled
+            .iter()
+            .position(|frame| frame.surface_id == focused)
+            .map(|idx| insert_at + idx);
+        monitor.strip.append_frames(frames.tiled);
+        if let Some(idx) = focused_idx {
+            monitor.strip.set_active(idx);
+        } else if insert_at == 0 && !monitor.strip.frames().is_empty() {
+            monitor.strip.set_active(0);
+        }
+        // `add_frame` stacks on top, so the topmost goes last.
+        for frame in frames.floating.into_iter().rev() {
+            monitor.floating.add_frame(frame);
+        }
+        Moved {
+            ids,
+            dst: Some(monitor.output.clone()),
+            dst_prev_active,
+            ..Moved::default()
+        }
+    }
+
+    /// Move frames `ids` from `src` to `dst`, each kind into its own container.
+    pub(crate) fn move_frames(
+        &mut self,
+        src: &Output,
+        dst: &Output,
+        ids: &[u64],
+        focused: u64,
+    ) -> Moved {
+        let (Some(src_idx), Some(dst_idx)) = (self.monitor_idx(src), self.monitor_idx(dst)) else {
+            return Moved::default();
         };
-        self.homeless.extend(strip.take_frames());
-    }
-
-    fn remember_last_active(&mut self, identity: &str, frame_id: Option<u64>) {
-        match frame_id {
-            Some(id) => {
-                self.last_active.insert(identity.to_string(), id);
-            }
-            None => {
-                self.last_active.remove(identity);
-            }
+        if src_idx == dst_idx {
+            return Moved::default();
+        }
+        let src = &mut self.monitors[src_idx];
+        let src_prev_active = src.strip.active_frame_id();
+        let frames = Frames {
+            tiled: src
+                .strip
+                .drain_frames(|frame| ids.contains(&frame.surface_id)),
+            floating: src
+                .floating
+                .drain_frames(|frame| ids.contains(&frame.surface_id)),
+        };
+        Moved {
+            src: Some(src.output.clone()),
+            src_prev_active,
+            ..self.place_frames(dst_idx, frames, focused)
         }
     }
 
-    fn take_last_active(&mut self, identity: &str) -> Option<u64> {
-        self.last_active.remove(identity)
+    /// Put every parked frame on `dst`.
+    pub(crate) fn adopt_homeless(&mut self, dst: &Output, focused: u64) -> Moved {
+        let Some(idx) = self.monitor_idx(dst) else {
+            return Moved::default();
+        };
+        let frames = mem::take(&mut self.homeless);
+        self.place_frames(idx, frames, focused)
     }
 
-    fn remember_frame_homes(&mut self, home: &str, frame_ids: impl IntoIterator<Item = u64>) {
-        for id in frame_ids {
-            if id != 0 {
-                self.remember_home_if_missing(id, home);
-            }
-        }
-    }
-
-    pub(crate) fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
+    fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
         self.home_outputs
             .entry(frame_id)
             .or_insert_with(|| home.to_string());
     }
 
-    fn forget_frame_home(&mut self, frame_id: u64) {
-        self.home_outputs.remove(&frame_id);
-    }
-
-    fn home_output(&self, frame_id: u64) -> Option<&str> {
-        self.home_outputs.get(&frame_id).map(String::as_str)
-    }
-}
-
-impl Ewm {
-    /// Detach a surface from every layout entry.
-    pub(crate) fn detach_surface_from_layouts(&mut self, id: u64) {
-        for frame in self.frame_set.all_frames_mut() {
-            frame.detach_surface(id);
-        }
-        for space in self.floating_spaces.values_mut() {
-            for frame in space.frames_mut() {
-                frame.detach_surface(id);
-            }
-        }
-    }
-
-    /// Restore the focus invariants after a layout swap or frame removal:
-    /// drop stale `selected_entry_id` / `focused_entry_id`, and zero
-    /// `focused_frame_id` when its frame no longer exists.
-    pub(crate) fn prune_dangling_focus(&mut self) {
-        for frame in self.frame_set.all_frames_mut() {
-            frame.validate_fullscreen();
-            if let Some(sel) = frame.selected_entry_id
-                && !frame.entries.iter().any(|entry| entry.id == sel)
-            {
-                frame.selected_entry_id = None;
-            }
-        }
-        for space in self.floating_spaces.values_mut() {
-            for frame in space.frames_mut() {
-                frame.validate_fullscreen();
-                if let Some(sel) = frame.selected_entry_id
-                    && !frame.entries.iter().any(|entry| entry.id == sel)
-                {
-                    frame.selected_entry_id = None;
-                }
-            }
-        }
-        if let Some(v) = self.focused_entry_id {
-            let in_focused_frame = self
-                .frame_location(self.focused_frame_id)
-                .map(|location| location.frame)
-                .is_some_and(|f| f.entries.iter().any(|entry| entry.id == v));
-            if !in_focused_frame {
-                self.focused_entry_id = None;
-            }
-        }
-        if self.focused_frame_id != 0 && self.lookup_frame(self.focused_frame_id).is_none() {
-            self.focused_frame_id = 0;
-            self.focused_entry_id = None;
-        }
-    }
-
-    /// If no frame is focused but some frame exists, use canonical output order.
-    pub(crate) fn focus_any_frame_if_unfocused(&mut self, reason: &'static str) {
-        if self.focused_frame_id == 0 {
-            for output in &self.sorted_outputs {
-                let name = output.name();
-                if let Some(id) = self
-                    .frame_set
-                    .mapped_strip(&name)
-                    .and_then(|strip| strip.frames().first())
-                    .map(|frame| frame.surface_id)
-                {
-                    self.set_focus_frame(id, reason, false);
-                    return;
-                }
-            }
-        }
-    }
-
-    pub(crate) fn focus_mapped_frame_if_focused_output_unmapped(&mut self, output_name: &str) {
-        let focused_output = self
-            .frame_position(self.focused_surface_id())
-            .map(|(focused_output, _)| focused_output);
-        let focused_homeless = self.frame_set.is_homeless(self.focused_frame_id);
-        if focused_output.as_deref() != Some(output_name) && !focused_homeless {
-            return;
-        }
-
-        if let Some(id) = self
-            .sorted_outputs
+    /// Frames homed at `dst`'s display, grouped by the other output holding them.
+    pub(crate) fn homed_elsewhere(&self, dst: &Output) -> Vec<(Output, Vec<u64>)> {
+        let identity = crate::utils::output_identity(dst);
+        self.monitors
             .iter()
-            .find_map(|output| self.active_frame_surface_id(&output.name()))
+            .filter(|monitor| &monitor.output != dst)
+            .filter_map(|monitor| {
+                let ids: Vec<u64> = monitor
+                    .frame_ids()
+                    .filter(|id| self.home_outputs.get(id) == Some(&identity))
+                    .collect();
+                (!ids.is_empty()).then(|| (monitor.output.clone(), ids))
+            })
+            .collect()
+    }
+
+    /// Re-activate `output`'s remembered frame unless the focused frame sits on
+    /// its strip. Returns the frame active before.
+    pub(crate) fn restore_last_active(&mut self, output: &Output, focused: u64) -> Option<u64> {
+        let remembered = self
+            .last_active
+            .remove(&crate::utils::output_identity(output));
+        let strip = self.strip_mut(output)?;
+        let prev_active = strip.active_frame_id();
+        // The focused frame stays active. Focus continuity wins.
+        if let Some(frame_id) = remembered
+            && strip.index_of(focused).is_none()
+            && let Some(to) = strip.index_of(frame_id)
         {
-            self.set_focus_frame(id, "output_disabled", false);
+            strip.set_active(to);
+        }
+        prev_active
+    }
+
+    /// Make `id` active in its container. Returns its output and the strip
+    /// frame that was active.
+    pub(crate) fn activate_frame(&mut self, id: u64) -> Option<(Output, Option<u64>)> {
+        self.with_frame_container(
+            id,
+            |strip, idx| strip.set_active(idx),
+            |space| {
+                space.activate_frame(id);
+            },
+        )
+    }
+
+    /// Whether surface `id` shows fullscreen on some output.
+    pub fn is_surface_fullscreen(&self, id: u64) -> bool {
+        self.placed_frames()
+            .any(|frame| frame.surface_fullscreen(id))
+    }
+
+    /// The surface entry `entry_id` shows.
+    pub(crate) fn entry_surface_id(&self, entry_id: LayoutEntryId) -> Option<u64> {
+        self.entry_location(entry_id)?.entry.surface_id()
+    }
+
+    /// Whether entry `entry_id` shows fullscreen.
+    pub fn entry_fullscreen(&self, entry_id: LayoutEntryId) -> bool {
+        self.entry_location(entry_id)
+            .is_some_and(|location| location.fullscreen())
+    }
+
+    /// The output whose contents change when entry `entry_id` goes `fullscreen` or back.
+    pub fn fullscreen_change_output(
+        &self,
+        entry_id: LayoutEntryId,
+        fullscreen: bool,
+    ) -> Option<Output> {
+        let location = self.entry_location(entry_id)?;
+        (location.fullscreen() != fullscreen).then(|| location.monitor.output().clone())
+    }
+
+    /// Set entry `entry_id` fullscreen or back. Returns its surface and the one
+    /// it displaced.
+    pub(crate) fn set_entry_fullscreen(
+        &mut self,
+        entry_id: LayoutEntryId,
+        fullscreen: bool,
+    ) -> Option<(u64, Option<u64>)> {
+        let frame = self
+            .all_frames_mut()
+            .find(|frame| frame.entry_surface_id(entry_id).is_some())?;
+        let target = frame.entry_surface_id(entry_id)?;
+        let cleared = if fullscreen {
+            frame
+                .set_fullscreen_entry(entry_id)
+                .and_then(|(previous, _)| previous)
         } else {
-            self.set_focus_state(0, None);
-        }
-    }
-
-    /// Bake frame `id`'s close snapshot.
-    pub(crate) fn store_frame_close_snapshot(&mut self, renderer: &mut GlesRenderer, id: u64) {
-        let Some(snapshot) = crate::render::render_frame_snapshot(self, renderer, id) else {
-            return;
+            frame.clear_fullscreen_entry(entry_id)
         };
-        if let Some(frame) = self.frame_mut(id) {
-            frame.close_snapshot = Some(snapshot);
-        }
+        Some((target, cleared.map(|cleared| cleared.surface_id)))
     }
 
-    /// Drop the Emacs frame `id` from whichever strip holds it.
-    pub(crate) fn remove_emacs_frame_from_strip(&mut self, id: u64, active_close: bool) {
-        self.frame_set.forget_frame_home(id);
-        if self.frame_set.remove_homeless_frame(id) {
-            return;
-        }
-        let Some((out, idx)) = self.lookup_frame(id) else {
-            return;
-        };
-        let pre_entries = self.strip_entries(&out);
-        let removed_floating = self.floating_spaces.get_mut(&out).and_then(|space| {
-            space
-                .close_frame(id)
-                .map(|_| space.frames().is_empty() && space.closing_frames().is_empty())
-        });
-        if let Some(empty) = removed_floating {
-            if empty {
-                self.floating_spaces.remove(&out);
-            }
-            self.reconcile_output_entries(&out, &pre_entries);
-            return;
-        }
-        let mut prev_active_id = None;
-        if let Some(strip) = self.frame_set.mapped_strip_mut(&out) {
-            prev_active_id = strip.active_frame().map(|f| f.surface_id);
-            if active_close {
-                strip.close_active_frame_at(idx);
-            } else {
-                strip.close_frame_at(idx);
-            }
-        }
-        self.reconcile_output_entries(&out, &pre_entries);
-        self.reconcile_active_for_output(&out, prev_active_id);
+    /// Whether `output`'s active frame shows an entry fullscreen.
+    pub fn active_fullscreen_on(&self, output: &Output) -> bool {
+        self.strip(output)
+            .is_some_and(strip::Strip::active_frame_is_fullscreen)
     }
 
-    pub(crate) fn migrate_or_pool_output_frames(&mut self, output_name: &str, output: &Output) {
-        let active_id = self.active_frame_surface_id(output_name);
-        let home_identity = crate::utils::output_identity(output);
-        self.frame_set
-            .remember_last_active(&home_identity, active_id);
+    /// Whether some active frame shows an entry fullscreen.
+    pub fn any_active_fullscreen(&self) -> bool {
+        self.monitors
+            .iter()
+            .any(|monitor| monitor.strip.active_frame_is_fullscreen())
+    }
 
-        if !self.migrate_output_frames_to_fallback(output_name, &home_identity) {
-            let pre = self.surface_outputs_for(output_name);
-            self.reconcile_output_membership(output_name, Some(output), &pre, &HashSet::new());
-            self.leave_emacs_frames_on_output(output);
-            if let Some(id) = active_id {
-                self.queue_event(Event::FrameHidden { id });
+    /// Mark one view of each surface primary: its largest among the shown frames,
+    /// ties broken by `order`.
+    pub(crate) fn assign_primaries(&mut self, order: &[Output]) {
+        let mut best: HashMap<u64, (u64, LayoutEntryId)> = HashMap::new();
+        let shown = order
+            .iter()
+            .filter_map(|output| self.monitor_of(output))
+            .flat_map(Monitor::entry_locations)
+            .filter(LayoutEntryLocation::shown);
+        for location in shown {
+            let Some(surface_id) = location.entry.surface_id() else {
+                continue;
+            };
+            let area = entry_area(
+                location.monitor.output(),
+                location.entry,
+                location.fullscreen(),
+            );
+            let entry = best.entry(surface_id).or_insert((area, location.entry.id));
+            if area > entry.0 {
+                *entry = (area, location.entry.id);
             }
         }
-        self.frame_set.pool_mapped_strip(output_name);
-    }
-
-    /// Resolve an Emacs window entry id to its strip location and owning frame.
-    fn frame_at_location(&self, location: &LayoutEntryLocation) -> Option<&strip::Frame> {
-        if location.floating {
-            self.floating_spaces
-                .get(location.output_name)?
-                .frames()
-                .get(location.frame_idx)
-        } else {
-            self.frame_set
-                .mapped_strip(location.output_name)?
-                .frames()
-                .get(location.frame_idx)
-        }
-    }
-
-    pub(crate) fn lookup_entry(&self, entry_id: LayoutEntryId) -> Option<EntryLocation> {
-        let location = self.layout_entry_for_id(entry_id)?;
-        let frame = self.frame_at_location(&location)?;
-        Some(EntryLocation {
-            output: location.output_name.to_string(),
-            frame_idx: location.frame_idx,
-            floating: location.floating,
-            frame_surface_id: frame.surface_id,
-            surface_id: location.entry.surface_id(),
-        })
-    }
-
-    pub(crate) fn frame_location(&self, frame_surface_id: u64) -> Option<FrameLocation<'_>> {
-        for (output_name, strip) in self.frame_set.mapped_strips() {
-            if let Some((frame_idx, frame)) = strip
-                .frames()
-                .iter()
-                .enumerate()
-                .find(|(_, frame)| frame.surface_id == frame_surface_id)
-            {
-                return Some(FrameLocation {
-                    output_name,
-                    frame_idx,
-                    strip: Some(strip),
-                    frame,
-                });
+        let primaries: HashSet<LayoutEntryId> = best.values().map(|&(_, id)| id).collect();
+        for frame in self.all_frames_mut() {
+            for entry in &mut frame.entries {
+                entry.set_primary(primaries.contains(&entry.id));
             }
         }
-        for (output_name, space) in &self.floating_spaces {
-            if let Some((frame_idx, frame)) = space
-                .frames()
-                .iter()
-                .enumerate()
-                .find(|(_, frame)| frame.surface_id == frame_surface_id)
-            {
-                return Some(FrameLocation {
-                    output_name,
-                    frame_idx,
-                    strip: None,
-                    frame,
-                });
-            }
-        }
-        None
     }
 
-    /// Mutable lookup across strips, the homeless pool and floating spaces.
-    pub(crate) fn frame_mut(&mut self, frame_surface_id: u64) -> Option<&mut strip::Frame> {
-        self.frame_set.frame_mut(frame_surface_id).or_else(|| {
-            self.floating_spaces
-                .values_mut()
-                .find_map(|space| space.frame_mut(frame_surface_id))
-        })
+    pub fn frame_location(&self, id: u64) -> Option<FrameLocation<'_>> {
+        self.monitors
+            .iter()
+            .flat_map(Monitor::frame_locations)
+            .find(|location| location.frame.surface_id == id)
     }
 
-    pub(crate) fn mapped_output_strips(&self) -> impl Iterator<Item = (&str, &strip::Strip)> {
-        self.sorted_outputs.iter().filter_map(|output| {
-            self.frame_set
-                .mapped_strips()
-                .get_key_value(&output.name())
-                .map(|(name, strip)| (name.as_str(), strip))
-        })
+    /// Whether `id` is an Emacs frame we place, parked ones included.
+    pub fn has_frame(&self, id: u64) -> bool {
+        self.monitors.iter().any(|monitor| monitor.has_frame(id)) || self.is_homeless(id)
     }
 
-    pub fn is_emacs_frame(&self, id: u64) -> bool {
-        self.frame_location(id).is_some() || self.frame_set.is_homeless(id)
+    pub fn frame_output(&self, id: u64) -> Option<&str> {
+        self.frame_location(id)
+            .map(|location| location.monitor.name())
     }
 
-    pub fn emacs_frame_output(&self, id: u64) -> Option<&str> {
-        self.frame_location(id).map(|location| location.output_name)
-    }
-
-    pub fn emacs_frames_on<'a>(&'a self, output_name: &'a str) -> impl Iterator<Item = u64> + 'a {
-        self.frame_set
-            .mapped_strip(output_name)
+    /// Surface ids of `output`'s strip frames, left to right.
+    pub fn strip_frame_ids(&self, output: &Output) -> impl Iterator<Item = u64> + '_ {
+        self.strip(output)
             .into_iter()
-            .flat_map(|s| s.frames().iter().map(|f| f.surface_id))
-            .filter(|&id| id != 0)
-    }
-
-    /// Resolve a frame's xdg_toplevel `surface_id` to `(output_name, frame_idx)`.
-    pub fn lookup_frame(&self, frame_surface_id: u64) -> Option<(String, usize)> {
-        self.frame_location(frame_surface_id)
-            .map(|location| (location.output_name.to_string(), location.frame_idx))
+            .flat_map(strip::Strip::frame_ids)
     }
 
     /// Frame surface_id whose focus id matches.
     pub fn frame_with_focus_id(&self, focus_id: FocusId) -> Option<u64> {
         self.placed_frames()
-            .find(|f| f.focus_id == focus_id)
-            .map(|f| f.surface_id)
+            .find(|frame| frame.focus_id == focus_id)
+            .map(|frame| frame.surface_id)
     }
 
     /// Focus id assigned to the frame with this surface id.
@@ -447,197 +725,339 @@ impl Ewm {
             .map(|location| location.frame.focus_id)
     }
 
-    /// Surface id of the Emacs frame whose strip-frame currently hosts
-    /// `surface_id`, or `None` if the surface is not under any frame.
-    pub fn frame_for_surface(&self, surface_id: u64) -> Option<u64> {
-        self.frame_entry_for_surface(surface_id)
-            .map(|(frame_id, _)| frame_id)
+    /// Surface id of the active frame on `output`'s strip.
+    pub fn active_frame_id(&self, output: &Output) -> Option<u64> {
+        self.strip(output)?.active_frame_id()
+    }
+
+    /// Strip frames that are not their strip's active one.
+    pub(crate) fn inactive_frame_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.strips().flat_map(|(_, strip)| {
+            let active = strip.active_frame_id();
+            strip.frame_ids().filter(move |id| Some(*id) != active)
+        })
+    }
+
+    /// Frames no monitor shows: inactive strip frames and parked ones.
+    pub(crate) fn unshown_frame_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.inactive_frame_ids()
+            .chain(self.homeless.iter().map(|frame| frame.surface_id))
+    }
+
+    /// Every strip entry with the output showing it.
+    pub(crate) fn strip_entry_outputs(&self) -> impl Iterator<Item = (LayoutEntryId, &Output)> {
+        self.entry_locations()
+            .filter(|location| !location.floating)
+            .map(|location| (location.entry.id, location.monitor.output()))
+    }
+
+    /// Strip frame surface ids per monitor, left to right.
+    pub(crate) fn strip_frames_snapshot(&self) -> HashMap<String, Vec<u64>> {
+        self.strips()
+            .map(|(name, strip)| (name.to_string(), strip.frame_ids().collect()))
+            .collect()
+    }
+
+    /// Output name per placed frame.
+    pub(crate) fn frame_outputs_snapshot(&self) -> HashMap<u64, String> {
+        self.monitors
+            .iter()
+            .flat_map(|monitor| monitor.frame_ids().map(|id| (id, monitor.name.clone())))
+            .collect()
+    }
+
+    /// Active frame surface id per monitor.
+    pub(crate) fn active_frames_snapshot(&self) -> HashMap<String, u64> {
+        self.strips()
+            .filter_map(|(name, strip)| Some((name.to_string(), strip.active_frame_id()?)))
+            .collect()
+    }
+
+    /// Surfaces `output` shows: its frames and their entries' surfaces.
+    pub(crate) fn surface_ids_on(&self, output: &Output) -> HashSet<u64> {
+        self.monitor_of(output)
+            .into_iter()
+            .flat_map(Monitor::frames)
+            .flat_map(|frame| {
+                std::iter::once(frame.surface_id)
+                    .chain(frame.entries.iter().filter_map(LayoutEntry::surface_id))
+            })
+            .collect()
+    }
+
+    /// Every entry with its frame, per monitor tiled then floating.
+    pub(crate) fn entry_locations(&self) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
+        self.monitors.iter().flat_map(Monitor::entry_locations)
+    }
+
+    pub(crate) fn entry_location(
+        &self,
+        entry_id: LayoutEntryId,
+    ) -> Option<LayoutEntryLocation<'_>> {
+        self.entry_locations()
+            .find(|location| location.entry.id == entry_id)
+    }
+
+    /// Detach a surface from every layout entry.
+    pub(crate) fn detach_surface(&mut self, id: u64) {
+        for frame in self.all_frames_mut() {
+            frame.detach_surface(id);
+        }
+    }
+
+    /// Refill every held frame's contents from `frames`, emptying the ones it leaves out.
+    pub fn merge_frames(&mut self, mut frames: Vec<strip::Frame>) {
+        for monitor in &mut self.monitors {
+            let (tiled, floating): (Vec<_>, Vec<_>) = frames
+                .extract_if(.., |frame| monitor.has_frame(frame.surface_id))
+                .partition(|frame| monitor.strip.index_of(frame.surface_id).is_some());
+            monitor.strip.merge_layout_frames(tiled);
+            monitor.floating.merge_layout_frames(floating);
+        }
+    }
+
+    /// Panic unless every frame sits in exactly one place and names only entries it holds.
+    pub fn verify_invariants(&self) {
+        let mut seen = HashSet::new();
+        for frame in self.all_frames() {
+            assert!(
+                seen.insert(frame.surface_id),
+                "frame {} sits in two places",
+                frame.surface_id
+            );
+            if let Some(sel) = frame.selected_entry_id {
+                assert!(
+                    frame.entries.iter().any(|entry| entry.id == sel),
+                    "frame {} selects an entry it lacks",
+                    frame.surface_id
+                );
+            }
+            assert!(
+                frame.fullscreen_is_live(),
+                "frame {} fullscreens an entry it lost",
+                frame.surface_id
+            );
+        }
+        let mut names = HashSet::new();
+        for monitor in &self.monitors {
+            assert!(
+                names.insert(monitor.name.as_str()),
+                "two monitors for {}",
+                monitor.name
+            );
+            assert_eq!(
+                monitor.strip.active_frame().is_some(),
+                !monitor.strip.frames().is_empty(),
+                "strip on {} has frames but no active one",
+                monitor.name
+            );
+            assert_eq!(
+                monitor.floating.frames_with_render_geo().count(),
+                monitor.floating.frames().len(),
+                "floating space on {} lost a frame's data",
+                monitor.name
+            );
+        }
+        for &id in self.home_outputs.keys() {
+            assert!(self.has_frame(id), "home remembered for gone frame {id}");
+        }
+    }
+
+    /// Move frame `id` by `delta` slots along its strip, stopping at the edge.
+    /// Returns the output it moved on.
+    pub fn move_frame(&mut self, id: u64, delta: i32) -> Option<&Output> {
+        let (monitor, from) = self.monitors.iter_mut().find_map(|monitor| {
+            let from = monitor.strip.index_of(id)?;
+            Some((monitor, from))
+        })?;
+        let to = from
+            .checked_add_signed(delta as isize)
+            .filter(|&to| to < monitor.strip.frames().len())?;
+        monitor.strip.move_frame(from, to);
+        Some(&monitor.output)
+    }
+}
+
+/// Fullscreen entries claim the output's full size, not entry.w/h.
+fn entry_area(output: &Output, entry: &LayoutEntry, fullscreen: bool) -> u64 {
+    if fullscreen {
+        let size = crate::utils::output_size(output);
+        size.w as u64 * size.h as u64
+    } else {
+        entry.w as u64 * entry.h as u64
+    }
+}
+
+pub(crate) fn enter_output_for_window(window: &Window, output: &Output) {
+    crate::utils::set_preferred_scale_transform(window, output);
+    if let Some(surface) = window.wl_surface() {
+        output.enter(&surface);
+    }
+}
+
+fn leave_output_for_window(window: &Window, output: &Output) {
+    if let Some(surface) = window.wl_surface() {
+        output.leave(&surface);
+    }
+}
+
+impl Ewm {
+    /// If no frame is focused but some frame exists, use canonical output order.
+    pub(crate) fn focus_any_frame_if_unfocused(&mut self, reason: &'static str) {
+        if self.focused_frame_id != 0 {
+            return;
+        }
+        let first = self
+            .mapped_monitors()
+            .find_map(|monitor| monitor.strip.frame_ids().next());
+        if let Some(id) = first {
+            self.set_focus_frame(id, reason, false);
+        }
+    }
+
+    /// Refocus when the focused frame was parked with its output.
+    pub(crate) fn refocus_if_focused_frame_parked(&mut self) {
+        if !self.layout.is_homeless(self.focused_frame_id) {
+            return;
+        }
+        match self.first_active_frame_surface_id() {
+            Some(id) => self.set_focus_frame(id, "output_disabled", false),
+            None => self.set_focus_state(0, None),
+        }
+    }
+
+    /// Bake frame `id`'s close snapshot.
+    pub(crate) fn store_frame_close_snapshot(&mut self, renderer: &mut GlesRenderer, id: u64) {
+        let Some(snapshot) = crate::render::render_frame_snapshot(self, renderer, id) else {
+            return;
+        };
+        if let Some(frame) = self.layout.frame_mut(id) {
+            frame.close_snapshot = Some(snapshot);
+        }
+    }
+
+    /// Drop Emacs frame `id` from wherever it is, unfocusing it. Returns the output it left.
+    pub(crate) fn remove_emacs_frame(&mut self, id: u64, active_close: bool) -> Option<Output> {
+        let removed = self.layout.remove_frame(id, active_close);
+        if let Some((output, prev_active)) = &removed {
+            self.reconcile_output_entries(output);
+            self.reconcile_active_for_output(output, *prev_active);
+        }
+        if self.focused_frame_id == id {
+            self.set_focus_state(0, None);
+        }
+        removed.map(|(output, _)| output)
+    }
+
+    /// Move `output`'s frames to the next output in order, else park them, and unmap it.
+    pub(crate) fn detach_output(&mut self, output: &Output) {
+        let fallback = self.sorted_outputs.iter().find(|other| *other != output);
+        let moved = self
+            .layout
+            .detach_output(output, fallback, self.focused_frame_id);
+        self.settle_moved_frames(&moved);
+        self.space.unmap_output(output);
+        self.sync_sorted_outputs();
+        self.refresh_cursor_outputs();
+        self.recalculate_output_size();
+        self.output_management_state.output_heads_changed = true;
+        self.refocus_if_focused_frame_parked();
+    }
+
+    /// Global origin of every floating frame, for Emacs's own geometry.
+    pub(crate) fn frame_origins_snapshot(&self) -> Vec<module::FrameOrigin> {
+        self.layout
+            .monitors()
+            .iter()
+            .flat_map(Monitor::frame_locations)
+            .filter(|location| location.floating)
+            .filter_map(|location| {
+                let origin = self.frame_origin(location)?;
+                Some(module::FrameOrigin {
+                    surface_id: location.frame.surface_id,
+                    origin: (origin.x, origin.y),
+                })
+            })
+            .collect()
+    }
+
+    /// Monitors in output order.
+    pub(crate) fn mapped_monitors(&self) -> impl Iterator<Item = &Monitor> {
+        self.sorted_outputs
+            .iter()
+            .filter_map(|output| self.layout.monitor_of(output))
     }
 
     pub(crate) fn frame_entry_for_surface(&self, surface_id: u64) -> Option<(u64, LayoutEntryId)> {
         let location = self
             .focused_entry_for_surface(surface_id)
             .or_else(|| self.layout_entry_for_surface(surface_id, |_| true))?;
-        let frame = self.frame_at_location(&location)?;
-        Some((frame.surface_id, location.entry.id))
-    }
-
-    /// `(output_name, frame_idx)` of the strip frame containing `surface_id`,
-    /// either as the frame's own xdg_toplevel or in its layout entries.
-    pub fn frame_position(&self, surface_id: u64) -> Option<(String, usize)> {
-        // Frame surface match is unique.
-        if let Some(location) = self.lookup_frame(surface_id) {
-            return Some(location);
-        }
-        // For multi-view surfaces, prefer the focused output's active frame so remote
-        // focus requests (xdg_activation, foreign_toplevel, unlock) don't jump outputs.
-        if let Some(out) = self.get_focused_output()
-            && let Some(strip) = self.frame_set.mapped_strip(&out)
-        {
-            let idx = strip.active_idx();
-            if strip.frames().get(idx).is_some_and(|frame| {
-                frame
-                    .entries
-                    .iter()
-                    .any(|entry| entry.surface_id() == Some(surface_id))
-            }) {
-                return Some((out, idx));
-            }
-        }
-        // Fall back to visible frames in canonical output order.
-        self.mapped_output_strips()
-            .find_map(|(name, strip)| {
-                strip
-                    .frames()
-                    .iter()
-                    .position(|frame| {
-                        frame
-                            .entries
-                            .iter()
-                            .any(|entry| entry.surface_id() == Some(surface_id))
-                    })
-                    .map(|i| (name.to_string(), i))
-            })
-            .or_else(|| {
-                self.floating_spaces.iter().find_map(|(name, space)| {
-                    space
-                        .frames()
-                        .iter()
-                        .position(|frame| {
-                            frame
-                                .entries
-                                .iter()
-                                .any(|entry| entry.surface_id() == Some(surface_id))
-                        })
-                        .map(|i| (name.to_string(), i))
-                })
-            })
-    }
-
-    /// Surface id of the active Emacs frame on `output_name`.
-    pub fn active_frame_surface_id(&self, output_name: &str) -> Option<u64> {
-        let strip = self.frame_set.mapped_strip(output_name)?;
-        strip.active_frame().map(|f| f.surface_id)
-    }
-
-    /// Strip frame surface ids per mapped output, left to right.
-    pub(crate) fn strip_frames_snapshot(&self) -> HashMap<String, Vec<u64>> {
-        self.mapped_output_strips()
-            .map(|(name, _)| (name.to_string(), self.emacs_frames_on(name).collect()))
-            .collect()
-    }
-
-    /// Active Emacs frame surface id per mapped output.
-    pub(crate) fn active_frames_snapshot(&self) -> HashMap<String, u64> {
-        self.sorted_outputs
-            .iter()
-            .filter_map(|o| {
-                let name = o.name();
-                self.active_frame_surface_id(&name).map(|id| (name, id))
-            })
-            .collect()
+        Some((location.frame.surface_id, location.entry.id))
     }
 
     pub(crate) fn first_active_frame_surface_id(&self) -> Option<u64> {
-        self.sorted_outputs
-            .iter()
-            .find_map(|output| self.active_frame_surface_id(&output.name()))
+        self.mapped_monitors()
+            .find_map(|monitor| monitor.strip.active_frame_id())
     }
 
-    /// Activate a frame on OUTPUT, dispatching by placement kind.
-    pub(crate) fn activate_frame_at(
-        &mut self,
-        output: &str,
-        floating: bool,
-        frame_surface_id: u64,
-        frame_idx: usize,
-    ) {
-        if floating {
-            self.activate_floating_frame(output, frame_surface_id);
-        } else {
-            self.activate_frame(output, frame_idx);
-        }
-    }
-
-    /// Mark `new_idx` as active on `output_name`.
-    fn activate_floating_frame(&mut self, output_name: &str, frame_surface_id: u64) {
-        if let Some(space) = self.floating_spaces.get_mut(output_name) {
-            space.activate_frame(frame_surface_id);
-            if let Some(output) = self.find_mapped_output(output_name) {
-                self.queue_redraw(&output);
-            }
-        }
-    }
-
-    pub fn activate_frame(&mut self, output_name: &str, new_idx: usize) {
-        let Some(strip) = self.frame_set.mapped_strip_mut(output_name) else {
+    /// Make frame `id` the active one in its container.
+    pub(crate) fn activate_frame(&mut self, id: u64) {
+        let Some((output, prev_active)) = self.layout.activate_frame(id) else {
             return;
         };
-        let prev_idx = strip.active_idx();
-        let prev_active_id = strip.active_frame().map(|f| f.surface_id);
-        let frames_len = strip.frames().len();
-        let prev_offset = strip.view_offset().current();
-        strip.set_active(new_idx);
-        let active_changed = strip.active_idx() != prev_idx;
-        if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-            tracing::debug!(
-                "activate_frame: {} {} -> {} (frames={}) view_offset {:.1} -> {:.1}",
-                output_name,
-                prev_idx,
-                strip.active_idx(),
-                frames_len,
-                prev_offset,
-                strip.view_offset().current(),
-            );
-        }
-
-        // Active-idx flip may shift a surface's largest visible entry to/from this
-        // output, changing its size and scale.
-        if active_changed {
-            self.reconcile_active_for_output(output_name, prev_active_id);
+        // An active flip may shift a surface's largest visible entry to or from
+        // this output, changing its size and scale.
+        if self.layout.active_frame_id(&output) != prev_active {
+            self.reconcile_active_for_output(&output, prev_active);
             self.refresh_primary_assignments();
             self.queue_redraw_all();
-            return;
-        }
-        let output = self.find_mapped_output(output_name);
-        if let Some(output) = output {
+        } else {
             self.queue_redraw(&output);
         }
     }
 
-    /// Global logical top-left of an Emacs frame's working area,
-    /// driven by the strip column (frames aren't placed in `space`).
-    pub fn emacs_frame_origin(
-        &self,
-        surface_id: u64,
-    ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
-        let location = self.frame_location(surface_id)?;
-        let output = self.mapped_output_by_name(location.output_name)?;
-        let output_geo = self.space.output_geometry(output)?;
-        let working_area = self.get_working_area(output);
+    /// Global origin of slot `frame_idx` on `strip`.
+    pub(crate) fn strip_frame_origin(
+        output_geo: Rectangle<i32, Logical>,
+        working_area: Rectangle<i32, Logical>,
+        strip: &strip::Strip,
+        frame_idx: usize,
+    ) -> Point<i32, Logical> {
+        // Rounded so popups and hits track a sliding frame.
+        let frame_dx = strip.screen_x_of_frame(frame_idx).round() as i32;
+        Point::from((
+            output_geo.loc.x + working_area.loc.x + frame_dx,
+            output_geo.loc.y + working_area.loc.y,
+        ))
+    }
 
-        if location.strip.is_none() {
-            let (_, data) = self
-                .floating_spaces
-                .get(location.output_name)?
-                .frame_with_data(surface_id)?;
+    /// Global origin of the frame at `location`.
+    fn frame_origin(&self, location: FrameLocation<'_>) -> Option<Point<i32, Logical>> {
+        let output = location.monitor.output();
+        let output_geo = self.space.output_geometry(output)?;
+        if location.floating {
+            let (_, data) = location
+                .monitor
+                .floating
+                .frame_with_data(location.frame.surface_id)?;
             let loc = data.logical_pos();
             return Some(Point::from((
                 output_geo.loc.x + loc.x as i32,
                 output_geo.loc.y + loc.y as i32,
             )));
         }
+        let working_area = self.get_working_area(output);
+        Some(Self::strip_frame_origin(
+            output_geo,
+            working_area,
+            &location.monitor.strip,
+            location.frame_idx,
+        ))
+    }
 
-        Some(
-            Self::frame_rect(
-                output_geo,
-                working_area,
-                location.strip?,
-                location.frame_idx,
-                location.frame,
-            )
-            .loc,
-        )
+    /// Global top-left of an Emacs frame, which is not in `space`.
+    pub fn emacs_frame_origin(&self, surface_id: u64) -> Option<Point<i32, Logical>> {
+        self.frame_origin(self.layout.frame_location(surface_id)?)
     }
 
     fn frame_rect(
@@ -647,57 +1067,27 @@ impl Ewm {
         frame_idx: usize,
         frame: &strip::Frame,
     ) -> Rectangle<i32, Logical> {
-        // Rounded so popups and hits track a sliding frame.
-        let frame_dx = strip.screen_x_of_frame(frame_idx).round() as i32;
         Rectangle::new(
-            Point::from((
-                output_geo.loc.x + working_area.loc.x + frame_dx,
-                output_geo.loc.y + working_area.loc.y,
-            )),
+            Self::strip_frame_origin(output_geo, working_area, strip, frame_idx),
             Size::from((frame.width as i32, working_area.size.h)),
         )
     }
 
-    /// Find the focused layout entry for a surface.
-    ///
-    /// The frame index feeds `Strip::screen_x_of_frame` so callers can apply
-    /// the per-frame slide offset when computing global positions.
+    /// The focused layout entry when it shows surface `id`.
     pub(crate) fn focused_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
-        let focused = self.focused_entry_id?;
-        self.layout_entry_for_surface(id, |entry| entry.id == focused)
+        let location = self.layout.entry_location(self.focused_entry_id?)?;
+        (location.entry.surface_id() == Some(id)).then_some(location)
     }
 
-    pub(crate) fn layout_entry_for_id(
-        &self,
-        entry_id: LayoutEntryId,
-    ) -> Option<LayoutEntryLocation<'_>> {
-        for (output_name, strip) in self.mapped_output_strips() {
-            if let Some((frame_idx, entry)) = strip
-                .entries_with_frame()
-                .find(|(_, entry)| entry.id == entry_id)
-            {
-                return Some(LayoutEntryLocation {
-                    output_name,
-                    frame_idx,
-                    floating: false,
-                    entry,
-                });
-            }
-        }
-        for (output_name, space) in &self.floating_spaces {
-            if let Some((frame_idx, entry)) = space
-                .entries_with_frame()
-                .find(|(_, entry)| entry.id == entry_id)
-            {
-                return Some(LayoutEntryLocation {
-                    output_name,
-                    frame_idx,
-                    floating: true,
-                    entry,
-                });
-            }
-        }
-        None
+    /// Entries showing `id`: every strip in output order, then every floating space.
+    fn surface_entry_locations(&self, id: u64) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
+        let locations = |floating| {
+            self.mapped_monitors()
+                .flat_map(move |monitor| monitor.entry_locations_in(floating))
+        };
+        locations(false)
+            .chain(locations(true))
+            .filter(move |location| location.entry.surface_id() == Some(id))
     }
 
     pub(crate) fn layout_entry_for_surface(
@@ -705,33 +1095,8 @@ impl Ewm {
         id: u64,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryLocation<'_>> {
-        for (output_name, strip) in self.mapped_output_strips() {
-            if let Some((frame_idx, entry)) = strip
-                .surface_entries_with_frame()
-                .find(|(_, entry)| entry.surface_id() == Some(id) && predicate(entry))
-            {
-                return Some(LayoutEntryLocation {
-                    output_name,
-                    frame_idx,
-                    floating: false,
-                    entry,
-                });
-            }
-        }
-        for (output_name, space) in &self.floating_spaces {
-            if let Some((frame_idx, entry)) = space
-                .surface_entries_with_frame()
-                .find(|(_, entry)| entry.surface_id() == Some(id) && predicate(entry))
-            {
-                return Some(LayoutEntryLocation {
-                    output_name,
-                    frame_idx,
-                    floating: true,
-                    entry,
-                });
-            }
-        }
-        None
+        self.surface_entry_locations(id)
+            .find(|location| predicate(location.entry))
     }
 
     /// Layout entry used for positioning a multi-view surface.
@@ -748,24 +1113,11 @@ impl Ewm {
     ) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
         let surface = window.wl_surface()?;
         let id = self.surface_id(&surface)?;
-        if !self.surface_in_layout(id) {
+        if self.layout.has_frame(id) {
             return self.emacs_frame_origin(id);
         }
         let location = self.preferred_entry_for_surface(id)?;
         self.entry_origin(location)
-    }
-
-    /// On-screen rectangle of one layout view. Fullscreen-primary centers on
-    /// the toplevel's geometry.
-    fn layout_entry_is_fullscreen(
-        strip: &strip::Strip,
-        frame_idx: usize,
-        entry: &LayoutEntry,
-    ) -> bool {
-        strip
-            .frames()
-            .get(frame_idx)
-            .is_some_and(|frame| frame.entry_fullscreen(entry.id))
     }
 
     pub(crate) fn layout_entry_rect(
@@ -775,8 +1127,9 @@ impl Ewm {
         strip: &strip::Strip,
         frame_idx: usize,
         entry: &LayoutEntry,
+        fullscreen: bool,
     ) -> Rectangle<i32, Logical> {
-        if Self::layout_entry_is_fullscreen(strip, frame_idx, entry) {
+        if fullscreen {
             if entry.primary() {
                 let window_size = entry
                     .surface_id()
@@ -792,95 +1145,40 @@ impl Ewm {
             return Rectangle::new(output_geo.loc, entry.rect().size);
         }
 
-        let frame_dx = strip.screen_x_of_frame(frame_idx).round() as i32;
         Rectangle::new(
-            Point::from((
-                output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                output_geo.loc.y + working_area.loc.y + entry.y,
-            )),
+            Self::strip_frame_origin(output_geo, working_area, strip, frame_idx)
+                + Point::from((entry.x, entry.y)),
             entry.rect().size,
         )
     }
 
     fn entry_origin(&self, location: LayoutEntryLocation<'_>) -> Option<Point<i32, Logical>> {
-        let output = self.mapped_output_by_name(location.output_name)?;
-        let output_geo = self.space.output_geometry(output)?;
-        if location.floating {
-            let space = self.floating_spaces.get(location.output_name)?;
-            let frame = space.frames().get(location.frame_idx)?;
-            let (_, data) = space.frame_with_data(frame.surface_id)?;
-            let loc = data.logical_pos();
-            return Some(Point::from((
-                output_geo.loc.x + loc.x as i32 + location.entry.x,
-                output_geo.loc.y + loc.y as i32 + location.entry.y,
-            )));
-        }
-        let working_area = self.get_working_area(output);
-        let strip = self.frame_set.mapped_strip(location.output_name)?;
-        Some(
-            self.layout_entry_rect(
+        if location.fullscreen() {
+            let output = location.monitor.output();
+            let output_geo = self.space.output_geometry(output)?;
+            let working_area = self.get_working_area(output);
+            let rect = self.layout_entry_rect(
                 output_geo,
                 working_area,
-                strip,
+                &location.monitor.strip,
                 location.frame_idx,
                 location.entry,
-            )
-            .loc,
-        )
-    }
-
-    pub(crate) fn layout_entry_location_fullscreen(
-        &self,
-        location: LayoutEntryLocation<'_>,
-    ) -> bool {
-        !location.floating
-            && self
-                .frame_set
-                .mapped_strip(location.output_name)
-                .is_some_and(|strip| {
-                    Self::layout_entry_is_fullscreen(strip, location.frame_idx, location.entry)
-                })
+                true,
+            );
+            return Some(rect.loc);
+        }
+        let origin = self.frame_origin(location.frame_location())?;
+        Some(origin + Point::from((location.entry.x, location.entry.y)))
     }
 
     /// On-screen origins of every layout view of `surface_id`, one per entry.
     pub fn surface_view_origins(&self, surface_id: u64) -> Vec<Point<i32, Logical>> {
-        if !self.surface_in_layout(surface_id) {
+        if self.layout.has_frame(surface_id) {
             return self.emacs_frame_origin(surface_id).into_iter().collect();
         }
-        let mut origins = Vec::new();
-        for (output_name, strip) in self.mapped_output_strips() {
-            for (frame_idx, entry) in strip.surface_entries_with_frame() {
-                if entry.surface_id() != Some(surface_id) {
-                    continue;
-                }
-                let location = LayoutEntryLocation {
-                    output_name,
-                    frame_idx,
-                    floating: false,
-                    entry,
-                };
-                if let Some(p) = self.entry_origin(location) {
-                    origins.push(p);
-                }
-            }
-        }
-        for (output_name, space) in &self.floating_spaces {
-            for (frame_idx, entry) in space.surface_entries_with_frame() {
-                if entry.surface_id() != Some(surface_id) {
-                    continue;
-                }
-                let location = LayoutEntryLocation {
-                    output_name,
-                    frame_idx,
-                    floating: true,
-                    entry,
-                };
-                if let Some(p) = self.entry_origin(location) {
-                    origins.push(p);
-                }
-            }
-        }
-        origins
+        self.surface_entry_locations(surface_id)
+            .filter_map(|location| self.entry_origin(location))
+            .collect()
     }
 
     fn rect_contains_f64(rect: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
@@ -890,69 +1188,67 @@ impl Ewm {
             && pos.y < (rect.loc.y + rect.size.h) as f64
     }
 
-    /// Floating space under `pos`: its output name, the space, and output-local `pos`.
-    fn floating_space_at(
-        &self,
-        pos: Point<f64, Logical>,
-    ) -> Option<(String, &floating::FloatingSpace, Point<f64, Logical>)> {
+    /// Monitor under `pos` with its output geometry, while frames sit in place.
+    fn monitor_at(&self, pos: Point<f64, Logical>) -> Option<(&Monitor, Rectangle<i32, Logical>)> {
+        // Zoomed or hidden content takes no hits.
         if !self.frames_in_place() {
             return None;
         }
         let output = self.output_at(pos)?;
         let output_geo = self.space.output_geometry(output)?;
-        let output_name = output.name();
-        let pos_within_output = pos - output_geo.loc.to_f64();
-        let space = self.floating_spaces.get(&output_name)?;
-        Some((output_name, space, pos_within_output))
+        Some((self.layout.monitor_of(output)?, output_geo))
     }
 
-    pub(crate) fn floating_frame_under(&self, pos: Point<f64, Logical>) -> Option<(String, u64)> {
-        let (output_name, space, pos_within_output) = self.floating_space_at(pos)?;
-        let (frame_id, _) = space.frame_under(pos_within_output)?;
-        Some((output_name, frame_id))
+    pub(crate) fn floating_frame_under(&self, pos: Point<f64, Logical>) -> Option<u64> {
+        let (monitor, output_geo) = self.monitor_at(pos)?;
+        let (frame_id, _) = monitor
+            .floating
+            .frame_under(pos - output_geo.loc.to_f64())?;
+        Some(frame_id)
     }
 
     pub(crate) fn floating_resize_edges_under(
         &self,
         pos: Point<f64, Logical>,
-    ) -> Option<(String, u64, floating::ResizeEdge)> {
-        let (output_name, space, pos_within_output) = self.floating_space_at(pos)?;
-        let (frame_id, edges) = space.resize_edges_under(pos_within_output)?;
-        Some((output_name, frame_id, edges))
+    ) -> Option<(u64, floating::ResizeEdge)> {
+        let (monitor, output_geo) = self.monitor_at(pos)?;
+        monitor
+            .floating
+            .resize_edges_under(pos - output_geo.loc.to_f64())
     }
 
-    fn layout_entry_under_matching(
+    /// Topmost entry on `monitor` under `pos` that `predicate` accepts.
+    fn layout_entry_in<'a>(
         &self,
+        monitor: &'a Monitor,
+        output_geo: Rectangle<i32, Logical>,
+        working_area: Rectangle<i32, Logical>,
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
-    ) -> Option<LayoutEntryHit<'_>> {
-        // Zoomed or hidden content takes no surface hits.
-        if !self.frames_in_place() {
-            return None;
-        }
-        if let Some(hit) = self.floating_entry_under_matching(pos, &mut predicate) {
+    ) -> Option<LayoutEntryHit<'a>> {
+        if let Some(hit) =
+            Self::floating_entry_under_matching(&monitor.floating, output_geo, pos, &mut predicate)
+        {
             return Some(hit);
         }
         // A floating frame occludes the strip; don't match a tiled entry beneath it.
-        if self.floating_frame_under(pos).is_some() {
+        if monitor
+            .floating
+            .frame_under(pos - output_geo.loc.to_f64())
+            .is_some()
+        {
             return None;
         }
-        let output = self.output_at(pos)?;
-        let output_geo = self.space.output_geometry(output)?;
-        let working_area = self.get_working_area(output);
-        let strip = self.frame_set.mapped_strip(&output.name())?;
-        self.tiled_entry_under_matching(strip, output_geo, working_area, pos, predicate)
+        self.tiled_entry_under_matching(monitor, output_geo, working_area, pos, predicate)
     }
 
     /// Hit-test `pos` against floating frames' entries only (the overlay above the strip).
-    fn floating_entry_under_matching(
-        &self,
+    fn floating_entry_under_matching<'a>(
+        space: &'a floating::FloatingSpace,
+        output_geo: Rectangle<i32, Logical>,
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
-    ) -> Option<LayoutEntryHit<'_>> {
-        let output = self.output_at(pos)?;
-        let output_geo = self.space.output_geometry(output)?;
-        let space = self.floating_spaces.get(&output.name())?;
+    ) -> Option<LayoutEntryHit<'a>> {
         for (frame, frame_rect) in space.frames_with_render_geo() {
             for entry in frame.entries.iter() {
                 if !predicate(entry) {
@@ -978,47 +1274,38 @@ impl Ewm {
         None
     }
 
-    /// Hit-test `pos` against a tiled strip's entries only (no floating overlay).
+    /// Hit-test `pos` against a monitor's tiled entries only (no floating overlay).
     fn tiled_entry_under_matching<'a>(
         &self,
-        strip: &'a strip::Strip,
+        monitor: &'a Monitor,
         output_geo: Rectangle<i32, Logical>,
         working_area: Rectangle<i32, Logical>,
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryHit<'a>> {
-        let active_idx = strip.active_idx();
-        // Fullscreen primary clicks miss in the letterbox; inactive fullscreens render off-screen.
-        for (frame_idx, entry) in strip.entries_with_frame() {
-            if !predicate(entry) {
-                continue;
-            }
-            let fullscreen = Self::layout_entry_is_fullscreen(strip, frame_idx, entry);
-            if fullscreen && frame_idx != active_idx {
-                continue;
-            }
-            let rect = self.layout_entry_rect(output_geo, working_area, strip, frame_idx, entry);
-            if Self::rect_contains_f64(rect, pos) {
-                return Some(LayoutEntryHit {
-                    entry,
+        monitor
+            .entry_locations_in(false)
+            .filter(|location| predicate(location.entry))
+            // Fullscreen primary clicks miss in the letterbox. Inactive fullscreens render
+            // off-screen.
+            .filter(|location| location.shown() || !location.fullscreen())
+            .find_map(|location| {
+                let fullscreen = location.fullscreen();
+                let rect = self.layout_entry_rect(
+                    output_geo,
+                    working_area,
+                    &monitor.strip,
+                    location.frame_idx,
+                    location.entry,
+                    fullscreen,
+                );
+                Self::rect_contains_f64(rect, pos).then_some(LayoutEntryHit {
+                    entry: location.entry,
                     fullscreen,
                     rect,
                     output_size: output_geo.size,
-                });
-            }
-        }
-        None
-    }
-
-    /// Find the topmost layout entry containing `pos`, returning the entry
-    /// and its global rectangle.
-    fn layout_entry_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryHit<'_>> {
-        self.layout_entry_under_matching(pos, |_| true)
-    }
-
-    /// Find the topmost surface-backed layout entry containing `pos`.
-    fn surface_layout_entry_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryHit<'_>> {
-        self.layout_entry_under_matching(pos, |entry| entry.surface_id().is_some())
+                })
+            })
     }
 
     /// The tiled entry whose rect contains a floating frame's center, for spatial reattach.
@@ -1026,26 +1313,19 @@ impl Ewm {
         &self,
         floating_frame_id: u64,
     ) -> Option<LayoutEntryId> {
-        let (output_name, center) = self.floating_spaces.iter().find_map(|(name, space)| {
-            space.frames_with_render_geo().find_map(|(frame, rect)| {
-                (frame.surface_id == floating_frame_id).then(|| {
-                    let c: Point<f64, Logical> = Point::from((
-                        rect.loc.x + rect.size.w / 2.0,
-                        rect.loc.y + rect.size.h / 2.0,
-                    ));
-                    (name.clone(), c)
-                })
-            })
-        })?;
-        let output = self.mapped_output_by_name(&output_name)?;
+        let monitor = self
+            .layout
+            .frame_location(floating_frame_id)
+            .filter(|location| location.floating)?
+            .monitor;
+        let (_, data) = monitor.floating.frame_with_data(floating_frame_id)?;
+        let (pos, size) = (data.render_pos(), data.size());
+        let center: Point<f64, Logical> = Point::from((pos.x + size.w / 2.0, pos.y + size.h / 2.0));
+        let output = monitor.output();
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
-        let center = Point::from((
-            output_geo.loc.x as f64 + center.x,
-            output_geo.loc.y as f64 + center.y,
-        ));
-        let strip = self.frame_set.mapped_strip(&output_name)?;
-        self.tiled_entry_under_matching(strip, output_geo, working_area, center, |_| true)
+        let center = output_geo.loc.to_f64() + center;
+        self.tiled_entry_under_matching(monitor, output_geo, working_area, center, |_| true)
             .map(|hit| hit.entry.id)
     }
 
@@ -1082,9 +1362,13 @@ impl Ewm {
     /// separately by `popup_surface_under`, so popup placement and z-order stay
     /// identical to rendering.
     pub fn layout_surface_under(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
-        self.surface_layout_entry_under(pos)
-            .and_then(|hit| self.surface_under_layout_entry(pos, hit))
-            .or_else(|| self.surface_under_frame(pos))
+        let (monitor, output_geo) = self.monitor_at(pos)?;
+        let working_area = self.get_working_area(monitor.output());
+        self.layout_entry_in(monitor, output_geo, working_area, pos, |entry| {
+            entry.surface_id().is_some()
+        })
+        .and_then(|hit| self.surface_under_layout_entry(pos, hit))
+        .or_else(|| self.surface_under_frame(monitor, output_geo, working_area, pos))
     }
 
     fn surface_under_layout_entry(
@@ -1108,60 +1392,40 @@ impl Ewm {
         Self::surface_under_non_popup_window(window, pos_in_window, window_origin)
     }
 
-    /// Find the frame containing `pos`, returning the frame surface itself.
-    fn surface_under_frame(&self, pos: Point<f64, Logical>) -> Option<SurfaceHit> {
-        if !self.frames_in_place() {
-            return None;
-        }
-        let output = self.output_at(pos)?;
-        let output_geo = self.space.output_geometry(output)?;
-        let working_area = self.get_working_area(output);
-        if let Some(space) = self.floating_spaces.get(&output.name()) {
-            for (frame, frame_rect) in space.frames_with_render_geo() {
+    /// Find the frame on `monitor` containing `pos`, returning the frame surface itself.
+    fn surface_under_frame(
+        &self,
+        monitor: &Monitor,
+        output_geo: Rectangle<i32, Logical>,
+        working_area: Rectangle<i32, Logical>,
+        pos: Point<f64, Logical>,
+    ) -> Option<SurfaceHit> {
+        let strip = &monitor.strip;
+        // Floats sit above the strip.
+        let floats = monitor
+            .floating
+            .frames_with_render_geo()
+            .map(|(frame, rect)| {
                 let rect = Rectangle::new(
                     Point::from((
-                        output_geo.loc.x + frame_rect.loc.x as i32,
-                        output_geo.loc.y + frame_rect.loc.y as i32,
+                        output_geo.loc.x + rect.loc.x as i32,
+                        output_geo.loc.y + rect.loc.y as i32,
                     )),
-                    Size::from((frame_rect.size.w as i32, frame_rect.size.h as i32)),
+                    Size::from((rect.size.w as i32, rect.size.h as i32)),
                 );
-                if !Self::rect_contains_f64(rect, pos) {
-                    continue;
-                }
-                let Some(window) = self.window(frame.surface_id) else {
-                    continue;
-                };
-                let window_origin: Point<f64, Logical> =
-                    Point::from((rect.loc.x as f64, rect.loc.y as f64));
-                let pos_in_window = Point::from((pos.x - window_origin.x, pos.y - window_origin.y));
-                if let Some(hit) =
-                    Self::surface_under_non_popup_window(window, pos_in_window, window_origin)
-                {
-                    return Some(hit);
-                }
-            }
-        }
-        let strip = self.frame_set.mapped_strip(&output.name())?;
-
-        for (frame_idx, frame) in strip.frames().iter().enumerate() {
+                (frame.surface_id, rect)
+            });
+        let tiled = strip.frames().iter().enumerate().map(|(frame_idx, frame)| {
             let rect = Self::frame_rect(output_geo, working_area, strip, frame_idx, frame);
-            if !Self::rect_contains_f64(rect, pos) {
-                continue;
-            }
-            let Some(window) = self.window(frame.surface_id) else {
-                continue;
-            };
-            let window_origin: Point<f64, Logical> =
-                Point::from((rect.loc.x as f64, rect.loc.y as f64));
-            let pos_in_window = Point::from((pos.x - window_origin.x, pos.y - window_origin.y));
-            if let Some(hit) =
-                Self::surface_under_non_popup_window(window, pos_in_window, window_origin)
-            {
-                return Some(hit);
-            }
-        }
-
-        None
+            (frame.surface_id, rect)
+        });
+        floats
+            .chain(tiled)
+            .filter(|&(_, rect)| Self::rect_contains_f64(rect, pos))
+            .find_map(|(id, rect)| {
+                let origin = rect.loc.to_f64();
+                Self::surface_under_non_popup_window(self.window(id)?, pos - origin, origin)
+            })
     }
 
     fn surface_under_non_popup_window(
@@ -1199,32 +1463,11 @@ impl Ewm {
         None
     }
 
-    /// Check if a surface is currently displaying as fullscreen on any output.
-    pub fn is_surface_fullscreen(&self, id: u64) -> bool {
-        self.mapped_output_strips()
-            .map(|(_, strip)| strip)
-            .any(|strip| {
-                strip
-                    .frames()
-                    .iter()
-                    .any(|frame| frame.surface_fullscreen(id))
-            })
-    }
-
-    /// The views of `id` in active frames and floating frames, with their output.
-    pub(crate) fn surface_views(&self, id: u64) -> impl Iterator<Item = (&str, &LayoutEntry)> {
-        self.mapped_output_strips()
-            .flat_map(|(name, strip)| {
-                strip
-                    .active_surface_entries()
-                    .map(move |entry| (name, entry))
-            })
-            .chain(self.floating_spaces.iter().flat_map(|(name, space)| {
-                space
-                    .surface_entries()
-                    .map(move |entry| (name.as_str(), entry))
-            }))
-            .filter(move |(_, entry)| entry.surface_id() == Some(id))
+    /// The views of `id` in shown frames, with their output.
+    pub(crate) fn surface_views(&self, id: u64) -> impl Iterator<Item = (&Output, &LayoutEntry)> {
+        self.surface_entry_locations(id)
+            .filter(LayoutEntryLocation::shown)
+            .map(|location| (location.monitor.output(), location.entry))
     }
 
     fn surface_has_primary_entry(&self, id: u64) -> bool {
@@ -1253,104 +1496,53 @@ impl Ewm {
         }
     }
 
+    /// Set entry `entry_id` fullscreen or back and configure the surfaces it affects.
     pub fn set_layout_entry_fullscreen(
         &mut self,
         entry_id: LayoutEntryId,
         fullscreen: bool,
     ) -> Option<u64> {
-        let frame = self
-            .frame_set
-            .all_frames_mut()
-            .find(|frame| frame.entry_surface_id(entry_id).is_some())?;
-        let target_surface = frame.entry_surface_id(entry_id)?;
-        let cleared = if fullscreen {
-            frame
-                .set_fullscreen_entry(entry_id)
-                .and_then(|(previous, _)| previous)
-        } else {
-            frame.clear_fullscreen_entry(entry_id)
-        };
+        let (target, cleared) = self.layout.set_entry_fullscreen(entry_id, fullscreen)?;
         self.refresh_primary_assignments();
         if let Some(cleared) = cleared
-            && !self.surface_has_primary_entry(cleared.surface_id)
+            && !self.surface_has_primary_entry(cleared)
         {
-            self.configure_surface_fullscreen_state(cleared.surface_id, false);
+            self.configure_surface_fullscreen_state(cleared, false);
         }
-        if !self.surface_has_primary_entry(target_surface) {
-            self.configure_surface_fullscreen_state(target_surface, fullscreen);
+        if !self.surface_has_primary_entry(target) {
+            self.configure_surface_fullscreen_state(target, fullscreen);
         }
-        Some(target_surface)
-    }
-
-    /// Whether entry `entry_id` is fullscreen.
-    pub(crate) fn layout_entry_fullscreen(&self, entry_id: LayoutEntryId) -> bool {
-        self.layout_entry_for_id(entry_id)
-            .is_some_and(|location| self.layout_entry_location_fullscreen(location))
-    }
-
-    /// The output whose contents change when entry `entry_id` goes `fullscreen` or back.
-    pub(crate) fn fullscreen_change_output(
-        &self,
-        entry_id: LayoutEntryId,
-        fullscreen: bool,
-    ) -> Option<Output> {
-        let location = self.layout_entry_for_id(entry_id)?;
-        let output_name = location.output_name;
-        if self.layout_entry_location_fullscreen(location) == fullscreen {
-            return None;
-        }
-        self.find_mapped_output(output_name)
+        Some(target)
     }
 
     /// True iff the active frame has a fullscreen entry covering the Top layer.
     pub fn render_above_top_layer(&self, output: &Output) -> bool {
-        self.frames_in_place()
-            && self
-                .frame_set
-                .mapped_strip(&output.name())
-                .is_some_and(strip::Strip::active_frame_is_fullscreen)
+        self.frames_in_place() && self.layout.active_fullscreen_on(output)
     }
 
     /// Entry id of the layout entry under a point.
     pub fn layout_entry_id_under(&self, pos: Point<f64, Logical>) -> Option<LayoutEntryId> {
-        self.layout_entry_under(pos).map(|hit| hit.entry.id)
-    }
-
-    /// Entry surface ids on `output_name`'s strip; empty if the strip is gone.
-    fn strip_entries(&self, output_name: &str) -> HashSet<u64> {
-        let mut entries: HashSet<u64> = self
-            .frame_set
-            .mapped_strip(output_name)
-            .map(|strip| {
-                strip
-                    .surface_entries()
-                    .filter_map(LayoutEntry::surface_id)
-                    .collect()
-            })
-            .unwrap_or_default();
-        if let Some(space) = self.floating_spaces.get(output_name) {
-            entries.extend(space.surface_entries().filter_map(LayoutEntry::surface_id));
-        }
-        entries
+        let (monitor, output_geo) = self.monitor_at(pos)?;
+        let working_area = self.get_working_area(monitor.output());
+        self.layout_entry_in(monitor, output_geo, working_area, pos, |_| true)
+            .map(|hit| hit.entry.id)
     }
 
     /// Whether `id` shows on output `name`, as a view or as an Emacs frame.
     pub fn surface_on_output(&self, id: u64, name: &str) -> bool {
-        let Some(surface) = self.surfaces.get(&id) else {
-            return false;
-        };
-        surface.outputs.contains(name)
-            || (surface.emacs && self.emacs_frame_output(id) == Some(name))
+        self.surfaces
+            .get(&id)
+            .is_some_and(|surface| surface.outputs.contains(name))
     }
 
-    /// Whether some output shows `id` as a view.
+    /// Whether some output shows `id`, as a frame or a view.
     pub fn surface_in_layout(&self, id: u64) -> bool {
         self.surfaces
             .get(&id)
             .is_some_and(|surface| !surface.outputs.is_empty())
     }
 
-    /// The outputs showing each surface as a view.
+    /// The outputs showing each surface.
     pub fn surface_outputs(&self) -> HashMap<u64, HashSet<String>> {
         self.surfaces
             .iter()
@@ -1359,340 +1551,74 @@ impl Ewm {
             .collect()
     }
 
-    fn surface_outputs_for(&self, output_name: &str) -> HashSet<u64> {
-        self.surfaces
-            .iter()
-            .filter_map(|(&id, surface)| surface.outputs.contains(output_name).then_some(id))
-            .collect()
-    }
-
-    pub(crate) fn enter_output_for_window(&self, window: &Window, output: &Output) {
-        crate::utils::set_preferred_scale_transform(window, output);
-        if let Some(surface) = window.wl_surface() {
-            output.enter(&surface);
-        }
-    }
-
-    fn leave_output_for_window(&self, window: &Window, output: &Output) {
-        if let Some(surface) = window.wl_surface() {
-            output.leave(&surface);
-        }
-    }
-
-    fn leave_emacs_frames_on_output(&self, output: &Output) {
-        let output_name = output.name();
-        for id in self.emacs_frames_on(&output_name) {
-            if let Some(window) = self.window(id) {
-                self.leave_output_for_window(window, output);
+    /// Fire `wl_surface.enter` / `leave` for what `output`'s monitor now shows.
+    pub(crate) fn reconcile_output_entries(&mut self, output: &Output) {
+        let shown = self.layout.surface_ids_on(output);
+        let name = output.name();
+        for (id, surface) in &mut self.surfaces {
+            match (surface.outputs.contains(&name), shown.contains(id)) {
+                (true, false) => {
+                    leave_output_for_window(&surface.window, output);
+                    surface.outputs.remove(&name);
+                }
+                (false, true) => {
+                    enter_output_for_window(&surface.window, output);
+                    surface.outputs.insert(name.clone());
+                }
+                _ => {}
             }
         }
     }
 
-    fn reconcile_output_membership(
-        &mut self,
-        output_name: &str,
-        output: Option<&Output>,
-        pre: &HashSet<u64>,
-        post: &HashSet<u64>,
-    ) {
-        for &id in pre.difference(post) {
-            if let (Some(out), Some(window)) = (output, self.window(id)) {
-                self.leave_output_for_window(window, out);
-            }
-            if let Some(surface) = self.surfaces.get_mut(&id) {
-                surface.outputs.remove(output_name);
-            }
+    /// Output membership, scale, events and active frames after `moved` landed.
+    fn settle_moved_frames(&mut self, moved: &Moved) {
+        if let Some(src) = &moved.src {
+            self.reconcile_output_entries(src);
         }
-        for &id in post.difference(pre) {
-            let Some(window) = self.window(id) else {
-                warn!("reconcile_output_entries: surface {} has no window", id);
-                continue;
-            };
-            if let Some(out) = output {
-                self.enter_output_for_window(window, out);
-            }
+        if let Some(dst) = &moved.dst {
+            self.reconcile_output_entries(dst);
         }
-        for &id in post {
-            if let Some(surface) = self.surfaces.get_mut(&id) {
-                surface.outputs.insert(output_name.to_string());
+        if let Some(dst) = &moved.dst {
+            self.update_frames_for_working_area(dst);
+        }
+        self.refresh_primary_assignments();
+        if let Some(src) = &moved.src {
+            if let Some(id) = moved.src_prev_active
+                && moved.ids.contains(&id)
+            {
+                self.queue_event(Event::FrameHidden { id });
             }
+            self.reconcile_active_for_output(src, moved.src_prev_active);
+        }
+        if let Some(dst) = &moved.dst {
+            self.reconcile_active_for_output(dst, moved.dst_prev_active);
         }
     }
 
-    /// Diff `pre` (snapshot before strip mutation) against the current strip;
-    /// fire `wl_surface.enter` / `leave` and sync each surface's outputs.
-    fn reconcile_output_entries(&mut self, output_name: &str, pre: &HashSet<u64>) {
-        let output = self.find_mapped_output(output_name);
-        let post = output
-            .as_ref()
-            .map(|_| self.strip_entries(output_name))
-            .unwrap_or_default();
-        self.reconcile_output_membership(output_name, output.as_ref(), pre, &post);
-    }
-
-    pub(crate) fn reconcile_mapped_output_entries(&mut self, output: &Output) {
-        let output_name = output.name();
-        let pre = self.surface_outputs_for(&output_name);
-        let post = self.strip_entries(&output_name);
-        self.reconcile_output_membership(&output_name, Some(output), &pre, &post);
-    }
-
-    /// Move the frames' windows onto `target`, leaving `prev_output` first when given.
-    fn enter_frames_on_output(&self, target: &Output, ids: &[u64], prev_output: Option<&str>) {
-        let prev_output = prev_output.and_then(|name| self.mapped_output_by_name(name));
-        for &id in ids {
-            let Some(window) = self.window(id) else {
-                continue;
-            };
-            if let Some(prev_output) = prev_output {
-                self.leave_output_for_window(window, prev_output);
-            }
-            self.enter_output_for_window(window, target);
-        }
-    }
-
-    fn move_frame_ids_between_outputs(
-        &mut self,
-        src_name: &str,
-        dst_name: &str,
-        frame_ids: &[u64],
-    ) -> bool {
-        if src_name == dst_name || frame_ids.is_empty() {
-            return false;
-        }
-
-        let frame_ids: HashSet<u64> = frame_ids.iter().copied().collect();
-        let pre_src = self.strip_entries(src_name);
-        let pre_dst = self.strip_entries(dst_name);
-        let prev_src_active = self.active_frame_surface_id(src_name);
-        let prev_dst_active = self.active_frame_surface_id(dst_name);
-
+    fn move_frame_ids_between_outputs(&mut self, src: &Output, dst: &Output, ids: &[u64]) {
         let moved = self
-            .frame_set
-            .mapped_strip_mut(src_name)
-            .map_or_else(Vec::new, |src_strip| {
-                src_strip.drain_frames(|frame| frame_ids.contains(&frame.surface_id))
-            });
-        if moved.is_empty() {
-            return false;
-        }
-
-        let moved_ids = moved
-            .iter()
-            .map(|frame| frame.surface_id)
-            .collect::<Vec<_>>();
-
-        let clock = self.animations_clock.clone();
-        let scale = self.output_scale(dst_name);
-        let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock, scale);
-        let insert_at = dst_strip.frames().len();
-        dst_strip.append_frames(moved);
-        if let Some(focused_idx) = moved_ids
-            .iter()
-            .position(|id| *id == self.focused_frame_id)
-            .map(|idx| insert_at + idx)
-        {
-            dst_strip.set_active(focused_idx);
-        } else if insert_at == 0 {
-            dst_strip.set_active(0);
-        }
-
-        self.reconcile_output_entries(src_name, &pre_src);
-        self.reconcile_output_entries(dst_name, &pre_dst);
-        let dst_output = self.find_mapped_output(dst_name);
-        if let Some(dst_output) = &dst_output {
-            self.enter_frames_on_output(dst_output, &moved_ids, Some(src_name));
-        }
-
-        self.refresh_primary_assignments();
-        if let Some(dst_output) = &dst_output {
-            self.update_frames_for_working_area(dst_output);
-        }
-        self.prune_dangling_focus();
-        self.focus_any_frame_if_unfocused("frame_set_move");
-        if let Some(id) = prev_src_active
-            && frame_ids.contains(&id)
-        {
-            self.queue_event(Event::FrameHidden { id });
-        }
-        self.reconcile_active_for_output(src_name, prev_src_active);
-        self.reconcile_active_for_output(dst_name, prev_dst_active);
-        for id in moved_ids {
-            let home_output = self
-                .frame_set
-                .home_output(id)
-                .unwrap_or(dst_name)
-                .to_string();
-            self.queue_event(Event::FrameMoved {
-                id,
-                output: dst_name.to_string(),
-                home_output,
-            });
-        }
-
-        true
+            .layout
+            .move_frames(src, dst, ids, self.focused_frame_id);
+        self.settle_moved_frames(&moved);
     }
 
-    fn migrate_output_frames_to_fallback(
-        &mut self,
-        output_name: &str,
-        home_identity: &str,
-    ) -> bool {
-        let frame_ids = self
-            .frame_set
-            .mapped_strip(output_name)
-            .map(|strip| {
-                strip
-                    .frames()
-                    .iter()
-                    .map(|frame| frame.surface_id)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        self.frame_set
-            .remember_frame_homes(home_identity, frame_ids.iter().copied());
-        let fallback = self
-            .sorted_outputs
-            .iter()
-            .map(Output::name)
-            .find(|name| name != output_name);
-        fallback.is_some_and(|fallback| {
-            self.move_frame_ids_between_outputs(output_name, &fallback, &frame_ids)
-        })
-    }
-
-    pub(crate) fn restore_home_output_frames(&mut self, output_name: &str) -> bool {
-        // Match frames by the reconnecting output's stable identity, not its
-        // connector name, so a display that re-enumerated on a different
-        // connector still reclaims its frames.
-        let Some(home_identity) = self
-            .mapped_output_by_name(output_name)
-            .map(crate::utils::output_identity)
-        else {
-            return false;
-        };
-        let source_moves = self
-            .frame_set
-            .mapped_strips()
-            .iter()
-            .filter(|(src_name, _)| src_name.as_str() != output_name)
-            .filter_map(|(src_name, strip)| {
-                let frame_ids = strip
-                    .frames()
-                    .iter()
-                    .filter(|frame| {
-                        self.frame_set
-                            .home_output(frame.surface_id)
-                            .is_some_and(|home| home == home_identity)
-                    })
-                    .map(|frame| frame.surface_id)
-                    .collect::<Vec<_>>();
-                (!frame_ids.is_empty()).then(|| (src_name.to_string(), frame_ids))
-            })
-            .collect::<Vec<_>>();
-
-        let mut moved = false;
-        for (src_name, frame_ids) in source_moves {
-            moved |= self.move_frame_ids_between_outputs(&src_name, output_name, &frame_ids);
+    /// Adopt parked frames and reclaim homed ones onto `output`, which just mapped.
+    pub(crate) fn attach_output(&mut self, output: &Output, focus_reason: &'static str) {
+        let adopted = self.layout.adopt_homeless(output, self.focused_frame_id);
+        if !adopted.ids.is_empty() {
+            self.settle_moved_frames(&adopted);
         }
-        moved
-    }
-
-    /// Adopt every homeless frame onto a newly mapped output.
-    fn adopt_homeless_frames(&mut self, dst_name: &str) -> bool {
-        let moved = self.frame_set.take_homeless_frames();
-        if moved.is_empty() {
-            return false;
+        for (src, ids) in self.layout.homed_elsewhere(output) {
+            self.move_frame_ids_between_outputs(&src, output, &ids);
         }
-
-        let pre_dst = self.strip_entries(dst_name);
-        let prev_dst_active = self.active_frame_surface_id(dst_name);
-        let moved_ids = moved
-            .iter()
-            .map(|frame| frame.surface_id)
-            .collect::<Vec<_>>();
-
-        let clock = self.animations_clock.clone();
-        let scale = self.output_scale(dst_name);
-        let dst_strip = self.frame_set.ensure_mapped_strip(dst_name, clock, scale);
-        let insert_at = dst_strip.frames().len();
-        dst_strip.append_frames(moved);
-        if insert_at == 0 {
-            dst_strip.set_active(0);
-        }
-
-        self.reconcile_output_entries(dst_name, &pre_dst);
-        if let Some(dst_output) = self.find_mapped_output(dst_name) {
-            self.enter_frames_on_output(&dst_output, &moved_ids, None);
-            self.update_frames_for_working_area(&dst_output);
-        }
-        self.refresh_primary_assignments();
-        self.reconcile_active_for_output(dst_name, prev_dst_active);
-        for id in moved_ids {
-            let home_output = self
-                .frame_set
-                .home_output(id)
-                .unwrap_or(dst_name)
-                .to_string();
-            self.queue_event(Event::FrameMoved {
-                id,
-                output: dst_name.to_string(),
-                home_output,
-            });
-        }
-        true
-    }
-
-    /// Activate the output's remembered active frame if it is present again.
-    fn restore_last_active_frame(&mut self, output_name: &str) {
-        let Some(identity) = self
-            .mapped_output_by_name(output_name)
-            .map(crate::utils::output_identity)
-        else {
-            return;
-        };
-        let Some(frame_id) = self.frame_set.take_last_active(&identity) else {
-            return;
-        };
-        let prev_active_id = self.active_frame_surface_id(output_name);
-        let focused_frame_id = self.focused_frame_id;
-        let Some(strip) = self.frame_set.mapped_strip_mut(output_name) else {
-            return;
-        };
-        // The focused frame stays active; focus continuity wins.
-        if strip
-            .frames()
-            .iter()
-            .any(|frame| frame.surface_id == focused_frame_id)
-        {
-            return;
-        }
-        let Some(idx) = strip.index_of(frame_id) else {
-            return;
-        };
-        strip.set_active(idx);
-        self.reconcile_active_for_output(output_name, prev_active_id);
-    }
-
-    /// Adopt homeless frames and pull homed frames back onto an output that
-    /// just became mapped.
-    pub(crate) fn attach_frames_for_mapped_output(
-        &mut self,
-        output: &Output,
-        focus_reason: &'static str,
-    ) {
-        let output_name = output.name();
-        let adopted = self.adopt_homeless_frames(&output_name);
-        let restored = self.restore_home_output_frames(&output_name);
-        if !adopted && !restored {
-            self.reconcile_mapped_output_entries(output);
-            self.reconcile_active_for_output(&output_name, None);
-        }
-        self.restore_last_active_frame(&output_name);
+        let prev_active = self
+            .layout
+            .restore_last_active(output, self.focused_frame_id);
+        self.reconcile_active_for_output(output, prev_active);
         // Frames coming back may hold a surface whose activation waited for them.
         self.focus_pending_activation_surfaces();
         if self.focused_frame_id == 0
-            && let Some(id) = self.active_frame_surface_id(&output_name)
+            && let Some(id) = self.layout.active_frame_id(output)
         {
             self.set_focus_frame(id, focus_reason, false);
         }
@@ -1700,22 +1626,12 @@ impl Ewm {
     }
 
     /// Follow the focused frame's selected window after a merge, even if only its surface changed.
-    fn sync_focus_after_merge(&mut self, output_name: &str, focused_surface: u64) {
+    fn sync_focus_after_merge(&mut self, focused_surface: u64) {
         let frame_id = self.focused_frame_id;
-        let selected = if let Some(strip) = self.frame_set.mapped_strip_mut(output_name)
-            && let Some(idx) = strip.index_of(frame_id)
-        {
-            strip.set_active(idx);
-            strip.frames()[idx].selected_entry_id
-        } else if let Some(space) = self.floating_spaces.get_mut(output_name)
-            && let Some(idx) = space.idx_of(frame_id)
-        {
-            let selected = space.frames()[idx].selected_entry_id;
-            space.activate_frame(frame_id);
-            selected
-        } else {
+        let Some(location) = self.layout.frame_location(frame_id) else {
             return;
         };
+        let selected = location.frame.selected_entry_id;
         let entry_changed = selected != self.focused_entry_id;
         self.set_focus_state(frame_id, selected);
         if entry_changed || self.focused_surface_id() != focused_surface {
@@ -1725,105 +1641,30 @@ impl Ewm {
         }
     }
 
-    /// Frames on mapped outputs, strips in output order then floating spaces.
-    pub(crate) fn placed_frames(&self) -> impl Iterator<Item = &strip::Frame> {
-        self.mapped_output_strips()
-            .flat_map(|(_, strip)| strip.frames().iter())
-            .chain(
-                self.floating_spaces
-                    .values()
-                    .flat_map(|space| space.frames().iter()),
-            )
-    }
-
-    /// Declare every Emacs frame's contents. Placement is ours: a frame keeps
-    /// its output and slot, one the layout leaves out keeps its slot with empty
-    /// contents until its Wayland destroy arrives, and homeless frames wait
-    /// for an output.
+    /// Replace every frame's contents from Emacs's layout. Nothing moves: frames
+    /// keep their output and slot, and a frame the layout leaves out stays empty
+    /// until its destroy arrives.
     pub fn apply_layout(&mut self, frames: Vec<strip::Frame>) {
         let focused_surface = self.focused_surface_id();
-        let moved = strip::moved_entry_ids(self.placed_frames(), &frames);
-        let prev_active = self.active_frames_snapshot();
-        let outputs: Vec<(String, Output, HashSet<u64>)> = self
-            .sorted_outputs
-            .iter()
-            .map(|output| {
-                let name = output.name();
-                let entries = self.strip_entries(&name);
-                (name, output.clone(), entries)
-            })
-            .collect();
+        let moved = strip::moved_entry_ids(self.layout.placed_frames(), &frames);
+        let outputs: Vec<Output> = self.layout.outputs().cloned().collect();
 
-        // Route each frame to the strip or floating space holding it. Frames
-        // we do not know (not yet mapped, or already destroyed) are skipped.
-        let mut tiled: HashMap<String, Vec<strip::Frame>> = HashMap::new();
-        let mut floating: HashMap<String, Vec<strip::Frame>> = HashMap::new();
-        for frame in frames {
-            let Some(location) = self.frame_location(frame.surface_id) else {
-                continue;
-            };
-            let bucket = if location.strip.is_some() {
-                &mut tiled
-            } else {
-                &mut floating
-            };
-            bucket
-                .entry(location.output_name.to_string())
-                .or_default()
-                .push(frame);
-        }
+        self.layout.merge_frames(frames);
 
-        for (name, _, _) in &outputs {
-            if let Some(strip) = self.frame_set.mapped_strip_mut(name) {
-                strip.merge_layout_frames(tiled.remove(name).unwrap_or_default());
-            }
-            if let Some(space) = self.floating_spaces.get_mut(name) {
-                space.merge_layout_frames(floating.remove(name).unwrap_or_default());
-            }
-            self.sync_focus_after_merge(name, focused_surface);
-        }
-        for name in tiled.keys().chain(floating.keys()) {
-            warn!(
-                "apply_layout: output '{}' is unmapped, its frames were not updated",
-                name
-            );
-        }
-
-        for (name, _, pre) in &outputs {
-            self.reconcile_output_entries(name, pre);
+        self.sync_focus_after_merge(focused_surface);
+        for output in &outputs {
+            self.reconcile_output_entries(output);
+            self.queue_redraw(output);
         }
         self.refresh_primary_assignments_after_layout(&moved);
-        for (_, output, _) in &outputs {
-            self.update_frames_for_working_area(output);
-        }
-        self.prune_dangling_focus();
         // Covers the race where the layout runs before `new_toplevel`'s auto-focus.
         self.focus_any_frame_if_unfocused("auto_focus_on_layout");
         self.focus_pending_activation_surfaces();
-        for (name, _, _) in &outputs {
-            self.reconcile_active_for_output(name, prev_active.get(name).copied());
-        }
     }
 
-    /// Move frame `id` by `delta` slots in its strip, stopping at the strip's edge.
-    pub fn swap_frame(&mut self, id: u64, delta: i32) {
-        let Some(output_name) = self.emacs_frame_output(id).map(str::to_string) else {
-            return;
-        };
-        let Some(strip) = self.frame_set.mapped_strip_mut(&output_name) else {
-            return;
-        };
-        let Some(from) = strip.index_of(id) else {
-            return;
-        };
-        let Some(to) = from
-            .checked_add_signed(delta as isize)
-            .filter(|&to| to < strip.frames().len())
-        else {
-            return;
-        };
-        strip.move_frame(from, to);
-        if let Some(output) = self.find_mapped_output(&output_name) {
+    /// Move frame `id` by `delta` slots along its strip, stopping at the edge.
+    pub fn move_frame(&mut self, id: u64, delta: i32) {
+        if let Some(output) = self.layout.move_frame(id, delta).cloned() {
             self.queue_redraw(&output);
         }
     }
@@ -1834,14 +1675,12 @@ impl Ewm {
         id: u64,
         f: impl FnOnce(&mut floating::FloatingSpace) -> bool,
     ) -> bool {
-        let Some(output_name) = self.emacs_frame_output(id).map(str::to_string) else {
+        let Some(monitor) = self.layout.monitor_of_frame_mut(id) else {
             return false;
         };
-        let Some(space) = self.floating_spaces.get_mut(&output_name) else {
-            return false;
-        };
-        let changed = f(space);
-        if changed && let Some(output) = self.find_mapped_output(&output_name) {
+        let output = monitor.output().clone();
+        let changed = f(&mut monitor.floating);
+        if changed {
             self.queue_redraw(&output);
         }
         changed
@@ -1857,20 +1696,15 @@ impl Ewm {
         id: u64,
         f: impl FnOnce(&mut floating::FloatingSpace) -> Option<Size<i32, Logical>>,
     ) -> bool {
-        let Some(output_name) = self.emacs_frame_output(id).map(str::to_string) else {
-            return false;
-        };
-        let Some(space) = self.floating_spaces.get_mut(&output_name) else {
-            return false;
-        };
-        let Some(size) = f(space) else {
-            return false;
-        };
-        self.configure_floating_frame_size(id, size);
-        if let Some(output) = self.find_mapped_output(&output_name) {
-            self.queue_redraw(&output);
+        let mut size = None;
+        let changed = self.with_floating_space(id, |space| {
+            size = f(space);
+            size.is_some()
+        });
+        if let Some(size) = size {
+            self.configure_floating_frame_size(id, size);
         }
-        true
+        changed
     }
 
     pub fn resize_floating_frame(&mut self, id: u64, dw: f64, dh: f64) -> bool {
@@ -1948,178 +1782,32 @@ impl Ewm {
 
     /// Like `refresh_primary_assignments`, after a layout that `moved` entries.
     fn refresh_primary_assignments_after_layout(&mut self, moved: &HashSet<LayoutEntryId>) {
-        let output_sizes = self.output_sizes_by_name();
-        let best_area = self.primary_entry_areas(&output_sizes);
-        self.assign_primary_entries(&output_sizes, &best_area);
+        self.layout.assign_primaries(&self.sorted_outputs);
         self.refresh_mapped_cast_outputs();
         self.configure_primary_entries(moved);
     }
 
-    /// Configure every primary entry's surface for its slot, noting the resizes to fade.
+    /// Configure every shown primary entry's surface for its slot, noting the resizes to fade.
     fn configure_primary_entries(&mut self, moved: &HashSet<LayoutEntryId>) {
-        for output in &self.sorted_outputs {
-            let name = output.name();
-            let active = self
-                .frame_set
-                .mapped_strip(&name)
-                .and_then(strip::Strip::active_frame);
-            let floating = self
-                .floating_spaces
-                .get(&name)
-                .map(floating::FloatingSpace::frames)
-                .unwrap_or_default();
-            for frame in active.into_iter().chain(floating) {
-                for entry in frame.entries.iter().filter(|entry| entry.primary()) {
-                    let Some(id) = entry.surface_id() else {
-                        continue;
-                    };
-                    let fullscreen = frame.entry_fullscreen(entry.id);
-                    let size = if fullscreen {
-                        let s = crate::utils::output_size(output);
-                        (s.w as i32, s.h as i32).into()
-                    } else {
-                        entry.rect().size
-                    };
-                    let pending = self.pending_resize(id, size, moved);
-                    if let Some(surface) = self.surfaces.get_mut(&id) {
-                        surface.configure(output, size, fullscreen, pending);
-                    }
-                }
-            }
-        }
-    }
-
-    fn output_sizes_by_name(&self) -> HashMap<String, (u64, u64)> {
-        self.space
-            .outputs()
-            .map(|o| {
-                let size = crate::utils::output_size(o);
-                (o.name(), (size.w as u64, size.h as u64))
-            })
-            .collect()
-    }
-
-    /// Fullscreen entries claim the output's full size, not entry.w/h.
-    fn layout_entry_area(
-        output_sizes: &HashMap<String, (u64, u64)>,
-        output_name: &str,
-        entry: &LayoutEntry,
-        fullscreen: bool,
-    ) -> u64 {
-        if fullscreen {
-            let (w, h) = output_sizes
-                .get(output_name)
-                .copied()
-                .unwrap_or((entry.w as u64, entry.h as u64));
-            w * h
-        } else {
-            entry.w as u64 * entry.h as u64
-        }
-    }
-
-    pub(crate) fn primary_entry_areas(
-        &self,
-        output_sizes: &HashMap<String, (u64, u64)>,
-    ) -> HashMap<u64, u64> {
-        let mut best_area: HashMap<u64, u64> = HashMap::new();
-        for (oname, strip) in self.mapped_output_strips() {
-            let active_idx = strip.active_idx();
-            let Some(frame) = strip.frames().get(active_idx) else {
+        let shown_primaries = self
+            .layout
+            .entry_locations()
+            .filter(|location| location.shown() && location.entry.primary());
+        for location in shown_primaries {
+            let Some(id) = location.entry.surface_id() else {
                 continue;
             };
-            for entry in frame.entries.iter().filter(|entry| entry.surface.is_some()) {
-                let fullscreen = frame.entry_fullscreen(entry.id);
-                let area = Self::layout_entry_area(output_sizes, oname, entry, fullscreen);
-                let Some(surface_id) = entry.surface_id() else {
-                    continue;
-                };
-                best_area
-                    .entry(surface_id)
-                    .and_modify(|a| *a = (*a).max(area))
-                    .or_insert(area);
-            }
-        }
-        for (oname, space) in &self.floating_spaces {
-            for frame in space.frames() {
-                for entry in frame.entries.iter().filter(|entry| entry.surface.is_some()) {
-                    let area = Self::layout_entry_area(output_sizes, oname, entry, false);
-                    let Some(surface_id) = entry.surface_id() else {
-                        continue;
-                    };
-                    best_area
-                        .entry(surface_id)
-                        .and_modify(|a| *a = (*a).max(area))
-                        .or_insert(area);
-                }
-            }
-        }
-        best_area
-    }
-
-    pub(crate) fn assign_primary_entries(
-        &mut self,
-        output_sizes: &HashMap<String, (u64, u64)>,
-        best_area: &HashMap<u64, u64>,
-    ) {
-        for frame in self.frame_set.all_frames_mut() {
-            for entry in frame
-                .entries
-                .iter_mut()
-                .filter(|entry| entry.surface.is_some())
-            {
-                entry.set_primary(false);
-            }
-        }
-        for space in self.floating_spaces.values_mut() {
-            for entry in space.surface_entries_mut() {
-                entry.set_primary(false);
-            }
-        }
-
-        let mut assigned: HashSet<u64> = HashSet::new();
-        for output in &self.sorted_outputs {
-            let oname = output.name();
-            if let Some(strip) = self.frame_set.mapped_strip_mut(&oname) {
-                let active_idx = strip.active_idx();
-                let Some(frame) = strip.frames_mut().get_mut(active_idx) else {
-                    continue;
-                };
-                let fullscreen_entry_id = frame.fullscreen.map(|fullscreen| fullscreen.entry_id);
-                for entry in frame
-                    .entries
-                    .iter_mut()
-                    .filter(|entry| entry.surface.is_some())
-                {
-                    let Some(surface_id) = entry.surface_id() else {
-                        continue;
-                    };
-                    let dominated = best_area.get(&surface_id).copied().unwrap_or(0);
-                    let fullscreen = fullscreen_entry_id == Some(entry.id);
-                    if Self::layout_entry_area(output_sizes, &oname, entry, fullscreen) == dominated
-                        && assigned.insert(surface_id)
-                    {
-                        entry.set_primary(true);
-                    }
-                }
-            }
-            if let Some(space) = self.floating_spaces.get_mut(&oname) {
-                for frame in space.frames_mut() {
-                    for entry in frame
-                        .entries
-                        .iter_mut()
-                        .filter(|entry| entry.surface.is_some())
-                    {
-                        let Some(surface_id) = entry.surface_id() else {
-                            continue;
-                        };
-                        let dominated = best_area.get(&surface_id).copied().unwrap_or(0);
-                        if Self::layout_entry_area(output_sizes, &oname, entry, false) == dominated
-                            && assigned.insert(surface_id)
-                        {
-                            entry.set_primary(true);
-                        }
-                    }
-                }
+            let output = location.monitor.output();
+            let fullscreen = location.fullscreen();
+            let size = if fullscreen {
+                let s = crate::utils::output_size(output);
+                (s.w as i32, s.h as i32).into()
+            } else {
+                location.entry.rect().size
+            };
+            let pending = self.pending_resize(id, size, moved);
+            if let Some(surface) = self.surfaces.get_mut(&id) {
+                surface.configure(output, size, fullscreen, pending);
             }
         }
     }
@@ -2129,20 +1817,20 @@ impl Ewm {
     /// compares against the post-mutation state.  No stored state.
     pub(crate) fn reconcile_active_for_output(
         &mut self,
-        output_name: &str,
+        output: &Output,
         prev_active_id: Option<u64>,
     ) {
-        let Some(strip) = self.frame_set.mapped_strip(output_name) else {
+        let Some(strip) = self.layout.strip(output) else {
             return;
         };
-        let new_active_id = strip.active_frame().map(|f| f.surface_id);
+        let new_active_id = strip.active_frame_id();
         if prev_active_id == new_active_id {
             return;
         }
         if let Some(id) = prev_active_id {
             // Skip if the frame was destroyed -- the lisp side already handled it.
             // The overview keeps every frame visible.
-            if !self.overview.is_active() && strip.frames().iter().any(|f| f.surface_id == id) {
+            if !self.overview.is_active() && strip.index_of(id).is_some() {
                 self.queue_event(Event::FrameHidden { id });
             }
         }
@@ -2156,8 +1844,8 @@ impl Ewm {
         let Some(output) = self.output_containing(pos) else {
             return false;
         };
-        self.frame_set
-            .mapped_strip(&output.name())
+        self.layout
+            .strip(output)
             .is_some_and(|s| s.animations_ongoing())
     }
 }

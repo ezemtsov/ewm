@@ -14,8 +14,9 @@
 //! 2. **Rendering order**: Elements are collected front-to-back, matching typical desktop
 //!    compositor layering: Cursor -> Overlay -> Top -> Popups -> Windows -> Bottom -> Background.
 //!
-//! 3. **Layout-based rendering**: Surfaces with entries in `output_strips` are rendered at their
-//!    declared positions. Surfaces without layout entries use space positions (for Emacs frames).
+//! 3. **Layout-based rendering**: Surfaces with entries in the layout's strips are rendered at
+//!    their declared positions. Surfaces without layout entries use space positions (for Emacs
+//!    frames).
 
 use std::ptr;
 
@@ -720,7 +721,7 @@ pub fn collect_render_elements_for_output(
         elements.extend(content.drain(..).map(zoomed));
     }
 
-    // Render declared surfaces from output_strips. Frames outside the viewport are culled.
+    // Render declared surfaces from the layout. Frames outside the viewport are culled.
     let working_area = ewm.get_working_area(output);
     let view_size =
         Size::<f64, Logical>::from((working_area.size.w as f64, working_area.size.h as f64));
@@ -729,7 +730,7 @@ pub fn collect_render_elements_for_output(
         .output_state
         .get(output)
         .map(|state| &state.fullscreen_backdrop);
-    if let Some(space) = ewm.floating_spaces.get_mut(&output.name()) {
+    if let Some(space) = ewm.layout.floating_mut(output) {
         let focused_entry_id = ewm.focused_entry_id;
         let focused_frame_id = ewm.focused_frame_id;
         let unfocused_alpha = ewm.unfocused_alpha;
@@ -813,7 +814,7 @@ pub fn collect_render_elements_for_output(
             });
         }
     }
-    let strip = ewm.frame_set.mapped_strip(&output.name());
+    let strip = ewm.layout.strip(output);
     if let Some(strip) = strip {
         let active_idx = strip.active_idx();
         for (frame_idx, frame, frame_rect) in
@@ -1027,8 +1028,9 @@ pub fn render_frame_snapshot(
 ) -> Option<Snapshot> {
     tracy_span!("render_frame_snapshot");
 
-    let location = ewm.frame_location(id)?;
-    let scale = Scale::from(ewm.output_scale(location.output_name));
+    let location = ewm.layout.frame_location(id)?;
+    let output = location.monitor.output().clone();
+    let scale = Scale::from(output.current_scale().fractional_scale());
 
     let mut content: Vec<ContentRenderElement> = Vec::new();
     render_frame_views(&mut content, renderer, ewm, location.frame, scale);
@@ -1042,9 +1044,9 @@ pub fn render_frame_snapshot(
             render_window_without_popups(window, renderer, Point::from((0, 0)), scale, 1.);
         content.extend(elements.into_iter().map(ContentRenderElement::Surface));
         if let Some((_, data)) = ewm
-            .floating_spaces
-            .values_mut()
-            .find_map(|space| space.frame_with_data_mut(id))
+            .layout
+            .floating_mut(&output)
+            .and_then(|space| space.frame_with_data_mut(id))
         {
             let focused = ewm.focused_frame_id == id;
             let size = data.size();

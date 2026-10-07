@@ -187,7 +187,9 @@ impl Harness {
                 .fix
                 .ewm()
                 .set_focus_frame(self.ids[EMACS], "test", false),
-            Some(e) => self.fix.ewm().set_focus_entry(e, "test", false),
+            Some(e) => {
+                self.fix.ewm().set_focus_entry(e, "test", false);
+            }
         }
         self.fix.sync_keyboard_focus();
         self.wires();

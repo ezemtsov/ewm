@@ -29,6 +29,13 @@
   (defun ewm-layout (_frames) nil))
 (unless (fboundp 'ewm-get-strip-frame-ids)
   (defun ewm-get-strip-frame-ids (_output) nil))
+;; Frames sit where they were made for.
+(unless (fboundp 'ewm-get-frame-output)
+  (defun ewm-get-frame-output (surface-id)
+    (seq-some (lambda (frame)
+                (and (eql (frame-parameter frame 'ewm-surface-id) surface-id)
+                     (frame-parameter frame 'ewm-output)))
+              (frame-list))))
 (unless (fboundp 'ewm-focus-target-module)
   (defun ewm-focus-target-module (_focus-id) nil))
 (unless (fboundp 'ewm-prepare-frame-close-module)
@@ -597,31 +604,14 @@ VARS is (MADE [FITTED]): the (OUTPUT PARAMS POS) and (W . H) the stubs saw."
       (set-frame-parameter frame 'ewm-output old-output)
       (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
 
-(ert-deftest ewm-focus/frame-moved-event-updates-output-and-home ()
-  "Elisp mirrors compositor-owned frame topology."
-  (let* ((frame (selected-frame))
-         (old-output (frame-parameter frame 'ewm-output))
-         (old-home-output (frame-parameter frame 'ewm-home-output))
-         (old-surface-id (frame-parameter frame 'ewm-surface-id))
-         (refresh-count 0))
-    (unwind-protect
-        (progn
-          (set-frame-parameter frame 'ewm-output "eDP-1")
-          (set-frame-parameter frame 'ewm-home-output nil)
-          (set-frame-parameter frame 'ewm-surface-id 42)
-          (cl-letf (((symbol-function 'ewm-layout--refresh)
-                     (lambda () (cl-incf refresh-count))))
-            (ewm--handle-frame-moved
-             '((event . "frame_moved")
-               (id . 42)
-               (output . "DP-2")
-               (home_output . "eDP-1"))))
-          (should (= refresh-count 1))
-          (should (equal (frame-parameter frame 'ewm-output) "DP-2"))
-          (should (equal (frame-parameter frame 'ewm-home-output) "eDP-1")))
-      (set-frame-parameter frame 'ewm-output old-output)
-      (set-frame-parameter frame 'ewm-home-output old-home-output)
-      (set-frame-parameter frame 'ewm-surface-id old-surface-id))))
+(ert-deftest ewm-focus/frame-output-comes-from-the-compositor ()
+  "A placed frame's output is the compositor's, an in-flight frame's is its intent."
+  (ewm-focus-tests--with-frame f
+    (cl-letf (((symbol-function 'ewm-get-frame-output)
+               (lambda (id) (and (eql id ewm-focus-tests--frame-surface-id) "DP-2"))))
+      (should (equal (ewm--frame-output f) "DP-2"))
+      (set-frame-parameter f 'ewm-surface-id nil)
+      (should (equal (ewm--frame-output f) ewm-focus-tests--output)))))
 
 (ert-deftest ewm-focus/with-surface-buffer-skips-unknown-id ()
   "Event for an unregistered surface id is a no-op."

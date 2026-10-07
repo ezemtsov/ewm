@@ -26,6 +26,11 @@
 
 (ewm-test--stub ewm-layout (_frames) nil)
 (ewm-test--stub ewm-get-strip-frame-ids (_output) nil)
+(ewm-test--stub ewm-get-frame-output (surface-id)
+  (seq-some (lambda (frame)
+              (and (eql (frame-parameter frame 'ewm-surface-id) surface-id)
+                   (frame-parameter frame 'ewm-output)))
+            (frame-list)))
 (ewm-test--stub ewm-init-event-channel (_process) nil)
 (defvar ewm-test--queued nil "Events the stubbed `ewm-drain-events' hands out.")
 (ewm-test--stub ewm-drain-events () (prog1 ewm-test--queued (setq ewm-test--queued nil)))
@@ -111,7 +116,6 @@
                   (environment . ewm--handle-environment)
                   (frame_shown . ewm--gtk-frame-updates)
                   (frame_hidden . ewm--gtk-frame-updates)
-                  (frame_moved . ewm--handle-frame-moved)
                   (overview . ewm--handle-overview)
                   (hide . ewm--handle-hide)))
          ;; Layout notifications have no Lisp side yet.

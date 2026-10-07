@@ -147,7 +147,7 @@ pub(crate) enum ActiveConstraint {
 #[derive(Default)]
 pub struct GestureState {
     pub cumulative: Option<(f64, f64)>,
-    pub active_output: Option<String>,
+    pub active_output: Option<Output>,
 }
 
 const GESTURE_DEADZONE_SQ: f64 = 16.0 * 16.0;
@@ -468,6 +468,7 @@ impl State {
         let focused_entry_id = self.ewm.focused_entry_id;
         let fullscreen_entry = focused_entry_id.and_then(|entry_id| {
             self.ewm
+                .layout
                 .frame_location(focused_frame_id)
                 .map(|location| location.frame)
                 .filter(|f| f.entry_fullscreen(entry_id))
@@ -602,7 +603,7 @@ impl State {
                     self.ewm.focused_surface_id()
                 );
 
-                if self.ewm.emacs_surface_for_focused_output().is_some() {
+                if self.ewm.focused_emacs_frame_surface().is_some() {
                     self.ewm.cancel_command_repeat();
                     module::begin_keyboard_redirect_capture();
                     self.ewm
@@ -914,7 +915,7 @@ impl State {
         let Some((frame_id, entry_id)) = self.ewm.focus_under(pos, source) else {
             return;
         };
-        if let Some(focus_id) = entry_id.or_else(|| self.ewm.focus_id_of_frame(frame_id)) {
+        if let Some(focus_id) = entry_id.or_else(|| self.ewm.layout.focus_id_of_frame(frame_id)) {
             let (x, y) = self
                 .ewm
                 .pointer_target_at(pos)
@@ -975,7 +976,7 @@ impl State {
 
         // Check if we need to start an interactive move.
         if button_code == BTN_LEFT {
-            let Some((_, frame_id)) = self.ewm.floating_frame_under(location) else {
+            let Some(frame_id) = self.ewm.floating_frame_under(location) else {
                 return false;
             };
 
@@ -997,7 +998,7 @@ impl State {
         }
         // Check if we need to start an interactive resize.
         else if button_code == BTN_RIGHT {
-            let Some((_, frame_id, edges)) = self.ewm.floating_resize_edges_under(location) else {
+            let Some((frame_id, edges)) = self.ewm.floating_resize_edges_under(location) else {
                 return false;
             };
 
@@ -1037,7 +1038,7 @@ impl State {
             .focus
             .as_ref()
             .and_then(|(surface, _)| self.ewm.surface_id(surface))
-            .is_some_and(|id| self.ewm.is_emacs_frame(id));
+            .is_some_and(|id| self.ewm.layout.has_frame(id));
         if on_frame {
             let grab = FrameClickGrab::new(start_data);
             pointer.set_grab(self, grab, serial, PointerFocus::Keep);
@@ -1095,11 +1096,8 @@ impl State {
         self.notify_pointer_activity();
     }
 
-    fn working_area_width(&self, name: &str) -> f64 {
-        self.ewm
-            .find_mapped_output(name)
-            .map(|o| self.ewm.get_working_area(&o).size.w as f64)
-            .unwrap_or(0.0)
+    fn working_area_width(&self, output: &Output) -> f64 {
+        self.ewm.get_working_area(output).size.w as f64
     }
 
     /// Three-finger swipe begin: arm the deadzone; other finger counts pass through.
@@ -1166,8 +1164,8 @@ impl State {
                     if self.ewm.frames_hidden() {
                         return;
                     }
-                    if let Some(out) = self.ewm.active_output() {
-                        if let Some(strip) = self.ewm.frame_set.mapped_strip_mut(&out) {
+                    if let Some(out) = self.ewm.active_output().cloned() {
+                        if let Some(strip) = self.ewm.layout.strip_mut(&out) {
                             strip.gesture_begin();
                         }
                         self.ewm.gesture.active_output = Some(out);
@@ -1190,12 +1188,10 @@ impl State {
             let w = self.working_area_width(&out);
             // Zoomed-out content still follows the fingers on screen.
             let dx = dx / self.ewm.overview.zoom();
-            if let Some(strip) = self.ewm.frame_set.mapped_strip_mut(&out) {
+            if let Some(strip) = self.ewm.layout.strip_mut(&out) {
                 strip.gesture_update(dx, timestamp, w);
             }
-            if let Some(o) = self.ewm.find_mapped_output(&out) {
-                self.ewm.queue_redraw(&o);
-            }
+            self.ewm.queue_redraw(&out);
             return;
         }
 
@@ -1432,8 +1428,7 @@ impl State {
             lookup_configs(&self.ewm.input_configs, device_name, DeviceType::Tablet);
 
         if resolve!(device_cfg, type_cfg, map_to_focused_output, false) {
-            let name = self.ewm.active_output()?;
-            self.ewm.mapped_output_by_name(&name)
+            self.ewm.active_output()
         } else {
             self.configured_output(device_cfg, type_cfg)
         }
@@ -1639,7 +1634,7 @@ impl State {
         device_cfg
             .and_then(|c| c.map_to_output.as_deref())
             .or_else(|| type_cfg.and_then(|c| c.map_to_output.as_deref()))
-            .and_then(|name| self.ewm.mapped_output_by_name(name))
+            .and_then(|name| self.ewm.layout.output(name))
     }
 }
 

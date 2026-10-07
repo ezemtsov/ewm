@@ -143,14 +143,10 @@ impl CompositorHandler for State {
                     .unwrap_or((false, None));
                 let parent_id = parent.and_then(|wl| self.ewm.surface_id(&wl));
                 let output = self.ewm.active_output();
-                let frame_surface_id = self
-                    .ewm
-                    .resolve_app_host_frame(parent_id, output.as_deref());
+                let frame_surface_id = self.ewm.resolve_app_host_frame(parent_id, output);
                 // Size hint for floating placement, dropped when it fills the working area.
-                let working_area = output
-                    .as_deref()
-                    .and_then(|name| self.ewm.mapped_output_by_name(name))
-                    .map(|o| self.ewm.get_working_area(o));
+                let working_area = output.map(|o| self.ewm.get_working_area(o));
+                let output = output.map(smithay::output::Output::name);
                 let (width, height) = self
                     .ewm
                     .window(id)

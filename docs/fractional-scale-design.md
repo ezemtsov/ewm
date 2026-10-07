@@ -138,7 +138,7 @@ Scale is sent at every surface lifecycle point:
 | Lifecycle Event | Function | What Happens |
 |----------------|----------|-------------|
 | Toplevel created | `handle_new_toplevel()` | `send_scale_transform` + direct `output.enter()` |
-| Subsurface created | `new_subsurface()` | `propagate_preferred_scale` from root surface |
+| Subsurface created | `new_subsurface()` | `send_scale_transform` with the root surface's output |
 | Popup initial commit | `commit()` | `output_for_popup` -> `send_scale_transform` |
 | Layer surface created | `new_layer_surface()` | `send_scale_transform` with output's scale |
 | Lock surface created | `configure_lock_surface()` | `send_scale_transform` with output's scale |
@@ -202,7 +202,8 @@ pub fn cleanup_dead_windows(&mut self) {
 Output association happens at two points:
 
 **1. Window creation** (`handle_new_toplevel`): Direct `Output::enter` before the
-client's first commit. Cannot use `SpaceElement::output_enter` because that calls
+client's first commit, for Emacs frames through `reconcile_output_entries` as soon
+as the frame is placed. Cannot use `SpaceElement::output_enter` because that calls
 `output_update` which sends `output.leave()` for uncommitted surfaces.
 
 ```rust
@@ -219,23 +220,15 @@ if let Some(output) = scale_output {
 ```
 
 **2. Layout positioning** (`Layout` command): When Emacs declares the frame
-layout, `apply_layout` diffs each output's old vs new surface ID sets and
-sends `output.enter()`/`output.leave()` + scale/transform for each change:
+layout, `apply_layout` runs `reconcile_output_entries` per output, which
+compares each surface's recorded outputs with what the monitor now shows:
 
 ```rust
-// In apply_layout(), per output:
-// Surfaces added to this output get enter + scale
-for &id in &added {
-    if let Some(window) = self.window(id) {
-        output.enter(&surface);
-        send_scale_transform(surface, data, scale, transform);
-    }
-}
-// Surfaces removed from this output get leave
-for &id in &removed {
-    if let Some(window) = self.window(id) {
-        output.leave(&surface);
-    }
+// Ewm::reconcile_output_entries, per output:
+match (surface.outputs.contains(&name), shown.contains(id)) {
+    (true, false) => leave_output_for_window(&surface.window, output),
+    (false, true) => enter_output_for_window(&surface.window, output), // sets scale first
+    _ => {}
 }
 ```
 
@@ -244,36 +237,12 @@ for &id in &removed {
 Subsurfaces and xdg_popups are separate `wl_surface` objects that don't automatically
 inherit scale from their parent. Each needs explicit scale notification.
 
-### Subsurfaces: `propagate_preferred_scale`
+### Subsurfaces
 
 Firefox creates `wp_fractional_scale_v1` on a **subsurface**, not the toplevel.
 Without `preferred_scale` on the subsurface, Firefox's CSS DPR defaults to 1.
-
-The `CompositorHandler::new_subsurface` callback and popup handling both use
-`propagate_preferred_scale()`, a shared helper that walks from parent to root
-surface and copies the stored `preferred_scale`:
-
-```rust
-pub fn propagate_preferred_scale(surface: &WlSurface, parent: &WlSurface) {
-    let mut root = parent.clone();
-    while let Some(p) = get_parent(&root) {
-        root = p;
-    }
-    let root_scale = with_states(&root, |data| {
-        with_fractional_scale(data, |state| state.preferred_scale())
-    });
-    if let Some(scale) = root_scale {
-        with_states(surface, |data| {
-            with_fractional_scale(data, |state| {
-                state.set_preferred_scale(scale);
-            });
-        });
-    }
-}
-```
-
-This stores the value in Smithay's per-surface data map. When the client later
-calls `get_fractional_scale`, Smithay finds the stored value and sends it.
+`CompositorHandler::new_subsurface` resolves the root surface's output and sends
+that output's scale and transform to the new subsurface with `send_scale_transform`.
 
 ### Popups: `output_for_popup` + `send_scale_transform`
 
@@ -404,10 +373,10 @@ emacsclient --socket-name=vt2 -e '(ewm-configure-output "DP-1" :scale 1.5)'
 | Scale notification | `utils.rs` | `send_scale_transform()` |
 | Coordinate helpers | `utils.rs` | `to_physical_precise_round`, `round_logical_in_physical`, `output_size` |
 | Scale rounding | `backend/mod.rs` | `closest_representable_scale()` |
-| Output association | `layout/mod.rs` | `apply_layout()`, `cleanup_dead_windows()` |
-| Scale propagation | `utils.rs` | `propagate_preferred_scale()` |
-| Subsurface handler | `lib.rs` | `CompositorHandler::new_subsurface()` |
-| Popup output lookup | `lib.rs` | `output_for_popup()` |
+| Output association | `layout/mod.rs` | `apply_layout()`, `reconcile_output_entries()` |
+| Dead window sweep | `lib.rs` | `cleanup_dead_windows()` |
+| Subsurface handler | `handlers/compositor.rs` | `CompositorHandler::new_subsurface()` |
+| Popup output lookup | `handlers/xdg_shell.rs` | `output_for_popup()` |
 | Toplevel setup | `lib.rs` | `handle_new_toplevel()` |
 | Bulk notification | `lib.rs` | `send_scale_transform_to_output_surfaces()` |
 | Lock surface | `lib.rs` | `configure_lock_surface()` |

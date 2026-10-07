@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use ewm_core::event::{Event, OutputInfo, OutputMode, TextInputKey};
 
-const VARIANTS: usize = 35;
+const VARIANTS: usize = 34;
 
 /// Exhaustive by construction: a new variant does not compile until it is numbered here.
 fn variant(event: &Event) -> usize {
@@ -40,12 +40,11 @@ fn variant(event: &Event) -> usize {
         Event::Environment { .. } => 26,
         Event::FrameShown { .. } => 27,
         Event::FrameHidden { .. } => 28,
-        Event::FrameMoved { .. } => 29,
-        Event::ActivateSurface { .. } => 30,
-        Event::Overview { .. } => 31,
-        Event::Hide { .. } => 32,
-        Event::FullscreenRequest { .. } => 33,
-        Event::UnfullscreenRequest { .. } => 34,
+        Event::ActivateSurface { .. } => 29,
+        Event::Overview { .. } => 30,
+        Event::Hide { .. } => 31,
+        Event::FullscreenRequest { .. } => 32,
+        Event::UnfullscreenRequest { .. } => 33,
     }
 }
 
@@ -76,13 +75,13 @@ fn every_event() -> Vec<Event> {
         Event::New {
             id: 7,
             app: "Alacritty".into(),
-            output: None,
+            seq: None,
             pid: 4242,
         },
         Event::New {
             id: 1,
             app: "emacs".into(),
-            output: Some("eDP-1".into()),
+            seq: Some(3),
             pid: 4000,
         },
         Event::Mapped {
@@ -192,11 +191,6 @@ fn every_event() -> Vec<Event> {
         },
         Event::FrameShown { id: 1 },
         Event::FrameHidden { id: 1 },
-        Event::FrameMoved {
-            id: 1,
-            output: "DP-1".into(),
-            home_output: "BOE 0x0a1b".into(),
-        },
         Event::Overview { open: true },
         Event::Overview { open: false },
         Event::Hide { hidden: true },

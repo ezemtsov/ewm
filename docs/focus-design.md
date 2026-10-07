@@ -52,17 +52,22 @@ So: an Emacs frame is one surface (the frame itself).  An external application
 is one surface that might appear as zero, one, or many views inside Emacs
 frames.
 
-## The layout authority and the focus authority
+## The contents authority and the placement authority
 
 Given the mapping, who decides where everything goes?
 
-Lisp decides layout.  Emacs is, after all, a window manager: `split-window`,
+Lisp decides contents.  Emacs is, after all, a window manager: `split-window`,
 `display-buffer-alist`, `tab-bar-mode`, every layout-shaping mechanism
 already exists there and is configured to a fault by every user.  Trying
 to take that away would mean reimplementing window management twice.  So
-lisp ships a description of the layout to the compositor: per output, an
-ordered list of Emacs frames; per frame, the views inside it with their
-geometry.
+lisp ships a description of what each frame shows to the compositor: per
+frame, the views inside it with their geometry.
+
+The compositor decides placement.  Which output a frame is on, its slot in
+the strip and where a float sits are compositor state.  Lisp sends intents
+(`ewm-prepare-frame`, `ewm-move-frame-module`) and reads placement back through
+snapshot queries (`ewm-get-strip-frame-ids`, `ewm-get-active-frame-id`,
+`ewm-get-frame-output`).
 
 The compositor decides keyboard focus.  This is forced: Wayland's keyboard
 state lives in the compositor, and intercepted keys (like `C-x`) need to
@@ -70,18 +75,18 @@ be re-routed *atomically with the key forwarding* -- there's no time to
 defer it.  So the compositor holds two ids: which Emacs frame is focused,
 and which view inside that frame is the keyboard target.
 
-These authorities are not symmetric.  Layout is data that flows mostly
-one way (lisp -> compositor).  Focus is interactive and flows both ways:
-lisp can request a focus change ("focus this view"), but the compositor
-makes the call and tells lisp what happened.
+These authorities are not symmetric.  Contents flow one way (lisp ->
+compositor).  Placement and focus are interactive and flow both ways:
+lisp can request a change ("focus this view", "move this frame"), but the
+compositor makes the call and tells lisp what happened.
 
 ```
  ┌──────────────────────────┐  module commands  ┌──────────────────────────┐
  │           Emacs          │ ─────────────────► │        Compositor        │
  │     (lisp; Emacs main    │   Layout           │      (Rust; thread       │
- │         thread)          │   FocusView        │      inside Emacs)       │
+ │         thread)          │   FocusTarget      │      inside Emacs)       │
  │                          │   FocusOutputDir   │                          │
- │   layout authority       │                    │    focus authority       │
+ │   contents authority     │                    │    focus authority       │
  │   frame / window tree    │                    │    Wayland keyboard      │
  │   buffer ↔ view ↔        │      pipe          │    stored focus pair     │
  │   surface mapping        │ ◄───────────────── │    + overlay state       │
@@ -97,9 +102,11 @@ left-to-right sequence of Emacs frames.  Only one frame is "on-screen" at
 a time per output, and a keybind slides between them.  Frames in the
 strip are workspaces, more or less.
 
-Inside a frame, Emacs's own window splits position the views.  The
-compositor renders each view at the screen rect of the Emacs window
-that displays it.
+The compositor owns the strip.  Frames enter it at `new_toplevel` where
+lisp asked, move along it with `ewm-move-frame-module`, and move with their
+output on hotplug.  Inside a frame, Emacs's own window splits position
+the views, and that is the description lisp sends.  The compositor
+renders each view at the screen rect of the Emacs window that displays it.
 
 So layout has three nested layers:
 
@@ -107,10 +114,9 @@ So layout has three nested layers:
 output -> strip (ordered Emacs frames) -> frame (views in window splits)
 ```
 
-The compositor doesn't manage any of this -- it receives it as a
-description.  But it does have to be able to *reason about* it: "which
-frame is the user looking at?", "which view should keys go to?", "what
-moved between layout updates?".
+The compositor has to *reason about* all three: "which frame is the user
+looking at?", "which view should keys go to?", "what moved between layout
+updates?".
 
 Strip-active transitions also gate Emacs's own paint cost: every change
 to a strip's active slot emits `FrameShown` / `FrameHidden` events that
@@ -221,8 +227,9 @@ Always:
    frame than the focused one.
 3. **If no frame is focused, no view is focused either.**  The
    "nothing is focused" state is consistent at both levels.
-4. **Each frame lives on exactly one output's strip.**  Cross-output
-   migration moves a frame; it does not duplicate it.
+4. **Each frame sits in exactly one place.**  One output's strip or
+   floating space, or the parked pool.  A move takes the frame along, it
+   does not duplicate it (`Layout::verify_invariants`).
 5. **The focused frame is the active frame of its strip.**  Strip
    navigation and focus stay in lockstep.
 6. **A frame's selected view, when set, is one of that frame's own
@@ -240,9 +247,10 @@ After specific operations:
    may move to Emacs but the capture command preserves the stored
    focused frame/view pair.
 9. **Applying a layout never removes a frame.**  Frames go away only
-   through `handle_toplevel_destroyed`.
-10. **Removing an output evicts its strip.**  After `remove_output`,
-   there is no strip entry for that output, and focus has hopped to
+   through `handle_toplevel_destroyed_by_id`.
+10. **Detaching an output moves its frames whole.**  After
+   `detach_output`, the output has no monitor, its frames sit on the
+   next output in order or in the parked pool, and focus has hopped to
    a surviving frame if any exist.
 11. **A layout changes no frame's placement.**  `apply_layout(frames)`
     leaves every strip's frame set and order as they were. It replaces
@@ -250,7 +258,7 @@ After specific operations:
     leaves out. Frames enter a strip at `new_toplevel` and move only
     through compositor operations.
 12. **Destruction is authoritative.**  After
-    `handle_toplevel_destroyed`, the frame's surface_id is gone from
+    `handle_toplevel_destroyed_by_id`, the frame's surface_id is gone from
     every strip.
 
 The pure `resolve_keyboard_focus_target` helper (lock > layer >
@@ -304,21 +312,16 @@ brittle.
 
 A few small decisions buy a lot of robustness:
 
-**The compositor eagerly inserts new Emacs frames into the strip.**  When
-the Wayland surface is born, the compositor doesn't wait for lisp's first
-layout-refresh -- it constructs a placeholder frame in the target output's
-strip immediately, using the deterministic view id derivation described
-above.  This means "is this an Emacs frame?" is answerable from strip
-membership alone, without a separate registry.  No dual state, no
-synchronization rule between two data structures.
+**Frames enter the layout once, at `new_toplevel`.**  When the Wayland
+surface is born, the compositor places the frame where `ewm-prepare-frame`
+said, before lisp's first layout arrives.  This means "is this an Emacs
+frame?" is answerable from the layout alone, without a separate registry.
+No dual state, no synchronization rule between two data structures.
 
-**Layouts merge into strips, they don't replace them.**  When lisp ships a
-layout, the compositor updates fields of existing frames and adds any new
-frames.  Frames in the strip that aren't in the layout are kept.  They go
-away only when their wl_surface is destroyed -- a separate, authoritative
-signal.  This lets eager-inserted placeholders survive a layout refresh
-that races ahead of lisp's own bookkeeping, and it lets lisp's layout be
-"advisory" without each transient miss costing the user a frame.
+**A layout refills contents, it never places.**  When lisp ships a layout,
+the compositor refills the frames it names and empties the frames it
+leaves out.  It adds, moves and removes nothing.  Frames go away only when
+their wl_surface is destroyed, a separate, authoritative signal.
 
 **Per-frame selected-view-id replaces a per-entry focused flag.**  An
 older design carried a "focused" flag on each layout entry, recomputed
@@ -338,11 +341,10 @@ issuing another focus change -- echo loop.  EWM overrides Emacs's
 focus-frame primitive to bypass `x-focus-frame` and use a direct module
 command instead.
 
-**Destruction is authoritative; layout is advisory.**  A frame in the
-strip but not in the latest layout is preserved.  A frame whose
-wl_surface is destroyed is removed everywhere, immediately.  This neatly
-separates "lisp may not have caught up" from "the thing is actually
-gone".
+**Destruction is authoritative.**  A frame the latest layout leaves out
+keeps its place, emptied, until its wl_surface is destroyed, and then it
+is removed everywhere, immediately.  This neatly separates "lisp has not
+caught up" from "the thing is actually gone".
 
 ## Modal input states
 

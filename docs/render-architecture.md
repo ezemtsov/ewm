@@ -65,10 +65,10 @@ impl State {
         // 4. Render queued outputs, focused first. Between outputs, check for
         //    commands that arrived during render; process them and defer
         //    remaining redraws (picked up next VBlank cycle).
-        let focused = self.ewm.get_focused_output();
+        let focused = self.ewm.focused_output().cloned();
         let mut rendered_focused = false;
-        while let Some(output) = self.ewm.next_queued_redraw(focused.as_deref()) {
-            let is_focused = focused.as_deref() == Some(output.name().as_str());
+        while let Some(output) = self.ewm.next_queued_redraw(focused.as_ref()) {
+            let is_focused = focused.as_ref() == Some(&output);
             if rendered_focused && !is_focused && self.process_pending_commands() {
                 break;
             }
@@ -393,7 +393,7 @@ slot of their strip:
   schedules one catch-up paint.
 - The compositor emits `Event::FrameShown` / `Event::FrameHidden` on every
   strip-active transition (`activate_frame`, `apply_layout`,
-  `remove_emacs_frame_from_strip`, gesture-swipe-end, and new toplevel
+  `remove_emacs_frame`, gesture-swipe-end, and new toplevel
   insertion).  Each call site snapshots the active id before the
   mutation and compares after, so the compositor doesn't carry any
   "previously shown" state.

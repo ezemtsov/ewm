@@ -77,7 +77,7 @@ fn fullscreen_request_from_a_float_is_handed_to_emacs() {
         matches!(requests[..], [Event::FullscreenRequest { id: a }, Event::UnfullscreenRequest { id: b }] if a == sid && b == sid),
         "{requests:?}"
     );
-    assert!(!fix.ewm_ref().is_surface_fullscreen(sid));
+    assert!(!fix.ewm_ref().layout.is_surface_fullscreen(sid));
     assert!(!configured_sizes(&mut client).contains(&(1920, 1080)));
 }
 
@@ -101,7 +101,7 @@ fn tiled_selection_covers_the_output() {
 
     assert!(configured_sizes(&mut client).contains(&(1920, 1080)));
     let ewm = fix.ewm_ref();
-    assert!(ewm.is_surface_fullscreen(sid));
+    assert!(ewm.layout.is_surface_fullscreen(sid));
     // A 400x300 window centered on a 1920x1080 output.
     assert_eq!(
         ewm.surface_view_origins(sid),

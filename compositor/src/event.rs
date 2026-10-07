@@ -66,13 +66,13 @@ pub enum Event {
     /// Compositor is ready
     #[serde(rename = "ready")]
     Ready,
-    /// New surface created; the buffer is created now and placed at `Mapped`.
+    /// New surface created. The buffer is created now and placed at `Mapped`.
     #[serde(rename = "new")]
     New {
         id: u64,
         app: String,
-        /// Emacs toplevels only.
-        output: Option<String>,
+        /// Emacs frames only: the `ewm-frame-seq` the surface belongs to.
+        seq: Option<u64>,
         pid: i32,
     },
     /// App surface mapped: placed once, floating (`open_floating`) or tiled in `frame_surface_id`.
@@ -199,15 +199,4 @@ pub enum Event {
     /// Emacs frame left the active strip slot.
     #[serde(rename = "frame_hidden")]
     FrameHidden { id: u64 },
-    /// Emacs frame was moved to another compositor output.
-    ///
-    /// `output` is the frame's current connector; `home_output` is its stable
-    /// home identity (make/model/serial, or connector when unavailable), the
-    /// output it returns to on reconnect.
-    #[serde(rename = "frame_moved")]
-    FrameMoved {
-        id: u64,
-        output: String,
-        home_output: String,
-    },
 }

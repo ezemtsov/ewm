@@ -268,10 +268,6 @@ impl Frame {
         Some((previous, next))
     }
 
-    pub fn clear_fullscreen(&mut self) -> Option<FullscreenEntry> {
-        self.fullscreen.take()
-    }
-
     pub fn clear_fullscreen_entry(&mut self, entry_id: LayoutEntryId) -> Option<FullscreenEntry> {
         if self.entry_fullscreen(entry_id) {
             self.fullscreen.take()
@@ -280,22 +276,46 @@ impl Frame {
         }
     }
 
-    pub fn validate_fullscreen(&mut self) -> Option<FullscreenEntry> {
-        let fullscreen = self.fullscreen?;
-        if self.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id) {
-            None
-        } else {
-            self.fullscreen.take()
+    /// Whether the fullscreen entry, if any, still shows its surface.
+    pub fn fullscreen_is_live(&self) -> bool {
+        self.fullscreen.is_none_or(|fullscreen| {
+            self.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id)
+        })
+    }
+
+    /// Drop a fullscreen whose entry no longer shows its surface.
+    pub fn validate_fullscreen(&mut self) {
+        if !self.fullscreen_is_live() {
+            self.fullscreen = None;
         }
     }
 
-    pub fn preserve_compositor_view_state_from(&mut self, previous: &Frame) {
-        self.fullscreen = previous.fullscreen.filter(|fullscreen| {
-            self.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id)
-        });
+    /// Drop a selection that names none of the entries.
+    pub fn validate_selection(&mut self) {
+        if self
+            .selected_entry_id
+            .is_some_and(|sel| !self.entries.iter().any(|entry| entry.id == sel))
+        {
+            self.selected_entry_id = None;
+        }
     }
 
-    pub fn clear_compositor_view_state(&mut self) {
+    /// Take `new`'s contents, keeping the name, slot animation and fullscreen that still apply.
+    pub fn refill(&mut self, mut new: Frame) {
+        new.validate_selection();
+        if new.workspace_name.is_none() {
+            new.workspace_name = self.workspace_name.take();
+        }
+        new.move_anim = self.move_anim.take();
+        new.fullscreen = self.fullscreen;
+        *self = new;
+        self.validate_fullscreen();
+    }
+
+    /// Empty the frame as a layout that leaves it out does.
+    pub fn clear_contents(&mut self) {
+        self.entries.clear();
+        self.selected_entry_id = None;
         self.fullscreen = None;
     }
 
@@ -438,6 +458,14 @@ impl Strip {
         self.frames.iter().position(|f| f.surface_id == surface_id)
     }
 
+    pub fn frame_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.frames.iter().map(|frame| frame.surface_id)
+    }
+
+    pub fn active_frame_id(&self) -> Option<u64> {
+        self.active_frame().map(|frame| frame.surface_id)
+    }
+
     pub fn push_frame(&mut self, frame: Frame) {
         self.frames.push(frame);
     }
@@ -461,7 +489,7 @@ impl Strip {
             return;
         }
         let view_pos = self.view_pos();
-        let active_id = self.active_frame().map(|f| f.surface_id);
+        let active_id = self.active_frame_id();
         let from_x = self.column_x(from);
         let stride = self.stride(&self.frames[from]);
         let frame = self.frames.remove(from);
@@ -502,7 +530,7 @@ impl Strip {
 
     /// Pull out the frames `take` selects; the active frame stays active when it stays.
     pub fn drain_frames(&mut self, take: impl FnMut(&Frame) -> bool) -> Vec<Frame> {
-        let active_id = self.active_frame().map(|f| f.surface_id);
+        let active_id = self.active_frame_id();
         let (taken, kept): (Vec<_>, Vec<_>) =
             mem::take(&mut self.frames).into_iter().partition(take);
         self.frames = kept;
@@ -611,19 +639,9 @@ impl Strip {
         self.frames.iter().flat_map(|f| f.entries.iter())
     }
 
-    /// Mutable flat iterator over all entries across all frames.
-    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
-        self.frames.iter_mut().flat_map(|f| f.entries.iter_mut())
-    }
-
     /// Surface-backed entries across all frames.
     pub fn surface_entries(&self) -> impl Iterator<Item = &LayoutEntry> {
         self.entries().filter(|entry| entry.surface.is_some())
-    }
-
-    /// Mutable surface-backed entries across all frames.
-    pub fn surface_entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
-        self.entries_mut().filter(|entry| entry.surface.is_some())
     }
 
     pub fn active_frame(&self) -> Option<&Frame> {
@@ -635,65 +653,23 @@ impl Strip {
             .is_some_and(|frame| frame.fullscreen.is_some())
     }
 
-    /// Entries on the active (on-screen at rest) frame only.
-    pub fn active_entries(&self) -> impl Iterator<Item = &LayoutEntry> {
-        self.active_frame()
-            .into_iter()
-            .flat_map(|f| f.entries.iter())
-    }
-
-    pub fn active_entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
-        let idx = self.active_idx;
-        self.frames
-            .get_mut(idx)
-            .into_iter()
-            .flat_map(|f| f.entries.iter_mut())
-    }
-
-    /// Surface-backed entries on the active frame only.
-    pub fn active_surface_entries(&self) -> impl Iterator<Item = &LayoutEntry> {
-        self.active_entries()
-            .filter(|entry| entry.surface.is_some())
-    }
-
-    pub fn active_surface_entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
-        self.active_entries_mut()
-            .filter(|entry| entry.surface.is_some())
-    }
-
-    /// Merge a fresh Emacs layout into this strip.
-    ///
-    /// Frames are updated in place so their slot and move animations survive.
-    /// A frame the layout leaves out keeps its slot until its Wayland destroy
-    /// arrives, but its layout entries are cleared because views belong to the
-    /// latest layout declaration. Frames not in the strip are ignored.
+    /// Refill the frames this strip holds from `frames`, emptying the ones it leaves out.
     pub fn merge_layout_frames(&mut self, frames: Vec<Frame>) {
         let named: HashSet<u64> = frames.iter().map(|frame| frame.surface_id).collect();
 
-        for mut new_frame in frames {
-            let Some(existing) = self
+        for new_frame in frames {
+            if let Some(existing) = self
                 .frames
                 .iter_mut()
                 .find(|frame| frame.surface_id == new_frame.surface_id)
-            else {
-                continue;
-            };
-            let preserved_anim = existing.move_anim.clone();
-            let preserved_workspace_name = existing.workspace_name.clone();
-            new_frame.clear_compositor_view_state();
-            new_frame.preserve_compositor_view_state_from(existing);
-            *existing = new_frame;
-            if existing.workspace_name.is_none() {
-                existing.workspace_name = preserved_workspace_name;
+            {
+                existing.refill(new_frame);
             }
-            existing.move_anim = preserved_anim;
         }
 
         for frame in &mut self.frames {
             if !named.contains(&frame.surface_id) {
-                frame.entries.clear();
-                frame.selected_entry_id = None;
-                frame.clear_compositor_view_state();
+                frame.clear_contents();
             }
         }
     }
@@ -905,7 +881,7 @@ mod tests {
     }
 
     fn frame_ids(strip: &Strip) -> Vec<u64> {
-        strip.frames.iter().map(|frame| frame.surface_id).collect()
+        strip.frame_ids().collect()
     }
 
     proptest! {
@@ -1079,14 +1055,14 @@ mod tests {
                 frame.surface_id = 100 + idx as u64;
             }
             let (from, to) = (raw_from % len, raw_to % len);
-            let active_id = strip.active_frame().unwrap().surface_id;
+            let active_id = strip.active_frame_id().unwrap();
             let before: Vec<(u64, f64)> = (0..len)
                 .map(|idx| (strip.frames[idx].surface_id, strip.screen_x_of_frame(idx)))
                 .collect();
 
             strip.move_frame(from, to);
 
-            prop_assert_eq!(strip.active_frame().unwrap().surface_id, active_id);
+            prop_assert_eq!(strip.active_frame_id().unwrap(), active_id);
             for (id, x) in before {
                 let idx = strip.index_of(id).unwrap();
                 prop_assert!((strip.screen_x_of_frame(idx) - x).abs() <= 1. / strip.scale);

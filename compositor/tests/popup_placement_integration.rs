@@ -28,7 +28,7 @@ fn scene() -> (Fixture, TestClient, Toplevel) {
     }
     fix.tile(HEAD, frames);
     fix.ewm().animations_clock.set_complete_instantly(true);
-    for strip in fix.ewm().frame_set.mapped_strips_mut() {
+    for strip in fix.ewm().layout.strips_mut() {
         strip.advance();
     }
     fix.roundtrip(&mut client);

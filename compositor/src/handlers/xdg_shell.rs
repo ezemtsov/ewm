@@ -282,8 +282,7 @@ impl Ewm {
 
     pub(crate) fn output_for_root(&self, root: &WlSurface) -> Option<Output> {
         if let Some(id) = self.surface_id(root) {
-            let output_name = self.surface_output_name(id)?;
-            return self.find_mapped_output(output_name);
+            return self.find_surface_output(id);
         }
 
         self.layer_for_root(root).map(|(output, _)| output)
@@ -304,10 +303,10 @@ impl Ewm {
     fn popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
         let location = self.preferred_entry_for_surface(id)?;
         let entry = location.entry;
-        let output = self.mapped_output_by_name(location.output_name)?;
+        let output = location.monitor.output();
         let output_geo = self.space.output_geometry(output)?;
 
-        if self.layout_entry_location_fullscreen(location) {
+        if location.fullscreen() {
             return Some(Rectangle::from_size(output_geo.size));
         }
 
@@ -325,7 +324,7 @@ impl Ewm {
 
     /// Working area in an Emacs frame's own coordinates.
     fn frame_popup_target_rect(&self, id: u64) -> Option<Rectangle<i32, Logical>> {
-        let output = self.mapped_output_by_name(self.frame_location(id)?.output_name)?;
+        let output = self.layout.frame_location(id)?.monitor.output();
         let output_geo = self.space.output_geometry(output)?;
         let working_area = self.get_working_area(output);
         let origin = self.emacs_frame_origin(id)?;
@@ -355,7 +354,7 @@ impl Ewm {
     /// The target comes from the layout entry position (not window.geometry())
     /// so centering offsets and CSD geometry don't affect placement.
     fn unconstrain_window_popup(&self, popup: &PopupKind, id: u64) {
-        let mut target = if self.is_emacs_frame(id) {
+        let mut target = if self.layout.has_frame(id) {
             self.frame_popup_target_rect(id)
         } else {
             self.popup_target_rect(id)

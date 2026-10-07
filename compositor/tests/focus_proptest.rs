@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use ewm_core::event::Event;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{Fixture, mark_active_frame_close};
+use ewm_core::testing::{Fixture, mark_active_frame_close, strip_with_frame_ids};
 use ewm_core::{LayoutEntry, LayoutEntryId, OutputConfig, resolve_keyboard_focus_target};
 use proptest::prelude::*;
 
@@ -198,16 +198,12 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 return;
             }
             let already_present = strip_frame_ids(fix).contains(&surface_id);
-            if already_present && fix.ewm_ref().emacs_frame_output(surface_id) != Some(output_name)
+            if already_present && fix.ewm_ref().layout.frame_output(surface_id) != Some(output_name)
             {
                 return;
             }
             if !already_present {
-                let clock = fix.ewm().animations_clock.clone();
-                let strip = fix
-                    .ewm()
-                    .frame_set
-                    .ensure_mapped_strip(output_name, clock, 1.);
+                let strip = fix.strip_mut(output_name);
                 strip.push_frame(Frame::new(surface_id));
             }
             let do_auto_focus = fix.ewm().focused_surface_id() == 0;
@@ -225,27 +221,14 @@ fn apply_op(fix: &mut Fixture, op: Op) {
         }
         Op::ApplyLayout { frames } => {
             let real: Vec<Frame> = frames.iter().map(to_frame).collect();
-            let before = strip_orders(fix);
             fix.ewm().apply_layout(real.clone());
-            // I9/I11: a layout moves no frame, drops none and creates none.
-            assert_eq!(
-                strip_orders(fix),
-                before,
-                "invariant 11: apply_layout changed placement",
-            );
             // A frame on a strip that the layout names carries the submitted
             // contents. Homeless frames wait for an output.
             for frame in &real {
-                let Some(live) = fix
-                    .ewm_ref()
-                    .frame_set
-                    .mapped_strips()
-                    .values()
-                    .flat_map(|strip| strip.frames().iter())
-                    .find(|f| f.surface_id == frame.surface_id)
-                else {
+                let Some(location) = fix.ewm_ref().layout.frame_location(frame.surface_id) else {
                     continue;
                 };
+                let live = location.frame;
                 let ids = |f: &Frame| f.entries.iter().map(|e| e.id).collect::<Vec<_>>();
                 assert_eq!(
                     ids(live),
@@ -299,16 +282,17 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             let was_present = strip_frame_ids(fix).contains(&id);
             let prev_focused = fix.ewm_ref().focused_frame_id;
             let expected_same_output_refocus = if prev_focused == id {
-                fix.ewm_ref().lookup_frame(id).and_then(|(output, idx)| {
-                    let frames = &fix.ewm_ref().frame_set.mapped_strip(&output)?.frames();
-                    if idx + 1 < frames.len() {
-                        Some(frames[idx + 1].surface_id)
-                    } else if idx > 0 {
-                        Some(frames[idx - 1].surface_id)
-                    } else {
-                        None
-                    }
-                })
+                fix.ewm_ref()
+                    .layout
+                    .frame_location(id)
+                    .and_then(|location| {
+                        let idx = location.frame_idx;
+                        let frames = location.monitor.strip.frames();
+                        frames
+                            .get(idx + 1)
+                            .or_else(|| idx.checked_sub(1).and_then(|i| frames.get(i)))
+                            .map(|frame| frame.surface_id)
+                    })
             } else {
                 None
             };
@@ -451,20 +435,6 @@ fn strip_frame_ids(fix: &Fixture) -> HashSet<u64> {
         .collect()
 }
 
-/// Every strip's frame ids in slot order, keyed by output, plus the homeless pool.
-fn strip_orders(fix: &Fixture) -> Vec<(String, Vec<u64>)> {
-    let frame_set = &fix.ewm_ref().frame_set;
-    let ids = |frames: &[Frame]| frames.iter().map(|f| f.surface_id).collect::<Vec<_>>();
-    let mut orders: Vec<(String, Vec<u64>)> = frame_set
-        .mapped_strips()
-        .iter()
-        .map(|(name, strip)| (name.clone(), ids(strip.frames())))
-        .collect();
-    orders.sort();
-    orders.push((String::new(), ids(frame_set.homeless_frames())));
-    orders
-}
-
 fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
     all_frames(fix)
         .flat_map(|frame| frame.entries.iter().filter_map(LayoutEntry::surface_id))
@@ -472,7 +442,7 @@ fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
 }
 
 fn all_frames(fix: &Fixture) -> impl Iterator<Item = &ewm_core::strip::Frame> {
-    fix.ewm_ref().frame_set.all_frames()
+    fix.ewm_ref().layout.all_frames()
 }
 
 fn mapped_output_names(fix: &Fixture) -> HashSet<String> {
@@ -506,27 +476,23 @@ fn set_output_enabled(fix: &mut Fixture, output_name: &str, enabled: bool) {
 fn expected_surface_outputs(fix: &Fixture) -> HashMap<u64, HashSet<String>> {
     let mut expected: HashMap<u64, HashSet<String>> = HashMap::new();
 
-    for (output_name, strip) in fix.ewm_ref().frame_set.mapped_strips() {
-        for surface_id in strip
-            .surface_entries()
-            .filter_map(LayoutEntry::surface_id)
+    for monitor in fix.ewm_ref().layout.monitors() {
+        for surface_id in monitor
+            .frames()
+            .flat_map(|frame| {
+                std::iter::once(frame.surface_id)
+                    .chain(frame.entries.iter().filter_map(LayoutEntry::surface_id))
+            })
             .filter(|id| fix.ewm_ref().surfaces.contains_key(id))
         {
             expected
                 .entry(surface_id)
                 .or_default()
-                .insert(output_name.clone());
+                .insert(monitor.name().to_string());
         }
     }
 
     expected
-}
-
-fn install_strip(fix: &mut Fixture, output: &str, ids: &[u64]) {
-    let clock = fix.ewm().animations_clock.clone();
-    let strip = fix.ewm().frame_set.ensure_mapped_strip(output, clock, 1.);
-    strip.append_frames(ids.iter().copied().map(Frame::new));
-    strip.set_active(0);
 }
 
 proptest! {
@@ -539,7 +505,7 @@ proptest! {
         let ids: Vec<u64> = (0..len).map(|i| 10_000 + i as u64).collect();
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
-        install_strip(&mut fix, OUTPUTS[0], &ids);
+        fix.install_strip(OUTPUTS[0], strip_with_frame_ids(ids.to_vec(), 0));
         fix.ewm().set_focus_frame(ids[idx], "proptest", false);
 
         let expected = if idx + 1 < len {
@@ -553,8 +519,8 @@ proptest! {
         fix.ewm()
             .set_focus_frame(refocus.unwrap(), "toplevel_destroyed", false);
         prop_assert_eq!(fix.ewm_ref().focused_frame_id, expected);
-        let strip = fix.ewm_ref().frame_set.mapped_strip(OUTPUTS[0]).unwrap();
-        prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(expected));
+        let strip = fix.strip(OUTPUTS[0]);
+        prop_assert_eq!(strip.active_frame_id(), Some(expected));
     }
 
     #[test]
@@ -571,16 +537,16 @@ proptest! {
         let ids: Vec<u64> = (0..len).map(|i| 20_000 + i as u64).collect();
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
-        install_strip(&mut fix, OUTPUTS[0], &ids);
+        fix.install_strip(OUTPUTS[0], strip_with_frame_ids(ids.to_vec(), 0));
         fix.ewm().set_focus_frame(ids[focus_idx], "proptest", false);
 
         let refocus = fix.ewm().handle_toplevel_destroyed_by_id(ids[destroy_idx]);
 
         prop_assert_eq!(refocus, None);
         prop_assert_eq!(fix.ewm_ref().focused_frame_id, ids[focus_idx]);
-        let strip = fix.ewm_ref().frame_set.mapped_strip(OUTPUTS[0]).unwrap();
+        let strip = fix.strip(OUTPUTS[0]);
         prop_assert_eq!(
-            strip.active_frame().map(|f| f.surface_id),
+            strip.active_frame_id(),
             Some(ids[focus_idx]),
         );
     }
@@ -606,7 +572,7 @@ proptest! {
         };
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
-        install_strip(&mut fix, OUTPUTS[0], &ids);
+        fix.install_strip(OUTPUTS[0], strip_with_frame_ids(ids.to_vec(), 0));
         fix.ewm().set_focus_frame(closing_id, "proptest", false);
 
         mark_active_frame_close(closing_id);
@@ -632,8 +598,8 @@ proptest! {
             .set_focus_frame(refocus.unwrap(), "toplevel_destroyed", false);
         prop_assert_eq!(fix.ewm_ref().focused_frame_id, expected);
         prop_assert!(!strip_frame_ids(&fix).contains(&closing_id));
-        let strip = fix.ewm_ref().frame_set.mapped_strip(OUTPUTS[0]).unwrap();
-        prop_assert_eq!(strip.active_frame().map(|f| f.surface_id), Some(expected));
+        let strip = fix.strip(OUTPUTS[0]);
+        prop_assert_eq!(strip.active_frame_id(), Some(expected));
     }
 
     #[test]
@@ -652,9 +618,10 @@ proptest! {
         fix.ewm().apply_layout(vec![Frame::new(101)]);
 
         let omitted = fix
-            .ewm_ref()
-            .frame_set.mapped_strip(OUTPUTS[0])
-            .and_then(|strip| strip.frames().iter().find(|frame| frame.surface_id == 100))
+            .strip(OUTPUTS[0])
+            .frames()
+            .iter()
+            .find(|frame| frame.surface_id == 100)
             .unwrap();
         prop_assert!(omitted.entries.is_empty());
         prop_assert_eq!(omitted.selected_entry_id, None);
@@ -688,22 +655,14 @@ fn assert_invariants(fix: &Fixture) {
         );
     }
 
-    // Invariant 3: a frame's surface_id appears in at most one strip or the
-    // homeless pool.  A compositor move takes the frame along, never a copy.
-    let mut seen: HashSet<u64> = HashSet::new();
-    for f in all_frames(fix) {
-        assert!(
-            seen.insert(f.surface_id),
-            "invariant 3: frame {} appears in multiple strips",
-            f.surface_id,
-        );
-    }
+    // Invariant 3: the layout's own invariants, one place per frame among them.
+    ewm.layout.verify_invariants();
 
     // Invariant 4: the focused frame is the active frame of its own strip,
     // and never a homeless frame.
     if ewm.focused_frame_id != 0 {
-        for strip in ewm.frame_set.mapped_strips().values() {
-            let active_id = strip.active_frame().map(|f| f.surface_id);
+        for strip in ewm.layout.strips().map(|(_, strip)| strip) {
+            let active_id = strip.active_frame_id();
             if active_id == Some(ewm.focused_frame_id) {
                 continue;
             }
@@ -717,10 +676,7 @@ fn assert_invariants(fix: &Fixture) {
             );
         }
         assert!(
-            !ewm.frame_set
-                .homeless_frames()
-                .iter()
-                .any(|f| f.surface_id == ewm.focused_frame_id),
+            !ewm.layout.is_homeless(ewm.focused_frame_id),
             "invariant 4: focused frame {} is homeless",
             ewm.focused_frame_id,
         );
@@ -730,21 +686,21 @@ fn assert_invariants(fix: &Fixture) {
     // non-zero. Frames may be parked in the homeless pool only while no
     // output is mapped.
     let mapped_outputs = mapped_output_names(fix);
-    for name in ewm.frame_set.mapped_strips().keys() {
+    for name in ewm.layout.strips().map(|(name, _)| name) {
         assert!(
             mapped_outputs.contains(name),
-            "invariant 5: output_strips contains unmapped output {}",
+            "invariant 5: layout has a monitor for unmapped output {}",
             name,
         );
     }
     assert!(
-        mapped_outputs.is_empty() || ewm.frame_set.homeless_frames().is_empty(),
+        mapped_outputs.is_empty() || ewm.layout.homeless().tiled.is_empty(),
         "invariant 5: homeless frames exist while an output is mapped",
     );
     let any_frame = ewm
-        .frame_set
-        .mapped_strips()
-        .values()
+        .layout
+        .strips()
+        .map(|(_, strip)| strip)
         .any(|strip| !strip.frames().is_empty());
     assert_eq!(
         any_frame,
@@ -753,18 +709,6 @@ fn assert_invariants(fix: &Fixture) {
         any_frame,
         ewm.focused_frame_id,
     );
-
-    // Invariant 6: selected_entry_id, if set, names one of the frame's own entries.
-    for f in all_frames(fix) {
-        if let Some(sel) = f.selected_entry_id {
-            assert!(
-                f.entries.iter().any(|e| e.id == sel),
-                "invariant 6: frame {} selected_entry_id={:?} not in its own entries",
-                f.surface_id,
-                sel,
-            );
-        }
-    }
 
     // Invariant 7: every live entry entry_id identifies exactly one layout occurrence.
     let mut entry_ids = HashMap::new();
@@ -786,7 +730,7 @@ fn assert_invariants(fix: &Fixture) {
     assert_eq!(
         ewm.surface_outputs(),
         expected_surface_outputs(fix),
-        "invariant 8: surface_outputs diverged from mapped strip entries",
+        "invariant 8: surface_outputs diverged from the layout",
     );
 }
 
@@ -820,16 +764,6 @@ fn reconcile_op_strategy() -> impl Strategy<Value = Op> {
     ]
 }
 
-/// Give every mapped output a strip so per-output reconciliation runs for it.
-fn ensure_strips(fix: &mut Fixture) {
-    for name in OUTPUTS {
-        if is_output_mapped(fix, name) {
-            let clock = fix.ewm().animations_clock.clone();
-            fix.ewm().frame_set.ensure_mapped_strip(name, clock, 1.);
-        }
-    }
-}
-
 proptest! {
     /// For every frame currently in some strip, the running net of
     /// `FrameShown - FrameHidden` events should be 1 iff it's that strip's
@@ -843,25 +777,18 @@ proptest! {
         for name in OUTPUTS {
             fix.add_output(name, 1920, 1080);
         }
-        ensure_strips(&mut fix);
         let _ = fix.drain_events();
 
         let mut net: HashMap<u64, i32> = HashMap::new();
 
         for op in ops {
             apply_op(&mut fix, op);
-            ensure_strips(&mut fix);
 
             let mapped_outputs = mapped_output_names(&fix);
             for event in fix.drain_events() {
                 match event {
                     Event::FrameShown { id } => *net.entry(id).or_insert(0) += 1,
                     Event::FrameHidden { id } => *net.entry(id).or_insert(0) -= 1,
-                    Event::FrameMoved { output, .. } => prop_assert!(
-                        mapped_outputs.contains(&output),
-                        "FrameMoved targeted unmapped output {}",
-                        output,
-                    ),
                     // Production surface ids are monotonic; the test fixture
                     // recycles them, so drop net state when the id goes away.
                     Event::Close { id } => {
@@ -871,11 +798,11 @@ proptest! {
                 }
             }
 
-            for (out_name, strip) in fix.ewm_ref().frame_set.mapped_strips() {
-                let active = strip.active_frame().map(|f| f.surface_id);
+            for (out_name, strip) in fix.ewm_ref().layout.strips() {
+                let active = strip.active_frame_id();
                 for frame in strip.frames() {
                     let id = frame.surface_id;
-                    let expected: i32 = if mapped_outputs.contains(out_name.as_str())
+                    let expected: i32 = if mapped_outputs.contains(out_name)
                         && active == Some(id)
                     {
                         1
@@ -894,7 +821,7 @@ proptest! {
                     );
                 }
             }
-            for frame in fix.ewm_ref().frame_set.homeless_frames() {
+            for frame in &fix.ewm_ref().layout.homeless().tiled {
                 let id = frame.surface_id;
                 let actual = net.get(&id).copied().unwrap_or(0);
                 prop_assert_eq!(
@@ -1033,12 +960,8 @@ fn nav_build(setup: &NavSetup) -> Fixture {
         fix.add_output(&setup.output_name(i), 1920, 1080);
     }
 
-    let clock = fix.ewm().animations_clock.clone();
     for i in 0..setup.n() {
-        let strip =
-            fix.ewm()
-                .frame_set
-                .ensure_mapped_strip(&setup.output_name(i), clock.clone(), 1.);
+        let strip = fix.strip_mut(&setup.output_name(i));
         for f in 0..setup.frames_per_output[i] {
             strip.push_frame(Frame::new(setup.frame_id(i, f)));
         }

@@ -115,8 +115,7 @@ use std::time::{Duration, Instant};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
-pub use layout::FrameSet;
-use layout::{EntryLocation};
+pub use layout::{Layout, Monitor, Placement};
 use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
 use serde::{Deserialize, Serialize};
 use smithay::backend::input::{InputTime, KeyState};
@@ -764,11 +763,8 @@ pub struct Ewm {
     next_surface_id: u64,
     title_flush_timer_token: Option<RegistrationToken>,
     last_emacs_keyboard_activity: Instant,
-    /// Compositor-owned Emacs frame set. Mapped strips are currently visible;
-    /// homeless frames wait for any output when none is mapped.
-    pub frame_set: FrameSet,
-    /// Per-output floating Emacs frame spaces, attached to the output's strip/workspace.
-    pub floating_spaces: HashMap<String, floating::FloatingSpace>,
+    /// Where every Emacs frame is: a monitor per mapped output, parked frames when none is.
+    pub layout: Layout,
     /// Clock every `Animation` reads, frozen at the target presentation time per redraw.
     pub animations_clock: animation::Clock,
     /// Zoomed-out strip view shared by all outputs.
@@ -879,9 +875,6 @@ pub struct Ewm {
     pub unmapped_layer_surfaces: std::collections::HashSet<WlSurface>,
     /// Layer surface with OnDemand keyboard interactivity that was clicked
     pub layer_shell_on_demand_focus: Option<DesktopLayerSurface>,
-
-    // Working area per output (non-exclusive zone from layer-shell surfaces)
-    pub working_areas: HashMap<String, Rectangle<i32, smithay::utils::Logical>>,
 
     // XDG activation state (allows apps to request focus)
     pub activation_state: XdgActivationState,
@@ -1212,8 +1205,7 @@ impl Ewm {
             next_surface_id: 1,
             title_flush_timer_token: None,
             last_emacs_keyboard_activity: Instant::now(),
-            frame_set: FrameSet::default(),
-            floating_spaces: HashMap::new(),
+            layout: Layout::new(animations_clock.clone()),
             overview: overview::Overview::new(animations_clock.clone()),
             hide: strip::ViewOffset::default(),
             animations_clock,
@@ -1261,7 +1253,6 @@ impl Ewm {
             layer_shell_state,
             unmapped_layer_surfaces: std::collections::HashSet::new(),
             layer_shell_on_demand_focus: None,
-            working_areas: HashMap::new(),
             activation_state,
             xdg_foreign_state,
             xdg_system_bell_state,
@@ -1373,20 +1364,12 @@ impl Ewm {
     /// Unmap a connected output while keeping its head available for
     /// output-management so it can be re-enabled later.
     pub(crate) fn disable_output(&mut self, output: &Output) {
-        let output_name = output.name();
         if self.space.output_geometry(output).is_none() {
             return;
         }
 
-        self.migrate_or_pool_output_frames(&output_name, output);
-        self.space.unmap_output(output);
-        self.sync_sorted_outputs();
-        self.refresh_cursor_outputs();
-        self.refresh_primary_assignments();
-        self.focus_mapped_frame_if_focused_output_unmapped(&output_name);
-        self.recalculate_output_size();
+        self.detach_output(output);
         self.active_outputs_dirty = true;
-        self.output_management_state.output_heads_changed = true;
         self.queue_redraw_all();
     }
 
@@ -1430,25 +1413,9 @@ impl Ewm {
             }
         }
 
-        self.migrate_or_pool_output_frames(&output_name, output);
-        self.space.unmap_output(output);
-        self.working_areas.remove(&output_name);
-
-        self.sync_sorted_outputs();
-        self.refresh_cursor_outputs();
-        self.focus_mapped_frame_if_focused_output_unmapped(&output_name);
-
+        self.detach_output(output);
         self.screencopy_state.remove_output(output);
-
-        // Prune dangling focus from the gone strip and hop to a survivor; I5.
-        self.prune_dangling_focus();
-        #[cfg(feature = "screencast")]
-        self.refresh_mapped_cast_outputs();
-        self.focus_any_frame_if_unfocused("output_removed");
-
-        self.recalculate_output_size();
         self.send_output_disconnected(&output_name);
-        self.output_management_state.output_heads_changed = true;
 
         info!("Output removed: {}", output_name);
     }
@@ -1483,7 +1450,7 @@ impl Ewm {
 
         let mut states = HashMap::new();
         for info in output_infos {
-            let output = self.mapped_output_by_name(&info.name);
+            let output = self.layout.output(&info.name);
             let geo = output.and_then(|o| self.space.output_geometry(o));
 
             let enabled = self
@@ -1558,8 +1525,9 @@ impl Ewm {
     #[cfg(feature = "screencast")]
     pub(crate) fn introspect_windows(&self) -> HashMap<u64, dbus::WindowProperties> {
         let mut windows = HashMap::new();
-        for (output_name, strip) in self.mapped_output_strips() {
-            for (frame_idx, frame) in strip.frames().iter().enumerate() {
+        for monitor in self.mapped_monitors() {
+            let output_name = monitor.name();
+            for (frame_idx, frame) in monitor.strip.frames().iter().enumerate() {
                 let workspace_name =
                     crate::protocols::workspace::frame_workspace_name(frame, frame_idx);
                 let frame_props = self.surfaces.get(&frame.surface_id).map(window_properties);
@@ -1599,17 +1567,13 @@ impl Ewm {
 
     /// Surface id receiving keyboard input.
     pub fn focused_surface_id(&self) -> u64 {
-        if let Some(entry_id) = self.focused_entry_id {
-            self.lookup_entry(entry_id)
-                .and_then(|location| location.surface_id)
-                .unwrap_or(self.focused_frame_id)
-        } else {
-            self.focused_frame_id
-        }
+        self.focused_entry_id
+            .and_then(|entry_id| self.layout.entry_surface_id(entry_id))
+            .unwrap_or(self.focused_frame_id)
     }
 
     pub fn set_surface_urgent(&mut self, surface_id: u64, urgent: bool) -> bool {
-        if surface_id == 0 || (urgent && self.is_emacs_frame(surface_id)) {
+        if surface_id == 0 || (urgent && self.layout.has_frame(surface_id)) {
             return false;
         }
         if urgent && self.focused_surface_id() == surface_id {
@@ -1631,7 +1595,7 @@ impl Ewm {
 
     pub fn mark_workspace_urgent(&mut self, frame_surface_id: Option<u64>) -> bool {
         let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id);
-        if frame_surface_id == 0 || !self.is_emacs_frame(frame_surface_id) {
+        if frame_surface_id == 0 || !self.layout.has_frame(frame_surface_id) {
             return false;
         }
         if self.focused_frame_id == frame_surface_id {
@@ -1648,75 +1612,54 @@ impl Ewm {
         self.focused_entry_id = entry_id;
     }
 
-    /// Focus the layout entry identified by `entry_id`.
-    pub fn set_focus_entry(&mut self, entry_id: LayoutEntryId, source: &str, notify_emacs: bool) {
-        let Some(location) = self.lookup_entry(entry_id) else {
-            return;
-        };
-        self.set_focus_entry_at(entry_id, location, source, notify_emacs);
-    }
-
-    fn set_focus_entry_at(
+    /// Focus the layout entry identified by `entry_id`. Returns its frame.
+    pub fn set_focus_entry(
         &mut self,
         entry_id: LayoutEntryId,
-        location: EntryLocation,
         source: &str,
         notify_emacs: bool,
-    ) {
+    ) -> Option<u64> {
+        let location = self.layout.entry_location(entry_id)?;
+        let frame_id = location.frame.surface_id;
         module::record_focus(
-            location.surface_id.unwrap_or(location.frame_surface_id),
+            location.entry.surface_id().unwrap_or(frame_id),
             source,
             None,
         );
-        if let Some(surface_id) = location.surface_id {
-            self.flush_pending_title_event(surface_id);
-        }
-        self.set_focus_state(location.frame_surface_id, Some(entry_id));
-        self.clear_focused_urgency();
-        self.activate_frame_at(
-            &location.output,
-            location.floating,
-            location.frame_surface_id,
-            location.frame_idx,
-        );
-        if notify_emacs {
-            self.queue_event(Event::Focus {
-                focus_id: entry_id,
-                x: None,
-                y: None,
-                pointer: false,
-            });
-        }
+        self.commit_focus(frame_id, Some(entry_id), entry_id, notify_emacs);
+        Some(frame_id)
     }
 
     /// Focus an Emacs frame, routing keyboard to its selected entry's surface if one exists.
     pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str, notify_emacs: bool) {
-        let Some(location) = self.frame_location(frame_surface_id) else {
+        let Some(location) = self.layout.frame_location(frame_surface_id) else {
             debug!("set_focus_frame({source}): unknown frame {frame_surface_id}");
             return;
         };
-        let output = location.output_name.to_string();
-        if self.mapped_output_by_name(&output).is_none() {
-            debug!("set_focus_frame({source}): output {output} not mapped");
-            return;
-        }
-        let idx = location.frame_idx;
-        let is_tiled = location.strip.is_some();
-        let frame_focus_id = location.frame.focus_id;
-        let selected_entry_id = location.frame.selected_entry_id;
+        let (focus_id, selected) = (location.frame.focus_id, location.frame.selected_entry_id);
         module::record_focus(frame_surface_id, source, None);
-        if let Some(surface_id) = selected_entry_id.and_then(|entry_id| {
-            self.lookup_entry(entry_id)
-                .and_then(|location| location.surface_id)
-        }) {
+        self.commit_focus(frame_surface_id, selected, focus_id, notify_emacs);
+    }
+
+    /// Focus `frame_id` with `entry_id` selected, then tell Emacs about `focus_id`.
+    fn commit_focus(
+        &mut self,
+        frame_id: u64,
+        entry_id: Option<LayoutEntryId>,
+        focus_id: FocusId,
+        notify_emacs: bool,
+    ) {
+        if let Some(surface_id) =
+            entry_id.and_then(|entry_id| self.layout.entry_surface_id(entry_id))
+        {
             self.flush_pending_title_event(surface_id);
         }
-        self.set_focus_state(frame_surface_id, selected_entry_id);
+        self.set_focus_state(frame_id, entry_id);
         self.clear_focused_urgency();
-        self.activate_frame_at(&output, !is_tiled, frame_surface_id, idx);
+        self.activate_frame(frame_id);
         if notify_emacs {
             self.queue_event(Event::Focus {
-                focus_id: frame_focus_id,
+                focus_id,
                 x: None,
                 y: None,
                 pointer: false,
@@ -1731,7 +1674,7 @@ impl Ewm {
 
     fn workspace_name_taken(&self, name: &str, except_frame: u64) -> bool {
         let name = name.to_lowercase();
-        self.frame_set.all_frames().any(|frame| {
+        self.layout.all_frames().any(|frame| {
             frame.surface_id != except_frame
                 && frame
                     .workspace_name
@@ -1756,7 +1699,7 @@ impl Ewm {
             return false;
         }
 
-        let Some(frame) = self.frame_set.frame_mut(frame_surface_id) else {
+        let Some(frame) = self.layout.frame_mut(frame_surface_id) else {
             warn!(
                 "rename_workspace: frame surface {} not found",
                 frame_surface_id,
@@ -1783,8 +1726,8 @@ impl Ewm {
             .unwrap_or_default();
         let scale = output.current_scale().fractional_scale();
         let shift = self
-            .frame_set
-            .mapped_strip(&output.name())
+            .layout
+            .strip(output)
             .map_or(0.0, strip::Strip::overview_shift)
             * progress;
         overview::Geometry::new(size, scale, self.overview.zoom(), shift)
@@ -1800,7 +1743,7 @@ impl Ewm {
     ) -> Option<(usize, Point<f64, Logical>)> {
         let working_area = self.get_working_area(output);
         let in_strip = in_content - working_area.loc.to_f64();
-        let strip = self.frame_set.mapped_strip(&output.name())?;
+        let strip = self.layout.strip(output)?;
         strip
             .frames_with_render_geo(
                 working_area.size.to_f64(),
@@ -1826,8 +1769,8 @@ impl Ewm {
         let slide = self.hide.current() * f64::from(output_geo.size.h);
         let in_content = in_output + Point::from((0., slide));
         let floating_frame = self
-            .floating_spaces
-            .get(&output.name())
+            .layout
+            .floating(&output)
             .and_then(|space| space.frame_under(in_content));
         if let Some((frame_id, rect)) = floating_frame {
             self.set_focus_frame_from_pointer(frame_id, "overview", in_content - rect.loc);
@@ -1835,7 +1778,7 @@ impl Ewm {
         } else if let Some((idx, pos_in_frame)) =
             self.overview_frame_under(&output, &geometry, in_content)
         {
-            self.overview_activate_frame(&output.name(), idx, pos_in_frame);
+            self.overview_activate_frame(&output, idx, pos_in_frame);
         } else if Rectangle::from_size(output_geo.size.to_f64()).contains(in_output) {
             self.overview_close();
         }
@@ -1844,12 +1787,12 @@ impl Ewm {
     /// Activate frame `idx` and close; the strip snaps onto it and the zoom carries the slide.
     fn overview_activate_frame(
         &mut self,
-        output_name: &str,
+        output: &Output,
         idx: usize,
         pos_in_frame: Point<f64, Logical>,
     ) {
         self.bake_overview_shifts();
-        let Some(strip) = self.frame_set.mapped_strip(output_name) else {
+        let Some(strip) = self.layout.strip(output) else {
             return;
         };
         let Some(target) = strip.frames().get(idx).map(|frame| frame.surface_id) else {
@@ -1860,7 +1803,7 @@ impl Ewm {
         let progress = self.overview.progress().unwrap_or(0.0);
         self.set_focus_frame_from_pointer(target, "overview", pos_in_frame);
         if progress > 0.01
-            && let Some(strip) = self.frame_set.mapped_strip_mut(output_name)
+            && let Some(strip) = self.layout.strip_mut(output)
         {
             strip.carry_slide_as_overview_shift(prev_view_pos, zoom, progress);
         }
@@ -1887,7 +1830,7 @@ impl Ewm {
     fn bake_overview_shifts(&mut self) {
         let progress = self.overview.progress();
         let zoom = self.overview.zoom();
-        for strip in self.frame_set.mapped_strips_mut() {
+        for strip in self.layout.strips_mut() {
             strip.bake_overview_shift(progress, zoom);
         }
     }
@@ -1907,19 +1850,7 @@ impl Ewm {
 
     /// Thaw every frame while the overview shows them all, or refreeze the inactive ones.
     fn set_inactive_frames_shown(&mut self, shown: bool) {
-        let ids: Vec<u64> = self
-            .frame_set
-            .mapped_strips()
-            .values()
-            .flat_map(|strip| {
-                let active = strip.active_frame().map(|f| f.surface_id);
-                strip
-                    .frames()
-                    .iter()
-                    .map(|f| f.surface_id)
-                    .filter(move |id| Some(*id) != active)
-            })
-            .collect();
+        let ids: Vec<u64> = self.layout.inactive_frame_ids().collect();
         for id in ids {
             self.queue_event(if shown {
                 Event::FrameShown { id }
@@ -1983,22 +1914,17 @@ impl Ewm {
         self.queue_redraw_all();
     }
 
-    /// End a strip swipe on `output_name`: snap to the nearest frame and focus it.
-    pub fn strip_gesture_end(&mut self, output_name: &str, working_w: f64) {
-        let prev_active_id = self
-            .frame_set
-            .mapped_strip(output_name)
-            .and_then(|s| s.active_frame())
-            .map(|f| f.surface_id);
-        let target = self.frame_set.mapped_strip_mut(output_name).and_then(|s| {
+    /// End a strip swipe on `output`: snap to the nearest frame and focus it.
+    pub fn strip_gesture_end(&mut self, output: &Output, working_w: f64) {
+        let prev_active_id = self.layout.active_frame_id(output);
+        let target = self.layout.strip_mut(output).and_then(|s| {
             s.gesture_end(working_w);
-            s.active_frame().map(|f| f.surface_id)
+            s.active_frame_id()
         });
-        self.reconcile_active_for_output(output_name, prev_active_id);
+        self.reconcile_active_for_output(output, prev_active_id);
         // A swipe that snaps back changes nothing; don't refocus.
         let target = target.filter(|&id| Some(id) != prev_active_id);
-        let output = self.find_mapped_output(output_name);
-        if let (Some(id), Some(output)) = (target, &output) {
+        if let Some(id) = target {
             if self.pointer_is_on_output(output) {
                 // The frame settles flush with the working area.
                 let output_loc = self
@@ -2015,9 +1941,7 @@ impl Ewm {
                 self.set_focus_frame(id, "gesture", true);
             }
         }
-        if let Some(output) = output {
-            self.queue_redraw(&output);
-        }
+        self.queue_redraw(output);
     }
 
     /// Focus a frame reached with the pointer; Emacs then anchors mouse-follows-focus.
@@ -2028,7 +1952,7 @@ impl Ewm {
         pos_in_frame: Point<f64, Logical>,
     ) {
         self.set_focus_frame(frame_surface_id, source, false);
-        if let Some(focus_id) = self.focus_id_of_frame(frame_surface_id) {
+        if let Some(focus_id) = self.layout.focus_id_of_frame(frame_surface_id) {
             self.queue_event(Event::Focus {
                 focus_id,
                 x: Some(pos_in_frame.x),
@@ -2041,26 +1965,23 @@ impl Ewm {
     fn refresh_mapped_cast_outputs(&mut self) {
         #[cfg(feature = "screencast")]
         {
-            self.introspect_windows_dirty = true;
-            let mut seen = HashSet::new();
-            self.casting.mapped_cast_output.clear();
-            for output in &self.sorted_outputs {
-                let Some(strip) = self.frame_set.mapped_strip(&output.name()) else {
-                    continue;
-                };
-                for entry in strip.entries() {
-                    seen.insert(entry.id);
-                    self.casting
-                        .mapped_cast_output
-                        .insert(entry.id, output.clone());
-                }
+            let live = || self.layout.strip_entry_outputs();
+            let current = &self.casting.mapped_cast_output;
+            let changed = live().count() != current.len()
+                || live().any(|(id, output)| current.get(&id) != Some(output));
+            if changed {
+                self.casting.mapped_cast_output =
+                    live().map(|(id, output)| (id, output.clone())).collect();
+                self.introspect_windows_dirty = true;
             }
             let sessions_to_stop: Vec<screencasting::CastSessionId> = self
                 .casting
                 .casts
                 .iter()
                 .filter_map(|cast| match cast.target {
-                    dbus::CastTarget::LayoutEntry { entry_id } if !seen.contains(&entry_id) => {
+                    dbus::CastTarget::LayoutEntry { entry_id }
+                        if !self.casting.mapped_cast_output.contains_key(&entry_id) =>
+                    {
                         Some(cast.session_id)
                     }
                     _ => None,
@@ -2086,18 +2007,12 @@ impl Ewm {
     /// Emacs frames redraw their assigned output. Untracked surfaces
     /// fall back to redrawing all outputs.
     pub fn queue_redraw_for_surface(&mut self, id: u64) {
-        let Some(surface) = self.surfaces.get(&id) else {
-            return self.queue_redraw_all();
-        };
-        let frame_output = surface.emacs.then(|| self.emacs_frame_output(id)).flatten();
-        let outputs: Vec<_> = self
-            .space
-            .outputs()
-            .filter(|output| {
-                let name = output.name();
-                surface.outputs.contains(&name) || frame_output == Some(name.as_str())
-            })
-            .cloned()
+        let outputs: Vec<Output> = self
+            .layout
+            .monitors()
+            .iter()
+            .filter(|monitor| self.surface_on_output(id, monitor.name()))
+            .map(|monitor| monitor.output().clone())
             .collect();
         if outputs.is_empty() {
             return self.queue_redraw_all();
@@ -2626,12 +2541,7 @@ impl Ewm {
     /// A visible fullscreen surface on any output inhibits idle.
     /// Catches apps that don't implement zwp-idle-inhibit-v1 or D-Bus ScreenSaver.
     fn fullscreen_surface_inhibits_idle(&self) -> bool {
-        !self.frames_hidden()
-            && self
-                .frame_set
-                .mapped_strips()
-                .values()
-                .any(strip::Strip::active_frame_is_fullscreen)
+        !self.frames_hidden() && self.layout.any_active_fullscreen()
     }
 
     /// Kill idle child process (e.g., on lid close).
@@ -2666,16 +2576,12 @@ impl Ewm {
     }
 
     /// Return the next output needing a redraw, preferring `prefer` if queued.
-    fn next_queued_redraw(&self, prefer: Option<&str>) -> Option<Output> {
+    fn next_queued_redraw(&self, prefer: Option<&Output>) -> Option<Output> {
         let needs_redraw = |s: &OutputState| s.redraw_state.is_render_queued();
-        if let Some(name) = prefer {
-            let found = self
-                .output_state
-                .iter()
-                .find(|(o, s)| o.name() == name && needs_redraw(s));
-            if let Some((output, _)) = found {
-                return Some(output.clone());
-            }
+        if let Some(prefer) = prefer
+            && needs_redraw(self.output_state.get(prefer)?)
+        {
+            return Some(prefer.clone());
         }
         self.output_state
             .iter()
@@ -2694,15 +2600,8 @@ impl Ewm {
             self.set_inactive_frames_shown(false);
         }
         self.hide.advance();
-        if let Some(strip) = self.frame_set.mapped_strip_mut(&output.name()) {
-            strip.advance();
-        }
-        if let Some(space) = self.floating_spaces.get_mut(&output.name()) {
-            space.advance();
-            // A space kept only for a close fade goes once the fade has.
-            if space.frames().is_empty() && space.closing_frames().is_empty() {
-                self.floating_spaces.remove(&output.name());
-            }
+        if let Some(monitor) = self.layout.monitor_of_mut(output) {
+            monitor.advance();
         }
         for surface in self.surfaces.values_mut() {
             surface.advance();
@@ -2746,8 +2645,10 @@ impl Ewm {
 
         // Refresh protocol state before rendering
         self.refresh_foreign_toplevel();
-        let output_infos = backend.output_info_list(&self.sorted_outputs);
-        self.refresh_output_management(&output_infos);
+        if self.output_management_state.output_heads_changed {
+            let output_infos = backend.output_info_list(&self.sorted_outputs);
+            self.refresh_output_management(&output_infos);
+        }
 
         // Inactive monitors have no framebuffer and a disabled output keeps
         // its surface off, so neither shows anything. Skip the backend and
@@ -2798,13 +2699,9 @@ impl Ewm {
             .iter()
             .any(|(&id, surface)| surface.is_animating() && self.surface_on_output(id, &name));
         let layout_animating = self
-            .frame_set
-            .mapped_strip(&name)
-            .is_some_and(|strip| strip.animations_ongoing())
-            || self
-                .floating_spaces
-                .get(&name)
-                .is_some_and(|space| space.animations_ongoing());
+            .layout
+            .monitor_of(output)
+            .is_some_and(Monitor::animations_ongoing);
         if let Some(state) = self.output_state.get_mut(output)
             && (any_fade || layout_animating || state.fullscreen_fade.is_some())
         {
@@ -3221,27 +3118,15 @@ impl Ewm {
     /// prevents busy-looping since it won't re-send if a callback was already
     /// sent recently through the normal path.
     fn fallback_hidden_emacs_ids(&self) -> HashSet<u64> {
-        let visible: HashSet<u64> = self
-            .mapped_output_strips()
-            .filter_map(|(_, strip)| strip.active_frame().map(|frame| frame.surface_id))
-            .chain(
-                self.floating_spaces
-                    .values()
-                    .flat_map(|space| space.frames().iter().map(|frame| frame.surface_id)),
-            )
+        if self.frames_hidden() {
             // Hidden frames have slid off their outputs too.
-            .filter(|_| !self.frames_hidden())
-            .collect();
-        self.frame_set
-            .all_frames()
-            .map(|frame| frame.surface_id)
-            .chain(
-                self.floating_spaces
-                    .values()
-                    .flat_map(|space| space.frames().iter().map(|frame| frame.surface_id)),
-            )
-            .filter(|id| !visible.contains(id))
-            .collect()
+            return self
+                .layout
+                .all_frames()
+                .map(|frame| frame.surface_id)
+                .collect();
+        }
+        self.layout.unshown_frame_ids().collect()
     }
 
     pub fn send_frame_callbacks_on_fallback_timer(&self) {
@@ -3335,13 +3220,14 @@ impl Ewm {
     pub fn refresh_foreign_toplevel(&mut self) {
         use smithay::wayland::seat::WaylandFocus;
 
+        let focused = self.focused_surface_id();
         let windows: Vec<WindowInfo> = self
             .surfaces
             .iter()
             .filter_map(|(&id, surface)| {
                 let wl_surface = surface.window.wl_surface()?.into_owned();
                 let output = self.find_surface_output(id);
-                let is_fullscreen = self.is_surface_fullscreen(id);
+                let is_fullscreen = self.layout.is_surface_fullscreen(id);
                 Some(WindowInfo {
                     id,
                     surface: wl_surface,
@@ -3352,7 +3238,7 @@ impl Ewm {
                     },
                     app_id: Some(surface.app_id.clone()),
                     output,
-                    is_focused: self.focused_surface_id() == id,
+                    is_focused: focused == id,
                     is_fullscreen,
                 })
             })
@@ -3373,36 +3259,21 @@ impl Ewm {
         self.output_management_state.notify_changes(new_state);
     }
 
-    /// Output name for a surface, preferring the focused layout entry when a
-    /// surface appears on multiple outputs.
-    fn surface_output_name(&self, surface_id: u64) -> Option<&str> {
-        if self.surface_in_layout(surface_id) {
-            if let Some(location) = self.focused_entry_for_surface(surface_id) {
-                return Some(location.output_name);
-            }
-            if let Some(name) = self.canonical_surface_output_name(surface_id) {
-                return Some(name);
-            }
+    /// The monitor showing surface `id`: its focused view's, else the first in
+    /// output order, else the one holding it as an Emacs frame.
+    fn surface_monitor(&self, id: u64) -> Option<&Monitor> {
+        if let Some(location) = self.focused_entry_for_surface(id) {
+            return Some(location.monitor);
         }
-
-        self.emacs_frame_output(surface_id)
+        let outputs = &self.surfaces.get(&id)?.outputs;
+        self.mapped_monitors()
+            .find(|monitor| outputs.contains(monitor.name()))
     }
 
-    fn canonical_surface_output_name(&self, surface_id: u64) -> Option<&str> {
-        let output_names = &self.surfaces.get(&surface_id)?.outputs;
-        self.sorted_outputs
-            .iter()
-            .find_map(|output| {
-                let name = output.name();
-                output_names.get(name.as_str()).map(String::as_str)
-            })
-            .or_else(|| output_names.iter().map(String::as_str).min())
-    }
-
-    /// Find the output for a surface (returns Output object)
-    fn find_surface_output(&self, surface_id: u64) -> Option<smithay::output::Output> {
-        let output_name = self.surface_output_name(surface_id)?;
-        self.find_mapped_output(output_name)
+    /// The output showing surface `id`, owned.
+    pub(crate) fn find_surface_output(&self, id: u64) -> Option<Output> {
+        self.surface_monitor(id)
+            .map(|monitor| monitor.output().clone())
     }
 
     /// Set the Emacs process PID for client identification
@@ -3413,14 +3284,14 @@ impl Ewm {
 
     /// Check if focus is on an Emacs surface (for key interception decisions)
     pub fn is_focus_on_emacs(&self) -> bool {
-        self.is_emacs_frame(self.focused_surface_id())
+        self.layout.has_frame(self.focused_surface_id())
     }
 
     pub(crate) fn is_keyboard_focus_on_emacs(&self) -> bool {
         self.keyboard_focus
             .as_ref()
             .and_then(|surface| self.surface_id(surface))
-            .is_some_and(|id| self.is_emacs_frame(id))
+            .is_some_and(|id| self.layout.has_frame(id))
     }
 
     pub(crate) fn begin_key_hold(&mut self, keycode: u32, owner: HeldKeyOwner) {
@@ -3457,10 +3328,14 @@ impl Ewm {
             .reschedule_if_active(&self.loop_handle, keycode);
     }
 
-    pub(crate) fn emacs_surface_for_focused_output(&self) -> Option<WlSurface> {
-        self.get_emacs_surface_for_focused_output()
-            .and_then(|id| self.window(id))
-            .and_then(|window| window.wl_surface())
+    /// The focused Emacs frame's surface, for keyboard redirects.
+    pub(crate) fn focused_emacs_frame_surface(&self) -> Option<WlSurface> {
+        let id = self.focused_frame_id;
+        if id == 0 || !self.layout.has_frame(id) {
+            return None;
+        }
+        self.window(id)?
+            .wl_surface()
             .map(|surface| surface.into_owned())
     }
 
@@ -3469,12 +3344,12 @@ impl Ewm {
             return None;
         }
 
-        self.emacs_surface_for_focused_output().or_else(|| {
+        self.focused_emacs_frame_surface().or_else(|| {
             self.keyboard_focus
                 .as_ref()
                 .filter(|surface| {
                     self.surface_id(surface)
-                        .is_some_and(|id| self.is_emacs_frame(id))
+                        .is_some_and(|id| self.layout.has_frame(id))
                 })
                 .cloned()
         })
@@ -3489,7 +3364,7 @@ impl Ewm {
             self.set_focus_entry(entry_id, source, notify_emacs);
             true
         } else if frame_id != 0 {
-            if self.is_emacs_frame(frame_id) {
+            if self.layout.has_frame(frame_id) {
                 self.set_focus_frame(frame_id, source, notify_emacs);
                 true
             } else {
@@ -3501,7 +3376,7 @@ impl Ewm {
     }
 
     fn resolve_focus_target(&self, id: u64) -> (u64, Option<LayoutEntryId>) {
-        if self.is_emacs_frame(id) {
+        if self.layout.has_frame(id) {
             return (id, None);
         }
         if let Some((frame_id, entry_id)) = self.frame_entry_for_surface(id) {
@@ -3513,7 +3388,7 @@ impl Ewm {
 
     pub fn focus_target_ready(&self, id: u64) -> bool {
         let (frame_id, entry_id) = self.resolve_focus_target(id);
-        entry_id.is_some() || (frame_id != 0 && self.is_emacs_frame(frame_id))
+        entry_id.is_some() || (frame_id != 0 && self.layout.has_frame(frame_id))
     }
 
     /// Focus the surface, or ask Emacs to show it when no window does.
@@ -3553,9 +3428,7 @@ impl Ewm {
         source: &str,
     ) -> Option<(u64, Option<LayoutEntryId>)> {
         let (frame_id, entry_id) = if let Some(entry_id) = self.layout_entry_id_under(pos) {
-            let location = self.lookup_entry(entry_id)?;
-            let frame_id = location.frame_surface_id;
-            self.set_focus_entry_at(entry_id, location, source, false);
+            let frame_id = self.set_focus_entry(entry_id, source, false)?;
             (frame_id, Some(entry_id))
         } else {
             let (surface, _) = self.surface_under_point(pos)?;
@@ -3578,7 +3451,7 @@ impl Ewm {
         let Some((frame_id, entry_id)) = self.focus_under(pos, "pointer_motion") else {
             return;
         };
-        if let Some(focus_id) = entry_id.or_else(|| self.focus_id_of_frame(frame_id)) {
+        if let Some(focus_id) = entry_id.or_else(|| self.layout.focus_id_of_frame(frame_id)) {
             self.queue_event(Event::Focus {
                 focus_id,
                 x: Some(pos.x - origin.x),
@@ -3694,7 +3567,7 @@ impl Ewm {
         first_title: bool,
         app_changed: bool,
     ) {
-        if self.is_emacs_frame(id) {
+        if self.layout.has_frame(id) {
             self.discard_pending_title_event(id);
             return;
         }
@@ -3838,7 +3711,7 @@ impl Ewm {
             im::TextInputProvider::Emacs => surface.filter(|surface| {
                 !self
                     .surface_id(surface)
-                    .is_some_and(|id| self.is_emacs_frame(id))
+                    .is_some_and(|id| self.layout.has_frame(id))
             }),
             im::TextInputProvider::External => surface,
         };
@@ -4129,48 +4002,27 @@ impl Ewm {
         (under, focus_changed)
     }
 
-    /// Get the output where the focused frame is located
-    pub(crate) fn get_focused_output(&self) -> Option<String> {
-        if self.focused_frame_id == 0 {
-            return None;
-        }
-        self.emacs_frame_output(self.focused_frame_id)
-            .map(str::to_string)
+    /// The output showing the focused frame.
+    pub(crate) fn focused_output(&self) -> Option<&Output> {
+        self.layout
+            .frame_location(self.focused_frame_id)
+            .map(|location| location.monitor.output())
     }
 
-    /// Get the output under the cursor position
-    fn output_under_cursor(&self) -> Option<String> {
-        use smithay::utils::Point;
-        let (px, py) = self.cursor_location();
-        let cursor_point = Point::from((px as i32, py as i32));
-
-        for output in &self.sorted_outputs {
-            if let Some(geo) = self.space.output_geometry(output)
-                && geo.contains(cursor_point)
-            {
-                return Some(output.name());
-            }
-        }
-        None
+    fn output_under_cursor(&self) -> Option<&Output> {
+        self.output_containing(self.cursor_location().into())
     }
 
-    /// Output for surface placement and keyboard nav: focused > cursor > first.
-    pub fn active_output(&self) -> Option<String> {
-        self.get_focused_output()
+    /// Output for surface placement and keyboard nav: focused, else under the cursor, else first.
+    pub fn active_output(&self) -> Option<&Output> {
+        self.focused_output()
             .or_else(|| self.output_under_cursor())
-            .or_else(|| self.first_output().map(|o| o.name()))
+            .or_else(|| self.first_output())
     }
 
-    /// Find a mapped output by name.
-    pub(crate) fn mapped_output_by_name(&self, name: &str) -> Option<&Output> {
-        self.sorted_outputs
-            .iter()
-            .find(|output| output.name() == name)
-    }
-
-    /// Find a mapped output by name.
+    /// The mapped output called `name`, owned.
     pub(crate) fn find_mapped_output(&self, name: &str) -> Option<Output> {
-        self.mapped_output_by_name(name).cloned()
+        self.layout.output(name).cloned()
     }
 
     /// Output adjacent to `current` along one axis. Candidates must overlap
@@ -4220,30 +4072,15 @@ impl Ewm {
     /// current one.  `dx` is `-1`/`+1` for left/right, `dy` is `-1`/`+1`
     /// for up/down; mixed axes and zero vectors are a no-op.
     pub fn focus_output_direction(&mut self, dx: i32, dy: i32) {
-        let cur_name = match self.active_output() {
-            Some(n) => n,
-            None => return,
-        };
-        let cur = match self.find_mapped_output(&cur_name) {
-            Some(o) => o,
-            None => return,
+        let Some(cur) = self.active_output().cloned() else {
+            return;
         };
         let target = self.output_in_direction(&cur, dx, dy);
         let Some(target) = target else { return };
-        let Some(id) = self.active_frame_surface_id(&target.name()) else {
+        let Some(id) = self.layout.active_frame_id(&target) else {
             return;
         };
         self.set_focus_frame(id, "focus_output_direction", true);
-    }
-
-    /// Pick the Emacs frame to redirect intercepted keys to.
-    pub fn get_emacs_surface_for_focused_output(&self) -> Option<u64> {
-        if self.focused_frame_id != 0 && self.is_emacs_frame(self.focused_frame_id) {
-            return Some(self.focused_frame_id);
-        }
-        let output = self.get_focused_output()?;
-        self.active_frame_surface_id(&output)
-            .or_else(|| self.first_active_frame_surface_id())
     }
 
     /// Recalculate total output size from current space geometry
@@ -4260,51 +4097,19 @@ impl Ewm {
     }
 
     fn active_outputs_snapshot(&self) -> Vec<module::ActiveOutput> {
-        self.sorted_outputs
-            .iter()
-            .filter_map(|output| {
-                let geo = self.space.output_geometry(output)?;
-                let wa = self.working_areas.get(&output.name());
-                let x = geo.loc.x + wa.map_or(0, |r| r.loc.x);
-                let y = geo.loc.y + wa.map_or(0, |r| r.loc.y);
+        self.mapped_monitors()
+            .filter_map(|monitor| {
+                let geo = self.space.output_geometry(monitor.output())?;
+                let working_area = monitor.working_area;
                 Some(module::ActiveOutput {
-                    name: output.name(),
-                    origin: (x, y),
+                    name: monitor.name().to_string(),
+                    origin: (
+                        geo.loc.x + working_area.loc.x,
+                        geo.loc.y + working_area.loc.y,
+                    ),
                 })
             })
             .collect()
-    }
-
-    fn frame_origins_snapshot(&self) -> Vec<module::FrameOrigin> {
-        let mut origins = Vec::new();
-
-        // Floating frames carry their own logical position.
-        for (name, space) in &self.floating_spaces {
-            let Some(output) = self.mapped_output_by_name(name) else {
-                continue;
-            };
-            let Some(output_geo) = self.space.output_geometry(output) else {
-                continue;
-            };
-            for frame in space.frames() {
-                if frame.surface_id == 0 {
-                    continue;
-                }
-                let Some((_, data)) = space.frame_with_data(frame.surface_id) else {
-                    continue;
-                };
-                let loc = data.logical_pos();
-                origins.push(module::FrameOrigin {
-                    surface_id: frame.surface_id,
-                    origin: (
-                        output_geo.loc.x + loc.x as i32,
-                        output_geo.loc.y + loc.y as i32,
-                    ),
-                });
-            }
-        }
-
-        origins
     }
 
     /// Immediately sync active_outputs into shared state so that Emacs sees
@@ -4331,6 +4136,14 @@ impl Ewm {
         self.queue_event(Event::OutputDisconnected {
             name: name.to_string(),
         });
+    }
+
+    /// Map `output` at `position` and give it a monitor.
+    pub(crate) fn map_output(&mut self, output: &Output, position: Point<i32, Logical>) {
+        self.space.map_output(output, position);
+        output.change_current_state(None, None, None, Some(position));
+        let working_area = self.get_working_area(output);
+        self.layout.add_output(output.clone(), working_area);
     }
 
     fn sync_sorted_outputs(&mut self) {
@@ -4362,7 +4175,6 @@ impl Ewm {
 
         // Send initial working area (full output initially, before any panels)
         let working_area = self.get_working_area(output);
-        self.working_areas.insert(output_name.clone(), working_area);
         self.queue_event(Event::WorkingArea {
             output: output_name.clone(),
             x: working_area.loc.x,
@@ -4372,7 +4184,7 @@ impl Ewm {
         });
 
         if self.space.output_geometry(output).is_some() {
-            self.attach_frames_for_mapped_output(output, "output_added");
+            self.attach_output(output, "output_added");
             self.introspect_windows_dirty = true;
         }
         self.output_management_state.output_heads_changed = true;
@@ -4384,12 +4196,6 @@ impl Ewm {
     /// backend-agnostic bookkeeping: scale notification, lock buffer resize,
     /// screencast size, recalculation, working areas, event to Emacs, and
     /// output management state.
-    /// Fractional scale of the mapped output `output_name`, or 1 when it is not mapped.
-    pub fn output_scale(&self, output_name: &str) -> f64 {
-        self.mapped_output_by_name(output_name)
-            .map_or(1., |output| output.current_scale().fractional_scale())
-    }
-
     pub fn output_config_changed(&mut self, output: &Output, became_mapped: bool) {
         let output_name = output.name();
         let current_mode = output.current_mode().unwrap_or(smithay::output::Mode {
@@ -4400,7 +4206,7 @@ impl Ewm {
         let current_transform = output.current_transform();
         let current_geo = self.space.output_geometry(output).unwrap_or_default();
         self.sync_sorted_outputs();
-        if let Some(strip) = self.frame_set.mapped_strip_mut(&output_name) {
+        if let Some(strip) = self.layout.strip_mut(output) {
             strip.update_config(current_scale);
         }
 
@@ -4451,9 +4257,7 @@ impl Ewm {
         self.refresh_primary_assignments();
         self.queue_redraw_all();
         if became_mapped {
-            self.attach_frames_for_mapped_output(output, "output_enabled");
-        } else {
-            self.restore_home_output_frames(&output_name);
+            self.attach_output(output, "output_enabled");
         }
 
         // Notify Emacs of the applied config
@@ -4471,28 +4275,15 @@ impl Ewm {
         self.output_management_state.output_heads_changed = true;
     }
 
-    /// Notify all surfaces on an output about a scale/transform change.
-    ///
-    /// Iterates windows and layer surfaces on the given output, sending both
-    /// integer and fractional scale via `send_scale_transform`. Layout
-    /// migration uses `enter_output_for_window`, which sets scale before enter.
+    /// Send `output`'s scale and transform to every window and layer surface on it.
     pub fn send_scale_transform_to_output_surfaces(&self, output: &Output) {
         let scale = output.current_scale();
         let transform = output.current_transform();
 
-        // Notify declared surfaces on this output
-        if let Some(strip) = self.frame_set.mapped_strip(&output.name()) {
-            for surface_id in strip.surface_entries().filter_map(LayoutEntry::surface_id) {
-                if let Some(window) = self.window(surface_id) {
-                    crate::utils::set_preferred_scale_transform(window, output);
-                }
-            }
-        }
-
-        // Emacs frames aren't in `space`; notify them via the strip.
-        for id in self.emacs_frames_on(&output.name()) {
-            if let Some(window) = self.window(id) {
-                crate::utils::set_preferred_scale_transform(window, output);
+        let name = output.name();
+        for surface in self.surfaces.values() {
+            if surface.outputs.contains(&name) {
+                crate::utils::set_preferred_scale_transform(&surface.window, output);
             }
         }
 
@@ -4512,32 +4303,12 @@ impl Ewm {
         map.non_exclusive_zone()
     }
 
-    fn working_area_f64(&self, output: &Output) -> Rectangle<f64, smithay::utils::Logical> {
-        self.get_working_area(output).to_f64()
-    }
-
-    fn ensure_floating_space_for_output(
-        &mut self,
-        output_name: &str,
-    ) -> Option<&mut floating::FloatingSpace> {
-        let output = self.mapped_output_by_name(output_name)?.clone();
-        let working_area = self.working_area_f64(&output);
-        let clock = self.animations_clock.clone();
-        let space = self
-            .floating_spaces
-            .entry(output_name.to_string())
-            .or_insert_with(|| floating::FloatingSpace::new(working_area, clock));
-        space.update_config(working_area);
-        Some(space)
-    }
-
     /// Update Emacs frames to fit within the working area of an output.
     /// Called when layer surface exclusive zones change.
     pub fn update_frames_for_working_area(&mut self, output: &Output) {
         let working_area = self.get_working_area(output);
-        let output_name = output.name();
 
-        for id in self.emacs_frames_on(&output_name) {
+        for id in self.layout.strip_frame_ids(output) {
             let Some(window) = self.window(id) else {
                 continue;
             };
@@ -4554,7 +4325,7 @@ impl Ewm {
             }
         }
 
-        if let Some(space) = self.floating_spaces.get_mut(&output_name) {
+        if let Some(space) = self.layout.floating_mut(output) {
             space.update_config(working_area.to_f64());
         }
 
@@ -4570,11 +4341,10 @@ impl Ewm {
         let working_area = self.get_working_area(output);
         let output_name = output.name();
 
-        // Check if changed
-        let changed = self
-            .working_areas
-            .get(&output_name)
-            .is_none_or(|prev| *prev != working_area);
+        let Some(monitor) = self.layout.monitor_of_mut(output) else {
+            return false;
+        };
+        let changed = mem::replace(&mut monitor.working_area, working_area) != working_area;
 
         if changed {
             info!(
@@ -4586,7 +4356,6 @@ impl Ewm {
                 working_area.loc.y
             );
 
-            self.working_areas.insert(output_name.clone(), working_area);
             self.active_outputs_dirty = true;
 
             // Update Emacs frames to fit new working area
@@ -4607,14 +4376,18 @@ impl Ewm {
 
     /// Get working areas as serializable structs for state dump.
     pub fn get_working_areas_info(&self) -> Vec<crate::event::WorkingAreaInfo> {
-        self.working_areas
+        self.layout
+            .monitors()
             .iter()
-            .map(|(name, rect)| crate::event::WorkingAreaInfo {
-                output: name.clone(),
-                x: rect.loc.x,
-                y: rect.loc.y,
-                width: rect.size.w,
-                height: rect.size.h,
+            .map(|monitor| {
+                let rect = monitor.working_area;
+                crate::event::WorkingAreaInfo {
+                    output: monitor.name().to_string(),
+                    x: rect.loc.x,
+                    y: rect.loc.y,
+                    width: rect.size.w,
+                    height: rect.size.h,
+                }
             })
             .collect()
     }
@@ -4669,25 +4442,10 @@ impl Ewm {
             .iter()
             .filter(|(_, surface)| surface.urgent)
             .map(|(&id, _)| id)
-            .partition(|&id| self.is_emacs_frame(id));
+            .partition(|&id| self.layout.has_frame(id));
         urgent_surfaces.sort_unstable();
         urgent_workspaces.sort_unstable();
-        let emacs_surfaces: HashMap<u64, String> = self
-            .frame_set
-            .mapped_strips()
-            .iter()
-            .flat_map(|(out, s)| {
-                s.frames()
-                    .iter()
-                    .map(move |f| (f.surface_id, out.to_string()))
-            })
-            .chain(self.floating_spaces.iter().flat_map(|(out, space)| {
-                space
-                    .frames()
-                    .iter()
-                    .map(move |f| (f.surface_id, out.to_string()))
-            }))
-            .collect();
+        let emacs_surfaces = self.layout.frame_outputs_snapshot();
         let cursor_pos: Point<f64, Logical> = self.cursor_location().into();
         let pointer_output = self.output_at(cursor_pos);
         let cursor_scale = pointer_output
@@ -4707,14 +4465,20 @@ impl Ewm {
         serde_json::json!({
             "surfaces": surfaces,
             "emacs_surfaces": emacs_surfaces,
-            "output_strips": &self.frame_set.mapped_strips(),
+            "output_strips": self.layout.strips().collect::<HashMap<_, _>>(),
             "overview": {
                 "open": self.overview.is_open(),
                 "progress": self.overview.progress(),
                 "zoom": self.overview.zoom(),
             },
-            "homeless_frames": &self.frame_set.homeless_frames(),
-            "floating_spaces": &self.floating_spaces,
+            "homeless_frames": &self.layout.homeless().tiled,
+            "homeless_floating_frames": &self.layout.homeless().floating,
+            "floating_spaces": self
+                .layout
+                .monitors()
+                .iter()
+                .map(|monitor| (monitor.name(), &monitor.floating))
+                .collect::<HashMap<_, _>>(),
             "surface_outputs": self.surface_outputs(),
             "focused_surface_id": self.focused_surface_id(),
             "focused_frame_id": self.focused_frame_id,
@@ -4760,26 +4524,24 @@ impl Ewm {
         })
     }
 
-    fn is_floating_frame(&self, id: u64) -> bool {
-        self.floating_spaces
-            .values()
-            .any(|space| space.has_frame(id))
-    }
-
     /// Tiled host for an app surface: parent's frame, else focused, else active; never floating.
-    fn resolve_app_host_frame(&self, parent_id: Option<u64>, output: Option<&str>) -> Option<u64> {
+    fn resolve_app_host_frame(
+        &self,
+        parent_id: Option<u64>,
+        output: Option<&Output>,
+    ) -> Option<u64> {
+        let tiled_frame_on = |id: u64, output: Option<&Output>| {
+            self.layout
+                .frame_location(id)
+                .filter(|location| !location.floating)
+                .filter(|location| output.is_none_or(|o| location.monitor.output() == o))
+                .map(|_| id)
+        };
         parent_id
-            .and_then(|pid| self.frame_for_surface(pid))
-            .filter(|&id| !self.is_floating_frame(id))
-            .or_else(|| {
-                output.and_then(|o| {
-                    (self.focused_frame_id != 0
-                        && !self.is_floating_frame(self.focused_frame_id)
-                        && self.emacs_frame_output(self.focused_frame_id) == Some(o))
-                    .then_some(self.focused_frame_id)
-                })
-            })
-            .or_else(|| output.and_then(|o| self.active_frame_surface_id(o)))
+            .and_then(|pid| self.frame_entry_for_surface(pid))
+            .and_then(|(id, _)| tiled_frame_on(id, None))
+            .or_else(|| output.and_then(|o| tiled_frame_on(self.focused_frame_id, Some(o))))
+            .or_else(|| output.and_then(|o| self.layout.active_frame_id(o)))
     }
 
     /// Handle new toplevel surface from XdgShellHandler.
@@ -4807,13 +4569,16 @@ impl Ewm {
         // Determine target output before the initial configure so floating
         // Emacs frames don't get the normal maximized/working-area configure.
         let pending_frame = is_emacs.then(module::take_pending_frame).flatten();
-        let frame_output = pending_frame.as_ref().map(|pending| pending.output.clone());
-        let frame_is_floating = pending_frame
+        let target_output = pending_frame
             .as_ref()
-            .is_some_and(|pending| pending.floating);
-        let frame_pos = pending_frame.as_ref().and_then(|pending| pending.pos);
-        let frame_after = pending_frame.as_ref().and_then(|pending| pending.after);
-        let target_output = frame_output.clone().or_else(|| self.active_output());
+            .and_then(|pending| self.layout.output(&pending.output))
+            .or_else(|| self.active_output())
+            .cloned();
+        let frame_seq = pending_frame.as_ref().map(|pending| pending.seq);
+        let placement = pending_frame.map_or(Placement::Tiled { after: None }, |pending| {
+            pending.placement
+        });
+        let frame_is_floating = matches!(placement, Placement::Floating { .. });
 
         surface.with_pending_state(|state| {
             if is_emacs && frame_is_floating {
@@ -4832,50 +4597,34 @@ impl Ewm {
         self.surfaces.insert(id, record);
 
         debug!(
-            "new_toplevel id={} is_emacs={} pending_output={:?} floating={} target_output={:?} pending_queue_after_take={:?}",
+            "new_toplevel id={} is_emacs={} seq={:?} floating={} target_output={:?} pending_queue_after_take={:?}",
             id,
             is_emacs,
-            frame_output,
+            frame_seq,
             frame_is_floating,
             target_output,
             module::peek_pending_frame_outputs()
         );
 
-        if is_emacs {
-            // Place the frame now so `is_emacs_frame(id)`, `set_focus_frame(id)`,
-            // etc. work before Emacs's first layout arrives. That layout only
-            // fills in contents (name, width, entries, selected_entry_id).
-            if let Some(output_name) = target_output.as_deref() {
-                if frame_is_floating {
-                    self.place_new_floating_frame(id, output_name, frame_pos.map(Point::from));
-                } else {
-                    self.place_new_frame(id, output_name, frame_after);
-                }
-            }
-        }
-
-        // Associate window with target output for scale detection.
-        // Output association is managed explicitly (not via space.refresh()).
-        // We send scale info and enter the output before the client's first commit
-        // so it knows the correct scale to render at.
-        let scale_output = target_output
-            .as_ref()
-            .and_then(|name| self.mapped_output_by_name(name))
-            .or_else(|| self.first_output())
-            .cloned();
-        if let Some(output) = scale_output {
-            // Direct output enter, bypassing SpaceElement::output_enter which would
-            // trigger output_update -> leave for uncommitted surfaces.
-            self.enter_output_for_window(&window, &output);
+        // Place the frame now so `layout.has_frame(id)`, `set_focus_frame(id)`,
+        // etc. work before Emacs's first layout arrives. That layout only
+        // fills in contents (name, width, entries, selected_entry_id).
+        if is_emacs && let Some(output) = &target_output {
+            self.layout.add_frame(id, output, placement);
+            self.reconcile_output_entries(output);
+        } else if let Some(output) = target_output.as_ref().or_else(|| self.first_output()) {
+            // Scale and enter before the first commit, bypassing SpaceElement::output_enter
+            // which would leave uncommitted surfaces.
+            layout::enter_output_for_window(&window, output);
         }
 
         // Resize Emacs frames to fill their working area
-        if let Some(ref output_name) = frame_output.filter(|_| !frame_is_floating)
-            && let Some(working_area) = self
-                .mapped_output_by_name(output_name)
-                .map(|o| self.get_working_area(o))
+        if is_emacs
+            && !frame_is_floating
+            && let Some(output) = &target_output
             && let Some(t) = window.toplevel()
         {
+            let working_area = self.get_working_area(output);
             t.with_pending_state(|state| {
                 state.size = Some(working_area.size);
             });
@@ -4890,11 +4639,11 @@ impl Ewm {
             self.set_focus_frame(id, "initial_surface", false);
         }
 
-        // App surfaces resolve their host frame at map; `New` only creates the buffer.
+        // App surfaces resolve their host frame at map. `New` only creates the buffer.
         self.queue_event(Event::New {
             id,
             app: app.clone(),
-            output: target_output.clone().filter(|_| is_emacs),
+            seq: frame_seq,
             pid: client_pid,
         });
         // A new emacs frame joins its strip inactive. Tell lisp so it can
@@ -4902,8 +4651,8 @@ impl Ewm {
         // the lisp side.
         if is_emacs {
             let is_active = target_output
-                .as_deref()
-                .and_then(|o| self.active_frame_surface_id(o))
+                .as_ref()
+                .and_then(|output| self.layout.active_frame_id(output))
                 == Some(id);
             self.queue_event(if frame_is_floating || is_active {
                 Event::FrameShown { id }
@@ -4915,7 +4664,7 @@ impl Ewm {
         // time the Focus event is processed.
         if auto_focus {
             info!("Auto-focusing initial Emacs surface {}", id);
-            if let Some(focus_id) = self.focus_id_of_frame(id) {
+            if let Some(focus_id) = self.layout.focus_id_of_frame(id) {
                 self.queue_event(Event::Focus {
                     focus_id,
                     x: None,
@@ -4928,45 +4677,8 @@ impl Ewm {
             "New toplevel {} ({}) -> {:?}",
             id,
             app,
-            target_output.as_deref().unwrap_or("unknown")
+            target_output.as_ref().map(Output::name)
         );
-    }
-
-    /// Put new frame `id` into `output_name`'s strip right of `after`, else at the end.
-    fn place_new_frame(&mut self, id: u64, output_name: &str, after: Option<u64>) {
-        if let Some(output) = self.mapped_output_by_name(output_name) {
-            let home = crate::utils::output_identity(output);
-            self.frame_set.remember_home_if_missing(id, &home);
-        }
-        let clock = self.animations_clock.clone();
-        let scale = self.output_scale(output_name);
-        let strip = self
-            .frame_set
-            .ensure_mapped_strip(output_name, clock, scale);
-        let frame = crate::strip::Frame::new(id);
-        match after.and_then(|after| strip.index_of(after)) {
-            Some(idx) => strip.insert_frame(idx + 1, frame),
-            None => strip.push_frame(frame),
-        }
-    }
-
-    /// Put new floating frame `id` into `output_name`'s space at `pos`, else centered.
-    fn place_new_floating_frame(
-        &mut self,
-        id: u64,
-        output_name: &str,
-        pos: Option<Point<f64, Logical>>,
-    ) {
-        let Some(space) = self.ensure_floating_space_for_output(output_name) else {
-            return;
-        };
-        let mut frame = crate::strip::Frame::new(id);
-        frame.width = floating::DEFAULT_FRAME_WIDTH;
-        frame.height = floating::DEFAULT_FRAME_HEIGHT;
-        frame.floating_pos = pos.map(|pos| {
-            floating::Data::logical_to_size_frac_in_working_area(space.working_area(), pos)
-        });
-        space.add_frame(frame);
     }
 
     /// Drop toplevel `id`, returning the frame to refocus.
@@ -4974,18 +4686,20 @@ impl Ewm {
         let was_focused = self.focused_frame_id == id;
         let close_was_active = module::take_pending_active_frame_close(id);
         let active_close = was_focused || close_was_active;
-        let output = self.surface_output_name(id).map(str::to_owned);
 
         self.flush_pending_title_event(id);
         self.surfaces.remove(&id);
-        let was_emacs = self.is_emacs_frame(id);
-        self.detach_surface_from_layouts(id);
-        self.remove_emacs_frame_from_strip(id, active_close);
-        self.prune_dangling_focus();
+        let was_emacs = self.layout.has_frame(id);
+        self.layout.detach_surface(id);
+        let output = self.remove_emacs_frame(id, active_close);
         self.queue_event(Event::Close { id });
         debug!(
             "Toplevel {} destroyed was_focused={} close_was_active={} was_emacs={} output={:?}",
-            id, was_focused, close_was_active, was_emacs, output
+            id,
+            was_focused,
+            close_was_active,
+            was_emacs,
+            output.as_ref().map(Output::name)
         );
 
         if was_emacs {
@@ -4995,12 +4709,12 @@ impl Ewm {
         if active_close {
             // Output may be unknown if lisp pruned the frame before destroy fired.
             let refocus = output
-                .as_deref()
-                .and_then(|out| self.active_frame_surface_id(out))
+                .as_ref()
+                .and_then(|output| self.layout.active_frame_id(output))
                 .or_else(|| {
                     self.pointer_output
                         .as_ref()
-                        .and_then(|o| self.active_frame_surface_id(&o.name()))
+                        .and_then(|output| self.layout.active_frame_id(output))
                 })
                 .or_else(|| self.first_active_frame_surface_id());
             debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
@@ -5291,9 +5005,7 @@ impl Ewm {
     }
 
     fn lock_surface_output(&self) -> Option<&Output> {
-        self.output_under_cursor()
-            .and_then(|name| self.mapped_output_by_name(&name))
-            .or_else(|| self.first_output())
+        self.output_under_cursor().or_else(|| self.first_output())
     }
 
     /// Get the lock surface for keyboard focus when locked.
@@ -5674,7 +5386,7 @@ impl State {
         // Refresh workspace protocol state (pull model: diff source of truth vs mirrors).
         crate::protocols::workspace::refresh::<State>(
             &mut self.ewm.workspace_state,
-            self.ewm.frame_set.mapped_strips(),
+            &self.ewm.layout,
             &|id| {
                 self.ewm
                     .surfaces
@@ -5694,11 +5406,11 @@ impl State {
 
         // Render queued outputs, focused first. Between outputs, check for
         // commands that arrived during render. Process them and defer remaining redraws.
-        let focused = self.ewm.get_focused_output();
+        let focused = self.ewm.focused_output().cloned();
         let mut rendered_focused = false;
 
-        while let Some(output) = self.ewm.next_queued_redraw(focused.as_deref()) {
-            let is_focused = focused.as_deref() == Some(output.name().as_str());
+        while let Some(output) = self.ewm.next_queued_redraw(focused.as_ref()) {
+            let is_focused = focused.as_ref() == Some(&output);
 
             if rendered_focused && !is_focused && self.process_pending_commands() {
                 break;
@@ -5740,8 +5452,9 @@ impl State {
             self.ewm.flush_active_outputs();
         }
         let frame_origins = self.ewm.frame_origins_snapshot();
-        let active_frames = self.ewm.active_frames_snapshot();
-        let strip_frames = self.ewm.strip_frames_snapshot();
+        let active_frames = self.ewm.layout.active_frames_snapshot();
+        let strip_frames = self.ewm.layout.strip_frames_snapshot();
+        let frame_outputs = self.ewm.layout.frame_outputs_snapshot();
         let mut shared = module::shared_state().lock().unwrap();
         shared.focused_surface_id = self.ewm.focused_surface_id();
         shared.focused_frame_id = self.ewm.focused_frame_id;
@@ -5749,6 +5462,7 @@ impl State {
         shared.frame_origins = frame_origins;
         shared.active_frames = active_frames;
         shared.strip_frames = strip_frames;
+        shared.frame_outputs = frame_outputs;
     }
 
     /// Handle a module command (from Emacs via dynamic module).
@@ -5778,9 +5492,9 @@ impl State {
                 self.ewm.mark_workspace_urgent(frame_surface_id);
             }
             ModuleCommand::FocusTarget { focus_id } => {
-                if self.ewm.lookup_entry(focus_id).is_some() {
+                if self.ewm.layout.entry_location(focus_id).is_some() {
                     self.ewm.set_focus_entry(focus_id, "lisp_request", false);
-                } else if let Some(frame_id) = self.ewm.frame_with_focus_id(focus_id) {
+                } else if let Some(frame_id) = self.ewm.layout.frame_with_focus_id(focus_id) {
                     self.ewm.set_focus_frame(frame_id, "lisp_request", false);
                 }
             }
@@ -6009,13 +5723,13 @@ impl State {
                 debug!("Selection set from Emacs");
             }
             ModuleCommand::Layout { frames } => {
-                let dropped = strip::dropped_frame_ids(self.ewm.placed_frames(), &frames);
+                let dropped = strip::dropped_frame_ids(self.ewm.layout.placed_frames(), &frames);
                 self.store_close_snapshots(&dropped);
                 self.ewm.apply_layout(frames);
                 self.refresh_pointer_after_layout();
             }
-            ModuleCommand::SwapFrame { id, delta } => {
-                self.ewm.swap_frame(id, delta);
+            ModuleCommand::MoveFrame { id, delta } => {
+                self.ewm.move_frame(id, delta);
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::MoveFloatingFrame { id, dx, dy } => {
@@ -6027,7 +5741,7 @@ impl State {
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::ToggleFullscreen { entry_id } => {
-                let on = !self.ewm.layout_entry_fullscreen(entry_id);
+                let on = !self.ewm.layout.entry_fullscreen(entry_id);
                 self.set_fullscreen(entry_id, on);
             }
             ModuleCommand::SetFullscreen { entry_id, on } => self.set_fullscreen(entry_id, on),

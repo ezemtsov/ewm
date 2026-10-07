@@ -59,7 +59,8 @@ struct Harness {
     listener: TestClient,
     portal: TestClient,
     /// Model of the pending-frame queue, front first.
-    pending: Vec<&'static str>,
+    pending: Vec<(&'static str, u64)>,
+    next_seq: u64,
 }
 
 impl Harness {
@@ -79,13 +80,15 @@ impl Harness {
             listener,
             portal,
             pending: Vec::new(),
+            next_seq: 0,
         }
     }
 
     fn arrive(&mut self, arrival: Arrival) -> Result<(), TestCaseError> {
         if let Some(i) = arrival.pending {
-            prepare_frame(OUTPUTS[i], None);
-            self.pending.push(OUTPUTS[i]);
+            self.next_seq += 1;
+            prepare_frame(OUTPUTS[i], self.next_seq, None);
+            self.pending.push((OUTPUTS[i], self.next_seq));
         }
         // A parent must come from the same client, so it is an arrival of its own.
         let parent = match arrival.hints {
@@ -135,13 +138,13 @@ impl Harness {
 
     fn check(&mut self, sid: u64, kind: Kind, hints: Hints) -> Result<(), TestCaseError> {
         let is_emacs = kind == Kind::Emacs;
-        prop_assert_eq!(self.fix.ewm_ref().is_emacs_frame(sid), is_emacs);
+        prop_assert_eq!(self.fix.ewm_ref().layout.has_frame(sid), is_emacs);
 
         let events = self.fix.drain_events();
         let new: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
-                Event::New { id, output, .. } if *id == sid => Some(output.clone()),
+                Event::New { id, seq, .. } if *id == sid => Some(*seq),
                 _ => None,
             })
             .collect();
@@ -159,21 +162,26 @@ impl Harness {
         if is_emacs {
             // Emacs takes the oldest pending frame, and is placed by lisp, never via Mapped.
             match self.pending.first().copied() {
-                Some(output) => {
+                Some((_, seq)) => {
                     self.pending.remove(0);
-                    prop_assert_eq!(new[0].as_deref(), Some(output));
+                    prop_assert_eq!(new[0], Some(seq));
                 }
-                None => prop_assert!(new[0].is_some()),
+                None => prop_assert!(new[0].is_none(), "no pending frame, no seq"),
             }
             prop_assert!(mapped.is_empty());
         } else {
-            prop_assert_eq!(&new[0], &None, "apps carry no pairing output");
+            prop_assert_eq!(&new[0], &None, "apps carry no frame seq");
             let floats = kind == Kind::Portal || hints != Hints::Plain;
             prop_assert_eq!(mapped, vec![floats]);
         }
         prop_assert_eq!(
             &self.fix.debug_state()["pending_frame_outputs"],
-            &json!(self.pending)
+            &json!(
+                self.pending
+                    .iter()
+                    .map(|(output, _)| output)
+                    .collect::<Vec<_>>()
+            )
         );
         Ok(())
     }

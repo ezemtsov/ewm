@@ -54,6 +54,7 @@ use smithay::reexports::calloop::LoopSignal;
 
 use crate::cursor::CursorConfig;
 use crate::im::TextInputProvider;
+use crate::layout::Placement;
 use crate::strip::Frame;
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
@@ -84,6 +85,7 @@ pub struct SharedState {
     pub frame_origins: Vec<FrameOrigin>,
     pub active_frames: HashMap<String, u64>,
     pub strip_frames: HashMap<String, Vec<u64>>,
+    pub frame_outputs: HashMap<u64, String>,
 }
 
 static SHARED_STATE: OnceLock<Mutex<SharedState>> = OnceLock::new();
@@ -115,11 +117,9 @@ pub fn set_text_input_surrounding(snapshot: Option<SurroundingSnapshot>) {
 #[derive(Debug, Clone)]
 pub struct PendingFrame {
     pub output: String,
-    pub floating: bool,
-    /// Requested top-left in logical pixels; floating frames only, else centered.
-    pub pos: Option<(f64, f64)>,
-    /// Strip frame to insert right of. Tiled frames only, else appended.
-    pub after: Option<u64>,
+    pub placement: Placement,
+    /// Emacs's creation counter, echoed in `Event::New` to pair the surface with its frame.
+    pub seq: u64,
 }
 
 static PENDING_FRAMES: OnceLock<Mutex<VecDeque<PendingFrame>>> = OnceLock::new();
@@ -145,7 +145,7 @@ pub fn peek_pending_frame_outputs() -> Vec<String> {
         .unwrap()
         .iter()
         .map(|pending| {
-            if pending.floating {
+            if matches!(pending.placement, Placement::Floating { .. }) {
                 format!("{}:floating", pending.output)
             } else {
                 pending.output.clone()
@@ -353,6 +353,15 @@ fn get_strip_frame_ids(name: String) -> Result<Lisp<Vec<u64>>> {
     ))
 }
 
+/// Output name of the Emacs frame with SURFACE-ID, or nil while it is unplaced.
+#[defun]
+fn get_frame_output(surface_id: i64) -> Result<Option<String>> {
+    let state = shared_state().lock().unwrap();
+    Ok(u64::try_from(surface_id)
+        .ok()
+        .and_then(|id| state.frame_outputs.get(&id).cloned()))
+}
+
 /// Query a floating Emacs frame's origin for mouse-follows-focus pointer warping.
 /// Returns (x . y) cons cell, or nil if the frame is not found.
 #[defun]
@@ -441,12 +450,12 @@ pub enum ModuleCommand {
     SetSelection {
         text: String,
     },
-    /// Contents of every Emacs frame. Placement is ours. Focus moves only via `FocusTarget'.
+    /// Contents of every Emacs frame. Nothing moves, and focus changes only via `FocusTarget'.
     Layout {
         frames: Vec<Frame>,
     },
-    /// Move an Emacs frame by `delta` slots in its strip.
-    SwapFrame {
+    /// Move an Emacs frame `delta` slots along its strip.
+    MoveFrame {
         id: u64,
         delta: i32,
     },
@@ -999,16 +1008,12 @@ fn layout_module(frames: Lisp<Vec<FrameSpec>>) -> Result<()> {
     Ok(())
 }
 
-/// Move Emacs frame ID by DELTA slots in its strip.
+/// Move Emacs frame ID by DELTA slots along its strip.
 #[defun]
-fn swap_frame_module(id: i64, delta: i64) -> Result<()> {
-    if id <= 0 {
-        tracing::warn!("swap_frame_module: ignored invalid id {id}");
-        return Ok(());
-    }
-    push_command(ModuleCommand::SwapFrame {
-        id: id as u64,
-        delta: delta.clamp(i32::MIN.into(), i32::MAX.into()) as i32,
+fn move_frame_module(id: Lisp<u64>, delta: Lisp<i32>) -> Result<()> {
+    push_command(ModuleCommand::MoveFrame {
+        id: id.0,
+        delta: delta.0,
     });
     Ok(())
 }
@@ -1127,34 +1132,33 @@ fn warp_pointer_module(x: Lisp<f64>, y: Lisp<f64>) -> Result<()> {
     Ok(())
 }
 
-/// Prepare the next frame for OUTPUT, right of strip frame AFTER when given
-/// (synchronous to avoid a race with surface creation).
+/// Prepare the next frame as Emacs frame SEQ on OUTPUT, right of strip frame AFTER
+/// when given (synchronous to avoid a race with surface creation).
 #[defun]
-fn prepare_frame_module(output: String, after: Lisp<Option<u64>>) -> Result<()> {
+fn prepare_frame_module(output: String, seq: Lisp<u64>, after: Lisp<Option<u64>>) -> Result<()> {
     tracing::info!("Prepared frame for output {}", output);
     prepare_frame(PendingFrame {
         output,
-        floating: false,
-        pos: None,
-        after: after.0.filter(|&id| id != 0),
+        placement: Placement::Tiled { after: after.0 },
+        seq: seq.0,
     });
     Ok(())
 }
 
-/// Prepare next frame as a floating frame on OUTPUT, optionally at top-left X/Y.
+/// Prepare the next frame as Emacs frame SEQ floating on OUTPUT, optionally at top-left X/Y.
 #[defun]
 fn prepare_floating_frame_module(
     output: String,
+    seq: Lisp<u64>,
     x: Lisp<Option<f64>>,
     y: Lisp<Option<f64>>,
 ) -> Result<()> {
-    let pos = x.0.zip(y.0);
+    let pos = x.0.zip(y.0).map(smithay::utils::Point::from);
     tracing::info!("Prepared floating frame for output {}", output);
     prepare_frame(PendingFrame {
         output,
-        floating: true,
-        pos,
-        after: None,
+        placement: Placement::Floating { pos },
+        seq: seq.0,
     });
     Ok(())
 }

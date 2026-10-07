@@ -2,11 +2,9 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::testing::{
-    HEAD_A, HEAD_B, HEAD_C, HEAD_D, PROP_HEADS, add_prop_outputs, frame_with_entry,
-    frame_with_width, nz, order_from_keys, set_sorted_output_order, strip_with_frame_ids,
+    HEAD_A, HEAD_B, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width, nz,
+    order_from_keys, set_sorted_output_order, strip_with_frame_ids,
 };
-
-const PROP_SURFACE_OUTPUTS: [&str; 6] = [HEAD_A, HEAD_B, HEAD_C, HEAD_D, "HEAD-X", "HEAD-Y"];
 
 #[cfg(feature = "screencast")]
 #[test]
@@ -141,7 +139,7 @@ proptest! {
     #[test]
     fn surface_output_name_prefers_focus_then_sorted_output_order(
         order_keys in any::<[u8; 4]>(),
-        membership in 1u8..64,
+        membership in 1u8..16,
         focused_idx in 0usize..=4,
     ) {
         let mut fix = testing::Fixture::new().unwrap();
@@ -152,7 +150,7 @@ proptest! {
         let mut client = fix.new_client().unwrap();
         fix.roundtrip(&mut client);
         let surface_id = fix.open_toplevel_id(&mut client, "prop", Size::from((400, 400)));
-        let selected = PROP_SURFACE_OUTPUTS
+        let selected = PROP_HEADS
             .iter()
             .enumerate()
             .filter_map(|(idx, name)| ((membership & (1 << idx)) != 0).then_some(*name))
@@ -169,7 +167,7 @@ proptest! {
                     surface_id,
                 );
                 strip.push_frame(frame);
-                fix.ewm().frame_set.insert_mapped_strip((*name).to_string(), strip);
+                fix.install_strip(name, strip);
             }
         }
 
@@ -188,22 +186,24 @@ proptest! {
             .iter()
             .map(|idx| PROP_HEADS[*idx])
             .find(|name| selected.contains(name));
-        let lexical = selected.iter().copied().min();
-        let expected = focused.or(ordered).or(lexical);
+        let expected = focused.or(ordered);
 
-        prop_assert_eq!(fix.ewm_ref().surface_output_name(surface_id), expected);
+        prop_assert_eq!(
+            fix.ewm_ref()
+                .surface_monitor(surface_id)
+                .map(|monitor| monitor.name()),
+            expected
+        );
         prop_assert_eq!(
             fix.ewm_ref()
                 .layout_entry_for_surface(surface_id, |_| true)
-                .map(|location| location.output_name),
+                .map(|location| location.monitor.name()),
             ordered,
         );
         prop_assert_eq!(
-            fix.ewm_ref().frame_position(surface_id),
-            focused.or(ordered).map(|name| (name.to_string(), 0)),
-        );
-        prop_assert_eq!(
-            fix.ewm_ref().frame_for_surface(surface_id),
+            fix.ewm_ref()
+                .frame_entry_for_surface(surface_id)
+                .map(|(id, _)| id),
             focused.or(ordered).map(|name| {
                 2_000 + PROP_HEADS.iter().position(|candidate| candidate == &name).unwrap() as u64
             }),
@@ -350,9 +350,7 @@ fn focused_title_update_is_immediate() {
 
     let mut strip = strip::Strip::new(animation::Clock::default());
     strip.push_frame(frame_with_entry(100, entry_id, surface_id));
-    fix.ewm()
-        .frame_set
-        .insert_mapped_strip(HEAD_A.to_string(), strip);
+    fix.install_strip(HEAD_A, strip);
     fix.ewm().focused_frame_id = 100;
     fix.ewm().focused_entry_id = Some(entry_id);
     fix.enable_event_capture();
@@ -376,12 +374,8 @@ fn fallback_frame_callbacks_hide_unmapped_output_frames() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);
     fix.add_output(HEAD_B, 1600, 900);
-    fix.ewm()
-        .frame_set
-        .insert_mapped_strip(HEAD_A.to_string(), strip_with_frame_ids(vec![100, 101], 0));
-    fix.ewm()
-        .frame_set
-        .insert_mapped_strip(HEAD_B.to_string(), strip_with_frame_ids(vec![200], 0));
+    fix.install_strip(HEAD_A, strip_with_frame_ids(vec![100, 101], 0));
+    fix.install_strip(HEAD_B, strip_with_frame_ids(vec![200], 0));
 
     fix.ewm().output_config.insert(
         HEAD_B.to_string(),

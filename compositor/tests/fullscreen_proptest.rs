@@ -182,7 +182,7 @@ fn to_frame(spec: &FrameSpec) -> Frame {
 
 fn all_fullscreen_selections(fix: &Fixture) -> HashSet<ViewKey> {
     fix.ewm_ref()
-        .frame_set
+        .layout
         .all_frames()
         .filter_map(|frame| {
             frame.fullscreen.map(|fullscreen| ViewKey {
@@ -196,7 +196,7 @@ fn all_fullscreen_selections(fix: &Fixture) -> HashSet<ViewKey> {
 
 fn live_views(fix: &Fixture) -> HashSet<ViewKey> {
     fix.ewm_ref()
-        .frame_set
+        .layout
         .all_frames()
         .flat_map(|frame| {
             frame.entries.iter().filter_map(|entry| {
@@ -212,9 +212,9 @@ fn live_views(fix: &Fixture) -> HashSet<ViewKey> {
 
 fn mapped_fullscreen_surfaces(fix: &Fixture) -> HashSet<u64> {
     fix.ewm_ref()
-        .frame_set
-        .mapped_strips()
-        .values()
+        .layout
+        .strips()
+        .map(|(_, strip)| strip)
         .flat_map(|strip| strip.frames().iter())
         .filter_map(|frame| frame.fullscreen.map(|fullscreen| fullscreen.surface_id))
         .collect()
@@ -247,7 +247,7 @@ fn assert_fullscreen_invariants(fix: &Fixture) -> Result<(), TestCaseError> {
 
     for surface_id in 1..=6 {
         prop_assert_eq!(
-            fix.ewm_ref().is_surface_fullscreen(surface_id),
+            fix.ewm_ref().layout.is_surface_fullscreen(surface_id),
             mapped_fullscreen_surfaces.contains(&surface_id),
             "mapped fullscreen index diverged for surface {}",
             surface_id,

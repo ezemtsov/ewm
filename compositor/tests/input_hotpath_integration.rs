@@ -185,7 +185,7 @@ impl Harness {
             FocusMode::EmbeddedApp | FocusMode::FullscreenApp => {
                 self.fix
                     .ewm()
-                    .set_focus_entry(self.app_entry_id, "test", false)
+                    .set_focus_entry(self.app_entry_id, "test", false);
             }
             FocusMode::EmacsBuffer => self.fix.ewm().set_focus_frame(self.emacs_id, "test", false),
         }

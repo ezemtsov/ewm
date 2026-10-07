@@ -11,8 +11,9 @@ mod input;
 pub use client::LayerSurface;
 pub use client::{ClientEvent, ClientState as TestClientState, Popup, TestClient, Toplevel};
 pub use fixture::Fixture;
+use smithay::utils::{Rectangle, Size};
 
-use crate::{LayoutEntry, LayoutEntryId, animation, strip};
+use crate::{Layout, LayoutEntry, LayoutEntryId, animation, strip};
 
 /// Two wl_fixed steps of 1/256 px.
 pub const WL_FIXED_TOLERANCE: f64 = 1.0 / 128.0;
@@ -25,14 +26,41 @@ pub fn mark_active_frame_close(id: u64) {
     crate::module::mark_pending_active_frame_close(id);
 }
 
-/// Queue a tiled Emacs frame for OUTPUT, as `ewm-prepare-frame` does.
-pub fn prepare_frame(output: &str, after: Option<u64>) {
+/// Queue Emacs frame SEQ tiled on OUTPUT, as `ewm-prepare-frame` does.
+pub fn prepare_frame(output: &str, seq: u64, after: Option<u64>) {
     crate::module::prepare_frame(crate::module::PendingFrame {
         output: output.to_owned(),
-        floating: false,
-        pos: None,
-        after,
+        placement: crate::layout::Placement::Tiled { after },
+        seq,
     });
+}
+
+/// A bare output called `name`, for layouts without a backend.
+pub fn output(name: &str) -> smithay::output::Output {
+    smithay::output::Output::new(
+        name.to_string(),
+        smithay::output::PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: smithay::output::Subpixel::Unknown,
+            make: String::new(),
+            model: String::new(),
+            serial_number: String::new(),
+        },
+    )
+}
+
+/// A layout with one mapped output per strip, without a compositor around it.
+pub fn layout_with(strips: Vec<(&str, strip::Strip)>) -> Layout {
+    let mut layout = Layout::new(animation::Clock::default());
+    for (name, strip) in strips {
+        let output = output(name);
+        layout.add_output(
+            output.clone(),
+            Rectangle::from_size(Size::from((1600, 900))),
+        );
+        layout.install_strip(&output, strip);
+    }
+    layout
 }
 
 /// Drop every queued frame; the queue is a process-wide static.

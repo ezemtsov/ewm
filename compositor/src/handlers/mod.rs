@@ -376,7 +376,7 @@ impl XdgActivationHandler for State {
                     } else {
                         debug!("xdg_activation: urgency ignored for surface {}", id);
                     }
-                } else if self.ewm.is_emacs_frame(id) {
+                } else if self.ewm.layout.has_frame(id) {
                     debug!("xdg_activation: ignored for Emacs frame {}", id);
                 } else {
                     self.ewm
@@ -402,7 +402,7 @@ impl XdgSystemBellHandler for State {
     fn ring(&mut self, surface: Option<WlSurface>) {
         let id = surface.and_then(|surface| self.ewm.surface_id(&surface));
         // Emacs rang this itself; echoing it back would loop.
-        if id.is_some_and(|id| self.ewm.is_emacs_frame(id)) {
+        if id.is_some_and(|id| self.ewm.layout.has_frame(id)) {
             return;
         }
         self.ewm.queue_event(Event::Bell { id });
@@ -418,7 +418,7 @@ impl ForeignToplevelHandler for State {
     fn is_read_only_surface(&self, wl_surface: &WlSurface) -> bool {
         self.ewm
             .surface_id(wl_surface)
-            .is_some_and(|id| self.ewm.is_emacs_frame(id))
+            .is_some_and(|id| self.ewm.layout.has_frame(id))
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {

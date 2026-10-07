@@ -13,8 +13,8 @@ the compositor keeps clients consistent with its strips.
 
 | Side  | Owns                                | Reads from        |
 |-------|-------------------------------------|-------------------|
-| rust  | `output_strips` (`HashMap<String, Strip>`)      | itself. Lisp asks via `ewm-prepare-frame` and `ewm-swap-frame` |
-| lisp  | frame contents (`ewm-layout`)                    | rust via `ewm-get-strip-frame-ids` and `ewm-get-active-frame-id` |
+| rust  | `Layout`: one `Monitor` per mapped output, each with its `Strip` | itself. Lisp asks via `ewm-prepare-frame` and `ewm-move-frame-module` |
+| lisp  | frame contents (`ewm-layout`)                    | rust via `ewm-get-strip-frame-ids`, `ewm-get-active-frame-id` and `ewm-get-frame-output` |
 | protocol mirror | per-client ext-workspace handles        | rust strips |
 
 Every other source of "frame order" is wrong. In particular:
@@ -50,8 +50,8 @@ In the table below, `O` ranges over outputs, `k` over slot indices.
 |----|----------------------------------------------------------------------------------------------------|
 | I1 | The strip is the only copy of frame order. Lisp reads it through `ewm-get-strip-frame-ids`.        |
 | I2 | A layout command changes neither a strip's frame set nor its order.                                 |
-| I3 | The mirror has exactly one workspace handle per `(O, frame.surface_id)` in `output_strips`.        |
-| I4 | A mirror workspace's `coordinates[1]` equals the slot index of its frame in `output_strips[O]`.    |
+| I3 | The mirror has exactly one workspace handle per `(O, frame.surface_id)` in `layout.strips()`.      |
+| I4 | A mirror workspace's `coordinates[1]` equals the slot index of its frame in `O`'s strip.           |
 | I5 | A mirror workspace's `name` equals `(coordinates[1] + 1)` as decimal.                              |
 | I6 | Exactly one workspace per non-empty group has `Active` state, at slot `strip.active_idx`.          |
 | I7 | The active workspace's frame's `surface_id` equals `focused_frame_id` (when focus is on a frame).  |
@@ -69,7 +69,7 @@ When more than one party could pick, exactly one of them does:
 |----------------------------------|---------|------------------------------------|
 | Frame creation                   | lisp    | `ewm-frame-new` → `make-frame`     |
 | Frame placement                  | rust    | `ewm-prepare-frame` names the output and the frame to insert right of. `new_toplevel` inserts |
-| Strip reorder                    | rust    | `ewm-frame-move-left/right` → `ewm-swap-frame` → `Strip::move_frame` |
+| Strip reorder                    | rust    | `ewm-frame-move-left/right` → `ewm-move-frame-module` → `Layout::move_frame` |
 | Active frame on reorder          | rust    | the active slot follows its frame  |
 | Active frame on close (I9, I10)  | rust    | lisp passes an explicit frame to `delete-frame`; Rust applies active-close or inactive-close strip rules when that frame's toplevel is destroyed |
 | Workspace handle lifecycle       | rust    | `protocols::workspace::refresh`    |
@@ -88,7 +88,7 @@ compositor then removes the destroyed slot with active-close semantics
 ## Refresh model
 
 `protocols::workspace::refresh()` runs every event-loop iteration. It
-diffs the protocol mirror against `output_strips` and emits only the
+diffs the protocol mirror against `layout.strips()` and emits only the
 changed events (`name`, `coordinates`, `state`, plus `workspace_enter` /
 `workspace_leave` on cross-output moves). A single `done()` is emitted
 at the end of each iteration that produced any change.

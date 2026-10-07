@@ -104,16 +104,13 @@ compositor parks keyboard focus on the frame chrome."
             :height (float (frame-pixel-height frame))
             :entries (vconcat (nreverse entries))))))
 
-(defun ewm-layout--managed-frames ()
-  "Frames the compositor has placed, so frames carrying a surface id."
-  (seq-filter (lambda (frame) (frame-parameter frame 'ewm-surface-id)) (frame-list)))
-
 (defun ewm-layout--send-layouts ()
-  "Declare every frame's contents, suppressing `:selected-entry-id' while modal."
+  "Declare every placed frame's contents, suppressing `:selected-entry-id' while modal."
   (let ((menu-active (ewm-layout--menu-active-p)))
-    (ewm-layout (vconcat (mapcar (lambda (frame)
-                                   (ewm-layout--build-frame-plist frame menu-active))
-                                 (ewm-layout--managed-frames))))))
+    (ewm-layout (vconcat (delq nil (mapcar (lambda (frame)
+                                             (and (frame-parameter frame 'ewm-surface-id)
+                                                  (ewm-layout--build-frame-plist frame menu-active)))
+                                           (frame-list)))))))
 
 (defun ewm-layout--refresh ()
   "Send the current window layout to the compositor."

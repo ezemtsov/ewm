@@ -35,7 +35,11 @@ impl FullscreenFade {
 impl State {
     /// Set entry `entry_id` fullscreen or back, dissolving its output from the old contents.
     pub(crate) fn set_fullscreen(&mut self, entry_id: LayoutEntryId, fullscreen: bool) {
-        if let Some(output) = self.ewm.fullscreen_change_output(entry_id, fullscreen) {
+        if let Some(output) = self
+            .ewm
+            .layout
+            .fullscreen_change_output(entry_id, fullscreen)
+        {
             self.start_fullscreen_fade(&output);
         }
         self.ewm.set_layout_entry_fullscreen(entry_id, fullscreen);

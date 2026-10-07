@@ -115,17 +115,6 @@ fn assert_on_panel(
     Ok(())
 }
 
-fn entry_fullscreen(fixture: &Fixture, output: &str, entry_id: LayoutEntryId) -> Option<bool> {
-    fixture
-        .ewm_ref()
-        .frame_set
-        .mapped_strip(output)?
-        .frames()
-        .iter()
-        .find(|frame| frame.entries.iter().any(|entry| entry.id == entry_id))
-        .map(|frame| frame.entry_fullscreen(entry_id))
-}
-
 fn has_surface_enter(
     client: &TestClient,
     events: &[ClientEvent],
@@ -335,9 +324,9 @@ proptest! {
 
         let working_area = fixture
             .ewm_ref()
-            .working_areas
-            .get("Virtual-1")
-            .cloned()
+            .layout
+            .monitor_of(&fixture.output("Virtual-1"))
+            .map(|monitor| monitor.working_area)
             .unwrap();
         prop_assert_eq!(working_area.size, output_size(&output).to_i32_round());
     }
@@ -437,35 +426,22 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
         ],
     );
     fixture.dispatch_roundtrip(2);
-    let neighbour_focus_id = fixture
-        .ewm_ref()
-        .frame_set
-        .mapped_strip("Virtual-1")
-        .unwrap()
-        .frames()[1]
-        .focus_id;
+    let neighbour_focus_id = fixture.strip("Virtual-1").frames()[1].focus_id;
     fixture.pointer_motion_to(640.0, 360.0);
     fixture.enable_event_capture();
 
     {
-        let strip = fixture
-            .ewm()
-            .frame_set
-            .mapped_strip_mut("Virtual-1")
-            .unwrap();
+        let strip = fixture.strip_mut("Virtual-1");
         strip.gesture_begin();
         strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
         // A late zero delta drains the velocity history so the snap is decided by position.
         strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
     }
-    fixture.ewm().strip_gesture_end("Virtual-1", 1280.0);
+    let virtual_1 = fixture.output("Virtual-1");
+    fixture.ewm().strip_gesture_end(&virtual_1, 1280.0);
     fixture.dispatch_roundtrip(2);
 
-    let strip = fixture
-        .ewm_ref()
-        .frame_set
-        .mapped_strip("Virtual-1")
-        .unwrap();
+    let strip = fixture.strip("Virtual-1");
     assert_eq!(strip.active_idx(), 1);
     assert_eq!(fixture.ewm_ref().pointer_location(), (640.0, 360.0));
     // Pointer focus, so Emacs anchors mouse-follows-focus instead of warping.
@@ -477,27 +453,16 @@ fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
 
     // A swipe past the strip end snaps back to the same frame and changes no focus.
     {
-        let strip = fixture
-            .ewm()
-            .frame_set
-            .mapped_strip_mut("Virtual-1")
-            .unwrap();
+        let strip = fixture.strip_mut("Virtual-1");
         strip.gesture_begin();
         strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
         strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
     }
-    fixture.ewm().strip_gesture_end("Virtual-1", 1280.0);
+    let virtual_1 = fixture.output("Virtual-1");
+    fixture.ewm().strip_gesture_end(&virtual_1, 1280.0);
     fixture.dispatch_roundtrip(2);
 
-    assert_eq!(
-        fixture
-            .ewm_ref()
-            .frame_set
-            .mapped_strip("Virtual-1")
-            .unwrap()
-            .active_idx(),
-        1
-    );
+    assert_eq!(fixture.strip("Virtual-1").active_idx(), 1);
     assert!(
         !fixture
             .drain_events()
@@ -532,16 +497,13 @@ fn strip_swipe_with_the_pointer_on_another_output_warps_like_a_key() {
     fixture.enable_event_capture();
 
     {
-        let strip = fixture
-            .ewm()
-            .frame_set
-            .mapped_strip_mut("Virtual-1")
-            .unwrap();
+        let strip = fixture.strip_mut("Virtual-1");
         strip.gesture_begin();
         strip.gesture_update(700.0, std::time::Duration::ZERO, 1280.0);
         strip.gesture_update(0.0, std::time::Duration::from_millis(200), 1280.0);
     }
-    fixture.ewm().strip_gesture_end("Virtual-1", 1280.0);
+    let virtual_1 = fixture.output("Virtual-1");
+    fixture.ewm().strip_gesture_end(&virtual_1, 1280.0);
     fixture.dispatch_roundtrip(2);
 
     // Keyboard-style focus, so mouse-follows-focus brings the pointer over.
@@ -659,7 +621,10 @@ fn disabling_focused_output_migrates_focused_frame_to_mapped_output() {
     fixture.apply_output_config("Virtual-1");
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), 100);
-    assert_eq!(fixture.ewm_ref().emacs_frame_output(100), Some("Virtual-2"));
+    assert_eq!(
+        fixture.ewm_ref().layout.frame_output(100),
+        Some("Virtual-2")
+    );
 }
 
 #[test]
@@ -682,13 +647,19 @@ fn disabling_output_migrates_entries_to_mapped_output() {
     );
     fixture.apply_output_config("Virtual-1");
 
-    assert!(fixture.ewm_ref().is_surface_fullscreen(1));
+    assert!(fixture.ewm_ref().layout.is_surface_fullscreen(1));
     fixture.ewm().set_focus_entry(nz(1), "test", false);
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), 1);
     assert_eq!(fixture.ewm_ref().focused_entry_id, Some(nz(1)));
-    assert_eq!(fixture.ewm_ref().frame_with_focus_id(nz(1_100)), Some(100));
-    assert_eq!(fixture.ewm_ref().emacs_frame_output(100), Some("Virtual-2"));
+    assert_eq!(
+        fixture.ewm_ref().layout.frame_with_focus_id(nz(1_100)),
+        Some(100)
+    );
+    assert_eq!(
+        fixture.ewm_ref().layout.frame_output(100),
+        Some("Virtual-2")
+    );
 }
 
 #[test]
@@ -713,11 +684,7 @@ fn disabling_output_reassigns_primary_entry_to_mapped_entry() {
     );
     fixture.apply_output_config("Virtual-1");
 
-    let live_strip = fixture
-        .ewm_ref()
-        .frame_set
-        .mapped_strip("Virtual-2")
-        .expect("Virtual-2 strip exists");
+    let live_strip = fixture.strip("Virtual-2");
     assert!(
         live_strip
             .surface_entries()
@@ -742,21 +709,14 @@ enum HotplugOp {
 }
 
 fn strip_ids(fixture: &Fixture, output: &str) -> Vec<u64> {
-    fixture
-        .ewm_ref()
-        .frame_set
-        .mapped_strip(output)
-        .map(|strip| strip.frames().iter().map(|f| f.surface_id).collect())
-        .unwrap_or_default()
+    let layout = &fixture.ewm_ref().layout;
+    layout
+        .output(output)
+        .map_or_else(Vec::new, |output| layout.strip_frame_ids(output).collect())
 }
 
 fn frame_is_homeless(fixture: &Fixture, id: u64) -> bool {
-    fixture
-        .ewm_ref()
-        .frame_set
-        .homeless_frames()
-        .iter()
-        .any(|f| f.surface_id == id)
+    fixture.ewm_ref().layout.is_homeless(id)
 }
 
 /// Invariants that must hold after every hotplug op:
@@ -767,17 +727,11 @@ fn frame_is_homeless(fixture: &Fixture, id: u64) -> bool {
 ///   output is mapped, else in the homeless pool.
 fn assert_hotplug_invariants(fixture: &Fixture, displays: &[Display]) {
     let any_mapped = fixture.ewm_ref().space.outputs().next().is_some();
-    let all_frames: Vec<u64> = fixture
-        .ewm_ref()
-        .frame_set
-        .all_frames()
-        .map(|f| f.surface_id)
-        .collect();
+    fixture.ewm_ref().layout.verify_invariants();
 
     for display in displays {
         for &id in &display.frames {
-            let count = all_frames.iter().filter(|&&f| f == id).count();
-            assert_eq!(count, 1, "frame {id} present {count} times, want exactly 1");
+            assert!(fixture.ewm_ref().layout.has_frame(id), "frame {id} is gone");
         }
         match &display.connector {
             Some(connector) => {
@@ -795,7 +749,7 @@ fn assert_hotplug_invariants(fixture: &Fixture, displays: &[Display]) {
                 for &id in &display.frames {
                     if any_mapped {
                         assert!(
-                            fixture.ewm_ref().emacs_frame_output(id).is_some(),
+                            fixture.ewm_ref().layout.frame_output(id).is_some(),
                             "frame {id} of disconnected display {} was lost",
                             display.serial,
                         );
@@ -885,27 +839,18 @@ fn layout_merge_preserves_fullscreen_for_same_surface_view() {
         vec![frame_with_entry(100, entry_id, surface_id)],
     );
     fixture.ewm().set_layout_entry_fullscreen(entry_id, true);
-    assert_eq!(
-        entry_fullscreen(&fixture, "Virtual-1", entry_id),
-        Some(true)
-    );
+    assert!(fixture.ewm_ref().layout.entry_fullscreen(entry_id));
 
     fixture.tile(
         "Virtual-1",
         vec![frame_with_entry(100, entry_id, surface_id)],
     );
-    assert_eq!(
-        entry_fullscreen(&fixture, "Virtual-1", entry_id),
-        Some(true)
-    );
-    assert!(fixture.ewm_ref().is_surface_fullscreen(surface_id));
+    assert!(fixture.ewm_ref().layout.entry_fullscreen(entry_id));
+    assert!(fixture.ewm_ref().layout.is_surface_fullscreen(surface_id));
 
     fixture.tile("Virtual-1", vec![frame_with_entry(100, entry_id, 2)]);
-    assert_eq!(
-        entry_fullscreen(&fixture, "Virtual-1", entry_id),
-        Some(false)
-    );
-    assert!(!fixture.ewm_ref().is_surface_fullscreen(surface_id));
+    assert!(!fixture.ewm_ref().layout.entry_fullscreen(entry_id));
+    assert!(!fixture.ewm_ref().layout.is_surface_fullscreen(surface_id));
 }
 
 #[test]
@@ -931,18 +876,12 @@ fn output_scale_change_reassigns_fullscreen_primary_entry() {
     );
     fixture.apply_output_config("Virtual-1");
 
-    let primary_output =
-        fixture
-            .ewm_ref()
-            .frame_set
-            .mapped_strips()
-            .iter()
-            .find_map(|(name, strip)| {
-                strip
-                    .surface_entries()
-                    .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary())
-                    .then_some(name.as_str())
-            });
+    let primary_output = fixture.ewm_ref().layout.strips().find_map(|(name, strip)| {
+        strip
+            .surface_entries()
+            .any(|entry| entry.surface_id() == Some(surface_id) && entry.primary())
+            .then_some(name)
+    });
     assert_eq!(primary_output, Some("Virtual-2"));
 }
 
@@ -998,7 +937,7 @@ fn migrated_layout_surfaces_receive_destination_preferred_scale() {
     );
     fixture.apply_output_config("Virtual-1");
     assert_eq!(
-        fixture.ewm_ref().emacs_frame_output(frame_id),
+        fixture.ewm_ref().layout.frame_output(frame_id),
         Some("Virtual-2")
     );
     assert_preferred_scale(&fixture, frame_id, 2.0);
@@ -1013,7 +952,7 @@ fn migrated_layout_surfaces_receive_destination_preferred_scale() {
     );
     fixture.apply_output_config("Virtual-1");
     assert_eq!(
-        fixture.ewm_ref().emacs_frame_output(frame_id),
+        fixture.ewm_ref().layout.frame_output(frame_id),
         Some("Virtual-1")
     );
     assert_preferred_scale(&fixture, frame_id, 1.0);

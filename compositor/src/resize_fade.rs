@@ -109,7 +109,7 @@ impl Ewm {
                 rect,
                 native,
             });
-            scale = scale.max(drawn * self.output_scale(output));
+            scale = scale.max(drawn * output.current_scale().fractional_scale());
         }
         (!views.is_empty()).then_some(PendingResize { views, scale })
     }

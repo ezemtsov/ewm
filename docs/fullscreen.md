@@ -2,7 +2,7 @@
 
 Fullscreen is compositor-owned presentation state, not layout input. Emacs
 keeps its windows as they are and the compositor draws the selected view over
-the whole output. Layout refreshes, migrations and output changes may keep or
+the whole output. Layout refreshes, output moves and output changes may keep or
 clear a selection but never create one (`tests/fullscreen_proptest.rs`).
 
 ## Requests
@@ -22,7 +22,7 @@ clear a selection but never create one (`tests/fullscreen_proptest.rs`).
 ## Presentation
 
 - Configure: the primary view is configured at the output's logical size with
-  `XdgToplevelState::Fullscreen` (`configure_primary`).
+  `XdgToplevelState::Fullscreen` (`configure_primary_entries`).
 - Render: `push_fullscreen_view` draws a primary view at native size centered
   on the output and a non-primary view stretched to fill it, over a black
   backdrop. The Top layer is deferred behind it (`render_above_top_layer`).
@@ -36,4 +36,4 @@ clear a selection but never create one (`tests/fullscreen_proptest.rs`).
 - A request made before the surface has a window is dropped, so a client that
   asks for fullscreen before mapping is placed as usual.
 - Fullscreen for Emacs buffers, a distraction-free mode, is a separate design:
-  the minibuffer and frame-output parity both stand in the way.
+  the minibuffer stands in the way.

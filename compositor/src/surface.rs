@@ -50,7 +50,7 @@ pub struct SurfaceState {
     /// Activation granted before a window shows it.
     pub pending_activation: bool,
     pub pending_title: Option<PendingTitle>,
-    /// Outputs showing it as a view.
+    /// Outputs showing it.
     pub outputs: HashSet<String>,
     /// Fade-in after the first buffer.
     pub open: Option<Animation>,

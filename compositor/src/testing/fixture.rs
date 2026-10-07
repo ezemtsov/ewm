@@ -452,7 +452,29 @@ impl Fixture {
         &mut self.state.ewm
     }
 
-    /// Get immutable access to the compositor state
+    /// The mapped output called `name`.
+    pub fn output(&self, name: &str) -> smithay::output::Output {
+        self.ewm_ref()
+            .layout
+            .output(name)
+            .cloned()
+            .unwrap_or_else(|| panic!("output {name} is not mapped"))
+    }
+
+    pub fn strip(&self, name: &str) -> &crate::strip::Strip {
+        self.ewm_ref().layout.strip(&self.output(name)).unwrap()
+    }
+
+    pub fn strip_mut(&mut self, name: &str) -> &mut crate::strip::Strip {
+        let output = self.output(name);
+        self.ewm().layout.strip_mut(&output).unwrap()
+    }
+
+    pub fn install_strip(&mut self, name: &str, strip: crate::strip::Strip) {
+        let output = self.output(name);
+        self.ewm().layout.install_strip(&output, strip);
+    }
+
     pub fn ewm_ref(&self) -> &Ewm {
         &self.state.ewm
     }
@@ -580,8 +602,10 @@ impl Fixture {
 
     /// `tile` declaring the contents through the command path Emacs uses.
     pub fn tile_command(&mut self, output: &str, frames: Vec<Frame>) {
-        let layout = self.place(output, frames, false);
-        self.layout_command(layout);
+        let frames = self.place(output, frames, false);
+        self.state
+            .handle_module_command(crate::module::ModuleCommand::Layout { frames });
+        self.state.sync_keyboard_focus();
     }
 
     /// `tile` for `output`'s floating space.
@@ -590,36 +614,31 @@ impl Fixture {
         self.state.ewm.apply_layout(layout);
     }
 
-    /// Declare the layout through the same command path used by Emacs.
-    pub fn layout_command(&mut self, frames: Vec<Frame>) {
-        self.state
-            .handle_module_command(crate::module::ModuleCommand::Layout { frames });
-        self.state.sync_keyboard_focus();
-    }
-
     /// Place the unplaced frames among `frames` on `output` as `new_toplevel`
     /// would, then return them with every other placed frame as it is: Emacs
     /// declares them all.
     fn place(&mut self, output: &str, frames: Vec<Frame>, floating: bool) -> Vec<Frame> {
         let ewm = &mut self.state.ewm;
-        if ewm.mapped_output_by_name(output).is_some() {
+        if let Some(output) = ewm.layout.output(output).cloned() {
             for frame in &frames {
                 let id = frame.surface_id;
-                if id == 0 || ewm.is_emacs_frame(id) {
+                if id == 0 || ewm.layout.has_frame(id) {
                     continue;
                 }
-                if floating {
+                let placement = if floating {
                     let pos = frame.floating_pos.and_then(|pos| {
-                        let area = ewm.ensure_floating_space_for_output(output)?.working_area();
+                        let area = ewm.layout.floating(&output)?.working_area();
                         Some(crate::floating::Data::scale_by_working_area(area, pos))
                     });
-                    ewm.place_new_floating_frame(id, output, pos);
+                    crate::layout::Placement::Floating { pos }
                 } else {
-                    ewm.place_new_frame(id, output, None);
-                }
+                    crate::layout::Placement::Tiled { after: None }
+                };
+                ewm.layout.add_frame(id, &output, placement);
             }
         }
         let mut layout: Vec<Frame> = ewm
+            .layout
             .placed_frames()
             .filter(|placed| !frames.iter().any(|f| f.surface_id == placed.surface_id))
             .cloned()

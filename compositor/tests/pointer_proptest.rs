@@ -6,7 +6,7 @@
 //!
 //! L1  - Surface-index parity. `ewm.surface_outputs()` equals the set of
 //!       `(surface_id, output_name)` pairs derived from
-//!       `output_strips[output].surface_entries()`.
+//!       the `surface_entries()` of every strip in `layout.strips()`.
 //!
 //! L2  - View origin formula. `surface_view_origins(S)` lists exactly one
 //!       origin per layout entry of `S`, computed from the frame-owned
@@ -361,9 +361,9 @@ impl Harness {
     fn toplevel_in_some_strip(&self) -> bool {
         self.fix
             .ewm_ref()
-            .frame_set
-            .mapped_strips()
-            .values()
+            .layout
+            .strips()
+            .map(|(_, strip)| strip)
             .any(|strip| {
                 strip
                     .surface_entries()
@@ -374,9 +374,9 @@ impl Harness {
     fn frame_in_some_strip(&self) -> bool {
         self.fix
             .ewm_ref()
-            .frame_set
-            .mapped_strips()
-            .values()
+            .layout
+            .strips()
+            .map(|(_, strip)| strip)
             .any(|strip| {
                 strip
                     .frames()
@@ -713,7 +713,7 @@ fn apply_split_client_layout(h: &mut Harness, output: usize) {
 
 fn settle_strip_animations(h: &mut Harness) {
     h.fix.ewm().animations_clock.set_complete_instantly(true);
-    for strip in h.fix.ewm().frame_set.mapped_strips_mut() {
+    for strip in h.fix.ewm().layout.strips_mut() {
         strip.advance();
     }
 }
@@ -721,22 +721,25 @@ fn settle_strip_animations(h: &mut Harness) {
 fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let mut from_strips: HashMap<u64, HashSet<String>> = HashMap::new();
-    for (out_name, strip) in ewm.frame_set.mapped_strips() {
-        for surface_id in strip
-            .surface_entries()
-            .filter_map(LayoutEntry::surface_id)
+    for monitor in ewm.layout.monitors() {
+        for surface_id in monitor
+            .frames()
+            .flat_map(|frame| {
+                std::iter::once(frame.surface_id)
+                    .chain(frame.entries.iter().filter_map(LayoutEntry::surface_id))
+            })
             .filter(|id| ewm.surfaces.contains_key(id))
         {
             from_strips
                 .entry(surface_id)
                 .or_default()
-                .insert(out_name.clone());
+                .insert(monitor.name().to_string());
         }
     }
     prop_assert_eq!(
         from_strips,
         ewm.surface_outputs(),
-        "L1: surface_outputs out of sync with output_strips",
+        "L1: surface_outputs out of sync with the layout",
     );
     Ok(())
 }
@@ -744,9 +747,8 @@ fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
 fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let primary = ewm
-        .frame_set
-        .mapped_strips()
-        .iter()
+        .layout
+        .strips()
         .flat_map(|(name, strip)| {
             let active_idx = strip.active_idx();
             strip
@@ -758,7 +760,7 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
                         .entries
                         .iter()
                         .filter(|entry| entry.surface.is_some())
-                        .map(move |entry| (name.clone(), frame, entry))
+                        .map(move |entry| (name, frame, entry))
                 })
         })
         .find(|(_, _, e)| e.surface_id() == Some(h.sid) && e.primary());
@@ -811,7 +813,7 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
     let mut expected: Vec<Point<i32, Logical>> = Vec::new();
     // Mirror production order: `surface_view_origins` walks `sorted_outputs`.
     for output in &ewm.sorted_outputs {
-        let Some(strip) = ewm.frame_set.mapped_strip(&output.name()) else {
+        let Some(strip) = ewm.layout.strip(output) else {
             continue;
         };
         let Some(output_geo) = ewm.space.output_geometry(output) else {
@@ -914,8 +916,7 @@ fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, Layout
             continue;
         }
 
-        let output_name = output.name();
-        let Some(strip) = ewm.frame_set.mapped_strip(&output_name) else {
+        let Some(strip) = ewm.layout.strip(output) else {
             continue;
         };
         let working_area = ewm.get_working_area(output);
@@ -1202,7 +1203,7 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
         return Ok(());
     }
     let p_int = Point::from((p.x as i32, p.y as i32));
-    for (out_name, strip) in ewm.frame_set.mapped_strips() {
+    for (out_name, strip) in ewm.layout.strips() {
         let Some(output) = ewm.space.outputs().find(|o| o.name() == *out_name) else {
             continue;
         };
@@ -1243,28 +1244,7 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
 }
 
 fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
-    let ewm = h.fix.ewm_ref();
-    for (name, strip) in ewm.frame_set.mapped_strips() {
-        for (frame_idx, frame) in strip.frames().iter().enumerate() {
-            let count = usize::from(frame.fullscreen.is_some());
-            prop_assert!(
-                count <= 1,
-                "N4: strip {} frame {} has {} fullscreen entries, expected at most 1",
-                name,
-                frame_idx,
-                count,
-            );
-            if let Some(fullscreen) = frame.fullscreen {
-                prop_assert_eq!(
-                    frame.entry_surface_id(fullscreen.entry_id),
-                    Some(fullscreen.surface_id),
-                    "N4: strip {} frame {} fullscreen entry must identify a live surface view",
-                    name,
-                    frame_idx,
-                );
-            }
-        }
-    }
+    h.fix.ewm_ref().layout.verify_invariants();
     Ok(())
 }
 

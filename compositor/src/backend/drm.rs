@@ -1807,7 +1807,7 @@ impl DrmBackendState {
                 || self.closed_lid_settle_timer.is_some())
             && self.apply_lid_policy(ewm, LidPolicyReason::Hotplug);
         // Signal Emacs that output topology is settled so it can
-        // re-sync layout, focus, and frame-output parity.
+        // re-sync layout, focus, and stray frames.
         if changed && !lid_handled {
             ewm.queue_event(crate::event::Event::OutputsComplete);
         }

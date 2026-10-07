@@ -102,9 +102,9 @@ JSON line is delivered exactly once. Serde serialization replaces the manual
 | Event | Rust | Purpose |
 |-------|------|---------|
 | `ready` | `Event::Ready` | Compositor initialized |
-| `new` | `Event::New{id,app,output,pid}` | Surface created; `output` only for Emacs frames |
+| `new` | `Event::New{id,app,seq,pid}` | Surface created. `seq` names the Emacs frame it belongs to, nil for apps |
 | `close` | `Event::Close{id}` | Surface destroyed |
-| `focus` | `Event::Focus{view_id,x,y}` | View focused |
+| `focus` | `Event::Focus{focus_id,x,y,pointer}` | Frame or view focused |
 | `title` | `Event::Title{id,app,title}` | Surface title changed |
 | `output_detected` | `Event::OutputDetected(info)` | Monitor connected |
 | `output_disconnected` | `Event::OutputDisconnected{name}` | Monitor removed |
@@ -121,11 +121,11 @@ Commands flow in the opposite direction via `COMMAND_QUEUE`:
 ```
 Emacs Main Thread              │  Compositor Thread
                                │
-ewm-focus-view-module(view-id) │
-  └─ queue.push(FocusView{view-id})
-  └─ wake LOOP_SIGNAL ────────►│  calloop wakes
-                               │    └─ drain_commands()
-                               │    └─ handle FocusView{view-id}
+ewm-focus-target-module(focus-id) │
+  └─ queue.push(FocusTarget{focus-id})
+  └─ wake LOOP_SIGNAL ──────────►│  calloop wakes
+                                 │    └─ drain_commands()
+                                 │    └─ handle FocusTarget{focus-id}
 ```
 
 All `ewm-*-module` functions push to the command queue and wake the
@@ -152,8 +152,8 @@ this event instead of using arbitrary sleep delays:
   ...)
 ```
 
-**Critical**: Emacs-side setup must run before the wait loop so that
-`output_detected` events properly register frames as pending.  The public
+**Critical**: Emacs-side setup must run before the wait loop so that the
+`outputs_complete` event finds its handlers installed and creates the first frames.  The public
 `ewm-mode` state is published only after the compositor sends `ready`, making
 `ewm-mode-hook` suitable for launching Wayland clients such as panels.
 
@@ -179,13 +179,12 @@ this event instead of using arbitrary sleep delays:
 All `*-module` functions push to command queue:
 
 ```elisp
-(ewm-focus-view-module view-id)
+(ewm-focus-target-module focus-id)
 (ewm-focus-output-direction-module dx dy)
 (ewm-close-module id)
 (ewm-layout-module frames-vector)
-(ewm-swap-frame-module id delta)
+(ewm-move-frame-module id delta)
 (ewm-warp-pointer-module x y)
-(ewm-screenshot-module &optional path)
 (ewm-configure-output-module name x y width height refresh scale transform enabled)
 (ewm-intercept-keys-module keys-vector)
 (ewm-configure-input-module configs-vector)

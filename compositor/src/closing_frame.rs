@@ -57,7 +57,8 @@ impl State {
             .iter()
             .copied()
             .filter(|&id| {
-                ewm.frame_location(id)
+                ewm.layout
+                    .frame_location(id)
                     .is_some_and(|location| location.frame.close_snapshot.is_none())
             })
             .collect();

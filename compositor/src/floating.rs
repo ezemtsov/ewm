@@ -334,18 +334,49 @@ impl FloatingSpace {
             .map(|pos| Data::scale_by_working_area(self.working_area, pos))
     }
 
-    /// Drop frame `id`, fading it out where it stood.
-    pub fn close_frame(&mut self, id: u64) -> Option<Frame> {
+    /// Take frame `id` out with the position it stood at.
+    fn remove_frame_with_data(&mut self, id: u64) -> Option<(Frame, Data)> {
         let idx = self.idx_of(id)?;
         self.interactive_move = self.interactive_move.filter(|move_| move_.frame_id != id);
         self.interactive_resize = self
             .interactive_resize
             .filter(|resize| resize.frame_id != id);
         let data = self.data.remove(idx);
-        let mut frame = self.frames.remove(idx);
+        let frame = self.frames.remove(idx);
         if self.active_frame_id == Some(id) {
             self.active_frame_id = self.frames.first().map(|frame| frame.surface_id);
         }
+        Some((frame, data))
+    }
+
+    /// Take frame `id` out, keeping its position in `floating_pos` for its next space.
+    pub fn remove_frame(&mut self, id: u64) -> Option<Frame> {
+        let (mut frame, data) = self.remove_frame_with_data(id)?;
+        frame.floating_pos = Some(data.pos);
+        Some(frame)
+    }
+
+    /// Take the frames `take` selects out, keeping their positions in `floating_pos`.
+    pub fn drain_frames(&mut self, mut take: impl FnMut(&Frame) -> bool) -> Vec<Frame> {
+        let ids: Vec<u64> = self
+            .frames
+            .iter()
+            .filter(|frame| take(frame))
+            .map(|frame| frame.surface_id)
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.remove_frame(id))
+            .collect()
+    }
+
+    /// Take every frame out, keeping their positions in `floating_pos`.
+    pub fn take_frames(&mut self) -> Vec<Frame> {
+        self.drain_frames(|_| true)
+    }
+
+    /// Drop frame `id`, fading it out where it stood.
+    pub fn close_frame(&mut self, id: u64) -> Option<Frame> {
+        let (mut frame, data) = self.remove_frame_with_data(id)?;
         if let Some(snapshot) = frame.close_snapshot.take() {
             let anim = Animation::ease(self.clock.clone(), 0., 1., CLOSE_ANIM_DURATION);
             self.closing_frames
@@ -403,15 +434,11 @@ impl FloatingSpace {
         for mut new_frame in frames {
             named.insert(new_frame.surface_id);
             if let Some(idx) = self.idx_of(new_frame.surface_id) {
-                let preserved_workspace_name = std::mem::take(&mut self.frames[idx].workspace_name);
                 let prev_size = self.data[idx].size();
                 let was_auto = self.frames[idx].floating_pos.is_none();
                 let preserved_pos = self.data[idx].pos;
                 new_frame.floating_pos = (!was_auto).then_some(preserved_pos);
-                self.frames[idx] = new_frame;
-                if self.frames[idx].workspace_name.is_none() {
-                    self.frames[idx].workspace_name = preserved_workspace_name;
-                }
+                self.frames[idx].refill(new_frame);
                 self.data[idx].update(&self.frames[idx]);
                 // Auto-floated frames are added placeholder-sized; center once the real size lands.
                 let recenter = was_auto && self.data[idx].size() != prev_size;
@@ -438,8 +465,7 @@ impl FloatingSpace {
 
         for (frame, data) in zip(&mut self.frames, &self.data) {
             if !named.contains(&frame.surface_id) {
-                frame.entries.clear();
-                frame.selected_entry_id = None;
+                frame.clear_contents();
                 // Persist only an already-explicit position; leave auto frames auto.
                 if frame.floating_pos.is_some() {
                     frame.floating_pos = Some(data.pos);
@@ -656,28 +682,8 @@ impl FloatingSpace {
         self.frames.iter().flat_map(|f| f.entries.iter())
     }
 
-    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
-        self.frames.iter_mut().flat_map(|f| f.entries.iter_mut())
-    }
-
     pub fn surface_entries(&self) -> impl Iterator<Item = &LayoutEntry> {
         self.entries().filter(|entry| entry.surface.is_some())
-    }
-
-    pub fn surface_entries_mut(&mut self) -> impl Iterator<Item = &mut LayoutEntry> {
-        self.entries_mut().filter(|entry| entry.surface.is_some())
-    }
-
-    pub fn entries_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
-        self.frames
-            .iter()
-            .enumerate()
-            .flat_map(|(i, f)| f.entries.iter().map(move |entry| (i, entry)))
-    }
-
-    pub fn surface_entries_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
-        self.entries_with_frame()
-            .filter(|(_, entry)| entry.surface.is_some())
     }
 
     pub fn advance(&mut self) {
