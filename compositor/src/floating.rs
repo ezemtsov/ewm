@@ -72,12 +72,6 @@ impl std::ops::BitOrAssign for ResizeEdge {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct InteractiveMove {
-    frame_id: u64,
-    original_pos: Point<f64, Logical>,
-}
-
-#[derive(Debug, Clone, Copy)]
 struct InteractiveResize {
     frame_id: u64,
     original_pos: Point<f64, Logical>,
@@ -107,7 +101,8 @@ pub struct Data {
     /// Working area used for conversions.
     working_area: Rectangle<f64, Logical>,
 
-    move_anim: Option<Animation>,
+    /// Offset the frame slides in from, and its 1 to 0 progress along it.
+    move_anim: Option<(Point<f64, Logical>, Animation)>,
 
     shadow: crate::floating_shadow::Shadow,
 }
@@ -240,16 +235,29 @@ impl Data {
     }
 
     pub fn move_offset(&self) -> Point<f64, Logical> {
-        Point::from((self.move_anim.as_ref().map_or(0.0, Animation::value), 0.0))
+        self.move_anim
+            .as_ref()
+            .map_or_else(Point::default, |(from, anim)| from.upscale(anim.value()))
     }
 
-    pub fn set_move_anim(&mut self, from_x: f64, clock: Clock) {
+    pub fn set_move_anim(&mut self, from: Point<f64, Logical>, clock: Clock) {
         self.move_anim = (!clock.should_complete_instantly())
-            .then(|| Animation::new(clock, from_x, 0.0, 0., slide_spring()));
+            .then(|| (from, Animation::new(clock, 1.0, 0.0, 0., slide_spring())));
+    }
+
+    /// Set the position as dragged, off-screen included, leaving the clamp for the drop.
+    pub fn set_dragged_pos(&mut self, logical_pos: Point<f64, Logical>) {
+        self.pos = Self::logical_to_size_frac_in_working_area(self.working_area, logical_pos);
+        self.logical_pos = logical_pos;
+        self.move_anim = None;
     }
 
     pub fn advance(&mut self) {
-        if self.move_anim.as_ref().is_some_and(Animation::is_done) {
+        if self
+            .move_anim
+            .as_ref()
+            .is_some_and(|(_, anim)| anim.is_done())
+        {
             self.move_anim = None;
         }
     }
@@ -267,8 +275,6 @@ pub struct FloatingSpace {
     data: Vec<Data>,
     active_frame_id: Option<u64>,
     #[serde(skip)]
-    interactive_move: Option<InteractiveMove>,
-    #[serde(skip)]
     interactive_resize: Option<InteractiveResize>,
     #[serde(skip)]
     working_area: Rectangle<f64, Logical>,
@@ -284,7 +290,6 @@ impl FloatingSpace {
             frames: Vec::new(),
             data: Vec::new(),
             active_frame_id: None,
-            interactive_move: None,
             interactive_resize: None,
             working_area,
             clock,
@@ -337,7 +342,6 @@ impl FloatingSpace {
     /// Take frame `id` out with the position it stood at.
     fn remove_frame_with_data(&mut self, id: u64) -> Option<(Frame, Data)> {
         let idx = self.idx_of(id)?;
-        self.interactive_move = self.interactive_move.filter(|move_| move_.frame_id != id);
         self.interactive_resize = self
             .interactive_resize
             .filter(|resize| resize.frame_id != id);
@@ -474,19 +478,49 @@ impl FloatingSpace {
         }
     }
 
-    pub fn move_frame_by(&mut self, id: u64, delta: Point<f64, Logical>) -> bool {
+    /// Put frame `id` at `pos`, sliding it in from where it stood if that is far.
+    fn move_and_animate(&mut self, id: u64, pos: Point<f64, Logical>) -> bool {
+        // Moves shorter than this many logical pixels do not animate.
+        const ANIM_THRESHOLD_SQ: f64 = 10.0 * 10.0;
+
         let clock = self.clock.clone();
         let Some((frame, data)) = self.frame_with_data_mut(id) else {
             return false;
         };
         let prev = data.logical_pos();
-        data.set_logical_pos(prev + delta);
+        data.set_logical_pos(pos);
         frame.floating_pos = Some(data.pos);
         let diff = prev - data.logical_pos();
-        if diff.x * diff.x + diff.y * diff.y > 10.0 * 10.0 {
-            data.set_move_anim(diff.x, clock);
+        if diff.x * diff.x + diff.y * diff.y > ANIM_THRESHOLD_SQ {
+            data.set_move_anim(diff, clock);
         }
         true
+    }
+
+    pub fn move_frame_by(&mut self, id: u64, delta: Point<f64, Logical>) -> bool {
+        let Some((_, data)) = self.frame_with_data(id) else {
+            return false;
+        };
+        let pos = data.logical_pos() + delta;
+        self.move_and_animate(id, pos)
+    }
+
+    /// Pin frame `id` under the pointer, off-screen included, while it is dragged.
+    pub fn drag_frame_to(&mut self, id: u64, pos: Point<f64, Logical>) {
+        let Some((frame, data)) = self.frame_with_data_mut(id) else {
+            return;
+        };
+        data.set_dragged_pos(pos);
+        frame.floating_pos = Some(data.pos);
+    }
+
+    /// Clamp a dropped frame back on screen, sliding it in if the clamp moved it.
+    pub fn settle_dragged_frame(&mut self, id: u64) {
+        let Some((_, data)) = self.frame_with_data(id) else {
+            return;
+        };
+        let pos = data.logical_pos();
+        self.move_and_animate(id, pos);
     }
 
     pub fn resize_frame_by(
@@ -519,56 +553,6 @@ impl FloatingSpace {
         self.frames_with_render_geo()
             .find(|(_, frame_rect)| frame_rect.contains(pos))
             .map(|(frame, _)| (frame.surface_id, ResizeEdge::BOTTOM_RIGHT))
-    }
-
-    pub fn interactive_move_begin(&mut self, frame_id: u64) -> bool {
-        if self.interactive_move.is_some() {
-            return false;
-        }
-
-        let Some((_, data)) = self.frame_with_data(frame_id) else {
-            return false;
-        };
-
-        self.interactive_move = Some(InteractiveMove {
-            frame_id,
-            original_pos: data.logical_pos(),
-        });
-
-        true
-    }
-
-    pub fn interactive_move_update(&mut self, frame_id: u64, delta: Point<f64, Logical>) -> bool {
-        let Some(move_) = self.interactive_move else {
-            return false;
-        };
-
-        if frame_id != move_.frame_id {
-            return false;
-        }
-
-        let Some((frame, data)) = self.frame_with_data_mut(frame_id) else {
-            return false;
-        };
-
-        data.set_logical_pos(move_.original_pos + delta);
-        frame.floating_pos = Some(data.pos);
-
-        true
-    }
-
-    pub fn interactive_move_end(&mut self, frame_id: Option<u64>) {
-        let Some(move_) = self.interactive_move else {
-            return;
-        };
-
-        if let Some(frame_id) = frame_id
-            && frame_id != move_.frame_id
-        {
-            return;
-        }
-
-        self.interactive_move = None;
     }
 
     pub fn interactive_resize_begin(&mut self, frame_id: u64, edges: ResizeEdge) -> bool {

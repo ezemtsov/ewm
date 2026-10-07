@@ -70,6 +70,14 @@ impl<'a> FrameLocation<'a> {
     }
 }
 
+/// A floating frame following the pointer.
+#[derive(Debug, Clone, Copy)]
+struct InteractiveMove {
+    frame_id: u64,
+    /// Where the pointer grabbed the frame, as a fraction of its size.
+    pointer_ratio: (f64, f64),
+}
+
 /// Where a new frame goes on its output.
 #[derive(Debug, Clone, Copy)]
 pub enum Placement {
@@ -206,6 +214,8 @@ pub struct Layout {
     home_outputs: HashMap<u64, String>,
     /// Last active frame per display identity.
     last_active: HashMap<String, u64>,
+    /// Floating frame the pointer is dragging.
+    interactive_move: Option<InteractiveMove>,
     /// Clock for driving animations.
     clock: animation::Clock,
 }
@@ -217,6 +227,7 @@ impl Layout {
             homeless: Frames::default(),
             home_outputs: HashMap::new(),
             last_active: HashMap::new(),
+            interactive_move: None,
             clock,
         }
     }
@@ -456,6 +467,7 @@ impl Layout {
         active_close: bool,
     ) -> Option<(Output, Option<u64>)> {
         self.home_outputs.remove(&id);
+        self.interactive_move = self.interactive_move.filter(|move_| move_.frame_id != id);
         self.homeless.tiled.retain(|frame| frame.surface_id != id);
         self.homeless
             .floating
@@ -542,6 +554,12 @@ impl Layout {
         };
         let frames = mem::take(&mut self.homeless);
         self.place_frames(idx, frames, focused)
+    }
+
+    /// Make `output`'s display the frame's home, so a replug brings it back there.
+    fn set_home(&mut self, frame_id: u64, output: &Output) {
+        self.home_outputs
+            .insert(frame_id, crate::utils::output_identity(output));
     }
 
     fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
@@ -861,6 +879,116 @@ impl Layout {
         for &id in self.home_outputs.keys() {
             assert!(self.has_frame(id), "home remembered for gone frame {id}");
         }
+        if let Some(move_) = self.interactive_move {
+            assert!(
+                self.frame_location(move_.frame_id)
+                    .is_some_and(|location| location.floating),
+                "dragged frame {} is not in a floating space",
+                move_.frame_id
+            );
+            let (x, y) = move_.pointer_ratio;
+            assert!(
+                (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y),
+                "pointer grabbed frame {} outside it at {:?}",
+                move_.frame_id,
+                move_.pointer_ratio
+            );
+        }
+    }
+
+    /// Start dragging floating frame `id`, remembering where the pointer grabbed it.
+    pub(crate) fn interactive_move_begin(
+        &mut self,
+        id: u64,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        if self.interactive_move.is_some() {
+            return false;
+        }
+        let Some(monitor) = self.monitor_of(output) else {
+            return false;
+        };
+        let Some((_, data)) = monitor.floating.frame_with_data(id) else {
+            return false;
+        };
+        // Measured against the drawn position, so a sliding frame grabs without a jump.
+        let offset = pos_within_output - data.render_pos();
+        let size = data.size();
+        self.interactive_move = Some(InteractiveMove {
+            frame_id: id,
+            pointer_ratio: (
+                (offset.x / size.w.max(1.0)).clamp(0.0, 1.0),
+                (offset.y / size.h.max(1.0)).clamp(0.0, 1.0),
+            ),
+        });
+        true
+    }
+
+    /// Carry the dragged frame to `pos_within_output` on `output`, crossing outputs with
+    /// the pointer. Returns the crossing, empty when it stayed, `None` when no drag is live.
+    pub(crate) fn interactive_move_update(
+        &mut self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+        focused: u64,
+    ) -> Option<Moved> {
+        let move_ = self.interactive_move?;
+        let id = move_.frame_id;
+        let src = self
+            .frame_location(id)
+            .filter(|location| location.floating)
+            .map(|location| location.monitor.output().clone());
+        let Some(src) = src else {
+            // The frame left its floating space, so the drag is over.
+            self.interactive_move = None;
+            return None;
+        };
+        if self.monitor_idx(output).is_none() {
+            // Nothing to drag onto, so the frame waits where it is.
+            return Some(Moved::default());
+        }
+        let moved = if src == *output {
+            Moved::default()
+        } else {
+            let moved = self.move_frames(&src, output, &[id], focused);
+            if !moved.ids.is_empty() {
+                // A deliberate drag rehomes the frame, an unplug does not.
+                self.set_home(id, output);
+            }
+            moved
+        };
+        if let Some(monitor) = self.monitor_of_mut(output) {
+            let size = monitor
+                .floating
+                .frame_with_data(id)
+                .map(|(_, data)| data.size());
+            if let Some(size) = size {
+                let pos = pos_within_output
+                    - Point::from((
+                        size.w * move_.pointer_ratio.0,
+                        size.h * move_.pointer_ratio.1,
+                    ));
+                monitor.floating.drag_frame_to(id, pos);
+            }
+        }
+        Some(moved)
+    }
+
+    /// Drop the dragged frame, clamping it back on screen. Returns the output it landed on.
+    pub(crate) fn interactive_move_end(&mut self, id: u64) -> Option<Output> {
+        if self
+            .interactive_move
+            .is_none_or(|move_| move_.frame_id != id)
+        {
+            return None;
+        }
+        self.interactive_move = None;
+        let output = self.frame_location(id)?.monitor.output().clone();
+        self.monitor_of_mut(&output)?
+            .floating
+            .settle_dragged_frame(id);
+        Some(output)
     }
 
     /// Move frame `id` by `delta` slots along its strip, stopping at the edge.
@@ -1732,23 +1860,53 @@ impl Ewm {
         }
     }
 
-    pub fn interactive_move_floating_frame_begin(&mut self, id: u64) -> bool {
-        self.with_floating_space(id, |space| space.interactive_move_begin(id))
+    /// The output strictly under `pos`, with `pos` made relative to it.
+    fn output_local_pos(&self, pos: Point<f64, Logical>) -> Option<(Output, Point<f64, Logical>)> {
+        let output = self.output_containing(pos)?;
+        let geo = self.space.output_geometry(output)?;
+        Some((output.clone(), pos - geo.loc.to_f64()))
     }
 
-    pub fn interactive_move_floating_frame_update(
+    /// Start dragging floating frame `id` grabbed at global position `pos`.
+    pub fn interactive_move_floating_frame_begin(
         &mut self,
         id: u64,
-        delta: Point<f64, Logical>,
+        pos: Point<f64, Logical>,
     ) -> bool {
-        self.with_floating_space(id, |space| space.interactive_move_update(id, delta))
+        let Some((output, pos_within_output)) = self.output_local_pos(pos) else {
+            return false;
+        };
+        self.layout
+            .interactive_move_begin(id, &output, pos_within_output)
+    }
+
+    /// Drag the moving frame to global position `pos`. False once the drag is over.
+    pub fn interactive_move_floating_frame_update(&mut self, pos: Point<f64, Logical>) -> bool {
+        let Some((output, pos_within_output)) = self.output_local_pos(pos) else {
+            // Dead space between outputs leaves the frame where it is.
+            return true;
+        };
+        let focused = self.focused_frame_id;
+        let Some(moved) = self
+            .layout
+            .interactive_move_update(&output, pos_within_output, focused)
+        else {
+            return false;
+        };
+        if !moved.ids.is_empty() {
+            self.settle_moved_frames(&moved);
+            if let Some(src) = &moved.src {
+                self.queue_redraw(src);
+            }
+        }
+        self.queue_redraw(&output);
+        true
     }
 
     pub fn interactive_move_floating_frame_end(&mut self, id: u64) {
-        self.with_floating_space(id, |space| {
-            space.interactive_move_end(Some(id));
-            true
-        });
+        if let Some(output) = self.layout.interactive_move_end(id) {
+            self.queue_redraw(&output);
+        }
     }
 
     pub fn interactive_resize_floating_frame_begin(

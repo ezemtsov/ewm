@@ -10,6 +10,83 @@ use crate::testing::{
 };
 
 #[test]
+fn dragging_a_float_to_another_output_carries_and_rehomes_it() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+    fix.add_output(HEAD_B, 1600, 900);
+    fix.float(HEAD_A, vec![frame_with_entry(200, nz(3001), 9000)]);
+    assert_eq!(fix.ewm_ref().layout.frame_output(200), Some(HEAD_A));
+
+    let (head_a, head_b) = (fix.output(HEAD_A), fix.output(HEAD_B));
+    let a_geo = fix.ewm_ref().space.output_geometry(&head_a).unwrap();
+    let b_geo = fix.ewm_ref().space.output_geometry(&head_b).unwrap();
+
+    // Grab the float just inside its top-left corner.
+    let grab = {
+        let monitor = fix.ewm_ref().layout.monitor_of(&head_a).unwrap();
+        let (_, data) = monitor.floating.frame_with_data(200).unwrap();
+        a_geo.loc.to_f64() + data.logical_pos() + Point::from((5.0, 5.0))
+    };
+    assert!(fix.ewm().interactive_move_floating_frame_begin(200, grab));
+
+    let target = b_geo.loc.to_f64() + Point::from((800.0, 450.0));
+    assert!(fix.ewm().interactive_move_floating_frame_update(target));
+    assert_eq!(fix.ewm_ref().layout.frame_output(200), Some(HEAD_B));
+
+    fix.ewm().interactive_move_floating_frame_end(200);
+    assert_eq!(fix.ewm_ref().layout.frame_output(200), Some(HEAD_B));
+    assert_eq!(
+        fix.ewm_ref().layout.home_outputs.get(&200),
+        Some(&crate::utils::output_identity(&head_b)),
+        "a deliberate drag rehomes the frame"
+    );
+
+    // The frame stays under the pointer that dropped it.
+    let monitor = fix.ewm_ref().layout.monitor_of(&head_b).unwrap();
+    let (_, data) = monitor.floating.frame_with_data(200).unwrap();
+    let rect = Rectangle::new(b_geo.loc.to_f64() + data.logical_pos(), data.size());
+    assert!(
+        rect.contains(target),
+        "{rect:?} dropped away from {target:?}"
+    );
+    fix.ewm_ref().layout.verify_invariants();
+}
+
+#[test]
+fn grabbing_a_sliding_float_keeps_it_where_it_is_drawn() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+    fix.float(HEAD_A, vec![frame_with_entry(200, nz(3001), 9000)]);
+    let head_a = fix.output(HEAD_A);
+    let a_geo = fix.ewm_ref().space.output_geometry(&head_a).unwrap();
+
+    // A keyboard move leaves the frame sliding in from where it stood.
+    assert!(fix.ewm().move_floating_frame(200, 300.0, 200.0));
+    let drawn_at = {
+        let monitor = fix.ewm_ref().layout.monitor_of(&head_a).unwrap();
+        let (_, data) = monitor.floating.frame_with_data(200).unwrap();
+        assert_ne!(
+            data.render_pos(),
+            data.logical_pos(),
+            "the slide should be live"
+        );
+        data.render_pos()
+    };
+
+    let grab = a_geo.loc.to_f64() + drawn_at + Point::from((5.0, 5.0));
+    assert!(fix.ewm().interactive_move_floating_frame_begin(200, grab));
+    assert!(fix.ewm().interactive_move_floating_frame_update(grab));
+
+    let monitor = fix.ewm_ref().layout.monitor_of(&head_a).unwrap();
+    let (_, data) = monitor.floating.frame_with_data(200).unwrap();
+    let drift = data.render_pos() - drawn_at;
+    assert!(
+        drift.x.abs() < 0.5 && drift.y.abs() < 0.5,
+        "grab jumped by {drift:?}"
+    );
+}
+
+#[test]
 fn tiled_entry_under_floating_center_hits_active_window() {
     let mut fix = testing::Fixture::new().unwrap();
     fix.add_output(HEAD_A, 1600, 900);
@@ -480,9 +557,24 @@ enum LayoutOp {
     RestoreLastActive(usize),
     Activate(u64),
     Merge(Vec<u64>),
+    DragBegin {
+        id: u64,
+        output: usize,
+        px: f64,
+        py: f64,
+    },
+    DragUpdate {
+        output: usize,
+        px: f64,
+        py: f64,
+    },
+    DragEnd(u64),
 }
 
 const LAYOUT_FRAME_IDS: std::ops::RangeInclusive<u64> = 1..=8;
+
+/// Pointer positions well past the 1600x900 heads, so drags leave the output too.
+const DRAG_COORD: std::ops::Range<f64> = -1000.0..2600.0;
 
 fn layout_op() -> impl Strategy<Value = LayoutOp> {
     let output = 0..PROP_HEADS.len();
@@ -512,9 +604,14 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
         )
             .prop_map(|(src, dst, ids)| LayoutOp::MoveFrames { src, dst, ids }),
         1 => output.clone().prop_map(LayoutOp::AdoptHomeless),
-        1 => output.prop_map(LayoutOp::RestoreLastActive),
+        1 => output.clone().prop_map(LayoutOp::RestoreLastActive),
         1 => id.clone().prop_map(LayoutOp::Activate),
-        1 => prop::collection::vec(id, 0..6).prop_map(LayoutOp::Merge),
+        1 => prop::collection::vec(id.clone(), 0..6).prop_map(LayoutOp::Merge),
+        1 => (id.clone(), output.clone(), DRAG_COORD, DRAG_COORD)
+            .prop_map(|(id, output, px, py)| LayoutOp::DragBegin { id, output, px, py }),
+        2 => (output, DRAG_COORD, DRAG_COORD)
+            .prop_map(|(output, px, py)| LayoutOp::DragUpdate { output, px, py }),
+        1 => id.prop_map(LayoutOp::DragEnd),
     ]
 }
 
@@ -611,6 +708,43 @@ fn apply_layout_op(
             {
                 prop_assert_eq!(layout.active_frame_id(&output), Some(id));
             }
+        }
+        LayoutOp::DragBegin { id, output, px, py } => {
+            let was_dragging = layout.interactive_move.is_some();
+            let began = layout.interactive_move_begin(id, &outputs[output], Point::from((px, py)));
+            if began {
+                // A drag starts only when none is live, and it names the frame asked for.
+                prop_assert!(!was_dragging);
+                prop_assert_eq!(
+                    layout.interactive_move.map(|move_| move_.frame_id),
+                    Some(id)
+                );
+            } else {
+                prop_assert_eq!(layout.interactive_move.is_some(), was_dragging);
+            }
+        }
+        LayoutOp::DragUpdate { output, px, py } => {
+            let dst = &outputs[output];
+            let dragged = layout.interactive_move.map(|move_| move_.frame_id);
+            let moved = layout.interactive_move_update(dst, Point::from((px, py)), focused);
+            if let (Some(moved), Some(id)) = (&moved, dragged)
+                && layout.monitor_of(dst).is_some()
+            {
+                // The drag carries the frame onto the output under the pointer.
+                prop_assert_eq!(layout.frame_output(id), Some(PROP_HEADS[output]));
+                if !moved.ids.is_empty() {
+                    check_landed(layout, dst, moved, focused)?;
+                }
+            }
+            prop_assert_eq!(moved.is_none(), layout.interactive_move.is_none());
+        }
+        LayoutOp::DragEnd(id) => {
+            layout.interactive_move_end(id);
+            prop_assert!(
+                layout
+                    .interactive_move
+                    .is_none_or(|move_| move_.frame_id != id)
+            );
         }
         LayoutOp::Merge(ref ids) => {
             let strips = layout.strip_frames_snapshot();

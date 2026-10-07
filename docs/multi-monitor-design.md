@@ -121,6 +121,8 @@ The compositor uses UdevBackend to detect monitor connect/disconnect events at r
 
 Emacs observes all of this through `frame_shown`, `frame_hidden` and the placement queries. Hotplug uses the same path as startup.
 
+A frame's home display changes only when the user moves it on purpose. Dragging a floating frame onto another output rehomes it there, so a later replug leaves it where the user put it.
+
 ## Lid Switch and Session Resume
 
 ### Lid Close

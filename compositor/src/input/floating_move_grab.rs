@@ -42,10 +42,10 @@ impl PointerGrab<State> for MoveGrab {
         // While the grab is active, no client has pointer focus.
         handle.motion(data, None, event);
 
-        let delta = event.location - self.start_data.location;
+        // Absolute, so the frame stays pinned to the pointer across outputs.
         let ongoing = data
             .ewm
-            .interactive_move_floating_frame_update(self.frame_id, delta);
+            .interactive_move_floating_frame_update(event.location);
         if ongoing {
             return;
         }

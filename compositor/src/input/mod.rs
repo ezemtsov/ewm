@@ -982,7 +982,10 @@ impl State {
 
             self.focus_pointer_target("floating_move_grab");
 
-            if self.ewm.interactive_move_floating_frame_begin(frame_id) {
+            if self
+                .ewm
+                .interactive_move_floating_frame_begin(frame_id, location)
+            {
                 let start_data = PointerGrabStartData {
                     focus: None,
                     button: button_code,
