@@ -282,7 +282,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             }
             // Only a layout that reaches the compositor drains pending activations.
             if fix.has_output(OUTPUTS[output]) {
-                for id in fix.ewm_ref().pending_activation_surfaces.clone() {
+                for id in fix.ewm_ref().pending_activations() {
                     assert!(
                         !fix.ewm_ref().focus_target_ready(id),
                         "layout left activation of {} pending although it can be focused",
@@ -385,9 +385,11 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             fix.ewm().activate_or_defer_surface(id, true, "proptest");
             let ewm = fix.ewm_ref();
             let focused = ewm.focused_surface_id() == id;
-            let pending = ewm.pending_activation_surfaces.contains(&id);
-            assert!(
-                focused != pending,
+            let pending = ewm.pending_activations().any(|pending| pending == id);
+            // Only a surface with a record can wait. A layout-only id focuses or is dropped.
+            assert_eq!(
+                pending,
+                !focused && ewm.surfaces.contains_key(&id),
                 "activate({}) must focus the surface or defer it: focused={} pending={}",
                 id,
                 focused,
@@ -419,7 +421,9 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 id,
             );
             assert!(
-                !fix.ewm_ref().pending_activation_surfaces.contains(&id),
+                !fix.ewm_ref()
+                    .pending_activations()
+                    .any(|pending| pending == id),
                 "destroy({}) left a pending activation",
                 id,
             );

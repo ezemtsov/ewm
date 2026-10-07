@@ -130,6 +130,18 @@ impl Fixture {
         toplevel
     }
 
+    /// Open a toplevel and return its surface id.
+    pub fn open_toplevel_id(
+        &mut self,
+        client: &mut TestClient,
+        title: &str,
+        size: Size<i32, Logical>,
+    ) -> u64 {
+        let toplevel = self.open_toplevel(client, title, size);
+        self.find_surface_id(client, &toplevel.surface)
+            .expect("toplevel gets an id")
+    }
+
     /// Open a toplevel titled FIRST before map and retitled SECOND on the mapping commit.
     pub fn open_toplevel_retitled(
         &mut self,

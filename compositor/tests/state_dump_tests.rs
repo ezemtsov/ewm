@@ -8,6 +8,7 @@ use ewm_core::cursor::CursorConfig;
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
 use serde_json::{Value, json};
+use smithay::utils::Size;
 
 const HEAD_A: &str = "HEAD-A";
 const HEAD_B: &str = "HEAD-B";
@@ -190,23 +191,27 @@ fn workspace_protocol_reports_renamed_workspace_and_preserves_name_across_layout
 #[test]
 fn workspace_protocol_reports_urgent_workspace_from_surface_attention() {
     let mut fix = Fixture::new().unwrap();
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
     fix.add_output(HEAD_A, 1600, 900);
+    let urgent_id = fix.open_toplevel_id(&mut client, "urgent", Size::from((400, 400)));
+    let focused_id = fix.open_toplevel_id(&mut client, "focused", Size::from((400, 400)));
 
     fix.ewm().apply_output_layout(
         HEAD_A,
         vec![
-            frame_with_surface_entry(100, 1001, 200),
-            frame_with_surface_entry(101, 1002, 201),
+            frame_with_surface_entry(100, 1001, urgent_id),
+            frame_with_surface_entry(101, 1002, focused_id),
         ],
     );
     fix.ewm().set_focus_entry(nz(1002), "test", false);
-    fix.ewm().set_surface_urgent(200, true);
+    fix.ewm().set_surface_urgent(urgent_id, true);
     fix.dispatch();
 
     let state = fix.debug_state();
     let urgent = workspace_for_surface(&state, 100);
     let inactive = workspace_for_surface(&state, 101);
-    assert_eq!(state["urgent_surfaces"], json!([200]));
+    assert_eq!(state["urgent_surfaces"], json!([urgent_id]));
     assert_eq!(urgent["urgent"], true);
     assert_eq!(inactive["urgent"], false);
 
@@ -222,27 +227,31 @@ fn workspace_protocol_reports_urgent_workspace_from_surface_attention() {
 #[test]
 fn workspace_protocol_reports_urgent_workspace_from_explicit_mark() {
     let mut fix = Fixture::new().unwrap();
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
     fix.add_output(HEAD_A, 1600, 900);
+    let focused_id = fix.open_toplevel_id(&mut client, "focused", Size::from((400, 400)));
+    let urgent_id = fix.open_toplevel_id(&mut client, "urgent", Size::from((400, 400)));
 
     fix.ewm()
-        .apply_output_layout(HEAD_A, vec![frame(100), frame(101)]);
-    fix.ewm().set_focus_frame(100, "test", false);
-    assert!(fix.ewm().mark_workspace_urgent(Some(101)));
-    assert!(!fix.ewm().mark_workspace_urgent(Some(100)));
+        .apply_output_layout(HEAD_A, vec![frame(focused_id), frame(urgent_id)]);
+    fix.ewm().set_focus_frame(focused_id, "test", false);
+    assert!(fix.ewm().mark_workspace_urgent(Some(urgent_id)));
+    assert!(!fix.ewm().mark_workspace_urgent(Some(focused_id)));
     fix.dispatch();
 
     let state = fix.debug_state();
-    let focused = workspace_for_surface(&state, 100);
-    let urgent = workspace_for_surface(&state, 101);
-    assert_eq!(state["urgent_workspaces"], json!([101]));
+    let focused = workspace_for_surface(&state, focused_id);
+    let urgent = workspace_for_surface(&state, urgent_id);
+    assert_eq!(state["urgent_workspaces"], json!([urgent_id]));
     assert_eq!(focused["urgent"], false);
     assert_eq!(urgent["urgent"], true);
 
-    fix.ewm().set_focus_frame(101, "test", false);
+    fix.ewm().set_focus_frame(urgent_id, "test", false);
     fix.dispatch();
 
     let state = fix.debug_state();
-    let urgent = workspace_for_surface(&state, 101);
+    let urgent = workspace_for_surface(&state, urgent_id);
     assert_eq!(state["urgent_workspaces"], json!([]));
     assert_eq!(urgent["urgent"], false);
 }

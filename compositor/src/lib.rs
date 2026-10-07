@@ -476,13 +476,6 @@ impl Default for SurfaceFrameThrottlingState {
     }
 }
 
-/// Cached surface info for change detection
-#[derive(Clone, Default, Serialize)]
-struct SurfaceInfo {
-    app_id: String,
-    title: String,
-}
-
 /// An entry in a per-output declarative layout.
 /// Coordinates are relative to the output's working area (frame-relative).
 pub type LayoutEntryId = std::num::NonZeroU64;
@@ -601,10 +594,10 @@ pub fn fullscreen_center_offset(
 }
 
 #[cfg(feature = "screencast")]
-fn window_properties(info: &SurfaceInfo) -> dbus::WindowProperties {
+fn window_properties(surface: &surface::SurfaceState) -> dbus::WindowProperties {
     dbus::WindowProperties {
-        title: info.title.clone(),
-        app_id: info.app_id.clone(),
+        title: surface.title.clone(),
+        app_id: surface.app_id.clone(),
     }
 }
 
@@ -739,14 +732,6 @@ pub fn slide_spring() -> animation::SpringParams {
     animation::SpringParams::new(1., 800., 0.0001)
 }
 
-// Coalesces compositor -> Lisp title notifications only. `surface_info`
-// remains exact and is updated before anything reaches this queue.
-struct PendingTitleEvent {
-    app: String,
-    title: String,
-    queued_at: Instant,
-}
-
 pub struct Ewm {
     pub stop_signal: Option<LoopSignal>,
     pub space: Space<Window>,
@@ -773,8 +758,6 @@ pub struct Ewm {
 
     // Surface tracking
     next_surface_id: u64,
-    surface_info: HashMap<u64, SurfaceInfo>,
-    pending_title_events: HashMap<u64, PendingTitleEvent>,
     title_flush_timer_token: Option<RegistrationToken>,
     last_emacs_keyboard_activity: Instant,
     /// Compositor-owned Emacs frame set. Mapped strips are currently visible;
@@ -792,19 +775,6 @@ pub struct Ewm {
     pub surface_outputs: HashMap<u64, HashSet<String>>,
     /// Every toplevel's compositor-side state, from creation to destruction.
     pub surfaces: HashMap<u64, surface::SurfaceState>,
-    /// App surfaces that requested attention.
-    ///
-    /// ext-workspace urgency is derived from this set and the frame layout.
-    /// Focus clears the bit, matching the per-window urgency model.
-    pub urgent_surfaces: HashSet<u64>,
-    /// Emacs frame workspaces explicitly marked as requiring attention.
-    ///
-    /// This covers terminal/editor activity inside an Emacs frame, where no
-    /// child Wayland surface exists for `urgent_surfaces` to track.
-    pub urgent_workspaces: HashSet<u64>,
-    /// Valid activation requests that arrived before the surface was attached
-    /// to an Emacs frame.  Drained after layout refresh makes them focusable.
-    pub pending_activation_surfaces: HashSet<u64>,
 
     // Output
     pub output_size: Size<i32, Logical>,
@@ -1238,8 +1208,6 @@ impl Ewm {
             keyboard,
             tablet_cursor_location: None,
             next_surface_id: 1,
-            surface_info: HashMap::new(),
-            pending_title_events: HashMap::new(),
             title_flush_timer_token: None,
             last_emacs_keyboard_activity: Instant::now(),
             frame_set: FrameSet::default(),
@@ -1249,9 +1217,6 @@ impl Ewm {
             animations_clock,
             surface_outputs: HashMap::new(),
             surfaces: HashMap::new(),
-            urgent_surfaces: HashSet::new(),
-            urgent_workspaces: HashSet::new(),
-            pending_activation_surfaces: HashSet::new(),
             output_size: Size::from((0, 0)),
             sorted_outputs: Vec::new(),
             output_config: HashMap::new(),
@@ -1596,14 +1561,11 @@ impl Ewm {
             for (frame_idx, frame) in strip.frames().iter().enumerate() {
                 let workspace_name =
                     crate::protocols::workspace::frame_workspace_name(frame, frame_idx);
-                let frame_props = self
-                    .surface_info
-                    .get(&frame.surface_id)
-                    .map(window_properties);
+                let frame_props = self.surfaces.get(&frame.surface_id).map(window_properties);
                 for entry in &frame.entries {
                     let props = entry
                         .surface_id()
-                        .and_then(|surface_id| self.surface_info.get(&surface_id))
+                        .and_then(|surface_id| self.surfaces.get(&surface_id))
                         .map(window_properties)
                         .or_else(|| frame_props.clone());
                     if let Some(mut props) = props {
@@ -1653,20 +1615,16 @@ impl Ewm {
             return false;
         }
 
-        if urgent {
-            self.urgent_surfaces.insert(surface_id)
-        } else {
-            self.urgent_surfaces.remove(&surface_id)
-        }
+        self.surfaces
+            .get_mut(&surface_id)
+            .is_some_and(|surface| std::mem::replace(&mut surface.urgent, urgent) != urgent)
     }
 
     fn clear_focused_urgency(&mut self) {
-        let focused = self.focused_surface_id();
-        if focused != 0 {
-            self.set_surface_urgent(focused, false);
-        }
-        if self.focused_frame_id != 0 {
-            self.urgent_workspaces.remove(&self.focused_frame_id);
+        for id in [self.focused_surface_id(), self.focused_frame_id] {
+            if let Some(surface) = self.surfaces.get_mut(&id) {
+                surface.urgent = false;
+            }
         }
     }
 
@@ -1679,7 +1637,9 @@ impl Ewm {
             return false;
         }
 
-        self.urgent_workspaces.insert(frame_surface_id)
+        self.surfaces
+            .get_mut(&frame_surface_id)
+            .is_some_and(|frame| !std::mem::replace(&mut frame.urgent, true))
     }
 
     fn set_focus_state(&mut self, frame_id: u64, entry_id: Option<LayoutEntryId>) {
@@ -3360,21 +3320,21 @@ impl Ewm {
         use smithay::wayland::seat::WaylandFocus;
 
         let windows: Vec<WindowInfo> = self
-            .windows()
-            .filter_map(|(id, window)| {
-                let surface = window.wl_surface()?.into_owned();
-                let info = self.surface_info.get(&id)?;
+            .surfaces
+            .iter()
+            .filter_map(|(&id, surface)| {
+                let wl_surface = surface.window.wl_surface()?.into_owned();
                 let output = self.find_surface_output(id);
                 let is_fullscreen = self.is_surface_fullscreen(id);
                 Some(WindowInfo {
                     id,
-                    surface,
-                    title: if info.title.is_empty() {
+                    surface: wl_surface,
+                    title: if surface.title.is_empty() {
                         None
                     } else {
-                        Some(info.title.clone())
+                        Some(surface.title.clone())
                     },
-                    app_id: Some(info.app_id.clone()),
+                    app_id: Some(surface.app_id.clone()),
                     output,
                     is_focused: self.focused_surface_id() == id,
                     is_fullscreen,
@@ -3542,27 +3502,27 @@ impl Ewm {
 
     /// Focus the surface, or ask Emacs to show it when no window does.
     pub fn activate_or_defer_surface(&mut self, id: u64, notify_emacs: bool, source: &str) {
-        if self.set_focus(id, notify_emacs, source) {
-            self.pending_activation_surfaces.remove(&id);
-        } else {
-            self.pending_activation_surfaces.insert(id);
-            if notify_emacs {
-                self.queue_event(Event::ActivateSurface { id });
-            }
+        let focused = self.set_focus(id, notify_emacs, source);
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        surface.pending_activation = !focused;
+        if !focused && notify_emacs {
+            self.queue_event(Event::ActivateSurface { id });
         }
     }
 
     fn focus_pending_activation_surfaces(&mut self) {
-        let mut ready: Vec<_> = self
-            .pending_activation_surfaces
-            .iter()
-            .copied()
+        let mut ready: Vec<u64> = self
+            .pending_activations()
             .filter(|&id| self.focus_target_ready(id))
             .collect();
         ready.sort_unstable();
 
         for id in ready {
-            self.pending_activation_surfaces.remove(&id);
+            if let Some(surface) = self.surfaces.get_mut(&id) {
+                surface.pending_activation = false;
+            }
             self.set_focus(id, true, "xdg_activation_pending");
         }
     }
@@ -3737,17 +3697,18 @@ impl Ewm {
             return;
         }
 
-        self.pending_title_events
-            .entry(id)
-            .and_modify(|pending| {
-                pending.app = app.clone();
-                pending.title = title.clone();
-            })
-            .or_insert_with(|| PendingTitleEvent {
-                app,
-                title,
-                queued_at: Instant::now(),
-            });
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        let queued_at = surface
+            .pending_title
+            .as_ref()
+            .map_or_else(Instant::now, |pending| pending.queued_at);
+        surface.pending_title = Some(surface::PendingTitle {
+            app,
+            title,
+            queued_at,
+        });
         self.ensure_title_flush_timer(TITLE_EVENT_IDLE_FLUSH_DELAY);
     }
 
@@ -3767,36 +3728,50 @@ impl Ewm {
         }
     }
 
+    /// Drop the flush timer once no title is pending.
     fn cancel_title_flush_timer(&mut self) {
-        if let Some(token) = self.title_flush_timer_token.take() {
-            self.loop_handle.remove(token);
+        let Some(token) = self.title_flush_timer_token else {
+            return;
+        };
+        if self
+            .surfaces
+            .values()
+            .any(|surface| surface.pending_title.is_some())
+        {
+            return;
         }
+        self.title_flush_timer_token = None;
+        self.loop_handle.remove(token);
     }
 
     fn discard_pending_title_event(&mut self, id: u64) {
-        self.pending_title_events.remove(&id);
-        if self.pending_title_events.is_empty() {
-            self.cancel_title_flush_timer();
+        if let Some(surface) = self.surfaces.get_mut(&id) {
+            surface.pending_title = None;
         }
+        self.cancel_title_flush_timer();
     }
 
     fn flush_pending_title_event(&mut self, id: u64) {
-        if let Some(pending) = self.pending_title_events.remove(&id) {
+        if let Some(pending) = self
+            .surfaces
+            .get_mut(&id)
+            .and_then(|surface| surface.pending_title.take())
+        {
             self.queue_event(Event::Title {
                 id,
                 app: pending.app,
                 title: pending.title,
             });
         }
-        if self.pending_title_events.is_empty() {
-            self.cancel_title_flush_timer();
-        }
+        self.cancel_title_flush_timer();
     }
 
     fn flush_pending_title_events(&mut self) {
-        self.cancel_title_flush_timer();
-
-        let mut pending = self.pending_title_events.drain().collect::<Vec<_>>();
+        let mut pending: Vec<(u64, surface::PendingTitle)> = self
+            .surfaces
+            .iter_mut()
+            .filter_map(|(&id, surface)| Some((id, surface.pending_title.take()?)))
+            .collect();
         pending.sort_by_key(|(id, _)| *id);
         for (id, pending) in pending {
             self.queue_event(Event::Title {
@@ -3805,15 +3780,16 @@ impl Ewm {
                 title: pending.title,
             });
         }
+        self.cancel_title_flush_timer();
     }
 
     fn on_title_flush_timer(&mut self) {
         self.title_flush_timer_token = None;
 
         let Some(oldest) = self
-            .pending_title_events
+            .surfaces
             .values()
-            .map(|pending| pending.queued_at)
+            .filter_map(|surface| Some(surface.pending_title.as_ref()?.queued_at))
             .min()
         else {
             return;
@@ -4664,9 +4640,21 @@ impl Ewm {
 
     /// Build the JSON object shown by `ewm-show-state`.
     pub fn debug_state(&self, output_infos: &[OutputInfo]) -> serde_json::Value {
-        let mut urgent_surfaces: Vec<u64> = self.urgent_surfaces.iter().copied().collect();
+        let surfaces: HashMap<u64, serde_json::Value> = self
+            .surfaces
+            .iter()
+            .map(|(&id, surface)| {
+                let info = serde_json::json!({ "app_id": surface.app_id, "title": surface.title });
+                (id, info)
+            })
+            .collect();
+        let (mut urgent_workspaces, mut urgent_surfaces): (Vec<u64>, Vec<u64>) = self
+            .surfaces
+            .iter()
+            .filter(|(_, surface)| surface.urgent)
+            .map(|(&id, _)| id)
+            .partition(|&id| self.is_emacs_frame(id));
         urgent_surfaces.sort_unstable();
-        let mut urgent_workspaces: Vec<u64> = self.urgent_workspaces.iter().copied().collect();
         urgent_workspaces.sort_unstable();
         let emacs_surfaces: HashMap<u64, String> = self
             .frame_set
@@ -4701,7 +4689,7 @@ impl Ewm {
         let (keyboard_repeat_rate, keyboard_repeat_delay) = self.im_repeat.repeat_config_debug();
 
         serde_json::json!({
-            "surfaces": &self.surface_info,
+            "surfaces": surfaces,
             "emacs_surfaces": emacs_surfaces,
             "output_strips": &self.frame_set.mapped_strips(),
             "overview": {
@@ -4822,7 +4810,7 @@ impl Ewm {
         });
         surface.send_configure();
 
-        let record = surface::SurfaceState::new(id, surface, is_emacs);
+        let record = surface::SurfaceState::new(id, surface, is_emacs, app.clone());
         let window = record.window.clone();
         self.surfaces.insert(id, record);
 
@@ -4894,14 +4882,6 @@ impl Ewm {
             t.send_configure();
         }
 
-        self.surface_info.insert(
-            id,
-            SurfaceInfo {
-                app_id: app.clone(),
-                title: String::new(),
-            },
-        );
-
         // Auto-focus the first Emacs surface so keyboard input works without
         // a pointer event. Keyboard.enter is replayed on Initialized command;
         // PGTK drops enters sent before its surface's first roundtrip.
@@ -4959,12 +4939,8 @@ impl Ewm {
         let active_close = was_focused || close_was_active;
         let output = self.surface_output_name(id).map(str::to_owned);
 
-        self.surfaces.remove(&id);
-        self.urgent_surfaces.remove(&id);
-        self.urgent_workspaces.remove(&id);
-        self.pending_activation_surfaces.remove(&id);
         self.flush_pending_title_event(id);
-        self.surface_info.remove(&id);
+        self.surfaces.remove(&id);
         let was_emacs = self.is_emacs_frame(id);
         self.detach_surface_from_layouts(id);
         self.remove_emacs_frame_from_strip(id, active_close);
@@ -5019,12 +4995,12 @@ impl Ewm {
         Ok(socket_name)
     }
 
-    fn check_surface_info_changes(&mut self, surface: &WlSurface) {
-        let Some(id) = self.surface_id(surface) else {
+    fn check_surface_info_changes(&mut self, wl_surface: &WlSurface) {
+        let Some(id) = self.surface_id(wl_surface) else {
             return;
         };
 
-        let (app_id, title) = smithay::wayland::compositor::with_states(surface, |states| {
+        let (app_id, title) = smithay::wayland::compositor::with_states(wl_surface, |states| {
             states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
@@ -5038,31 +5014,25 @@ impl Ewm {
                 .unwrap_or_default()
         });
 
-        let cached = self.surface_info.get(&id);
-        let changed = match cached {
-            Some(info) => info.app_id != app_id || info.title != title,
-            None => true,
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
         };
-        let first_title = !title.is_empty() && cached.is_none_or(|info| info.title.is_empty());
-        let app_changed = cached.is_some_and(|info| info.app_id != app_id);
-
-        if changed && (!app_id.is_empty() || !title.is_empty()) {
-            if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-                debug!(
-                    "Surface {} info changed: app='{}' title='{}'",
-                    id, app_id, title
-                );
-            }
-            self.surface_info.insert(
-                id,
-                SurfaceInfo {
-                    app_id: app_id.clone(),
-                    title: title.clone(),
-                },
-            );
-            self.introspect_windows_dirty = true;
-            self.queue_title_update(id, app_id, title, first_title, app_changed);
+        let changed = surface.app_id != app_id || surface.title != title;
+        if !changed || (app_id.is_empty() && title.is_empty()) {
+            return;
         }
+        let first_title = !title.is_empty() && surface.title.is_empty();
+        let app_changed = surface.app_id != app_id;
+        if module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            debug!(
+                "Surface {} info changed: app='{}' title='{}'",
+                id, app_id, title
+            );
+        }
+        surface.app_id = app_id.clone();
+        surface.title = title.clone();
+        self.introspect_windows_dirty = true;
+        self.queue_title_update(id, app_id, title, first_title, app_changed);
     }
 
     /// Handle commit for layer surfaces. Returns true if this was a layer surface.
@@ -5668,8 +5638,12 @@ impl State {
         crate::protocols::workspace::refresh::<State>(
             &mut self.ewm.workspace_state,
             self.ewm.frame_set.mapped_strips(),
-            &self.ewm.urgent_surfaces,
-            &self.ewm.urgent_workspaces,
+            &|id| {
+                self.ewm
+                    .surfaces
+                    .get(&id)
+                    .is_some_and(|surface| surface.urgent)
+            },
             &self.ewm.sorted_outputs,
         );
 

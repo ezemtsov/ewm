@@ -242,14 +242,18 @@ proptest! {
 #[test]
 fn hidden_surface_activation_asks_emacs_to_show_it() {
     let mut fix = testing::Fixture::new().unwrap();
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    fix.add_output(HEAD_A, 1600, 900);
+    let id = fix.open_toplevel_id(&mut client, "hidden", Size::from((400, 400)));
     fix.enable_event_capture();
 
-    fix.ewm().activate_or_defer_surface(42, true, "test");
+    fix.ewm().activate_or_defer_surface(id, true, "test");
 
-    assert!(fix.ewm_ref().pending_activation_surfaces.contains(&42));
+    assert!(fix.ewm_ref().pending_activations().eq([id]));
     assert!(matches!(
         fix.drain_events().as_slice(),
-        [Event::ActivateSurface { id: 42 }]
+        [Event::ActivateSurface { id: activated }] if *activated == id
     ));
 }
 
@@ -319,20 +323,24 @@ fn system_bell_forwards_toplevel_id() {
 #[test]
 fn background_title_updates_coalesce_to_latest() {
     let mut fix = testing::Fixture::new().unwrap();
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    fix.add_output(HEAD_A, 1600, 900);
+    let id = fix.open_toplevel_id(&mut client, "background", Size::from((400, 400)));
     fix.enable_event_capture();
 
     fix.ewm()
-        .queue_title_update(42, "app".to_string(), "one".to_string(), false, false);
+        .queue_title_update(id, "app".to_string(), "one".to_string(), false, false);
     fix.ewm()
-        .queue_title_update(42, "app".to_string(), "two".to_string(), false, false);
+        .queue_title_update(id, "app".to_string(), "two".to_string(), false, false);
 
     assert!(fix.drain_events().is_empty());
 
     fix.ewm().flush_pending_title_events();
     let events = fix.drain_events();
     assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], Event::Title { id, app, title }
-            if *id == 42 && app == "app" && title == "two"));
+    assert!(matches!(&events[0], Event::Title { id: titled, app, title }
+            if *titled == id && app == "app" && title == "two"));
 }
 
 #[test]
@@ -395,16 +403,20 @@ fn fallback_frame_callbacks_hide_unmapped_output_frames() {
 #[test]
 fn close_flushes_pending_title_before_close_event() {
     let mut fix = testing::Fixture::new().unwrap();
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    fix.add_output(HEAD_A, 1600, 900);
+    let id = fix.open_toplevel_id(&mut client, "closing", Size::from((400, 400)));
     fix.enable_event_capture();
 
     fix.ewm()
-        .queue_title_update(42, "app".to_string(), "final".to_string(), false, false);
+        .queue_title_update(id, "app".to_string(), "final".to_string(), false, false);
     assert!(fix.drain_events().is_empty());
 
-    fix.ewm().handle_toplevel_destroyed_by_id(42);
+    fix.ewm().handle_toplevel_destroyed_by_id(id);
     let events = fix.drain_events();
     assert_eq!(events.len(), 2);
-    assert!(matches!(&events[0], Event::Title { id, app, title }
-            if *id == 42 && app == "app" && title == "final"));
-    assert!(matches!(&events[1], Event::Close { id } if *id == 42));
+    assert!(matches!(&events[0], Event::Title { id: titled, app, title }
+            if *titled == id && app == "app" && title == "final"));
+    assert!(matches!(&events[1], Event::Close { id: closed } if *closed == id));
 }

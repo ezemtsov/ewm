@@ -1,7 +1,7 @@
 //! Compositor-side state of one toplevel, from creation to destruction.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -21,6 +21,14 @@ const OPEN_ANIM_DELAY: Duration = Duration::from_millis(16);
 /// The id of the toplevel a wl_surface backs, 0 between toplevels.
 struct SurfaceId(AtomicU64);
 
+/// A title change held back from Lisp while Emacs is busy.
+#[derive(Debug)]
+pub struct PendingTitle {
+    pub app: String,
+    pub title: String,
+    pub queued_at: Instant,
+}
+
 #[derive(Debug)]
 pub struct SurfaceState {
     /// The tag this record holds on its wl_surface.
@@ -30,8 +38,15 @@ pub struct SurfaceState {
     hook: HookId,
     /// An Emacs frame rather than an app window.
     pub emacs: bool,
+    pub app_id: String,
+    pub title: String,
     /// Whether a buffer has ever been committed.
     pub mapped: bool,
+    /// Asked for attention and not focused since.
+    pub urgent: bool,
+    /// Activation granted before a window shows it.
+    pub pending_activation: bool,
+    pub pending_title: Option<PendingTitle>,
     /// Fade-in after the first buffer.
     pub open: Option<Animation>,
     /// Resizes configured but not yet answered, oldest first.
@@ -41,7 +56,7 @@ pub struct SurfaceState {
 }
 
 impl SurfaceState {
-    pub(crate) fn new(id: u64, toplevel: ToplevelSurface, emacs: bool) -> Self {
+    pub(crate) fn new(id: u64, toplevel: ToplevelSurface, emacs: bool, app_id: String) -> Self {
         let surface = toplevel.wl_surface();
         with_states(surface, |states| {
             states
@@ -56,7 +71,12 @@ impl SurfaceState {
             window: Window::new_wayland_window(toplevel),
             hook,
             emacs,
+            app_id,
+            title: String::new(),
             mapped: false,
+            urgent: false,
+            pending_activation: false,
+            pending_title: None,
             open: None,
             pending_resizes: Vec::new(),
             resize: None,
@@ -137,6 +157,14 @@ impl Ewm {
         self.surfaces
             .iter()
             .map(|(&id, surface)| (id, &surface.window))
+    }
+
+    /// Surfaces whose activation waits for a window to show them.
+    pub fn pending_activations(&self) -> impl Iterator<Item = u64> {
+        self.surfaces
+            .iter()
+            .filter(|(_, surface)| surface.pending_activation)
+            .map(|(&id, _)| id)
     }
 
     /// The toplevel `surface` backs, if one does.
