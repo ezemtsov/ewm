@@ -5,8 +5,8 @@
 //! 1. **Thread safety**: The compositor runs in a separate thread from Emacs. Communication uses
 //!    queues, pipes, and shared state:
 //!    - `COMMAND_QUEUE`: Emacs -> Compositor commands (layouts, focus, etc.)
-//!    - `EVENT_CHANNEL`: Compositor -> Emacs events, a queue drained by `drain_events`; the pipe fd
-//!      (open_channel) only carries a wakeup byte
+//!    - `EVENT_CHANNEL`: Compositor -> Emacs events, drainable only after the tick publishes
+//!      `SHARED_STATE`; the pipe fd (open_channel) only carries a wakeup byte
 //!    - `SHARED_STATE`: Compositor -> Emacs snapshot (focus, pointer, outputs)
 //!    - `KEYBOARD_CAPTURE_ACTIVE`: derived from tokened Emacs input leases
 //!
@@ -713,6 +713,8 @@ pub fn get_focus_history() -> Vec<FocusEvent> {
 // Event channel (compositor -> Emacs): a queue drained by `drain_events`, the pipe as wakeup.
 
 struct EventChannel {
+    /// Staged until `flush_events`.
+    pending: VecDeque<crate::event::Event>,
     queue: VecDeque<crate::event::Event>,
     wakeup: Box<dyn std::io::Write + Send>,
 }
@@ -725,22 +727,30 @@ static EVENT_CHANNEL: Mutex<Option<EventChannel>> = Mutex::new(None);
 fn init_event_channel(env: &Env, pipe_process: Value<'_>) -> Result<()> {
     let wakeup = Box::new(env.open_channel(pipe_process)?);
     *EVENT_CHANNEL.lock().unwrap() = Some(EventChannel {
+        pending: VecDeque::new(),
         queue: VecDeque::new(),
         wakeup,
     });
     Ok(())
 }
 
-/// Queue `event` for Emacs, waking the pipe filter when the queue was idle.
+/// Queue `event` for Emacs.
 pub(crate) fn push_event(event: crate::event::Event) {
+    if let Some(channel) = EVENT_CHANNEL.lock().unwrap().as_mut() {
+        channel.pending.push_back(event);
+    }
+}
+
+/// Hand this tick's events to Emacs, waking the pipe filter when it was idle.
+pub(crate) fn flush_events() {
     use std::io::Write;
-    let mut guard = EVENT_CHANNEL.lock().unwrap();
-    let Some(channel) = guard.as_mut() else {
-        return;
-    };
-    channel.queue.push_back(event);
-    if channel.queue.len() == 1 {
-        let _ = channel.wakeup.write_all(b"\0");
+    if let Some(channel) = EVENT_CHANNEL.lock().unwrap().as_mut()
+        && !channel.pending.is_empty()
+    {
+        if channel.queue.is_empty() {
+            let _ = channel.wakeup.write_all(b"\0");
+        }
+        channel.queue.append(&mut channel.pending);
     }
 }
 

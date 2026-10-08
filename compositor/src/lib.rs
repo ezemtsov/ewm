@@ -791,8 +791,6 @@ pub struct Ewm {
     pub focused_entry_id: Option<LayoutEntryId>,
     pub keyboard_focus: Option<WlSurface>,
     pub(crate) im_repeat: InterceptRepeatState,
-    /// Output geometry or working areas changed; shared active_outputs need recomputation.
-    pub active_outputs_dirty: bool,
     /// Introspected window list changed; announce it next tick.
     pub introspect_windows_dirty: bool,
     /// Focus follows mouse
@@ -1235,7 +1233,6 @@ impl Ewm {
                 input::DEFAULT_KEYBOARD_REPEAT_RATE,
                 input::DEFAULT_KEYBOARD_REPEAT_DELAY,
             ),
-            active_outputs_dirty: true,
             introspect_windows_dirty: false,
             focus_follows_mouse_mode: false,
             emacs_drag_source: false,
@@ -1382,7 +1379,6 @@ impl Ewm {
         }
 
         self.detach_output(output);
-        self.active_outputs_dirty = true;
         self.queue_redraw_all();
     }
 
@@ -1428,7 +1424,9 @@ impl Ewm {
 
         self.detach_output(output);
         self.screencopy_state.remove_output(output);
-        self.send_output_disconnected(&output_name);
+        self.queue_event(Event::OutputDisconnected {
+            name: output_name.clone(),
+        });
 
         info!("Output removed: {}", output_name);
     }
@@ -4135,32 +4133,6 @@ impl Ewm {
             .collect()
     }
 
-    /// Immediately sync active_outputs into shared state so that Emacs sees
-    /// up-to-date output lists when it handles events queued after this call.
-    pub fn flush_active_outputs(&mut self) {
-        let mut shared = module::shared_state().lock().unwrap();
-        shared.active_outputs = self.active_outputs_snapshot();
-        self.active_outputs_dirty = false;
-    }
-
-    /// Send output detected event to Emacs.
-    /// Flushes active_outputs to shared state first so Emacs sees the new
-    /// output immediately when handling this or subsequent events.
-    pub fn send_output_detected(&mut self, output: OutputInfo) {
-        self.flush_active_outputs();
-        self.queue_event(Event::OutputDetected(output));
-    }
-
-    /// Send output disconnected event to Emacs.
-    /// Flushes active_outputs to shared state first so Emacs sees the removal
-    /// immediately when handling this or subsequent events.
-    pub fn send_output_disconnected(&mut self, name: &str) {
-        self.flush_active_outputs();
-        self.queue_event(Event::OutputDisconnected {
-            name: name.to_string(),
-        });
-    }
-
     /// Map `output` at `position` and give it a monitor.
     pub(crate) fn map_output(&mut self, output: &Output, position: Point<i32, Logical>) {
         self.space.map_output(output, position);
@@ -4194,7 +4166,7 @@ impl Ewm {
         self.refresh_cursor_outputs();
         self.recalculate_output_size();
 
-        self.send_output_detected(info);
+        self.queue_event(Event::OutputDetected(info));
 
         // Send initial working area (full output initially, before any panels)
         let working_area = self.get_working_area(output);
@@ -4270,7 +4242,6 @@ impl Ewm {
 
         // Recalculate total output size, working areas, and queue redraw
         self.recalculate_output_size();
-        self.active_outputs_dirty = true;
         let working_area_changed = self.check_working_area_change(output);
         if !working_area_changed {
             // Always refresh Emacs frames: the output position may have changed
@@ -4378,8 +4349,6 @@ impl Ewm {
                 working_area.loc.x,
                 working_area.loc.y
             );
-
-            self.active_outputs_dirty = true;
 
             // Update Emacs frames to fit new working area
             self.update_frames_for_working_area(output);
@@ -5453,7 +5422,6 @@ impl State {
             self.sync_keyboard_focus();
         }
 
-        // Update shared state snapshot for Emacs to read synchronously
         self.update_shared_state();
         self.ewm.flush_introspect_windows();
 
@@ -5467,25 +5435,20 @@ impl State {
         self.ewm.notified_activity_this_iteration = false;
     }
 
-    /// Update the shared state snapshot that Emacs reads synchronously.
-    /// Called once per tick, after all command processing and state changes.
-    fn update_shared_state(&mut self) {
-        // Flush active_outputs first (acquires shared_state lock internally).
-        if self.ewm.active_outputs_dirty {
-            self.ewm.flush_active_outputs();
+    /// Publish this tick's state to Emacs, then its events.
+    fn update_shared_state(&self) {
+        {
+            let mut shared = module::shared_state().lock().unwrap();
+            shared.focused_surface_id = self.ewm.focused_surface_id();
+            shared.focused_frame_id = self.ewm.focused_frame_id;
+            shared.pointer_location = self.ewm.pointer_location();
+            shared.active_outputs = self.ewm.active_outputs_snapshot();
+            shared.frame_origins = self.ewm.frame_origins_snapshot();
+            shared.active_frames = self.ewm.layout.active_frames_snapshot();
+            shared.strip_frames = self.ewm.layout.strip_frames_snapshot();
+            shared.frame_outputs = self.ewm.layout.frame_outputs_snapshot();
         }
-        let frame_origins = self.ewm.frame_origins_snapshot();
-        let active_frames = self.ewm.layout.active_frames_snapshot();
-        let strip_frames = self.ewm.layout.strip_frames_snapshot();
-        let frame_outputs = self.ewm.layout.frame_outputs_snapshot();
-        let mut shared = module::shared_state().lock().unwrap();
-        shared.focused_surface_id = self.ewm.focused_surface_id();
-        shared.focused_frame_id = self.ewm.focused_frame_id;
-        shared.pointer_location = self.ewm.pointer_location();
-        shared.frame_origins = frame_origins;
-        shared.active_frames = active_frames;
-        shared.strip_frames = strip_frames;
-        shared.frame_outputs = frame_outputs;
+        module::flush_events();
     }
 
     /// Handle a module command (from Emacs via dynamic module).

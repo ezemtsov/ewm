@@ -3225,6 +3225,9 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     info!("Tracking Emacs PID {}", pid);
     state.ewm.set_emacs_pid(pid);
 
+    // Startup queues outside any tick, so run one.
+    state.refresh_and_flush_clients();
+
     // Run the event loop with per-frame callback
     event_loop
         .run(None, &mut state, |state| {
