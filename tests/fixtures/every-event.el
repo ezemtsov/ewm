@@ -7,8 +7,8 @@
     ready
     (new (id . 7) (app . "Alacritty") (seq) (pid . 4242))
     (new (id . 1) (app . "emacs") (seq . 3) (pid . 4000))
-    (mapped (id . 7) (open_floating) (output) (frame_surface_id . 1) (width) (height))
-    (mapped (id . 9) (open_floating . t) (output . "eDP-1") (frame_surface_id) (width . 800.0) (height . 600.0))
+    (mapped (id . 7) (open_floating) (activate . t) (output) (frame_surface_id . 1) (width) (height))
+    (mapped (id . 9) (open_floating . t) (activate) (output . "eDP-1") (frame_surface_id) (width . 800.0) (height . 600.0))
     (close (id . 7))
     (minimize (id . 7))
     (activate_surface (id . 7))

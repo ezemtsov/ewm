@@ -45,10 +45,12 @@ pub struct SurfaceState {
     pub title: String,
     /// Whether a buffer has ever been committed.
     pub mapped: bool,
+    /// Whether a layout has ever shown it.
+    pub placed: bool,
     /// Asked for attention and not focused since.
     pub urgent: bool,
-    /// Activation granted before a window shows it.
-    pub pending_activation: bool,
+    /// When an activation was granted before a window showed it.
+    pub pending_activation: Option<Instant>,
     pub pending_title: Option<PendingTitle>,
     /// Outputs showing it.
     pub outputs: HashSet<String>,
@@ -79,14 +81,21 @@ impl SurfaceState {
             app_id,
             title: String::new(),
             mapped: false,
+            placed: false,
             urgent: false,
-            pending_activation: false,
+            pending_activation: None,
             pending_title: None,
             outputs: HashSet::new(),
             open: None,
             pending_resizes: Vec::new(),
             resize: None,
         }
+    }
+
+    /// Whether an activation granted within the token timeout still waits.
+    pub fn activation_pending(&self) -> bool {
+        self.pending_activation
+            .is_some_and(|granted| granted.elapsed() < handlers::XDG_ACTIVATION_TOKEN_TIMEOUT)
     }
 
     /// Size the toplevel for a view on `output`, queueing `pending` to fade when the size changes.
@@ -207,7 +216,7 @@ impl Ewm {
     pub fn pending_activations(&self) -> impl Iterator<Item = u64> {
         self.surfaces
             .iter()
-            .filter(|(_, surface)| surface.pending_activation)
+            .filter(|(_, surface)| surface.pending_activation.is_some())
             .map(|(&id, _)| id)
     }
 

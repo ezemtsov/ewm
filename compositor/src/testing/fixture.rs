@@ -117,6 +117,32 @@ impl Fixture {
         self.roundtrip(client);
     }
 
+    /// Create a toplevel, a dialog of `parent` if given, and leave it unmapped.
+    pub fn open_toplevel_unmapped(
+        &mut self,
+        client: &mut TestClient,
+        title: &str,
+        parent: Option<&crate::testing::Toplevel>,
+    ) -> crate::testing::Toplevel {
+        let toplevel = client.create_toplevel(title);
+        if let Some(parent) = parent {
+            toplevel.xdg_toplevel.set_parent(Some(&parent.xdg_toplevel));
+            toplevel.surface.commit();
+        }
+        self.roundtrip(client);
+        toplevel
+    }
+
+    /// Map `toplevel` by committing its first buffer.
+    pub fn map_toplevel(
+        &mut self,
+        client: &mut TestClient,
+        toplevel: &crate::testing::Toplevel,
+        size: Size<i32, Logical>,
+    ) {
+        self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
+    }
+
     /// Drive a full xdg toplevel lifecycle.
     pub fn open_toplevel(
         &mut self,
@@ -124,9 +150,8 @@ impl Fixture {
         title: &str,
         size: Size<i32, Logical>,
     ) -> crate::testing::Toplevel {
-        let toplevel = client.create_toplevel(title);
-        self.roundtrip(client);
-        self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
+        let toplevel = self.open_toplevel_unmapped(client, title, None);
+        self.map_toplevel(client, &toplevel, size);
         toplevel
     }
 
@@ -181,11 +206,8 @@ impl Fixture {
         parent: &crate::testing::Toplevel,
         size: Size<i32, Logical>,
     ) -> crate::testing::Toplevel {
-        let toplevel = client.create_toplevel(title);
-        toplevel.xdg_toplevel.set_parent(Some(&parent.xdg_toplevel));
-        toplevel.surface.commit();
-        self.roundtrip(client);
-        self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
+        let toplevel = self.open_toplevel_unmapped(client, title, Some(parent));
+        self.map_toplevel(client, &toplevel, size);
         toplevel
     }
 

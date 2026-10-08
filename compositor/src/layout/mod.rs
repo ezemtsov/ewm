@@ -1699,6 +1699,7 @@ impl Ewm {
                 (false, true) => {
                     enter_output_for_window(&surface.window, output);
                     surface.outputs.insert(name.clone());
+                    surface.placed = true;
                 }
                 _ => {}
             }

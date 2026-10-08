@@ -238,22 +238,148 @@ proptest! {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Step {
+    Show,
+    Hide,
+    Activate,
+    Expire,
+}
+
+fn step() -> impl Strategy<Value = Step> {
+    prop_oneof![
+        Just(Step::Show),
+        Just(Step::Hide),
+        Just(Step::Activate),
+        Just(Step::Expire),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn activation_asks_emacs_only_for_a_hidden_surface(
+        steps in prop::collection::vec(step(), 1..12),
+    ) {
+        let mut fix = testing::Fixture::new().unwrap();
+        fix.add_output(HEAD_A, 1600, 900);
+        fix.tile(HEAD_A, vec![frame_with_width(100, 800.0)]);
+
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
+        let id = fix.open_toplevel_id(&mut client, "dialog", Size::from((400, 300)));
+        fix.enable_event_capture();
+
+        // A pending grant is fresh (Some(true)) or stale (Some(false)).
+        let (mut placed, mut shown) = (false, false);
+        let mut pending: Option<bool> = None;
+        for step in steps {
+            match step {
+                Step::Show => {
+                    fix.float(HEAD_A, vec![frame_with_entry(200, nz(3001), id)]);
+                    placed = true;
+                    shown = true;
+                    if pending == Some(true) {
+                        prop_assert_eq!(fix.focused_surface_id(), id);
+                    }
+                    pending = None;
+                }
+                Step::Hide => {
+                    fix.float(HEAD_A, vec![frame_with_width(200, 400.0)]);
+                    shown = false;
+                    if pending == Some(false) {
+                        pending = None;
+                    }
+                }
+                Step::Activate => {
+                    fix.ewm().activate_or_defer_surface(id, "test");
+                    if shown {
+                        prop_assert_eq!(fix.focused_surface_id(), id);
+                    }
+                    pending = (!shown).then_some(true);
+                }
+                Step::Expire => {
+                    let surface = fix.ewm().surfaces.get_mut(&id).unwrap();
+                    if surface.pending_activation.is_some() {
+                        surface.pending_activation =
+                            Some(Instant::now() - XDG_ACTIVATION_TOKEN_TIMEOUT);
+                        pending = Some(false);
+                    }
+                }
+            }
+            let asked = fix
+                .drain_events()
+                .iter()
+                .any(|event| matches!(event, Event::ActivateSurface { .. }));
+            prop_assert_eq!(asked, matches!(step, Step::Activate) && placed && !shown);
+            prop_assert_eq!(fix.ewm_ref().pending_activations().eq([id]), pending.is_some());
+        }
+    }
+}
+
 #[test]
-fn hidden_surface_activation_asks_emacs_to_show_it() {
-    let mut fix = testing::Fixture::new().unwrap();
-    let mut client = fix.new_client().unwrap();
-    fix.roundtrip(&mut client);
-    fix.add_output(HEAD_A, 1600, 900);
-    let id = fix.open_toplevel_id(&mut client, "hidden", Size::from((400, 400)));
-    fix.enable_event_capture();
+fn mapped_asks_to_select_for_a_token_or_a_focused_parent() {
+    for parented in [false, true] {
+        for parent_focused in [false, true] {
+            for fullscreen in [false, true] {
+                for token in [false, true] {
+                    let mut fix = testing::Fixture::new().unwrap();
+                    fix.add_output(HEAD_A, 1600, 900);
+                    let mut client = fix.new_client().unwrap();
+                    fix.roundtrip(&mut client);
+                    let parent = fix.open_toplevel(&mut client, "parent", Size::from((400, 300)));
+                    let parent_id = fix.find_surface_id(&client, &parent.surface).unwrap();
+                    let other_id =
+                        fix.open_toplevel_id(&mut client, "other", Size::from((400, 300)));
+                    fix.tile(
+                        HEAD_A,
+                        vec![
+                            frame_with_entry(100, nz(3001), parent_id),
+                            frame_with_entry(300, nz(3003), other_id),
+                        ],
+                    );
+                    let focused = if parent_focused { nz(3001) } else { nz(3003) };
+                    fix.ewm().set_focus_entry(focused, "test", false);
+                    if fullscreen {
+                        fix.set_fullscreen(focused, true);
+                    }
 
-    fix.ewm().activate_or_defer_surface(id, true, "test");
+                    let dialog = fix.open_toplevel_unmapped(
+                        &mut client,
+                        "dialog",
+                        parented.then_some(&parent),
+                    );
+                    let id = fix.find_surface_id(&client, &dialog.surface).unwrap();
+                    if token {
+                        fix.ewm().activate_or_defer_surface(id, "test");
+                    }
+                    fix.enable_event_capture();
+                    fix.map_toplevel(&mut client, &dialog, Size::from((200, 100)));
 
-    assert!(fix.ewm_ref().pending_activations().eq([id]));
-    assert!(matches!(
-        fix.drain_events().as_slice(),
-        [Event::ActivateSurface { id: activated }] if *activated == id
-    ));
+                    let activate = fix.drain_events().iter().find_map(|event| match event {
+                        Event::Mapped {
+                            id: mapped,
+                            activate,
+                            ..
+                        } if *mapped == id => Some(*activate),
+                        _ => None,
+                    });
+                    let expected = token
+                        || if parented {
+                            parent_focused
+                        } else {
+                            !fullscreen
+                        };
+                    assert_eq!(
+                        activate,
+                        Some(expected),
+                        "parented={parented} parent_focused={parent_focused} fullscreen={fullscreen} token={token}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

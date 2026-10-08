@@ -142,6 +142,13 @@ impl CompositorHandler for State {
                     .map(|toplevel| (compute_open_floating(toplevel), toplevel.parent()))
                     .unwrap_or((false, None));
                 let parent_id = parent.and_then(|wl| self.ewm.surface_id(&wl));
+                // Select it for its token or its focused parent, never over a fullscreen surface.
+                let focused = self.ewm.focused_surface_id();
+                let activate = self.ewm.surfaces[&id].activation_pending()
+                    || match parent_id {
+                        Some(parent) => focused == parent,
+                        None => !self.ewm.layout.is_surface_fullscreen(focused),
+                    };
                 let output = self.ewm.active_output();
                 let frame_surface_id = self.ewm.resolve_app_host_frame(parent_id, output);
                 // Size hint for floating placement, dropped when it fills the working area.
@@ -157,6 +164,7 @@ impl CompositorHandler for State {
                 self.ewm.queue_event(Event::Mapped {
                     id,
                     open_floating,
+                    activate,
                     output,
                     frame_surface_id,
                     width,

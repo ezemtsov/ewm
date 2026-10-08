@@ -313,7 +313,7 @@ buffer; `mapped' displays and publishes it."
            '((id . 42) (open_floating . t) (output . "HEAD-A") (frame_surface_id . 7)
              (width . 480.0) (height . 160.0)))
           (should (null ewm--pending-placements))
-          (should (equal (list buf t "HEAD-A" 7) (car placed)))
+          (should (equal (list buf t "HEAD-A" 7 nil) (car placed)))
           (should (equal '(480.0 . 160.0) (buffer-local-value 'ewm-surface-size buf))))
       (kill-buffer buf))))
 
@@ -333,7 +333,7 @@ buffer; `mapped' displays and publishes it."
           (should (null placed))
           (should (= 1 (length ewm--pending-placements)))
           (ewm--flush-pending-placements)
-          (should (equal (list buf nil "HEAD-A" 7) (car placed)))
+          (should (equal (list buf nil "HEAD-A" 7 nil) (car placed)))
           (should (= 1 (length placed)))
           (should (null ewm--pending-placements)))
       (kill-buffer buf))))
@@ -433,9 +433,23 @@ buffer; `mapped' displays and publishes it."
       (cl-letf (((symbol-function 'pop-to-buffer)
                  (lambda (buffer action &optional _norecord)
                    (setq popped (cons buffer action)))))
-        (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id)
+        (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id t)
         (should (equal (cons buf '(ewm-display-buffer-floating (ewm-output . "HEAD-A")))
                        popped))))))
+
+(ert-deftest ewm-focus/unactivated-float-is-displayed-without-selection ()
+  "A float the compositor does not activate is displayed, never popped to."
+  (ewm-focus-tests--with-frame f
+    (let ((buf (ewm-focus-tests--make-surface-buffer 42))
+          displayed)
+      (cl-letf (((symbol-function 'pop-to-buffer)
+                 (lambda (&rest _) (error "pop-to-buffer selects the float")))
+                ((symbol-function 'display-buffer)
+                 (lambda (buffer action &optional _frame)
+                   (setq displayed (cons buffer action)))))
+        (ewm--place-surface-buffer buf t "HEAD-A" ewm-focus-tests--frame-surface-id nil)
+        (should (equal (cons buf '(ewm-display-buffer-floating (ewm-output . "HEAD-A")))
+                       displayed))))))
 
 (defmacro ewm-focus-tests--with-stubbed-float (vars &rest body)
   "Run BODY with float creation stubbed onto the batch frame.

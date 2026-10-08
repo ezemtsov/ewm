@@ -104,7 +104,7 @@ pub fn is_laptop_panel(connector_name: &str) -> bool {
     matches!(connector_name.get(..4), Some("eDP-" | "LVDS" | "DSI-"))
 }
 
-use crate::handlers::configure_lock_surface;
+use crate::handlers::{XDG_ACTIVATION_TOKEN_TIMEOUT, configure_lock_surface};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -1180,6 +1180,19 @@ impl Ewm {
                 smithay::reexports::calloop::channel::Event::Closed => (),
             })
             .expect("failed to register worker event source");
+        loop_handle_clone
+            .insert_source(
+                Timer::from_duration(XDG_ACTIVATION_TOKEN_TIMEOUT),
+                |_, _, state| {
+                    state.ewm.activation_state.retain_tokens(|_, token_data| {
+                        token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT
+                    });
+                    smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
+                        XDG_ACTIVATION_TOKEN_TIMEOUT,
+                    )
+                },
+            )
+            .expect("failed to register activation token timer");
 
         let animations_clock = animation::Clock::default();
 
@@ -3391,19 +3404,28 @@ impl Ewm {
         entry_id.is_some() || (frame_id != 0 && self.layout.has_frame(frame_id))
     }
 
-    /// Focus the surface, or ask Emacs to show it when no window does.
-    pub fn activate_or_defer_surface(&mut self, id: u64, notify_emacs: bool, source: &str) {
-        let focused = self.set_focus(id, notify_emacs, source);
+    /// Focus the surface, or ask Emacs to show it again when no window does.
+    pub fn activate_or_defer_surface(&mut self, id: u64, source: &str) {
+        let focused = self.set_focus(id, true, source);
+        if focused {
+            self.layer_shell_on_demand_focus = None;
+        }
         let Some(surface) = self.surfaces.get_mut(&id) else {
             return;
         };
-        surface.pending_activation = !focused;
-        if !focused && notify_emacs {
+        surface.pending_activation = (!focused).then(Instant::now);
+        // Mapped asks Emacs to show an unplaced surface.
+        if !focused && surface.placed {
             self.queue_event(Event::ActivateSurface { id });
         }
     }
 
     fn focus_pending_activation_surfaces(&mut self) {
+        for surface in self.surfaces.values_mut() {
+            if !surface.activation_pending() {
+                surface.pending_activation = None;
+            }
+        }
         let mut ready: Vec<u64> = self
             .pending_activations()
             .filter(|&id| self.focus_target_ready(id))
@@ -3412,9 +3434,10 @@ impl Ewm {
 
         for id in ready {
             if let Some(surface) = self.surfaces.get_mut(&id) {
-                surface.pending_activation = false;
+                surface.pending_activation = None;
             }
             self.set_focus(id, true, "xdg_activation_pending");
+            self.layer_shell_on_demand_focus = None;
         }
     }
 

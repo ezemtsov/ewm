@@ -6,6 +6,7 @@ mod xdg_shell;
 use std::collections::HashMap;
 use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
+use std::time::Duration;
 
 use smithay::backend::input::{InputEvent, TabletToolDescriptor};
 use smithay::desktop::{PopupKind, PopupManager};
@@ -305,6 +306,8 @@ impl VirtualPointerHandler for State {
     }
 }
 
+pub const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct UrgentOnlyMarker;
 
 // XDG Activation protocol (allows apps to request focus or attention)
@@ -357,15 +360,12 @@ impl XdgActivationHandler for State {
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        use std::time::Duration;
-        const TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
-
         debug!(
             "xdg_activation: request_activation called for surface {:?}",
             surface.id()
         );
 
-        if token_data.timestamp.elapsed() < TOKEN_TIMEOUT {
+        if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
             if let Some(id) = self.ewm.surface_id(&surface) {
                 // Lisp owns Emacs frame focus via select-frame-set-input-focus;
                 // honoring GTK's echo activation here would loop with our own
@@ -379,8 +379,7 @@ impl XdgActivationHandler for State {
                 } else if self.ewm.layout.has_frame(id) {
                     debug!("xdg_activation: ignored for Emacs frame {}", id);
                 } else {
-                    self.ewm
-                        .activate_or_defer_surface(id, true, "xdg_activation");
+                    self.ewm.activate_or_defer_surface(id, "xdg_activation");
                     info!("xdg_activation: granted for surface {}", id);
                 }
             } else {
@@ -423,8 +422,7 @@ impl ForeignToplevelHandler for State {
 
     fn activate(&mut self, wl_surface: WlSurface) {
         if let Some(id) = self.ewm.surface_id(&wl_surface) {
-            self.ewm
-                .activate_or_defer_surface(id, true, "foreign_toplevel");
+            self.ewm.activate_or_defer_surface(id, "foreign_toplevel");
             info!("Foreign toplevel: activated surface {}", id);
         }
     }

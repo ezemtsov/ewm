@@ -500,11 +500,12 @@ paired with it. Any other surface gets a buffer."
     (ewm--place-or-defer buffer
                          (alist-get 'open_floating event)
                          (alist-get 'output event)
-                         (alist-get 'frame_surface_id event))))
+                         (alist-get 'frame_surface_id event)
+                         (alist-get 'activate event))))
 
-(defun ewm--place-or-defer (buffer floating output host-id)
+(defun ewm--place-or-defer (buffer floating output host-id activate)
   "Place BUFFER now, or once the active menu closes."
-  (let ((args (list buffer floating output host-id)))
+  (let ((args (list buffer floating output host-id activate)))
     (if (ewm-layout--menu-active-p)
         (push args ewm--pending-placements)
       (apply #'ewm--place-surface-buffer args))))
@@ -517,14 +518,18 @@ paired with it. Any other surface gets a buffer."
       (when (buffer-live-p (car args))
         (apply #'ewm--place-surface-buffer args)))))
 
-(defun ewm--place-surface-buffer (buffer floating output host-id)
-  "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID."
+(defun ewm--place-surface-buffer (buffer floating output host-id activate)
+  "Display BUFFER on OUTPUT: floating in a new frame, else tiled in HOST-ID.
+A float is selected only when ACTIVATE."
   (let ((host (or (ewm--frame-by-surface-id host-id)
                   (ewm--surface-target-frame-for-output output))))
     (when host (select-frame host))
     (cond
      (floating
-      (pop-to-buffer buffer `(ewm-display-buffer-floating (ewm-output . ,output))))
+      (let ((action `(ewm-display-buffer-floating (ewm-output . ,output))))
+        (if activate
+            (pop-to-buffer buffer action)
+          (display-buffer buffer action))))
      (host
       (pop-to-buffer-same-window buffer)
       (ewm-layout--refresh)))))
@@ -567,7 +572,7 @@ without lisp asking (e.g. compositor-driven destroy)."
   (ewm--with-surface-buffer-from-event event
     (ewm--place-or-defer (current-buffer) nil
                          (ewm--frame-output (ignore-errors (ewm--focused-frame)))
-                         nil)))
+                         nil t)))
 
 (defun ewm--handle-maximize-request (_event)
   "Handle maximize request EVENT.

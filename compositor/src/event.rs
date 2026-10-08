@@ -76,11 +76,14 @@ pub enum Event {
         pid: i32,
     },
     /// App surface mapped: placed once, floating (`open_floating`) or tiled in `frame_surface_id`.
-    /// `width`/`height` carry the client's natural size, nil when it fills the working area.
+    /// `activate` asks Emacs to select it: a token or its focused parent wants it and no fullscreen
+    /// surface holds focus. `width`/`height` carry the client's natural size, nil when it fills the
+    /// working area.
     #[serde(rename = "mapped")]
     Mapped {
         id: u64,
         open_floating: bool,
+        activate: bool,
         output: Option<String>,
         frame_surface_id: Option<u64>,
         width: Option<f64>,
@@ -92,7 +95,7 @@ pub enum Event {
     /// Surface minimize requested
     #[serde(rename = "minimize")]
     Minimize { id: u64 },
-    /// Activation asked for a surface no Emacs window shows
+    /// Activation asked for a surface Emacs no longer shows
     #[serde(rename = "activate_surface")]
     ActivateSurface { id: u64 },
     /// Surface title changed

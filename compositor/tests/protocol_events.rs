@@ -87,6 +87,7 @@ fn every_event() -> Vec<Event> {
         Event::Mapped {
             id: 7,
             open_floating: false,
+            activate: true,
             output: None,
             frame_surface_id: Some(1),
             width: None,
@@ -95,6 +96,7 @@ fn every_event() -> Vec<Event> {
         Event::Mapped {
             id: 9,
             open_floating: true,
+            activate: false,
             output: Some("eDP-1".into()),
             frame_surface_id: None,
             width: Some(800.0),

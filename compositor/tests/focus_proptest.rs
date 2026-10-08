@@ -337,7 +337,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                 fix.ewm_ref().focused_frame_id,
                 fix.ewm_ref().focused_entry_id,
             );
-            fix.ewm().activate_or_defer_surface(id, true, "proptest");
+            fix.ewm().activate_or_defer_surface(id, "proptest");
             let ewm = fix.ewm_ref();
             let focused = ewm.focused_surface_id() == id;
             let pending = ewm.pending_activations().any(|pending| pending == id);
