@@ -18,6 +18,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'wid-edit)
 
 ;; A stale .elc next to a newer .el would otherwise mask the source we're
 ;; meant to be testing.
@@ -81,6 +82,17 @@
                 (lambda () (setq refreshed t))))
        ,@body)
      (should-not refreshed)))
+
+;;;; Customize types
+
+(ert-deftest ewm-input-tests/intercept-prefixes-type-accepts-modified-events ()
+  "Customize accepts default prefixes and modified integer key events."
+  (let ((widget (widget-convert (get 'ewm-intercept-prefixes 'custom-type))))
+    (should (widget-apply widget :match
+                          (eval (car (get 'ewm-intercept-prefixes 'standard-value)) t)))
+    (should (widget-apply widget :match
+                          '(?\M-: ?\M-` ?\M-& (?\M-y :fullscreen)
+                            (?\s-f :fullscreen) "M-x" ("s-m" :fullscreen))))))
 
 ;;;; Keymap bindings
 

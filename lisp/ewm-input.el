@@ -236,7 +236,8 @@ Example:
   "Keys that always go to Emacs, even when a surface has focus.
 Each entry is a key or (key :fullscreen).  Plain keys are intercepted
 normally; :fullscreen keys are also sent to Emacs when a fullscreen
-surface has focus.  Keys can be character literals or strings.  Plain
+surface has focus.  Keys can be integer key events (including modified
+character literals) or key-description strings.  Plain
 entries enter the Emacs keyboard path; entries that are also bound in
 `ewm-mode-map' use command-event delivery.
 
@@ -247,8 +248,8 @@ Set with `setopt' (or `:custom' in `use-package'):
   (setopt ewm-intercept-prefixes
           \\='(\"C-x\" \"C-u\" \"C-h\" \"M-x\" \"M-`\"
             (\"<Print>\" :fullscreen)))"
-  :type '(repeat (choice character string
-                         (list (choice character string) (const :fullscreen))))
+  :type '(repeat (choice integer string
+                         (list (choice integer string) (const :fullscreen))))
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
   :group 'ewm-input)
