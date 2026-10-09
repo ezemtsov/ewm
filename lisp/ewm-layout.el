@@ -17,10 +17,6 @@
 
 (defvar ewm--module-mode)
 
-(defgroup ewm-layout nil
-  "EWM layout and modal focus contract."
-  :group 'ewm)
-
 (defun ewm-layout--reading-key-p ()
   "Non-nil while an overriding keymap is consuming keystrokes."
   (or overriding-terminal-local-map
@@ -31,14 +27,12 @@
 A plain prompt stays unpinned so its value can come from another window."
   (and (active-minibuffer-window) minibuffer-completion-table))
 
-(defcustom ewm-layout-menu-predicates
+(defvar ewm-layout-menu-predicates
   '(ewm-layout--minibuffer-menu-p
     ewm-layout--reading-key-p)
   "Predicates that signal Emacs is reading keys for itself.
 If any returns non-nil, the next layout's `:selected-entry-id' is
-suppressed for every frame."
-  :type '(repeat function)
-  :group 'ewm-layout)
+suppressed for every frame.")
 
 (defun ewm-layout--menu-active-p ()
   "Non-nil if any `ewm-layout-menu-predicates' entry says so."

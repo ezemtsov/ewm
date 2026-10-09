@@ -156,16 +156,47 @@ FORMAT-STRING and ARGS are passed to `format'."
   (setq ewm--event-process nil))
 
 (defgroup ewm nil
-  "Emacs Wayland Manager - Wayland apps as Emacs buffers."
+  "Support for Wayland apps as Emacs buffers."
+  :tag "EWM"
   :link '(emacs-library-link :tag "Library Source" "ewm.el")
   :group 'environment
+  :prefix "ewm-")
+
+(defgroup ewm-keybindings nil
+  "Key interception, prefix keys and per-app keys."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Keybindings")
+  :group 'ewm
+  :prefix "ewm-")
+
+(defgroup ewm-input-methods nil
+  "Text input in Wayland clients."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Input-Methods")
+  :group 'ewm
+  :prefix "ewm-")
+
+(defgroup ewm-input-devices nil
+  "Device settings, cursor hiding and pointer focus."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Input-Devices")
+  :group 'ewm
+  :prefix "ewm-")
+
+(defgroup ewm-output nil
+  "Display resolution, scaling, positioning and idle."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Output")
+  :group 'ewm
+  :prefix "ewm-")
+
+(defgroup ewm-appearance nil
+  "Dimming, animations, overview, blur and cursor theme."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Appearance")
+  :group 'ewm
   :prefix "ewm-")
 
 (defcustom ewm-mouse-follows-focus t
   "Whether the mouse pointer follows focus changes.
 When non-nil, warps the pointer to the center of the focused window."
   :type 'boolean
-  :group 'ewm)
+  :group 'ewm-input-devices)
 
 (defcustom ewm-animations-enabled t
   "Whether cross-frame slide and surface open-fade animations play.
@@ -173,7 +204,7 @@ Set to nil to snap in-flight animations to target and skip easing on
 new ones.  Toggling is live -- the compositor flips the shared
 animation clock and the next frame settles."
   :type 'boolean
-  :group 'ewm
+  :group 'ewm-appearance
   :set (lambda (sym val)
          (set-default sym val)
          (when (fboundp 'ewm-set-animations-enabled)
@@ -187,7 +218,7 @@ animation clock and the next frame settles."
 The compositor sends focus events with cursor coordinates; intra-frame
 window switching is handled by `ewm--handle-focus' from those events."
   :type 'boolean
-  :group 'ewm
+  :group 'ewm-input-devices
   :set (lambda (sym val)
          (set-default sym val)
          (setq focus-follows-mouse (and val t))
@@ -200,7 +231,7 @@ A float in 0.0..1.0; 1.0 (default) disables the effect.  Lower values
 dim non-focused windows so the focused one stands out.  Emacs frames
 and layer surfaces (panels, lock screen) are never dimmed."
   :type 'float
-  :group 'ewm
+  :group 'ewm-appearance
   :set (lambda (sym val)
          (set-default sym val)
          (when (fboundp 'ewm-set-unfocused-alpha)
@@ -217,14 +248,14 @@ and layer surfaces (panels, lock screen) are never dimmed."
   "Scale of each output's content in the overview.
 A float above 0.0 and at most 0.75; smaller values show more of the strip."
   :type 'float
-  :group 'ewm
+  :group 'ewm-appearance
   :set (ewm--send-on-set 'ewm--send-overview-config))
 
 (defcustom ewm-overview-backdrop-color "#262626"
   "Color behind the zoomed-out output in the overview.
 A color name or #RRGGBB spec; unknown names fall back to the default."
   :type 'color
-  :group 'ewm
+  :group 'ewm-appearance
   :set (ewm--send-on-set 'ewm--send-overview-config))
 
 (defcustom ewm-blur t
@@ -232,31 +263,31 @@ A color name or #RRGGBB spec; unknown names fall back to the default."
 Clients request blur through the ext-background-effect protocol and
 the blurred area follows the region they set."
   :type 'boolean
-  :group 'ewm
+  :group 'ewm-appearance
   :set (ewm--send-on-set 'ewm--send-blur-config))
 
 (defcustom ewm-blur-passes 3
   "Number of blur passes, 1 to 31. More passes blur further."
   :type 'natnum
-  :group 'ewm
+  :group 'ewm-appearance
   :set (ewm--send-on-set 'ewm--send-blur-config))
 
 (defcustom ewm-blur-offset 3.0
   "Sampling offset per blur pass, in pixels."
   :type 'float
-  :group 'ewm
+  :group 'ewm-appearance
   :set (ewm--send-on-set 'ewm--send-blur-config))
 
 (defcustom ewm-blur-noise 0.02
   "Noise added to blurred areas; 0.0 disables it."
   :type 'float
-  :group 'ewm
+  :group 'ewm-appearance
   :set (ewm--send-on-set 'ewm--send-blur-config))
 
 (defcustom ewm-blur-saturation 1.5
   "Saturation multiplier for blurred areas; 1.0 keeps colors as they are."
   :type 'float
-  :group 'ewm
+  :group 'ewm-appearance
   :set (ewm--send-on-set 'ewm--send-blur-config))
 
 (defvar ewm--is-ffm-focus-event nil
@@ -318,7 +349,7 @@ Example:
     (\"eDP-1\" :width 1024 :height 640 :refresh 60 :custom t))"
   :type '(alist :key-type string :value-type plist)
   :set (ewm--send-on-set 'ewm--apply-output-config)
-  :group 'ewm)
+  :group 'ewm-output)
 
 (defcustom ewm-idle nil
   "Idle timeout and action.
@@ -336,7 +367,7 @@ Examples:
                        (integer :tag "Seconds")
                        (string :tag "Shell command")))
   :set (ewm--send-on-set 'ewm--send-idle-config)
-  :group 'ewm)
+  :group 'ewm-output)
 
 (defvar ewm-idle-hook nil
   "Hook run when idle state changes.
@@ -353,7 +384,7 @@ Examples:
   :type '(choice (const :tag "Disabled" nil)
                  (integer :tag "Hide after N seconds"))
   :set (ewm--send-on-set 'ewm--send-cursor-hide-config)
-  :group 'ewm)
+  :group 'ewm-input-devices)
 
 (defcustom ewm-cursor-theme nil
   "Xcursor theme used by EWM and clients launched from it.
@@ -361,7 +392,7 @@ When nil, EWM picks a loadable theme from the session environment."
   :type '(choice (const :tag "Auto" nil)
                  (string :tag "Theme"))
   :set (ewm--send-on-set 'ewm--send-cursor-config)
-  :group 'ewm)
+  :group 'ewm-appearance)
 
 (defvar ewm--session-cursor-theme (getenv "XCURSOR_THEME")
   "Initial session XCURSOR_THEME value from before EWM applied its config.")
@@ -374,7 +405,7 @@ When nil, EWM picks a loadable theme from the session environment."
   "Xcursor size used by EWM and clients launched from it."
   :type '(integer :tag "Pixels")
   :set (ewm--send-on-set 'ewm--send-cursor-config)
-  :group 'ewm)
+  :group 'ewm-appearance)
 
 (defcustom ewm-cursor-hide-when-typing nil
   "When non-nil, hide the mouse cursor on key press.
@@ -382,7 +413,7 @@ Pointer motion restores it.  Independent from `ewm-cursor-auto-hide';
 both can be enabled together."
   :type 'boolean
   :set (ewm--send-on-set 'ewm--send-cursor-hide-config)
-  :group 'ewm)
+  :group 'ewm-input-devices)
 
 (defvar ewm-idle-inhibited nil
   "Whether idle is manually inhibited from Emacs.

@@ -38,7 +38,7 @@ ibus, which then serves Emacs frames as well."
   :set (lambda (sym val)
          (set-default sym val)
          (ewm-text-input--send-provider))
-  :group 'ewm)
+  :group 'ewm-input-methods)
 
 (defvar ewm-text-input--composing nil
   "Surface id whose input method is reading keys, else nil.")
@@ -106,7 +106,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
 (define-minor-mode ewm-text-input-mode
   "Mode-line indicator for active Wayland text-input relay."
   :global t
-  :group 'ewm
+  :group 'ewm-input-methods
   :lighter " IM")
 
 (defun ewm-text-input--active-input-method ()
@@ -136,7 +136,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
 (define-minor-mode ewm-text-input-auto-mode
   "Automatically relay input methods to active Wayland text fields."
   :global t
-  :group 'ewm
+  :group 'ewm-input-methods
   (let ((hook-function (if ewm-text-input-auto-mode #'add-hook #'remove-hook)))
     (dolist (hook '(ewm-text-input-activated-hook ewm-text-input-deactivated-hook
                    input-method-activate-hook))

@@ -133,10 +133,6 @@ Override individual bindings with `use-package':
 (defvar ewm-surface-mode-map)
 (defvar ewm-text-input--composing)
 
-(defgroup ewm-input nil
-  "EWM input handling."
-  :group 'ewm)
-
 (defun ewm-input--set-input-config (sym val)
   "Set SYM to VAL and refresh compositor input config."
   (set-default sym val)
@@ -207,7 +203,7 @@ Example:
                 :value-type plist)
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-input-config
-  :group 'ewm-input)
+  :group 'ewm-input-devices)
 
 (defun ewm--send-input-config ()
   "Send input device configuration to compositor."
@@ -255,7 +251,7 @@ Set with `setopt' (or `:custom' in `use-package'):
   :type '(repeat (choice ewm-key (list ewm-key (const :fullscreen))))
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
-  :group 'ewm-input)
+  :group 'ewm-keybindings)
 
 (defcustom ewm-surface-emulate-keys
   '((kill-ring-save . "C-c")
@@ -267,7 +263,7 @@ that surface only, see `ewm-update-app-hook'."
   :type '(alist :key-type (choice function ewm-key) :value-type string)
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
-  :group 'ewm-input)
+  :group 'ewm-keybindings)
 
 (defcustom ewm-repeatable-commands
   '(ewm-focus-left ewm-focus-right ewm-focus-up ewm-focus-down
@@ -279,7 +275,7 @@ that surface only, see `ewm-update-app-hook'."
   :type '(repeat function)
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
-  :group 'ewm-input)
+  :group 'ewm-keybindings)
 
 (defconst ewm-input--repeatable-key-descriptions
   '("<AudioRaiseVolume>" "<AudioLowerVolume>" "<AudioMute>" "<AudioMicMute>"
