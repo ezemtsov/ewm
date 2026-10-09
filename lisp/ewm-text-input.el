@@ -106,6 +106,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
 (define-minor-mode ewm-text-input-mode
   "Mode-line indicator for active Wayland text-input relay."
   :global t
+  :group 'ewm
   :lighter " IM")
 
 (defun ewm-text-input--active-input-method ()
