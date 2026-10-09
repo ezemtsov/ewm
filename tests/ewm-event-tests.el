@@ -64,6 +64,7 @@
              (expand-file-name "../lisp"
                                (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm)
+(require 'cus-edit)
 ;; One of each event, printed by the module's serializer.
 (load (expand-file-name "fixtures/every-event"
                         (file-name-directory (or load-file-name buffer-file-name)))
@@ -219,6 +220,14 @@
       (let ((ewm-bell-function nil))
         (ewm--handle-event '(bell (id . 10))))
       (should (equal rung (list nil nil nil (current-buffer)))))))
+
+(ert-deftest ewm-event-tests/defaults-match-custom-types ()
+  "Every ewm option's default matches its Customize type."
+  (should-not
+   (seq-remove (lambda (sym)
+                 (widget-apply (widget-convert (custom-variable-type sym))
+                               :match (custom--standard-value sym)))
+               (apropos-internal "\\`ewm-" #'custom-variable-p))))
 
 (provide 'ewm-event-tests)
 ;;; ewm-event-tests.el ends here

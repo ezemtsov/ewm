@@ -225,6 +225,12 @@ Example:
 
 ;;; Key interception
 
+(define-widget 'ewm-key 'lazy
+  "A single key, as an integer event or a key description."
+  :tag "Key"
+  :type '(choice character integer string)
+  :match (lambda (_ key) (ewm--key-event key)))
+
 (defcustom ewm-intercept-prefixes
   '(?\C-x ?\C-u ?\C-h ?\M-x (?\s-f :fullscreen)
           ("s-S-<left>" :fullscreen) ("s-S-<right>" :fullscreen)
@@ -234,22 +240,19 @@ Example:
           ("<AudioMute>" :fullscreen) ("<AudioMicMute>" :fullscreen)
           ("<Print>" :fullscreen))
   "Keys that always go to Emacs, even when a surface has focus.
-Each entry is a key or (key :fullscreen).  Plain keys are intercepted
-normally; :fullscreen keys are also sent to Emacs when a fullscreen
-surface has focus.  Keys can be integer key events (including modified
-character literals) or key-description strings.  Plain
-entries enter the Emacs keyboard path; entries that are also bound in
-`ewm-mode-map' use command-event delivery.
+Each entry is a key or (key :fullscreen), where a key is an integer
+event such as ?\\M-x or a key description naming one key. :fullscreen
+entries are intercepted even when a fullscreen surface has focus.
 
-Bindings in `ewm-mode-map' are always intercepted (without :fullscreen).
+Bindings in `ewm-mode-map' are always intercepted (without :fullscreen)
+and use command-event delivery. Other keys enter the Emacs keyboard path.
 
 Set with `setopt' (or `:custom' in `use-package'):
 
   (setopt ewm-intercept-prefixes
           \\='(\"C-x\" \"C-u\" \"C-h\" \"M-x\" \"M-`\"
             (\"<Print>\" :fullscreen)))"
-  :type '(repeat (choice integer string
-                         (list (choice integer string) (const :fullscreen))))
+  :type '(repeat (choice ewm-key (list ewm-key (const :fullscreen))))
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
   :group 'ewm-input)
@@ -261,8 +264,7 @@ Set with `setopt' (or `:custom' in `use-package'):
 FROM is a command or a single key, KEYS a key description Emacs sends with
 `ewm-send-key' instead. A surface buffer's local value adds entries for
 that surface only, see `ewm-update-app-hook'."
-  :type '(alist :key-type (choice function string character)
-                :value-type string)
+  :type '(alist :key-type (choice function ewm-key) :value-type string)
   :initialize 'custom-initialize-default
   :set #'ewm-input--set-intercept-config
   :group 'ewm-input)
@@ -613,7 +615,7 @@ VALUE is the ASCII code or special-key name; flags are t or nil."
             :super (and (memq 'super mods) t)))))
 
 (defun ewm--key-event (key)
-  "Return the event KEY names, a character or one-key sequence, else nil."
+  "Return the event KEY names, an integer or a one-key description, else nil."
   (cond ((integerp key) key)
         ((stringp key)
          (let ((seq (key-parse key)))

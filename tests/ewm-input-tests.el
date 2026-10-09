@@ -18,7 +18,6 @@
 
 (require 'ert)
 (require 'cl-lib)
-(require 'wid-edit)
 
 ;; A stale .elc next to a newer .el would otherwise mask the source we're
 ;; meant to be testing.
@@ -82,17 +81,6 @@
                 (lambda () (setq refreshed t))))
        ,@body)
      (should-not refreshed)))
-
-;;;; Customize types
-
-(ert-deftest ewm-input-tests/intercept-prefixes-type-accepts-modified-events ()
-  "Customize accepts default prefixes and modified integer key events."
-  (let ((widget (widget-convert (get 'ewm-intercept-prefixes 'custom-type))))
-    (should (widget-apply widget :match
-                          (eval (car (get 'ewm-intercept-prefixes 'standard-value)) t)))
-    (should (widget-apply widget :match
-                          '(?\M-: ?\M-` ?\M-& (?\M-y :fullscreen)
-                            (?\s-f :fullscreen) "M-x" ("s-m" :fullscreen))))))
 
 ;;;; Keymap bindings
 
@@ -242,6 +230,12 @@
   "Unknown shapes (number list, vector) return nil."
   (should (null (ewm--parse-intercept-entry [some vector])))
   (should (null (ewm--parse-intercept-entry 'a-symbol))))
+
+(ert-deftest ewm-input-tests/key-event-names-one-key ()
+  "`ewm--key-event' returns the one event a description names, else nil."
+  (should (eq (ewm--key-event "<Print>") 'Print))
+  (should-not (ewm--key-event "C-x C-f"))
+  (should-not (ewm--key-event "")))
 
 (ert-deftest ewm-input-tests/intercepted-command-uses-active-keymap ()
   "Queued commands respect normal key lookup and command hooks."
