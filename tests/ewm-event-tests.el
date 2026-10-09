@@ -229,5 +229,26 @@
                                :match (custom--standard-value sym)))
                (apropos-internal "\\`ewm-" #'custom-variable-p))))
 
+(ert-deftest ewm-event-tests/setup-resends-every-option ()
+  "Startup sends whatever the option setters send."
+  (let* ((options (seq-remove (lambda (sym) (memq (get sym 'custom-set) '(nil custom-set-minor-mode)))
+                              (apropos-internal "\\`ewm-" #'custom-variable-p)))
+         (module-functions (apropos-internal "\\`ewm-\\(set-\\|.*-module\\'\\)" #'fboundp))
+         (ewm--module-mode t)
+         calls)
+    (unwind-protect
+        (progn
+          (dolist (fn module-functions)
+            (advice-add fn :before (lambda (&rest _) (cl-pushnew fn calls)) `((name . ,fn))))
+          (dolist (sym options)
+            (funcall (get sym 'custom-set) sym (default-value sym)))
+          (let ((by-setters calls))
+            (setq calls nil)
+            (ewm--setup)
+            (should-not (cl-set-difference by-setters calls))))
+      (ewm--teardown)
+      (dolist (fn module-functions)
+        (advice-remove fn fn)))))
+
 (provide 'ewm-event-tests)
 ;;; ewm-event-tests.el ends here
