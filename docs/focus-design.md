@@ -260,6 +260,9 @@ After specific operations:
 12. **Destruction is authoritative.**  After
     `handle_toplevel_destroyed_by_id`, the frame's surface_id is gone from
     every strip.
+13. **Activating a multi-view surface stays in the focused frame.**  The
+    focused view wins when it shows the surface, else a view in the
+    focused frame, else the first view in output order.
 
 The pure `resolve_keyboard_focus_target` helper (lock > layer >
 toplevel priority) is covered by a second set of properties in the
@@ -418,6 +421,11 @@ The right-monitor copy isn't affected.  The same surface is "focused" in
 the Wayland sense (`keyboard.set_focus(firefox_surface)`), but the
 question "which Emacs window is the user editing?" is resolved
 independently by view id.
+
+Activation goes the other way: a token or foreign-toplevel request names
+a surface, and the compositor must pick a view.  A view in the focused
+frame wins (invariant 13), so a link opened from the terminal lands on
+the Firefox copy next to it instead of sliding another output's strip.
 
 ## Why we ended up here
 

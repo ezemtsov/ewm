@@ -358,6 +358,10 @@ fn apply_op(fix: &mut Fixture, op: Op) {
                     id,
                 );
             }
+            // Invariant 13: a view in the focused frame wins.
+            if focused {
+                assert_focused_frame_view(fix, id, prev.0);
+            }
         }
         Op::DestroySurface(id) => {
             let was_present = layout_surface_ids(fix).contains(&id);
@@ -428,6 +432,29 @@ fn apply_op(fix: &mut Fixture, op: Op) {
     }
 }
 
+/// Views of `surface` in frame `frame`.
+fn views_in_frame(fix: &Fixture, surface: u64, frame: u64) -> Vec<LayoutEntryId> {
+    all_frames(fix)
+        .filter(|f| f.surface_id == frame)
+        .flat_map(|f| f.entries.iter())
+        .filter(|entry| entry.surface_id() == Some(surface))
+        .map(|entry| entry.id)
+        .collect()
+}
+
+/// Invariant 13: when `frame` showed `surface`, the view that took focus is one of them.
+fn assert_focused_frame_view(fix: &Fixture, surface: u64, frame: u64) {
+    let views = views_in_frame(fix, surface, frame);
+    if views.is_empty() {
+        return;
+    }
+    let chosen = fix.ewm_ref().focused_entry_id;
+    assert!(
+        chosen.is_some_and(|entry| views.contains(&entry)),
+        "invariant 13: activate({surface}) left focused frame {frame} which shows it",
+    );
+}
+
 fn strip_frame_ids(fix: &Fixture) -> HashSet<u64> {
     all_frames(fix)
         .map(|f| f.surface_id)
@@ -493,6 +520,52 @@ fn expected_surface_outputs(fix: &Fixture) -> HashMap<u64, HashSet<String>> {
     }
 
     expected
+}
+
+/// Invariant 13 over every placement of a surface's views and of the focused frame.
+#[test]
+fn activation_prefers_the_focused_frame() {
+    const SURFACE: u64 = 7;
+    for membership in 1u8..16 {
+        for focused_frame in 100..104u64 {
+            let mut fix = Fixture::new().unwrap();
+            // Two frames per output, each with a window of its own and maybe a view of the surface.
+            for (output_idx, name) in OUTPUTS.iter().enumerate() {
+                fix.add_output(name, 1920, 1080);
+                let frames = (0..2)
+                    .map(|i| {
+                        let idx = 2 * output_idx + i;
+                        let frame_id = 100 + idx as u64;
+                        let own = entry_entry_id_for(frame_id, 0);
+                        let mut frame = frame_with_entry(frame_id, own, 1_000 + idx as u64);
+                        if membership & (1 << idx) != 0 {
+                            frame.entries.push(LayoutEntry::surface(
+                                entry_entry_id_for(frame_id, 1),
+                                "view".to_string(),
+                                SURFACE,
+                                0,
+                                100,
+                                100,
+                                100,
+                            ));
+                        }
+                        frame
+                    })
+                    .collect();
+                fix.tile(name, frames);
+            }
+            fix.ewm().set_focus_frame(focused_frame, "test", false);
+            fix.ewm().activate_or_defer_surface(SURFACE, "test");
+
+            let ewm = fix.ewm_ref();
+            assert_eq!(
+                ewm.focused_surface_id(),
+                SURFACE,
+                "membership={membership:#06b} focused={focused_frame}"
+            );
+            assert_focused_frame_view(&fix, SURFACE, focused_frame);
+        }
+    }
 }
 
 proptest! {

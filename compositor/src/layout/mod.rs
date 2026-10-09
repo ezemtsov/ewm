@@ -1123,11 +1123,20 @@ impl Ewm {
             .filter_map(|output| self.layout.monitor_of(output))
     }
 
+    /// The view of `surface_id` to focus: focused, else in the focused frame, else first.
     pub(crate) fn frame_entry_for_surface(&self, surface_id: u64) -> Option<(u64, LayoutEntryId)> {
         let location = self
             .focused_entry_for_surface(surface_id)
+            .or_else(|| self.focused_frame_entry_for_surface(surface_id))
             .or_else(|| self.layout_entry_for_surface(surface_id, |_| true))?;
         Some((location.frame.surface_id, location.entry.id))
+    }
+
+    fn focused_frame_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
+        self.layout
+            .frame_location(self.focused_frame_id)?
+            .entries()
+            .find(|location| location.entry.surface_id() == Some(id))
     }
 
     pub(crate) fn first_active_frame_surface_id(&self) -> Option<u64> {
