@@ -2273,7 +2273,7 @@ impl Ewm {
         let timer = Timer::from_duration(duration);
         match self.loop_handle.insert_source(timer, |_, _, state| {
             let went_idle = state.ewm.on_idle_timer_fired();
-            if went_idle {
+            if went_idle && !state.ewm.monitors_active {
                 // Blank the DRM surfaces (DPMS off)
                 state.backend.clear_all_surfaces();
             }
