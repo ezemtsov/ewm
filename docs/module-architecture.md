@@ -103,7 +103,7 @@ JSON line is delivered exactly once. Serde serialization replaces the manual
 |-------|------|---------|
 | `ready` | `Event::Ready` | Compositor initialized |
 | `new` | `Event::New{id,app,seq,pid}` | Surface created. `seq` names the Emacs frame it belongs to, nil for apps |
-| `close` | `Event::Close{id}` | Surface destroyed |
+| `close` | `Event::Close{id}` | Surface destroyed, or a frame the compositor dropped for Emacs to delete |
 | `focus` | `Event::Focus{focus_id,x,y,pointer}` | Frame or view focused |
 | `title` | `Event::Title{id,app,title}` | Surface title changed |
 | `output_detected` | `Event::OutputDetected(info)` | Monitor connected |

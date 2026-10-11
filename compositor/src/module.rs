@@ -972,6 +972,8 @@ struct EntrySpec {
 struct FrameSpec {
     name: String,
     surface_id: u64,
+    #[serde(default)]
+    owner: crate::strip::Owner,
     focus_id: Option<FocusId>,
     selected_entry_id: Option<LayoutEntryId>,
     width: f64,
@@ -995,6 +997,7 @@ impl FrameSpec {
             });
         Some(Frame {
             name: self.name,
+            owner: self.owner,
             focus_id,
             width: self.width,
             height: self.height,

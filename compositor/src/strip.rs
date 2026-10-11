@@ -183,6 +183,15 @@ pub fn frame_focus_id_for(surface_id: u64) -> FocusId {
         .expect("frame focus id is non-zero by construction")
 }
 
+/// Who a frame belongs to: the user, or the compositor when EWM made it to fill an output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Owner {
+    #[default]
+    User,
+    Compositor,
+}
+
 /// One Emacs frame in the strip.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Frame {
@@ -190,6 +199,7 @@ pub struct Frame {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_name: Option<String>,
     pub surface_id: u64,
+    pub owner: Owner,
     pub focus_id: FocusId,
     pub width: f64,
     pub height: f64,
@@ -213,12 +223,18 @@ pub struct FullscreenEntry {
 }
 
 impl Frame {
+    /// EWM made this frame to fill an output and nobody has used or named it.
+    pub fn is_filler(&self) -> bool {
+        self.owner == Owner::Compositor && self.workspace_name.is_none()
+    }
+
     /// Construct a default Frame for a newly mapped Emacs frame chrome.
     pub fn new(surface_id: u64) -> Self {
         Self {
             name: String::new(),
             workspace_name: None,
             surface_id,
+            owner: Owner::User,
             focus_id: frame_focus_id_for(surface_id),
             width: 0.0,
             height: 0.0,
@@ -850,18 +866,9 @@ mod tests {
             frames: widths
                 .into_iter()
                 .map(|w| Frame {
-                    name: String::new(),
-                    workspace_name: None,
-                    surface_id: 0,
                     focus_id: std::num::NonZeroU64::MIN,
                     width: w,
-                    height: 0.0,
-                    entries: Vec::new(),
-                    fullscreen: None,
-                    selected_entry_id: None,
-                    move_anim: None,
-                    floating_pos: None,
-                    close_snapshot: None,
+                    ..Frame::new(0)
                 })
                 .collect(),
             gap,

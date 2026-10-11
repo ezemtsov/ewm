@@ -32,7 +32,7 @@ EWM supports multiple monitors with a frame per output to start, hotplug detecti
 Emacs starts with `--fg-daemon`, meaning no frames exist initially. Frames are created explicitly when outputs are discovered, ensuring uniform handling for all outputs.
 
 ### A Frame Per Output To Start
-Each output starts with one Emacs frame and the user adds more with `ewm-frame-new`. Emacs manages the windows inside a frame. The compositor owns where every frame sits.
+Each output starts with one Emacs frame and the user adds more with `ewm-frame-new`. Emacs manages the windows inside a frame. The compositor owns where every frame sits. Emacs declares each frame's owner in the layout: `compositor` for a frame it made to fill an output, until that frame first shows more than it was made with, then `user`. A compositor-owned frame the user has not named is EWM's to drop.
 
 ### Emacs-Controlled Configuration
 All output configuration (positioning, scale) is controlled via `ewm.el`, not hardcoded in the compositor. This allows user-friendly configuration through Emacs customization.
@@ -116,7 +116,7 @@ Emacs calls module functions directly (no serialization needed):
 
 The compositor uses UdevBackend to detect monitor connect/disconnect events at runtime. Frames never leave the compositor's hands:
 
-- **Disconnect**: the output's frames move to the next output in output order, or wait in the parked pool when it was the last one. The compositor remembers which display each frame came from and which frame that display showed, then sends `OutputDisconnected`.
+- **Disconnect**: the output's frames move to the next output in output order, or wait in the parked pool when it was the last one. The compositor remembers which display each frame came from and which frame that display showed, then sends `OutputDisconnected`. A compositor-owned frame without a name does not migrate: the compositor drops it and sends `Close`, and Emacs deletes it.
 - **Connect**: the new output adopts any parked frames and reclaims the frames that came from its display, matched by make, model and serial rather than connector, and shows the frame it showed before. `OutputDetected` tells Emacs, which creates a frame only when the output ends up empty.
 
 Emacs observes all of this through `frame_shown`, `frame_hidden` and the placement queries. Hotplug uses the same path as startup.

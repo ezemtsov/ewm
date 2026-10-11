@@ -71,6 +71,16 @@ Computed deterministically so the compositor can construct the same id at
           (- right left)
           (- bottom top))))
 
+(defun ewm-layout--filler-p (frame)
+  "Non-nil while FRAME is EWM's filler nobody used.
+A used one becomes the user's for good."
+  (when (eq (frame-parameter frame 'ewm-owner) 'compositor)
+    (let ((window (frame-root-window frame)))
+      ;; Splitting makes the root window internal.
+      (when (or (not (window-live-p window)) (window-prev-buffers window))
+        (set-frame-parameter frame 'ewm-owner 'user)))
+    (eq (frame-parameter frame 'ewm-owner) 'compositor)))
+
 (defun ewm-layout--build-frame-plist (frame menu-active)
   "Plist describing FRAME for `ewm-layout'.
 When MENU-ACTIVE is non-nil, `:selected-entry-id' is nil so the
@@ -90,13 +100,14 @@ compositor parks keyboard focus on the frame chrome."
              (when-let* ((sel-win (frame-selected-window frame)))
                (unless (window-minibuffer-p sel-win)
                  (ewm-layout--ensure-entry-id sel-win))))))
-      (list :name (or (frame-parameter frame 'name) "")
-            :surface-id (frame-parameter frame 'ewm-surface-id)
-            :focus-id (ewm-layout--ensure-frame-focus-id frame)
-            :selected-entry-id selected-entry-id
-            :width (float (frame-pixel-width frame))
-            :height (float (frame-pixel-height frame))
-            :entries (vconcat (nreverse entries))))))
+      `(:name ,(or (frame-parameter frame 'name) "")
+        :surface-id ,(frame-parameter frame 'ewm-surface-id)
+        ,@(when (ewm-layout--filler-p frame) '(:owner compositor))
+        :focus-id ,(ewm-layout--ensure-frame-focus-id frame)
+        :selected-entry-id ,selected-entry-id
+        :width ,(float (frame-pixel-width frame))
+        :height ,(float (frame-pixel-height frame))
+        :entries ,(vconcat (nreverse entries))))))
 
 (defun ewm-layout--send-layouts ()
   "Declare every placed frame's contents, suppressing `:selected-entry-id' while modal."

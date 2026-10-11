@@ -109,6 +109,141 @@ fn output_reports_track_backend_lifecycle() {
     );
 }
 
+fn filler(id: u64) -> strip::Frame {
+    let mut frame = frame_with_width(id, 800.0);
+    frame.owner = strip::Owner::Compositor;
+    frame
+}
+
+#[test]
+fn removing_an_output_retires_its_unused_fillers() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+    fix.add_output(HEAD_B, 1280, 720);
+    let mut named = filler(102);
+    named.workspace_name = Some("dev".into());
+    fix.tile(
+        HEAD_B,
+        vec![frame_with_width(100, 800.0), filler(101), named],
+    );
+    fix.ewm().set_focus_frame(101, "test", false);
+
+    fix.enable_event_capture();
+    fix.remove_output(HEAD_B);
+
+    let events = fix.drain_events();
+    // The output goes first, then the frames it took with it.
+    let order: Vec<&Event> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::OutputDisconnected { .. } | Event::Close { .. }
+            )
+        })
+        .collect();
+    assert!(matches!(
+        order.as_slice(),
+        [Event::OutputDisconnected { name }, Event::Close { id: 101 }] if name == HEAD_B
+    ));
+    assert_eq!(fix.ewm_ref().layout.frame_output(100), Some(HEAD_A));
+    // A name claims a filler, so it migrates like the user's frames.
+    assert_eq!(fix.ewm_ref().layout.frame_output(102), Some(HEAD_A));
+    assert!(!fix.ewm_ref().layout.has_frame(101));
+    // Focus left the dropped filler for the frame that did move.
+    assert_eq!(fix.ewm_ref().focused_frame_id, 100);
+
+    // A redock adopts nothing it was asked to delete.
+    fix.add_output(HEAD_B, 1280, 720);
+    assert!(!fix.ewm_ref().layout.has_frame(101));
+}
+
+#[test]
+fn re_enabling_a_disabled_output_asks_emacs_for_a_new_filler() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+    fix.add_output(HEAD_B, 1280, 720);
+    fix.tile(HEAD_A, vec![frame_with_width(100, 800.0)]);
+    fix.tile(HEAD_B, vec![filler(101)]);
+    fix.ewm().output_config.insert(
+        HEAD_B.to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fix.enable_event_capture();
+    fix.apply_output_config(HEAD_B);
+    let events = fix.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Close { id: 101 }))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::OutputsComplete))
+    );
+
+    fix.ewm()
+        .output_config
+        .insert(HEAD_B.to_string(), OutputConfig::default());
+    fix.apply_output_config(HEAD_B);
+    let events = fix.drain_events();
+    assert!(!fix.ewm_ref().layout.has_frame(101));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::OutputsComplete))
+    );
+
+    // A plain config change does not ask again.
+    fix.ewm().output_config.insert(
+        HEAD_B.to_string(),
+        OutputConfig {
+            scale: Some(2.0),
+            ..Default::default()
+        },
+    );
+    fix.apply_output_config(HEAD_B);
+    let events = fix.drain_events();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::OutputsComplete))
+    );
+}
+
+/// Emacs cannot make a frame without one, so the last filler parks and comes back.
+#[test]
+fn disabling_the_only_output_keeps_its_last_filler() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+    fix.tile(HEAD_A, vec![filler(101)]);
+    fix.ewm().output_config.insert(
+        HEAD_A.to_string(),
+        OutputConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    fix.enable_event_capture();
+    fix.apply_output_config(HEAD_A);
+    assert!(
+        !fix.drain_events()
+            .iter()
+            .any(|event| matches!(event, Event::Close { .. }))
+    );
+    assert!(fix.ewm_ref().layout.is_homeless(101));
+
+    fix.ewm()
+        .output_config
+        .insert(HEAD_A.to_string(), OutputConfig::default());
+    fix.apply_output_config(HEAD_A);
+    assert_eq!(fix.ewm_ref().layout.frame_output(101), Some(HEAD_A));
+}
+
 #[test]
 fn cursor_config_change_queues_pointer_output_redraw() {
     let mut fix = testing::Fixture::new().unwrap();

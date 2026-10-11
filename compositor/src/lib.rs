@@ -1422,11 +1422,12 @@ impl Ewm {
             }
         }
 
-        self.detach_output(output);
-        self.screencopy_state.remove_output(output);
+        // The output goes first, then the frames it took with it.
         self.queue_event(Event::OutputDisconnected {
             name: output_name.clone(),
         });
+        self.detach_output(output);
+        self.screencopy_state.remove_output(output);
 
         info!("Output removed: {}", output_name);
     }
@@ -4265,6 +4266,10 @@ impl Ewm {
             scale: current_scale,
             transform: backend::transform_to_int(current_transform),
         });
+        // Enabled by config, nothing else asks Emacs for the frames it lacks.
+        if became_mapped {
+            self.queue_event(Event::OutputsComplete);
+        }
 
         self.output_management_state.output_heads_changed = true;
     }

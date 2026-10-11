@@ -320,7 +320,7 @@ proptest! {
 
         let disabled = fix.output(disabled_name);
         fix.ewm().layout.detach_output(&disabled, None, 0);
-        fix.ewm().refocus_if_focused_frame_parked();
+        fix.ewm().refocus_if_focused_frame_unplaced();
         prop_assert_eq!(fix.ewm_ref().focused_frame_id, fallback_active_id);
     }
 
@@ -539,6 +539,7 @@ enum LayoutOp {
         output: usize,
         floating: bool,
         after: Option<u64>,
+        filler: bool,
     },
     RemoveFrame {
         id: u64,
@@ -586,13 +587,15 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
             id.clone(),
             output.clone(),
             any::<bool>(),
-            prop::option::of(id.clone())
+            prop::option::of(id.clone()),
+            any::<bool>()
         )
-            .prop_map(|(id, output, floating, after)| LayoutOp::AddFrame {
+            .prop_map(|(id, output, floating, after, filler)| LayoutOp::AddFrame {
                 id,
                 output,
                 floating,
                 after,
+                filler,
             }),
         1 => (id.clone(), any::<bool>())
             .prop_map(|(id, active_close)| LayoutOp::RemoveFrame { id, active_close }),
@@ -651,8 +654,28 @@ fn apply_layout_op(
         LayoutOp::DetachOutput(i) => {
             let output = &outputs[i];
             let fallback = layout.outputs().find(|other| *other != output).cloned();
+            // Fillers are dropped unless they are Emacs's last frames, everything else moves or
+            // parks.
+            let on_output: Vec<&strip::Frame> = layout
+                .monitor_of(output)
+                .into_iter()
+                .flat_map(Monitor::frames)
+                .collect();
+            let fillers: Vec<u64> = on_output
+                .iter()
+                .filter(|frame| frame.is_filler())
+                .map(|frame| frame.surface_id)
+                .collect();
+            let last_frames =
+                fillers.len() == on_output.len() && layout.all_frames().count() == on_output.len();
+            let expected = if last_frames { Vec::new() } else { fillers };
             let moved = layout.detach_output(output, fallback.as_ref(), focused);
             prop_assert!(layout.monitor_of(output).is_none());
+            prop_assert_eq!(&moved.retired, &expected);
+            for id in &moved.retired {
+                live.remove(id);
+                prop_assert!(!layout.has_frame(*id));
+            }
             if let Some(dst) = &moved.dst {
                 check_landed(layout, dst, &moved, focused)?;
             }
@@ -662,6 +685,7 @@ fn apply_layout_op(
             output,
             floating,
             after,
+            filler,
         } => {
             if !live.contains(&id) && layout.monitor_of(&outputs[output]).is_some() {
                 let placement = if floating {
@@ -670,6 +694,9 @@ fn apply_layout_op(
                     Placement::Tiled { after }
                 };
                 layout.add_frame(id, &outputs[output], placement);
+                if filler {
+                    layout.frame_mut(id).unwrap().owner = strip::Owner::Compositor;
+                }
                 live.insert(id);
                 prop_assert_eq!(layout.frame_output(id), Some(PROP_HEADS[output]));
             }

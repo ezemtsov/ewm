@@ -201,6 +201,8 @@ pub(crate) struct Moved {
     pub dst: Option<Output>,
     pub src_prev_active: Option<u64>,
     pub dst_prev_active: Option<u64>,
+    /// Compositor-owned frames dropped for Emacs to delete.
+    pub retired: Vec<u64>,
 }
 
 /// Where every Emacs frame is.
@@ -339,10 +341,29 @@ impl Layout {
                 self.last_active.remove(&identity);
             }
         }
-        let frames = Frames {
+        let mut frames = Frames {
             tiled: monitor.strip.take_frames(),
             floating: monitor.floating.take_frames(),
         };
+        // A filler nobody used or named dies with its output, except Emacs's last frame.
+        let last_frames =
+            self.all_frames().next().is_none() && frames.iter().all(strip::Frame::is_filler);
+        let retired: Vec<u64> = if last_frames {
+            Vec::new()
+        } else {
+            frames
+                .tiled
+                .extract_if(.., |frame| frame.is_filler())
+                .chain(frames.floating.extract_if(.., |frame| frame.is_filler()))
+                .map(|frame| frame.surface_id)
+                .collect()
+        };
+        for id in &retired {
+            self.home_outputs.remove(id);
+        }
+        self.interactive_move = self
+            .interactive_move
+            .filter(|move_| !retired.contains(&move_.frame_id));
         let placed = match fallback.and_then(|dst| self.monitor_idx(dst)) {
             Some(dst_idx) => self.place_frames(dst_idx, frames, focused),
             None => {
@@ -357,6 +378,7 @@ impl Layout {
         Moved {
             src: Some(monitor.output),
             src_prev_active,
+            retired,
             ..placed
         }
     }
@@ -1050,9 +1072,9 @@ impl Ewm {
         }
     }
 
-    /// Refocus when the focused frame was parked with its output.
-    pub(crate) fn refocus_if_focused_frame_parked(&mut self) {
-        if !self.layout.is_homeless(self.focused_frame_id) {
+    /// Refocus when the focused frame left with its output.
+    pub(crate) fn refocus_if_focused_frame_unplaced(&mut self) {
+        if self.focused_frame_id == 0 || self.layout.frame_output(self.focused_frame_id).is_some() {
             return;
         }
         match self.first_active_frame_surface_id() {
@@ -1091,12 +1113,15 @@ impl Ewm {
             .layout
             .detach_output(output, fallback, self.focused_frame_id);
         self.settle_moved_frames(&moved);
+        for id in moved.retired {
+            self.queue_event(Event::Close { id });
+        }
         self.space.unmap_output(output);
         self.sync_sorted_outputs();
         self.refresh_cursor_outputs();
         self.recalculate_output_size();
         self.output_management_state.output_heads_changed = true;
-        self.refocus_if_focused_frame_parked();
+        self.refocus_if_focused_frame_unplaced();
     }
 
     /// Global origin of every floating frame, for Emacs's own geometry.

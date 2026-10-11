@@ -566,9 +566,7 @@ A float is selected only when ACTIVATE."
       (ewm-layout--refresh)))))
 
 (defun ewm--handle-close-surface (event)
-  "Handle close surface EVENT.
-Quits the surface buffer's windows and kills it, or deletes a frame that died
-without lisp asking (e.g. compositor-driven destroy)."
+  "Kill the surface buffer for EVENT, or delete a frame the compositor dropped."
   (let* ((id (alist-get 'id event))
          (buf (gethash id ewm--surfaces))
          (frame (ewm--frame-by-surface-id id)))
@@ -777,7 +775,7 @@ Similar to `exwm-workspace-rename-buffer'."
   (let (created)
     (dolist (output (ewm-get-active-outputs))
       (unless (or (ewm--strip-frames output) (ewm--frame-in-flight-on-p output))
-        (ewm--create-frame-for-output output)
+        (ewm--create-frame-for-output output nil '((ewm-owner . compositor)))
         (setq created t)))
     (ewm--delete-stray-frames)
     (ewm-layout--refresh)

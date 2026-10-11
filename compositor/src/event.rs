@@ -89,7 +89,7 @@ pub enum Event {
         width: Option<f64>,
         height: Option<f64>,
     },
-    /// Surface closed
+    /// Surface closed, or an Emacs frame the compositor dropped for Emacs to delete
     #[serde(rename = "close")]
     Close { id: u64 },
     /// Surface minimize requested

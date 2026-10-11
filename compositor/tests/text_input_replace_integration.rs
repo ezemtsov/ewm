@@ -19,12 +19,8 @@ fn pump(fix: &mut Fixture, emacs: &mut TestClient, app: &mut TestClient) {
 
 fn frame_with_app(frame_id: u64, entry_id: LayoutEntryId, app_id: u64) -> Frame {
     Frame {
-        name: String::new(),
-        workspace_name: None,
-        surface_id: frame_id,
         focus_id: nz(frame_id + 1_000),
         width: 1280.0,
-        height: 0.0,
         entries: vec![LayoutEntry::surface(
             entry_id,
             "entry".to_string(),
@@ -34,11 +30,8 @@ fn frame_with_app(frame_id: u64, entry_id: LayoutEntryId, app_id: u64) -> Frame 
             400,
             300,
         )],
-        fullscreen: None,
         selected_entry_id: Some(entry_id),
-        move_anim: None,
-        floating_pos: None,
-        close_snapshot: None,
+        ..Frame::new(frame_id)
     }
 }
 

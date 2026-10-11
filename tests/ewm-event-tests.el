@@ -206,6 +206,39 @@
         (setq ewm--module-mode nil)
         (setq ewm--compositor-ready nil)))))
 
+(ert-deftest ewm-event-tests/close-of-a-frame-deletes-it ()
+  "A close naming a frame's own surface deletes the frame."
+  (let* ((frame (selected-frame))
+         (surface-id (frame-parameter frame 'ewm-surface-id))
+         (ewm--surfaces (make-hash-table :test 'eql))
+         deleted)
+    (cl-letf (((symbol-function 'delete-frame)
+               (lambda (f &optional _force) (push f deleted))))
+      (unwind-protect
+          (progn
+            (set-frame-parameter frame 'ewm-surface-id 5)
+            (ewm--handle-close-surface '((id . 5)))
+            (should (equal deleted (list frame))))
+        (set-frame-parameter frame 'ewm-surface-id surface-id)))))
+
+(ert-deftest ewm-event-tests/filler-becomes-the-users-once-it-shows-more ()
+  "The layout declares a filler compositor-owned until it shows more than it was made with."
+  (let* ((frame (selected-frame))
+         (window (frame-root-window frame))
+         (owner (frame-parameter frame 'ewm-owner))
+         (prev (window-prev-buffers window)))
+    (unwind-protect
+        (progn
+          (set-frame-parameter frame 'ewm-owner 'compositor)
+          (set-window-prev-buffers window nil)
+          (should (eq (plist-get (ewm-layout--build-frame-plist frame nil) :owner)
+                      'compositor))
+          (set-window-prev-buffers window (list (list (current-buffer) 1 1)))
+          (should-not (plist-get (ewm-layout--build-frame-plist frame nil) :owner))
+          (should (eq (frame-parameter frame 'ewm-owner) 'user)))
+      (set-frame-parameter frame 'ewm-owner owner)
+      (set-window-prev-buffers window prev))))
+
 (ert-deftest ewm-event-tests/bell-resolves-surface-buffer ()
   "A bell passes its live surface buffer to `ewm-bell-function', else nil."
   (let ((ewm--surfaces (make-hash-table :test 'eql))
