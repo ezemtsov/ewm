@@ -693,6 +693,17 @@ impl Fixture {
         self.handle_module_command(crate::module::ModuleCommand::SetFullscreen { entry_id, on });
     }
 
+    pub fn configure_idle(&mut self, timeout_secs: Option<u64>, action: &str) {
+        self.handle_module_command(crate::module::ModuleCommand::ConfigureIdle {
+            timeout_secs,
+            action: action.into(),
+        });
+    }
+
+    pub fn set_idle_inhibited(&mut self, inhibited: bool) {
+        self.handle_module_command(crate::module::ModuleCommand::SetIdleInhibited { inhibited });
+    }
+
     pub fn clear_keyboard_capture(&mut self) {
         crate::module::clear_keyboard_capture_holders();
         self.state.sync_keyboard_focus();
