@@ -37,7 +37,6 @@ pub mod event;
 pub mod floating;
 mod floating_shadow;
 pub mod frame_clock;
-pub mod fullscreen_fade;
 pub mod gtk;
 pub mod handlers;
 pub mod im;
@@ -399,8 +398,6 @@ pub struct OutputState {
     pub frame_callback_sequence: u32,
     /// Black backdrop for fullscreen surfaces (covers entire output)
     pub fullscreen_backdrop: SolidColorBuffer,
-    /// Old contents dissolving after a fullscreen toggle.
-    pub fullscreen_fade: Option<fullscreen_fade::FullscreenFade>,
     /// Fill of the output behind its frames.
     pub background: SolidColorBuffer,
     /// Panel exclusive zones, painted in the fill colour.
@@ -425,7 +422,6 @@ impl OutputState {
             lock_color_buffer: SolidColorBuffer::new(size, [0.1, 0.1, 0.1, 1.0]),
             frame_callback_sequence: 0,
             fullscreen_backdrop: SolidColorBuffer::new(size, [0.0, 0.0, 0.0, 1.0]),
-            fullscreen_fade: None,
             background: SolidColorBuffer::new(size, overview::DEFAULT_BACKGROUND_COLOR),
             bands: Default::default(),
             overview_backdrop: SolidColorBuffer::new(size, overview::DEFAULT_BACKDROP_COLOR),
@@ -507,6 +503,9 @@ pub struct LayoutEntrySurface {
     /// Largest view per surface, computed by compositor from entry dimensions.
     /// Drives send_configure() size + scale and native-size rendering.
     pub primary: bool,
+    /// The view its frame shows fullscreen, marked by `Layout::reconcile_fullscreen`.
+    #[serde(default)]
+    pub fullscreen: bool,
 }
 
 impl LayoutEntry {
@@ -541,6 +540,7 @@ impl LayoutEntry {
             surface: Some(LayoutEntrySurface {
                 surface_id,
                 primary: false,
+                fullscreen: false,
             }),
         }
     }
@@ -565,11 +565,22 @@ impl LayoutEntry {
             surface.primary = primary;
         }
     }
+
+    pub fn fullscreen(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| surface.fullscreen)
+    }
+
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        if let Some(surface) = &mut self.surface {
+            surface.fullscreen = fullscreen;
+        }
+    }
 }
 
 struct LayoutEntryHit<'a> {
     entry: &'a LayoutEntry,
-    fullscreen: bool,
     rect: Rectangle<i32, Logical>,
     output_size: Size<i32, Logical>,
 }
@@ -1624,7 +1635,7 @@ impl Ewm {
         self.focused_entry_id = entry_id;
     }
 
-    /// Focus the layout entry identified by `entry_id`. Returns its frame.
+    /// Focus the layout entry identified by `entry_id`. Returns the frame focused.
     pub fn set_focus_entry(
         &mut self,
         entry_id: LayoutEntryId,
@@ -1639,18 +1650,23 @@ impl Ewm {
             None,
         );
         self.commit_focus(frame_id, Some(entry_id), entry_id, notify_emacs);
-        Some(frame_id)
+        Some(self.focused_frame_id)
     }
 
     /// Focus an Emacs frame, routing keyboard to its selected entry's surface if one exists.
-    pub fn set_focus_frame(&mut self, frame_surface_id: u64, source: &str, notify_emacs: bool) {
+    pub fn set_focus_frame(
+        &mut self,
+        frame_surface_id: u64,
+        source: &str,
+        notify_emacs: bool,
+    ) -> Option<FocusId> {
         let Some(location) = self.layout.frame_location(frame_surface_id) else {
             debug!("set_focus_frame({source}): unknown frame {frame_surface_id}");
-            return;
+            return None;
         };
         let (focus_id, selected) = (location.frame.focus_id, location.frame.selected_entry_id);
         module::record_focus(frame_surface_id, source, None);
-        self.commit_focus(frame_surface_id, selected, focus_id, notify_emacs);
+        Some(self.commit_focus(frame_surface_id, selected, focus_id, notify_emacs))
     }
 
     /// Focus `frame_id` with `entry_id` selected, then tell Emacs about `focus_id`.
@@ -1660,7 +1676,12 @@ impl Ewm {
         entry_id: Option<LayoutEntryId>,
         focus_id: FocusId,
         notify_emacs: bool,
-    ) {
+    ) -> FocusId {
+        // A fullscreen float takes the focus meant for its frame.
+        let (frame_id, entry_id, focus_id) = match self.layout.fullscreen_float_over(frame_id) {
+            Some((float_id, entry_id)) => (float_id, Some(entry_id), entry_id),
+            None => (frame_id, entry_id, focus_id),
+        };
         if let Some(surface_id) =
             entry_id.and_then(|entry_id| self.layout.entry_surface_id(entry_id))
         {
@@ -1677,6 +1698,7 @@ impl Ewm {
                 pointer: false,
             });
         }
+        focus_id
     }
 
     fn workspace_name_from_rename(name: String) -> Option<String> {
@@ -1761,8 +1783,8 @@ impl Ewm {
                 working_area.size.to_f64(),
                 geometry.strip_viewport(working_area),
             )
-            .find(|(_, _, rect)| rect.contains(in_strip))
-            .map(|(idx, _, rect)| (idx, in_strip - rect.loc))
+            .find(|(_, _, rect, _)| rect.contains(in_strip))
+            .map(|(idx, _, rect, _)| (idx, in_strip - rect.loc))
     }
 
     /// Click in the open overview: a frame under `pos` becomes active, and a
@@ -1780,10 +1802,12 @@ impl Ewm {
         // Hidden frames have slid up, so the click maps onto where they were.
         let slide = self.hide.current() * f64::from(output_geo.size.h);
         let in_content = in_output + Point::from((0., slide));
-        let floating_frame = self
-            .layout
-            .floating(&output)
-            .and_then(|space| space.frame_under(in_content));
+        let floating_frame = self.layout.monitor_of(&output).and_then(|monitor| {
+            monitor
+                .floats_with_render_geo()
+                .find(|(_, rect)| rect.contains(in_content))
+                .map(|(frame, rect)| (frame.surface_id, rect))
+        });
         if let Some((frame_id, rect)) = floating_frame {
             self.set_focus_frame_from_pointer(frame_id, "overview", in_content - rect.loc);
             self.overview_close();
@@ -1963,8 +1987,7 @@ impl Ewm {
         source: &str,
         pos_in_frame: Point<f64, Logical>,
     ) {
-        self.set_focus_frame(frame_surface_id, source, false);
-        if let Some(focus_id) = self.layout.focus_id_of_frame(frame_surface_id) {
+        if let Some(focus_id) = self.set_focus_frame(frame_surface_id, source, false) {
             self.queue_event(Event::Focus {
                 focus_id,
                 x: Some(pos_in_frame.x),
@@ -2623,14 +2646,6 @@ impl Ewm {
         for surface in self.surfaces.values_mut() {
             surface.advance();
         }
-        if let Some(state) = self.output_state.get_mut(output)
-            && state
-                .fullscreen_fade
-                .as_ref()
-                .is_some_and(fullscreen_fade::FullscreenFade::is_done)
-        {
-            state.fullscreen_fade = None;
-        }
     }
 
     /// Orchestrate a single output redraw.
@@ -2720,7 +2735,7 @@ impl Ewm {
             .monitor_of(output)
             .is_some_and(Monitor::animations_ongoing);
         if let Some(state) = self.output_state.get_mut(output)
-            && (any_fade || layout_animating || state.fullscreen_fade.is_some())
+            && (any_fade || layout_animating)
         {
             state.unfinished_animations_remain = true;
         }
@@ -3244,7 +3259,6 @@ impl Ewm {
             .filter_map(|(&id, surface)| {
                 let wl_surface = surface.window.wl_surface()?.into_owned();
                 let output = self.find_surface_output(id);
-                let is_fullscreen = self.layout.is_surface_fullscreen(id);
                 Some(WindowInfo {
                     id,
                     surface: wl_surface,
@@ -3256,7 +3270,7 @@ impl Ewm {
                     app_id: Some(surface.app_id.clone()),
                     output,
                     is_focused: focused == id,
-                    is_fullscreen,
+                    is_fullscreen: surface.fullscreen,
                 })
             })
             .collect();
@@ -4349,6 +4363,7 @@ impl Ewm {
             return false;
         };
         let changed = mem::replace(&mut monitor.working_area, working_area) != working_area;
+        monitor.set_view(working_area);
 
         if changed {
             info!(
@@ -4526,7 +4541,7 @@ impl Ewm {
         })
     }
 
-    /// Tiled host for an app surface: parent's frame, else focused, else active; never floating.
+    /// Tiled host for an app surface: parent's frame, else focused, else active, never a float.
     fn resolve_app_host_frame(
         &self,
         parent_id: Option<u64>,
@@ -4693,6 +4708,7 @@ impl Ewm {
         self.surfaces.remove(&id);
         let was_emacs = self.layout.has_frame(id);
         self.layout.detach_surface(id);
+        self.reconcile_fullscreen();
         let output = self.remove_emacs_frame(id, active_close);
         self.queue_event(Event::Close { id });
         debug!(
@@ -5056,6 +5072,24 @@ pub struct State {
 }
 
 impl State {
+    /// Set surface `id` fullscreen or back.
+    pub(crate) fn set_surface_fullscreen(&mut self, id: u64, fullscreen: bool) {
+        self.ewm.set_surface_fullscreen(id, fullscreen);
+        self.refresh_pointer_after_layout();
+    }
+
+    /// A client asked for fullscreen `on`. Every request is answered with a configure.
+    pub(crate) fn request_fullscreen(&mut self, surface: &WlSurface, on: bool) {
+        let Some(id) = self.ewm.surface_id(surface) else {
+            return;
+        };
+        if self.ewm.pending_fullscreen(id) != on {
+            self.set_surface_fullscreen(id, on);
+        } else if let Some(toplevel) = self.ewm.window(id).and_then(|window| window.toplevel()) {
+            toplevel.send_configure();
+        }
+    }
+
     /// Warp the pointer to an absolute position, notifying clients.
     /// Does NOT activate pointer constraints (programmatic warps from Emacs
     /// during layout changes should not trap the pointer).
@@ -5737,10 +5771,16 @@ impl State {
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::ToggleFullscreen { entry_id } => {
-                let on = !self.ewm.layout.entry_fullscreen(entry_id);
-                self.set_fullscreen(entry_id, on);
+                if let Some(id) = self.ewm.layout.entry_surface_id(entry_id) {
+                    let on = !self.ewm.pending_fullscreen(id);
+                    self.set_surface_fullscreen(id, on);
+                }
             }
-            ModuleCommand::SetFullscreen { entry_id, on } => self.set_fullscreen(entry_id, on),
+            ModuleCommand::SetFullscreen { entry_id, on } => {
+                if let Some(id) = self.ewm.layout.entry_surface_id(entry_id) {
+                    self.set_surface_fullscreen(id, on);
+                }
+            }
             ModuleCommand::ConfigureInput { configs } => {
                 info!("Input config updated: {} entries", configs.len());
 

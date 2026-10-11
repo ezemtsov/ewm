@@ -2,7 +2,7 @@
 
 use ewm_core::input::KeyboardAction;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, TestClient};
+use ewm_core::testing::{ClientEvent, Fixture, TestClient, Toplevel};
 use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId};
 use smithay::input::keyboard::keysyms;
 use smithay::utils::Size;
@@ -122,6 +122,7 @@ struct Harness {
     fix: Fixture,
     emacs: TestClient,
     app: TestClient,
+    app_toplevel: Toplevel,
     emacs_id: u64,
     app_id: u64,
     app_entry_id: LayoutEntryId,
@@ -152,6 +153,7 @@ impl Harness {
             fix,
             emacs,
             app,
+            app_toplevel: app_surface,
             emacs_id,
             app_id,
             app_entry_id: nz(3001),
@@ -170,17 +172,21 @@ impl Harness {
         }
 
         self.fix.tile_command(HEAD, vec![frame]);
-        self.fix.ewm().set_layout_entry_fullscreen(
-            self.app_entry_id,
-            matches!(mode, FocusMode::FullscreenApp),
-        );
+        self.fix
+            .set_fullscreen(self.app_entry_id, matches!(mode, FocusMode::FullscreenApp));
+        if matches!(mode, FocusMode::FullscreenApp) {
+            // The app commits the fullscreen state it was configured for.
+            self.fix.answer_configure(&mut self.app, &self.app_toplevel);
+        }
         match mode {
             FocusMode::EmbeddedApp | FocusMode::FullscreenApp => {
                 self.fix
                     .ewm()
                     .set_focus_entry(self.app_entry_id, "test", false);
             }
-            FocusMode::EmacsBuffer => self.fix.ewm().set_focus_frame(self.emacs_id, "test", false),
+            FocusMode::EmacsBuffer => {
+                self.fix.ewm().set_focus_frame(self.emacs_id, "test", false);
+            }
         }
         self.fix.sync_keyboard_focus();
         self.pump();

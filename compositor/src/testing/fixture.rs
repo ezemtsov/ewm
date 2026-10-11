@@ -143,6 +143,25 @@ impl Fixture {
         self.finish_xdg(client, &toplevel.surface, &toplevel.xdg_surface, size);
     }
 
+    /// Deliver what is pending, returning the sizes configured since the last drain.
+    pub fn configured(&mut self, client: &mut TestClient) -> Vec<(i32, i32)> {
+        self.roundtrip(client);
+        client.configured_sizes()
+    }
+
+    /// Deliver the configures and commit a buffer of the last size asked, returning the sizes.
+    pub fn answer_configure(
+        &mut self,
+        client: &mut TestClient,
+        toplevel: &crate::testing::Toplevel,
+    ) -> Vec<(i32, i32)> {
+        let sizes = self.configured(client);
+        if let Some(&(w, h)) = sizes.iter().rev().find(|&&(w, h)| w > 0 && h > 0) {
+            self.map_toplevel(client, toplevel, Size::from((w, h)));
+        }
+        sizes
+    }
+
     /// Drive a full xdg toplevel lifecycle.
     pub fn open_toplevel(
         &mut self,
@@ -162,9 +181,21 @@ impl Fixture {
         title: &str,
         size: Size<i32, Logical>,
     ) -> u64 {
+        self.open_toplevel_with_id(client, title, size).1
+    }
+
+    /// Open a toplevel and return it with its surface id.
+    pub fn open_toplevel_with_id(
+        &mut self,
+        client: &mut TestClient,
+        title: &str,
+        size: Size<i32, Logical>,
+    ) -> (crate::testing::Toplevel, u64) {
         let toplevel = self.open_toplevel(client, title, size);
-        self.find_surface_id(client, &toplevel.surface)
-            .expect("toplevel gets an id")
+        let id = self
+            .find_surface_id(client, &toplevel.surface)
+            .expect("toplevel gets an id");
+        (toplevel, id)
     }
 
     /// Open a toplevel titled FIRST before map and retitled SECOND on the mapping commit.

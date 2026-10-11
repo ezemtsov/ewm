@@ -21,7 +21,7 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use tracing::warn;
 
-use crate::{Event, Ewm, State, im};
+use crate::{Ewm, State, im};
 
 /// Snapshot a frame on the commit that unmaps it, or fade a view on the one answering a configure.
 pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> HookId {
@@ -153,13 +153,11 @@ impl XdgShellHandler for State {
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
-        self.ewm
-            .queue_surface_request(surface.wl_surface(), |id| Event::FullscreenRequest { id });
+        self.request_fullscreen(surface.wl_surface(), true);
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        self.ewm
-            .queue_surface_request(surface.wl_surface(), |id| Event::UnfullscreenRequest { id });
+        self.request_fullscreen(surface.wl_surface(), false);
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
@@ -306,7 +304,7 @@ impl Ewm {
         let output = location.monitor.output();
         let output_geo = self.space.output_geometry(output)?;
 
-        if location.fullscreen() {
+        if location.entry.fullscreen() {
             return Some(Rectangle::from_size(output_geo.size));
         }
 

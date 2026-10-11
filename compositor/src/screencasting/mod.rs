@@ -101,19 +101,8 @@ impl Ewm {
     ) -> Option<LayoutEntryCastGeometry<'_>> {
         let location = self.layout.entry_location(entry_id)?;
         let output = location.monitor.output().clone();
-        let output_geo = self.space.output_geometry(&output)?;
-        let working_area = self.get_working_area(&output);
-        let strip = &location.monitor.strip;
-        let frame_origin =
-            Self::strip_frame_origin(output_geo, working_area, strip, location.frame_idx);
-        let entry_rect = self.layout_entry_rect(
-            output_geo,
-            working_area,
-            strip,
-            location.frame_idx,
-            location.entry,
-            location.fullscreen(),
-        );
+        let frame_origin = self.frame_origin(location.frame_location())?;
+        let entry_rect = self.drawn_rect(location)?;
         Some(LayoutEntryCastGeometry {
             output,
             frame_surface_id: location.frame.surface_id,

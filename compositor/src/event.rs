@@ -175,12 +175,6 @@ pub enum Event {
     /// Surface requests to leave maximized mode
     #[serde(rename = "unmaximize_request")]
     UnmaximizeRequest { id: u64 },
-    /// Surface requests fullscreen.
-    #[serde(rename = "fullscreen_request")]
-    FullscreenRequest { id: u64 },
-    /// Surface requests to leave fullscreen.
-    #[serde(rename = "unfullscreen_request")]
-    UnfullscreenRequest { id: u64 },
     /// Client rang the system bell.
     #[serde(rename = "bell")]
     Bell { id: Option<u64> },

@@ -191,6 +191,17 @@ impl TestClient {
         std::mem::take(&mut self.state.events)
     }
 
+    /// Drain the events, keeping the size each `xdg_toplevel.configure` asked for.
+    pub fn configured_sizes(&mut self) -> Vec<(i32, i32)> {
+        self.drain_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                ClientEvent::ToplevelConfigure { width, height } => Some((width, height)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Server-advertised name for the `wl_output` proxy with this protocol id,
     /// or `None` if the client hasn't received a `Name` event for it yet.
     pub fn output_name(&self, proxy_id: u32) -> Option<&str> {

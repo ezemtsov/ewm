@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use ewm_core::event::{Event, OutputInfo, OutputMode, TextInputKey};
 
-const VARIANTS: usize = 34;
+const VARIANTS: usize = 32;
 
 /// Exhaustive by construction: a new variant does not compile until it is numbered here.
 fn variant(event: &Event) -> usize {
@@ -43,8 +43,6 @@ fn variant(event: &Event) -> usize {
         Event::ActivateSurface { .. } => 29,
         Event::Overview { .. } => 30,
         Event::Hide { .. } => 31,
-        Event::FullscreenRequest { .. } => 32,
-        Event::UnfullscreenRequest { .. } => 33,
     }
 }
 
@@ -183,8 +181,6 @@ fn every_event() -> Vec<Event> {
         Event::ActivateWorkspace { id: 7 },
         Event::MaximizeRequest { id: 7 },
         Event::UnmaximizeRequest { id: 7 },
-        Event::FullscreenRequest { id: 7 },
-        Event::UnfullscreenRequest { id: 7 },
         Event::Bell { id: Some(7) },
         Event::Bell { id: None },
         Event::IdleStateChanged { idle: true },

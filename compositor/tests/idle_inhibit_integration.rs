@@ -3,19 +3,26 @@
 
 use std::sync::atomic::Ordering;
 
-use ewm_core::testing::{Fixture, TestClient, frame_with_entry, nz};
+use ewm_core::testing::{Fixture, TestClient, Toplevel, frame_with_entry, nz};
 use smithay::utils::Size;
 
 const OUTPUT: &str = "HEAD-A";
 const ENTRY: u64 = 7;
 
-fn tiled_client(fix: &mut Fixture) -> TestClient {
+fn tiled_client(fix: &mut Fixture) -> (TestClient, Toplevel) {
     let mut client = fix.new_client().unwrap();
     fix.roundtrip(&mut client);
-    let sid = fix.open_toplevel_id(&mut client, "idleprobe", Size::from((400, 300)));
+    let (toplevel, sid) =
+        fix.open_toplevel_with_id(&mut client, "idleprobe", Size::from((400, 300)));
     fix.tile(OUTPUT, vec![frame_with_entry(500, nz(ENTRY), sid)]);
     fix.roundtrip(&mut client);
-    client
+    (client, toplevel)
+}
+
+/// Put the view fullscreen and let its client commit it.
+fn go_fullscreen(fix: &mut Fixture, client: &mut TestClient, toplevel: &Toplevel) {
+    fix.set_fullscreen(nz(ENTRY), true);
+    fix.answer_configure(client, toplevel);
 }
 
 fn inhibited(fix: &mut Fixture) -> bool {
@@ -41,7 +48,7 @@ fn lock_parks_every_hidden_source_until_unlock() {
 
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUT, 1920, 1080);
-        let mut client = tiled_client(&mut fix);
+        let (mut client, toplevel) = tiled_client(&mut fix);
         fix.configure_idle(Some(300), "blank");
         if manual {
             fix.set_idle_inhibited(true);
@@ -52,7 +59,7 @@ fn lock_parks_every_hidden_source_until_unlock() {
                 .store(true, Ordering::SeqCst);
         }
         if fullscreen {
-            fix.set_fullscreen(nz(ENTRY), true);
+            go_fullscreen(&mut fix, &mut client, &toplevel);
         }
         assert_eq!(inhibited(&mut fix), any, "{case}: before lock");
         assert_eq!(timer_armed(&fix), !any, "{case}: timer before lock");
@@ -77,9 +84,9 @@ fn lock_parks_every_hidden_source_until_unlock() {
 fn idle_blanks_behind_the_lock_despite_fullscreen() {
     let mut fix = Fixture::new().unwrap();
     fix.add_output(OUTPUT, 1920, 1080);
-    let mut client = tiled_client(&mut fix);
+    let (mut client, toplevel) = tiled_client(&mut fix);
     fix.configure_idle(Some(0), "blank");
-    fix.set_fullscreen(nz(ENTRY), true);
+    go_fullscreen(&mut fix, &mut client, &toplevel);
     assert!(inhibited(&mut fix));
     assert!(!timer_armed(&fix));
     fix.dispatch_roundtrip(3);

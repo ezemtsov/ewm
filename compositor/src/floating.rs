@@ -278,6 +278,9 @@ pub struct FloatingSpace {
     interactive_resize: Option<InteractiveResize>,
     #[serde(skip)]
     working_area: Rectangle<f64, Logical>,
+    /// The output in space coordinates, which a fullscreen float spans.
+    #[serde(skip)]
+    output: Rectangle<f64, Logical>,
     #[serde(skip)]
     clock: Clock,
     #[serde(skip)]
@@ -292,8 +295,26 @@ impl FloatingSpace {
             active_frame_id: None,
             interactive_resize: None,
             working_area,
+            output: Rectangle::default(),
             clock,
             closing_frames: Vec::new(),
+        }
+    }
+
+    pub(crate) fn set_view(&mut self, output: Size<f64, Logical>) {
+        self.output = Rectangle::from_size(output);
+    }
+
+    /// `frame`'s slot: `output` when it shows fullscreen, else its own rect.
+    fn slot(
+        output: Rectangle<f64, Logical>,
+        frame: &Frame,
+        data: &Data,
+    ) -> Rectangle<f64, Logical> {
+        if frame.fullscreen_entry().is_some() {
+            output
+        } else {
+            Rectangle::new(data.render_pos(), data.size())
         }
     }
 
@@ -549,12 +570,6 @@ impl FloatingSpace {
             .map(|(frame, rect)| (frame.surface_id, rect))
     }
 
-    pub fn resize_edges_under(&self, pos: Point<f64, Logical>) -> Option<(u64, ResizeEdge)> {
-        self.frames_with_render_geo()
-            .find(|(_, frame_rect)| frame_rect.contains(pos))
-            .map(|(frame, _)| (frame.surface_id, ResizeEdge::BOTTOM_RIGHT))
-    }
-
     pub fn interactive_resize_begin(&mut self, frame_id: u64, edges: ResizeEdge) -> bool {
         if edges.is_empty() || self.interactive_resize.is_some() {
             return false;
@@ -641,25 +656,18 @@ impl FloatingSpace {
         self.interactive_resize = None;
     }
 
+    /// Frames with their slots, topmost first.
     pub fn frames_with_render_geo(
         &self,
     ) -> impl Iterator<Item = (&Frame, Rectangle<f64, Logical>)> {
         self.frames
             .iter()
             .zip(self.data.iter())
-            .map(|(frame, data)| (frame, Rectangle::new(data.render_pos(), data.size())))
+            .map(|(frame, data)| (frame, Self::slot(self.output, frame, data)))
     }
 
-    pub fn frames_with_render_geo_mut(
-        &mut self,
-    ) -> impl Iterator<Item = (&Frame, &mut Data, Rectangle<f64, Logical>)> {
-        self.frames
-            .iter()
-            .zip(self.data.iter_mut())
-            .map(|(frame, data)| {
-                let rect = Rectangle::new(data.render_pos(), data.size());
-                (frame, data, rect)
-            })
+    pub fn frames_with_data_mut(&mut self) -> impl Iterator<Item = (&Frame, &mut Data)> {
+        self.frames.iter().zip(self.data.iter_mut())
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &LayoutEntry> {
@@ -701,30 +709,6 @@ mod tests {
         frame.width = 600.;
         frame.height = 300.;
         frame
-    }
-
-    #[test]
-    fn resize_edges_under_uses_bottom_right_for_any_frame_hit() {
-        let mut space = test_space();
-        space.add_frame(test_frame(1));
-        let (_, rect) = space.frame_under(Point::from((600., 300.))).unwrap();
-
-        assert_eq!(
-            space.resize_edges_under(rect.loc + Point::from((10., 10.))),
-            Some((1, ResizeEdge::BOTTOM_RIGHT))
-        );
-        assert_eq!(
-            space.resize_edges_under(rect.loc + Point::from((590., 290.))),
-            Some((1, ResizeEdge::BOTTOM_RIGHT))
-        );
-        assert_eq!(
-            space.resize_edges_under(rect.loc + Point::from((300., 150.))),
-            Some((1, ResizeEdge::BOTTOM_RIGHT))
-        );
-        assert_eq!(
-            space.resize_edges_under(rect.loc - Point::from((1., 1.))),
-            None
-        );
     }
 
     #[test]

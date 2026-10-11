@@ -26,22 +26,30 @@ pub(crate) struct LayoutEntryLocation<'a> {
 }
 
 impl<'a> LayoutEntryLocation<'a> {
-    /// Whether the entry shows fullscreen.
-    pub(crate) fn fullscreen(&self) -> bool {
-        !self.floating && self.frame.entry_fullscreen(self.entry.id)
-    }
-
-    /// Whether the entry is on screen: floating, or in the strip's active frame.
+    /// Whether the entry is on screen: in a shown float, or in the strip's active frame.
     pub(crate) fn shown(&self) -> bool {
-        self.floating || self.monitor.strip.active_idx() == self.frame_idx
+        if self.floating {
+            self.monitor.float_shown(self.frame)
+        } else {
+            self.monitor.strip.active_idx() == self.frame_idx
+        }
     }
 
-    fn frame_location(&self) -> FrameLocation<'a> {
+    pub(crate) fn frame_location(&self) -> FrameLocation<'a> {
         FrameLocation {
             monitor: self.monitor,
             frame_idx: self.frame_idx,
             floating: self.floating,
             frame: self.frame,
+        }
+    }
+
+    /// The strip frame this view shows on, a float's being the one it belongs to.
+    fn strip_frame(&self) -> Option<u64> {
+        if self.floating {
+            self.monitor.strip.frame_of_float(self.frame)
+        } else {
+            Some(self.frame.surface_id)
         }
     }
 }
@@ -55,6 +63,15 @@ pub struct FrameLocation<'a> {
 }
 
 impl<'a> FrameLocation<'a> {
+    /// Screen x of the strip slot the frame rides in.
+    pub(crate) fn slot_x(&self) -> f64 {
+        if self.floating {
+            self.monitor.pin_offset(self.frame)
+        } else {
+            self.monitor.strip.screen_x_of_frame(self.frame_idx)
+        }
+    }
+
     /// The frame's entries at this slot.
     fn entries(self) -> impl Iterator<Item = LayoutEntryLocation<'a>> {
         self.frame
@@ -125,6 +142,70 @@ impl Monitor {
 
     fn frame_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.frames().map(|frame| frame.surface_id)
+    }
+
+    /// Whether `frame`, a float, is on screen: unpinned or pinned to the active frame.
+    pub fn float_shown(&self, frame: &strip::Frame) -> bool {
+        frame
+            .pinned_to
+            .is_none_or(|id| Some(id) == self.strip.active_frame_id())
+    }
+
+    /// How far a pinned float has slid with its strip frame.
+    pub(crate) fn pin_offset(&self, float: &strip::Frame) -> f64 {
+        float
+            .pinned_to
+            .and_then(|id| self.strip.index_of(id))
+            .map_or(0., |idx| self.strip.screen_x_of_frame(idx))
+    }
+
+    /// Floats with their slots, pinned ones sliding with their frame, topmost first.
+    pub(crate) fn floats_with_render_geo(
+        &self,
+    ) -> impl Iterator<Item = (&strip::Frame, Rectangle<f64, Logical>)> {
+        self.floating
+            .frames_with_render_geo()
+            .map(|(frame, mut slot)| {
+                slot.loc.x += self.pin_offset(frame);
+                (frame, slot)
+            })
+    }
+
+    /// Span the fullscreen slots over the output, or over `working_area` while it has no mode.
+    pub(crate) fn set_view(&mut self, working_area: Rectangle<i32, Logical>) {
+        let size = self
+            .output
+            .current_mode()
+            .map_or(working_area.size.to_f64(), |_| {
+                crate::utils::output_size(&self.output)
+            });
+        self.strip.set_view(working_area, size);
+        self.floating.set_view(size);
+    }
+
+    /// The topmost float pinned to strip frame `id` showing fullscreen.
+    pub(crate) fn fullscreen_float_on(&self, id: u64) -> Option<&strip::Frame> {
+        self.floating
+            .frames()
+            .iter()
+            .find(|float| float.pinned_to == Some(id) && float.fullscreen_entry().is_some())
+    }
+
+    /// The frame covering the output while strip frame `id` is active.
+    pub(crate) fn fullscreen_on(&self, id: u64) -> Option<u64> {
+        self.fullscreen_float_on(id)
+            .or_else(|| {
+                self.strip
+                    .frames()
+                    .iter()
+                    .find(|frame| frame.surface_id == id && frame.fullscreen_entry().is_some())
+            })
+            .map(|frame| frame.surface_id)
+    }
+
+    /// The frame covering the output.
+    pub fn presenting_fullscreen(&self) -> Option<u64> {
+        self.fullscreen_on(self.strip.active_frame_id()?)
     }
 
     pub(crate) fn advance(&mut self) {
@@ -310,13 +391,15 @@ impl Layout {
         let mut strip = strip::Strip::new(self.clock.clone());
         strip.update_config(output.current_scale().fractional_scale());
         let floating = floating::FloatingSpace::new(working_area.to_f64(), self.clock.clone());
-        self.monitors.push(Monitor {
+        let mut monitor = Monitor {
             output,
             name,
             strip,
             floating,
             working_area,
-        });
+        };
+        monitor.set_view(working_area);
+        self.monitors.push(monitor);
     }
 
     /// Drop `output`'s monitor, moving its frames to `fallback` or parking them,
@@ -477,13 +560,13 @@ impl Layout {
         &mut self,
         id: u64,
         tiled: impl FnOnce(&mut strip::Strip, usize),
-        floating: impl FnOnce(&mut floating::FloatingSpace),
+        floating: impl FnOnce(&mut Monitor),
     ) -> Option<(Output, Option<u64>)> {
         let monitor = self.monitor_of_frame_mut(id)?;
         let prev_active = monitor.strip.active_frame_id();
         match monitor.strip.index_of(id) {
             Some(idx) => tiled(&mut monitor.strip, idx),
-            None => floating(&mut monitor.floating),
+            None => floating(monitor),
         }
         Some((monitor.output.clone(), prev_active))
     }
@@ -510,8 +593,8 @@ impl Layout {
                     strip.close_frame_at(idx);
                 }
             },
-            |space| {
-                space.close_frame(id);
+            |monitor| {
+                monitor.floating.close_frame(id);
             },
         )
     }
@@ -631,77 +714,122 @@ impl Layout {
         prev_active
     }
 
-    /// Make `id` active in its container. Returns its output and the strip
-    /// frame that was active.
+    /// Make `id` active in its container, a pinned float its strip frame too. Returns its output
+    /// and the strip frame that was active.
     pub(crate) fn activate_frame(&mut self, id: u64) -> Option<(Output, Option<u64>)> {
         self.with_frame_container(
             id,
             |strip, idx| strip.set_active(idx),
-            |space| {
-                space.activate_frame(id);
+            |monitor| {
+                monitor.floating.activate_frame(id);
+                if let Some(idx) = monitor
+                    .floating
+                    .frame(id)
+                    .and_then(|float| float.pinned_to)
+                    .and_then(|pin| monitor.strip.index_of(pin))
+                {
+                    monitor.strip.set_active(idx);
+                }
             },
         )
     }
 
     /// Whether surface `id` shows fullscreen on some output.
     pub fn is_surface_fullscreen(&self, id: u64) -> bool {
-        self.placed_frames()
-            .any(|frame| frame.surface_fullscreen(id))
+        self.entry_locations()
+            .any(|location| location.entry.fullscreen() && location.entry.surface_id() == Some(id))
     }
 
     /// The surface entry `entry_id` shows.
-    pub(crate) fn entry_surface_id(&self, entry_id: LayoutEntryId) -> Option<u64> {
+    pub fn entry_surface_id(&self, entry_id: LayoutEntryId) -> Option<u64> {
         self.entry_location(entry_id)?.entry.surface_id()
     }
 
     /// Whether entry `entry_id` shows fullscreen.
     pub fn entry_fullscreen(&self, entry_id: LayoutEntryId) -> bool {
         self.entry_location(entry_id)
-            .is_some_and(|location| location.fullscreen())
+            .is_some_and(|location| location.entry.fullscreen())
     }
 
-    /// The output whose contents change when entry `entry_id` goes `fullscreen` or back.
-    pub fn fullscreen_change_output(
+    /// Mark the views of `committed` surfaces and pin fullscreen floats to their strip frame.
+    pub(crate) fn reconcile_fullscreen(&mut self, committed: impl Fn(u64) -> bool) {
+        for monitor in &mut self.monitors {
+            for frame in monitor.strip.frames_mut() {
+                frame.mark_fullscreen(&committed);
+            }
+            let strip = &monitor.strip;
+            for frame in monitor.floating.frames_mut() {
+                frame.mark_fullscreen(&committed);
+                frame.pinned_to = if frame.fullscreen_entry().is_some() {
+                    strip.frame_of_float(frame)
+                } else if frame.has_views() {
+                    None
+                } else {
+                    // A viewless float stays with its frame while that lasts.
+                    frame.pinned_to.filter(|&id| strip.index_of(id).is_some())
+                };
+            }
+        }
+        // Parked frames show nothing.
+        for frame in self.homeless.iter_mut() {
+            frame.mark_fullscreen(&|_| false);
+            frame.pinned_to = None;
+        }
+    }
+
+    /// The view a fullscreen float pinned over strip frame `id` shows, with the float.
+    pub(crate) fn fullscreen_float_over(&self, id: u64) -> Option<(u64, LayoutEntryId)> {
+        let float = self
+            .monitors
+            .iter()
+            .find(|monitor| monitor.strip.index_of(id).is_some())?
+            .fullscreen_float_on(id)?;
+        Some((float.surface_id, float.fullscreen_entry()?.id))
+    }
+
+    /// Other `requested` surfaces on the strip frames `id` shows on, floats counting for theirs.
+    pub(crate) fn fullscreen_rivals(
         &self,
-        entry_id: LayoutEntryId,
-        fullscreen: bool,
-    ) -> Option<Output> {
-        let location = self.entry_location(entry_id)?;
-        (location.fullscreen() != fullscreen).then(|| location.monitor.output().clone())
+        id: u64,
+        requested: impl Fn(u64) -> bool,
+    ) -> HashSet<u64> {
+        let frames: HashSet<u64> = self
+            .entry_locations()
+            .filter(|location| location.entry.surface_id() == Some(id))
+            .filter_map(|location| location.strip_frame())
+            .collect();
+        self.entry_locations()
+            .filter(|location| {
+                location
+                    .strip_frame()
+                    .is_some_and(|frame| frames.contains(&frame))
+            })
+            .filter_map(|location| location.entry.surface_id())
+            .filter(|&other| other != id && requested(other))
+            .collect()
     }
 
-    /// Set entry `entry_id` fullscreen or back. Returns its surface and the one
-    /// it displaced.
-    pub(crate) fn set_entry_fullscreen(
-        &mut self,
-        entry_id: LayoutEntryId,
-        fullscreen: bool,
-    ) -> Option<(u64, Option<u64>)> {
-        let frame = self
-            .all_frames_mut()
-            .find(|frame| frame.entry_surface_id(entry_id).is_some())?;
-        let target = frame.entry_surface_id(entry_id)?;
-        let cleared = if fullscreen {
-            frame
-                .set_fullscreen_entry(entry_id)
-                .and_then(|(previous, _)| previous)
-        } else {
-            frame.clear_fullscreen_entry(entry_id)
-        };
-        Some((target, cleared.map(|cleared| cleared.surface_id)))
+    /// Floats on screen, `active` being each monitor's active strip frame.
+    pub(crate) fn shown_floats(&self, active: impl Fn(&Monitor) -> Option<u64>) -> HashSet<u64> {
+        self.monitors
+            .iter()
+            .flat_map(|monitor| {
+                let active = active(monitor);
+                monitor
+                    .floating
+                    .frames()
+                    .iter()
+                    .filter(move |frame| frame.pinned_to.is_none_or(|id| Some(id) == active))
+                    .map(|frame| frame.surface_id)
+            })
+            .collect()
     }
 
-    /// Whether `output`'s active frame shows an entry fullscreen.
-    pub fn active_fullscreen_on(&self, output: &Output) -> bool {
-        self.strip(output)
-            .is_some_and(strip::Strip::active_frame_is_fullscreen)
-    }
-
-    /// Whether some active frame shows an entry fullscreen.
+    /// Whether some output shows a view fullscreen.
     pub fn any_active_fullscreen(&self) -> bool {
         self.monitors
             .iter()
-            .any(|monitor| monitor.strip.active_frame_is_fullscreen())
+            .any(|monitor| monitor.presenting_fullscreen().is_some())
     }
 
     /// Mark one view of each surface primary: its largest among the shown frames,
@@ -717,11 +845,7 @@ impl Layout {
             let Some(surface_id) = location.entry.surface_id() else {
                 continue;
             };
-            let area = entry_area(
-                location.monitor.output(),
-                location.entry,
-                location.fullscreen(),
-            );
+            let area = entry_area(location.monitor.output(), location.entry);
             let entry = best.entry(surface_id).or_insert((area, location.entry.id));
             if area > entry.0 {
                 *entry = (area, location.entry.id);
@@ -880,8 +1004,13 @@ impl Layout {
                 );
             }
             assert!(
-                frame.fullscreen_is_live(),
-                "frame {} fullscreens an entry it lost",
+                frame
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.fullscreen())
+                    .count()
+                    <= 1,
+                "frame {} shows two views fullscreen",
                 frame.surface_id
             );
         }
@@ -904,6 +1033,40 @@ impl Layout {
                 "floating space on {} lost a frame's data",
                 monitor.name
             );
+            for frame in monitor.floating.frames() {
+                assert!(
+                    frame.pinned_to.is_none()
+                        || frame.fullscreen_entry().is_some()
+                        || !frame.has_views(),
+                    "float {} on {} is pinned while showing views, none fullscreen",
+                    frame.surface_id,
+                    monitor.name
+                );
+                assert!(
+                    frame.fullscreen_entry().is_none()
+                        || frame.pinned_to.is_some()
+                        || monitor.strip.frames().is_empty(),
+                    "fullscreen float {} on {} is pinned to no frame",
+                    frame.surface_id,
+                    monitor.name
+                );
+                assert!(
+                    frame
+                        .pinned_to
+                        .is_none_or(|id| monitor.strip.index_of(id).is_some()),
+                    "float {} on {} is pinned to a frame not in its strip",
+                    frame.surface_id,
+                    monitor.name
+                );
+            }
+            for frame in monitor.strip.frames() {
+                assert!(
+                    frame.pinned_to.is_none(),
+                    "strip frame {} on {} is pinned",
+                    frame.surface_id,
+                    monitor.name
+                );
+            }
         }
         for &id in self.home_outputs.keys() {
             assert!(self.has_frame(id), "home remembered for gone frame {id}");
@@ -938,12 +1101,15 @@ impl Layout {
         let Some(monitor) = self.monitor_of(output) else {
             return false;
         };
-        let Some((_, data)) = monitor.floating.frame_with_data(id) else {
+        // Measured against the drawn slot, so a sliding frame grabs without a jump.
+        let Some((_, rect)) = monitor
+            .floats_with_render_geo()
+            .find(|(frame, _)| frame.surface_id == id)
+        else {
             return false;
         };
-        // Measured against the drawn position, so a sliding frame grabs without a jump.
-        let offset = pos_within_output - data.render_pos();
-        let size = data.size();
+        let offset = pos_within_output - rect.loc;
+        let size = rect.size;
         self.interactive_move = Some(InteractiveMove {
             frame_id: id,
             pointer_ratio: (
@@ -1036,8 +1202,8 @@ impl Layout {
 }
 
 /// Fullscreen entries claim the output's full size, not entry.w/h.
-fn entry_area(output: &Output, entry: &LayoutEntry, fullscreen: bool) -> u64 {
-    if fullscreen {
+fn entry_area(output: &Output, entry: &LayoutEntry) -> u64 {
+    if entry.fullscreen() {
         let size = crate::utils::output_size(output);
         size.w as u64 * size.h as u64
     } else {
@@ -1078,7 +1244,9 @@ impl Ewm {
             return;
         }
         match self.first_active_frame_surface_id() {
-            Some(id) => self.set_focus_frame(id, "output_disabled", false),
+            Some(id) => {
+                self.set_focus_frame(id, "output_disabled", false);
+            }
             None => self.set_focus_state(0, None),
         }
     }
@@ -1095,6 +1263,15 @@ impl Ewm {
 
     /// Drop Emacs frame `id` from wherever it is, unfocusing it. Returns the output it left.
     pub(crate) fn remove_emacs_frame(&mut self, id: u64, active_close: bool) -> Option<Output> {
+        // A float off screen or hidden under a fullscreen view leaves without a fade.
+        let hidden = self.layout.frame_location(id).is_some_and(|location| {
+            location.floating
+                && !(location.monitor.float_shown(location.frame)
+                    && self.float_visible(location.monitor, location.frame))
+        });
+        if hidden && let Some(frame) = self.layout.frame_mut(id) {
+            frame.close_snapshot = None;
+        }
         let removed = self.layout.remove_frame(id, active_close);
         if let Some((output, prev_active)) = &removed {
             self.reconcile_output_entries(output);
@@ -1201,7 +1378,7 @@ impl Ewm {
     }
 
     /// Global origin of the frame at `location`.
-    fn frame_origin(&self, location: FrameLocation<'_>) -> Option<Point<i32, Logical>> {
+    pub(crate) fn frame_origin(&self, location: FrameLocation<'_>) -> Option<Point<i32, Logical>> {
         let output = location.monitor.output();
         let output_geo = self.space.output_geometry(output)?;
         if location.floating {
@@ -1210,8 +1387,9 @@ impl Ewm {
                 .floating
                 .frame_with_data(location.frame.surface_id)?;
             let loc = data.logical_pos();
+            let dx = location.slot_x().round() as i32;
             return Some(Point::from((
-                output_geo.loc.x + loc.x as i32,
+                output_geo.loc.x + loc.x as i32 + dx,
                 output_geo.loc.y + loc.y as i32,
             )));
         }
@@ -1289,55 +1467,69 @@ impl Ewm {
         self.entry_origin(location)
     }
 
-    pub(crate) fn layout_entry_rect(
+    /// Fullscreen `entry` in `slot`: centered at its own size when primary, else across the slot.
+    pub(crate) fn fullscreen_entry_rect(
         &self,
-        output_geo: Rectangle<i32, Logical>,
-        working_area: Rectangle<i32, Logical>,
-        strip: &strip::Strip,
-        frame_idx: usize,
+        slot: Rectangle<i32, Logical>,
         entry: &LayoutEntry,
-        fullscreen: bool,
     ) -> Rectangle<i32, Logical> {
-        if fullscreen {
-            if entry.primary() {
-                let window_size = entry
-                    .surface_id()
-                    .and_then(|surface_id| self.window(surface_id))
-                    .map(|window| window.geometry().size)
-                    .unwrap_or_default();
-                let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
-                return Rectangle::new(
-                    Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy)),
-                    window_size,
-                );
-            }
-            return Rectangle::new(output_geo.loc, entry.rect().size);
+        if !entry.primary() {
+            return slot;
         }
+        let window_size = entry
+            .surface_id()
+            .and_then(|surface_id| self.window(surface_id))
+            .map(|window| window.geometry().size)
+            .unwrap_or_default();
+        let (ox, oy) = fullscreen_center_offset(window_size, slot.size);
+        Rectangle::new(slot.loc + Point::from((ox, oy)), window_size)
+    }
 
-        Rectangle::new(
-            Self::strip_frame_origin(output_geo, working_area, strip, frame_idx)
-                + Point::from((entry.x, entry.y)),
-            entry.rect().size,
-        )
+    /// Whether the view at `location` is drawn: its float shows and no sibling covers it.
+    pub(crate) fn view_visible(&self, location: LayoutEntryLocation<'_>) -> bool {
+        (!location.floating || self.float_visible(location.monitor, location.frame))
+            && (location.entry.fullscreen() || location.frame.fullscreen_entry().is_none())
     }
 
     fn entry_origin(&self, location: LayoutEntryLocation<'_>) -> Option<Point<i32, Logical>> {
-        if location.fullscreen() {
-            let output = location.monitor.output();
-            let output_geo = self.space.output_geometry(output)?;
-            let working_area = self.get_working_area(output);
-            let rect = self.layout_entry_rect(
-                output_geo,
-                working_area,
-                &location.monitor.strip,
-                location.frame_idx,
-                location.entry,
-                true,
-            );
-            return Some(rect.loc);
-        }
+        self.drawn_rect(location).map(|rect| rect.loc)
+    }
+
+    /// Where the view at `location` is drawn, globally.
+    pub(crate) fn drawn_rect(
+        &self,
+        location: LayoutEntryLocation<'_>,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let output_geo = self.space.output_geometry(location.monitor.output())?;
         let origin = self.frame_origin(location.frame_location())?;
-        Some(origin + Point::from((location.entry.x, location.entry.y)))
+        Some(self.entry_rect_at(location, output_geo, origin))
+    }
+
+    /// Where the view at `location` is drawn with its frame at `origin` on `output_geo`.
+    fn entry_rect_at(
+        &self,
+        location: LayoutEntryLocation<'_>,
+        output_geo: Rectangle<i32, Logical>,
+        origin: Point<i32, Logical>,
+    ) -> Rectangle<i32, Logical> {
+        let entry = location.entry;
+        if entry.fullscreen() {
+            let dx = location.frame_location().slot_x().round() as i32;
+            let slot = Rectangle::new(output_geo.loc + Point::from((dx, 0)), output_geo.size);
+            return self.fullscreen_entry_rect(slot, entry);
+        }
+        Rectangle::new(origin + Point::from((entry.x, entry.y)), entry.rect().size)
+    }
+
+    /// `local`, an output-local rect, on `output_geo`.
+    fn on_output(
+        output_geo: Rectangle<i32, Logical>,
+        local: Rectangle<f64, Logical>,
+    ) -> Rectangle<i32, Logical> {
+        Rectangle::new(
+            output_geo.loc + Point::from((local.loc.x as i32, local.loc.y as i32)),
+            Size::from((local.size.w as i32, local.size.h as i32)),
+        )
     }
 
     /// On-screen origins of every layout view of `surface_id`, one per entry.
@@ -1368,22 +1560,27 @@ impl Ewm {
         Some((self.layout.monitor_of(output)?, output_geo))
     }
 
-    pub(crate) fn floating_frame_under(&self, pos: Point<f64, Logical>) -> Option<u64> {
+    /// The topmost visible float whose slot holds `pos`.
+    fn visible_float_under(&self, pos: Point<f64, Logical>) -> Option<&strip::Frame> {
         let (monitor, output_geo) = self.monitor_at(pos)?;
-        let (frame_id, _) = monitor
-            .floating
-            .frame_under(pos - output_geo.loc.to_f64())?;
-        Some(frame_id)
+        let pos = pos - output_geo.loc.to_f64();
+        self.visible_floats(monitor)
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(frame, _)| frame)
+    }
+
+    pub(crate) fn floating_frame_under(&self, pos: Point<f64, Logical>) -> Option<u64> {
+        self.visible_float_under(pos).map(|frame| frame.surface_id)
     }
 
     pub(crate) fn floating_resize_edges_under(
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(u64, floating::ResizeEdge)> {
-        let (monitor, output_geo) = self.monitor_at(pos)?;
-        monitor
-            .floating
-            .resize_edges_under(pos - output_geo.loc.to_f64())
+        // A fullscreen float has no edge to take.
+        self.visible_float_under(pos)
+            .filter(|frame| frame.fullscreen_entry().is_none())
+            .map(|frame| (frame.surface_id, floating::ResizeEdge::BOTTOM_RIGHT))
     }
 
     /// Topmost entry on `monitor` under `pos` that `predicate` accepts.
@@ -1395,52 +1592,35 @@ impl Ewm {
         pos: Point<f64, Logical>,
         mut predicate: impl FnMut(&LayoutEntry) -> bool,
     ) -> Option<LayoutEntryHit<'a>> {
-        if let Some(hit) =
-            Self::floating_entry_under_matching(&monitor.floating, output_geo, pos, &mut predicate)
-        {
-            return Some(hit);
-        }
-        // A floating frame occludes the strip; don't match a tiled entry beneath it.
-        if monitor
-            .floating
-            .frame_under(pos - output_geo.loc.to_f64())
-            .is_some()
-        {
-            return None;
-        }
-        self.tiled_entry_under_matching(monitor, output_geo, working_area, pos, predicate)
-    }
-
-    /// Hit-test `pos` against floating frames' entries only (the overlay above the strip).
-    fn floating_entry_under_matching<'a>(
-        space: &'a floating::FloatingSpace,
-        output_geo: Rectangle<i32, Logical>,
-        pos: Point<f64, Logical>,
-        mut predicate: impl FnMut(&LayoutEntry) -> bool,
-    ) -> Option<LayoutEntryHit<'a>> {
-        for (frame, frame_rect) in space.frames_with_render_geo() {
-            for entry in frame.entries.iter() {
-                if !predicate(entry) {
+        // Floats first, topmost first, and a float's slot occludes the strip.
+        let floats = monitor
+            .frame_locations_in(true)
+            .zip(monitor.floats_with_render_geo());
+        for (location, (_, slot)) in floats {
+            if !self.float_visible(monitor, location.frame) {
+                continue;
+            }
+            let slot = Self::on_output(output_geo, slot);
+            let covered = location.frame.fullscreen_entry().is_some();
+            for location in location.entries() {
+                let entry = location.entry;
+                if (covered && !entry.fullscreen()) || !predicate(entry) {
                     continue;
                 }
-                let rect = Rectangle::new(
-                    Point::from((
-                        output_geo.loc.x + frame_rect.loc.x as i32 + entry.x,
-                        output_geo.loc.y + frame_rect.loc.y as i32 + entry.y,
-                    )),
-                    entry.rect().size,
-                );
+                let rect = self.entry_rect_at(location, output_geo, slot.loc);
                 if Self::rect_contains_f64(rect, pos) {
                     return Some(LayoutEntryHit {
                         entry,
-                        fullscreen: false,
                         rect,
                         output_size: output_geo.size,
                     });
                 }
             }
+            if Self::rect_contains_f64(slot, pos) {
+                return None;
+            }
         }
-        None
+        self.tiled_entry_under_matching(monitor, output_geo, working_area, pos, predicate)
     }
 
     /// Hit-test `pos` against a monitor's tiled entries only (no floating overlay).
@@ -1455,22 +1635,18 @@ impl Ewm {
         monitor
             .entry_locations_in(false)
             .filter(|location| predicate(location.entry))
-            // Fullscreen primary clicks miss in the letterbox. Inactive fullscreens render
-            // off-screen.
-            .filter(|location| location.shown() || !location.fullscreen())
+            // Primary clicks miss in the letterbox.
+            .filter(|location| self.view_visible(*location))
             .find_map(|location| {
-                let fullscreen = location.fullscreen();
-                let rect = self.layout_entry_rect(
+                let origin = Self::strip_frame_origin(
                     output_geo,
                     working_area,
                     &monitor.strip,
                     location.frame_idx,
-                    location.entry,
-                    fullscreen,
                 );
+                let rect = self.entry_rect_at(location, output_geo, origin);
                 Self::rect_contains_f64(rect, pos).then_some(LayoutEntryHit {
                     entry: location.entry,
-                    fullscreen,
                     rect,
                     output_size: output_geo.size,
                 })
@@ -1548,8 +1724,12 @@ impl Ewm {
         let entry = hit.entry;
         let window = self.window(entry.surface_id()?)?;
         let window_geo = window.geometry();
-        let pointer_scale =
-            Self::pointer_scale_for_entry(entry, hit.fullscreen, window_geo.size, hit.output_size);
+        let pointer_scale = Self::pointer_scale_for_entry(
+            entry,
+            entry.fullscreen(),
+            window_geo.size,
+            hit.output_size,
+        );
 
         let pos_in_window = Point::from((
             (pos.x - hit.rect.loc.x as f64) * pointer_scale,
@@ -1570,31 +1750,26 @@ impl Ewm {
         pos: Point<f64, Logical>,
     ) -> Option<SurfaceHit> {
         let strip = &monitor.strip;
+        // The frame's own surface hides under its fullscreen view.
+        let own = |frame: &strip::Frame| {
+            frame
+                .fullscreen_entry()
+                .is_none()
+                .then_some(frame.surface_id)
+        };
         // Floats sit above the strip.
-        let floats = monitor
-            .floating
-            .frames_with_render_geo()
-            .map(|(frame, rect)| {
-                let rect = Rectangle::new(
-                    Point::from((
-                        output_geo.loc.x + rect.loc.x as i32,
-                        output_geo.loc.y + rect.loc.y as i32,
-                    )),
-                    Size::from((rect.size.w as i32, rect.size.h as i32)),
-                );
-                (frame.surface_id, rect)
-            });
+        let floats = self
+            .visible_floats(monitor)
+            .map(|(frame, rect)| (own(frame), Self::on_output(output_geo, rect)));
         let tiled = strip.frames().iter().enumerate().map(|(frame_idx, frame)| {
             let rect = Self::frame_rect(output_geo, working_area, strip, frame_idx, frame);
-            (frame.surface_id, rect)
+            (own(frame), rect)
         });
-        floats
+        let (id, rect) = floats
             .chain(tiled)
-            .filter(|&(_, rect)| Self::rect_contains_f64(rect, pos))
-            .find_map(|(id, rect)| {
-                let origin = rect.loc.to_f64();
-                Self::surface_under_non_popup_window(self.window(id)?, pos - origin, origin)
-            })
+            .find(|&(_, rect)| Self::rect_contains_f64(rect, pos))?;
+        let origin = rect.loc.to_f64();
+        Self::surface_under_non_popup_window(self.window(id?)?, pos - origin, origin)
     }
 
     fn surface_under_non_popup_window(
@@ -1650,43 +1825,115 @@ impl Ewm {
         let Some(toplevel) = window.toplevel() else {
             return;
         };
+        // Unplaced, the view is sized to the active output.
+        let size = self
+            .active_output()
+            .map(|output| crate::utils::output_size(output).to_i32_round());
         let changed = toplevel.with_pending_state(|state| {
             let was_fullscreen = state.states.contains(XdgToplevelState::Fullscreen);
+            let resized = size.is_some_and(|size| state.size != Some(size));
+            if let Some(size) = size {
+                state.size = Some(size);
+            }
             if fullscreen {
                 state.states.set(XdgToplevelState::Fullscreen);
                 state.states.unset(XdgToplevelState::Maximized);
             } else {
                 state.states.unset(XdgToplevelState::Fullscreen);
+                state.states.set(XdgToplevelState::Maximized);
             }
-            was_fullscreen != fullscreen
+            was_fullscreen != fullscreen || resized
         });
         if changed {
             toplevel.send_configure();
         }
     }
 
-    /// Set entry `entry_id` fullscreen or back and configure the surfaces it affects.
-    pub fn set_layout_entry_fullscreen(
-        &mut self,
-        entry_id: LayoutEntryId,
-        fullscreen: bool,
-    ) -> Option<u64> {
-        let (target, cleared) = self.layout.set_entry_fullscreen(entry_id, fullscreen)?;
-        self.refresh_primary_assignments();
-        if let Some(cleared) = cleared
-            && !self.surface_has_primary_entry(cleared)
-        {
-            self.configure_surface_fullscreen_state(cleared, false);
+    /// Ask surface `id` to go fullscreen or back, and configure it so.
+    pub(crate) fn set_surface_fullscreen(&mut self, id: u64, on: bool) {
+        match self.surfaces.get_mut(&id) {
+            Some(surface) if surface.pending_fullscreen != on => surface.pending_fullscreen = on,
+            _ => return,
         }
-        if !self.surface_has_primary_entry(target) {
-            self.configure_surface_fullscreen_state(target, fullscreen);
+        if on {
+            // One fullscreen per strip frame, the newest wins.
+            for rival in self
+                .layout
+                .fullscreen_rivals(id, |other| self.pending_fullscreen(other))
+            {
+                self.set_surface_fullscreen(rival, false);
+            }
         }
-        Some(target)
+        if self.surface_has_primary_entry(id) {
+            self.refresh_primary_assignments();
+        } else {
+            self.configure_surface_fullscreen_state(id, on);
+        }
     }
 
-    /// True iff the active frame has a fullscreen entry covering the Top layer.
+    /// Whether surface `id` is asked to be fullscreen, shown or not.
+    pub fn pending_fullscreen(&self, id: u64) -> bool {
+        self.surfaces
+            .get(&id)
+            .is_some_and(|surface| surface.pending_fullscreen)
+    }
+
+    /// Mark the views of committed fullscreen surfaces, reporting floats that hid or came back.
+    pub(crate) fn reconcile_fullscreen(&mut self) {
+        let surfaces = &self.surfaces;
+        let committed = |id| surfaces.get(&id).is_some_and(|surface| surface.fullscreen);
+        let shown = self
+            .layout
+            .shown_floats(|monitor| monitor.strip.active_frame_id());
+        self.layout.reconcile_fullscreen(committed);
+        self.report_float_visibility(&shown);
+        // A float going fullscreen takes the focus from its frame.
+        if let Some((_, entry_id)) = self.layout.fullscreen_float_over(self.focused_frame_id)
+            && self.focused_entry_id != Some(entry_id)
+        {
+            self.set_focus_entry(entry_id, "fullscreen_over", true);
+        }
+        self.queue_redraw_all();
+    }
+
+    /// Tell Emacs which floats went off or on screen since `before`.
+    fn report_float_visibility(&mut self, before: &HashSet<u64>) {
+        let after = self
+            .layout
+            .shown_floats(|monitor| monitor.strip.active_frame_id());
+        for &id in before.difference(&after) {
+            self.queue_event(Event::FrameHidden { id });
+        }
+        for &id in after.difference(before) {
+            self.queue_event(Event::FrameShown { id });
+        }
+    }
+
+    /// Whether the active frame's fullscreen view covers the Top layer, the strip at rest.
     pub fn render_above_top_layer(&self, output: &Output) -> bool {
-        self.frames_in_place() && self.layout.active_fullscreen_on(output)
+        self.frames_in_place()
+            && self.layout.monitor_of(output).is_some_and(|monitor| {
+                monitor.strip.view_is_static() && monitor.presenting_fullscreen().is_some()
+            })
+    }
+
+    /// Whether float `frame` on `monitor` is drawn, not hidden under its frame's fullscreen view.
+    pub(crate) fn float_visible(&self, monitor: &Monitor, frame: &strip::Frame) -> bool {
+        monitor
+            .strip
+            .frame_of_float(frame)
+            .and_then(|id| monitor.fullscreen_on(id))
+            .is_none_or(|id| id == frame.surface_id || frame.surface_id == self.focused_frame_id)
+    }
+
+    /// `monitor`'s visible floats with their output-local slots, topmost first.
+    pub(crate) fn visible_floats<'m>(
+        &self,
+        monitor: &'m Monitor,
+    ) -> impl Iterator<Item = (&'m strip::Frame, Rectangle<f64, Logical>)> {
+        monitor
+            .floats_with_render_geo()
+            .filter(move |(frame, _)| self.float_visible(monitor, frame))
     }
 
     /// Entry id of the layout entry under a point.
@@ -1781,6 +2028,7 @@ impl Ewm {
         for (src, ids) in self.layout.homed_elsewhere(output) {
             self.move_frame_ids_between_outputs(&src, output, &ids);
         }
+        self.reconcile_fullscreen();
         let prev_active = self
             .layout
             .restore_last_active(output, self.focused_frame_id);
@@ -1820,6 +2068,7 @@ impl Ewm {
         let outputs: Vec<Output> = self.layout.outputs().cloned().collect();
 
         self.layout.merge_frames(frames);
+        self.reconcile_fullscreen();
 
         self.sync_focus_after_merge(focused_surface);
         for output in &outputs {
@@ -1998,10 +2247,9 @@ impl Ewm {
                 continue;
             };
             let output = location.monitor.output();
-            let fullscreen = location.fullscreen();
+            let fullscreen = self.pending_fullscreen(id);
             let size = if fullscreen {
-                let s = crate::utils::output_size(output);
-                (s.w as i32, s.h as i32).into()
+                crate::utils::output_size(output).to_i32_round()
             } else {
                 location.entry.rect().size
             };
@@ -2037,6 +2285,15 @@ impl Ewm {
         if let Some(id) = new_active_id {
             self.queue_event(Event::FrameShown { id });
         }
+        // Fullscreen floats go off and on screen with their frame.
+        let before = self.layout.shown_floats(|monitor| {
+            if monitor.output() == output {
+                prev_active_id
+            } else {
+                monitor.strip.active_frame_id()
+            }
+        });
+        self.report_float_visibility(&before);
     }
 
     /// True when the strip on the output under `pos` is mid-animation.

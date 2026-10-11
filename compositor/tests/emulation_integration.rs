@@ -183,10 +183,11 @@ impl Harness {
         frame.selected_entry_id = selected;
         self.fix.tile_command(HEAD, vec![frame]);
         match selected {
-            None => self
-                .fix
-                .ewm()
-                .set_focus_frame(self.ids[EMACS], "test", false),
+            None => {
+                self.fix
+                    .ewm()
+                    .set_focus_frame(self.ids[EMACS], "test", false);
+            }
             Some(e) => {
                 self.fix.ewm().set_focus_entry(e, "test", false);
             }

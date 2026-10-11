@@ -594,15 +594,6 @@ pub fn collect_render_elements_for_output(
         return (elements, cursor_elements);
     }
 
-    // A fullscreen toggle's old contents, dissolving over the whole output.
-    if let Some(fade) = ewm
-        .output_state
-        .get(output)
-        .and_then(|state| state.fullscreen_fade.as_ref())
-    {
-        elements.push(EwmRenderElement::Texture(fade.render()));
-    }
-
     // Collect all layer elements in a tight scope to avoid holding the RefCell
     // borrow across the rest of the function. layer_map_for_output() returns
     // RefMut<LayerMap>; calling it again (e.g. via get_working_area) while
@@ -730,6 +721,15 @@ pub fn collect_render_elements_for_output(
         .output_state
         .get(output)
         .map(|state| &state.fullscreen_backdrop);
+    // Floats in view with their slots.
+    let float_viewport = geometry.to_content_rect(Rectangle::from_size(output_size.to_f64()));
+    let floats: Vec<(u64, Rectangle<f64, Logical>)> =
+        ewm.layout.monitor_of(output).map_or(Vec::new(), |monitor| {
+            ewm.visible_floats(monitor)
+                .filter(|(_, slot)| float_viewport.overlaps(*slot))
+                .map(|(frame, slot)| (frame.surface_id, slot))
+                .collect()
+        });
     if let Some(space) = ewm.layout.floating_mut(output) {
         let focused_entry_id = ewm.focused_entry_id;
         let focused_frame_id = ewm.focused_frame_id;
@@ -742,7 +742,29 @@ pub fn collect_render_elements_for_output(
             content.push(ContentRenderElement::Texture(elem));
         }
 
-        for (frame, data, frame_rect) in space.frames_with_render_geo_mut() {
+        for (frame, data) in space.frames_with_data_mut() {
+            let Some(&(_, frame_rect)) = floats.iter().find(|(id, _)| *id == frame.surface_id)
+            else {
+                continue;
+            };
+            // A fullscreen view fills the float's slot, its frame and shadow hide under it.
+            if let Some(entry) = frame.fullscreen_entry() {
+                if let Some(surface) = entry.surface_id().and_then(|id| surfaces.get(&id)) {
+                    push_fullscreen_view(
+                        &mut content,
+                        renderer,
+                        surface,
+                        entry,
+                        surface.open_alpha(),
+                        frame_rect.loc.to_physical_precise_round(scale),
+                        output_size,
+                        backdrop,
+                        scale,
+                        blur_config,
+                    );
+                }
+                continue;
+            }
             for entry in frame
                 .entries
                 .iter()
@@ -817,11 +839,11 @@ pub fn collect_render_elements_for_output(
     let strip = ewm.layout.strip(output);
     if let Some(strip) = strip {
         let active_idx = strip.active_idx();
-        for (frame_idx, frame, frame_rect) in
+        for (frame_idx, frame, _, screen_x) in
             strip.frames_with_render_geo(view_size, strip_viewport)
         {
             let frame_offset: Point<i32, Physical> =
-                frame_rect.loc.to_physical_precise_round(scale);
+                Point::<f64, Logical>::from((screen_x, 0.0)).to_physical_precise_round(scale);
             let in_active_frame = frame_idx == active_idx;
             for entry in frame
                 .entries
@@ -829,7 +851,7 @@ pub fn collect_render_elements_for_output(
                 .filter(|entry| entry.surface_id().is_some())
             {
                 let surface_id = entry.surface_id().expect("surface-backed entry");
-                let entry_fullscreen = frame.entry_fullscreen(entry.id);
+                let entry_fullscreen = entry.fullscreen();
                 // Active-frame fullscreen covers the rest.
                 if above_top_layer && !entry_fullscreen && in_active_frame {
                     continue;
@@ -891,13 +913,15 @@ pub fn collect_render_elements_for_output(
         Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
             .to_physical_precise_round(scale);
     if let Some(strip) = strip {
-        for (_, frame, frame_rect) in strip.frames_with_render_geo(view_size, strip_viewport) {
+        for (_, frame, frame_rect, screen_x) in
+            strip.frames_with_render_geo(view_size, strip_viewport)
+        {
             let Some(frame_surface) = ewm.surfaces.get(&frame.surface_id) else {
                 continue;
             };
             let window = &frame_surface.window;
             let frame_offset_emacs: Point<i32, Physical> =
-                frame_rect.loc.to_physical_precise_round(scale);
+                Point::<f64, Logical>::from((screen_x, 0.0)).to_physical_precise_round(scale);
             let frame_alpha = frame_surface.open_alpha();
             let frame_loc = working_area_loc_physical + frame_offset_emacs;
             let view_elements =
@@ -974,25 +998,47 @@ pub fn collect_render_elements_for_output(
     (elements, cursor_elements)
 }
 
-/// `frame`'s views at the frame origin, without blur.
+/// `frame`'s views at the frame origin, without blur, a fullscreen one over its backdrop as on
+/// the output.
+#[allow(clippy::too_many_arguments)]
 fn render_frame_views(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
     ewm: &Ewm,
     frame: &crate::strip::Frame,
+    output_size: Size<i32, Logical>,
+    working_area: Rectangle<i32, Logical>,
+    backdrop: Option<&SolidColorBuffer>,
     scale: Scale<f64>,
 ) {
     let no_blur = Blur {
         off: true,
         ..Blur::default()
     };
-    for entry in &frame.entries {
-        let Some(surface_id) = entry.surface_id() else {
+    let fullscreen = frame.entries.iter().filter(|entry| entry.fullscreen());
+    let others = frame.entries.iter().filter(|entry| !entry.fullscreen());
+    for entry in fullscreen.chain(others) {
+        let Some(surface) = entry.surface_id().and_then(|id| ewm.surfaces.get(&id)) else {
             continue;
         };
-        let Some(window) = ewm.window(surface_id) else {
+        if entry.fullscreen() {
+            let origin = Point::<i32, Logical>::from((-working_area.loc.x, -working_area.loc.y))
+                .to_physical_precise_round(scale);
+            push_fullscreen_view(
+                content,
+                renderer,
+                surface,
+                entry,
+                1.,
+                origin,
+                output_size,
+                backdrop,
+                scale,
+                no_blur,
+            );
             continue;
-        };
+        }
+        let window = &surface.window;
         let alpha = if ewm.focused_entry_id == Some(entry.id) {
             1.0
         } else {
@@ -1031,9 +1077,27 @@ pub fn render_frame_snapshot(
     let location = ewm.layout.frame_location(id)?;
     let output = location.monitor.output().clone();
     let scale = Scale::from(output.current_scale().fractional_scale());
+    let output_size = {
+        let size = crate::utils::output_size(&output);
+        Size::from((size.w as i32, size.h as i32))
+    };
+    let working_area = ewm.get_working_area(&output);
+    let backdrop = ewm
+        .output_state
+        .get(&output)
+        .map(|state| &state.fullscreen_backdrop);
 
     let mut content: Vec<ContentRenderElement> = Vec::new();
-    render_frame_views(&mut content, renderer, ewm, location.frame, scale);
+    render_frame_views(
+        &mut content,
+        renderer,
+        ewm,
+        location.frame,
+        output_size,
+        working_area,
+        backdrop,
+        scale,
+    );
     // Like the live pass, no frame surface or shadow before the frame has shown a buffer.
     if let Some(window) = ewm.window(id)
         && window
@@ -1162,6 +1226,16 @@ pub fn window_popup_placements(
         let Some(window_loc) = ewm.window_global_position(window) else {
             continue;
         };
+        // A float hidden under a fullscreen view hides its popups with it.
+        let hidden = ewm
+            .surface_id(&surface)
+            .and_then(|id| ewm.preferred_entry_for_surface(id))
+            .is_some_and(|location| {
+                location.floating && !ewm.float_visible(location.monitor, location.frame)
+            });
+        if hidden {
+            continue;
+        }
         let window_geo = window.geometry();
         for (popup, popup_offset) in popups {
             let popup_geo = popup.geometry();

@@ -61,7 +61,7 @@
 //! C1  - Configure tracks primary. If the toplevel has a primary entry,
 //!       the most recent `xdg_toplevel.configure` the client received
 //!       carries `(width, height)` equal to that entry's output size when
-//!       its frame selects it fullscreen, else `(entry.w, entry.h)`.
+//!       the surface is requested fullscreen, else `(entry.w, entry.h)`.
 //!
 //! C2  - Output-membership parity. The set of output names the client
 //!       believes the toplevel is on (running `wl_surface.enter` minus
@@ -257,6 +257,8 @@ struct Harness {
     /// Latest `xdg_toplevel.configure` size the client has been told, accumulated
     /// across drain windows. `None` until the first configure arrives.
     last_configure: Option<(i32, i32)>,
+    /// The configure the client last answered with a buffer.
+    answered_configure: Option<(i32, i32)>,
     /// Output names the client believes the toplevel is on, accumulated from
     /// `wl_surface.enter` / `leave` events.
     toplevel_on_outputs: HashSet<String>,
@@ -306,6 +308,7 @@ impl Harness {
             frame_popups: Vec::new(),
             frame_events: Vec::new(),
             last_configure: None,
+            answered_configure: None,
             toplevel_on_outputs: HashSet::new(),
             pointer_entry_id_before_warp: None,
             pointer_surface_id_before_warp: None,
@@ -409,6 +412,14 @@ impl Harness {
 }
 
 fn apply_op(h: &mut Harness, op: &Op) {
+    // The client answers its last configure first, so what its views show can follow.
+    if h.last_configure != h.answered_configure
+        && let Some((w, height)) = h.last_configure.filter(|&(w, height)| w > 0 && height > 0)
+    {
+        h.fix
+            .map_toplevel(&mut h.client, &h.toplevel, Size::from((w, height)));
+        h.answered_configure = h.last_configure;
+    }
     h.focused_entry_before_op = h.fix.ewm_ref().focused_entry_id;
     match *op {
         Op::AddOutput(i) => {
@@ -452,9 +463,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.fix.tile(name, frames);
             for i in 0..n_views {
                 if fullscreen_mask & (1 << i) != 0 {
-                    h.fix
-                        .ewm()
-                        .set_layout_entry_fullscreen(nz(1 + i as u64), true);
+                    h.fix.set_fullscreen(nz(1 + i as u64), true);
                 }
             }
         }
@@ -607,9 +616,7 @@ fn apply_multi_entry_layout(
     );
     for i in 0..n_entries {
         if fullscreen_mask & (1 << i) != 0 {
-            h.fix
-                .ewm()
-                .set_layout_entry_fullscreen(nz(10_000 + i as u64), true);
+            h.fix.set_fullscreen(nz(10_000 + i as u64), true);
         }
     }
 }
@@ -736,11 +743,11 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
                 })
         })
         .find(|(_, _, e)| e.surface_id() == Some(h.sid) && e.primary());
-    let Some((out_name, frame, entry)) = primary else {
+    let Some((out_name, _, entry)) = primary else {
         return Ok(());
     };
-    let entry_fullscreen = frame.entry_fullscreen(entry.id);
-    let expected = if entry_fullscreen {
+    let requested = ewm.pending_fullscreen(h.sid);
+    let expected = if requested {
         ewm.space
             .outputs()
             .find(|o| o.name() == out_name)
@@ -753,10 +760,10 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
         prop_assert_eq!(
             h.last_configure,
             Some(expected),
-            "C1: last toplevel configure was {:?}, expected {:?} (entry fullscreen={})",
+            "C1: last toplevel configure was {:?}, expected {:?} (fullscreen requested={})",
             h.last_configure,
             expected,
-            entry_fullscreen,
+            requested,
         );
     }
     Ok(())
@@ -799,20 +806,21 @@ fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
             let entry_fullscreen = strip
                 .frames()
                 .get(frame_idx)
-                .is_some_and(|frame| frame.entry_fullscreen(entry.id));
-            // Geometry follows the frame-owned fullscreen selection, with no
-            // AND against the client's committed XDG state.
+                .and_then(|frame| frame.fullscreen_entry())
+                .is_some_and(|fullscreen| fullscreen.id == entry.id);
+            // Geometry follows the view's mark, which the client's commit sets. A fullscreen
+            // view fills the frame's output-sized slot, which slides with the frame.
+            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
             let origin = if entry_fullscreen && entry.primary() {
                 let window_size = ewm
                     .window(entry.surface_id().expect("surface-backed entry"))
                     .map(|w| w.geometry().size)
                     .unwrap_or_default();
                 let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
-                Point::from((output_geo.loc.x + ox, output_geo.loc.y + oy))
+                Point::from((output_geo.loc.x + frame_dx + ox, output_geo.loc.y + oy))
             } else if entry_fullscreen {
-                Point::from((output_geo.loc.x, output_geo.loc.y))
+                Point::from((output_geo.loc.x + frame_dx, output_geo.loc.y))
             } else {
-                let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
                 Point::from((
                     output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
                     output_geo.loc.y + working_area.loc.y + entry.y,
@@ -1124,35 +1132,41 @@ fn check_p5(h: &Harness, pressed: bool) -> Result<(), TestCaseError> {
 /// Visible rect for one entry. Returns `None` for inactive-frame fullscreen
 /// entries, which render off-screen and can't be hit. Fullscreen primary
 /// centers the window inside the output, so its hit rect is the centered
-/// window rect — clicks in the letterbox fall through to other entries.
+/// window rect — clicks in the letterbox fall through to other entries. An active frame's
+/// fullscreen view covers its other entries (`covered`).
+#[allow(clippy::too_many_arguments)]
 fn visible_entry_rect(
     ewm: &ewm_core::Ewm,
     output_geo: Rectangle<i32, Logical>,
     working_area: Rectangle<i32, Logical>,
     frame_dx: i32,
-    in_active: bool,
-    fullscreen: bool,
+    frame: Option<&Frame>,
     entry: &LayoutEntry,
 ) -> Option<Rectangle<i32, Logical>> {
+    let covered = frame.and_then(|frame| frame.fullscreen_entry());
+    let fullscreen = covered.is_some_and(|fullscreen| fullscreen.id == entry.id);
+    let covered = covered.is_some();
+    if covered && !fullscreen {
+        return None;
+    }
     if fullscreen {
-        if !in_active {
-            return None;
-        }
+        // The view fills the frame's output-sized slot, which slides with the frame.
+        let slot = Rectangle::new(
+            Point::from((output_geo.loc.x + frame_dx, output_geo.loc.y)),
+            output_geo.size,
+        );
         if entry.primary() {
             let window_size = ewm
                 .window(entry.surface_id()?)
                 .map(|w| w.geometry().size)
                 .unwrap_or_default();
-            let (cx, cy) = fullscreen_center_offset(window_size, output_geo.size);
+            let (cx, cy) = fullscreen_center_offset(window_size, slot.size);
             Some(Rectangle::new(
-                Point::from((output_geo.loc.x + cx, output_geo.loc.y + cy)),
+                slot.loc + Point::from((cx, cy)),
                 window_size,
             ))
         } else {
-            Some(Rectangle::new(
-                output_geo.loc,
-                Size::from((entry.w as i32, entry.h as i32)),
-            ))
+            Some(slot)
         }
     } else {
         Some(Rectangle::new(
@@ -1183,26 +1197,15 @@ fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
             continue;
         };
         let working_area = ewm.get_working_area(output);
-        let active_idx = strip.active_idx();
         for (frame_idx, entry) in strip.surface_entries_with_frame() {
             if entry.surface_id() != Some(h.sid) {
                 continue;
             }
             let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            let in_active = frame_idx == active_idx;
-            let fullscreen = strip
-                .frames()
-                .get(frame_idx)
-                .is_some_and(|frame| frame.entry_fullscreen(entry.id));
-            let Some(rect) = visible_entry_rect(
-                ewm,
-                output_geo,
-                working_area,
-                frame_dx,
-                in_active,
-                fullscreen,
-                entry,
-            ) else {
+            let frame = strip.frames().get(frame_idx);
+            let Some(rect) =
+                visible_entry_rect(ewm, output_geo, working_area, frame_dx, frame, entry)
+            else {
                 continue;
             };
             if rect.contains(p_int) {

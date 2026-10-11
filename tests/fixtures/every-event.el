@@ -33,8 +33,6 @@
     (activate_workspace (id . 7))
     (maximize_request (id . 7))
     (unmaximize_request (id . 7))
-    (fullscreen_request (id . 7))
-    (unfullscreen_request (id . 7))
     (bell (id . 7))
     (bell (id))
     (idle_state_changed (idle . t))

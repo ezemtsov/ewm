@@ -110,8 +110,6 @@
                   (activate_workspace . ewm--handle-activate-workspace)
                   (maximize_request . ewm--handle-maximize-request)
                   (unmaximize_request . ewm--handle-unmaximize-request)
-                  (fullscreen_request . ewm--handle-fullscreen-request)
-                  (unfullscreen_request . ewm--handle-unfullscreen-request)
                   (bell . ewm--handle-bell)
                   (idle_state_changed . ewm--handle-idle-state-changed)
                   (environment . ewm--handle-environment)

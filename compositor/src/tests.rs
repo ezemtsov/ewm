@@ -518,7 +518,7 @@ fn mapped_asks_to_select_for_a_token_or_a_focused_parent() {
 }
 
 #[test]
-fn surface_request_helpers_queue_expected_events_and_update_fullscreen() {
+fn surface_request_helpers_queue_expected_events() {
     use smithay::wayland::seat::WaylandFocus as _;
 
     let mut fix = testing::Fixture::new().unwrap();
@@ -541,21 +541,15 @@ fn surface_request_helpers_queue_expected_events_and_update_fullscreen() {
     fix.ewm()
         .queue_minimize_request_for_surface(&server_surface);
     fix.ewm()
-        .queue_surface_request(&server_surface, |id| Event::FullscreenRequest { id });
-    fix.ewm()
-        .queue_surface_request(&server_surface, |id| Event::UnfullscreenRequest { id });
-    fix.ewm()
         .queue_maximize_request_for_surface(&server_surface);
     fix.ewm()
         .queue_unmaximize_request_for_surface(&server_surface);
 
     let events = fix.drain_events();
-    assert_eq!(events.len(), 5);
+    assert_eq!(events.len(), 3);
     assert!(matches!(&events[0], Event::Minimize { id } if *id == surface_id));
-    assert!(matches!(&events[1], Event::FullscreenRequest { id } if *id == surface_id));
-    assert!(matches!(&events[2], Event::UnfullscreenRequest { id } if *id == surface_id));
-    assert!(matches!(&events[3], Event::MaximizeRequest { id } if *id == surface_id));
-    assert!(matches!(&events[4], Event::UnmaximizeRequest { id } if *id == surface_id));
+    assert!(matches!(&events[1], Event::MaximizeRequest { id } if *id == surface_id));
+    assert!(matches!(&events[2], Event::UnmaximizeRequest { id } if *id == surface_id));
 }
 
 #[test]

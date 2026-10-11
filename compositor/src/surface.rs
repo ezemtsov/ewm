@@ -54,6 +54,10 @@ pub struct SurfaceState {
     pub pending_title: Option<PendingTitle>,
     /// Outputs showing it.
     pub outputs: HashSet<String>,
+    /// Fullscreen as a client or Emacs asked, what the configure says.
+    pub pending_fullscreen: bool,
+    /// Fullscreen as the client last committed it, what its views show.
+    pub fullscreen: bool,
     /// Fade-in after the first buffer.
     pub open: Option<Animation>,
     /// Resizes configured but not yet answered, oldest first.
@@ -86,6 +90,8 @@ impl SurfaceState {
             pending_activation: None,
             pending_title: None,
             outputs: HashSet::new(),
+            pending_fullscreen: false,
+            fullscreen: false,
             open: None,
             pending_resizes: Vec::new(),
             resize: None,
@@ -151,6 +157,16 @@ impl SurfaceState {
     /// Records a committed buffer, true only for the first one.
     pub(crate) fn mark_mapped(&mut self) -> bool {
         !std::mem::replace(&mut self.mapped, true)
+    }
+
+    /// Takes the committed fullscreen state, true when the commit changed it.
+    pub(crate) fn sync_fullscreen(&mut self) -> bool {
+        let committed = self.window.toplevel().is_some_and(|toplevel| {
+            toplevel.with_committed_state(|state| {
+                state.is_some_and(|state| state.states.contains(XdgToplevelState::Fullscreen))
+            })
+        });
+        std::mem::replace(&mut self.fullscreen, committed) != committed
     }
 
     pub(crate) fn is_animating(&self) -> bool {

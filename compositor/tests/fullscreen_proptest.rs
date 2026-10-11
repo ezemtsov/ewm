@@ -1,38 +1,25 @@
-//! Properties for compositor-owned fullscreen lifecycle state.
-//!
-//! Fullscreen is frame presentation state, not layout input.  Layout refreshes,
-//! migrations, output detach/reattach, and surface destruction may preserve or
-//! clear an existing fullscreen selection, but they must not manufacture one.
+//! Fullscreen is a per-surface bit set by requests and commands alone, shown once its client has
+//! committed it. Layouts, output changes and migrations place the bit but never change it.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
-use ewm_core::strip::{Frame, FullscreenEntry};
-use ewm_core::testing::Fixture;
+use ewm_core::strip::Frame;
+use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
+use smithay::utils::Size;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
 const FRAME_COUNT: usize = 4;
 const ENTRY_SLOTS: usize = 3;
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
+const SURFACES: usize = 6;
 
 fn frame_id(frame_idx: usize) -> u64 {
     100 + frame_idx as u64
 }
 
-fn frame_focus_id(frame_idx: usize) -> LayoutEntryId {
-    nz(1_000 + frame_idx as u64)
-}
-
 fn entry_id(frame_idx: usize, entry_slot: usize) -> LayoutEntryId {
     nz(10_000 + frame_idx as u64 * 100 + entry_slot as u64)
-}
-
-fn surface_strategy() -> impl Strategy<Value = u64> {
-    1u64..=6
 }
 
 #[derive(Debug, Clone)]
@@ -48,80 +35,60 @@ enum Op {
         entry_slot: usize,
         on: bool,
     },
-    DestroySurface(u64),
+    /// The client answers everything configured so far with a buffer.
+    Commit(usize),
+    DestroySurface(usize),
 }
 
 #[derive(Debug, Clone)]
 struct FrameSpec {
     frame_idx: usize,
-    entries: Vec<EntrySpec>,
-    incoming_fullscreen: Option<(LayoutEntryId, u64)>,
-    selected_entry_id: Option<LayoutEntryId>,
+    entries: Vec<(usize, usize)>,
+    selected: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
-struct EntrySpec {
-    entry_slot: usize,
-    surface_id: u64,
+/// The surfaces as the model sees them.
+#[derive(Default)]
+struct Model {
+    requested: BTreeSet<u64>,
+    committed: BTreeSet<u64>,
+    gone: BTreeSet<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ViewKey {
-    frame_id: u64,
-    entry_id: LayoutEntryId,
-    surface_id: u64,
-}
-
-fn frame_seed_strategy() -> impl Strategy<Value = (bool, Vec<(bool, u64)>, bool, bool)> {
-    (
-        any::<bool>(),
-        prop::collection::vec((any::<bool>(), surface_strategy()), ENTRY_SLOTS),
-        any::<bool>(),
-        any::<bool>(),
-    )
+struct Clients {
+    client: TestClient,
+    toplevels: Vec<Toplevel>,
+    sids: Vec<u64>,
 }
 
 fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
-    prop::collection::vec(frame_seed_strategy(), FRAME_COUNT).prop_map(|seeds| {
+    let frame = (
+        any::<bool>(),
+        prop::collection::vec((any::<bool>(), 0..SURFACES), ENTRY_SLOTS),
+        0..ENTRY_SLOTS,
+    );
+    prop::collection::vec(frame, FRAME_COUNT).prop_map(|seeds| {
         seeds
             .into_iter()
             .enumerate()
-            .filter_map(
-                |(frame_idx, (include_frame, entry_seeds, select_first, fullscreen_first))| {
-                    include_frame.then(|| {
-                        let entries = entry_seeds
-                            .into_iter()
-                            .enumerate()
-                            .filter_map(|(entry_slot, (include_entry, surface_id))| {
-                                include_entry.then_some(EntrySpec {
-                                    entry_slot,
-                                    surface_id,
-                                })
-                            })
-                            .collect::<Vec<_>>();
-                        let incoming_fullscreen = fullscreen_first
-                            .then(|| {
-                                entries.first().map(|entry| {
-                                    (entry_id(frame_idx, entry.entry_slot), entry.surface_id)
-                                })
-                            })
-                            .flatten();
-                        let selected_entry_id = select_first
-                            .then(|| {
-                                entries
-                                    .first()
-                                    .map(|entry| entry_id(frame_idx, entry.entry_slot))
-                            })
-                            .flatten();
-                        FrameSpec {
-                            frame_idx,
-                            entries,
-                            incoming_fullscreen,
-                            selected_entry_id,
-                        }
-                    })
-                },
-            )
+            .filter(|(_, (present, _, _))| *present)
+            .map(|(frame_idx, (_, slots, selected))| {
+                let entries: Vec<(usize, usize)> = slots
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, (present, _))| *present)
+                    .map(|(slot, (_, surface))| (slot, surface))
+                    .collect();
+                let selected = entries
+                    .iter()
+                    .any(|(slot, _)| *slot == selected)
+                    .then_some(selected);
+                FrameSpec {
+                    frame_idx,
+                    entries,
+                    selected,
+                }
+            })
             .collect()
     })
 }
@@ -130,9 +97,8 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         1 => (0..OUTPUTS.len()).prop_map(Op::AddOutput),
         1 => (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
-        5 => (0..OUTPUTS.len(), layout_strategy()).prop_map(|(output, frames)| {
-            Op::ApplyLayout { output, frames }
-        }),
+        5 => (0..OUTPUTS.len(), layout_strategy())
+            .prop_map(|(output, frames)| Op::ApplyLayout { output, frames }),
         4 => (0usize..FRAME_COUNT, 0usize..ENTRY_SLOTS, any::<bool>()).prop_map(
             |(frame_idx, entry_slot, on)| Op::SetEntryFullscreen {
                 frame_idx,
@@ -140,219 +106,178 @@ fn op_strategy() -> impl Strategy<Value = Op> {
                 on,
             },
         ),
-        2 => surface_strategy().prop_map(Op::DestroySurface),
+        4 => (0..SURFACES).prop_map(Op::Commit),
+        1 => (0..SURFACES).prop_map(Op::DestroySurface),
     ]
 }
 
-fn to_frame(spec: &FrameSpec) -> Frame {
-    Frame {
-        focus_id: frame_focus_id(spec.frame_idx),
-        width: 1280.0,
-        entries: spec
-            .entries
-            .iter()
-            .map(|entry| {
-                LayoutEntry::surface(
-                    entry_id(spec.frame_idx, entry.entry_slot),
-                    "entry".to_string(),
-                    entry.surface_id,
-                    0,
-                    0,
-                    400,
-                    300,
-                )
-            })
-            .collect(),
-        fullscreen: spec
-            .incoming_fullscreen
-            .map(|(entry_id, surface_id)| FullscreenEntry {
-                entry_id,
-                surface_id,
-            }),
-        selected_entry_id: spec.selected_entry_id,
-        ..Frame::new(frame_id(spec.frame_idx))
-    }
-}
-
-fn all_fullscreen_selections(fix: &Fixture) -> HashSet<ViewKey> {
-    fix.ewm_ref()
-        .layout
-        .all_frames()
-        .filter_map(|frame| {
-            frame.fullscreen.map(|fullscreen| ViewKey {
-                frame_id: frame.surface_id,
-                entry_id: fullscreen.entry_id,
-                surface_id: fullscreen.surface_id,
-            })
+fn to_frame(spec: &FrameSpec, sids: &[u64]) -> Frame {
+    let mut frame = Frame::new(frame_id(spec.frame_idx));
+    frame.width = 400.0;
+    frame.entries = spec
+        .entries
+        .iter()
+        .map(|&(slot, surface)| {
+            LayoutEntry::surface(
+                entry_id(spec.frame_idx, slot),
+                "entry".into(),
+                sids[surface],
+                0,
+                0,
+                400,
+                300,
+            )
         })
-        .collect()
+        .collect();
+    frame.selected_entry_id = spec.selected.map(|slot| entry_id(spec.frame_idx, slot));
+    frame
 }
 
-fn live_views(fix: &Fixture) -> HashSet<ViewKey> {
-    fix.ewm_ref()
-        .layout
-        .all_frames()
-        .flat_map(|frame| {
-            frame.entries.iter().filter_map(|entry| {
-                entry.surface_id().map(|surface_id| ViewKey {
-                    frame_id: frame.surface_id,
-                    entry_id: entry.id,
-                    surface_id,
-                })
-            })
-        })
-        .collect()
-}
-
-fn mapped_fullscreen_surfaces(fix: &Fixture) -> HashSet<u64> {
-    fix.ewm_ref()
+fn check(fix: &Fixture, model: &Model, sids: &[u64]) -> Result<(), TestCaseError> {
+    let ewm = fix.ewm_ref();
+    ewm.layout.verify_invariants();
+    let mut shown = BTreeSet::new();
+    let strip_frames = ewm
         .layout
         .strips()
-        .map(|(_, strip)| strip)
-        .flat_map(|strip| strip.frames().iter())
-        .filter_map(|frame| frame.fullscreen.map(|fullscreen| fullscreen.surface_id))
-        .collect()
-}
-
-fn live_view_for_entry(fix: &Fixture, entry_id: LayoutEntryId) -> Option<ViewKey> {
-    live_views(fix)
-        .into_iter()
-        .find(|view| view.entry_id == entry_id)
-}
-
-fn assert_fullscreen_invariants(fix: &Fixture) -> Result<(), TestCaseError> {
-    let live = live_views(fix);
-    let selections = all_fullscreen_selections(fix);
-    let mapped_fullscreen_surfaces = mapped_fullscreen_surfaces(fix);
-    let mut selected_frames = HashSet::new();
-
-    for selection in &selections {
-        prop_assert!(
-            live.contains(selection),
-            "fullscreen selection must point to a live view: {:?}",
-            selection,
-        );
-        prop_assert!(
-            selected_frames.insert(selection.frame_id),
-            "frame {} has more than one fullscreen selection",
-            selection.frame_id,
-        );
-    }
-
-    for surface_id in 1..=6 {
+        .flat_map(|(_, strip)| strip.frames().iter());
+    let floats = ewm
+        .layout
+        .monitors()
+        .iter()
+        .flat_map(|monitor| monitor.floating.frames().iter());
+    for frame in strip_frames.chain(floats) {
+        let marked: Vec<&LayoutEntry> = frame
+            .entries
+            .iter()
+            .filter(|entry| entry.fullscreen())
+            .collect();
+        let shows = frame.entries.iter().any(|entry| {
+            entry
+                .surface_id()
+                .is_some_and(|id| model.committed.contains(&id))
+        });
         prop_assert_eq!(
-            fix.ewm_ref().layout.is_surface_fullscreen(surface_id),
-            mapped_fullscreen_surfaces.contains(&surface_id),
-            "mapped fullscreen index diverged for surface {}",
-            surface_id,
+            marked.len(),
+            usize::from(shows),
+            "frame {} marks {:?} while showing a committed surface is {}",
+            frame.surface_id,
+            marked.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            shows
+        );
+        if let Some(entry) = marked.first() {
+            let surface_id = entry.surface_id().unwrap();
+            prop_assert!(
+                model.committed.contains(&surface_id),
+                "mark on {surface_id} before its commit"
+            );
+            shown.insert(surface_id);
+        }
+    }
+    for &sid in sids {
+        prop_assert_eq!(ewm.pending_fullscreen(sid), model.requested.contains(&sid));
+        prop_assert_eq!(ewm.layout.is_surface_fullscreen(sid), shown.contains(&sid));
+        prop_assert_eq!(
+            ewm.surfaces
+                .get(&sid)
+                .is_some_and(|surface| surface.fullscreen),
+            model.committed.contains(&sid),
+            "{} committed",
+            sid
         );
     }
-
     Ok(())
 }
 
-fn assert_no_new_selection(
-    before: &HashSet<ViewKey>,
-    after: &HashSet<ViewKey>,
+fn apply_op(
+    fix: &mut Fixture,
+    clients: &mut Clients,
+    model: &mut Model,
     op: &Op,
 ) -> Result<(), TestCaseError> {
-    let unexpected = after
-        .difference(before)
-        .copied()
-        .collect::<HashSet<ViewKey>>();
-    prop_assert!(
-        unexpected.is_empty(),
-        "{:?} manufactured fullscreen selection(s): {:?}",
-        op,
-        unexpected,
-    );
-    Ok(())
-}
-
-fn apply_op(fix: &mut Fixture, op: &Op) -> Result<(), TestCaseError> {
-    let before = all_fullscreen_selections(fix);
-
     match op {
         Op::AddOutput(output) => {
             let name = OUTPUTS[*output];
             if !fix.has_output(name) {
                 fix.add_output(name, 1920, 1080);
             }
-            let after = all_fullscreen_selections(fix);
-            assert_no_new_selection(&before, &after, op)?;
         }
-        Op::RemoveOutput(output) => {
-            fix.remove_output(OUTPUTS[*output]);
-            let after = all_fullscreen_selections(fix);
-            assert_no_new_selection(&before, &after, op)?;
-        }
+        Op::RemoveOutput(output) => fix.remove_output(OUTPUTS[*output]),
         Op::ApplyLayout { output, frames } => {
-            let frames = frames.iter().map(to_frame).collect();
+            let frames = frames
+                .iter()
+                .map(|spec| to_frame(spec, &clients.sids))
+                .collect();
             fix.tile(OUTPUTS[*output], frames);
-            let after = all_fullscreen_selections(fix);
-            assert_no_new_selection(&before, &after, op)?;
         }
         Op::SetEntryFullscreen {
             frame_idx,
             entry_slot,
             on,
         } => {
-            let entry_id = entry_id(*frame_idx, *entry_slot);
-            let expected = live_view_for_entry(fix, entry_id);
-            let target_surface = fix.ewm().set_layout_entry_fullscreen(entry_id, *on);
-            let after = all_fullscreen_selections(fix);
-
-            if *on {
-                match expected {
-                    Some(view) => {
-                        prop_assert_eq!(target_surface, Some(view.surface_id));
-                        prop_assert!(
-                            after.contains(&view),
-                            "set_layout_entry_fullscreen({:?}, true) did not select {:?}",
-                            entry_id,
-                            view,
-                        );
-                        prop_assert!(
-                            after
-                                .difference(&before)
-                                .all(|selection| *selection == view),
-                            "set_layout_entry_fullscreen({:?}, true) created unrelated selection(s): before={:?} after={:?}",
-                            entry_id,
-                            before,
-                            after,
-                        );
-                    }
-                    None => {
-                        prop_assert_eq!(target_surface, None);
-                        prop_assert_eq!(after, before);
-                    }
+            let entry = entry_id(*frame_idx, *entry_slot);
+            let target = fix
+                .ewm_ref()
+                .layout
+                .entry_surface_id(entry)
+                .filter(|id| !model.gone.contains(id));
+            if let Some(surface_id) = target
+                && *on
+            {
+                // One fullscreen per frame: the frames showing it drop their other requests.
+                let ewm = fix.ewm_ref();
+                let rivals: Vec<u64> = ewm
+                    .layout
+                    .strips()
+                    .flat_map(|(_, strip)| strip.frames())
+                    .filter(|frame| {
+                        frame
+                            .entries
+                            .iter()
+                            .any(|entry| entry.surface_id() == Some(surface_id))
+                    })
+                    .flat_map(|frame| frame.entries.iter().filter_map(LayoutEntry::surface_id))
+                    .filter(|&other| other != surface_id)
+                    .collect();
+                for other in rivals {
+                    model.requested.remove(&other);
                 }
-            } else {
-                assert_no_new_selection(&before, &after, op)?;
-                prop_assert!(
-                    after.iter().all(|selection| selection.entry_id != entry_id),
-                    "set_layout_entry_fullscreen({:?}, false) left that entry selected: {:?}",
-                    entry_id,
-                    after,
-                );
+            }
+            fix.set_fullscreen(entry, *on);
+            if let Some(surface_id) = target {
+                if *on {
+                    model.requested.insert(surface_id);
+                } else {
+                    model.requested.remove(&surface_id);
+                }
             }
         }
-        Op::DestroySurface(surface_id) => {
-            fix.ewm().handle_toplevel_destroyed_by_id(*surface_id);
-            let after = all_fullscreen_selections(fix);
-            assert_no_new_selection(&before, &after, op)?;
-            prop_assert!(
-                after
-                    .iter()
-                    .all(|selection| selection.surface_id != *surface_id),
-                "destroying surface {} left fullscreen selection(s): {:?}",
-                surface_id,
-                after,
-            );
+        Op::Commit(surface) => {
+            let sid = clients.sids[*surface];
+            if !model.gone.contains(&sid) {
+                fix.roundtrip(&mut clients.client);
+                fix.map_toplevel(
+                    &mut clients.client,
+                    &clients.toplevels[*surface],
+                    Size::from((400, 300)),
+                );
+                if model.requested.contains(&sid) {
+                    model.committed.insert(sid);
+                } else {
+                    model.committed.remove(&sid);
+                }
+            }
+        }
+        Op::DestroySurface(surface) => {
+            let sid = clients.sids[*surface];
+            if model.gone.insert(sid) {
+                fix.ewm().handle_toplevel_destroyed_by_id(sid);
+                model.requested.remove(&sid);
+                model.committed.remove(&sid);
+            }
         }
     }
-
-    assert_fullscreen_invariants(fix)
+    check(fix, model, &clients.sids)
 }
 
 proptest! {
@@ -367,10 +292,18 @@ proptest! {
         for output in OUTPUTS {
             fix.add_output(output, 1920, 1080);
         }
-
-        assert_fullscreen_invariants(&fix)?;
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
+        let (toplevels, sids) = (0..SURFACES)
+            .map(|i| {
+                fix.open_toplevel_with_id(&mut client, &format!("app{i}"), Size::from((400, 300)))
+            })
+            .unzip();
+        let mut clients = Clients { client, toplevels, sids };
+        let mut model = Model::default();
+        check(&fix, &model, &clients.sids)?;
         for op in &ops {
-            apply_op(&mut fix, op)?;
+            apply_op(&mut fix, &mut clients, &mut model, op)?;
         }
     }
 }

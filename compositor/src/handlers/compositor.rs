@@ -121,6 +121,17 @@ impl CompositorHandler for State {
             if let Some(window) = self.ewm.window(id) {
                 window.on_commit();
             }
+            // Views show fullscreen once the client has committed it.
+            if self
+                .ewm
+                .surfaces
+                .get_mut(&id)
+                .is_some_and(|surface| surface.sync_fullscreen())
+            {
+                self.ewm.reconcile_fullscreen();
+                self.ewm.refresh_primary_assignments();
+                self.refresh_pointer_after_layout();
+            }
             // Title before Mapped, so placement rules see a title set on the mapping commit.
             self.ewm.check_surface_info_changes(surface);
 
@@ -147,7 +158,7 @@ impl CompositorHandler for State {
                 let activate = self.ewm.surfaces[&id].activation_pending()
                     || match parent_id {
                         Some(parent) => focused == parent,
-                        None => !self.ewm.layout.is_surface_fullscreen(focused),
+                        None => !self.ewm.pending_fullscreen(focused),
                     };
                 let output = self.ewm.active_output();
                 let frame_surface_id = self.ewm.resolve_app_host_frame(parent_id, output);

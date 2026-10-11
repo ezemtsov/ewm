@@ -466,17 +466,13 @@ impl State {
         // make sure normal forwarded keys still go to that surface.
         let focused_frame_id = self.ewm.focused_frame_id;
         let focused_entry_id = self.ewm.focused_entry_id;
-        let fullscreen_entry = focused_entry_id.and_then(|entry_id| {
-            self.ewm
-                .layout
-                .frame_location(focused_frame_id)
-                .map(|location| location.frame)
-                .filter(|f| f.entry_fullscreen(entry_id))
-                .and_then(|f| {
-                    f.entry_surface_id(entry_id)
-                        .map(|surface_id| (entry_id, surface_id))
-                })
-        });
+        let fullscreen_entry = self
+            .ewm
+            .layout
+            .frame_location(focused_frame_id)
+            .and_then(|location| location.frame.fullscreen_entry())
+            .filter(|entry| Some(entry.id) == focused_entry_id)
+            .and_then(|entry| Some((entry.id, entry.surface_id()?)));
         let fullscreen_active = fullscreen_entry.is_some();
 
         // Undo temporary redirects before forwarding into fullscreen surfaces.
@@ -981,6 +977,24 @@ impl State {
             };
 
             self.focus_pointer_target("floating_move_grab");
+            // A float leaves fullscreen to be dragged.
+            let asked: Vec<u64> = self
+                .ewm
+                .layout
+                .frame_location(frame_id)
+                .into_iter()
+                .flat_map(|location| {
+                    location
+                        .frame
+                        .entries
+                        .iter()
+                        .filter_map(crate::LayoutEntry::surface_id)
+                })
+                .filter(|&id| self.ewm.pending_fullscreen(id))
+                .collect();
+            for surface_id in asked {
+                self.set_surface_fullscreen(surface_id, false);
+            }
 
             if self
                 .ewm

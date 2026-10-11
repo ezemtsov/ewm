@@ -4,7 +4,7 @@
 use ewm_core::strip::Frame;
 use ewm_core::testing::Fixture;
 use ewm_core::{Event, LayoutEntry, LayoutEntryId};
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Size};
 
 const OUTPUT: &str = "HEAD-A";
 const WIDTH: i32 = 1920;
@@ -184,15 +184,15 @@ fn click_on_backdrop_is_ignored() {
 
 #[test]
 fn overview_hides_top_layer_deferral_for_fullscreen() {
-    let mut fix = fixture(vec![frame_with_entry(10, 1, 100)]);
-    fix.strip_mut(OUTPUT).frames_mut()[0].set_fullscreen_entry(nz(1));
-    let output = fix
-        .ewm_ref()
-        .space
-        .outputs()
-        .find(|output| output.name() == OUTPUT)
-        .cloned()
-        .unwrap();
+    let mut fix = fixture(Vec::new());
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    let (toplevel, sid) =
+        fix.open_toplevel_with_id(&mut client, "app", Size::from((WIDTH, HEIGHT)));
+    fix.tile_command(OUTPUT, vec![frame_with_entry(10, 1, sid)]);
+    fix.set_fullscreen(nz(1), true);
+    fix.answer_configure(&mut client, &toplevel);
+    let output = fix.output(OUTPUT);
     assert!(fix.ewm_ref().render_above_top_layer(&output));
 
     fix.ewm().overview_toggle();

@@ -440,13 +440,11 @@ impl ForeignToplevelHandler for State {
     }
 
     fn set_fullscreen(&mut self, wl_surface: WlSurface, _wl_output: Option<WlOutput>) {
-        self.ewm
-            .queue_surface_request(&wl_surface, |id| Event::FullscreenRequest { id });
+        self.request_fullscreen(&wl_surface, true);
     }
 
     fn unset_fullscreen(&mut self, wl_surface: WlSurface) {
-        self.ewm
-            .queue_surface_request(&wl_surface, |id| Event::UnfullscreenRequest { id });
+        self.request_fullscreen(&wl_surface, false);
     }
 
     fn set_maximized(&mut self, wl_surface: WlSurface) {

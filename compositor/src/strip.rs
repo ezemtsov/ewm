@@ -204,22 +204,17 @@ pub struct Frame {
     pub width: f64,
     pub height: f64,
     pub entries: Vec<LayoutEntry>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fullscreen: Option<FullscreenEntry>,
     /// Selected entry's id (keyboard focus target when frame is focused).
     pub selected_entry_id: Option<LayoutEntryId>,
     #[serde(skip)]
     pub move_anim: Option<Animation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floating_pos: Option<SizeFracPoint>,
+    /// The strip frame a float is pinned to, showing and sliding with it.
+    #[serde(skip)]
+    pub pinned_to: Option<u64>,
     #[serde(skip)]
     pub close_snapshot: Option<Snapshot>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct FullscreenEntry {
-    pub entry_id: LayoutEntryId,
-    pub surface_id: u64,
 }
 
 impl Frame {
@@ -239,10 +234,10 @@ impl Frame {
             width: 0.0,
             height: 0.0,
             entries: Vec::new(),
-            fullscreen: None,
             selected_entry_id: None,
             move_anim: None,
             floating_pos: None,
+            pinned_to: None,
             close_snapshot: None,
         }
     }
@@ -258,51 +253,29 @@ impl Frame {
             .and_then(LayoutEntry::surface_id)
     }
 
-    pub fn entry_fullscreen(&self, entry_id: LayoutEntryId) -> bool {
-        self.fullscreen
-            .is_some_and(|fullscreen| fullscreen.entry_id == entry_id)
+    /// The view shown fullscreen, if any.
+    pub fn fullscreen_entry(&self) -> Option<&LayoutEntry> {
+        self.entries.iter().find(|entry| entry.fullscreen())
     }
 
-    pub fn surface_fullscreen(&self, surface_id: u64) -> bool {
-        self.fullscreen
-            .is_some_and(|fullscreen| fullscreen.surface_id == surface_id)
+    /// Whether any entry shows a surface.
+    pub(crate) fn has_views(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.surface_id().is_some())
     }
 
-    pub fn set_fullscreen_entry(
-        &mut self,
-        entry_id: LayoutEntryId,
-    ) -> Option<(Option<FullscreenEntry>, FullscreenEntry)> {
-        let surface_id = self.entry_surface_id(entry_id)?;
-        let next = FullscreenEntry {
-            entry_id,
-            surface_id,
-        };
-        if self.fullscreen == Some(next) {
-            return Some((None, next));
-        }
-        let previous = self.fullscreen.replace(next);
-        Some((previous, next))
-    }
-
-    pub fn clear_fullscreen_entry(&mut self, entry_id: LayoutEntryId) -> Option<FullscreenEntry> {
-        if self.entry_fullscreen(entry_id) {
-            self.fullscreen.take()
-        } else {
-            None
-        }
-    }
-
-    /// Whether the fullscreen entry, if any, still shows its surface.
-    pub fn fullscreen_is_live(&self) -> bool {
-        self.fullscreen.is_none_or(|fullscreen| {
-            self.entry_surface_id(fullscreen.entry_id) == Some(fullscreen.surface_id)
-        })
-    }
-
-    /// Drop a fullscreen whose entry no longer shows its surface.
-    pub fn validate_fullscreen(&mut self) {
-        if !self.fullscreen_is_live() {
-            self.fullscreen = None;
+    /// Mark the view showing a `committed` surface, the selected entry first.
+    pub(crate) fn mark_fullscreen(&mut self, committed: &impl Fn(u64) -> bool) {
+        let shows = |entry: &LayoutEntry| entry.surface_id().is_some_and(committed);
+        let selected = self.selected_entry_id;
+        let pick = self
+            .entries
+            .iter()
+            .position(|entry| Some(entry.id) == selected && shows(entry))
+            .or_else(|| self.entries.iter().position(shows));
+        for (idx, entry) in self.entries.iter_mut().enumerate() {
+            entry.set_fullscreen(Some(idx) == pick);
         }
     }
 
@@ -316,23 +289,22 @@ impl Frame {
         }
     }
 
-    /// Take `new`'s contents, keeping the name, slot animation and fullscreen that still apply.
+    /// Take `new`'s contents, keeping the name, slot animation and floating state.
     pub fn refill(&mut self, mut new: Frame) {
         new.validate_selection();
         if new.workspace_name.is_none() {
             new.workspace_name = self.workspace_name.take();
         }
         new.move_anim = self.move_anim.take();
-        new.fullscreen = self.fullscreen;
+        new.floating_pos = self.floating_pos;
+        new.pinned_to = self.pinned_to;
         *self = new;
-        self.validate_fullscreen();
     }
 
     /// Empty the frame as a layout that leaves it out does.
     pub fn clear_contents(&mut self) {
         self.entries.clear();
         self.selected_entry_id = None;
-        self.fullscreen = None;
     }
 
     /// Unbind a destroyed surface from its entries without removing them.
@@ -342,7 +314,6 @@ impl Frame {
                 entry.surface = None;
             }
         }
-        self.validate_fullscreen();
     }
 }
 
@@ -381,6 +352,9 @@ pub fn moved_entry_ids<'a>(
 pub struct Strip {
     frames: Vec<Frame>,
     gap: f64,
+    /// The output in strip space, which a frame showing fullscreen spans.
+    #[serde(skip)]
+    fullscreen_slot: Rectangle<f64, Logical>,
     active_idx: usize,
     #[serde(skip)]
     view_offset: ViewOffset,
@@ -400,6 +374,7 @@ impl Strip {
         Self {
             frames: Vec::new(),
             gap: 0.0,
+            fullscreen_slot: Rectangle::default(),
             active_idx: 0,
             view_offset: ViewOffset::default(),
             overview_shift: 0.0,
@@ -453,13 +428,38 @@ impl Strip {
             .sum()
     }
 
+    /// The `working_area` the strip lays out in and the `output` a fullscreen view fills.
+    pub(crate) fn set_view(
+        &mut self,
+        working_area: Rectangle<i32, Logical>,
+        output: Size<f64, Logical>,
+    ) {
+        let inset = working_area.loc.to_f64();
+        self.fullscreen_slot = Rectangle::new(Point::from((-inset.x, -inset.y)), output);
+    }
+
+    /// Whether the view is at rest, neither sliding nor under a swipe.
+    pub fn view_is_static(&self) -> bool {
+        self.view_offset.is_static()
+    }
+
+    /// `frame`'s slot at x 0: the output when it shows fullscreen, else its width over the view.
+    fn slot(&self, frame: &Frame, view_h: f64) -> Rectangle<f64, Logical> {
+        if frame.fullscreen_entry().is_some() {
+            self.fullscreen_slot
+        } else {
+            Rectangle::from_size(Size::from((frame.width, view_h)))
+        }
+    }
+
     /// Room a frame takes in the strip; an unsized frame takes none.
     fn stride(&self, frame: &Frame) -> f64 {
-        if frame.width > 0.0 {
-            frame.width + self.gap
+        let width = if frame.fullscreen_entry().is_some() {
+            self.fullscreen_slot.size.w
         } else {
-            0.0
-        }
+            frame.width
+        };
+        if width > 0.0 { width + self.gap } else { 0.0 }
     }
 
     pub fn frames(&self) -> &[Frame] {
@@ -577,6 +577,14 @@ impl Strip {
         self.column_x(idx) - self.view_pos() + move_offset
     }
 
+    /// The strip frame `float` belongs to: the one it is pinned to, else the active one.
+    pub(crate) fn frame_of_float(&self, float: &Frame) -> Option<u64> {
+        float
+            .pinned_to
+            .filter(|&id| self.index_of(id).is_some())
+            .or_else(|| self.active_frame_id())
+    }
+
     /// Strip-relative viewport left edge once any in-flight animation settles.
     pub fn target_view_pos(&self) -> f64 {
         self.column_x(self.active_idx) + self.view_offset.target()
@@ -627,26 +635,25 @@ impl Strip {
             .map(|closing| (closing, closing.pos() - Point::from((self.view_pos(), 0.))))
     }
 
-    /// `(idx, &Frame, screen_rect)` for frames whose rect intersects the screen-space
-    /// `viewport`. Prefix-sums column offsets in a single pass so the cull is O(N).
+    /// `(idx, frame, slot, screen_x)` for frames whose slot meets the screen-space `viewport`.
     pub fn frames_with_render_geo(
         &self,
         view_size: Size<f64, Logical>,
         viewport: Rectangle<f64, Logical>,
-    ) -> impl Iterator<Item = (usize, &Frame, Rectangle<f64, Logical>)> {
+    ) -> impl Iterator<Item = (usize, &Frame, Rectangle<f64, Logical>, f64)> {
         let view_pos = self.view_pos();
         let mut col_x = 0.0;
         self.frames.iter().enumerate().filter_map(move |(idx, f)| {
-            if f.width <= 0.0 {
+            let mut rect = self.slot(f, view_size.h);
+            if rect.size.w <= 0.0 {
                 return None;
             }
             let screen_x = col_x - view_pos + f.move_offset();
             col_x += self.stride(f);
-            let rect = Rectangle::new(
-                Point::from((screen_x, 0.0)),
-                Size::from((f.width, view_size.h)),
-            );
-            viewport.intersection(rect).map(|_| (idx, f, rect))
+            rect.loc.x += screen_x;
+            viewport
+                .intersection(rect)
+                .map(|_| (idx, f, rect, screen_x))
         })
     }
 
@@ -662,11 +669,6 @@ impl Strip {
 
     pub fn active_frame(&self) -> Option<&Frame> {
         self.frames.get(self.active_idx)
-    }
-
-    pub fn active_frame_is_fullscreen(&self) -> bool {
-        self.active_frame()
-            .is_some_and(|frame| frame.fullscreen.is_some())
     }
 
     /// Refill the frames this strip holds from `frames`, emptying the ones it leaves out.
@@ -872,6 +874,7 @@ mod tests {
                 })
                 .collect(),
             gap,
+            fullscreen_slot: Rectangle::default(),
             active_idx,
             view_offset: ViewOffset::default(),
             overview_shift: 0.0,
@@ -963,7 +966,7 @@ mod tests {
 
             let rendered = s
                 .frames_with_render_geo(view, Rectangle::from_size(view))
-                .map(|(idx, _, rect)| (idx, rect.loc.x, rect.size.w, rect.size.h))
+                .map(|(idx, _, rect, _)| (idx, rect.loc.x, rect.size.w, rect.size.h))
                 .collect::<Vec<_>>();
 
             prop_assert_eq!(rendered.len(), expected.len());
@@ -1112,5 +1115,49 @@ mod tests {
         strip.gesture_end(1_000.0);
 
         assert!(strip.active_idx() < strip.frames.len());
+    }
+
+    proptest! {
+        /// A frame showing fullscreen spans the output in strip space, the others their width.
+        #[test]
+        fn fullscreen_frames_span_the_output(
+            widths in prop::collection::vec(1u32..=MAX_WIDTH, 1..=MAX_FRAMES),
+            fullscreen in prop::collection::vec(any::<bool>(), MAX_FRAMES),
+            inset_x in 0i32..200,
+            inset_y in 0i32..200,
+            out_w in 800u32..=4000,
+            out_h in 600u32..=3000,
+        ) {
+            let mut s = strip_with(widths.iter().map(|w| f64::from(*w)).collect(), 0.0, 0);
+            let wa = Rectangle::new(
+                Point::from((inset_x, inset_y)),
+                Size::from((out_w as i32 - inset_x, out_h as i32 - inset_y)),
+            );
+            let output = Size::from((f64::from(out_w), f64::from(out_h)));
+            s.set_view(wa, output);
+            for (frame, &fills) in s.frames.iter_mut().zip(&fullscreen) {
+                if fills {
+                    let mut entry =
+                        LayoutEntry::surface(std::num::NonZeroU64::MIN, String::new(), 1, 0, 0, 1, 1);
+                    entry.set_fullscreen(true);
+                    frame.entries.push(entry);
+                }
+            }
+            let view = Size::from((f64::from(wa.size.w), f64::from(wa.size.h)));
+            let viewport = Rectangle::new(Point::from((-1e6, -1e6)), Size::from((2e6, 2e6)));
+            let mut x = 0.0;
+            for (idx, frame, rect, _) in s.frames_with_render_geo(view, viewport) {
+                let expected = if frame.fullscreen_entry().is_some() {
+                    Rectangle::new(
+                        Point::from((x - f64::from(inset_x), -f64::from(inset_y))),
+                        output,
+                    )
+                } else {
+                    Rectangle::new(Point::from((x, 0.0)), Size::from((frame.width, view.h)))
+                };
+                prop_assert_eq!(rect, expected, "frame {}", idx);
+                x += if frame.fullscreen_entry().is_some() { output.w } else { frame.width };
+            }
+        }
     }
 }

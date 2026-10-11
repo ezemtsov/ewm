@@ -53,7 +53,6 @@
 (declare-function ewm-workspace-rename-module "ewm-core")
 (declare-function ewm-workspace-mark-urgent-module "ewm-core")
 (declare-function ewm-toggle-fullscreen-module "ewm-core")
-(declare-function ewm-set-fullscreen-module "ewm-core")
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-get-frame-origin "ewm-core")
@@ -458,8 +457,6 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ('activate_workspace (ewm--handle-activate-workspace body))
       ('maximize_request (ewm--handle-maximize-request body))
       ('unmaximize_request (ewm--handle-unmaximize-request body))
-      ('fullscreen_request (ewm--handle-fullscreen-request body))
-      ('unfullscreen_request (ewm--handle-unfullscreen-request body))
       ('bell (ewm--handle-bell body))
       ('idle_state_changed (ewm--handle-idle-state-changed body))
       ('environment (ewm--handle-environment body))
@@ -612,16 +609,6 @@ No-op: tiling layout already manages window sizes."
   "Handle unmaximize request EVENT.
 No-op: tiling layout has no maximized state to restore."
   nil)
-
-(defun ewm--handle-fullscreen-request (event)
-  "Fullscreen the surface for EVENT, grounding a floating one first."
-  (ewm--with-surface-buffer-from-event event
-    (ewm--fullscreen (current-buffer) t)))
-
-(defun ewm--handle-unfullscreen-request (event)
-  "Leave fullscreen for the surface in EVENT, floating a grounded one back."
-  (ewm--with-surface-buffer-from-event event
-    (ewm--fullscreen (current-buffer) nil)))
 
 (defcustom ewm-bell-function #'ewm-bell-ding
   "Function called when a client rings the system bell.
@@ -1471,50 +1458,11 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
         (ewm--floating-attach-selected-buffer frame)
       (ewm--floating-detach-selected-buffer frame))))
 
-(defvar-local ewm--floating-restore nil
-  "Where a grounded buffer floats back to on unfullscreen, as (SIZE . POSITION).")
-
-(defun ewm--floating-geometry (frame)
-  "Client body size and output-relative position of floating FRAME."
-  (pcase-let ((`(,_ ,_ ,w ,h) (ewm--window-body-pixel-rect (frame-selected-window frame)))
-              (`(,fx . ,fy) (ewm--get-frame-origin frame))
-              (`(,ox . ,oy) (ewm--get-output-origin (ewm--frame-output frame))))
-    (cons (cons w h) (cons (- fx ox) (- fy oy)))))
-
-(defun ewm--float-back (buffer)
-  "Float BUFFER back to `ewm--floating-restore' and quit its tiled window."
-  (pcase-let ((`(,size . ,pos) (buffer-local-value 'ewm--floating-restore buffer))
-              (window (get-buffer-window buffer t)))
-    (with-current-buffer buffer (setq ewm--floating-restore nil))
-    (ewm--float-buffer buffer (window-frame window) size pos)
-    ;; Dropping the surface ends its fullscreen.
-    (quit-restore-window window)))
-
-(defun ewm--fullscreen (buffer on)
-  "Set BUFFER's view fullscreen to ON.
-A floating buffer is grounded into the active frame and floats back after."
-  (when-let* ((window (get-buffer-window buffer t))
-              (frame (window-frame window)))
-    (cond
-     ((and on (frame-parameter frame 'ewm-floating))
-      (with-current-buffer buffer
-        (setq ewm--floating-restore (ewm--floating-geometry frame)))
-      (ewm--absorb-floating frame
-                            (ewm-output-active-frame (ewm--frame-output frame))
-                            '(display-buffer-same-window display-buffer-pop-up-window))
-      (ewm--fullscreen buffer t))
-     ((and (not on) (buffer-local-value 'ewm--floating-restore buffer))
-      (ewm--float-back buffer))
-     ((window-parameter window 'ewm-entry-id)
-      (ewm-set-fullscreen-module (window-parameter window 'ewm-entry-id) on)))))
-
 (defun ewm-toggle-fullscreen ()
-  "Toggle fullscreen for the current view, grounding a floating one first."
+  "Toggle fullscreen for the view in the selected window."
   (interactive)
-  (cond ((or ewm--floating-restore (frame-parameter nil 'ewm-floating))
-         (ewm--fullscreen (current-buffer) (not ewm--floating-restore)))
-        ((window-parameter nil 'ewm-entry-id)
-         (ewm-toggle-fullscreen-module (window-parameter nil 'ewm-entry-id)))))
+  (when-let* ((entry (window-parameter nil 'ewm-entry-id)))
+    (ewm-toggle-fullscreen-module entry)))
 
 (defun ewm-frame-close ()
   "Close the focused frame; the compositor refocuses a same-output neighbour."
