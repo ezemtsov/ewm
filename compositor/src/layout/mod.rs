@@ -2290,8 +2290,7 @@ impl Ewm {
             } else {
                 location.entry.rect().size
             };
-            // An output whose working area changed lays out anew: its views do not fade.
-            let pending = if location.monitor.resized {
+            let pending = if location.monitor.settles_at_once(location.frame.surface_id) {
                 None
             } else {
                 self.pending_resize(id, size)
