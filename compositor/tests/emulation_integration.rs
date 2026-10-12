@@ -201,9 +201,11 @@ impl Harness {
     fn mask(&mut self, modifier: u32) -> u32 {
         assert_eq!(self.fix.keyboard_key(modifier, true), Forward);
         self.pump();
-        let &[Mods(mask), ..] = &take_wire(&mut self.clients[self.focused])[..] else {
-            panic!("a modifier press advertises modifiers first")
+        let wire = take_wire(&mut self.clients[self.focused]);
+        let &[press, Mods(mask)] = &wire[..] else {
+            panic!("a modifier press is the key then the modifiers, got {wire:?}")
         };
+        assert_eq!(press, down(modifier));
         assert_eq!(self.fix.keyboard_key(modifier, false), Forward);
         self.wires();
         mask
