@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Device, DeviceCapability, Event, InputBackend, InputTime,
+    AbsolutePositionEvent, Device, DeviceCapability, Event, GestureBeginEvent, GestureEndEvent,
+    GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent, InputBackend, InputTime,
     PointerMotionAbsoluteEvent, TouchDownEvent, TouchEvent, TouchSlot, TouchUpEvent, UnusedEvent,
 };
 use smithay::output::Output;
@@ -93,6 +94,49 @@ impl TouchDownEvent<TestInputBackend> for TestAbsoluteEvent {}
 impl TouchUpEvent<TestInputBackend> for TestAbsoluteEvent {}
 impl PointerMotionAbsoluteEvent<TestInputBackend> for TestAbsoluteEvent {}
 
+/// A touchpad swipe: `fingers` going down, moving by (`dx`, `dy`), or lifting.
+#[derive(Default)]
+pub struct TestSwipeEvent {
+    pub fingers: u32,
+    pub dx: f64,
+    pub dy: f64,
+}
+
+impl Event<TestInputBackend> for TestSwipeEvent {
+    fn time(&self) -> InputTime {
+        InputTime::from_millis(0)
+    }
+
+    fn device(&self) -> TestDevice {
+        TestDevice::default()
+    }
+}
+
+impl GestureBeginEvent<TestInputBackend> for TestSwipeEvent {
+    fn fingers(&self) -> u32 {
+        self.fingers
+    }
+}
+
+impl GestureSwipeUpdateEvent<TestInputBackend> for TestSwipeEvent {
+    fn delta_x(&self) -> f64 {
+        self.dx
+    }
+
+    fn delta_y(&self) -> f64 {
+        self.dy
+    }
+}
+
+impl GestureEndEvent<TestInputBackend> for TestSwipeEvent {
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+impl GestureSwipeBeginEvent<TestInputBackend> for TestSwipeEvent {}
+impl GestureSwipeEndEvent<TestInputBackend> for TestSwipeEvent {}
+
 pub struct TestInputBackend;
 
 impl InputBackend for TestInputBackend {
@@ -104,9 +148,9 @@ impl InputBackend for TestInputBackend {
     type PointerMotionEvent = UnusedEvent;
     type PointerMotionAbsoluteEvent = TestAbsoluteEvent;
 
-    type GestureSwipeBeginEvent = UnusedEvent;
-    type GestureSwipeUpdateEvent = UnusedEvent;
-    type GestureSwipeEndEvent = UnusedEvent;
+    type GestureSwipeBeginEvent = TestSwipeEvent;
+    type GestureSwipeUpdateEvent = TestSwipeEvent;
+    type GestureSwipeEndEvent = TestSwipeEvent;
     type GesturePinchBeginEvent = UnusedEvent;
     type GesturePinchUpdateEvent = UnusedEvent;
     type GesturePinchEndEvent = UnusedEvent;

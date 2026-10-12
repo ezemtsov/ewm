@@ -1139,7 +1139,7 @@ impl State {
         );
     }
 
-    /// Three-finger swipe update: accumulate to deadzone, then drive the active output's strip.
+    /// Three-finger swipe update: accumulate to deadzone, then drive the strip under the pointer.
     pub(crate) fn on_gesture_swipe_update<B: InputBackend>(
         &mut self,
         event: B::GestureSwipeUpdateEvent,
@@ -1181,7 +1181,7 @@ impl State {
                     if self.ewm.frames_hidden() {
                         return;
                     }
-                    if let Some(out) = self.ewm.active_output().cloned() {
+                    if let Some(out) = self.ewm.output_under_cursor().cloned() {
                         if let Some(strip) = self.ewm.layout.strip_mut(&out) {
                             strip.gesture_begin();
                         }

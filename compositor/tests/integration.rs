@@ -407,6 +407,54 @@ fn frame_focus_switch_refreshes_stationary_pointer_after_transition() {
     assert_eq!(fixture.pointer_focus_surface_id(), Some(second_surface_id));
 }
 
+/// A three-finger swipe scrolls the strip under the pointer, not the focused output's.
+#[test]
+fn strip_swipe_drives_the_output_under_the_pointer() {
+    let mut fixture = Fixture::new().unwrap();
+    fixture.add_output("Virtual-1", 1280, 720);
+    fixture.add_output("Virtual-2", 1280, 720);
+    fixture.ewm().animations_clock.set_complete_instantly(true);
+    fixture.tile_command(
+        "Virtual-1",
+        vec![
+            frame_with_entry(10, nz(1), 100),
+            frame_with_entry(11, nz(2), 101),
+        ],
+    );
+    fixture.tile_command(
+        "Virtual-2",
+        vec![
+            frame_with_entry(20, nz(3), 200),
+            frame_with_entry(21, nz(4), 201),
+        ],
+    );
+    fixture.dispatch_roundtrip(2);
+    let virtual_2 = fixture.output("Virtual-2");
+    let geo = fixture.ewm_ref().space.output_geometry(&virtual_2).unwrap();
+    fixture.pointer_motion_to(f64::from(geo.loc.x) + 640.0, f64::from(geo.loc.y) + 360.0);
+    fixture.ewm().set_focus_frame(10, "test", false);
+    assert_eq!(
+        fixture.ewm_ref().active_output().map(Output::name),
+        Some("Virtual-1".to_string())
+    );
+
+    fixture.swipe_begin(3);
+    fixture.swipe_update(700.0, 0.0);
+    assert_eq!(
+        fixture
+            .ewm_ref()
+            .gesture
+            .active_output
+            .as_ref()
+            .map(Output::name),
+        Some("Virtual-2".to_string())
+    );
+    assert!(fixture.strip("Virtual-1").view_is_static());
+    assert!(!fixture.strip("Virtual-2").view_is_static());
+    fixture.swipe_end();
+    assert!(fixture.strip("Virtual-2").view_is_static());
+}
+
 #[test]
 fn strip_swipe_focuses_the_snapped_frame_without_moving_the_pointer() {
     let mut fixture = Fixture::new().unwrap();

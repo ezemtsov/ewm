@@ -4050,7 +4050,7 @@ impl Ewm {
             .map(|location| location.monitor.output())
     }
 
-    fn output_under_cursor(&self) -> Option<&Output> {
+    pub(crate) fn output_under_cursor(&self) -> Option<&Output> {
         self.output_containing(self.cursor_location().into())
     }
 
