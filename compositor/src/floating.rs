@@ -6,7 +6,7 @@ use smithay::input::pointer::CursorIcon;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
-use crate::closing_frame::{CLOSE_ANIM_DURATION, ClosingFrame};
+use crate::closing_frame::Closing;
 use crate::strip::Frame;
 use crate::{LayoutEntry, slide_spring};
 
@@ -283,8 +283,9 @@ pub struct FloatingSpace {
     output: Rectangle<f64, Logical>,
     #[serde(skip)]
     clock: Clock,
+    /// Closing frames at their positions.
     #[serde(skip)]
-    closing_frames: Vec<ClosingFrame>,
+    closing_frames: Vec<(Point<f64, Logical>, Closing)>,
 }
 
 impl FloatingSpace {
@@ -403,9 +404,10 @@ impl FloatingSpace {
     pub fn close_frame(&mut self, id: u64) -> Option<Frame> {
         let (mut frame, data) = self.remove_frame_with_data(id)?;
         if let Some(snapshot) = frame.close_snapshot.take() {
-            let anim = Animation::ease(self.clock.clone(), 0., 1., CLOSE_ANIM_DURATION);
-            self.closing_frames
-                .push(ClosingFrame::new(snapshot, data.render_pos(), anim));
+            self.closing_frames.push((
+                data.render_pos(),
+                Closing::new(snapshot, self.clock.clone()),
+            ));
         }
         Some(frame)
     }
@@ -688,15 +690,20 @@ impl FloatingSpace {
         for data in &mut self.data {
             data.advance();
         }
+        for frame in &mut self.frames {
+            frame.advance();
+        }
         self.closing_frames
-            .retain(ClosingFrame::are_animations_ongoing);
+            .retain(|(_, closing)| closing.are_animations_ongoing());
     }
 
     pub fn animations_ongoing(&self) -> bool {
-        self.data.iter().any(Data::animations_ongoing) || !self.closing_frames.is_empty()
+        self.data.iter().any(Data::animations_ongoing)
+            || self.frames.iter().any(Frame::animations_ongoing)
+            || !self.closing_frames.is_empty()
     }
 
-    pub fn closing_frames(&self) -> &[ClosingFrame] {
+    pub(crate) fn closing_frames(&self) -> &[(Point<f64, Logical>, Closing)] {
         &self.closing_frames
     }
 }

@@ -11,7 +11,9 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::Sta
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
 
+use crate::closing_frame::Closing;
 use crate::resize_fade::ViewRect;
+use crate::snapshot::Snapshot;
 use crate::{
     Event, Ewm, FocusId, LayoutEntry, LayoutEntryHit, LayoutEntryId, SurfaceHit, animation,
     floating, fullscreen_center_offset, module, strip,
@@ -991,6 +993,14 @@ impl Layout {
         }
     }
 
+    /// Fade `snapshot` out where frame `id` drew the view it holds.
+    pub(crate) fn close_view(&mut self, id: u64, snapshot: Snapshot) {
+        let closing = Closing::new(snapshot, self.clock.clone());
+        if let Some(frame) = self.frame_mut(id) {
+            frame.closing_views.push(closing);
+        }
+    }
+
     /// Refill every held frame's contents from `frames`, emptying the ones it leaves out.
     pub fn merge_frames(&mut self, mut frames: Vec<strip::Frame>) {
         for monitor in &mut self.monitors {
@@ -1267,12 +1277,34 @@ impl Ewm {
     }
 
     /// Bake frame `id`'s close snapshot.
-    pub(crate) fn store_frame_close_snapshot(&mut self, renderer: &mut GlesRenderer, id: u64) {
-        let Some(snapshot) = crate::render::render_frame_snapshot(self, renderer, id) else {
+    /// Bake `id` for its close animation: a frame into its record, a surface into every frame
+    /// showing it.
+    pub(crate) fn store_close_snapshot(&mut self, renderer: &mut GlesRenderer, id: u64) {
+        if self.layout.has_frame(id) {
+            if let Some(snapshot) = crate::render::render_frame_snapshot(self, renderer, id)
+                && let Some(frame) = self.layout.frame_mut(id)
+            {
+                frame.close_snapshot = Some(snapshot);
+            }
             return;
-        };
-        if let Some(frame) = self.layout.frame_mut(id) {
-            frame.close_snapshot = Some(snapshot);
+        }
+        // Unmapped already, so its views are fading.
+        if !self
+            .window(id)
+            .and_then(Window::wl_surface)
+            .is_some_and(|surface| crate::utils::is_mapped(&surface))
+        {
+            return;
+        }
+        let views: Vec<(u64, Snapshot)> = self
+            .surface_entry_locations(id)
+            .filter_map(|location| {
+                let snapshot = crate::render::render_closing_view(self, renderer, location)?;
+                Some((location.frame.surface_id, snapshot))
+            })
+            .collect();
+        for (frame_id, snapshot) in views {
+            self.layout.close_view(frame_id, snapshot);
         }
     }
 
@@ -1442,7 +1474,10 @@ impl Ewm {
     }
 
     /// Entries showing `id`: every strip in output order, then every floating space.
-    fn surface_entry_locations(&self, id: u64) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
+    pub(crate) fn surface_entry_locations(
+        &self,
+        id: u64,
+    ) -> impl Iterator<Item = LayoutEntryLocation<'_>> {
         let locations = |floating| {
             self.mapped_monitors()
                 .flat_map(move |monitor| monitor.entry_locations_in(floating))

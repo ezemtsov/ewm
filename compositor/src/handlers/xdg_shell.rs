@@ -24,7 +24,7 @@ use tracing::warn;
 
 use crate::{Ewm, State, im};
 
-/// Snapshot an unmapping frame, fade a resize answer, note where views sat before a flip.
+/// Snapshot an unmapping frame or view, fade a resize answer, note where views sat before a flip.
 pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> HookId {
     add_pre_commit_hook::<State, _>(surface, move |state, _dh, surface| {
         let (removed, attached, acked) = with_states(surface, |states| {

@@ -39,6 +39,13 @@ impl CompositorHandler for State {
         }
     }
 
+    fn destroyed(&mut self, surface: &WlSurface) {
+        // A disconnecting client can lose its surface before its toplevel.
+        if let Some(id) = self.ewm.surface_id(surface) {
+            self.store_close_snapshots(&[id]);
+        }
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 

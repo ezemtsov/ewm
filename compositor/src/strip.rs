@@ -10,7 +10,7 @@ use std::time::Duration;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
-use crate::closing_frame::{CLOSE_ANIM_DURATION, ClosingFrame};
+use crate::closing_frame::Closing;
 use crate::floating::SizeFracPoint;
 use crate::snapshot::Snapshot;
 use crate::{FocusId, LayoutEntry, LayoutEntryId, slide_spring};
@@ -215,6 +215,9 @@ pub struct Frame {
     pub pinned_to: Option<u64>,
     #[serde(skip)]
     pub close_snapshot: Option<Snapshot>,
+    /// Views fading out where they were drawn.
+    #[serde(skip)]
+    pub closing_views: Vec<Closing>,
 }
 
 impl Frame {
@@ -239,11 +242,24 @@ impl Frame {
             floating_pos: None,
             pinned_to: None,
             close_snapshot: None,
+            closing_views: Vec::new(),
         }
     }
 
     pub fn move_offset(&self) -> f64 {
         self.move_anim.as_ref().map_or(0.0, Animation::value)
+    }
+
+    /// Drop finished animations.
+    pub fn advance(&mut self) {
+        if self.move_anim.as_ref().is_some_and(Animation::is_done) {
+            self.move_anim = None;
+        }
+        self.closing_views.retain(Closing::are_animations_ongoing);
+    }
+
+    pub(crate) fn animations_ongoing(&self) -> bool {
+        self.move_anim.is_some() || !self.closing_views.is_empty()
     }
 
     pub fn entry_surface_id(&self, entry_id: LayoutEntryId) -> Option<u64> {
@@ -289,13 +305,14 @@ impl Frame {
         }
     }
 
-    /// Take `new`'s contents, keeping the name, slot animation and floating state.
+    /// Take `new`'s contents, keeping the name, animations and floating state.
     pub fn refill(&mut self, mut new: Frame) {
         new.validate_selection();
         if new.workspace_name.is_none() {
             new.workspace_name = self.workspace_name.take();
         }
         new.move_anim = self.move_anim.take();
+        new.closing_views = mem::take(&mut self.closing_views);
         new.floating_pos = self.floating_pos;
         new.pinned_to = self.pinned_to;
         *self = new;
@@ -347,8 +364,9 @@ pub struct Strip {
     scale: f64,
     #[serde(skip)]
     clock: Clock,
+    /// Closing frames at their strip positions.
     #[serde(skip)]
-    closing_frames: Vec<ClosingFrame>,
+    closing_frames: Vec<(Point<f64, Logical>, Closing)>,
 }
 
 impl Strip {
@@ -593,28 +611,26 @@ impl Strip {
     pub fn advance(&mut self) {
         self.view_offset.advance();
         for f in &mut self.frames {
-            if f.move_anim.as_ref().is_some_and(Animation::is_done) {
-                f.move_anim = None;
-            }
+            f.advance();
         }
         self.closing_frames
-            .retain(ClosingFrame::are_animations_ongoing);
+            .retain(|(_, closing)| closing.are_animations_ongoing());
     }
 
     pub fn animations_ongoing(&self) -> bool {
         self.view_offset.is_animation_ongoing()
-            || self.frames.iter().any(|f| f.move_anim.is_some())
+            || self.frames.iter().any(Frame::animations_ongoing)
             || !self.closing_frames.is_empty()
     }
 
     /// Closing frames with their screen-space origin, newest first.
     pub fn closing_frames_with_render_pos(
         &self,
-    ) -> impl Iterator<Item = (&ClosingFrame, Point<f64, Logical>)> {
+    ) -> impl Iterator<Item = (&Closing, Point<f64, Logical>)> {
         self.closing_frames
             .iter()
             .rev()
-            .map(|closing| (closing, closing.pos() - Point::from((self.view_pos(), 0.))))
+            .map(|(pos, closing)| (closing, *pos - Point::from((self.view_pos(), 0.))))
     }
 
     /// `(idx, frame, slot, screen_x)` for frames whose slot meets the screen-space `viewport`.
@@ -759,9 +775,8 @@ impl Strip {
         let pos = Point::from((screen_x + self.view_pos(), 0.));
         // Fade only after the neighbours have slid in over it.
         let delay = slide.map_or(Duration::ZERO, |slide| slide.duration());
-        let anim = Animation::ease(self.clock.clone(), 0., 1., CLOSE_ANIM_DURATION).delayed(delay);
-        self.closing_frames
-            .push(ClosingFrame::new(snapshot, pos, anim));
+        let closing = Closing::new(snapshot, self.clock.clone()).delayed(delay);
+        self.closing_frames.push((pos, closing));
     }
 
     /// Begin a touchpad-driven view-offset gesture.

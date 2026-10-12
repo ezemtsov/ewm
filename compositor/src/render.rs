@@ -49,7 +49,9 @@ use smithay::wayland::shell::wlr_layer::Layer;
 use smithay::wayland::shm;
 use tracing::warn;
 
+use crate::closing_frame::Closing;
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
+use crate::layout::{FrameLocation, LayoutEntryLocation};
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
 use crate::render_helpers::background_effect;
 use crate::render_helpers::framebuffer_effect::FramebufferEffectElement;
@@ -874,9 +876,8 @@ pub fn collect_render_elements_for_output(
         let surfaces = &ewm.surfaces;
 
         // Draw the closing frames on top of the other frames.
-        for closing in floating.closing_frames().iter().rev() {
-            let elem = closing.render(closing.pos());
-            content.push(ContentRenderElement::Texture(elem));
+        for (pos, closing) in floating.closing_frames().iter().rev() {
+            content.push(ContentRenderElement::Texture(closing.render(*pos)));
         }
 
         for (frame, data) in floating.frames_with_data_mut() {
@@ -885,6 +886,11 @@ pub fn collect_render_elements_for_output(
             else {
                 continue;
             };
+            push_closing_views(
+                &mut content,
+                &frame.closing_views,
+                data.render_pos() + Point::from((dx, 0.)),
+            );
             let frame_surface = surfaces.get(&frame.surface_id);
             let frame_box = frame_rect.to_physical_precise_round(scale);
             let space = FrameSpace {
@@ -977,6 +983,7 @@ pub fn collect_render_elements_for_output(
                 ),
                 slot: Rectangle::new(frame_offset, output_phys),
             };
+            push_closing_views(&mut content, &frame.closing_views, space.origin);
             let in_active_frame = frame_idx == active_idx;
             let backdrop_alpha = |entry: &LayoutEntry| {
                 entry
@@ -1105,49 +1112,125 @@ pub fn collect_render_elements_for_output(
     (elements, cursor_elements)
 }
 
-/// `frame`'s views about its own origin, without blur, the fullscreen one first over its backdrop.
-#[allow(clippy::too_many_arguments)]
+/// `frame`'s views about its own origin, closing ones on top, the fullscreen one over the rest.
 fn render_frame_views(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
     ewm: &Ewm,
     frame: &crate::strip::Frame,
-    output_size: Size<i32, Logical>,
-    working_area: Rectangle<i32, Logical>,
-    backdrop: Option<&SolidColorBuffer>,
-    scale: Scale<f64>,
+    bake: &Bake<'_>,
 ) {
+    push_closing_views(content, &frame.closing_views, Point::from((0., 0.)));
+    let space = frame_own_space(ewm, frame, bake);
+    let fullscreen = frame.entries.iter().filter(|entry| entry.fullscreen());
+    let others = frame.entries.iter().filter(|entry| !entry.fullscreen());
+    for entry in fullscreen.chain(others) {
+        push_frame_view(content, renderer, ewm, entry, space, bake);
+    }
+}
+
+/// `closing` views fading out about the frame origin at `origin`.
+fn push_closing_views(
+    content: &mut Vec<ContentRenderElement>,
+    closing: &[Closing],
+    origin: Point<f64, Logical>,
+) {
+    for closing in closing.iter().rev() {
+        content.push(ContentRenderElement::Texture(closing.render(origin)));
+    }
+}
+
+/// The output around a frame being baked: scale, size, its origin in frame space, the backdrop.
+struct Bake<'a> {
+    scale: Scale<f64>,
+    output_size: Size<i32, Logical>,
+    origin: Point<i32, Logical>,
+    backdrop: Option<&'a SolidColorBuffer>,
+}
+
+fn bake_env<'a>(ewm: &'a Ewm, location: FrameLocation<'_>) -> Bake<'a> {
+    let output = location.monitor.output();
+    // A float's own place is its origin, a strip frame's is in the working area.
+    let origin = if location.floating {
+        let pos = location
+            .monitor
+            .floating
+            .frame_with_data(location.frame.surface_id)
+            .map_or(Point::default(), |(_, data)| data.render_pos());
+        Point::from((-(pos.x.round() as i32), -(pos.y.round() as i32)))
+    } else {
+        let working_area = ewm.get_working_area(output);
+        Point::from((-working_area.loc.x, -working_area.loc.y))
+    };
+    Bake {
+        scale: Scale::from(output.current_scale().fractional_scale()),
+        output_size: crate::utils::output_size(output).to_i32_round(),
+        origin,
+        backdrop: ewm
+            .output_state
+            .get(output)
+            .map(|state| &state.fullscreen_backdrop),
+    }
+}
+
+/// `frame`'s space about its own origin: its bounds and the output-sized slot around it.
+fn frame_own_space(ewm: &Ewm, frame: &crate::strip::Frame, bake: &Bake<'_>) -> FrameSpace {
+    let frame_box = Rectangle::<f64, Logical>::from_size(Size::from((frame.width, frame.height)))
+        .to_physical_precise_round(bake.scale);
+    FrameSpace {
+        origin: Point::from((0., 0.)),
+        bounds: frame_bounds(ewm.surfaces.get(&frame.surface_id), frame_box, bake.scale),
+        slot: Rectangle::new(
+            bake.origin.to_physical_precise_round(bake.scale),
+            bake.output_size.to_physical_precise_round(bake.scale),
+        ),
+    }
+}
+
+/// `entry` about its frame's origin, without blur.
+fn push_frame_view(
+    content: &mut Vec<ContentRenderElement>,
+    renderer: &mut GlesRenderer,
+    ewm: &Ewm,
+    entry: &LayoutEntry,
+    space: FrameSpace,
+    bake: &Bake<'_>,
+) {
+    let Some(surface) = entry.surface_id().and_then(|id| ewm.surfaces.get(&id)) else {
+        return;
+    };
     let no_blur = Blur {
         off: true,
         ..Blur::default()
     };
-    let space = FrameSpace {
-        origin: Point::from((0., 0.)),
-        bounds: frame_bounds(
-            ewm.surfaces.get(&frame.surface_id),
-            Rectangle::<f64, Logical>::from_size(Size::from((frame.width, frame.height)))
-                .to_physical_precise_round(scale),
-            scale,
-        ),
-        // The output about the frame's own origin.
-        slot: Rectangle::new(
-            Point::<i32, Logical>::from((-working_area.loc.x, -working_area.loc.y))
-                .to_physical_precise_round(scale),
-            output_size.to_physical_precise_round(scale),
-        ),
-    };
-    let fullscreen = frame.entries.iter().filter(|entry| entry.fullscreen());
-    let others = frame.entries.iter().filter(|entry| !entry.fullscreen());
-    for entry in fullscreen.chain(others) {
-        let Some(surface) = entry.surface_id().and_then(|id| ewm.surfaces.get(&id)) else {
-            continue;
-        };
-        let focused = entry.fullscreen() || ewm.focused_entry_id == Some(entry.id);
-        let alpha = if focused { 1.0 } else { ewm.unfocused_alpha };
-        if let Some(place) = ViewPlace::new(surface, entry, alpha, space, output_size, scale) {
-            push_view(content, renderer, &place, backdrop, scale, no_blur);
-        }
+    let focused = entry.fullscreen() || ewm.focused_entry_id == Some(entry.id);
+    let alpha = if focused { 1.0 } else { ewm.unfocused_alpha };
+    if let Some(place) = ViewPlace::new(surface, entry, alpha, space, bake.output_size, bake.scale)
+    {
+        push_view(
+            content,
+            renderer,
+            &place,
+            bake.backdrop,
+            bake.scale,
+            no_blur,
+        );
     }
+}
+
+/// The view at `location` baked for its close animation, about its frame's origin.
+pub(crate) fn render_closing_view(
+    ewm: &Ewm,
+    renderer: &mut GlesRenderer,
+    location: LayoutEntryLocation<'_>,
+) -> Option<Snapshot> {
+    tracy_span!("render_closing_view");
+
+    let bake = bake_env(ewm, location.frame_location());
+    let space = frame_own_space(ewm, location.frame, &bake);
+    let mut content: Vec<ContentRenderElement> = Vec::new();
+    push_frame_view(&mut content, renderer, ewm, location.entry, space, &bake);
+    Snapshot::new(renderer, &content, bake.scale)
 }
 
 /// Frame `id` with its views baked to a texture for its close animation.
@@ -1160,36 +1243,17 @@ pub fn render_frame_snapshot(
 
     let location = ewm.layout.frame_location(id)?;
     let output = location.monitor.output().clone();
-    let scale = Scale::from(output.current_scale().fractional_scale());
-    let output_size = {
-        let size = crate::utils::output_size(&output);
-        Size::from((size.w as i32, size.h as i32))
-    };
-    let working_area = ewm.get_working_area(&output);
-    let backdrop = ewm
-        .output_state
-        .get(&output)
-        .map(|state| &state.fullscreen_backdrop);
+    let bake = bake_env(ewm, location);
+    let scale = bake.scale;
 
     let mut content: Vec<ContentRenderElement> = Vec::new();
-    render_frame_views(
-        &mut content,
-        renderer,
-        ewm,
-        location.frame,
-        output_size,
-        working_area,
-        backdrop,
-        scale,
-    );
+    render_frame_views(&mut content, renderer, ewm, location.frame, &bake);
     // Like the live pass, no frame surface or shadow before the frame has shown a buffer.
-    if let Some(window) = ewm.window(id)
-        && window
-            .wl_surface()
-            .is_some_and(|surface| crate::utils::is_mapped(&surface))
+    if let Some(surface) = ewm.surfaces.get(&id)
+        && surface.has_buffer()
     {
         let elements =
-            render_window_without_popups(window, renderer, Point::from((0, 0)), scale, 1.);
+            render_window_without_popups(&surface.window, renderer, Point::from((0, 0)), scale, 1.);
         content.extend(elements.into_iter().map(ContentRenderElement::Surface));
         if let Some((_, data)) = ewm
             .layout
