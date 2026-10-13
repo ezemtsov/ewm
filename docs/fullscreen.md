@@ -13,9 +13,10 @@ windows as they are and the compositor draws the view over the whole output.
   before Emacs has shown a view configures the client at fullscreen size and
   takes effect on the first view the layout brings
   (`tests/fullscreen_integration.rs`).
-- Emacs: `ewm-toggle-fullscreen` (`s-f`) toggles the selected window's view
-  through `ewm-toggle-fullscreen-module`, `ewm-set-fullscreen-module` sets it.
-  Emacs is not told about client requests, nothing in its window layout changes.
+- Key: `s-f` runs the `toggle-fullscreen` action in the compositor on the
+  focused view, Emacs uninvolved. Emacs: `ewm-toggle-fullscreen` runs the
+  same action, `ewm-set-fullscreen-module` sets the bit. Emacs is not told
+  about client requests, nothing in its window layout changes.
 
 ## Where it shows
 

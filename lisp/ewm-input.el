@@ -10,7 +10,8 @@
 ;;
 ;; The compositor intercepts keys from three sources:
 ;;
-;; 1. `ewm-mode-map' - All bindings in this keymap are intercepted.
+;; 1. `ewm-mode-map' - All bindings in this keymap are intercepted, those
+;;    of commands with an `ewm-action' property run in the compositor.
 ;;    Override defaults with use-package :bind (:map ewm-mode-map ...).
 ;; 2. `ewm-intercept-prefixes' - Extra keys to intercept, plus keys that
 ;;    should also be intercepted while a client is fullscreen.
@@ -26,21 +27,23 @@
 (require 'cl-lib)
 (require 'windmove)
 
+(declare-function ewm-action-module "ewm-core" (action))
+
 (defmacro ewm--cmd (&rest args)
   "Create an interactive command that runs ARGS as a subprocess."
-  `(lambda () (interactive) (start-process ,(car args) nil ,@args)))
+  `(lambda () (interactive) (ewm-action-module '(spawn :command ,args))))
 
 (defvar ewm-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<XF86WakeUp>") #'ignore)
     (define-key map (kbd "C-M-<XF86WakeUp>") #'ignore)
     ;; Media/hardware keys
-    (define-key map (kbd "<AudioRaiseVolume>")  (ewm--cmd "wpctl" "set-volume" "-l" "1.0" "@DEFAULT_AUDIO_SINK@" "5%+"))
-    (define-key map (kbd "<AudioLowerVolume>")  (ewm--cmd "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%-"))
-    (define-key map (kbd "<AudioMute>")         (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"))
-    (define-key map (kbd "<AudioMicMute>")      (ewm--cmd "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
-    (define-key map (kbd "<MonBrightnessUp>")   (ewm--cmd "brightnessctl" "set" "5%+"))
-    (define-key map (kbd "<MonBrightnessDown>") (ewm--cmd "brightnessctl" "set" "5%-"))
+    (define-key map (kbd "<AudioRaiseVolume>") #'ewm-volume-raise)
+    (define-key map (kbd "<AudioLowerVolume>") #'ewm-volume-lower)
+    (define-key map (kbd "<AudioMute>") #'ewm-volume-mute)
+    (define-key map (kbd "<AudioMicMute>") #'ewm-mic-mute)
+    (define-key map (kbd "<MonBrightnessUp>") #'ewm-brightness-up)
+    (define-key map (kbd "<MonBrightnessDown>") #'ewm-brightness-down)
     ;; Window navigation; crosses outputs at the frame edge.
     (define-key map (kbd "s-<left>") #'ewm-focus-left)
     (define-key map (kbd "s-<right>") #'ewm-focus-right)
@@ -109,6 +112,12 @@ Override individual bindings with `use-package':
 (declare-function ewm-toggle-fullscreen "ewm")
 (declare-function ewm-floating-toggle "ewm")
 (declare-function ewm-lock-session "ewm")
+(declare-function ewm-volume-raise "ewm")
+(declare-function ewm-volume-lower "ewm")
+(declare-function ewm-volume-mute "ewm")
+(declare-function ewm-mic-mute "ewm")
+(declare-function ewm-brightness-up "ewm")
+(declare-function ewm-brightness-down "ewm")
 (declare-function ewm-edit "ewm-text-input")
 (declare-function ewm-frame-new "ewm")
 (declare-function ewm-frame-close "ewm")
@@ -280,7 +289,7 @@ that surface only, see `ewm-update-app-hook'."
 (defconst ewm-input--repeatable-key-descriptions
   '("<AudioRaiseVolume>" "<AudioLowerVolume>" "<AudioMute>" "<AudioMicMute>"
     "<MonBrightnessUp>" "<MonBrightnessDown>")
-  "Special key descriptions that should repeat despite anonymous bindings.")
+  "Hardware keys that repeat whatever they are bound to.")
 
 (defun ewm-input--gdk-style-xf86-key-p (event)
   "Return non-nil when EVENT is a GDK-style XF86 key name."
@@ -622,12 +631,20 @@ VALUE is the ASCII code or special-key name; flags are t or nil."
   (when-let* ((key-spec (ewm--event-key-spec event)))
     `(,@key-spec :description ,(key-description (vector event)) ,@props)))
 
+(defun ewm--event-action (event)
+  "The compositor action EVENT's `ewm-mode-map' command declares, or nil."
+  (let ((binding (ewm--event-mode-binding event)))
+    (when-let* (((symbolp binding))
+                (action (function-get binding 'ewm-action)))
+      (if (functionp action) (funcall action event) action))))
+
 (defun ewm--event-to-intercept-spec (event &optional fullscreen dispatch)
   "Return EVENT's compositor intercept spec plist, or nil."
   (ewm--intercept-spec event
                        :fullscreen (and fullscreen t)
                        :dispatch (or dispatch (ewm--event-dispatch event))
-                       :repeat (and (ewm--event-repeat-p event) t)))
+                       :repeat (and (ewm--event-repeat-p event) t)
+                       :action (ewm--event-action event)))
 
 (defun ewm--parse-intercept-entry (entry)
   "Parse ENTRY from `ewm-intercept-prefixes' into (event . fullscreen-p), or nil."

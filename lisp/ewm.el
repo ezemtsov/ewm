@@ -37,7 +37,6 @@
 (declare-function ewm-drain-events "ewm-core")
 (declare-function ewm-set-selection-module "ewm-core")
 (declare-function ewm-layout-module "ewm-core")
-(declare-function ewm-move-frame-module "ewm-core")
 (declare-function ewm-get-strip-frame-ids "ewm-core")
 (declare-function ewm-get-frame-output "ewm-core")
 (declare-function ewm-close-module "ewm-core")
@@ -52,7 +51,6 @@
 (declare-function ewm-resize-floating-frame-module "ewm-core")
 (declare-function ewm-workspace-rename-module "ewm-core")
 (declare-function ewm-workspace-mark-urgent-module "ewm-core")
-(declare-function ewm-toggle-fullscreen-module "ewm-core")
 (declare-function ewm-get-active-outputs "ewm-core")
 (declare-function ewm-get-output-origin "ewm-core")
 (declare-function ewm-get-frame-origin "ewm-core")
@@ -70,8 +68,7 @@
 (declare-function ewm-configure-background-module "ewm-core" (red green blue))
 (declare-function ewm-configure-blur-module "ewm-core"
                   (on passes offset noise saturation))
-(declare-function ewm-overview-module "ewm-core" (action))
-(declare-function ewm-hide-toggle-module "ewm-core")
+(declare-function ewm-action-module "ewm-core" (action))
 (declare-function ewm-notify-initialized-module "ewm-core")
 (declare-function ewm-focus-output-direction-module "ewm-core")
 (declare-function ewm-get-focused-frame-id "ewm-core")
@@ -941,10 +938,40 @@ of inactivity.  Useful for video playback or presentations."
 
 ;;; Commands
 
-(defun ewm-lock-session ()
-  "Lock the session via loginctl."
-  (interactive)
-  (start-process "loginctl" nil "loginctl" "lock-session"))
+(defmacro ewm--define-action (name action docstring)
+  "Define command NAME as compositor ACTION, documented by DOCSTRING."
+  (declare (indent defun) (doc-string 3))
+  `(progn
+     (defun ,name ()
+       ,docstring
+       (interactive)
+       (ewm-action-module ',action))
+     (function-put ',name 'ewm-action ',action)))
+
+(ewm--define-action ewm-lock-session (spawn :command ("loginctl" "lock-session"))
+  "Lock the session via loginctl.")
+
+(ewm--define-action ewm-volume-raise
+  (spawn :command ("wpctl" "set-volume" "-l" "1.0" "@DEFAULT_AUDIO_SINK@" "5%+"))
+  "Raise the default sink's volume by 5%.")
+
+(ewm--define-action ewm-volume-lower
+  (spawn :command ("wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%-"))
+  "Lower the default sink's volume by 5%.")
+
+(ewm--define-action ewm-volume-mute
+  (spawn :command ("wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"))
+  "Toggle the default sink's mute.")
+
+(ewm--define-action ewm-mic-mute
+  (spawn :command ("wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"))
+  "Toggle the default source's mute.")
+
+(ewm--define-action ewm-brightness-up (spawn :command ("brightnessctl" "set" "5%+"))
+  "Raise the screen brightness by 5%.")
+
+(ewm--define-action ewm-brightness-down (spawn :command ("brightnessctl" "set" "5%-"))
+  "Lower the screen brightness by 5%.")
 
 (defun ewm-power-off-monitors ()
   "Power off all monitors until a key press, pointer motion or session unlock."
@@ -1458,11 +1485,8 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
         (ewm--floating-attach-selected-buffer frame)
       (ewm--floating-detach-selected-buffer frame))))
 
-(defun ewm-toggle-fullscreen ()
-  "Toggle fullscreen for the view in the selected window."
-  (interactive)
-  (when-let* ((entry (window-parameter nil 'ewm-entry-id)))
-    (ewm-toggle-fullscreen-module entry)))
+(ewm--define-action ewm-toggle-fullscreen toggle-fullscreen
+  "Toggle fullscreen for the focused view.")
 
 (defun ewm-frame-close ()
   "Close the focused frame; the compositor refocuses a same-output neighbour."
@@ -1484,102 +1508,54 @@ Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
   "Frame the user is on per the compositor, falling back to `selected-frame'."
   (or (ewm--current-frame) (selected-frame)))
 
-(defun ewm--frame-shift-on-output (delta)
-  "Move strip focus by DELTA on the current output (no wrap-around).
-Returns the target frame on success, nil at the strip edge.  Anchors at
-the focused frame when it is in the strip, else the shown frame, so
-navigation works while a float holds focus."
-  (let* ((focused (ewm--focused-frame))
-         (output (ewm--frame-output focused))
-         (frames (ewm--strip-frames output))
-         (current (if (memq focused frames) focused (ewm-output-active-frame output)))
-         (idx (cl-position current frames))
-         (target-idx (and idx (+ idx delta))))
-    (when (and target-idx (>= target-idx 0) (< target-idx (length frames)))
-      (let ((target (nth target-idx frames)))
-        (select-frame-set-input-focus target)
-        target))))
+(ewm--define-action ewm-frame-left (focus-frame :delta -1)
+  "Slide to the previous frame on the current output's strip.")
 
-(defun ewm-frame-left ()
-  "Slide to the previous frame on the current output's strip."
-  (interactive)
-  (ewm--frame-shift-on-output -1))
+(ewm--define-action ewm-frame-right (focus-frame :delta 1)
+  "Slide to the next frame on the current output's strip.")
 
-(defun ewm-frame-right ()
-  "Slide to the next frame on the current output's strip."
-  (interactive)
-  (ewm--frame-shift-on-output 1))
-
-(defun ewm-overview-toggle ()
+(ewm--define-action ewm-overview-toggle (overview toggle)
   "Toggle the overview: zoom every output out to show its whole strip.
-Click a frame to select it and zoom back in."
-  (interactive)
-  (ewm-overview-module "toggle"))
+Click a frame to select it and zoom back in.")
 
-(defun ewm-overview-open ()
-  "Open the overview."
-  (interactive)
-  (ewm-overview-module "open"))
+(ewm--define-action ewm-overview-open (overview open)
+  "Open the overview.")
 
-(defun ewm-overview-close ()
-  "Close the overview."
-  (interactive)
-  (ewm-overview-module "close"))
+(ewm--define-action ewm-overview-close (overview close)
+  "Close the overview.")
 
-(defun ewm-hide-toggle ()
+(ewm--define-action ewm-hide-toggle hide-toggle
   "Slide every frame off its output to show what is behind, or bring them back.
-Clicking the emptied output also brings them back."
-  (interactive)
-  (ewm-hide-toggle-module))
+Clicking the emptied output also brings them back.")
+
+(defun ewm--frame-select-action (event)
+  "The `focus-nth-frame' action for the digit key EVENT."
+  (list 'focus-nth-frame :n (- (event-basic-type event) ?0)))
 
 (defun ewm-frame-select ()
-  "Select the Nth frame (1-based) on the current output.
-Reads the digit from `last-command-event'.  No-op if N is past the
-number of frames on this output."
+  "Select the Nth frame (1-based) on the current output, N the digit pressed.
+No-op if N is past the number of frames on this output."
   (interactive)
-  (let* ((pressed (- (event-basic-type last-command-event) ?0))
-         (current (ewm--focused-frame))
-         (output (ewm--frame-output current))
-         (frames (ewm--strip-frames output))
-         (target (and (>= pressed 1) (<= pressed (length frames))
-                      (nth (1- pressed) frames))))
-    (when target
-      (select-frame-set-input-focus target))))
+  (ewm-action-module (ewm--frame-select-action last-command-event)))
+(function-put 'ewm-frame-select 'ewm-action #'ewm--frame-select-action)
 
-(defun ewm--move-frame-on-strip (delta)
-  "Ask the compositor to move the focused frame DELTA slots along its strip."
-  (when-let* ((id (frame-parameter (ewm--focused-frame) 'ewm-surface-id)))
-    (ewm-move-frame-module id delta)))
+(ewm--define-action ewm-frame-move-left (move-frame :delta -1)
+  "Move the selected frame one slot left in the strip.")
 
-(defun ewm-frame-move-left ()
-  "Move the selected frame one slot left in the strip."
-  (interactive)
-  (ewm--move-frame-on-strip -1))
+(ewm--define-action ewm-frame-move-right (move-frame :delta 1)
+  "Move the selected frame one slot right in the strip.")
 
-(defun ewm-frame-move-right ()
-  "Move the selected frame one slot right in the strip."
-  (interactive)
-  (ewm--move-frame-on-strip 1))
+(ewm--define-action ewm-output-focus-left (focus-output :dx -1 :dy 0)
+  "Focus the active frame on the output to the left of the current one.")
 
-(defun ewm-output-focus-left ()
-  "Focus the active frame on the output to the left of the current one."
-  (interactive)
-  (ewm-focus-output-direction-module -1 0))
+(ewm--define-action ewm-output-focus-right (focus-output :dx 1 :dy 0)
+  "Focus the active frame on the output to the right of the current one.")
 
-(defun ewm-output-focus-right ()
-  "Focus the active frame on the output to the right of the current one."
-  (interactive)
-  (ewm-focus-output-direction-module 1 0))
+(ewm--define-action ewm-output-focus-up (focus-output :dx 0 :dy -1)
+  "Focus the active frame on the output above the current one.")
 
-(defun ewm-output-focus-up ()
-  "Focus the active frame on the output above the current one."
-  (interactive)
-  (ewm-focus-output-direction-module 0 -1))
-
-(defun ewm-output-focus-down ()
-  "Focus the active frame on the output below the current one."
-  (interactive)
-  (ewm-focus-output-direction-module 0 1))
+(ewm--define-action ewm-output-focus-down (focus-output :dx 0 :dy 1)
+  "Focus the active frame on the output below the current one.")
 
 (defun ewm-focus-left ()
   "Focus the visible window to the left; cross output at the frame edge."

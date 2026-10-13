@@ -109,6 +109,26 @@
   (let ((spec (ewm--event-to-intercept-spec ?a t)))
     (should (eq (plist-get spec :fullscreen) t))))
 
+(defun ewm-input-tests--go () (interactive))
+(function-put 'ewm-input-tests--go 'ewm-action '(focus-frame :delta 1))
+(defun ewm-input-tests--nth () (interactive))
+(function-put 'ewm-input-tests--nth 'ewm-action
+              (lambda (event) (list 'focus-nth-frame :n (- (event-basic-type event) ?0))))
+
+(ert-deftest ewm-input-tests/spec-action ()
+  "A command's `ewm-action' rides the spec, a function of the key when it is one."
+  (define-key ewm-mode-map (kbd "s-<f9>") #'ewm-input-tests--go)
+  (define-key ewm-mode-map (kbd "s-C-7") #'ewm-input-tests--nth)
+  (unwind-protect
+      (progn
+        (should (equal (plist-get (ewm--event-to-intercept-spec 's-f9) :action)
+                       '(focus-frame :delta 1)))
+        (should (equal (plist-get (ewm--event-to-intercept-spec ?\C-\s-7) :action)
+                       '(focus-nth-frame :n 7)))
+        (should-not (plist-get (ewm--event-to-intercept-spec ?a) :action)))
+    (define-key ewm-mode-map (kbd "s-<f9>") nil)
+    (define-key ewm-mode-map (kbd "s-C-7") nil)))
+
 (ert-deftest ewm-input-tests/spec-modifiers ()
   "Ctrl/Meta/Shift/Super are surfaced as boolean flags."
   (let ((spec (ewm--event-to-intercept-spec
