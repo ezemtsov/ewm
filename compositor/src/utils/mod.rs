@@ -6,6 +6,7 @@
 
 pub mod region;
 pub mod reply;
+pub(crate) mod spawning;
 
 use std::os::fd::AsFd;
 use std::time::Duration;

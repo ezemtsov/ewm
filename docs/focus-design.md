@@ -263,6 +263,12 @@ After specific operations:
 13. **Activating a multi-view surface stays in the focused frame.**  The
     focused view wins when it shows the surface, else a view in the
     focused frame, else the first view in output order.
+14. **Keys for Emacs follow the Focus they were typed after.**  While a
+    Focus event waits unread, keys bound for an Emacs surface queue in the
+    compositor and replay in order once Emacs drains the queue, into the
+    frame Emacs then selects.  Actions never wait, a VT switch never waits,
+    and the queue is handed over before keyboard focus leaves Emacs.
+    Modifier-only keys join an existing queue but never start one.
 
 The pure `resolve_keyboard_focus_target` helper (lock > layer >
 toplevel priority) is covered by a second set of properties in the
@@ -302,11 +308,10 @@ Three concrete examples:
    processed the event, lisp's `selected-window` and the compositor's
    focus disagree -- by design, briefly.
 
-3. When the user toggles a fullscreen surface via an intercepted command,
-   the keystroke reaches Emacs over the event pipe without moving Wayland
-   focus.  Emacs runs the toggle; lisp re-ships the layout; the compositor
-   sees fullscreen now applies; the user wants keys to continue going to
-   the surface immediately, not to Emacs.
+3. When a key runs a compositor action (a strip switch, a fullscreen
+   toggle), the compositor changes focus or the fullscreen bit on the
+   press and tells lisp over the pipe, as for a click or a swipe.  Until
+   lisp drains the event, `selected-frame` lags -- by design, briefly.
 
 The architecture's job is to make each of these self-healing rather than
 brittle.
@@ -391,11 +396,11 @@ triggers them, rather than deferred to a later tick:
   key is already coming.  Ordinary command bindings are delivered to Lisp
   without moving Wayland focus; if they open a minibuffer, transient, or
   read-key state, Lisp asks the compositor to capture keyboard focus at
-  that point.
+  that point.  Bindings of compositor actions (`Action`) never reach Lisp.
 
-- **Fullscreen surfaces.**  After an intercepted key toggles a surface
-  fullscreen, keyboard focus has to land back on the now-fullscreen
-  surface immediately, not on the Emacs frame the key was redirected to.
+- **Fullscreen surfaces.**  After a key or an Emacs command makes a
+  surface fullscreen, keyboard focus has to land on the now-fullscreen
+  surface immediately, not on the Emacs frame.
   A small redirect in the input handler ensures this: if the focused
   frame has a fullscreen view and the keyboard isn't on it, snap it
   back.

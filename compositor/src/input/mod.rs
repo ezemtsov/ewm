@@ -68,7 +68,7 @@ use tracing::{info, warn};
 use crate::event::TextInputKey;
 use crate::im::TextInputProvider;
 use crate::im::repeat::{HeldKeyOwner, InterceptRepeat};
-use crate::{InterceptDispatch, InterceptedKey, State, SurfaceHit, module, tracy_span};
+use crate::{Action, InterceptDispatch, InterceptedKey, State, SurfaceHit, module, tracy_span};
 
 /// Unified decision from the keyboard filter.
 /// Returned by `input_intercept`. The caller decides how to forward.
@@ -80,6 +80,8 @@ pub enum KeyAction {
     KeyboardRedirect(u32),
     /// Execute an Emacs command binding without moving Wayland keyboard focus.
     Command { key: String, repeat: bool },
+    /// Run a compositor action, the key never leaving the compositor.
+    Action { action: Action, repeat: bool },
     /// Text input intercept: key plus original modifier snapshot for Emacs IM processing.
     TextInput {
         keysym: u32,
@@ -125,10 +127,24 @@ pub enum KeyboardAction {
     RedirectToEmacs,
     /// Command binding intercepted and queued to Emacs over IPC
     CommandIntercepted,
+    /// A compositor action ran, the key never left the compositor
+    ActionRun,
+    /// Queued behind a Focus Emacs has not read yet
+    Deferred,
     /// Key intercepted for text input (sent to Emacs via IPC)
     TextInputIntercepted,
     /// VT switch requested (Ctrl+Alt+F1-F12)
     ChangeVt(i32),
+}
+
+/// A key for Emacs waiting until it reads the Focus the key was typed after.
+#[derive(Debug)]
+pub struct DeferredKey {
+    keycode: u32,
+    state: KeyState,
+    time: InputTime,
+    /// The modifier state the key left, when it changed it.
+    mods: Option<ModifiersState>,
 }
 
 const BTN_LEFT: u32 = 0x110;
@@ -350,6 +366,7 @@ impl State {
         Some(match owner {
             HeldKeyOwner::KeyboardRedirect => KeyboardAction::RedirectToEmacs,
             HeldKeyOwner::Command => KeyboardAction::CommandIntercepted,
+            HeldKeyOwner::Action => KeyboardAction::ActionRun,
             HeldKeyOwner::TextInput => KeyboardAction::TextInputIntercepted,
         })
     }
@@ -402,6 +419,74 @@ impl State {
             );
         }
         keyboard.advertise_modifier_state(self);
+    }
+
+    /// Run `action`, the compositor's own answer to a key.
+    pub(crate) fn do_action(&mut self, action: Action) {
+        match action {
+            Action::FocusFrame { delta } => self
+                .ewm
+                .focus_strip_frame(|anchor| anchor.checked_add_signed(delta as isize)),
+            Action::FocusNthFrame { n } => self.ewm.focus_strip_frame(|_| n.checked_sub(1)),
+            Action::FocusOutput { dx, dy } => self.ewm.focus_output_direction(dx, dy),
+            Action::MoveFrame { delta } => {
+                let id = self.ewm.focused_frame_id;
+                self.ewm.move_frame(id, delta);
+                self.refresh_pointer_after_layout();
+            }
+            Action::ToggleFullscreen => {
+                let focused = self.ewm.focused_entry_id;
+                if let Some(id) = focused.and_then(|entry| self.ewm.layout.entry_surface_id(entry))
+                {
+                    let on = !self.ewm.pending_fullscreen(id);
+                    self.set_surface_fullscreen(id, on);
+                }
+            }
+            Action::Overview(action) => {
+                self.ewm.overview(action);
+                self.refresh_pointer_after_scene_change(false);
+            }
+            Action::HideToggle => {
+                self.ewm.hide_toggle();
+                self.refresh_pointer_after_scene_change(false);
+            }
+            Action::Spawn { command } => crate::utils::spawning::spawn(command),
+        }
+    }
+
+    /// Replay the deferred keys in order, stopping at an unread Focus when `wait_for_focus`.
+    fn send_deferred_keys(&mut self, wait_for_focus: bool) {
+        let keyboard = self.ewm.keyboard.clone();
+        let seat = self.ewm.seat.clone();
+        while !(wait_for_focus && module::focus_unread())
+            && let Some(key) = self.ewm.deferred_keys.pop_front()
+        {
+            let serial = SERIAL_COUNTER.next_serial();
+            keyboard.input_forward(self, key.keycode.into(), key.state, serial, key.time, false);
+            if let Some(mods) = key.mods
+                && let Some(focus) = keyboard.current_focus()
+            {
+                focus.modifiers(&seat, self, mods, serial);
+            }
+        }
+    }
+
+    /// Emacs read a Focus: release the keys that waited, unless focus left Emacs meanwhile.
+    pub(crate) fn replay_deferred_keys(&mut self) {
+        if self.ewm.is_keyboard_focus_on_emacs() {
+            self.send_deferred_keys(true);
+        } else {
+            self.ewm.deferred_keys.clear();
+        }
+    }
+
+    /// Hand the deferred keys to the Emacs focus before `target`, outside Emacs, takes it.
+    pub(crate) fn flush_deferred_keys(&mut self, target: Option<&WlSurface>) {
+        if !self.ewm.deferred_keys.is_empty()
+            && !target.is_some_and(|surface| self.ewm.is_emacs_frame_surface(surface))
+        {
+            self.send_deferred_keys(false);
+        }
     }
 
     /// Process a keyboard key event and return the compositor action taken.
@@ -526,10 +611,12 @@ impl State {
         };
 
         let mods_before = keyboard.modifier_state();
+        let mut modifier_only = false;
         let intercepted_keys = module::intercepted_keys().read().unwrap();
         let (action, mods_changed) =
             keyboard.input_intercept(self, keycode.into(), key_state, |_, mods, handle| {
                 let modified = handle.modified_sym();
+                modifier_only = modified.is_modifier_key() || mods_before != *mods;
                 let keysym_raw = handle
                     .raw_latin_sym_or_raw_current_sym()
                     .unwrap_or(modified)
@@ -554,6 +641,21 @@ impl State {
 
         match action {
             KeyAction::Forward => {
+                // Keys for Emacs queue behind a Focus it has not read.
+                if focus_on_emacs
+                    && (!self.ewm.deferred_keys.is_empty()
+                        || (!modifier_only && module::focus_unread()))
+                {
+                    let mods = mods_changed.then(|| keyboard.modifier_state());
+                    self.ewm.deferred_keys.push_back(DeferredKey {
+                        keycode,
+                        state: key_state,
+                        time,
+                        mods,
+                    });
+                    self.notify_activity();
+                    return KeyboardAction::Deferred;
+                }
                 self.sync_keyboard_focus();
                 keyboard.input_forward(self, keycode.into(), key_state, serial, time, mods_changed);
                 if is_press && module::DEBUG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
@@ -626,6 +728,12 @@ impl State {
                 self.intercept(InterceptRepeat::Command { keycode, key }, repeat);
                 self.notify_activity();
                 return KeyboardAction::CommandIntercepted;
+            }
+
+            KeyAction::Action { action, repeat } => {
+                self.intercept(InterceptRepeat::Action { keycode, action }, repeat);
+                self.notify_activity();
+                return KeyboardAction::ActionRun;
             }
         }
 
@@ -1054,8 +1162,7 @@ impl State {
         let on_frame = start_data
             .focus
             .as_ref()
-            .and_then(|(surface, _)| self.ewm.surface_id(surface))
-            .is_some_and(|id| self.ewm.layout.has_frame(id));
+            .is_some_and(|(surface, _)| self.ewm.is_emacs_frame_surface(surface));
         if on_frame {
             let grab = FrameClickGrab::new(start_data);
             pointer.set_grab(self, grab, serial, PointerFocus::Keep);
@@ -1686,16 +1793,6 @@ fn decode_vt_switch(modified_raw: u32) -> Option<i32> {
     }
 }
 
-fn intercepted_key_action(ik: &InterceptedKey, keysym_raw: u32) -> KeyAction {
-    match ik.dispatch {
-        InterceptDispatch::Keyboard => KeyAction::KeyboardRedirect(keysym_raw),
-        InterceptDispatch::Command => KeyAction::Command {
-            key: ik.key.clone(),
-            repeat: ik.repeat,
-        },
-    }
-}
-
 /// Pure classification of a keyboard event. Reads no compositor state; the
 /// caller resolves the `KeyRouting` upstream and applies side effects
 /// downstream. Releases always Forward.
@@ -1731,13 +1828,22 @@ pub fn classify_key(
         ik.surface.is_none_or(|s| s == focused_surface_id)
             && ik.matches(keysym_raw, modified_raw, mods)
     }) {
-        if focus_on_emacs {
+        if fullscreen_active && !ik.allow_fullscreen {
             return KeyAction::Forward;
         }
-        if !fullscreen_active || ik.allow_fullscreen {
-            return intercepted_key_action(ik, keysym_raw);
-        }
-        return KeyAction::Forward;
+        // Actions run wherever focus is, Emacs bindings only off Emacs.
+        return match &ik.dispatch {
+            InterceptDispatch::Action(action) => KeyAction::Action {
+                action: action.clone(),
+                repeat: ik.repeat,
+            },
+            _ if focus_on_emacs => KeyAction::Forward,
+            InterceptDispatch::Keyboard => KeyAction::KeyboardRedirect(keysym_raw),
+            InterceptDispatch::Command => KeyAction::Command {
+                key: ik.key.clone(),
+                repeat: ik.repeat,
+            },
+        };
     }
 
     if text_input_intercept && !focus_on_emacs && !key_changes_modifiers {

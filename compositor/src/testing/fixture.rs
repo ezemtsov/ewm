@@ -31,6 +31,15 @@ use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 pub struct Fixture {
     event_loop: EventLoop<'static, State>,
     state: State,
+    owns_event_channel: bool,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if self.owns_event_channel {
+            crate::module::clear_event_channel();
+        }
+    }
 }
 
 impl Fixture {
@@ -64,7 +73,11 @@ impl Fixture {
 
         info!("Test fixture initialized with headless backend");
 
-        Ok(Self { event_loop, state })
+        Ok(Self {
+            event_loop,
+            state,
+            owns_event_channel: false,
+        })
     }
 
     /// Pair a `UnixStream` with the server `Display` as the listener would,
@@ -811,6 +824,26 @@ impl Fixture {
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default()
+    }
+
+    /// Give the compositor the event channel Emacs would have registered.
+    pub fn install_event_channel(&mut self) {
+        let _ = crate::module::drain_commands();
+        crate::module::install_event_channel(Box::new(std::io::sink()));
+        self.owns_event_channel = true;
+    }
+
+    /// Read the channel as `ewm-drain-events` does, then run what the read queued.
+    pub fn drain_channel(&mut self) -> Vec<crate::event::Event> {
+        let events = crate::module::take_events();
+        for command in crate::module::drain_commands() {
+            self.state.handle_module_command(command);
+        }
+        events
+    }
+
+    pub fn deferred_key_count(&self) -> usize {
+        self.state.ewm.deferred_keys.len()
     }
 
     /// Hold the animation clock where it is, so a spring or slide started now stays at its start.

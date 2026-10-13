@@ -15,9 +15,12 @@
 //! K4  - When Emacs already holds focus, intercept rules defer — the key
 //!       forwards (Emacs is the focused client). Independent of the flag
 //!       and of fullscreen.
+//!
+//! K5  - A compositor action runs wherever focus is, under fullscreen only
+//!       when flagged (`Action` dispatch -> `Action`, else `Forward`).
 
 use ewm_core::input::{KeyAction, KeyInput, KeyRouting, classify_key};
-use ewm_core::{InterceptDispatch, InterceptedKey};
+use ewm_core::{Action, InterceptDispatch, InterceptedKey};
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
@@ -134,6 +137,33 @@ proptest! {
             keysym,
         );
         prop_assert_eq!(action, KeyAction::Command { key, repeat });
+    }
+
+    #[test]
+    fn k5_action_runs_wherever_focus_is(
+        keysym in keysym_strategy(),
+        flag in any::<bool>(),
+        focus_on_emacs in any::<bool>(),
+        fullscreen_active in any::<bool>(),
+        repeat in any::<bool>(),
+        delta in -3i32..=3,
+    ) {
+        let action = Action::FocusFrame { delta };
+        let dispatch = InterceptDispatch::Action(action.clone());
+        let got = classify(
+            &[ik_with_dispatch_and_repeat(keysym, flag, dispatch, repeat)],
+            false,
+            focus_on_emacs,
+            fullscreen_active,
+            true,
+            keysym,
+        );
+        let expected = if !fullscreen_active || flag {
+            KeyAction::Action { action, repeat }
+        } else {
+            KeyAction::Forward
+        };
+        prop_assert_eq!(got, expected);
     }
 
     #[test]

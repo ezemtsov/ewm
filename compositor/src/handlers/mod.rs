@@ -415,9 +415,7 @@ impl ForeignToplevelHandler for State {
     }
 
     fn is_read_only_surface(&self, wl_surface: &WlSurface) -> bool {
-        self.ewm
-            .surface_id(wl_surface)
-            .is_some_and(|id| self.ewm.layout.has_frame(id))
+        self.ewm.is_emacs_frame_surface(wl_surface)
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {

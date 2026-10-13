@@ -105,7 +105,7 @@ pub fn is_laptop_panel(connector_name: &str) -> bool {
 
 use crate::handlers::{XDG_ACTIVATION_TOKEN_TIMEOUT, configure_lock_surface};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
 use std::os::unix::io::OwnedFd;
 use std::os::unix::net::UnixStream;
@@ -724,12 +724,36 @@ impl InterceptedKey {
 /// Emacs's command loop read the following key sequence. Command delivery
 /// executes the resolved Emacs binding through the event pipe, so Wayland
 /// keyboard focus stays on the client surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InterceptDispatch {
     #[default]
     Keyboard,
     Command,
+    /// Run in the compositor, Emacs told afterwards.
+    Action(Action),
+}
+
+/// What a key or a module call changes in the compositor alone, Emacs told by events.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Action {
+    /// Focus the strip frame `delta` slots away, counting from the shown frame under a float.
+    FocusFrame { delta: i32 },
+    /// Focus the `n`th strip frame, counting from 1.
+    FocusNthFrame { n: usize },
+    /// Focus the active frame on the output in direction `(dx, dy)`.
+    FocusOutput { dx: i32, dy: i32 },
+    /// Move the focused strip frame `delta` slots.
+    MoveFrame { delta: i32 },
+    /// Fullscreen the focused view's surface, or bring it back.
+    ToggleFullscreen,
+    /// Open, close or toggle the overview.
+    Overview(module::OverviewAction),
+    /// Slide every frame off its output, or back.
+    HideToggle,
+    /// Run `command` detached from the compositor.
+    Spawn { command: Vec<String> },
 }
 
 /// DnD icon surface attached to the pointer during a drag operation.
@@ -801,6 +825,8 @@ pub struct Ewm {
     pub focused_frame_id: u64,
     pub focused_entry_id: Option<LayoutEntryId>,
     pub keyboard_focus: Option<WlSurface>,
+    /// Keys for Emacs waiting until it reads the Focus they followed.
+    pub(crate) deferred_keys: VecDeque<input::DeferredKey>,
     pub(crate) im_repeat: InterceptRepeatState,
     /// Introspected window list changed; announce it next tick.
     pub introspect_windows_dirty: bool,
@@ -1240,6 +1266,7 @@ impl Ewm {
             focused_frame_id: 0,
             focused_entry_id: None,
             keyboard_focus: None,
+            deferred_keys: VecDeque::new(),
             im_repeat: InterceptRepeatState::new(
                 input::DEFAULT_KEYBOARD_REPEAT_RATE,
                 input::DEFAULT_KEYBOARD_REPEAT_DELAY,
@@ -1868,6 +1895,19 @@ impl Ewm {
         let zoom = self.overview.zoom();
         for strip in self.layout.strips_mut() {
             strip.bake_overview_shift(progress, zoom);
+        }
+    }
+
+    /// Run overview `action`.
+    pub(crate) fn overview(&mut self, action: module::OverviewAction) {
+        match action {
+            module::OverviewAction::Toggle => self.overview_toggle(),
+            module::OverviewAction::Open => {
+                self.overview_open();
+            }
+            module::OverviewAction::Close => {
+                self.overview_close();
+            }
         }
     }
 
@@ -3321,7 +3361,11 @@ impl Ewm {
     pub(crate) fn is_keyboard_focus_on_emacs(&self) -> bool {
         self.keyboard_focus
             .as_ref()
-            .and_then(|surface| self.surface_id(surface))
+            .is_some_and(|surface| self.is_emacs_frame_surface(surface))
+    }
+
+    pub(crate) fn is_emacs_frame_surface(&self, surface: &WlSurface) -> bool {
+        self.surface_id(surface)
             .is_some_and(|id| self.layout.has_frame(id))
     }
 
@@ -3378,10 +3422,7 @@ impl Ewm {
         self.focused_emacs_frame_surface().or_else(|| {
             self.keyboard_focus
                 .as_ref()
-                .filter(|surface| {
-                    self.surface_id(surface)
-                        .is_some_and(|id| self.layout.has_frame(id))
-                })
+                .filter(|surface| self.is_emacs_frame_surface(surface))
                 .cloned()
         })
     }
@@ -3749,11 +3790,9 @@ impl Ewm {
     /// same surface. An external input method serves Emacs frames too.
     pub fn update_text_input_focus(&self, surface: Option<&WlSurface>) {
         let surface = match self.text_input_provider {
-            im::TextInputProvider::Emacs => surface.filter(|surface| {
-                !self
-                    .surface_id(surface)
-                    .is_some_and(|id| self.layout.has_frame(id))
-            }),
+            im::TextInputProvider::Emacs => {
+                surface.filter(|surface| !self.is_emacs_frame_surface(surface))
+            }
             im::TextInputProvider::External => surface,
         };
         im::text_input::update_focus(&self.seat, surface);
@@ -4122,6 +4161,23 @@ impl Ewm {
             return;
         };
         self.set_focus_frame(id, "focus_output_direction", true);
+    }
+
+    /// Focus strip frame `pick(anchor)`, anchored at the focused frame, else at the shown one.
+    pub(crate) fn focus_strip_frame(&mut self, pick: impl FnOnce(usize) -> Option<usize>) {
+        let focused = self.focused_frame_id;
+        let target = self.layout.frame_location(focused).and_then(|location| {
+            let strip = &location.monitor.strip;
+            let anchor = if location.floating {
+                Some(strip.active_idx())
+            } else {
+                strip.index_of(focused)
+            };
+            strip.frame_ids().nth(pick(anchor?)?)
+        });
+        if let Some(id) = target {
+            self.set_focus_frame(id, "action", true);
+        }
     }
 
     /// Recalculate total output size from current space geometry
@@ -5285,6 +5341,7 @@ impl State {
         });
 
         if self.ewm.keyboard_focus != new_focus {
+            self.flush_deferred_keys(new_focus.as_ref());
             self.ewm.keyboard_focus = new_focus.clone();
             let keyboard = self.ewm.keyboard.clone();
             keyboard.set_focus(self, new_focus, SERIAL_COUNTER.next_serial());
@@ -5367,6 +5424,7 @@ impl State {
             InterceptRepeat::Command { key, .. } => {
                 self.ewm.queue_event(Event::InterceptedCommand { key })
             }
+            InterceptRepeat::Action { action, .. } => self.do_action(action),
         }
     }
 
@@ -5510,9 +5568,8 @@ impl State {
                     info!("Close surface {} (sent close request)", id);
                 }
             }
-            ModuleCommand::FocusOutputDirection { dx, dy } => {
-                self.ewm.focus_output_direction(dx, dy);
-            }
+            ModuleCommand::Action { action } => self.do_action(action),
+            ModuleCommand::ReplayDeferredKeys => self.replay_deferred_keys(),
             ModuleCommand::RenameWorkspace {
                 frame_surface_id,
                 name,
@@ -5889,22 +5946,6 @@ impl State {
             }
             ModuleCommand::ConfigureAnimations { enabled } => {
                 self.ewm.animations_clock.set_complete_instantly(!enabled);
-            }
-            ModuleCommand::Overview { action } => {
-                match action {
-                    module::OverviewAction::Toggle => self.ewm.overview_toggle(),
-                    module::OverviewAction::Open => {
-                        self.ewm.overview_open();
-                    }
-                    module::OverviewAction::Close => {
-                        self.ewm.overview_close();
-                    }
-                }
-                self.refresh_pointer_after_scene_change(false);
-            }
-            ModuleCommand::HideToggle => {
-                self.ewm.hide_toggle();
-                self.refresh_pointer_after_scene_change(false);
             }
             ModuleCommand::ConfigureOverview {
                 zoom,

@@ -387,6 +387,11 @@ fn get_pointer_location() -> Result<Lisp<Data>> {
 /// Commands sent from Emacs to the compositor via the module interface.
 #[derive(Debug)]
 pub enum ModuleCommand {
+    Action {
+        action: crate::Action,
+    },
+    /// Emacs read a Focus, so the keys deferred behind it can go.
+    ReplayDeferredKeys,
     Close {
         id: u64,
     },
@@ -505,12 +510,6 @@ pub enum ModuleCommand {
     SetDragSource {
         active: bool,
     },
-    /// Focus the active frame on the output adjacent to the current one.
-    /// `dx`/`dy` are -1/+1 along one axis; the other axis is 0.
-    FocusOutputDirection {
-        dx: i32,
-        dy: i32,
-    },
     /// Rename a workspace. If `frame_surface_id` is absent, the compositor's
     /// currently focused frame is renamed.
     RenameWorkspace {
@@ -538,10 +537,6 @@ pub enum ModuleCommand {
     ConfigureAnimations {
         enabled: bool,
     },
-    /// Open, close or toggle the zoomed-out strip view.
-    Overview {
-        action: OverviewAction,
-    },
     /// Overview zoom factor and backdrop colour.
     ConfigureOverview {
         zoom: f64,
@@ -551,8 +546,6 @@ pub enum ModuleCommand {
     ConfigureBackground {
         color: [f32; 4],
     },
-    /// Slide every frame off its output, or bring them back.
-    HideToggle,
     /// Set manual idle inhibition (from Emacs)
     SetIdleInhibited {
         inhibited: bool,
@@ -566,7 +559,8 @@ pub enum ModuleCommand {
     Initialized,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum OverviewAction {
     Toggle,
     Open,
@@ -756,6 +750,14 @@ impl EventChannel {
         self.notified = false;
         self.queue.drain(..).collect()
     }
+
+    /// Whether a Focus Emacs has not read is staged or queued.
+    fn focus_unread(&self) -> bool {
+        self.pending
+            .iter()
+            .chain(self.queue.iter())
+            .any(|event| matches!(event, crate::event::Event::Focus { .. }))
+    }
 }
 
 /// Set by `init_event_channel`, before the compositor thread starts.
@@ -770,9 +772,25 @@ fn init_event_channel(env: &Env, pipe_process: Value<'_>) -> Result<()> {
         .downcast_ref::<std::io::PipeWriter>()
         .ok_or_else(|| anyhow!("emacs-rs event channel is not a PipeWriter"))?;
     crate::utils::set_nonblocking(pipe)?;
-    let wakeup = Box::new(writer);
-    *EVENT_CHANNEL.lock().unwrap() = Some(EventChannel::new(wakeup));
+    install_event_channel(Box::new(writer));
     Ok(())
+}
+
+pub(crate) fn install_event_channel(wakeup: Box<dyn std::io::Write + Send>) {
+    *EVENT_CHANNEL.lock().unwrap() = Some(EventChannel::new(wakeup));
+}
+
+pub(crate) fn clear_event_channel() {
+    *EVENT_CHANNEL.lock().unwrap() = None;
+}
+
+/// Whether Emacs still has a Focus to read.
+pub(crate) fn focus_unread() -> bool {
+    EVENT_CHANNEL
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(EventChannel::focus_unread)
 }
 
 /// Queue `event` for Emacs.
@@ -792,11 +810,22 @@ pub(crate) fn flush_events() {
 /// The queued events, oldest first, as Lisp data.
 #[defun]
 fn drain_events() -> Result<Lisp<Vec<crate::event::Event>>> {
+    Ok(Lisp(take_events()))
+}
+
+/// Take the queued events, releasing the keys that waited on a Focus among them.
+pub(crate) fn take_events() -> Vec<crate::event::Event> {
     let events: Vec<crate::event::Event> = match EVENT_CHANNEL.lock().unwrap().as_mut() {
         Some(channel) => channel.take(),
         None => Vec::new(),
     };
-    Ok(Lisp(events))
+    if events
+        .iter()
+        .any(|event| matches!(event, crate::event::Event::Focus { .. }))
+    {
+        push_command(ModuleCommand::ReplayDeferredKeys);
+    }
+    events
 }
 
 /// Test function - returns a greeting
@@ -1128,9 +1157,11 @@ fn set_fullscreen_module(entry_id: i64, on: Value<'_>) -> Result<()> {
 /// DX/DY are -1/+1 along one axis; the other axis is 0.
 #[defun]
 fn focus_output_direction_module(dx: i64, dy: i64) -> Result<()> {
-    push_command(ModuleCommand::FocusOutputDirection {
-        dx: dx as i32,
-        dy: dy as i32,
+    push_command(ModuleCommand::Action {
+        action: crate::Action::FocusOutput {
+            dx: dx as i32,
+            dy: dy as i32,
+        },
     });
     Ok(())
 }
@@ -1370,6 +1401,7 @@ struct KeySpec {
     #[serde(default)]
     repeat: bool,
     surface: Option<u64>,
+    action: Option<crate::Action>,
 }
 
 #[derive(Deserialize)]
@@ -1402,9 +1434,10 @@ impl KeySpec {
             tracing::warn!("Could not resolve keysym for key {key}, skipping");
             return None;
         };
-        let dispatch = match self.dispatch {
-            Some(Dispatch::Command) => InterceptDispatch::Command,
-            _ => InterceptDispatch::Keyboard,
+        let dispatch = match (self.action, self.dispatch) {
+            (Some(action), _) => InterceptDispatch::Action(action),
+            (None, Some(Dispatch::Command)) => InterceptDispatch::Command,
+            (None, _) => InterceptDispatch::Keyboard,
         };
         Some(InterceptedKey {
             keysym: keysym.raw(),
@@ -1741,14 +1774,25 @@ fn overview_module(action: String) -> Result<()> {
         "close" => OverviewAction::Close,
         other => return Err(anyhow!("unknown overview action: {other}")),
     };
-    push_command(ModuleCommand::Overview { action });
+    push_command(ModuleCommand::Action {
+        action: crate::Action::Overview(action),
+    });
     Ok(())
 }
 
 /// Slide every frame off its output, or bring them back (module mode).
 #[defun]
 fn hide_toggle_module() -> Result<()> {
-    push_command(ModuleCommand::HideToggle);
+    push_command(ModuleCommand::Action {
+        action: crate::Action::HideToggle,
+    });
+    Ok(())
+}
+
+/// Run ACTION in the compositor, as a key bound to it would.
+#[defun]
+fn action_module(action: Lisp<crate::Action>) -> Result<()> {
+    push_command(ModuleCommand::Action { action: action.0 });
     Ok(())
 }
 
@@ -1952,6 +1996,18 @@ mod tests {
         channel.push(focus(2));
         channel.flush();
         assert_eq!(reader.read(&mut bytes).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_focus_is_unread_until_the_queue_is_drained() {
+        let mut channel = EventChannel::new(Box::new(Vec::new()));
+        assert!(!channel.focus_unread());
+        channel.push(focus(1));
+        assert!(channel.focus_unread());
+        channel.flush();
+        assert!(channel.focus_unread());
+        channel.take();
+        assert!(!channel.focus_unread());
     }
 
     #[test]

@@ -153,6 +153,7 @@ impl XdgShellHandler for State {
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
             }
+            self.flush_deferred_keys(grab.current_grab().as_ref());
             keyboard.set_focus(self, grab.current_grab(), serial);
             keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
         }

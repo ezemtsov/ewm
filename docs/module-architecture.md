@@ -187,6 +187,7 @@ All `*-module` functions push to command queue:
 (ewm-warp-pointer-module x y)
 (ewm-configure-output-module name x y width height refresh scale transform enabled)
 (ewm-intercept-keys-module keys-vector)
+(ewm-action-module action)
 (ewm-configure-input-module configs-vector)
 (ewm-im-commit-module text surface-id)
 (ewm-text-input-intercept-module enable)

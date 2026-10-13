@@ -13,13 +13,14 @@ use serde::Serialize;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 
-use crate::State;
 use crate::event::TextInputKey;
+use crate::{Action, State};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum HeldKeyOwner {
     KeyboardRedirect,
     Command,
+    Action,
     TextInput,
 }
 
@@ -28,6 +29,7 @@ impl HeldKeyOwner {
         match self {
             Self::KeyboardRedirect => "keyboard_redirect",
             Self::Command => "command",
+            Self::Action => "action",
             Self::TextInput => "text_input",
         }
     }
@@ -217,14 +219,15 @@ mod tests {
 pub(crate) enum InterceptRepeat {
     TextInput(TextInputKey),
     Command { keycode: u32, key: String },
+    Action { keycode: u32, action: Action },
 }
 
 impl InterceptRepeat {
     pub(crate) fn keycode(&self) -> u32 {
         match self {
-            Self::TextInput(TextInputKey { keycode, .. }) | Self::Command { keycode, .. } => {
-                *keycode
-            }
+            Self::TextInput(TextInputKey { keycode, .. })
+            | Self::Command { keycode, .. }
+            | Self::Action { keycode, .. } => *keycode,
         }
     }
 
@@ -232,6 +235,7 @@ impl InterceptRepeat {
         match self {
             Self::TextInput(_) => HeldKeyOwner::TextInput,
             Self::Command { .. } => HeldKeyOwner::Command,
+            Self::Action { .. } => HeldKeyOwner::Action,
         }
     }
 }
