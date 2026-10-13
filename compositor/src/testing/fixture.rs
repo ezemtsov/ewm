@@ -31,6 +31,8 @@ use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 pub struct Fixture {
     event_loop: EventLoop<'static, State>,
     state: State,
+    /// The time the animation clock is held at, so springs and slides hold still.
+    frozen_clock: Option<Duration>,
 }
 
 impl Fixture {
@@ -64,7 +66,11 @@ impl Fixture {
 
         info!("Test fixture initialized with headless backend");
 
-        Ok(Self { event_loop, state })
+        Ok(Self {
+            event_loop,
+            state,
+            frozen_clock: None,
+        })
     }
 
     /// Pair a `UnixStream` with the server `Display` as the listener would,
@@ -790,5 +796,16 @@ impl Fixture {
     /// Per-frame processing callback.
     fn refresh_and_flush_clients(&mut self) {
         self.state.refresh_and_flush_clients();
+        if let Some(time) = self.frozen_clock {
+            self.state.ewm.animations_clock.set(time);
+        }
+    }
+
+    /// Hold the animation clock where it is, so a spring or slide started now stays at its start.
+    pub fn freeze_clock(&mut self) {
+        let clock = &self.state.ewm.animations_clock;
+        let now = clock.now();
+        clock.set(now);
+        self.frozen_clock = Some(now);
     }
 }

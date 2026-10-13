@@ -3,6 +3,7 @@
 //! These tests verify compositor behavior using the headless backend and test fixture.
 
 use ewm_core::backend::{closest_representable_scale, int_to_transform, transform_to_int};
+use ewm_core::floating::{ResizeEdge, SizeFracPoint};
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE};
 use ewm_core::utils::output_size;
@@ -1031,4 +1032,97 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
         &toplevel.surface,
         "Virtual-1",
     ));
+}
+
+/// Views jump into place on the first layout after an output's working area changed, and the
+/// pointer waits while they spring afterwards.
+#[test]
+fn views_jump_after_an_output_change() {
+    let mut fixture = Fixture::new().unwrap();
+    fixture.add_output("Virtual-1", 1920, 1080);
+    fixture.freeze_clock();
+    let mut client = fixture.new_client().unwrap();
+    fixture.roundtrip(&mut client);
+    let surface_id = fixture.open_toplevel_id(&mut client, "app", Size::from((400, 300)));
+    fixture.tile(
+        "Virtual-1",
+        vec![frame_with_entry_at(100, nz(1), surface_id, 0, 0)],
+    );
+    fixture.ewm().output_config.insert(
+        "Virtual-1".to_string(),
+        OutputConfig {
+            scale: Some(2.0),
+            ..Default::default()
+        },
+    );
+    fixture.apply_output_config("Virtual-1");
+    fixture.tile(
+        "Virtual-1",
+        vec![frame_with_entry_at(100, nz(1), surface_id, 200, 150)],
+    );
+    assert!(
+        fixture.ewm_ref().surfaces[&surface_id]
+            .view_move(nz(1))
+            .is_none(),
+        "sprang after the output change"
+    );
+    fixture.tile(
+        "Virtual-1",
+        vec![frame_with_entry_at(100, nz(1), surface_id, 0, 0)],
+    );
+    assert!(
+        fixture.ewm_ref().surfaces[&surface_id]
+            .view_move(nz(1))
+            .is_some(),
+        "no spring on a plain layout"
+    );
+    assert!(
+        fixture.ewm_ref().is_animating_at(Point::from((50., 50.))),
+        "pointer focus would retarget mid-spring"
+    );
+}
+
+/// A float resized by hand follows the pointer: nothing in it springs on the way.
+#[test]
+fn views_of_a_frame_resized_by_hand_do_not_spring() {
+    const FRAME: u64 = 500;
+    let float = |x: i32, sid: u64| {
+        let mut frame = Frame::new(FRAME);
+        frame.width = 800.0;
+        frame.height = 600.0;
+        frame.entries = vec![LayoutEntry::surface(
+            nz(7),
+            "view".into(),
+            sid,
+            x,
+            0,
+            400,
+            300,
+        )];
+        frame.floating_pos = Some(SizeFracPoint { x: 0.1, y: 0.1 });
+        frame
+    };
+    let mut fix = Fixture::new().unwrap();
+    fix.add_output("Virtual-1", 1920, 1080);
+    fix.freeze_clock();
+    let mut client = fix.new_client().unwrap();
+    fix.roundtrip(&mut client);
+    let sid = fix.open_toplevel_id(&mut client, "app", Size::from((400, 300)));
+    fix.float("Virtual-1", vec![float(0, sid)]);
+
+    assert!(
+        fix.ewm()
+            .interactive_resize_floating_frame_begin(FRAME, ResizeEdge::BOTTOM_RIGHT)
+    );
+    fix.float("Virtual-1", vec![float(100, sid)]);
+    assert!(
+        fix.ewm_ref().surfaces[&sid].view_move(nz(7)).is_none(),
+        "sprang under the grab"
+    );
+    fix.ewm().interactive_resize_floating_frame_end(FRAME);
+    fix.float("Virtual-1", vec![float(200, sid)]);
+    assert!(
+        fix.ewm_ref().surfaces[&sid].view_move(nz(7)).is_some(),
+        "no spring after the grab"
+    );
 }

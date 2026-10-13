@@ -11,6 +11,7 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::Sta
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
 
+use crate::resize_fade::ViewRect;
 use crate::{
     Event, Ewm, FocusId, LayoutEntry, LayoutEntryHit, LayoutEntryId, SurfaceHit, animation,
     floating, fullscreen_center_offset, module, strip,
@@ -113,9 +114,16 @@ pub struct Monitor {
     pub floating: floating::FloatingSpace,
     /// Working area last reported to Emacs.
     pub working_area: Rectangle<i32, Logical>,
+    /// The working area changed since the last layout, whose views then jump into place.
+    pub resized: bool,
 }
 
 impl Monitor {
+    /// Whether the views of `frame` jump: under a resize grab, or after the working area changed.
+    pub(crate) fn settles_at_once(&self, frame: u64) -> bool {
+        self.resized || self.floating.is_resizing(frame)
+    }
+
     pub fn output(&self) -> &Output {
         &self.output
     }
@@ -397,6 +405,7 @@ impl Layout {
             strip,
             floating,
             working_area,
+            resized: false,
         };
         monitor.set_view(working_area);
         self.monitors.push(monitor);
@@ -732,6 +741,13 @@ impl Layout {
                 }
             },
         )
+    }
+
+    /// A layout has laid every output out anew.
+    pub(crate) fn settle_resized(&mut self) {
+        for monitor in &mut self.monitors {
+            monitor.resized = false;
+        }
     }
 
     /// Whether surface `id` shows fullscreen on some output.
@@ -1466,20 +1482,19 @@ impl Ewm {
         self.entry_origin(location)
     }
 
-    /// Fullscreen `entry` in `slot`: centered at its own size when primary, else across the slot.
+    /// Fullscreen `entry` in `slot`: centered at its own size when native, else across the slot.
     pub(crate) fn fullscreen_entry_rect(
         &self,
         slot: Rectangle<i32, Logical>,
         entry: &LayoutEntry,
     ) -> Rectangle<i32, Logical> {
-        if !entry.primary() {
+        let Some(surface) = entry.surface_id().and_then(|id| self.surfaces.get(&id)) else {
+            return slot;
+        };
+        if !surface.fullscreen_native(entry) {
             return slot;
         }
-        let window_size = entry
-            .surface_id()
-            .and_then(|surface_id| self.window(surface_id))
-            .map(|window| window.geometry().size)
-            .unwrap_or_default();
+        let window_size = surface.window.geometry().size;
         let (ox, oy) = fullscreen_center_offset(window_size, slot.size);
         Rectangle::new(slot.loc + Point::from((ox, oy)), window_size)
     }
@@ -1813,6 +1828,32 @@ impl Ewm {
             .map(|location| (location.monitor.output(), location.entry))
     }
 
+    /// Where every shown view sits on its output, as drawn.
+    pub fn view_rects(&self) -> Vec<ViewRect> {
+        self.layout
+            .entry_locations()
+            .filter(|location| location.shown() && self.view_visible(*location))
+            .filter_map(|location| {
+                let surface = location.entry.surface_id()?;
+                let output = location.monitor.output().clone();
+                let output_geo = self.space.output_geometry(&output)?;
+                let origin = self.frame_origin(location.frame_location())?;
+                let mut rect = self.entry_rect_at(location, output_geo, origin);
+                rect.loc -= output_geo.loc;
+                Some(ViewRect {
+                    surface,
+                    entry: location.entry.id,
+                    output,
+                    frame: location.frame.surface_id,
+                    origin: origin - output_geo.loc,
+                    rect,
+                    fullscreen: location.entry.fullscreen(),
+                    floating: location.floating,
+                })
+            })
+            .collect()
+    }
+
     fn surface_has_primary_entry(&self, id: u64) -> bool {
         self.surface_views(id).any(|(_, entry)| entry.primary())
     }
@@ -2063,8 +2104,8 @@ impl Ewm {
     /// until its destroy arrives.
     pub fn apply_layout(&mut self, frames: Vec<strip::Frame>) {
         let focused_surface = self.focused_surface_id();
-        let moved = strip::moved_entry_ids(self.layout.placed_frames(), &frames);
         let outputs: Vec<Output> = self.layout.outputs().cloned().collect();
+        let before = self.view_rects();
 
         self.layout.merge_frames(frames);
         self.reconcile_fullscreen();
@@ -2074,7 +2115,9 @@ impl Ewm {
             self.reconcile_output_entries(output);
             self.queue_redraw(output);
         }
-        self.refresh_primary_assignments_after_layout(&moved);
+        self.refresh_primary_assignments();
+        self.animate_view_moves(&before);
+        self.layout.settle_resized();
         // Covers the race where the layout runs before `new_toplevel`'s auto-focus.
         self.focus_any_frame_if_unfocused("auto_focus_on_layout");
         self.focus_pending_activation_surfaces();
@@ -2225,18 +2268,13 @@ impl Ewm {
     /// Pick each surface's primary entry (largest active-frame slot) and
     /// configure its toplevel.  Off-screen frames don't bid.
     pub(crate) fn refresh_primary_assignments(&mut self) {
-        self.refresh_primary_assignments_after_layout(&HashSet::new());
-    }
-
-    /// Like `refresh_primary_assignments`, after a layout that `moved` entries.
-    fn refresh_primary_assignments_after_layout(&mut self, moved: &HashSet<LayoutEntryId>) {
         self.layout.assign_primaries(&self.sorted_outputs);
         self.refresh_mapped_cast_outputs();
-        self.configure_primary_entries(moved);
+        self.configure_primary_entries();
     }
 
     /// Configure every shown primary entry's surface for its slot, noting the resizes to fade.
-    fn configure_primary_entries(&mut self, moved: &HashSet<LayoutEntryId>) {
+    fn configure_primary_entries(&mut self) {
         let shown_primaries = self
             .layout
             .entry_locations()
@@ -2252,7 +2290,12 @@ impl Ewm {
             } else {
                 location.entry.rect().size
             };
-            let pending = self.pending_resize(id, size, moved);
+            // An output whose working area changed lays out anew: its views do not fade.
+            let pending = if location.monitor.resized {
+                None
+            } else {
+                self.pending_resize(id, size)
+            };
             if let Some(surface) = self.surfaces.get_mut(&id) {
                 surface.configure(output, size, fullscreen, pending);
             }
@@ -2295,14 +2338,18 @@ impl Ewm {
         self.report_float_visibility(&before);
     }
 
-    /// True when the strip on the output under `pos` is mid-animation.
-    pub fn is_strip_animating_at(&self, pos: Point<f64, Logical>) -> bool {
+    /// Whether the strip or a view on `pos`'s output still moves, so pointer focus waits.
+    pub fn is_animating_at(&self, pos: Point<f64, Logical>) -> bool {
         let Some(output) = self.output_containing(pos) else {
             return false;
         };
         self.layout
             .strip(output)
             .is_some_and(|s| s.animations_ongoing())
+            || self
+                .surfaces
+                .values()
+                .any(|surface| surface.view_moving_on(output))
     }
 }
 

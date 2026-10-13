@@ -3,7 +3,7 @@
 //! Frame positions derive from per-frame widths via `column_x`; the viewport's
 //! left edge is `column_x(active_idx) + view_offset.current()`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::mem;
 use std::time::Duration;
 
@@ -325,24 +325,6 @@ pub fn dropped_frame_ids<'a>(
     current
         .map(|frame| frame.surface_id)
         .filter(|&id| !layout.iter().any(|frame| frame.surface_id == id))
-        .collect()
-}
-
-/// Surface entries in `layout` that are new or placed differently than in `current`.
-pub fn moved_entry_ids<'a>(
-    current: impl Iterator<Item = &'a Frame>,
-    layout: &[Frame],
-) -> HashSet<LayoutEntryId> {
-    let rects: HashMap<LayoutEntryId, Rectangle<i32, Logical>> = current
-        .flat_map(|frame| frame.entries.iter())
-        .filter(|entry| entry.surface.is_some())
-        .map(|entry| (entry.id, entry.rect()))
-        .collect();
-    layout
-        .iter()
-        .flat_map(|frame| frame.entries.iter())
-        .filter(|entry| entry.surface.is_some() && rects.get(&entry.id) != Some(&entry.rect()))
-        .map(|entry| entry.id)
         .collect()
 }
 

@@ -1,6 +1,6 @@
 //! Compositor-side state of one toplevel, from creation to destruction.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -13,9 +13,9 @@ use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
-use crate::animation::Animation;
-use crate::resize_fade::{FadingView, PendingResize, ResizeFade};
-use crate::{Ewm, LayoutEntry, handlers};
+use crate::animation::{Animation, Clock};
+use crate::resize_fade::{FadingView, PendingResize, ResizeFade, ViewMove, ViewRect};
+use crate::{Ewm, LayoutEntry, LayoutEntryId, handlers};
 
 const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
 /// Holds alpha at 0 for one vblank so the empty first buffer some clients ship never shows.
@@ -64,6 +64,10 @@ pub struct SurfaceState {
     pending_resizes: Vec<(Serial, PendingResize)>,
     /// Old contents dissolving into a resized buffer.
     pub resize: Option<ResizeFade>,
+    /// Views springing from where they sat, by entry.
+    moves: HashMap<LayoutEntryId, ViewMove>,
+    /// Where its views sat before a commit that flips fullscreen.
+    pub(crate) rects_before: Vec<ViewRect>,
 }
 
 impl SurfaceState {
@@ -95,6 +99,8 @@ impl SurfaceState {
             open: None,
             pending_resizes: Vec::new(),
             resize: None,
+            moves: HashMap::new(),
+            rects_before: Vec::new(),
         }
     }
 
@@ -141,6 +147,25 @@ impl SurfaceState {
         }
     }
 
+    /// Whether fullscreen `entry` draws at its own size: primary and owing no buffer.
+    pub(crate) fn fullscreen_native(&self, entry: &LayoutEntry) -> bool {
+        entry.primary() && self.pending_resizes.is_empty()
+    }
+
+    /// Whether the window has shown a buffer.
+    pub(crate) fn has_buffer(&self) -> bool {
+        self.window
+            .wl_surface()
+            .is_some_and(|surface| crate::utils::is_mapped(&surface))
+    }
+
+    /// Backdrop alpha under `entry`: whole at fullscreen rest, following a spring in or out.
+    pub(crate) fn backdrop_alpha(&self, entry: &LayoutEntry) -> f32 {
+        let to = entry.fullscreen();
+        self.view_move(entry.id)
+            .map_or(f32::from(u8::from(to)), |view| view.backdrop_alpha(to))
+    }
+
     /// The newest resize a commit acking `serial` answers. The ones it skipped are over too.
     pub(crate) fn take_answered_resize(&mut self, serial: Serial) -> Option<PendingResize> {
         let answered = self
@@ -170,7 +195,7 @@ impl SurfaceState {
     }
 
     pub(crate) fn is_animating(&self) -> bool {
-        self.open.is_some() || self.resize.is_some()
+        self.open.is_some() || self.resize.is_some() || !self.moves.is_empty()
     }
 
     /// Drop finished animations.
@@ -181,6 +206,45 @@ impl SurfaceState {
         if self.resize.as_ref().is_some_and(ResizeFade::is_done) {
             self.resize = None;
         }
+        self.moves.retain(|_, view| !view.is_done());
+    }
+
+    /// The spring view `entry` is still on, if any.
+    pub fn view_move(&self, entry: LayoutEntryId) -> Option<&ViewMove> {
+        self.moves.get(&entry).filter(|view| !view.is_done())
+    }
+
+    /// Spring view `entry` to where it is drawn now from `from`, or from mid-way if already moving.
+    pub(crate) fn start_move(
+        &mut self,
+        entry: LayoutEntryId,
+        was: &ViewRect,
+        now: &ViewRect,
+        clock: Clock,
+    ) {
+        let mut view = ViewMove::new(was, now, clock);
+        if let Some(under_way) = self.view_move(entry) {
+            view.from = under_way
+                .rect(was.rect.to_f64(), Some(was.origin.to_f64()))
+                .to_i32_round();
+        }
+        self.moves.insert(entry, view);
+    }
+
+    /// Drop the springs of views no longer shown on their output.
+    pub(crate) fn settle_moves(&mut self, shown: &[ViewRect]) {
+        self.moves.retain(|entry, view| {
+            shown
+                .iter()
+                .any(|v| v.entry == *entry && v.output == view.output)
+        });
+    }
+
+    /// Whether a view of this surface still springs on `output`.
+    pub(crate) fn view_moving_on(&self, output: &Output) -> bool {
+        self.moves
+            .values()
+            .any(|view| !view.is_done() && view.output == *output)
     }
 
     /// Alpha of the open fade, 1 once it is over.

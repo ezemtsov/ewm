@@ -642,6 +642,12 @@ impl FloatingSpace {
         )))
     }
 
+    /// Whether a pointer grab is resizing frame `id`.
+    pub(crate) fn is_resizing(&self, id: u64) -> bool {
+        self.interactive_resize
+            .is_some_and(|resize| resize.frame_id == id)
+    }
+
     pub fn interactive_resize_end(&mut self, frame_id: Option<u64>) {
         let Some(resize) = self.interactive_resize else {
             return;

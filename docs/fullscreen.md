@@ -47,9 +47,13 @@ windows as they are and the compositor draws the view over the whole output.
 
 - Configure: the primary view is configured at the output's logical size with
   `XdgToplevelState::Fullscreen` (`configure_primary_entries`).
-- Render: `push_fullscreen_view` draws a primary view at native size centered
+- Render: `ViewPlace::fullscreen` places a primary view at native size centered
   on the output and a non-primary view stretched to fill it, over a black
-  backdrop. The Top layer is deferred behind it (`render_above_top_layer`).
+  backdrop. The Top layer is deferred behind it (`render_above_top_layer`). A
+  view whose rect changes springs from where it sat, old contents fading into
+  the new buffer inside the moving rect and the backdrop following
+  (`resize_fade.rs`). Views of a frame under a resize grab or on an output whose
+  working area changed jump.
 - Input: hit-testing reads the same drawn rects as the renderer
   (`Ewm::entry_rect_at`), so pointer positions map to the fullscreen view rather
   than the hosting frame. Intercepted keys without

@@ -9,7 +9,7 @@ use ewm_core::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
 use ewm_core::{Event, LayoutEntry};
 use smithay::output::Output;
-use smithay::utils::{Logical, Point, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 
 const OUTPUT: &str = "HEAD-A";
 const CLIENT_W: u32 = 400;
@@ -103,6 +103,8 @@ fn pinned_to(fix: &Fixture, output: &Output, id: u64) -> Option<u64> {
 #[test]
 fn views_follow_the_client_commit() {
     let mut fix = fixture();
+    fix.freeze_clock();
+    fix.freeze_clock();
     let (mut client, top, sid) = client(&mut fix);
     fix.tile(OUTPUT, vec![tile(500, vec![entry(7, sid)])]);
     settle(&mut fix, &mut client);
@@ -136,6 +138,15 @@ fn views_follow_the_client_commit() {
         fix.ewm_ref().surface_view_origins(sid),
         [Point::<i32, Logical>::from((760, 390))]
     );
+    assert_eq!(
+        fix.ewm_ref().surfaces[&sid].view_move(nz(7)).map(|view| (
+            view.from,
+            view.from_fullscreen,
+            view.from_floating
+        )),
+        Some((Rectangle::new(Point::from((0, 0)), size()), false, false)),
+        "no spring up from the tile"
+    );
 
     top.xdg_toplevel.unset_fullscreen();
     assert!(
@@ -146,6 +157,17 @@ fn views_follow_the_client_commit() {
     assert_eq!(shown(&fix), (true, true, true), "left before the commit");
     fix.map_toplevel(&mut client, &top, size());
     assert_eq!(shown(&fix), (false, false, false), "shown after the commit");
+    // The way back departs from wherever the spring up had got to: under the frozen clock, its
+    // start.
+    assert_eq!(
+        fix.ewm_ref().surfaces[&sid].view_move(nz(7)).map(|view| (
+            view.from,
+            view.from_fullscreen,
+            view.from_floating
+        )),
+        Some((Rectangle::new(Point::from((0, 0)), size()), true, false)),
+        "no spring back"
+    );
 
     // A request that changes nothing is answered all the same.
     settle(&mut fix, &mut client);
@@ -173,6 +195,8 @@ fn views_follow_the_client_commit() {
 #[test]
 fn float_fullscreens_in_place_over_the_active_frame() {
     let mut fix = fixture();
+    fix.freeze_clock();
+    fix.freeze_clock();
     let (mut client, top, sid) = client(&mut fix);
     fix.tile(OUTPUT, vec![tile(400, vec![])]);
     fix.float(OUTPUT, vec![frame(500, vec![entry(7, sid)], Some(AT))]);
@@ -222,6 +246,17 @@ fn float_fullscreens_in_place_over_the_active_frame() {
         assert!(
             ewm.layout.entry_outputs().any(|(id, _)| id == nz(7)),
             "the float's view is not castable"
+        );
+        // The view springs up from the float's rect.
+        let from = Rectangle::new(before.0.to_i32_round(), size());
+        assert_eq!(
+            ewm.surfaces[&sid].view_move(nz(7)).map(|view| (
+                view.from,
+                view.from_fullscreen,
+                view.from_floating
+            )),
+            Some((from, false, true)),
+            "no spring up from the float"
         );
     }
 

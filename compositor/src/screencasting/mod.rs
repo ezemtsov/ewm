@@ -403,20 +403,24 @@ impl Ewm {
                 .geometry()
                 .size
                 .to_physical_precise_round(output_scale);
+            let constrain = Rectangle::from_size(entry_size);
             let mut elements = Vec::new();
-            crate::render::push_view_elements_fit(
-                &mut elements,
-                window,
-                view_elements,
-                Point::default(),
-                source_size,
-                output_scale,
-                Rectangle::from_size(entry_size),
-                !geometry.entry.primary(),
-                None,
-                None,
-                self.blur_config,
-            );
+            if let Some(element_scale) =
+                crate::render::view_scale(geometry.entry, source_size, constrain.size)
+            {
+                crate::render::push_view_elements(
+                    &mut elements,
+                    window,
+                    view_elements,
+                    Point::default(),
+                    element_scale,
+                    output_scale,
+                    constrain,
+                    None,
+                    None,
+                    self.blur_config,
+                );
+            }
             return elements;
         }
 

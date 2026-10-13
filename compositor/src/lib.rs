@@ -4035,7 +4035,7 @@ impl Ewm {
         if !grabbed
             && self.focus_follows_mouse_mode
             && (focus_changed || entry_changed)
-            && !self.is_strip_animating_at(pos)
+            && !self.is_animating_at(pos)
         {
             self.focus_follows_mouse(&under, pos);
         }
@@ -4364,6 +4364,7 @@ impl Ewm {
         };
         let changed = mem::replace(&mut monitor.working_area, working_area) != working_area;
         monitor.set_view(working_area);
+        monitor.resized |= changed;
 
         if changed {
             info!(
@@ -5137,7 +5138,7 @@ impl State {
         let (x, y) = self.ewm.pointer_location();
         let pos: Point<f64, Logical> = (x, y).into();
 
-        if skip_strip_animation && !self.ewm.is_locked() && self.ewm.is_strip_animating_at(pos) {
+        if skip_strip_animation && !self.ewm.is_locked() && self.ewm.is_animating_at(pos) {
             return false;
         }
 

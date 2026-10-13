@@ -924,7 +924,7 @@ fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, Layout
 
 fn check_f1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    if !ewm.focus_follows_mouse_mode || ewm.is_strip_animating_at(p) || ewm.pointer.is_grabbed() {
+    if !ewm.focus_follows_mouse_mode || ewm.is_animating_at(p) || ewm.pointer.is_grabbed() {
         return Ok(());
     }
 
@@ -983,7 +983,7 @@ fn check_p1(
     p: Point<f64, Logical>,
 ) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    if ewm.is_strip_animating_at(p) {
+    if ewm.is_animating_at(p) {
         return Ok(());
     }
 

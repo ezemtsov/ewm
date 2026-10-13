@@ -121,15 +121,14 @@ impl CompositorHandler for State {
             if let Some(window) = self.ewm.window(id) {
                 window.on_commit();
             }
-            // Views show fullscreen once the client has committed it.
-            if self
-                .ewm
-                .surfaces
-                .get_mut(&id)
-                .is_some_and(|surface| surface.sync_fullscreen())
+            // Views show fullscreen once the client commits it, springing from where they sat.
+            if let Some(surface) = self.ewm.surfaces.get_mut(&id)
+                && surface.sync_fullscreen()
             {
+                let before = std::mem::take(&mut surface.rects_before);
                 self.ewm.reconcile_fullscreen();
                 self.ewm.refresh_primary_assignments();
+                self.ewm.animate_view_moves(&before);
                 self.refresh_pointer_after_layout();
             }
             // Title before Mapped, so placement rules see a title set on the mapping commit.

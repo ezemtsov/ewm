@@ -4,6 +4,7 @@ use smithay::desktop::{
     layer_map_for_output,
 };
 use smithay::output::Output;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgToplevelState;
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -23,7 +24,7 @@ use tracing::warn;
 
 use crate::{Ewm, State, im};
 
-/// Snapshot a frame on the commit that unmaps it, or fade a view on the one answering a configure.
+/// Snapshot an unmapping frame, fade a resize answer, note where views sat before a flip.
 pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> HookId {
     add_pre_commit_hook::<State, _>(surface, move |state, _dh, surface| {
         let (removed, attached, acked) = with_states(surface, |states| {
@@ -34,14 +35,41 @@ pub(crate) fn add_toplevel_pre_commit_hook(surface: &WlSurface, id: u64) -> Hook
             let acked = states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
-                .and_then(|role| Some(role.lock().unwrap().last_acked.as_ref()?.serial));
+                .and_then(|role| {
+                    let role = role.lock().unwrap();
+                    let configure = role.last_acked.as_ref()?;
+                    let fullscreen = configure
+                        .state
+                        .states
+                        .contains(XdgToplevelState::Fullscreen);
+                    Some((configure.serial, fullscreen))
+                });
             (removed, attached, acked)
         });
         if removed {
             state.store_close_snapshots(&[id]);
-        } else if attached && let Some(serial) = acked {
+            return;
+        }
+        let Some((serial, fullscreen)) = acked else {
+            return;
+        };
+        if attached {
             // An ack without a buffer leaves the resize pending for the commit that brings one.
             state.start_resize_fade(id, serial);
+        }
+        if state
+            .ewm
+            .surfaces
+            .get(&id)
+            .is_some_and(|surface| surface.fullscreen != fullscreen)
+        {
+            let rects = state.ewm.view_rects();
+            if let Some(surface) = state.ewm.surfaces.get_mut(&id) {
+                surface.rects_before = rects
+                    .into_iter()
+                    .filter(|view| view.surface == id)
+                    .collect();
+            }
         }
     })
 }

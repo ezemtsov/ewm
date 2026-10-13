@@ -54,6 +54,7 @@ use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
 use crate::render_helpers::background_effect;
 use crate::render_helpers::framebuffer_effect::FramebufferEffectElement;
 use crate::render_helpers::zoom::ZoomRenderElement;
+use crate::resize_fade::ResizeFade;
 use crate::shadow_style::{BackgroundEffect, Blur, CornerRadius};
 use crate::snapshot::Snapshot;
 use crate::surface::SurfaceState;
@@ -287,56 +288,213 @@ pub fn render_cursor_elements(
     }
 }
 
-/// A fullscreen view at `origin`: the surface, then the black backdrop behind it.
-#[allow(clippy::too_many_arguments)]
-fn push_fullscreen_view(
+/// Where a frame's views are drawn: its origin, their bounds and the output-sized slot.
+#[derive(Clone, Copy)]
+struct FrameSpace {
+    origin: Point<f64, Logical>,
+    bounds: Rectangle<i32, Physical>,
+    slot: Rectangle<i32, Physical>,
+}
+
+/// A view's place on the output: at `loc` within `constrain`, or springing to `to` inside `clip`.
+struct ViewPlace<'a> {
+    surface: &'a SurfaceState,
+    entry: &'a LayoutEntry,
+    alpha: f32,
+    loc: Point<i32, Physical>,
+    to: Rectangle<i32, Physical>,
+    constrain: Rectangle<i32, Physical>,
+    clip: Rectangle<i32, Physical>,
+    frame_origin: Option<Point<f64, Logical>>,
+    /// Where the old contents of a resize sat.
+    fade_loc: Point<i32, Physical>,
+    /// The output-sized slot its backdrop fills.
+    slot: Rectangle<i32, Physical>,
+}
+
+impl<'a> ViewPlace<'a> {
+    /// `entry` fullscreen in the frame's slot, else at its rect, if any of it shows.
+    fn new(
+        surface: &'a SurfaceState,
+        entry: &'a LayoutEntry,
+        alpha: f32,
+        frame: FrameSpace,
+        output_size: Size<i32, Logical>,
+        scale: Scale<f64>,
+    ) -> Option<Self> {
+        if entry.fullscreen() {
+            Some(Self::fullscreen(
+                surface,
+                entry,
+                alpha,
+                frame.slot,
+                output_size,
+                scale,
+            ))
+        } else {
+            Self::in_frame(surface, entry, alpha, frame, scale)
+        }
+    }
+
+    /// Fullscreen in `slot`: centered at its own size when native, else across the slot.
+    fn fullscreen(
+        surface: &'a SurfaceState,
+        entry: &'a LayoutEntry,
+        alpha: f32,
+        slot: Rectangle<i32, Physical>,
+        output_size: Size<i32, Logical>,
+        scale: Scale<f64>,
+    ) -> Self {
+        let geometry = surface.window.geometry().size;
+        let centered = |size: Size<i32, Logical>| {
+            let (ox, oy) = crate::fullscreen_center_offset(size, output_size);
+            Point::from((ox, oy)).to_physical_precise_round(scale) + slot.loc
+        };
+        let loc = if entry.primary() {
+            centered(geometry)
+        } else {
+            slot.loc
+        };
+        let to = if surface.fullscreen_native(entry) {
+            Rectangle::new(loc, geometry.to_physical_precise_round(scale))
+        } else {
+            slot
+        };
+        // The old contents sat centered by their own size.
+        let fade_loc = surface
+            .resize_fade_for(entry)
+            .map_or(loc, |(fade, _)| centered(fade.size().to_i32_round()));
+        Self {
+            surface,
+            entry,
+            alpha,
+            loc,
+            to,
+            constrain: slot,
+            clip: slot,
+            frame_origin: None,
+            fade_loc,
+            slot,
+        }
+    }
+
+    /// At its rect in the frame, within its bounds or, leaving fullscreen, the output-sized slot.
+    fn in_frame(
+        surface: &'a SurfaceState,
+        entry: &'a LayoutEntry,
+        alpha: f32,
+        frame: FrameSpace,
+        scale: Scale<f64>,
+    ) -> Option<Self> {
+        let leaving = surface
+            .view_move(entry.id)
+            .is_some_and(|view| view.from_fullscreen);
+        let clip = if leaving { frame.slot } else { frame.bounds };
+        let loc = (frame.origin + Point::from((f64::from(entry.x), f64::from(entry.y))))
+            .to_physical_precise_round(scale);
+        let to = Rectangle::new(loc, entry.rect().size.to_physical_precise_round(scale));
+        Some(Self {
+            surface,
+            entry,
+            alpha,
+            loc,
+            to,
+            constrain: to.intersection(clip)?,
+            clip,
+            frame_origin: Some(frame.origin),
+            fade_loc: loc,
+            slot: frame.slot,
+        })
+    }
+}
+
+/// A view at rest or along its spring, the old contents of a resize under it, then its backdrop.
+fn push_view(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
-    surface: &SurfaceState,
-    entry: &crate::LayoutEntry,
-    alpha: f32,
-    origin: Point<i32, Physical>,
-    output_size: Size<i32, Logical>,
+    place: &ViewPlace<'_>,
     backdrop: Option<&SolidColorBuffer>,
     scale: Scale<f64>,
     blur_config: Blur,
 ) {
-    let window = &surface.window;
-    let geometry = window.geometry().size;
-    let constrain = Rectangle::new(origin, output_size.to_physical_precise_round(scale));
-    let source_size: Size<i32, Physical> = geometry.to_physical_precise_round(scale);
-    // Primary: native size, centered. Secondary: uniform stretch to fill the output.
-    let centered = |size: Size<i32, Logical>| {
-        let (ox, oy) = crate::fullscreen_center_offset(size, output_size);
-        Point::from((ox, oy)).to_physical_precise_round(scale) + origin
-    };
-    let loc = if entry.primary() {
-        centered(geometry)
-    } else {
-        origin
-    };
-    // The old contents sat centered by their own size.
-    let fade = surface.resize_fade_for(entry);
-    let fade_loc = fade.map_or(loc, |(fade, _)| centered(fade.size().to_i32_round()));
-    let reveal = fade.map_or(1., |(fade, _)| fade.progress());
-    let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha * reveal);
-    push_view_elements_fit(
-        content,
-        window,
-        view_elements,
+    let ViewPlace {
+        surface,
+        entry,
+        alpha,
         loc,
-        source_size,
-        scale,
+        to,
         constrain,
-        !entry.primary(),
-        Some(entry.id.get() as usize),
-        resize_fade_element(surface, entry, fade_loc, constrain, scale, alpha),
-        blur_config,
-    );
+        clip,
+        frame_origin,
+        fade_loc,
+        slot,
+    } = *place;
+    let window = &surface.window;
+    let source = window.geometry().size.to_physical_precise_round(scale);
+    let fade = surface.resize_fade_for(entry);
+    let reveal = fade.map_or(1., |(fade, _)| fade.progress());
+    let old = |fade: &ResizeFade| fade.size().to_physical_precise_round(scale);
+    // Where the view goes, at what scale, cropped to what, and the old contents likewise.
+    let placed = match surface.view_move(entry.id) {
+        Some(view) => {
+            let at = view
+                .rect(to.to_f64().to_logical(scale), frame_origin)
+                .to_physical_precise_round(scale);
+            let stretch = |size: Size<i32, Physical>| {
+                Scale::from((
+                    at.size.w as f64 / size.w.max(1) as f64,
+                    at.size.h as f64 / size.h.max(1) as f64,
+                ))
+            };
+            at.intersection(clip).map(|crop| {
+                let under = fade.map(|(fade, _)| (at.loc, stretch(old(fade))));
+                (at.loc, stretch(source), crop, under)
+            })
+        }
+        None => {
+            let element_scale = view_scale(entry, source, constrain.size);
+            let under = fade.and_then(|(fade, view)| {
+                if view.native {
+                    Some((fade_loc, Scale::from(1.)))
+                } else {
+                    Some((constrain.loc, fill_scale(old(fade), constrain.size)?))
+                }
+            });
+            element_scale.map(|element_scale| (loc, element_scale, constrain, under))
+        }
+    };
+    if let Some((at, element_scale, crop, under)) = placed {
+        let view_elements =
+            render_window_without_popups(window, renderer, at, scale, alpha * reveal);
+        let under = fade
+            .zip(under)
+            .and_then(|((fade, _), (at, s))| fade_element(fade, at, s, scale, crop, alpha));
+        push_view_elements(
+            content,
+            window,
+            view_elements,
+            at,
+            element_scale,
+            scale,
+            crop,
+            Some(entry.id.get() as usize),
+            under,
+            blur_config,
+        );
+    }
     if let Some(backdrop) = backdrop {
-        content.push(ContentRenderElement::SolidColor(solid(
-            backdrop, origin, scale,
-        )));
+        let alpha = surface.backdrop_alpha(entry);
+        if alpha > 0. {
+            content.push(ContentRenderElement::SolidColor(
+                SolidColorRenderElement::from_buffer(
+                    backdrop,
+                    slot.loc,
+                    scale,
+                    alpha,
+                    Kind::Unspecified,
+                ),
+            ));
+        }
     }
 }
 
@@ -364,22 +522,15 @@ pub(crate) fn push_constrained<I, E>(
     );
 }
 
-/// The old contents a view mid-resize fades in over, drawn as the view drew them.
-fn resize_fade_element(
-    surface: &SurfaceState,
-    entry: &LayoutEntry,
-    loc: Point<i32, Physical>,
-    constrain: Rectangle<i32, Physical>,
+/// `fade`'s old contents at `location`, scaled and cropped, under a view at `alpha`.
+fn fade_element(
+    fade: &ResizeFade,
+    location: Point<i32, Physical>,
+    element_scale: Scale<f64>,
     output_scale: Scale<f64>,
+    constrain: Rectangle<i32, Physical>,
     alpha: f32,
 ) -> Option<ConstrainedRenderElement> {
-    let (fade, view) = surface.resize_fade_for(entry)?;
-    let (location, element_scale) = if view.native {
-        (loc, Scale::from(1.))
-    } else {
-        let source = fade.size().to_physical_precise_round(output_scale);
-        (constrain.loc, fill_scale(source, constrain.size)?)
-    };
     // Under a live view at alpha * progress, the old contents sum to alpha * (1 - progress).
     let progress = fade.progress();
     let shown = alpha * progress;
@@ -393,68 +544,53 @@ fn resize_fade_element(
     CropRenderElement::from_element(elem, output_scale, constrain)
 }
 
-/// A view of `surface` in `entry` at `loc`, native when primary and fill-scaled otherwise,
-/// cropped to the entry since clients may render larger than configured.
-#[allow(clippy::too_many_arguments)]
-fn push_entry_view(
-    content: &mut Vec<ContentRenderElement>,
-    renderer: &mut GlesRenderer,
-    surface: &SurfaceState,
-    entry: &LayoutEntry,
-    loc: Point<i32, Physical>,
-    alpha: f32,
+/// The frame's buffer rect in its `slot`, or the slot before it has one. It bounds the views.
+fn frame_bounds(
+    surface: Option<&SurfaceState>,
+    slot: Rectangle<i32, Physical>,
     scale: Scale<f64>,
-    blur_config: Blur,
-) {
-    let window = &surface.window;
-    let entry_size = entry.rect().size.to_physical_precise_round(scale);
-    let constrain = Rectangle::new(loc, entry_size);
-    let reveal = surface
-        .resize_fade_for(entry)
-        .map_or(1., |(fade, _)| fade.progress());
-    let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha * reveal);
-    let source_size = window.geometry().size.to_physical_precise_round(scale);
-    push_view_elements_fit(
-        content,
-        window,
-        view_elements,
-        loc,
-        source_size,
-        scale,
-        constrain,
-        !entry.primary(),
-        Some(entry.id.get() as usize),
-        resize_fade_element(surface, entry, loc, constrain, scale, alpha),
-        blur_config,
-    );
+) -> Rectangle<i32, Physical> {
+    let size = surface
+        .filter(|surface| surface.has_buffer())
+        .map_or(slot.size, |surface| {
+            surface
+                .window
+                .geometry()
+                .size
+                .to_physical_precise_round(scale)
+        });
+    Rectangle::new(slot.loc, size)
 }
 
-/// A view of `window`, the old contents `under` it, and the blur behind both, in that order.
+/// A view's scale in `constrain`: native when `entry` is primary, else filling it.
+pub(crate) fn view_scale(
+    entry: &LayoutEntry,
+    source: Size<i32, Physical>,
+    constrain: Size<i32, Physical>,
+) -> Option<Scale<f64>> {
+    if entry.primary() {
+        Some(Scale::from(1.))
+    } else {
+        fill_scale(source, constrain)
+    }
+}
+
+/// A view's elements, scaled and cropped, over the old contents `under`, over the blur.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn push_view_elements_fit<
+pub(crate) fn push_view_elements<
     E: From<ConstrainedRenderElement> + From<FramebufferEffectElement>,
 >(
     elements: &mut Vec<E>,
     window: &smithay::desktop::Window,
     view_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     loc: Point<i32, Physical>,
-    source_size: Size<i32, Physical>,
+    element_scale: Scale<f64>,
     output_scale: Scale<f64>,
     constrain: Rectangle<i32, Physical>,
-    fill: bool,
     ns: Option<usize>,
     under: Option<ConstrainedRenderElement>,
     blur_config: Blur,
 ) {
-    let element_scale = if fill {
-        fill_scale(source_size, constrain.size)
-    } else {
-        Some(Scale::from(1.0))
-    };
-    let Some(element_scale) = element_scale else {
-        return;
-    };
-
     push_constrained(
         elements,
         view_elements,
@@ -721,94 +857,73 @@ pub fn collect_render_elements_for_output(
         .output_state
         .get(output)
         .map(|state| &state.fullscreen_backdrop);
-    // Floats in view with their slots.
+    let output_phys = output_size.to_physical_precise_round(scale);
+    // Floats in view with their slots, and how far their pin slid them.
     let float_viewport = geometry.to_content_rect(Rectangle::from_size(output_size.to_f64()));
-    let floats: Vec<(u64, Rectangle<f64, Logical>)> =
+    let floats: Vec<(u64, Rectangle<f64, Logical>, f64)> =
         ewm.layout.monitor_of(output).map_or(Vec::new(), |monitor| {
             ewm.visible_floats(monitor)
                 .filter(|(_, slot)| float_viewport.overlaps(*slot))
-                .map(|(frame, slot)| (frame.surface_id, slot))
+                .map(|(frame, slot)| (frame.surface_id, slot, monitor.pin_offset(frame)))
                 .collect()
         });
-    if let Some(space) = ewm.layout.floating_mut(output) {
+    if let Some(floating) = ewm.layout.floating_mut(output) {
         let focused_entry_id = ewm.focused_entry_id;
         let focused_frame_id = ewm.focused_frame_id;
         let unfocused_alpha = ewm.unfocused_alpha;
         let surfaces = &ewm.surfaces;
 
         // Draw the closing frames on top of the other frames.
-        for closing in space.closing_frames().iter().rev() {
+        for closing in floating.closing_frames().iter().rev() {
             let elem = closing.render(closing.pos());
             content.push(ContentRenderElement::Texture(elem));
         }
 
-        for (frame, data) in space.frames_with_data_mut() {
-            let Some(&(_, frame_rect)) = floats.iter().find(|(id, _)| *id == frame.surface_id)
+        for (frame, data) in floating.frames_with_data_mut() {
+            let Some(&(_, frame_rect, dx)) =
+                floats.iter().find(|(id, _, _)| *id == frame.surface_id)
             else {
                 continue;
             };
-            // A fullscreen view fills the float's slot, its frame and shadow hide under it.
-            if let Some(entry) = frame.fullscreen_entry() {
-                if let Some(surface) = entry.surface_id().and_then(|id| surfaces.get(&id)) {
-                    push_fullscreen_view(
-                        &mut content,
-                        renderer,
-                        surface,
-                        entry,
-                        surface.open_alpha(),
-                        frame_rect.loc.to_physical_precise_round(scale),
-                        output_size,
-                        backdrop,
-                        scale,
-                        blur_config,
-                    );
+            let frame_surface = surfaces.get(&frame.surface_id);
+            let frame_box = frame_rect.to_physical_precise_round(scale);
+            let space = FrameSpace {
+                origin: frame_rect.loc,
+                bounds: frame_bounds(frame_surface, frame_box, scale),
+                slot: Rectangle::new(
+                    Point::<f64, Logical>::from((dx, 0.)).to_physical_precise_round(scale),
+                    output_phys,
+                ),
+            };
+            // A fullscreen view fills the slot, its siblings, frame and shadow hide under it.
+            let fullscreen = frame.fullscreen_entry();
+            for entry in fullscreen.map_or(&frame.entries[..], std::slice::from_ref) {
+                let Some(surface) = entry.surface_id().and_then(|id| surfaces.get(&id)) else {
+                    continue;
+                };
+                let focused = entry.fullscreen() || focused_entry_id == Some(entry.id);
+                let alpha = if focused { 1.0 } else { unfocused_alpha } * surface.open_alpha();
+                if let Some(place) =
+                    ViewPlace::new(surface, entry, alpha, space, output_size, scale)
+                {
+                    push_view(&mut content, renderer, &place, backdrop, scale, blur_config);
                 }
+            }
+            if fullscreen.is_some() {
                 continue;
             }
-            for entry in frame
-                .entries
-                .iter()
-                .filter(|entry| entry.surface_id().is_some())
-            {
-                let surface_id = entry.surface_id().expect("surface-backed entry");
-                if let Some(surface) = surfaces.get(&surface_id) {
-                    let is_focused = focused_entry_id == Some(entry.id);
-                    let mut entry_alpha = if is_focused { 1.0 } else { unfocused_alpha };
-                    entry_alpha *= surface.open_alpha();
-                    let location = Point::from((
-                        frame_rect.loc.x + entry.x as f64,
-                        frame_rect.loc.y + entry.y as f64,
-                    ));
-                    let loc_physical: Point<i32, Physical> =
-                        location.to_physical_precise_round(scale);
-                    push_entry_view(
-                        &mut content,
-                        renderer,
-                        surface,
-                        entry,
-                        loc_physical,
-                        entry_alpha,
-                        scale,
-                        blur_config,
-                    );
-                }
-            }
 
-            let Some(frame_surface) = surfaces.get(&frame.surface_id) else {
+            let Some(frame_surface) = frame_surface else {
                 continue;
             };
             let window = &frame_surface.window;
             // A frame created hidden (sized, then shown) has no buffer yet; skip it
             // so its shadow never draws at the placeholder size.
-            if !window
-                .wl_surface()
-                .is_some_and(|s| crate::utils::is_mapped(&s))
-            {
+            if !frame_surface.has_buffer() {
                 continue;
             }
             let frame_alpha = frame_surface.open_alpha();
-            let frame_offset: Point<i32, Physical> =
-                frame_rect.loc.to_physical_precise_round(scale);
+            let frame_offset = frame_box.loc;
             let view_elements =
                 render_window_without_popups(window, renderer, frame_offset, scale, frame_alpha);
             content.extend(view_elements.into_iter().map(ContentRenderElement::Surface));
@@ -819,7 +934,7 @@ pub fn collect_render_elements_for_output(
                 frame_offset,
                 Scale::from(1.),
                 scale,
-                frame_rect.to_physical_precise_round(scale),
+                frame_box,
                 blur_config,
             );
 
@@ -836,67 +951,62 @@ pub fn collect_render_elements_for_output(
             });
         }
     }
+    let working_area_loc_physical =
+        Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
+            .to_physical_precise_round(scale);
     let strip = ewm.layout.strip(output);
     if let Some(strip) = strip {
         let active_idx = strip.active_idx();
-        for (frame_idx, frame, _, screen_x) in
+        for (frame_idx, frame, frame_rect, screen_x) in
             strip.frames_with_render_geo(view_size, strip_viewport)
         {
             let frame_offset: Point<i32, Physical> =
                 Point::<f64, Logical>::from((screen_x, 0.0)).to_physical_precise_round(scale);
+            let space = FrameSpace {
+                origin: Point::from((
+                    f64::from(working_area.loc.x) + screen_x,
+                    f64::from(working_area.loc.y),
+                )),
+                bounds: frame_bounds(
+                    ewm.surfaces.get(&frame.surface_id),
+                    Rectangle::new(
+                        working_area_loc_physical + frame_offset,
+                        frame_rect.size.to_physical_precise_round(scale),
+                    ),
+                    scale,
+                ),
+                slot: Rectangle::new(frame_offset, output_phys),
+            };
             let in_active_frame = frame_idx == active_idx;
-            for entry in frame
-                .entries
-                .iter()
-                .filter(|entry| entry.surface_id().is_some())
-            {
-                let surface_id = entry.surface_id().expect("surface-backed entry");
-                let entry_fullscreen = entry.fullscreen();
-                // Active-frame fullscreen covers the rest.
-                if above_top_layer && !entry_fullscreen && in_active_frame {
+            let backdrop_alpha = |entry: &LayoutEntry| {
+                entry
+                    .surface_id()
+                    .and_then(|id| ewm.surfaces.get(&id))
+                    .map_or(0., |surface| surface.backdrop_alpha(entry))
+            };
+            let mut views: Vec<&LayoutEntry> = frame.entries.iter().collect();
+            // Backdrop carriers first, so it covers their siblings, which hide only under an
+            // opaque one.
+            views.sort_by_cached_key(|entry| backdrop_alpha(entry) <= 0.);
+            let covered = above_top_layer
+                && in_active_frame
+                && frame
+                    .fullscreen_entry()
+                    .is_some_and(|entry| backdrop_alpha(entry) >= 1.);
+            for entry in views {
+                if covered && !entry.fullscreen() {
                     continue;
                 }
-                if let Some(surface) = ewm.surfaces.get(&surface_id) {
-                    // Fullscreen forced opaque so the backdrop doesn't bleed through.
-                    let is_focused = ewm.focused_entry_id == Some(entry.id);
-                    let mut entry_alpha = if entry_fullscreen || is_focused {
-                        1.0
-                    } else {
-                        ewm.unfocused_alpha
-                    };
-                    entry_alpha *= surface.open_alpha();
-                    if entry_fullscreen {
-                        push_fullscreen_view(
-                            &mut content,
-                            renderer,
-                            surface,
-                            entry,
-                            entry_alpha,
-                            frame_offset,
-                            output_size,
-                            backdrop,
-                            scale,
-                            blur_config,
-                        );
-                        continue;
-                    }
-
-                    // Frame-relative -> output-local (working_area.loc is relative to output
-                    // origin)
-                    let location =
-                        Point::from((working_area.loc.x + entry.x, working_area.loc.y + entry.y));
-                    let loc_physical: Point<i32, Physical> =
-                        location.to_physical_precise_round(scale) + frame_offset;
-                    push_entry_view(
-                        &mut content,
-                        renderer,
-                        surface,
-                        entry,
-                        loc_physical,
-                        entry_alpha,
-                        scale,
-                        blur_config,
-                    );
+                let Some(surface) = entry.surface_id().and_then(|id| ewm.surfaces.get(&id)) else {
+                    continue;
+                };
+                // Fullscreen forced opaque so the backdrop doesn't bleed through.
+                let focused = entry.fullscreen() || ewm.focused_entry_id == Some(entry.id);
+                let alpha = if focused { 1.0 } else { ewm.unfocused_alpha } * surface.open_alpha();
+                if let Some(place) =
+                    ViewPlace::new(surface, entry, alpha, space, output_size, scale)
+                {
+                    push_view(&mut content, renderer, &place, backdrop, scale, blur_config);
                 }
             }
         }
@@ -909,9 +1019,6 @@ pub fn collect_render_elements_for_output(
     }
 
     // The frames' own surfaces, culled like their views.
-    let working_area_loc_physical =
-        Point::<i32, Logical>::from((working_area.loc.x, working_area.loc.y))
-            .to_physical_precise_round(scale);
     if let Some(strip) = strip {
         for (_, frame, frame_rect, screen_x) in
             strip.frames_with_render_geo(view_size, strip_viewport)
@@ -998,8 +1105,7 @@ pub fn collect_render_elements_for_output(
     (elements, cursor_elements)
 }
 
-/// `frame`'s views at the frame origin, without blur, a fullscreen one over its backdrop as on
-/// the output.
+/// `frame`'s views about its own origin, without blur, the fullscreen one first over its backdrop.
 #[allow(clippy::too_many_arguments)]
 fn render_frame_views(
     content: &mut Vec<ContentRenderElement>,
@@ -1015,54 +1121,32 @@ fn render_frame_views(
         off: true,
         ..Blur::default()
     };
+    let space = FrameSpace {
+        origin: Point::from((0., 0.)),
+        bounds: frame_bounds(
+            ewm.surfaces.get(&frame.surface_id),
+            Rectangle::<f64, Logical>::from_size(Size::from((frame.width, frame.height)))
+                .to_physical_precise_round(scale),
+            scale,
+        ),
+        // The output about the frame's own origin.
+        slot: Rectangle::new(
+            Point::<i32, Logical>::from((-working_area.loc.x, -working_area.loc.y))
+                .to_physical_precise_round(scale),
+            output_size.to_physical_precise_round(scale),
+        ),
+    };
     let fullscreen = frame.entries.iter().filter(|entry| entry.fullscreen());
     let others = frame.entries.iter().filter(|entry| !entry.fullscreen());
     for entry in fullscreen.chain(others) {
         let Some(surface) = entry.surface_id().and_then(|id| ewm.surfaces.get(&id)) else {
             continue;
         };
-        if entry.fullscreen() {
-            let origin = Point::<i32, Logical>::from((-working_area.loc.x, -working_area.loc.y))
-                .to_physical_precise_round(scale);
-            push_fullscreen_view(
-                content,
-                renderer,
-                surface,
-                entry,
-                1.,
-                origin,
-                output_size,
-                backdrop,
-                scale,
-                no_blur,
-            );
-            continue;
+        let focused = entry.fullscreen() || ewm.focused_entry_id == Some(entry.id);
+        let alpha = if focused { 1.0 } else { ewm.unfocused_alpha };
+        if let Some(place) = ViewPlace::new(surface, entry, alpha, space, output_size, scale) {
+            push_view(content, renderer, &place, backdrop, scale, no_blur);
         }
-        let window = &surface.window;
-        let alpha = if ewm.focused_entry_id == Some(entry.id) {
-            1.0
-        } else {
-            ewm.unfocused_alpha
-        };
-        let loc: Point<i32, Physical> =
-            Point::from((entry.x, entry.y)).to_physical_precise_round(scale);
-        let view_elements = render_window_without_popups(window, renderer, loc, scale, alpha);
-        let entry_size: Size<i32, Physical> = entry.rect().size.to_physical_precise_round(scale);
-        let source_size: Size<i32, Physical> =
-            window.geometry().size.to_physical_precise_round(scale);
-        push_view_elements_fit(
-            content,
-            window,
-            view_elements,
-            loc,
-            source_size,
-            scale,
-            Rectangle::new(loc, entry_size),
-            !entry.primary(),
-            None,
-            None,
-            no_blur,
-        );
     }
 }
 
