@@ -717,6 +717,11 @@ impl Fixture {
         self.state.handle_module_command(command);
     }
 
+    /// Run `action` as a key or `ewm-action-module` would.
+    pub fn do_action(&mut self, action: crate::Action) {
+        self.handle_module_command(crate::module::ModuleCommand::Action { action });
+    }
+
     /// A workspace client's activate request for frame `id`.
     pub fn activate_workspace(&mut self, id: u64) {
         crate::protocols::workspace::WorkspaceHandler::activate_workspace(&mut self.state, id);

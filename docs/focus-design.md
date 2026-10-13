@@ -269,6 +269,10 @@ After specific operations:
     frame Emacs then selects.  Actions never wait, a VT switch never waits,
     and the queue is handed over before keyboard focus leaves Emacs.
     Modifier-only keys join an existing queue but never start one.
+15. **A compositor action completes without Emacs.**  Strip, output,
+    overview, hide, fullscreen and spawn actions change the compositor's
+    state on the key press or module command and queue events for Lisp
+    at most.  Nothing waits for a reply, so they work while Emacs is busy.
 
 The pure `resolve_keyboard_focus_target` helper (lock > layer >
 toplevel priority) is covered by a second set of properties in the

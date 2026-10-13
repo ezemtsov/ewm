@@ -60,6 +60,8 @@ pub mod tracy;
 pub mod utils;
 pub mod vblank_throttle;
 pub mod xwayland;
+
+pub use module::OverviewAction;
 pub use tracy::VBlankFrameTracker;
 
 // Testing module is always compiled but only used by tests

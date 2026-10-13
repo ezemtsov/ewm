@@ -8,7 +8,9 @@ use std::collections::{HashMap, HashSet};
 use ewm_core::event::Event;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{Fixture, mark_active_frame_close, strip_with_frame_ids};
-use ewm_core::{LayoutEntry, LayoutEntryId, OutputConfig, resolve_keyboard_focus_target};
+use ewm_core::{
+    Action, LayoutEntry, LayoutEntryId, OutputConfig, OverviewAction, resolve_keyboard_focus_target,
+};
 use proptest::prelude::*;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
@@ -41,6 +43,8 @@ enum Op {
     DestroyFrame(u64),
     DestroySurface(u64),
     ActivateSurface(u64),
+    /// A compositor action, as a key or `ewm-action-module` runs it.
+    Action(Action),
 }
 
 #[derive(Debug, Clone)]
@@ -126,8 +130,33 @@ fn layout_strategy() -> impl Strategy<Value = Vec<FrameSpec>> {
         })
 }
 
+/// One step along an output axis.
+fn direction_strategy() -> impl Strategy<Value = (i32, i32)> {
+    prop::sample::select(vec![(-1, 0), (1, 0), (0, -1), (0, 1)])
+}
+
+/// Every action but `Spawn`, which would start processes.
+fn action_strategy() -> impl Strategy<Value = Action> {
+    prop_oneof![
+        (-2i32..=2).prop_map(|delta| Action::FocusFrame { delta }),
+        (1usize..=4).prop_map(|n| Action::FocusNthFrame { n }),
+        FRAME_SID_RANGE.prop_map(|id| Action::ActivateFrame { id }),
+        direction_strategy().prop_map(|(dx, dy)| Action::FocusOutput { dx, dy }),
+        prop_oneof![Just(-1), Just(1)].prop_map(|delta| Action::MoveFrame { delta }),
+        Just(Action::ToggleFullscreen),
+        prop_oneof![
+            Just(OverviewAction::Toggle),
+            Just(OverviewAction::Open),
+            Just(OverviewAction::Close)
+        ]
+        .prop_map(Action::Overview),
+        Just(Action::HideToggle),
+    ]
+}
+
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
+        action_strategy().prop_map(Op::Action),
         (0..OUTPUTS.len(), FRAME_SID_RANGE)
             .prop_map(|(output, surface_id)| Op::CreateEmacsFrame { output, surface_id }),
         layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
@@ -244,6 +273,7 @@ fn apply_op(fix: &mut Fixture, op: Op) {
         Op::FocusFrame(f) => {
             fix.ewm().set_focus_frame(f, "proptest", false);
         }
+        Op::Action(action) => fix.do_action(action),
         Op::DisableOutput(output) => {
             set_output_enabled(fix, OUTPUTS[output], false);
         }
@@ -804,6 +834,7 @@ proptest! {
     #[test]
     fn focus_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..30)) {
         let mut fix = Fixture::new().unwrap();
+        fix.enable_event_capture();
         for name in OUTPUTS {
             fix.add_output(name, 1920, 1080);
         }
@@ -811,6 +842,13 @@ proptest! {
         for op in ops {
             apply_op(&mut fix, op);
             assert_invariants(&fix);
+            // Invariant 15: nothing here asks Emacs to run a command.
+            for event in fix.drain_events() {
+                prop_assert!(
+                    !matches!(event, Event::InterceptedCommand { .. } | Event::Key(_)),
+                    "{event:?}"
+                );
+            }
         }
     }
 }
@@ -819,6 +857,7 @@ proptest! {
 /// reconcile and would break the event-balance invariant.
 fn reconcile_op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
+        action_strategy().prop_map(Op::Action),
         layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
         entry_view_strategy().prop_map(Op::FocusView),
         FRAME_SID_RANGE.prop_map(Op::FocusFrame),
@@ -1108,7 +1147,7 @@ proptest! {
     #[test]
     fn focus_output_direction_round_trip(
         setup in nav_setup(),
-        dir in prop_oneof![Just((-1i32, 0i32)), Just((1, 0)), Just((0, -1)), Just((0, 1))],
+        dir in direction_strategy(),
     ) {
         let (dx, dy) = dir;
         let initial = setup.initial_focused_frame();
