@@ -428,6 +428,9 @@ impl State {
                 .ewm
                 .focus_strip_frame(|anchor| anchor.checked_add_signed(delta as isize)),
             Action::FocusNthFrame { n } => self.ewm.focus_strip_frame(|_| n.checked_sub(1)),
+            Action::ActivateFrame { id } => {
+                self.ewm.set_focus_frame(id, "action", true);
+            }
             Action::FocusOutput { dx, dy } => self.ewm.focus_output_direction(dx, dy),
             Action::MoveFrame { delta } => {
                 let id = self.ewm.focused_frame_id;

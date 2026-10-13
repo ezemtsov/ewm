@@ -742,6 +742,8 @@ pub enum Action {
     FocusFrame { delta: i32 },
     /// Focus the `n`th strip frame, counting from 1.
     FocusNthFrame { n: usize },
+    /// Focus frame `id`, as a workspace client asks.
+    ActivateFrame { id: u64 },
     /// Focus the active frame on the output in direction `(dx, dy)`.
     FocusOutput { dx: i32, dy: i32 },
     /// Move the focused strip frame `delta` slots.

@@ -53,7 +53,7 @@ use crate::protocols::virtual_pointer::{
     VirtualPointerMotionEvent,
 };
 use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
-use crate::{DndIcon, Event, LockRenderState, LockState, OutputConfig, State};
+use crate::{Action, DndIcon, Event, LockRenderState, LockState, OutputConfig, State};
 
 // DMA-BUF
 impl DmabufHandler for State {
@@ -465,7 +465,7 @@ impl WorkspaceHandler for State {
     }
 
     fn activate_workspace(&mut self, frame_surface_id: u64) {
-        self.ewm.queue_event(Event::ActivateWorkspace {
+        self.do_action(Action::ActivateFrame {
             id: frame_surface_id,
         });
     }

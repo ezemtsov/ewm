@@ -107,7 +107,6 @@
                   (intercepted-command . ewm--handle-intercepted-command)
                   (working_area . ewm--handle-working-area)
                   (selection-changed . ewm--handle-selection-changed)
-                  (activate_workspace . ewm--handle-activate-workspace)
                   (maximize_request . ewm--handle-maximize-request)
                   (unmaximize_request . ewm--handle-unmaximize-request)
                   (bell . ewm--handle-bell)

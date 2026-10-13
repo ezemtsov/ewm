@@ -16,7 +16,6 @@ flowchart TB
     focusev["Event::Focus"]
     newev["Event::New"]
     closeev["Event::Close"]
-    wsev["Event::ActivateWorkspace"]
     outev["Event::OutputsComplete"]
     fsev["Event::FullscreenRequest"]
     unfsev["Event::UnfullscreenRequest"]
@@ -28,7 +27,7 @@ flowchart TB
     foreign_src -->|notify| focusev
     newsurface_src --> newev
     closesurface_src --> closeev
-    waybar_src --> wsev
+    waybar_src -->|notify| focusev
     hotplug_src --> outev
     xdg_fs_req --> fsev
     xdg_unfs_req --> unfsev
@@ -38,7 +37,6 @@ flowchart TB
     focusev -->|pipe fd| dispatch
     newev -->|pipe fd| dispatch
     closeev -->|pipe fd| dispatch
-    wsev -->|pipe fd| dispatch
     outev -->|pipe fd| dispatch
     fsev -->|pipe fd| dispatch
     unfsev -->|pipe fd| dispatch
@@ -48,7 +46,6 @@ flowchart TB
     dispatch -->|focus| hfocus["ewm--handle-focus"]
     dispatch -->|new| hnew["ewm--handle-new-surface"]
     dispatch -->|close| hclose["ewm--handle-close-surface"]
-    dispatch -->|activate_workspace| hws["ewm--handle-activate-workspace"]
     dispatch -->|outputs_complete| hout["ewm--handle-outputs-complete"]
     dispatch -->|fullscreen_request| hfs["ewm--handle-fullscreen-request"]
     dispatch -->|unfullscreen_request| hunfs["ewm--handle-unfullscreen-request"]
@@ -73,14 +70,6 @@ flowchart TB
     new_guard -->|Yes| bufonly(["Buffer only"]):::safe
     new_guard -->|No| target["select-frame for output +<br/>pop-to-buffer-same-window"]
     target --> hooks
-
-    ws_guard{"menu<br/>active?"}:::guard
-    ws_drop(["Dropped"]):::safe
-
-    hws --> ws_guard
-    ws_guard -->|Yes| ws_drop
-    ws_guard -->|No| selframe["select-frame-set-input-focus"]
-    selframe --> hooks
 
     hclose --> killbuf["kill-buffer"]:::muted
     hout --> parity["apply-output-config +<br/>frames for empty outputs +<br/>delete stray frames +<br/>layout refresh"]:::muted

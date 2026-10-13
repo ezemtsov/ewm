@@ -166,9 +166,6 @@ pub enum Event {
     /// Clipboard selection changed (Wayland client copied text)
     #[serde(rename = "selection-changed")]
     SelectionChanged { text: String },
-    /// A client asked for the workspace of Emacs frame `id` (e.g. a bar click).
-    #[serde(rename = "activate_workspace")]
-    ActivateWorkspace { id: u64 },
     /// Surface requests maximized mode
     #[serde(rename = "maximize_request")]
     MaximizeRequest { id: u64 },

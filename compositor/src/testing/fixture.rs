@@ -717,6 +717,11 @@ impl Fixture {
         self.state.handle_module_command(command);
     }
 
+    /// A workspace client's activate request for frame `id`.
+    pub fn activate_workspace(&mut self, id: u64) {
+        crate::protocols::workspace::WorkspaceHandler::activate_workspace(&mut self.state, id);
+    }
+
     pub fn set_text_input_provider(&mut self, provider: crate::im::TextInputProvider) {
         self.handle_module_command(crate::module::ModuleCommand::ConfigureTextInput { provider });
     }

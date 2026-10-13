@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use ewm_core::event::{Event, OutputInfo, OutputMode, TextInputKey};
 
-const VARIANTS: usize = 32;
+const VARIANTS: usize = 31;
 
 /// Exhaustive by construction: a new variant does not compile until it is numbered here.
 fn variant(event: &Event) -> usize {
@@ -32,17 +32,16 @@ fn variant(event: &Event) -> usize {
         Event::WorkingArea { .. } => 18,
         Event::OutputConfigChanged { .. } => 19,
         Event::SelectionChanged { .. } => 20,
-        Event::ActivateWorkspace { .. } => 21,
-        Event::MaximizeRequest { .. } => 22,
-        Event::UnmaximizeRequest { .. } => 23,
-        Event::Bell { .. } => 24,
-        Event::IdleStateChanged { .. } => 25,
-        Event::Environment { .. } => 26,
-        Event::FrameShown { .. } => 27,
-        Event::FrameHidden { .. } => 28,
-        Event::ActivateSurface { .. } => 29,
-        Event::Overview { .. } => 30,
-        Event::Hide { .. } => 31,
+        Event::MaximizeRequest { .. } => 21,
+        Event::UnmaximizeRequest { .. } => 22,
+        Event::Bell { .. } => 23,
+        Event::IdleStateChanged { .. } => 24,
+        Event::Environment { .. } => 25,
+        Event::FrameShown { .. } => 26,
+        Event::FrameHidden { .. } => 27,
+        Event::ActivateSurface { .. } => 28,
+        Event::Overview { .. } => 29,
+        Event::Hide { .. } => 30,
     }
 }
 
@@ -178,7 +177,6 @@ fn every_event() -> Vec<Event> {
         Event::SelectionChanged {
             text: "copied".into(),
         },
-        Event::ActivateWorkspace { id: 7 },
         Event::MaximizeRequest { id: 7 },
         Event::UnmaximizeRequest { id: 7 },
         Event::Bell { id: Some(7) },

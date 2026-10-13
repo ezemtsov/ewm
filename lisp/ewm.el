@@ -451,7 +451,6 @@ Use `ewm-idle-inhibit-mode' to toggle interactively.")
       ('intercepted-command (ewm--handle-intercepted-command body))
       ('working_area (ewm--handle-working-area body))
       ('selection-changed (ewm--handle-selection-changed body))
-      ('activate_workspace (ewm--handle-activate-workspace body))
       ('maximize_request (ewm--handle-maximize-request body))
       ('unmaximize_request (ewm--handle-unmaximize-request body))
       ('bell (ewm--handle-bell body))
@@ -809,12 +808,6 @@ Push the text onto the kill ring."
   "Send TEXT to Wayland clipboard via compositor."
   (when (ewm--compositor-active-p)
     (ewm-set-selection-module text)))
-
-(defun ewm--handle-activate-workspace (event)
-  "Select the Emacs frame a client asked for in activate_workspace EVENT."
-  (unless (ewm-layout--menu-active-p)
-    (when-let* ((target (ewm--frame-by-surface-id (alist-get 'id event))))
-      (select-frame-set-input-focus target))))
 
 ;;; Strip-visibility freeze/thaw
 ;;

@@ -1,5 +1,5 @@
-//! Keys bound to compositor actions run in the compositor: the strip and the fullscreen bit change
-//! on the press, Emacs is told afterwards and never asked.
+//! Keys bound to compositor actions and workspace activations run in the compositor: the strip
+//! and the fullscreen bit change on the press, Emacs is told afterwards and never asked.
 use std::sync::Mutex;
 
 use ewm_core::input::KeyboardAction;
@@ -127,6 +127,24 @@ fn a_key_spawns_a_command() {
     }
     assert!(marker.exists(), "the spawned command never ran");
     let _ = std::fs::remove_file(&marker);
+}
+
+#[test]
+fn a_workspace_activation_focuses_the_frame_in_the_compositor() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(2);
+    fix.ewm().set_focus_frame(1, "test", false);
+    fix.enable_event_capture();
+
+    fix.activate_workspace(2);
+    assert_eq!(fix.ewm_ref().focused_frame_id, 2);
+    let events = fix.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Focus { pointer: false, .. })),
+        "{events:?}"
+    );
 }
 
 proptest! {

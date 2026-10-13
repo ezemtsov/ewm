@@ -74,7 +74,7 @@ When more than one party could pick, exactly one of them does:
 | Active frame on close (I9, I10)  | rust    | lisp passes an explicit frame to `delete-frame`; Rust applies active-close or inactive-close strip rules when that frame's toplevel is destroyed |
 | Workspace handle lifecycle       | rust    | `protocols::workspace::refresh`    |
 | Coordinate / name / state events | rust    | same                               |
-| Activate request (client click)  | rust→lisp | `Event::ActivateWorkspace { id }` names the frame's surface id. Lisp selects that frame |
+| Activate request (client click)  | rust    | `set_focus_frame` on the frame, Lisp follows the `focus` event |
 
 Close-time focus is compositor-owned because Emacs can change selection
 and send layout refreshes before `xdg_toplevel.destroy` reaches the
