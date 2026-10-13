@@ -1964,18 +1964,21 @@ impl Ewm {
 
     /// Ask surface `id` to go fullscreen or back, and configure it so.
     pub(crate) fn set_surface_fullscreen(&mut self, id: u64, on: bool) {
-        match self.surfaces.get_mut(&id) {
-            Some(surface) if surface.pending_fullscreen != on => surface.pending_fullscreen = on,
-            _ => return,
-        }
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        let changed = mem::replace(&mut surface.pending_fullscreen, on) != on;
         if on {
-            // One fullscreen per strip frame, the newest wins.
+            // One fullscreen per strip frame, the newest request wins, repeated or not.
             for rival in self
                 .layout
                 .fullscreen_rivals(id, |other| self.pending_fullscreen(other))
             {
                 self.set_surface_fullscreen(rival, false);
             }
+        }
+        if !changed {
+            return;
         }
         if self.surface_has_primary_entry(id) {
             self.refresh_primary_assignments();

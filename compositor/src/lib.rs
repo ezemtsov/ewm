@@ -5144,9 +5144,10 @@ impl State {
         let Some(id) = self.ewm.surface_id(surface) else {
             return;
         };
-        if self.ewm.pending_fullscreen(id) != on {
-            self.set_surface_fullscreen(id, on);
-        } else if let Some(toplevel) = self.ewm.window(id).and_then(|window| window.toplevel()) {
+        let changed = self.ewm.pending_fullscreen(id) != on;
+        self.set_surface_fullscreen(id, on);
+        if !changed && let Some(toplevel) = self.ewm.window(id).and_then(|window| window.toplevel())
+        {
             toplevel.send_configure();
         }
     }

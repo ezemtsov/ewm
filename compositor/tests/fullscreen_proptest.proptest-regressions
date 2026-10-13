@@ -4,5 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc e2b693f62a88ceff3392cfb28c3a9e9d75817bb18d90871ee94d482d16168325 # shrinks to ops = [DestroySurface(1), ApplyLayout { output: 0, frames: [FrameSpec { frame_idx: 3, entries: [(1, 1)], selected: None }] }, SetEntryFullscreen { frame_idx: 3, entry_slot: 1, on: true }]
-cc 66a41d859dd5f5383077f1a56119c0ccf7a95b012321bd3546a87cb981f9d13c # shrinks to ops = [ApplyLayout { output: 0, frames: [FrameSpec { frame_idx: 0, entries: [(0, 0), (2, 1)], selected: Some(0) }] }, SetEntryFullscreen { frame_idx: 0, entry_slot: 0, on: true }, SetEntryFullscreen { frame_idx: 0, entry_slot: 2, on: true }]
+cc ccf6e98e179a838a160dc1c7071ed3fd713385c21237b668fb6d07d4e2da0978 # shrinks to ops = [RequestFullscreen { surface: 2, on: true }, RequestFullscreen { surface: 0, on: true }, ApplyLayout { output: 0, frames: [FrameSpec { frame_idx: 2, entries: [(0, 0), (2, 2)], selected: Some(0) }] }, RequestFullscreen { surface: 0, on: true }]

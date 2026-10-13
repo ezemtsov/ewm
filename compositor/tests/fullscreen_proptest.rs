@@ -35,6 +35,11 @@ enum Op {
         entry_slot: usize,
         on: bool,
     },
+    /// The client asks for itself.
+    RequestFullscreen {
+        surface: usize,
+        on: bool,
+    },
     /// The client answers everything configured so far with a buffer.
     Commit(usize),
     DestroySurface(usize),
@@ -53,6 +58,34 @@ struct Model {
     requested: BTreeSet<u64>,
     committed: BTreeSet<u64>,
     gone: BTreeSet<u64>,
+}
+
+impl Model {
+    /// Surface `sid` asks for fullscreen `on`. The frames showing it drop their other requests.
+    fn request(&mut self, fix: &Fixture, sid: u64, on: bool) {
+        if !on {
+            self.requested.remove(&sid);
+            return;
+        }
+        let rivals: Vec<u64> = fix
+            .ewm_ref()
+            .layout
+            .strips()
+            .flat_map(|(_, strip)| strip.frames())
+            .filter(|frame| {
+                frame
+                    .entries
+                    .iter()
+                    .any(|entry| entry.surface_id() == Some(sid))
+            })
+            .flat_map(|frame| frame.entries.iter().filter_map(LayoutEntry::surface_id))
+            .filter(|&other| other != sid)
+            .collect();
+        for other in rivals {
+            self.requested.remove(&other);
+        }
+        self.requested.insert(sid);
+    }
 }
 
 struct Clients {
@@ -106,6 +139,8 @@ fn op_strategy() -> impl Strategy<Value = Op> {
                 on,
             },
         ),
+        4 => (0..SURFACES, any::<bool>())
+            .prop_map(|(surface, on)| Op::RequestFullscreen { surface, on }),
         4 => (0..SURFACES).prop_map(Op::Commit),
         1 => (0..SURFACES).prop_map(Op::DestroySurface),
     ]
@@ -221,35 +256,22 @@ fn apply_op(
                 .layout
                 .entry_surface_id(entry)
                 .filter(|id| !model.gone.contains(id));
-            if let Some(surface_id) = target
-                && *on
-            {
-                // One fullscreen per frame: the frames showing it drop their other requests.
-                let ewm = fix.ewm_ref();
-                let rivals: Vec<u64> = ewm
-                    .layout
-                    .strips()
-                    .flat_map(|(_, strip)| strip.frames())
-                    .filter(|frame| {
-                        frame
-                            .entries
-                            .iter()
-                            .any(|entry| entry.surface_id() == Some(surface_id))
-                    })
-                    .flat_map(|frame| frame.entries.iter().filter_map(LayoutEntry::surface_id))
-                    .filter(|&other| other != surface_id)
-                    .collect();
-                for other in rivals {
-                    model.requested.remove(&other);
-                }
-            }
             fix.set_fullscreen(entry, *on);
             if let Some(surface_id) = target {
+                model.request(fix, surface_id, *on);
+            }
+        }
+        Op::RequestFullscreen { surface, on } => {
+            let sid = clients.sids[*surface];
+            if !model.gone.contains(&sid) {
+                let toplevel = &clients.toplevels[*surface].xdg_toplevel;
                 if *on {
-                    model.requested.insert(surface_id);
+                    toplevel.set_fullscreen(None);
                 } else {
-                    model.requested.remove(&surface_id);
+                    toplevel.unset_fullscreen();
                 }
+                fix.roundtrip(&mut clients.client);
+                model.request(fix, sid, *on);
             }
         }
         Op::Commit(surface) => {
