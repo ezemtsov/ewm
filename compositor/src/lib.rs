@@ -2000,7 +2000,7 @@ impl Ewm {
     fn refresh_mapped_cast_outputs(&mut self) {
         #[cfg(feature = "screencast")]
         {
-            let live = || self.layout.strip_entry_outputs();
+            let live = || self.layout.entry_outputs();
             let current = &self.casting.mapped_cast_output;
             let changed = live().count() != current.len()
                 || live().any(|(id, output)| current.get(&id) != Some(output));

@@ -915,10 +915,9 @@ impl Layout {
             .chain(self.homeless.iter().map(|frame| frame.surface_id))
     }
 
-    /// Every strip entry with the output showing it.
-    pub(crate) fn strip_entry_outputs(&self) -> impl Iterator<Item = (LayoutEntryId, &Output)> {
+    /// Every entry with the output showing it.
+    pub fn entry_outputs(&self) -> impl Iterator<Item = (LayoutEntryId, &Output)> {
         self.entry_locations()
-            .filter(|location| !location.floating)
             .map(|location| (location.entry.id, location.monitor.output()))
     }
 

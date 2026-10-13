@@ -219,6 +219,10 @@ fn float_fullscreens_in_place_over_the_active_frame() {
             ewm.layout_entry_id_under(Point::from((5., 5.))),
             Some(nz(7))
         );
+        assert!(
+            ewm.layout.entry_outputs().any(|(id, _)| id == nz(7)),
+            "the float's view is not castable"
+        );
     }
 
     top.xdg_toplevel.unset_fullscreen();
