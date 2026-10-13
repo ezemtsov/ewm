@@ -197,3 +197,19 @@ pub enum Event {
     #[serde(rename = "frame_hidden")]
     FrameHidden { id: u64 },
 }
+
+impl Event {
+    /// Whether this event carries state that makes the unread `earlier` one stale.
+    pub(crate) fn supersedes(&self, earlier: &Event) -> bool {
+        matches!(
+            (self, earlier),
+            (Event::Focus { .. }, Event::Focus { .. })
+                | (Event::Overview { .. }, Event::Overview { .. })
+                | (Event::Hide { .. }, Event::Hide { .. })
+                | (
+                    Event::IdleStateChanged { .. },
+                    Event::IdleStateChanged { .. }
+                )
+        )
+    }
+}

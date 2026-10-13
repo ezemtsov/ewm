@@ -7,6 +7,7 @@
 pub mod region;
 pub mod reply;
 
+use std::os::fd::AsFd;
 use std::time::Duration;
 
 use smithay::backend::renderer::utils::{
@@ -14,11 +15,18 @@ use smithay::backend::renderer::utils::{
 };
 use smithay::desktop::Window;
 use smithay::output::{self, Output};
+use smithay::reexports::rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use smithay::reexports::rustix::time::{ClockId, clock_gettime};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Coordinate, Logical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::compositor::{SurfaceData, send_surface_state};
 use smithay::wayland::fractional_scale::with_fractional_scale;
+
+/// Set `O_NONBLOCK` on `fd`.
+pub(crate) fn set_nonblocking(fd: impl AsFd) -> std::io::Result<()> {
+    fcntl_setfl(&fd, fcntl_getfl(&fd)? | OFlags::NONBLOCK)?;
+    Ok(())
+}
 
 /// Get monotonic time for timestamps and frame scheduling.
 pub fn get_monotonic_time() -> Duration {

@@ -717,6 +717,45 @@ struct EventChannel {
     pending: VecDeque<crate::event::Event>,
     queue: VecDeque<crate::event::Event>,
     wakeup: Box<dyn std::io::Write + Send>,
+    /// Coalescing may empty the queue without consuming its wakeup.
+    notified: bool,
+}
+
+impl EventChannel {
+    fn new(wakeup: Box<dyn std::io::Write + Send>) -> Self {
+        Self {
+            pending: VecDeque::new(),
+            queue: VecDeque::new(),
+            wakeup,
+            notified: false,
+        }
+    }
+
+    /// Queue `event`, dropping the unread events it supersedes.
+    fn push(&mut self, event: crate::event::Event) {
+        self.pending.retain(|earlier| !event.supersedes(earlier));
+        self.queue.retain(|earlier| !event.supersedes(earlier));
+        self.pending.push_back(event);
+    }
+
+    /// Publish staged events, sending a wakeup only when none is outstanding.
+    fn flush(&mut self) {
+        use std::io::Write;
+        self.queue.append(&mut self.pending);
+        if !self.queue.is_empty() && !self.notified {
+            match self.wakeup.write_all(b"\0") {
+                Ok(()) => self.notified = true,
+                // A full pipe already has a wakeup for the reader.
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => self.notified = true,
+                Err(err) => tracing::warn!("event wakeup failed: {err}"),
+            }
+        }
+    }
+
+    fn take(&mut self) -> Vec<crate::event::Event> {
+        self.notified = false;
+        self.queue.drain(..).collect()
+    }
 }
 
 /// Set by `init_event_channel`, before the compositor thread starts.
@@ -725,32 +764,28 @@ static EVENT_CHANNEL: Mutex<Option<EventChannel>> = Mutex::new(None);
 /// Register the pipe process whose filter drains events with `drain_events`.
 #[defun]
 fn init_event_channel(env: &Env, pipe_process: Value<'_>) -> Result<()> {
-    let wakeup = Box::new(env.open_channel(pipe_process)?);
-    *EVENT_CHANNEL.lock().unwrap() = Some(EventChannel {
-        pending: VecDeque::new(),
-        queue: VecDeque::new(),
-        wakeup,
-    });
+    let writer = env.open_channel(pipe_process)?;
+    // open_channel hides the writer behind impl Write. It is a PipeWriter, the only way to its fd.
+    let pipe = (&writer as &dyn std::any::Any)
+        .downcast_ref::<std::io::PipeWriter>()
+        .ok_or_else(|| anyhow!("emacs-rs event channel is not a PipeWriter"))?;
+    crate::utils::set_nonblocking(pipe)?;
+    let wakeup = Box::new(writer);
+    *EVENT_CHANNEL.lock().unwrap() = Some(EventChannel::new(wakeup));
     Ok(())
 }
 
 /// Queue `event` for Emacs.
 pub(crate) fn push_event(event: crate::event::Event) {
     if let Some(channel) = EVENT_CHANNEL.lock().unwrap().as_mut() {
-        channel.pending.push_back(event);
+        channel.push(event);
     }
 }
 
 /// Hand this tick's events to Emacs, waking the pipe filter when it was idle.
 pub(crate) fn flush_events() {
-    use std::io::Write;
-    if let Some(channel) = EVENT_CHANNEL.lock().unwrap().as_mut()
-        && !channel.pending.is_empty()
-    {
-        if channel.queue.is_empty() {
-            let _ = channel.wakeup.write_all(b"\0");
-        }
-        channel.queue.append(&mut channel.pending);
+    if let Some(channel) = EVENT_CHANNEL.lock().unwrap().as_mut() {
+        channel.flush();
     }
 }
 
@@ -758,7 +793,7 @@ pub(crate) fn flush_events() {
 #[defun]
 fn drain_events() -> Result<Lisp<Vec<crate::event::Event>>> {
     let events: Vec<crate::event::Event> = match EVENT_CHANNEL.lock().unwrap().as_mut() {
-        Some(channel) => channel.queue.drain(..).collect(),
+        Some(channel) => channel.take(),
         None => Vec::new(),
     };
     Ok(Lisp(events))
@@ -1823,7 +1858,101 @@ fn list_xdg_apps() -> Result<Lisp<Data>> {
 
 #[cfg(test)]
 mod tests {
-    use super::KeyboardCaptureState;
+    use std::num::NonZeroU64;
+
+    use super::{EventChannel, KeyboardCaptureState};
+    use crate::event::Event;
+
+    fn focus(n: u64) -> Event {
+        Event::Focus {
+            focus_id: NonZeroU64::new(n).unwrap(),
+            x: None,
+            y: None,
+            pointer: false,
+        }
+    }
+
+    fn printed(events: impl IntoIterator<Item = Event>) -> Vec<String> {
+        events
+            .into_iter()
+            .map(|event| elisp::serde::to_value(&event).unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_newer_state_event_replaces_the_unread_one_in_place() {
+        let mut channel = EventChannel::new(Box::new(Vec::new()));
+        channel.push(focus(1));
+        channel.push(Event::Close { id: 9 });
+        channel.flush();
+        channel.push(Event::Overview { open: true });
+        channel.push(focus(2));
+        channel.push(Event::Overview { open: false });
+        let unread = channel.queue.iter().chain(channel.pending.iter()).cloned();
+        assert_eq!(
+            printed(unread),
+            printed([
+                Event::Close { id: 9 },
+                focus(2),
+                Event::Overview { open: false }
+            ])
+        );
+    }
+
+    #[test]
+    fn request_events_are_never_dropped() {
+        let mut channel = EventChannel::new(Box::new(Vec::new()));
+        channel.push(Event::FrameHidden { id: 1 });
+        channel.push(Event::Close { id: 1 });
+        channel.push(Event::FrameShown { id: 1 });
+        channel.push(Event::FrameHidden { id: 1 });
+        assert_eq!(channel.pending.len(), 4);
+    }
+
+    #[test]
+    fn coalescing_does_not_send_repeated_wakeups_to_a_stalled_reader() {
+        use std::io::Read;
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        crate::utils::set_nonblocking(&reader).unwrap();
+        crate::utils::set_nonblocking(&writer).unwrap();
+        let mut channel = EventChannel::new(Box::new(writer));
+        for n in 1..100_000 {
+            channel.push(focus(n));
+            channel.flush();
+        }
+        assert_eq!(channel.queue.len(), 1);
+        let mut bytes = [0; 16];
+        assert_eq!(reader.read(&mut bytes).unwrap(), 1);
+        assert_eq!(
+            reader.read(&mut bytes).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(
+            matches!(channel.take()[0], Event::Focus { focus_id, .. } if focus_id.get() == 99_999)
+        );
+        channel.push(focus(100_000));
+        channel.flush();
+        assert_eq!(reader.read(&mut bytes).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_full_wakeup_pipe_does_not_block_publication() {
+        use std::io::{Read, Write};
+        let (mut reader, mut writer) = std::io::pipe().unwrap();
+        crate::utils::set_nonblocking(&reader).unwrap();
+        crate::utils::set_nonblocking(&writer).unwrap();
+        while writer.write(&[0; 4096]).is_ok() {}
+        let mut channel = EventChannel::new(Box::new(writer));
+        channel.push(focus(1));
+        channel.flush();
+        assert_eq!(channel.queue.len(), 1);
+        let mut bytes = [0; 4096];
+        while reader.read(&mut bytes).is_ok() {}
+        assert_eq!(channel.take().len(), 1);
+        channel.push(focus(2));
+        channel.flush();
+        assert_eq!(reader.read(&mut bytes).unwrap(), 1);
+    }
 
     #[test]
     fn stale_keyboard_capture_end_keeps_newer_lease() {
