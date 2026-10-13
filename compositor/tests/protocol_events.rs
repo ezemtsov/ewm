@@ -2,9 +2,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroU64;
-use std::path::PathBuf;
 
 use ewm_core::event::{Event, OutputInfo, OutputMode, TextInputKey};
+
+mod common;
 
 const VARIANTS: usize = 31;
 
@@ -217,18 +218,5 @@ fn every_variant_is_sampled() {
 
 #[test]
 fn fixture_matches_the_events() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("tests/fixtures/every-event.el");
-    let expected = fixture();
-    if std::env::var_os("EWM_UPDATE_FIXTURES").is_some() {
-        std::fs::write(&path, &expected).unwrap();
-    }
-    let actual = std::fs::read_to_string(&path).unwrap_or_default();
-    assert!(
-        actual == expected,
-        "{} is stale; rerun with EWM_UPDATE_FIXTURES=1",
-        path.display()
-    );
+    common::assert_generated("tests/fixtures/every-event.el", &fixture());
 }

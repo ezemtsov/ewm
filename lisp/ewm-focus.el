@@ -12,7 +12,9 @@
 
 ;;; Code:
 
-(declare-function ewm-focus-target-module "ewm-core" (focus-id))
+(require 'ewm-module)
+(ewm-module--declare)
+
 (declare-function ewm-layout--ensure-frame-focus-id "ewm-layout" (frame))
 (declare-function ewm-layout--menu-active-p "ewm-layout" ())
 (declare-function ewm--frame-by-surface-id "ewm" (surface-id))

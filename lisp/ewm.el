@@ -25,6 +25,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ewm-module)
+(ewm-module--declare)
 
 (unless (featurep 'ewm-core)
   (let ((path (getenv "EWM_MODULE_PATH")))
@@ -32,47 +34,7 @@
         (module-load path)
       (require 'ewm-core))))
 
-;; Functions provided by the ewm-core dynamic module
-(declare-function ewm-init-event-channel "ewm-core")
-(declare-function ewm-drain-events "ewm-core")
-(declare-function ewm-set-selection-module "ewm-core")
-(declare-function ewm-layout-module "ewm-core")
-(declare-function ewm-get-strip-frame-ids "ewm-core")
-(declare-function ewm-get-frame-output "ewm-core")
-(declare-function ewm-close-module "ewm-core")
-(declare-function ewm-warp-pointer-module "ewm-core")
-(declare-function ewm-get-debug-state-module "ewm-core")
-(declare-function ewm-debug-mode-module "ewm-core")
-(declare-function ewm-configure-output-module "ewm-core")
-(declare-function ewm-prepare-frame-module "ewm-core")
-(declare-function ewm-prepare-floating-frame-module "ewm-core")
-(declare-function ewm-prepare-frame-close-module "ewm-core")
-(declare-function ewm-move-floating-frame-module "ewm-core")
-(declare-function ewm-resize-floating-frame-module "ewm-core")
-(declare-function ewm-workspace-rename-module "ewm-core")
-(declare-function ewm-workspace-mark-urgent-module "ewm-core")
-(declare-function ewm-get-active-outputs "ewm-core")
-(declare-function ewm-get-output-origin "ewm-core")
-(declare-function ewm-get-frame-origin "ewm-core")
-(declare-function ewm-entry-under-floating-center-module "ewm-core")
 (declare-function ewm--find-window-by-entry-id "ewm-focus")
-(declare-function ewm-configure-cursor-module "ewm-core")
-(declare-function ewm-power-off-monitors-module "ewm-core")
-(declare-function ewm-power-on-monitors-module "ewm-core")
-(declare-function ewm-start "ewm-core" (cursor-theme cursor-size))
-(declare-function ewm-list-xdg-apps "ewm-core")
-(declare-function ewm-set-focus-follows-mouse "ewm-core")
-(declare-function ewm-set-unfocused-alpha "ewm-core")
-(declare-function ewm-set-animations-enabled "ewm-core")
-(declare-function ewm-configure-overview-module "ewm-core" (zoom red green blue))
-(declare-function ewm-configure-background-module "ewm-core" (red green blue))
-(declare-function ewm-configure-blur-module "ewm-core"
-                  (on passes offset noise saturation))
-(declare-function ewm-action-module "ewm-core" (action))
-(declare-function ewm-notify-initialized-module "ewm-core")
-(declare-function ewm-focus-output-direction-module "ewm-core")
-(declare-function ewm-get-focused-frame-id "ewm-core")
-(declare-function ewm-get-active-frame-id "ewm-core")
 (declare-function ewm--handle-intercepted-command "ewm-input" (event))
 
 ;;; Logging
@@ -814,9 +776,6 @@ Push the text onto the kill ring."
 ;; The compositor emits frame_shown/frame_hidden when an emacs frame's
 ;; strip-active status changes.  We forward to GTK's update-freeze so
 ;; pgtk's per-tick Cairo paint skips hidden frames.
-
-(declare-function ewm-gtk-freeze-frame-updates "ewm-core")
-(declare-function ewm-gtk-thaw-frame-updates "ewm-core")
 
 (defun ewm-output-active-frame (output)
   "Return the strip frame shown on OUTPUT, or its first frame."
@@ -1639,8 +1598,6 @@ The compositor runs as a thread within the Emacs process."
     (with-timeout (ewm--compositor-stop-timeout nil)
       (while (ewm-running)
         (sleep-for ewm--compositor-poll-interval)))))
-
-(declare-function ewm-gtk-set-style "ewm-core")
 
 (defun ewm--apply-background (&rest _)
   "Push the default face background to the compositor and GTK."

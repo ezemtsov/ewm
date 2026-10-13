@@ -10,14 +10,8 @@
 
 ;;; Code:
 
-(declare-function ewm-im-commit-module "ewm-core")
-(declare-function ewm-im-preedit-module "ewm-core")
-(declare-function ewm-text-input-replace-module "ewm-core")
-(declare-function ewm-text-input-surrounding-module "ewm-core")
-(declare-function ewm-text-input-forward-key-module "ewm-core")
-(declare-function ewm-text-input-intercept-module "ewm-core")
-(declare-function ewm-configure-text-input-module "ewm-core")
-(declare-function ewm-get-focused-id "ewm-core")
+(require 'ewm-module)
+(ewm-module--declare)
 
 (defvar ewm--surfaces)
 (defvar ewm--module-mode)

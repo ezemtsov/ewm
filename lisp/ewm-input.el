@@ -26,8 +26,8 @@
 
 (require 'cl-lib)
 (require 'windmove)
-
-(declare-function ewm-action-module "ewm-core" (action))
+(require 'ewm-module)
+(ewm-module--declare)
 
 (defmacro ewm--cmd (&rest args)
   "Create an interactive command that runs ARGS as a subprocess."
@@ -92,17 +92,6 @@ Default super-key bindings for window management.
 Override individual bindings with `use-package':
   :bind (:map ewm-mode-map (\"s-d\" . my-launcher))")
 
-(declare-function ewm-intercept-keys-module "ewm-core")
-(declare-function ewm-send-key-module "ewm-core" (surface-id keys))
-(declare-function ewm-keyboard-capture-active-module "ewm-core")
-(declare-function ewm-configure-input-module "ewm-core")
-(declare-function ewm-keyboard-capture-begin-module "ewm-core" (reason))
-(declare-function ewm-keyboard-capture-end-module "ewm-core" (token))
-(declare-function ewm-keyboard-redirect-capture-clear-module "ewm-core")
-(declare-function ewm-set-drag-source "ewm-core" (active))
-(declare-function ewm-get-focused-id "ewm-core")
-(declare-function ewm-get-focused-frame-id "ewm-core")
-(declare-function ewm-get-pointer-location "ewm-core")
 (declare-function ewm-layout--menu-active-p "ewm-layout")
 (declare-function ewm--window-body-pixel-rect "ewm-layout" (window))
 (declare-function ewm-warp-pointer "ewm")
