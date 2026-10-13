@@ -28,6 +28,12 @@
 (require 'windmove)
 (require 'ewm-module)
 (ewm-module--declare)
+(require 'ewm-surface)
+(require 'ewm-layout)
+(require 'ewm-frame)
+(require 'ewm-focus)
+(require 'ewm-text-input)
+(require 'ewm-commands)
 
 (defmacro ewm--cmd (&rest args)
   "Create an interactive command that runs ARGS as a subprocess."
@@ -91,45 +97,6 @@
 Default super-key bindings for window management.
 Override individual bindings with `use-package':
   :bind (:map ewm-mode-map (\"s-d\" . my-launcher))")
-
-(declare-function ewm-layout--menu-active-p "ewm-layout")
-(declare-function ewm--window-body-pixel-rect "ewm-layout" (window))
-(declare-function ewm-warp-pointer "ewm")
-(declare-function ewm--get-frame-origin "ewm")
-;; Defined in ewm.el (loaded after ewm-input.el)
-(declare-function ewm-launch-app "ewm")
-(declare-function ewm-toggle-fullscreen "ewm")
-(declare-function ewm-floating-toggle "ewm")
-(declare-function ewm-lock-session "ewm")
-(declare-function ewm-volume-raise "ewm")
-(declare-function ewm-volume-lower "ewm")
-(declare-function ewm-volume-mute "ewm")
-(declare-function ewm-mic-mute "ewm")
-(declare-function ewm-brightness-up "ewm")
-(declare-function ewm-brightness-down "ewm")
-(declare-function ewm-edit "ewm-text-input")
-(declare-function ewm-frame-new "ewm")
-(declare-function ewm-frame-close "ewm")
-(declare-function ewm-frame-select "ewm")
-(declare-function ewm-frame-left "ewm")
-(declare-function ewm-frame-right "ewm")
-(declare-function ewm-overview-open "ewm")
-(declare-function ewm-overview-close "ewm")
-(declare-function ewm-hide-toggle "ewm")
-(declare-function ewm-frame-move-left "ewm")
-(declare-function ewm-frame-move-right "ewm")
-(declare-function ewm-focus-left "ewm")
-(declare-function ewm-focus-right "ewm")
-(declare-function ewm-focus-up "ewm")
-(declare-function ewm-focus-down "ewm")
-
-(defvar ewm--module-mode)
-(defvar ewm-mouse-follows-focus)
-(defvar ewm--mff-last-window)
-(defvar ewm--surfaces)
-(defvar ewm-surface-id)
-(defvar ewm-surface-mode-map)
-(defvar ewm-text-input--composing)
 
 (defun ewm-input--set-input-config (sym val)
   "Set SYM to VAL and refresh compositor input config."
@@ -300,6 +267,16 @@ that surface only, see `ewm-update-app-hook'."
    ewm-mode-map))
 
 ;;; Mouse-follows-focus
+
+(defcustom ewm-mouse-follows-focus t
+  "Whether the mouse pointer follows focus changes.
+When non-nil, warps the pointer to the center of the focused window."
+  :type 'boolean
+  :group 'ewm-input-devices)
+
+(defun ewm-warp-pointer (x y)
+  "Warp pointer to absolute position X, Y."
+  (ewm-warp-pointer-module x y))
 
 (defun ewm-input--pointer-in-window-p (window)
   "Return non-nil if pointer is inside WINDOW.

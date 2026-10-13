@@ -11,11 +11,9 @@
 
 ;;; Code:
 
+(require 'ewm-module)
+(ewm-module--declare)
 (require 'ewm-surface)
-
-(declare-function ewm-layout "ewm")
-
-(defvar ewm--module-mode)
 
 (defun ewm-layout--reading-key-p ()
   "Non-nil while an overriding keymap is consuming keystrokes."
@@ -55,11 +53,17 @@ The bit-32 range is reserved for frame chrome (see
   (or (window-parameter window 'ewm-entry-id)
       (set-window-parameter window 'ewm-entry-id (ewm-layout--fresh-entry-id))))
 
+(defun ewm--find-window-by-entry-id (entry-id)
+  "Window whose `ewm-entry-id' parameter is ENTRY-ID, if any."
+  (get-window-with-predicate
+   (lambda (window) (eql (window-parameter window 'ewm-entry-id) entry-id))
+   'no-minibuf t))
+
 (defun ewm-layout--ensure-frame-focus-id (frame)
   "Return FRAME's chrome focus id derived from its `ewm-surface-id'.
 Computed deterministically so the compositor can construct the same id at
 `new_toplevel' without coordination."
-  (when-let ((sid (frame-parameter frame 'ewm-surface-id)))
+  (when-let* ((sid (frame-parameter frame 'ewm-surface-id)))
     (logior ewm-layout--frame-focus-id-marker sid)))
 
 (defun ewm--window-body-pixel-rect (window)
@@ -109,8 +113,13 @@ compositor parks keyboard focus on the frame chrome."
         :height ,(float (frame-pixel-height frame))
         :entries ,(vconcat (nreverse entries))))))
 
+(defun ewm-layout (frames)
+  "Declare the contents of every Emacs frame. The compositor owns placement.
+FRAMES is a vector of `ewm-layout--build-frame-plist' plists."
+  (ewm-layout-module frames))
+
 (defun ewm-layout--send-layouts ()
-  "Declare every placed frame's contents, suppressing `:selected-entry-id' while modal."
+  "Declare every placed frame, suppressing `:selected-entry-id' while modal."
   (let ((menu-active (ewm-layout--menu-active-p)))
     (ewm-layout (vconcat (delq nil (mapcar (lambda (frame)
                                              (and (frame-parameter frame 'ewm-surface-id)

@@ -32,7 +32,6 @@
 (ewm-test--stub ewm-keyboard-capture-begin-module (_reason) 1)
 (ewm-test--stub ewm-keyboard-capture-end-module (_token) t)
 (ewm-test--stub ewm-keyboard-redirect-capture-clear-module () nil)
-(ewm-test--stub ewm-layout--menu-active-p () nil)
 (ewm-test--stub ewm-get-focused-id () 2)
 (ewm-test--stub ewm-get-focused-frame-id () 2)
 (provide 'ewm-core)
@@ -42,11 +41,6 @@
                                (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm-input)
 
-(defvar ewm--module-mode)
-(defvar ewm-text-input--composing)
-(defvar ewm--surfaces (make-hash-table :test 'eql))
-(defvar ewm-surface-mode-map (make-sparse-keymap))
-(defvar ewm-input--keyboard-capture-token)
 (defvar ewm-input-tests--focused-id 2)
 (defvar ewm-input-tests--focused-frame-id 2)
 
@@ -112,8 +106,7 @@
 (defun ewm-input-tests--go () (interactive))
 (function-put 'ewm-input-tests--go 'ewm-action '(focus-frame :delta 1))
 (defun ewm-input-tests--nth () (interactive))
-(function-put 'ewm-input-tests--nth 'ewm-action
-              (lambda (event) (list 'focus-nth-frame :n (- (event-basic-type event) ?0))))
+(function-put 'ewm-input-tests--nth 'ewm-action #'ewm--frame-select-action)
 
 (ert-deftest ewm-input-tests/spec-action ()
   "A command's `ewm-action' rides the spec, a function of the key when it is one."

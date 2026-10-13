@@ -12,9 +12,8 @@
 
 (require 'ewm-module)
 (ewm-module--declare)
+(require 'ewm-surface)
 
-(defvar ewm--surfaces)
-(defvar ewm--module-mode)
 (defvar ewm-text-input-provider)
 
 (defun ewm-text-input--send-provider ()
@@ -286,6 +285,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
   "Minor mode for buffers editing a Wayland field via `ewm-edit'."
   :init-value nil
   :lighter " ewm-edit")
+
 (put 'ewm-edit-mode 'permanent-local t)
 
 (defvar ewm-edit--pending (make-hash-table :test 'eql)

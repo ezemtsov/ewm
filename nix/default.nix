@@ -87,6 +87,7 @@ emacsPackage.pkgs.trivialBuild {
     fileset = lib.fileset.intersection gitTrackedFiles ./../lisp;
   };
   packageRequires = [ ewm-core ];
+  turnCompilationWarningToError = true;
   passthru.module = "${./service.nix}";
   postInstall = ''
     cp -r ${etcFiles} $out/etc

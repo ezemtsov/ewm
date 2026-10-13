@@ -14,16 +14,30 @@
 
 (require 'ewm-module)
 (ewm-module--declare)
+(require 'ewm-layout)
+(require 'ewm-frame)
 
-(declare-function ewm-layout--ensure-frame-focus-id "ewm-layout" (frame))
-(declare-function ewm-layout--menu-active-p "ewm-layout" ())
-(declare-function ewm--frame-by-surface-id "ewm" (surface-id))
+(defcustom ewm-focus-follows-mouse nil
+  "Whether moving the mouse pointer should focus applications.
+The compositor sends focus events with cursor coordinates; intra-frame
+window switching is handled by `ewm--handle-focus' from those events."
+  :type 'boolean
+  :group 'ewm-input-devices
+  :set (lambda (sym val)
+         (set-default sym val)
+         (setq focus-follows-mouse (and val t))
+         (when (fboundp 'ewm-set-focus-follows-mouse)
+           (ewm-set-focus-follows-mouse val))))
 
-(defvar ewm--module-mode)
-(defvar ewm-focus-follows-mouse)
-(defvar ewm--is-ffm-focus-event)
-(defvar ewm--is-pointer-focus-event)
-(defvar ewm--mff-last-window)
+(defvar ewm--mff-last-window nil
+  "Last window for mouse-follows-focus, to avoid redundant warps.")
+
+(defvar ewm--is-ffm-focus-event nil
+  "Whether the current event was triggered by focus follows mouse.
+Let-bound in `ewm--handle-focus' to gate the Emacs-window hover branch.")
+
+(defvar ewm--is-pointer-focus-event nil
+  "Whether the current focus event came from pointer interaction.")
 
 (defun ewm--select-frame-set-input-focus (frame &optional norecord)
   "Override skipping `x-focus-frame' so xdg_activation can't echo back."
@@ -34,12 +48,6 @@
         (ewm-focus-target-module focus-id)
       (set-frame-parameter frame 'ewm-focus-on-create t)))
   frame)
-
-(defun ewm--find-window-by-entry-id (entry-id)
-  "Window whose `ewm-entry-id' parameter is ENTRY-ID, if any."
-  (get-window-with-predicate
-   (lambda (window) (eql (window-parameter window 'ewm-entry-id) entry-id))
-   'no-minibuf t))
 
 (defun ewm--find-frame-by-focus-id (focus-id)
   "Frame whose chrome focus id matches FOCUS-ID, if any.
@@ -61,12 +69,12 @@ recover the surface-id."
            (ewm--is-ffm-focus-event
             (and ewm-focus-follows-mouse ewm--is-pointer-focus-event)))
       (cond
-       ((when-let ((win (ewm--find-window-by-entry-id focus-id)))
+       ((when-let* ((win (ewm--find-window-by-entry-id focus-id)))
           (select-frame (window-frame win))
           (select-window win)
           (setq ewm--mff-last-window win)
           t))
-       ((when-let ((frame (ewm--find-frame-by-focus-id focus-id)))
+       ((when-let* ((frame (ewm--find-frame-by-focus-id focus-id)))
           (select-frame frame)
           (when ewm--is-ffm-focus-event
             (when-let* ((window (window-at-x-y x y frame))

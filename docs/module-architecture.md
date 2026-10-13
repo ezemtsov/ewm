@@ -236,12 +236,17 @@ module commands and pipe events, not polling.
 - `compositor/src/module.rs` - Dynamic module FFI, queues, pipe event channel, defuns
 - `compositor/src/lib.rs` - Compositor core
 - `compositor/src/event.rs` - Event enum shared with module
-- `lisp/ewm.el` - Main module initialization, event dispatch
-- `lisp/ewm-focus.el` - Bidirectional focus synchronization
-- `lisp/ewm-input.el` - Input handling, intercepted keys, keyboard capture
+- `lisp/ewm-module.el` - Generated declarations of the module functions
+- `lisp/ewm-surface.el` - Surface ↔ buffer mapping, session state
 - `lisp/ewm-layout.el` - Layout declaration and refresh
-- `lisp/ewm-surface.el` - Surface ↔ buffer mapping
+- `lisp/ewm-frame.el` - Outputs, strip frames and floating frames
+- `lisp/ewm-focus.el` - Bidirectional focus synchronization
 - `lisp/ewm-text-input.el` - Input method bridge
+- `lisp/ewm-commands.el` - Interactive commands
+- `lisp/ewm-input.el` - Input handling, intercepted keys, keyboard capture
+- `lisp/ewm.el` - Lifecycle, configuration, event dispatch
+
+The Lisp files are listed in load order and each requires only the ones above it.
 
 ## References
 

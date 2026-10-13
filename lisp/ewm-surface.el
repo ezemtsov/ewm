@@ -6,16 +6,38 @@
 ;;; Commentary:
 
 ;; Surface buffer management for EWM.
-;; Provides the major mode for surface buffers and buffer lifecycle management.
+;; Provides the major mode for surface buffers and buffer lifecycle management,
+;; and holds the session state every other file reads.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ewm-module)
+(ewm-module--declare)
 
-(declare-function ewm-close "ewm")
-(declare-function ewm-im-commit "ewm-text-input")
+;;; Session state
 
-(defvar ewm--module-mode)
+(defvar ewm--module-mode nil
+  "Non-nil when running in module mode (compositor in-process).")
+
+(defvar ewm--surfaces (make-hash-table :test 'eql)
+  "Hash table mapping surface ID to buffer.")
+
+(defvar ewm--debug nil
+  "Non-nil when EWM debug mode is active.")
+
+(defun ewm--log (format-string &rest args)
+  "Log a message to the *ewm-log* buffer when debug mode is active.
+FORMAT-STRING and ARGS are passed to `format'."
+  (when ewm--debug
+    (let ((buf (get-buffer-create "*ewm-log*")))
+      (with-current-buffer buf
+        (goto-char (point-max))
+        (insert (format-time-string "[%H:%M:%S.%3N] ")
+                (apply #'format format-string args) "\n")))))
+
+;;; Surface buffers
+
 (defvar-local ewm-surface-id nil
   "Surface ID for this buffer.")
 
@@ -48,8 +70,6 @@ A nil regexp matches anything; matching is case-sensitive."
              (or (null app) (string-match-p app (or ewm-surface-app "")))
              (or (null title) (string-match-p title (or ewm-surface-title ""))))))))
 
-(defvar ewm--surfaces)
-
 (defmacro ewm--with-surface-buffer-from-event (event &rest body)
   "Run BODY in the surface buffer for EVENT's `id', when live; else no-op.
 Absorbs the race where the surface vanishes between the compositor
@@ -58,6 +78,10 @@ queueing the event and Emacs handling it."
   `(when-let* ((buf (gethash (alist-get 'id ,event) ewm--surfaces))
                ((buffer-live-p buf)))
      (with-current-buffer buf ,@body)))
+
+(defun ewm-close (id)
+  "Request surface ID to close gracefully."
+  (ewm-close-module id))
 
 (defun ewm--kill-buffer-query-function ()
   "Run in `kill-buffer-query-functions' for surface buffers.
@@ -71,13 +95,13 @@ Sends close request to compositor and prevents immediate buffer kill."
 (defun ewm-surface--after-change (beg end old-len)
   "Intercept insertions and route through im-commit.
 Pure insertions are captured, removed from the buffer, and
-forwarded to the client text field via `ewm-im-commit'."
+forwarded to the client text field via `ewm-im-commit-module'."
   (when (and (> end beg) (zerop old-len))
     (let ((text (buffer-substring-no-properties beg end))
           (inhibit-modification-hooks t)
           (buffer-undo-list t))
       (delete-region beg end)
-      (ewm-im-commit text ewm-surface-id))))
+      (ewm-im-commit-module text ewm-surface-id))))
 
 (define-derived-mode ewm-surface-mode fundamental-mode "Surface"
   "Major mode for EWM surface buffers."

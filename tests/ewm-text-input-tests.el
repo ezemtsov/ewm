@@ -58,8 +58,6 @@
                                (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ewm-text-input)
 
-(defvar ewm--surfaces)
-
 (defmacro ewm-text-input-tests--with-state (&rest body)
   "Run BODY with isolated text-input globals."
   (declare (indent 0) (debug t))
