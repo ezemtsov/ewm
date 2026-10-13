@@ -138,20 +138,16 @@ Clicking the emptied output also brings them back.")
 When FRAME is nil, use the selected frame.  An empty NAME clears
 the workspace name."
   (interactive (list (read-string "Workspace name: ")))
-  (let* ((frame (or frame (selected-frame)))
-         (frame-id (frame-parameter frame 'ewm-surface-id)))
-    (ewm-workspace-rename-module name frame-id)))
+  (ewm-workspace-rename-module name (frame-parameter frame 'ewm-surface-id)))
 
 (defun ewm-workspace-mark-urgent (&optional frame)
   "Mark FRAME's workspace as urgent.
 When FRAME is nil, use the selected frame.  The compositor ignores
 the request when the workspace is already focused."
   (interactive)
-  (let* ((frame (or frame (selected-frame)))
-         (frame-id (frame-parameter frame 'ewm-surface-id)))
-    (unless frame-id
-      (user-error "Frame has no EWM surface id"))
-    (ewm-workspace-mark-urgent-module frame-id)))
+  (ewm-workspace-mark-urgent-module
+   (or (frame-parameter frame 'ewm-surface-id)
+       (user-error "Frame has no EWM surface id"))))
 
 ;;; Surface buffers
 
@@ -179,19 +175,15 @@ the request when the workspace is already focused."
 When ID is nil, use the current buffer's surface or compositor focus.
 Returns nil when no surface is found."
   (when-let* ((surface-id (or id ewm-surface-id (ewm-get-focused-id)))
-              (buf (gethash surface-id ewm--surfaces)))
+              (buf (ewm--surface-buffer surface-id)))
     (list (cons 'id surface-id)
           (cons 'app (buffer-local-value 'ewm-surface-app buf))
           (cons 'title (buffer-local-value 'ewm-surface-title buf))
           (cons 'pid (buffer-local-value 'ewm-surface-pid buf)))))
 
 (defun ewm-get-window-info-json (&optional id)
-  "Return window info as a JSON string.
-Calls `ewm-get-window-info' and serializes the result.
-When ID is nil, use the current buffer's surface or compositor focus.
-Returns fallback Emacs frame info when no surface is found.
-
-For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
+  "Return `ewm-get-window-info' for ID as JSON, for emacsclient.
+Without a surface, describe the selected Emacs frame instead."
   (json-encode (or (ewm-get-window-info id)
                    `((id . 0)
                      (app . "emacs")
@@ -260,13 +252,7 @@ For use with `emacsclient -e \\='(ewm-get-window-info-json)'."
       (pp state (current-buffer)))))
 
 (defun ewm-list-outputs ()
-  "Display connected outputs with properties and ewm-output-config suggestions.
-Shows connector name, Make-Model-Serial, current mode, scale, position,
-physical size, all available modes, and a ready-to-use config entry.
-
-Output is written to the *ewm-outputs* buffer.  The suggested config key
-uses the Make-Model-Serial form when make/model are known so that the entry
-survives connector re-numbering when cables are replugged."
+  "Describe each connected output in *ewm-outputs*, with a config entry."
   (interactive)
   (if (null ewm--output-info)
       (message "No output info available (is the compositor running?)")
@@ -283,8 +269,7 @@ survives connector re-numbering when cables are replugged."
                (width-mm    (or (alist-get 'width_mm  info) 0))
                (height-mm   (or (alist-get 'height_mm info) 0))
                (modes       (alist-get 'modes info))
-               (cur (when modes
-                      (seq-find (lambda (m) (alist-get 'current m)) modes)))
+               (cur (seq-find (lambda (m) (alist-get 'current m)) modes))
                (transform-str
                 (pcase transform
                   (0 "Normal")   (1 "90°")          (2 "180°")
@@ -328,23 +313,12 @@ survives connector re-numbering when cables are replugged."
       (special-mode))))
 
 (defun ewm-debug-mode (&optional enable)
-  "Toggle compositor debug mode for verbose logging.
-With prefix arg, ENABLE if positive, disable if zero or negative.
-Without prefix arg, toggles the current state.
-
-When debug mode is enabled:
-- Focus changes are logged with source tracking
-- Command queue contents are shown in state dump
-- More verbose trace logging is active
-
-Check `journalctl --user -t ewm -f' to see debug output."
+  "Toggle compositor debug logging, on with a positive prefix ENABLE.
+Follow the output with `journalctl --user -t ewm -f'."
   (interactive "P")
-  (let ((new-state
-         (if enable
-             (ewm-debug-mode-module (> (prefix-numeric-value enable) 0))
-           (ewm-debug-mode-module nil))))
-    (setq ewm--debug new-state)
-    (message "EWM debug mode: %s" (if new-state "ENABLED" "disabled"))))
+  (let ((on (ewm-debug-mode-module (and enable (> (prefix-numeric-value enable) 0)))))
+    (setq ewm--debug on)
+    (message "EWM debug mode: %s" (if on "ENABLED" "disabled"))))
 
 (provide 'ewm-commands)
 ;;; ewm-commands.el ends here

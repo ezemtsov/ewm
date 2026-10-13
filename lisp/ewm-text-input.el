@@ -14,13 +14,6 @@
 (ewm-module--declare)
 (require 'ewm-surface)
 
-(defvar ewm-text-input-provider)
-
-(defun ewm-text-input--send-provider ()
-  "Tell the compositor who serves client text input."
-  (when (bound-and-true-p ewm--module-mode)
-    (ewm-configure-text-input-module ewm-text-input-provider)))
-
 (defcustom ewm-text-input-provider 'emacs
   "Who serves text input for Wayland clients.
 `emacs' routes client text fields through Emacs input methods.
@@ -28,10 +21,12 @@
 ibus, which then serves Emacs frames as well."
   :type '(choice (const :tag "Emacs input methods" emacs)
                  (const :tag "External input method (fcitx5, ibus)" external))
-  :set (lambda (sym val)
-         (set-default sym val)
-         (ewm-text-input--send-provider))
+  :set (ewm--send-on-set #'ewm-text-input--send-provider)
   :group 'ewm-input-methods)
+
+(defun ewm-text-input--send-provider ()
+  "Tell the compositor who serves client text input."
+  (ewm-configure-text-input-module ewm-text-input-provider))
 
 (defvar ewm-text-input--composing nil
   "Surface id whose input method is reading keys, else nil.")
@@ -53,14 +48,12 @@ Use this to enable special input handling modes.")
   "Non-nil while a Wayland client text field is active.")
 
 (defun ewm--handle-text-input-activated ()
-  "Handle text-input-activated event from compositor.
-Called when a client's text field gains focus."
+  "Note that a client text field gained focus and run the hook."
   (setq ewm-text-input--client-active t)
   (run-hooks 'ewm-text-input-activated-hook))
 
 (defun ewm--handle-text-input-deactivated ()
-  "Handle text-input-deactivated event from compositor.
-Called when a client's text field loses focus."
+  "Note that the client text field lost focus, aborting any composition."
   (setq ewm-text-input--client-active nil)
   (when ewm-text-input--composing
     ;; Stop the input method. Its text dies with the field.
@@ -104,11 +97,8 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
 
 (defun ewm-text-input--active-input-method ()
   "Return the input method of the focused text-input surface, if any."
-  (when-let* ((focused-id (ewm-get-focused-id))
-              ((numberp focused-id))
-              (surface-buf (gethash focused-id ewm--surfaces))
-              ((buffer-live-p surface-buf)))
-    (buffer-local-value 'current-input-method surface-buf)))
+  (when-let* ((buf (ewm--surface-buffer (ewm-get-focused-id))))
+    (buffer-local-value 'current-input-method buf)))
 
 (defvar ewm-text-input-auto-mode)
 
@@ -179,8 +169,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
   "Queue compositor key EVENT for the surface's input method, else forward it."
   (let* ((surface-id (alist-get 'surface_id event))
          (key (ewm-text-input--event event))
-         (surface-buf (and (numberp surface-id) (> surface-id 0)
-                           (gethash surface-id ewm--surfaces))))
+         (surface-buf (ewm--surface-buffer surface-id)))
     (cond
      ;; Keys may arrive before the command loop starts the first composition.
      ((or ewm-text-input--composing (ewm-text-input--pending-p))
@@ -188,7 +177,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
         (setq ewm-text-input--raw (nconc ewm-text-input--raw (list event)))
         (setq unread-command-events
               (nconc unread-command-events (list (cons 'no-record key))))))
-     ((and (ewm-text-input--text-p key) (buffer-live-p surface-buf))
+     ((and (ewm-text-input--text-p key) surface-buf)
       (setq unread-command-events
             (nconc unread-command-events
                    (list (list 'ewm-text-input-key surface-id key)))))
@@ -197,8 +186,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
 (defun ewm-text-input--preedit-sync (_window)
   "Before a redisplay, show the client what the input method composed so far."
   (when-let* ((surface-id ewm-text-input--composing)
-              (buf (gethash surface-id ewm--surfaces))
-              ((buffer-live-p buf)))
+              (buf (ewm--surface-buffer surface-id)))
     (let ((text (with-current-buffer buf
                   (buffer-substring-no-properties (point-min) (point-max)))))
       (unless (equal text ewm-text-input--preedit)
@@ -207,8 +195,7 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
 
 (defun ewm-text-input--input (surface-id key)
   "Give KEY to SURFACE-ID's input method and commit what it makes of it."
-  (when-let* ((buf (gethash surface-id ewm--surfaces))
-              ((buffer-live-p buf)))
+  (when-let* ((buf (ewm--surface-buffer surface-id)))
     (with-current-buffer buf
       (let ((ewm-text-input--composing surface-id)
             (ewm-text-input--preedit "")
@@ -270,9 +257,8 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
 
 (defun ewm-edit--buffer-name (surface-id)
   "Buffer name for editing the field on SURFACE-ID."
-  (let ((client (gethash surface-id ewm--surfaces)))
-    (format "*ewm-edit %s*"
-            (if (buffer-live-p client) (buffer-name client) surface-id))))
+  (let ((client (ewm--surface-buffer surface-id)))
+    (format "*ewm-edit %s*" (if client (buffer-name client) surface-id))))
 
 (defvar ewm-edit-mode-map
   (let ((map (make-sparse-keymap)))
@@ -283,7 +269,6 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
 
 (define-minor-mode ewm-edit-mode
   "Minor mode for buffers editing a Wayland field via `ewm-edit'."
-  :init-value nil
   :lighter " ewm-edit")
 
 (put 'ewm-edit-mode 'permanent-local t)
@@ -335,25 +320,26 @@ Value is (SURFACE-ID TEXT CURSOR ANCHOR); CURSOR/ANCHOR are byte offsets."
     (remhash ewm-edit--surface-id ewm-edit--pending))
   (quit-windows-on (current-buffer) t))
 
-(defun ewm--handle-text-input-replaced (event)
-  "Drop the edit buffer whose replace the compositor delivered."
+(defun ewm-edit--take-pending (event)
+  "Pop the live edit buffer awaiting EVENT's surface, else nil."
   (let* ((surface-id (alist-get 'surface_id event))
          (buffer (gethash surface-id ewm-edit--pending)))
     (remhash surface-id ewm-edit--pending)
-    (when (buffer-live-p buffer)
-      (kill-buffer buffer))))
+    (and (buffer-live-p buffer) buffer)))
+
+(defun ewm--handle-text-input-replaced (event)
+  "Drop the edit buffer whose replace the compositor delivered."
+  (when-let* ((buffer (ewm-edit--take-pending event)))
+    (kill-buffer buffer)))
 
 (defun ewm--handle-text-input-replace-dropped (event)
   "Re-surface the edit buffer whose replace the compositor dropped."
-  (let* ((surface-id (alist-get 'surface_id event))
-         (buffer (gethash surface-id ewm-edit--pending)))
-    (remhash surface-id ewm-edit--pending)
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (setq header-line-format
-              (substitute-command-keys
-               "Replace not applied; edit kept. \\[ewm-edit-finish] retries, \\[ewm-edit-cancel] discards")))
-      (pop-to-buffer buffer))))
+  (when-let* ((buffer (ewm-edit--take-pending event)))
+    (with-current-buffer buffer
+      (setq header-line-format
+            (substitute-command-keys
+             "Replace not applied; edit kept. \\[ewm-edit-finish] retries, \\[ewm-edit-cancel] discards")))
+    (pop-to-buffer buffer)))
 
 (provide 'ewm-text-input)
 ;;; ewm-text-input.el ends here

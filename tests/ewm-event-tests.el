@@ -107,8 +107,6 @@
                   (intercepted-command . ewm--handle-intercepted-command)
                   (working_area . ewm--handle-working-area)
                   (selection-changed . ewm--handle-selection-changed)
-                  (maximize_request . ewm--handle-maximize-request)
-                  (unmaximize_request . ewm--handle-unmaximize-request)
                   (bell . ewm--handle-bell)
                   (idle_state_changed . ewm--handle-idle-state-changed)
                   (environment . ewm--handle-environment)
@@ -116,8 +114,8 @@
                   (frame_hidden . ewm--gtk-frame-updates)
                   (overview . ewm--handle-overview)
                   (hide . ewm--handle-hide)))
-         ;; Layout notifications have no Lisp side yet.
-         (unhandled '(layouts layout-switched))
+         ;; Layout notifications have no Lisp side yet, tiling ignores maximize.
+         (unhandled '(layouts layout-switched maximize_request unmaximize_request))
          (handlers (delete-dups (mapcar #'cdr table)))
          (kinds (mapcar (lambda (event) (car (ensure-list event))) ewm-test-every-event))
          calls)

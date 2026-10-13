@@ -23,26 +23,20 @@ The compositor sends focus events with cursor coordinates; intra-frame
 window switching is handled by `ewm--handle-focus' from those events."
   :type 'boolean
   :group 'ewm-input-devices
-  :set (lambda (sym val)
-         (set-default sym val)
-         (setq focus-follows-mouse (and val t))
-         (when (fboundp 'ewm-set-focus-follows-mouse)
-           (ewm-set-focus-follows-mouse val))))
+  :set (ewm--send-on-set #'ewm--send-focus-follows-mouse))
+
+(defun ewm--send-focus-follows-mouse ()
+  "Mirror `ewm-focus-follows-mouse' into Emacs and the compositor."
+  (setq focus-follows-mouse (and ewm-focus-follows-mouse t))
+  (ewm-set-focus-follows-mouse ewm-focus-follows-mouse))
 
 (defvar ewm--mff-last-window nil
   "Last window for mouse-follows-focus, to avoid redundant warps.")
 
-(defvar ewm--is-ffm-focus-event nil
-  "Whether the current event was triggered by focus follows mouse.
-Let-bound in `ewm--handle-focus' to gate the Emacs-window hover branch.")
-
-(defvar ewm--is-pointer-focus-event nil
-  "Whether the current focus event came from pointer interaction.")
-
 (defun ewm--select-frame-set-input-focus (frame &optional norecord)
   "Override skipping `x-focus-frame' so xdg_activation can't echo back."
   (select-frame frame norecord)
-  (when (bound-and-true-p ewm--module-mode)
+  (when ewm--module-mode
     ;; Queue focus for an in-flight frame until its surface arrives.
     (if-let* ((focus-id (ewm-layout--ensure-frame-focus-id frame)))
         (ewm-focus-target-module focus-id)
@@ -50,9 +44,7 @@ Let-bound in `ewm--handle-focus' to gate the Emacs-window hover branch.")
   frame)
 
 (defun ewm--find-frame-by-focus-id (focus-id)
-  "Frame whose chrome focus id matches FOCUS-ID, if any.
-Chrome focus ids have `ewm-layout--frame-focus-id-marker' set; strip it to
-recover the surface-id."
+  "Frame whose own-surface focus id is FOCUS-ID, if any."
   (when (and focus-id
              (not (zerop (logand focus-id ewm-layout--frame-focus-id-marker))))
     (ewm--frame-by-surface-id
@@ -64,10 +56,8 @@ recover the surface-id."
     (let* ((focus-id (alist-get 'focus_id event))
            (x (alist-get 'x event))
            (y (alist-get 'y event))
-           (pointer (alist-get 'pointer event))
-           (ewm--is-pointer-focus-event (and pointer x y))
-           (ewm--is-ffm-focus-event
-            (and ewm-focus-follows-mouse ewm--is-pointer-focus-event)))
+           (pointer (and (alist-get 'pointer event) x y))
+           (ffm (and ewm-focus-follows-mouse pointer)))
       (cond
        ((when-let* ((win (ewm--find-window-by-entry-id focus-id)))
           (select-frame (window-frame win))
@@ -76,12 +66,12 @@ recover the surface-id."
           t))
        ((when-let* ((frame (ewm--find-frame-by-focus-id focus-id)))
           (select-frame frame)
-          (when ewm--is-ffm-focus-event
+          (when ffm
             (when-let* ((window (window-at-x-y x y frame))
                         ((not (minibufferp (window-buffer window)))))
               (select-window window)))
           ;; Anchor only on pointer focus; keyboard events must leave it stale so MFF warps.
-          (when ewm--is-pointer-focus-event
+          (when pointer
             (setq ewm--mff-last-window (selected-window)))
           t))))))
 

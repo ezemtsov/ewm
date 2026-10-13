@@ -20,17 +20,7 @@
 ;;; Outputs
 
 (defvar ewm--output-info nil
-  "Alist of (CONNECTOR-NAME . EVENT-ALIST) for currently connected outputs.
-Each value is the full output_detected event alist, including make, model,
-serial, modes, scale, position and physical size.
-Updated on output_detected and output_disconnected events.")
-
-(defun ewm--send-on-set (send)
-  "Return a `defcustom' setter that stores the value, then calls SEND if defined."
-  (lambda (sym val)
-    (set-default sym val)
-    (when (fboundp send)
-      (funcall send))))
+  "Alist of (CONNECTOR . OUTPUT-DETECTED-EVENT) for the connected outputs.")
 
 (defcustom ewm-output-config nil
   "Output configuration alist.
@@ -70,36 +60,25 @@ Example:
     (\"eDP-1\" :width 1920 :height 1200 :x 0 :y 0 :transform 0)
     (\"eDP-1\" :width 1024 :height 640 :refresh 60 :custom t))"
   :type '(alist :key-type string :value-type plist)
-  :set (ewm--send-on-set 'ewm--apply-output-config)
+  :set (ewm--send-on-set #'ewm--apply-output-config)
   :group 'ewm-output)
 
 (defun ewm--output-mms (info)
-  "Return \"Make Model Serial\" string for output INFO event alist.
-Uses \"Unknown\" for any component absent from EDID so config keys
-written from `ewm-list-outputs' round-trip correctly."
-  (let* ((make   (or (alist-get 'make   info) "Unknown"))
-         (model  (or (alist-get 'model  info) "Unknown"))
-         (serial (or (alist-get 'serial info) ""))
-         (serial-str (if (string-empty-p serial) "Unknown" serial)))
-    (format "%s %s %s" make model serial-str)))
+  "\"Make Model Serial\" for output INFO, \"Unknown\" where EDID has none."
+  (mapconcat (lambda (key)
+               (let ((value (alist-get key info)))
+                 (if (member value '(nil "")) "Unknown" value)))
+             '(make model serial) " "))
 
 (defun ewm--output-config-key (info)
-  "Return the recommended ewm-output-config key for output INFO.
-Uses the Make-Model-Serial string when make/model are known (survives
-connector re-numbering after cable changes), otherwise the connector name."
-  (let ((make  (or (alist-get 'make  info) "Unknown"))
-        (model (or (alist-get 'model info) "Unknown")))
-    (if (and (string= make "Unknown") (string= model "Unknown"))
-        (alist-get 'name info)
-      (ewm--output-mms info))))
+  "The `ewm-output-config' key for INFO: MMS when known, else the connector."
+  (if (seq-every-p (lambda (key) (member (alist-get key info) '(nil ""))) '(make model))
+      (alist-get 'name info)
+    (ewm--output-mms info)))
 
 (defun ewm--find-connector-for-config (config-name)
-  "Resolve CONFIG-NAME to a live connector name.
-CONFIG-NAME may be a connector name (e.g. \"DP-1\") or a Make-Model-Serial
-string (e.g. \"Dell U2722D ABC123\").  Tries exact connector match first,
-then case-insensitive MMS match against `ewm--output-info'.
-Returns CONFIG-NAME itself when no live output matches, so the compositor
-still stores the config for future hot-plug."
+  "Resolve CONFIG-NAME, a connector or Make-Model-Serial name, to a connector.
+An unmatched name passes through so the compositor keeps it for hot-plug."
   (or (car (assoc config-name ewm--output-info))
       (car (cl-find config-name ewm--output-info
                     :key (lambda (entry) (ewm--output-mms (cdr entry)))
@@ -107,24 +86,11 @@ still stores the config for future hot-plug."
       config-name))
 
 (defun ewm-configure-output (name &rest args)
-  "Configure output NAME with ARGS.
-ARGS is a plist with optional keys:
-  :x :y       - position in global coordinate space
-  :width :height :refresh - video mode
-  :custom     - when non-nil, generate a CVT mode for :width/:height/:refresh
-                instead of matching an advertised mode (:refresh required)
-  :modeline   - X11 modeline string, takes precedence over the mode fields:
-                \"CLOCK HDISP HSS HSE HTOTAL VDISP VSS VSE VTOTAL +hsync +vsync\"
-  :scale      - fractional scale (e.g. 1.5)
-  :transform  - transform integer (0=Normal, 1=90, 2=180, 3=270, ...)
-  :enabled    - t or nil to enable/disable the output"
+  "Configure output NAME with ARGS, a plist as in `ewm-output-config'."
   (ewm-configure-output-module name args))
 
 (defun ewm--apply-output-config ()
-  "Apply user output configuration from `ewm-output-config'.
-Config keys may be connector names (\"DP-1\") or Make-Model-Serial strings
-(\"Dell U2722D ABC123\"); the latter are resolved to the live connector name
-via `ewm--find-connector-for-config' before sending to the compositor."
+  "Send every `ewm-output-config' entry to its live connector."
   (dolist (config ewm-output-config)
     (let ((props (cdr config)))
       (when (or (plist-member props :enabled)
@@ -144,17 +110,13 @@ via `ewm--find-connector-for-config' before sending to the compositor."
 EWM can host either a pgtk or a native-Wayland (+ Skia) Emacs build.")
 
 (defun ewm--gtk-backed-p ()
-  "Non-nil when EWM's host Emacs frames are backed by GTK.
-The native Wayland backend has no GTK widgets or style context to mutate."
-  (eq (ignore-errors (ewm--window-system)) 'pgtk))
+  "Non-nil when the host Emacs frames are GTK widgets."
+  (featurep 'pgtk))
 
 (defun ewm--window-system ()
-  "Return the window system to create EWM output frames with.
-Picks whichever GUI backend this Emacs was built with (pgtk or the
-native Wayland backend)."
-  (cond ((featurep 'pgtk) 'pgtk)
-        ((featurep 'pwayl) 'pwayl)
-        (t (error "EWM requires a pgtk or native-Wayland Emacs build"))))
+  "The GUI backend this Emacs was built with."
+  (or (seq-find #'featurep ewm--managed-window-systems)
+      (error "EWM requires a pgtk or native-Wayland Emacs build")))
 
 (defun ewm--output-managed-p (frame)
   "Return non-nil if FRAME is bound to a compositor output."
@@ -172,21 +134,16 @@ native Wayland backend)."
       (ewm-get-frame-output id)
     (frame-parameter frame 'ewm-output)))
 
-(defun ewm--frame-in-flight-p (frame)
-  "Return non-nil when FRAME has an output assignment but no surface id yet."
-  (and (frame-parameter frame 'ewm-output)
-       (null (frame-parameter frame 'ewm-surface-id))))
-
 (defun ewm--strip-frames (output)
   "Return OUTPUT's strip frames left to right, as the compositor places them."
-  (delq nil (mapcar #'ewm--frame-by-surface-id (ewm-get-strip-frame-ids output))))
+  (seq-keep #'ewm--frame-by-surface-id (ewm-get-strip-frame-ids output)))
 
 (defun ewm--frame-in-flight-on-p (output)
   "Non-nil when a tiled frame bound for OUTPUT has not mapped yet."
   (seq-some (lambda (frame)
-              (and (ewm--frame-in-flight-p frame)
-                   (not (frame-parameter frame 'ewm-floating))
-                   (equal (frame-parameter frame 'ewm-output) output)))
+              (and (equal (frame-parameter frame 'ewm-output) output)
+                   (not (frame-parameter frame 'ewm-surface-id))
+                   (not (frame-parameter frame 'ewm-floating))))
             (frame-list)))
 
 (defun ewm-output-active-frame (output)
@@ -209,7 +166,7 @@ Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
 
 (defun ewm--surface-target-frame-for-output (output-name)
   "Return the best tiled fallback frame for a new surface on OUTPUT-NAME."
-  (or (let ((frame (ignore-errors (ewm--focused-frame))))
+  (or (let ((frame (ewm--focused-frame)))
         (and frame
              (not (frame-parameter frame 'ewm-floating))
              (equal (ewm--frame-output frame) output-name)
@@ -219,7 +176,6 @@ Emacs's `selected-frame' can drift via `display-buffer'/`select-window'."
 (defun ewm--get-frame-origin (frame)
   "Return global origin for FRAME, falling back to its output origin."
   (or (and (frame-parameter frame 'ewm-floating)
-           (fboundp 'ewm-get-frame-origin)
            (when-let* ((id (frame-parameter frame 'ewm-surface-id)))
              (ewm-get-frame-origin id)))
       (ewm--get-output-origin (ewm--frame-output frame))))
@@ -254,15 +210,14 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
 
 (defun ewm--create-floating-frame-for-output (output-name &optional extra-params pos)
   "Create a floating frame on OUTPUT-NAME, optionally at POS (X . Y) pixels."
-  (let* ((seq (cl-incf ewm--frame-seq))
-         (frame (progn
-                  (ewm-prepare-floating-frame output-name seq (car pos) (cdr pos))
-                  (ewm--make-output-frame
-                   output-name seq
-                   `((ewm-floating . t) ,@extra-params (width . 80) (height . 24))))))
-    ;; `quit-window' would iconify otherwise, which EWM frames cannot do.
-    (set-frame-parameter frame 'auto-hide-function (lambda () (delete-frame frame)))
-    frame))
+  (let ((seq (cl-incf ewm--frame-seq)))
+    (ewm-prepare-floating-frame output-name seq (car pos) (cdr pos))
+    (let ((frame (ewm--make-output-frame
+                  output-name seq
+                  `((ewm-floating . t) ,@extra-params (width . 80) (height . 24)))))
+      ;; `quit-window' would iconify otherwise, which EWM frames cannot do.
+      (set-frame-parameter frame 'auto-hide-function (lambda () (delete-frame frame)))
+      frame)))
 
 (defun ewm--stray-frame-p (frame)
   "Non-nil when FRAME is a managed frame EWM did not make."
@@ -282,25 +237,19 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
       (ignore-errors (delete-frame frame)))))
 
 (defun ewm--prevent-frame-deletion (orig-fun &optional frame force)
-  "Around advice for `delete-frame': refuse to delete the last frame of
-an output unless FORCE.
-
-When deletion proceeds, pass the captured frame to ORIG-FUN explicitly:
-interactive `delete-frame' passes nil, and nil means \"delete the
-selected frame\", which can change during pgtk's internal close handling."
+  "Around `delete-frame': keep an output's last frame unless FORCE."
   (let* ((f (or frame (selected-frame)))
          (output (ewm--frame-output f))
          (alone (and output
                      (not (frame-parameter f 'ewm-floating))
                      (<= (length (ewm--strip-frames output)) 1))))
-    (cond
-     ((and alone (not force))
-      (message "Cannot delete the only frame on output %s" output))
-     (t
+    (if (and alone (not force))
+        (message "Cannot delete the only frame on output %s" output)
       (when (eq f (selected-frame))
         (when-let* ((id (frame-parameter f 'ewm-surface-id)))
           (ewm-prepare-frame-close-module id)))
-      (funcall orig-fun f force)))))
+      ;; A nil FRAME means the selected one, which pgtk can change while closing.
+      (funcall orig-fun f force))))
 
 ;;; Floating frames
 
@@ -363,14 +312,10 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
 (defvar ewm-floating-popout-scale 0.9
   "Fraction of the source window a popped-out floating frame occupies.")
 
-(defun ewm--float-buffer (buffer frame size pos)
-  "Pop BUFFER off FRAME into a float of client body SIZE at output-relative POS."
+(defun ewm--float-buffer (buffer size pos)
+  "Pop BUFFER off the selected frame into a float of body SIZE at POS."
   (pop-to-buffer buffer `(ewm-display-buffer-floating
                           (inhibit-same-window . t)
-                          (ewm-output . ,(ewm--frame-output frame))
-                          (pop-up-frame-parameters
-                           (ewm-floating-origin-frame-id
-                            . ,(frame-parameter frame 'ewm-surface-id)))
                           (ewm-size . ,size) (ewm-position . ,pos))))
 
 (defun ewm--floating-detach-selected-buffer (frame)
@@ -389,7 +334,7 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
     ;; Float positions are output-relative.
     (pcase-let ((`(,fx . ,fy) (ewm--get-frame-origin frame))
                 (`(,ox . ,oy) (ewm--get-output-origin (ewm--frame-output frame))))
-      (ewm--float-buffer (window-buffer source-window) frame (cons fw fh)
+      (ewm--float-buffer (window-buffer source-window) (cons fw fh)
                          (cons (+ (nth 0 rect) (- fx ox) (/ (- w fw) 2))
                                (+ (nth 1 rect) (- fy oy) (/ (- h fh) 2)))))
     ;; Reclaim the tile once the buffer has left for a float.
@@ -400,8 +345,8 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
             (delete-window source-window)
           (quit-window nil source-window))))))
 
-(defun ewm--absorb-floating (floating-frame target action)
-  "Move FLOATING-FRAME's buffer into tiled TARGET, a window or frame, via ACTION."
+(defun ewm--absorb-floating (floating-frame target)
+  "Move FLOATING-FRAME's buffer into tiled TARGET, a window or frame."
   (let ((buffer (window-buffer (frame-selected-window floating-frame))))
     (delete-frame floating-frame t)
     (if (windowp target)
@@ -409,7 +354,7 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
       (select-frame-set-input-focus target))
     ;; pop-to-buffer lets Emacs reuse or split the target window on its own.
     (let ((ewm--inhibit-floating t))
-      (pop-to-buffer buffer action))
+      (pop-to-buffer buffer))
     (ewm-layout--refresh)))
 
 (defun ewm--floating-attach-selected-buffer (floating-frame)
@@ -420,7 +365,7 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
                      (ewm--floating-return-frame floating-frame))))
     (unless target
       (user-error "No tiled frame on output %s" (ewm--frame-output floating-frame)))
-    (ewm--absorb-floating floating-frame target nil)))
+    (ewm--absorb-floating floating-frame target)))
 
 (provide 'ewm-frame)
 ;;; ewm-frame.el ends here

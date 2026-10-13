@@ -35,10 +35,6 @@
 (require 'ewm-text-input)
 (require 'ewm-commands)
 
-(defmacro ewm--cmd (&rest args)
-  "Create an interactive command that runs ARGS as a subprocess."
-  `(lambda () (interactive) (ewm-action-module '(spawn :command ,args))))
-
 (defvar ewm-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "<XF86WakeUp>") #'ignore)
@@ -98,17 +94,6 @@ Default super-key bindings for window management.
 Override individual bindings with `use-package':
   :bind (:map ewm-mode-map (\"s-d\" . my-launcher))")
 
-(defun ewm-input--set-input-config (sym val)
-  "Set SYM to VAL and refresh compositor input config."
-  (set-default sym val)
-  (when (bound-and-true-p ewm--module-mode)
-    (ewm--send-input-config)))
-
-(defun ewm-input--set-intercept-config (sym val)
-  "Set SYM to VAL and refresh compositor key interception."
-  (set-default sym val)
-  (ewm--send-intercept-keys))
-
 ;;; Libinput device configuration
 
 (defcustom ewm-input-config nil
@@ -166,23 +151,21 @@ Example:
       (\"ELAN0676:00 04F3:3195 Touchpad\" :tap nil :accel-speed -0.2)))"
   :type '(alist :key-type (choice symbol string)
                 :value-type plist)
-  :initialize 'custom-initialize-default
-  :set #'ewm-input--set-input-config
+  :set (ewm--send-on-set #'ewm--send-input-config)
   :group 'ewm-input-devices)
 
 (defun ewm--send-input-config ()
   "Send input device configuration to compositor."
-  (when (bound-and-true-p ewm--module-mode)
-    (ewm-configure-input-module
-     (vconcat
-      (mapcar (lambda (entry)
-                (let ((key (car entry))
-                      (props (cdr entry)))
-                  (append (if (symbolp key)
-                              (list :type (symbol-name key))
-                            (list :device key))
-                          props)))
-              ewm-input-config)))))
+  (ewm-configure-input-module
+   (vconcat
+    (mapcar (lambda (entry)
+              (let ((key (car entry))
+                    (props (cdr entry)))
+                (append (if (symbolp key)
+                            (list :type (symbol-name key))
+                          (list :device key))
+                        props)))
+            ewm-input-config))))
 
 ;;; Key interception
 
@@ -214,8 +197,7 @@ Set with `setopt' (or `:custom' in `use-package'):
           \\='(\"C-x\" \"C-u\" \"C-h\" \"M-x\" \"M-`\"
             (\"<Print>\" :fullscreen)))"
   :type '(repeat (choice ewm-key (list ewm-key (const :fullscreen))))
-  :initialize 'custom-initialize-default
-  :set #'ewm-input--set-intercept-config
+  :set (ewm--send-on-set #'ewm--send-intercept-keys)
   :group 'ewm-keybindings)
 
 (defcustom ewm-surface-emulate-keys
@@ -226,8 +208,7 @@ FROM is a command or a single key, KEYS a key description Emacs sends with
 `ewm-send-key' instead. A surface buffer's local value adds entries for
 that surface only, see `ewm-update-app-hook'."
   :type '(alist :key-type (choice function ewm-key) :value-type string)
-  :initialize 'custom-initialize-default
-  :set #'ewm-input--set-intercept-config
+  :set (ewm--send-on-set #'ewm--send-intercept-keys)
   :group 'ewm-keybindings)
 
 (defcustom ewm-repeatable-commands
@@ -238,8 +219,7 @@ that surface only, see `ewm-update-app-hook'."
     ewm-next-surface-buffer ewm-prev-surface-buffer)
   "Commands whose intercepted key bindings repeat while held."
   :type '(repeat function)
-  :initialize 'custom-initialize-default
-  :set #'ewm-input--set-intercept-config
+  :set (ewm--send-on-set #'ewm--send-intercept-keys)
   :group 'ewm-keybindings)
 
 (defconst ewm-input--repeatable-key-descriptions
@@ -278,26 +258,21 @@ When non-nil, warps the pointer to the center of the focused window."
   "Warp pointer to absolute position X, Y."
   (ewm-warp-pointer-module x y))
 
-(defun ewm-input--pointer-in-window-p (window)
-  "Return non-nil if pointer is inside WINDOW.
-Coordinates are in compositor space."
-  (let* ((frame (window-frame window))
-         (frame-origin (ewm--get-frame-origin frame))
-         (pointer (ewm-get-pointer-location)))
-    (eq window (window-at-x-y (- (car pointer) (car frame-origin))
-                               (- (cdr pointer) (cdr frame-origin))
-                               frame))))
+(defun ewm-input--pointer-in-window-p (window origin)
+  "Non-nil if the pointer is inside WINDOW, whose frame sits at ORIGIN."
+  (let ((pointer (ewm-get-pointer-location)))
+    (eq window (window-at-x-y (- (car pointer) (car origin))
+                              (- (cdr pointer) (cdr origin))
+                              (window-frame window)))))
 
 (defun ewm-input--warp-pointer-to-window (window)
-  "Warp pointer to center of WINDOW.
-Does nothing if pointer is already inside the window or if it's a minibuffer."
-  (unless (or (window-minibuffer-p window)
-              (ewm-input--pointer-in-window-p window))
-    (when-let* ((frame (window-frame window))
-                (frame-origin (ewm--get-frame-origin frame)))
-      (pcase-let ((`(,x ,y ,width ,height) (ewm--window-body-pixel-rect window)))
-        (ewm-warp-pointer (float (+ (car frame-origin) x (/ width 2)))
-                          (float (+ (cdr frame-origin) y (/ height 2))))))))
+  "Warp the pointer to WINDOW's center unless it is already there."
+  (unless (window-minibuffer-p window)
+    (let ((origin (ewm--get-frame-origin (window-frame window))))
+      (unless (ewm-input--pointer-in-window-p window origin)
+        (pcase-let ((`(,x ,y ,width ,height) (ewm--window-body-pixel-rect window)))
+          (ewm-warp-pointer (float (+ (car origin) x (/ width 2)))
+                            (float (+ (cdr origin) y (/ height 2)))))))))
 
 (defun ewm-input--on-window-selection-change (_frame)
   "Warp pointer when selected window changes.
@@ -329,7 +304,7 @@ warps from packages that temporarily switch windows internally
   ;; Cache only what a live module was told, so a change while the module
   ;; is off is re-pushed once it starts.
   (when (and (not (eq active ewm-input--drag-source))
-             (bound-and-true-p ewm--module-mode))
+             ewm--module-mode)
     (setq ewm-input--drag-source active)
     (ewm-set-drag-source active)))
 
@@ -385,8 +360,8 @@ warps from packages that temporarily switch windows internally
 (defun ewm-input--keyboard-capture-start-allowed-p ()
   "Return non-nil when a new compositor keyboard-capture lease may start."
   ;; A client-field input method reads keys the compositor already intercepts.
-  (and (not (bound-and-true-p ewm-text-input--composing))
-       (or (not (bound-and-true-p ewm--module-mode))
+  (and (not ewm-text-input--composing)
+       (or (not ewm--module-mode)
            (ewm-input--emacs-frame-focused-p)
            (ewm-input--command-key-active-p)
            (ewm-input--prefix-key-active-p))))
@@ -403,14 +378,14 @@ redirect capture."
     (cond
      ((and enabled (not token))
       (setq ewm-input--keyboard-capture-token
-            (if (bound-and-true-p ewm--module-mode)
+            (if ewm--module-mode
                 (ewm-keyboard-capture-begin-module "command-loop")
               0)))
      ((and (not enabled) token)
       (setq ewm-input--keyboard-capture-token nil)
-      (when (and (bound-and-true-p ewm--module-mode) (> token 0))
+      (when (and ewm--module-mode (> token 0))
         (ewm-keyboard-capture-end-module token))))
-    (when (and clear-redirect (not enabled) (bound-and-true-p ewm--module-mode))
+    (when (and clear-redirect (not enabled) ewm--module-mode)
       (ewm-keyboard-redirect-capture-clear-module)
       (dolist (send (nreverse ewm--pending-keys))
         (apply #'ewm-send-key-module send))
@@ -476,16 +451,6 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
         (advice-add fn :around #'ewm-input--with-keyboard-capture)
       (advice-remove fn #'ewm-input--with-keyboard-capture))))
 
-;;; Frame-switch suppression
-;;
-;; PGTK delivers GDK focus changes as `switch-frame' events.  In stock
-;; Emacs these are bound to `handle-switch-frame' in `global-map', so they
-;; fan out through the command loop -- firing `post-command-hook' between
-;; the keys of an in-flight prefix sequence and clobbering EWM's keyboard
-;; capture state.  Route them to `special-event-map' instead (alongside
-;; `focus-in'/`focus-out'), where they're consumed without entering the
-;; command loop.  EWM owns frame selection via `ewm--handle-focus'.
-
 ;;; Input method follows the selected window
 ;;
 ;; `ewm--handle-focus' selects windows from the async event filter, where
@@ -498,7 +463,7 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
 (defun ewm-input--in-selected-window (orig key)
   "Translate KEY through the selected window's input method, else ORIG."
   (let ((buf (window-buffer (selected-window))))
-    (if (or (bound-and-true-p ewm-text-input--composing) (eq buf (current-buffer)))
+    (if (or ewm-text-input--composing (eq buf (current-buffer)))
         (funcall orig key)
       (with-current-buffer buf
         (if current-input-method (funcall input-method-function key) (list key))))))
@@ -513,6 +478,8 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   (add-hook 'minibuffer-exit-hook #'ewm-input--sync-keyboard-capture)
   (add-hook 'window-selection-change-functions #'ewm-input--on-window-selection-change)
   (ewm-input--set-read-function-capture t)
+  ;; PGTK reports GDK focus changes as `switch-frame' events. Kept out of the
+  ;; command loop, they cannot fire `post-command-hook' mid-prefix.
   (define-key special-event-map [switch-frame] #'ignore)
   (setq-default input-method-function
                 (apply-partially #'ewm-input--in-selected-window #'list))
@@ -573,11 +540,8 @@ runtime."
 VALUE is the ASCII code or special-key name; flags are t or nil."
   (let* ((mods (event-modifiers event))
          (base (event-basic-type event))
-         ;; base is either an integer (ASCII) or a symbol (special key)
-         (key-value (cond
-                     ((integerp base) base)
-                     ((symbolp base) (symbol-name base))
-                     (t nil))))
+         (key-value (cond ((integerp base) base)
+                          ((symbolp base) (symbol-name base)))))
     (when key-value
       (list :key key-value
             :ctrl (and (memq 'control mods) t)
@@ -661,23 +625,21 @@ Every entry also runs as `ewm-surface-emulate' in surface buffers."
 (defun ewm--send-intercept-keys ()
   "Send emulations, prefix and `ewm-mode-map' keys to the compositor.
 Emulations go first, since the compositor takes the first match."
-  (when (bound-and-true-p ewm--module-mode)
-    (ewm-input--install-xf86-key-aliases)
-    (let* ((prefixes (delq nil (mapcar #'ewm--parse-intercept-entry
-                                      ewm-intercept-prefixes)))
-           (fullscreen-events (mapcar #'car (cl-remove-if-not #'cdr prefixes)))
-           specs)
-      (dolist (event (delete-dups (append (mapcar #'car prefixes)
-                                         (ewm--mode-map-events))))
-        (when-let* ((spec (ewm--event-to-intercept-spec
-                           event
-                           (memq event fullscreen-events)
-                           (ewm--event-dispatch event (assq event prefixes)))))
-          (push spec specs)))
-      (ewm-intercept-keys-module
-       (vconcat (cl-loop for (surface . table) in (ewm--emulation-tables)
-                         nconc (ewm--emulation-specs table surface))
-                (nreverse specs))))))
+  (ewm-input--install-xf86-key-aliases)
+  (let* ((prefixes (seq-keep #'ewm--parse-intercept-entry ewm-intercept-prefixes))
+         (fullscreen-events (mapcar #'car (cl-remove-if-not #'cdr prefixes)))
+         specs)
+    (dolist (event (delete-dups (append (mapcar #'car prefixes)
+                                       (ewm--mode-map-events))))
+      (when-let* ((spec (ewm--event-to-intercept-spec
+                         event
+                         (memq event fullscreen-events)
+                         (ewm--event-dispatch event (assq event prefixes)))))
+        (push spec specs)))
+    (ewm-intercept-keys-module
+     (vconcat (cl-loop for (surface . table) in (ewm--emulation-tables)
+                       nconc (ewm--emulation-specs table surface))
+              (nreverse specs)))))
 
 (defun ewm--handle-intercepted-command (event)
   "Queue intercepted EVENT for normal Emacs command processing."

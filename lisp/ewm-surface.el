@@ -15,10 +15,55 @@
 (require 'ewm-module)
 (ewm-module--declare)
 
+;;; Customization groups
+
+(defgroup ewm nil
+  "Support for Wayland apps as Emacs buffers."
+  :tag "EWM"
+  :link '(emacs-library-link :tag "Library Source" "ewm.el")
+  :group 'environment
+  :prefix "ewm-")
+
+(defgroup ewm-keybindings nil
+  "Key interception, prefix keys and per-app keys."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Keybindings")
+  :group 'ewm
+  :prefix "ewm-")
+
+(defgroup ewm-input-methods nil
+  "Text input in Wayland clients."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Input-Methods")
+  :group 'ewm
+  :prefix "ewm-")
+
+(defgroup ewm-input-devices nil
+  "Device settings, cursor hiding and pointer focus."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Input-Devices")
+  :group 'ewm
+  :prefix "ewm-")
+
+(defgroup ewm-output nil
+  "Display resolution, scaling, positioning and idle."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Output")
+  :group 'ewm
+  :prefix "ewm-")
+
+(defgroup ewm-appearance nil
+  "Dimming, animations, overview, blur and cursor theme."
+  :link '(url-link "https://codeberg.org/ezemtsov/ewm/wiki/Appearance")
+  :group 'ewm
+  :prefix "ewm-")
+
 ;;; Session state
 
 (defvar ewm--module-mode nil
   "Non-nil when running in module mode (compositor in-process).")
+
+(defun ewm--send-on-set (send)
+  "A setter storing the value, then calling SEND once the compositor runs."
+  (lambda (sym val)
+    (set-default sym val)
+    (when ewm--module-mode (funcall send))))
 
 (defvar ewm--surfaces (make-hash-table :test 'eql)
   "Hash table mapping surface ID to buffer.")
@@ -27,8 +72,7 @@
   "Non-nil when EWM debug mode is active.")
 
 (defun ewm--log (format-string &rest args)
-  "Log a message to the *ewm-log* buffer when debug mode is active.
-FORMAT-STRING and ARGS are passed to `format'."
+  "Log FORMAT-STRING formatted with ARGS to *ewm-log* in debug mode."
   (when ewm--debug
     (let ((buf (get-buffer-create "*ewm-log*")))
       (with-current-buffer buf
@@ -70,13 +114,16 @@ A nil regexp matches anything; matching is case-sensitive."
              (or (null app) (string-match-p app (or ewm-surface-app "")))
              (or (null title) (string-match-p title (or ewm-surface-title ""))))))))
 
+(defun ewm--surface-buffer (id)
+  "Live buffer of surface ID, else nil."
+  (when-let* ((buf (gethash id ewm--surfaces)) ((buffer-live-p buf))) buf))
+
 (defmacro ewm--with-surface-buffer-from-event (event &rest body)
   "Run BODY in the surface buffer for EVENT's `id', when live; else no-op.
 Absorbs the race where the surface vanishes between the compositor
 queueing the event and Emacs handling it."
   (declare (indent 1) (debug t))
-  `(when-let* ((buf (gethash (alist-get 'id ,event) ewm--surfaces))
-               ((buffer-live-p buf)))
+  `(when-let* ((buf (ewm--surface-buffer (alist-get 'id ,event))))
      (with-current-buffer buf ,@body)))
 
 (defun ewm-close (id)
@@ -84,13 +131,10 @@ queueing the event and Emacs handling it."
   (ewm-close-module id))
 
 (defun ewm--kill-buffer-query-function ()
-  "Run in `kill-buffer-query-functions' for surface buffers.
-Sends close request to compositor and prevents immediate buffer kill."
-  (if (not (and ewm-surface-id ewm--module-mode))
-      t  ; Not a surface buffer or compositor not running
-    ;; Request graceful close via xdg_toplevel.close
-    (ewm-close ewm-surface-id)
-    nil))
+  "Ask the compositor to close a live surface instead of killing its buffer."
+  (if (and ewm-surface-id ewm--module-mode (gethash ewm-surface-id ewm--surfaces))
+      (progn (ewm-close ewm-surface-id) nil)
+    t))
 
 (defun ewm-surface--after-change (beg end old-len)
   "Intercept insertions and route through im-commit.
@@ -106,14 +150,12 @@ forwarded to the client text field via `ewm-im-commit-module'."
 (define-derived-mode ewm-surface-mode fundamental-mode "Surface"
   "Major mode for EWM surface buffers."
   ;; Surface buffers are visual proxies, not editable text content.
-  ;; Insertions are intercepted and routed to the client text field.
   (buffer-disable-undo)
   (add-hook 'after-change-functions #'ewm-surface--after-change nil t)
   (setq-local cursor-type nil)
   (setq-local left-fringe-width 0)
   (setq-local right-fringe-width 0)
   (setq-local show-trailing-whitespace nil)
-  ;; Kill buffer -> close window (like EXWM)
   (add-hook 'kill-buffer-query-functions
             #'ewm--kill-buffer-query-function nil t))
 

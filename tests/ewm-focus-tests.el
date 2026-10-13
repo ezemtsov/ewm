@@ -44,6 +44,8 @@
   (defun ewm-get-active-frame-id (_output) nil))
 (unless (fboundp 'ewm-get-output-origin)
   (defun ewm-get-output-origin (_output) nil))
+(unless (fboundp 'ewm-get-focused-frame-id)
+  (defun ewm-get-focused-frame-id () 0))
 ;; The dynamic module provides the `ewm-core' feature in production;
 ;; stub it here so `(require 'ewm)' resolves under batch.
 (provide 'ewm-core)
@@ -701,7 +703,7 @@ pointer."
                  (lambda (_) (cons 0 0)))
                 ;; Force the pointer-inside guard to fall through.
                 ((symbol-function 'ewm-input--pointer-in-window-p)
-                 (lambda (_) nil)))
+                 (lambda (&rest _) nil)))
         (ewm-input--warp-pointer-to-window (minibuffer-window f))
         (should (= 0 warps))))))
 
@@ -714,7 +716,7 @@ pointer."
                 ((symbol-function 'ewm--get-output-origin)
                  (lambda (_) (cons 0 0)))
                 ((symbol-function 'ewm-input--pointer-in-window-p)
-                 (lambda (_) t)))
+                 (lambda (&rest _) t)))
         (ewm-input--warp-pointer-to-window (frame-selected-window f))
         (should (= 0 warps))))))
 

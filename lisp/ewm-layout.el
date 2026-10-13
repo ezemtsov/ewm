@@ -34,18 +34,16 @@ suppressed for every frame.")
 
 (defun ewm-layout--menu-active-p ()
   "Non-nil if any `ewm-layout-menu-predicates' entry says so."
-  (run-hook-with-args-until-success 'ewm-layout-menu-predicates))
+  (and (run-hook-with-args-until-success 'ewm-layout-menu-predicates) t))
 
 (defconst ewm-layout--frame-focus-id-marker (ash 1 32)
-  "Bit 32 marker for frame chrome focus ids.
-Entry ids are random in [1, 2^32-1] with bit 32 unset; frame chrome
-focus ids are `(logior MARKER SURFACE-ID)' with bit 32 set.  Disjoint ranges
-let compositor and lisp derive the same id from surface_id without coordination.")
+  "Bit 32 marks the focus id of a frame's own surface.
+Entry ids are random in [1, 2^32-1] with bit 32 unset, a frame's focus id is
+`(logior MARKER SURFACE-ID)'. Disjoint ranges let the compositor and Lisp
+derive the same id from the surface id without coordination.")
 
 (defun ewm-layout--fresh-entry-id ()
-  "Generate a non-zero random entry id with bit 32 unset.
-The bit-32 range is reserved for frame chrome (see
-`ewm-layout--frame-focus-id-marker')."
+  "Generate a non-zero random entry id with bit 32 unset."
   (1+ (random (1- (ash 1 32)))))
 
 (defun ewm-layout--ensure-entry-id (window)
@@ -60,9 +58,7 @@ The bit-32 range is reserved for frame chrome (see
    'no-minibuf t))
 
 (defun ewm-layout--ensure-frame-focus-id (frame)
-  "Return FRAME's chrome focus id derived from its `ewm-surface-id'.
-Computed deterministically so the compositor can construct the same id at
-`new_toplevel' without coordination."
+  "FRAME's focus id, derived from its surface id as the compositor does."
   (when-let* ((sid (frame-parameter frame 'ewm-surface-id)))
     (logior ewm-layout--frame-focus-id-marker sid)))
 
@@ -88,17 +84,16 @@ A used one becomes the user's for good."
 (defun ewm-layout--build-frame-plist (frame menu-active)
   "Plist describing FRAME for `ewm-layout'.
 When MENU-ACTIVE is non-nil, `:selected-entry-id' is nil so the
-compositor parks keyboard focus on the frame chrome."
+compositor parks keyboard focus on the frame itself."
   (let (entries)
     (dolist (window (window-list frame 'no-minibuf))
-      (when-let* ((entry-id (ewm-layout--ensure-entry-id window))
-                  (geometry (ewm-layout--make-output-entry window)))
-        (let ((surface-id (ewm-surface-buffer-p (window-buffer window))))
-          (push `(,@(when surface-id `(:surface-id ,surface-id))
-                  :entry-id ,entry-id
-                  :name ,(buffer-name (window-buffer window))
-                  ,@geometry)
-                entries))))
+      (pcase-let ((`(,x ,y ,w ,h) (ewm--window-body-pixel-rect window))
+                  (surface-id (ewm-surface-buffer-p (window-buffer window))))
+        (push `(,@(when surface-id `(:surface-id ,surface-id))
+                :entry-id ,(ewm-layout--ensure-entry-id window)
+                :name ,(buffer-name (window-buffer window))
+                :x ,x :y ,y :w ,w :h ,h)
+              entries)))
     (let ((selected-entry-id
            (unless menu-active
              (when-let* ((sel-win (frame-selected-window frame)))
@@ -121,10 +116,10 @@ FRAMES is a vector of `ewm-layout--build-frame-plist' plists."
 (defun ewm-layout--send-layouts ()
   "Declare every placed frame, suppressing `:selected-entry-id' while modal."
   (let ((menu-active (ewm-layout--menu-active-p)))
-    (ewm-layout (vconcat (delq nil (mapcar (lambda (frame)
-                                             (and (frame-parameter frame 'ewm-surface-id)
-                                                  (ewm-layout--build-frame-plist frame menu-active)))
-                                           (frame-list)))))))
+    (ewm-layout (vconcat (seq-keep (lambda (frame)
+                                     (and (frame-parameter frame 'ewm-surface-id)
+                                          (ewm-layout--build-frame-plist frame menu-active)))
+                                   (frame-list))))))
 
 (defun ewm-layout--refresh ()
   "Send the current window layout to the compositor."
@@ -134,12 +129,6 @@ FRAMES is a vector of `ewm-layout--build-frame-plist' plists."
         (ewm-layout--send-layouts)
       (error (message "EWM: layout sync error: %s" (error-message-string err))))))
 
-(defun ewm-layout--make-output-entry (window)
-  "Create an entry geometry plist for WINDOW with frame-relative coordinates.
-Returns (:x X :y Y :w W :h H); the compositor adds the frame's origin."
-  (pcase-let ((`(,x ,y ,width ,height) (ewm--window-body-pixel-rect window)))
-    `(:x ,x :y ,y :w ,width :h ,height)))
-
 (defvar ewm-layout--last-menu-active nil
   "Cached previous `ewm-layout--menu-active-p' for edge detection.")
 
@@ -148,9 +137,7 @@ Returns (:x X :y Y :w W :h H); the compositor adds the frame's origin."
 
 (defun ewm-layout--on-post-command ()
   "Refresh layout on a modal-state transition."
-  ;; Coerce to t: the predicates return a window or a keymap, not t, and
-  ;; `eq' against those would never match across commands.
-  (let ((now (and (ewm-layout--menu-active-p) t)))
+  (let ((now (ewm-layout--menu-active-p)))
     (unless (eq now ewm-layout--last-menu-active)
       (setq ewm-layout--last-menu-active now)
       (unless now (run-hooks 'ewm-layout-menu-deactivated-hook))
@@ -158,7 +145,7 @@ Returns (:x X :y Y :w W :h H); the compositor adds the frame's origin."
 
 (defun ewm--enable-layout-sync ()
   "Enable automatic layout sync."
-  (setq ewm-layout--last-menu-active (and (ewm-layout--menu-active-p) t))
+  (setq ewm-layout--last-menu-active (ewm-layout--menu-active-p))
   (add-hook 'window-state-change-hook #'ewm-layout--refresh)
   (add-hook 'post-command-hook #'ewm-layout--on-post-command))
 
