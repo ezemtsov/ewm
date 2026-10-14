@@ -31,8 +31,6 @@ use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 pub struct Fixture {
     event_loop: EventLoop<'static, State>,
     state: State,
-    /// The time the animation clock is held at, so springs and slides hold still.
-    frozen_clock: Option<Duration>,
 }
 
 impl Fixture {
@@ -66,11 +64,7 @@ impl Fixture {
 
         info!("Test fixture initialized with headless backend");
 
-        Ok(Self {
-            event_loop,
-            state,
-            frozen_clock: None,
-        })
+        Ok(Self { event_loop, state })
     }
 
     /// Pair a `UnixStream` with the server `Display` as the listener would,
@@ -354,7 +348,7 @@ impl Fixture {
             self.event_loop
                 .dispatch(Some(Duration::from_millis(5)), &mut self.state)
                 .ok();
-            self.refresh_and_flush_clients();
+            self.state.refresh_and_flush_clients();
             if let Some(guard) = client.conn.prepare_read() {
                 let _ = guard.read();
             }
@@ -496,7 +490,7 @@ impl Fixture {
         self.event_loop
             .dispatch(Some(Duration::from_millis(10)), &mut self.state)
             .ok();
-        self.refresh_and_flush_clients();
+        self.state.refresh_and_flush_clients();
     }
 
     /// Dispatch the event loop multiple times to allow async operations to complete
@@ -656,7 +650,7 @@ impl Fixture {
     /// frames, then declare their contents. Frames placed already stay put.
     pub fn tile(&mut self, output: &str, frames: Vec<Frame>) {
         let layout = self.place(output, frames, false);
-        self.state.ewm.apply_layout(layout);
+        self.state.apply_layout(layout);
     }
 
     /// `tile` declaring the contents through the command path Emacs uses.
@@ -670,7 +664,7 @@ impl Fixture {
     /// `tile` for `output`'s floating space.
     pub fn float(&mut self, output: &str, frames: Vec<Frame>) {
         let layout = self.place(output, frames, true);
-        self.state.ewm.apply_layout(layout);
+        self.state.apply_layout(layout);
     }
 
     /// Place the unplaced frames among `frames` on `output` as `new_toplevel`
@@ -819,19 +813,9 @@ impl Fixture {
             .unwrap_or_default()
     }
 
-    /// Per-frame processing callback.
-    fn refresh_and_flush_clients(&mut self) {
-        self.state.refresh_and_flush_clients();
-        if let Some(time) = self.frozen_clock {
-            self.state.ewm.animations_clock.set(time);
-        }
-    }
-
     /// Hold the animation clock where it is, so a spring or slide started now stays at its start.
     pub fn freeze_clock(&mut self) {
         let clock = &self.state.ewm.animations_clock;
-        let now = clock.now();
-        clock.set(now);
-        self.frozen_clock = Some(now);
+        clock.freeze(clock.now());
     }
 }

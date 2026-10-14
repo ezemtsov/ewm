@@ -1,4 +1,4 @@
-//! Ported from niri's `animation/clock.rs`, without the rate adjustment.
+//! Ported from niri's `animation/clock.rs`, without the rate adjustment, with a test freeze.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -22,6 +22,7 @@ pub struct Clock {
 struct Inner {
     time: AtomicU64,
     complete_instantly: AtomicBool,
+    frozen: AtomicBool,
 }
 
 impl Default for Clock {
@@ -36,6 +37,7 @@ impl Clock {
             inner: Arc::new(Inner {
                 time: AtomicU64::new(time),
                 complete_instantly: AtomicBool::new(false),
+                frozen: AtomicBool::new(false),
             }),
         }
     }
@@ -61,9 +63,26 @@ impl Clock {
         self.inner.time.store(nanos(time), Ordering::Relaxed);
     }
 
-    /// Clears the stored time so it's re-fetched again next.
+    /// Moves the clock to the frame being rendered, unless frozen.
+    pub fn set_presentation_time(&self, time: Duration) {
+        if self.inner.frozen.load(Ordering::Relaxed) {
+            return;
+        }
+        self.set(time);
+    }
+
+    /// Clears the stored time so it's re-fetched again next, unless frozen.
     pub fn clear(&self) {
+        if self.inner.frozen.load(Ordering::Relaxed) {
+            return;
+        }
         self.inner.time.store(UNSET, Ordering::Relaxed);
+    }
+
+    /// Holds the clock at `time` against the loop, only `set` moves it then.
+    pub fn freeze(&self, time: Duration) {
+        self.set(time);
+        self.inner.frozen.store(true, Ordering::Relaxed);
     }
 
     /// Returns whether animations should complete instantly.

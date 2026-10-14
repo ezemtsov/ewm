@@ -13,8 +13,8 @@ use smithay::wayland::compositor::{HookId, remove_pre_commit_hook, with_states};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
-use crate::animation::{Animation, Clock};
-use crate::resize_fade::{FadingView, PendingResize, ResizeFade, ViewMove, ViewRect};
+use crate::animation::Animation;
+use crate::resize_fade::{Fit, PendingResize, ResizeFade, ViewRect};
 use crate::{Ewm, LayoutEntry, LayoutEntryId, handlers};
 
 const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);
@@ -62,11 +62,11 @@ pub struct SurfaceState {
     pub open: Option<Animation>,
     /// Resizes configured but not yet answered, oldest first.
     pending_resizes: Vec<(Serial, PendingResize)>,
-    /// Old contents dissolving into a resized buffer.
+    /// Old contents dissolving into the new.
     pub resize: Option<ResizeFade>,
-    /// Views springing from where they sat, by entry.
-    moves: HashMap<LayoutEntryId, ViewMove>,
-    /// Where its views sat before a commit that flips fullscreen.
+    /// How each view fits its contents, held while a resize is pending.
+    fitted: HashMap<LayoutEntryId, Fit>,
+    /// Where its views drew their contents before a commit that changes them.
     pub(crate) rects_before: Vec<ViewRect>,
 }
 
@@ -99,7 +99,7 @@ impl SurfaceState {
             open: None,
             pending_resizes: Vec::new(),
             resize: None,
-            moves: HashMap::new(),
+            fitted: HashMap::new(),
             rects_before: Vec::new(),
         }
     }
@@ -149,7 +149,12 @@ impl SurfaceState {
 
     /// Whether fullscreen `entry` draws at its own size: primary and owing no buffer.
     pub(crate) fn fullscreen_native(&self, entry: &LayoutEntry) -> bool {
-        entry.primary() && self.pending_resizes.is_empty()
+        entry.primary() && !self.owes_buffer()
+    }
+
+    /// Whether a size-changing configure is still unanswered.
+    pub fn owes_buffer(&self) -> bool {
+        !self.pending_resizes.is_empty()
     }
 
     /// Whether the window has shown a buffer.
@@ -159,11 +164,13 @@ impl SurfaceState {
             .is_some_and(|surface| crate::utils::is_mapped(&surface))
     }
 
-    /// Backdrop alpha under `entry`: whole at fullscreen rest, following a spring in or out.
+    /// Backdrop alpha under `entry`: whole at fullscreen rest, fading through a flip.
     pub(crate) fn backdrop_alpha(&self, entry: &LayoutEntry) -> f32 {
-        let to = entry.fullscreen();
-        self.view_move(entry.id)
-            .map_or(f32::from(u8::from(to)), |view| view.backdrop_alpha(to))
+        let to = f32::from(u8::from(entry.fullscreen()));
+        match self.resize_fade_for(entry) {
+            Some(fade) if fade.flips() => 1. - to + (2. * to - 1.) * fade.progress(),
+            _ => to,
+        }
     }
 
     /// The newest resize a commit acking `serial` answers. The ones it skipped are over too.
@@ -195,7 +202,7 @@ impl SurfaceState {
     }
 
     pub(crate) fn is_animating(&self) -> bool {
-        self.open.is_some() || self.resize.is_some() || !self.moves.is_empty()
+        self.open.is_some() || self.resize.is_some()
     }
 
     /// Drop finished animations.
@@ -206,45 +213,24 @@ impl SurfaceState {
         if self.resize.as_ref().is_some_and(ResizeFade::is_done) {
             self.resize = None;
         }
-        self.moves.retain(|_, view| !view.is_done());
     }
 
-    /// The spring view `entry` is still on, if any.
-    pub fn view_move(&self, entry: LayoutEntryId) -> Option<&ViewMove> {
-        self.moves.get(&entry).filter(|view| !view.is_done())
+    /// How view `entry` fits its contents, `now` until it has been fitted.
+    pub(crate) fn fit_of(&self, entry: LayoutEntryId, now: Fit) -> Fit {
+        self.fitted.get(&entry).copied().unwrap_or(now)
     }
 
-    /// Spring view `entry` to where it is drawn now from `from`, or from mid-way if already moving.
-    pub(crate) fn start_move(
-        &mut self,
-        entry: LayoutEntryId,
-        was: &ViewRect,
-        now: &ViewRect,
-        clock: Clock,
-    ) {
-        let mut view = ViewMove::new(was, now, clock);
-        if let Some(under_way) = self.view_move(entry) {
-            view.from = under_way
-                .rect(was.rect.to_f64(), Some(was.origin.to_f64()))
-                .to_i32_round();
+    /// Fit view `entry` by `fit`, unless on `hold` it already has one.
+    pub(crate) fn fit(&mut self, entry: LayoutEntryId, fit: Fit, hold: bool) {
+        if !(hold && self.fitted.contains_key(&entry)) {
+            self.fitted.insert(entry, fit);
         }
-        self.moves.insert(entry, view);
     }
 
-    /// Drop the springs of views no longer shown on their output.
-    pub(crate) fn settle_moves(&mut self, shown: &[ViewRect]) {
-        self.moves.retain(|entry, view| {
-            shown
-                .iter()
-                .any(|v| v.entry == *entry && v.output == view.output)
-        });
-    }
-
-    /// Whether a view of this surface still springs on `output`.
-    pub(crate) fn view_moving_on(&self, output: &Output) -> bool {
-        self.moves
-            .values()
-            .any(|view| !view.is_done() && view.output == *output)
+    /// Forget the views no longer shown.
+    pub(crate) fn forget_views(&mut self, shown: &[ViewRect]) {
+        self.fitted
+            .retain(|entry, _| shown.iter().any(|view| view.entry == *entry));
     }
 
     /// Alpha of the open fade, 1 once it is over.
@@ -252,13 +238,9 @@ impl SurfaceState {
         self.open.as_ref().map_or(1., |anim| anim.value() as f32)
     }
 
-    /// The resize fade `entry` still shows, and how it drew the old contents, if any.
-    pub(crate) fn resize_fade_for(
-        &self,
-        entry: &LayoutEntry,
-    ) -> Option<(&ResizeFade, &FadingView)> {
-        let fade = self.resize.as_ref()?;
-        Some((fade, fade.view(entry)?))
+    /// The resize fade `entry` still shows, if any.
+    pub(crate) fn resize_fade_for(&self, entry: &LayoutEntry) -> Option<&ResizeFade> {
+        self.resize.as_ref().filter(|fade| fade.shows(entry))
     }
 }
 

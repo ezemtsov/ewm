@@ -12,7 +12,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::closing_frame::Closing;
-use crate::resize_fade::ViewRect;
+use crate::resize_fade::{Fit, ViewRect, contents_rect};
 use crate::snapshot::Snapshot;
 use crate::{
     Event, Ewm, FocusId, LayoutEntry, LayoutEntryHit, LayoutEntryId, SurfaceHit, animation,
@@ -865,7 +865,8 @@ impl Layout {
             };
             let area = entry_area(location.monitor.output(), location.entry);
             let entry = best.entry(surface_id).or_insert((area, location.entry.id));
-            if area > entry.0 {
+            // A tie keeps the primary.
+            if area > entry.0 || (area == entry.0 && location.entry.primary()) {
                 *entry = (area, location.entry.id);
             }
         }
@@ -1563,11 +1564,34 @@ impl Ewm {
     ) -> Rectangle<i32, Logical> {
         let entry = location.entry;
         if entry.fullscreen() {
-            let dx = location.frame_location().slot_x().round() as i32;
-            let slot = Rectangle::new(output_geo.loc + Point::from((dx, 0)), output_geo.size);
+            let slot = Self::fullscreen_slot(location, output_geo);
             return self.fullscreen_entry_rect(slot, entry);
         }
         Rectangle::new(origin + Point::from((entry.x, entry.y)), entry.rect().size)
+    }
+
+    /// The output-sized slot of `location`'s frame.
+    fn fullscreen_slot(
+        location: LayoutEntryLocation<'_>,
+        output_geo: Rectangle<i32, Logical>,
+    ) -> Rectangle<i32, Logical> {
+        let dx = location.frame_location().slot_x().round() as i32;
+        Rectangle::new(output_geo.loc + Point::from((dx, 0)), output_geo.size)
+    }
+
+    /// Where the view at `location` sits, globally, with its frame at `origin`: its slot when
+    /// fullscreen, else its window.
+    fn view_place(
+        location: LayoutEntryLocation<'_>,
+        output_geo: Rectangle<i32, Logical>,
+        origin: Point<i32, Logical>,
+    ) -> Rectangle<i32, Logical> {
+        let entry = location.entry;
+        if entry.fullscreen() {
+            Self::fullscreen_slot(location, output_geo)
+        } else {
+            Rectangle::new(origin + Point::from((entry.x, entry.y)), entry.rect().size)
+        }
     }
 
     /// `local`, an output-local rect, on `output_geo`.
@@ -1869,21 +1893,35 @@ impl Ewm {
             .entry_locations()
             .filter(|location| location.shown() && self.view_visible(*location))
             .filter_map(|location| {
-                let surface = location.entry.surface_id()?;
+                let entry = location.entry;
+                let surface = entry.surface_id()?;
+                let state = self.surfaces.get(&surface)?;
                 let output = location.monitor.output().clone();
                 let output_geo = self.space.output_geometry(&output)?;
                 let origin = self.frame_origin(location.frame_location())?;
-                let mut rect = self.entry_rect_at(location, output_geo, origin);
+                let place = Self::view_place(location, output_geo, origin);
+                let now = Fit {
+                    window: place.size,
+                    native: entry.primary(),
+                };
+                let fit = state.fit_of(entry.id, now);
+                let buffer = state.window.geometry().size;
+                let mut loc = place.loc;
+                if entry.fullscreen() {
+                    loc += fit.fullscreen_offset(buffer, place.size);
+                }
+                let (rect, scale) = contents_rect(fit, buffer, loc.to_f64())?;
+                let mut rect = rect.to_i32_round();
                 rect.loc -= output_geo.loc;
                 Some(ViewRect {
                     surface,
-                    entry: location.entry.id,
+                    entry: entry.id,
                     output,
                     frame: location.frame.surface_id,
-                    origin: origin - output_geo.loc,
                     rect,
-                    fullscreen: location.entry.fullscreen(),
-                    floating: location.floating,
+                    scale,
+                    fit: now,
+                    window: entry.rect(),
                 })
             })
             .collect()
@@ -2140,7 +2178,6 @@ impl Ewm {
     pub fn apply_layout(&mut self, frames: Vec<strip::Frame>) {
         let focused_surface = self.focused_surface_id();
         let outputs: Vec<Output> = self.layout.outputs().cloned().collect();
-        let before = self.view_rects();
 
         self.layout.merge_frames(frames);
         self.reconcile_fullscreen();
@@ -2151,7 +2188,7 @@ impl Ewm {
             self.queue_redraw(output);
         }
         self.refresh_primary_assignments();
-        self.animate_view_moves(&before);
+        self.fit_views(false);
         self.layout.settle_resized();
         // Covers the race where the layout runs before `new_toplevel`'s auto-focus.
         self.focus_any_frame_if_unfocused("auto_focus_on_layout");
@@ -2372,7 +2409,7 @@ impl Ewm {
         self.report_float_visibility(&before);
     }
 
-    /// Whether the strip or a view on `pos`'s output still moves, so pointer focus waits.
+    /// Whether the strip on `pos`'s output still moves, so pointer focus waits.
     pub fn is_animating_at(&self, pos: Point<f64, Logical>) -> bool {
         let Some(output) = self.output_containing(pos) else {
             return false;
@@ -2380,10 +2417,6 @@ impl Ewm {
         self.layout
             .strip(output)
             .is_some_and(|s| s.animations_ongoing())
-            || self
-                .surfaces
-                .values()
-                .any(|surface| surface.view_moving_on(output))
     }
 }
 

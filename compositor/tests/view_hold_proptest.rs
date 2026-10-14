@@ -1,10 +1,8 @@
-//! A view whose rect changes by more than the snap threshold springs from where it sat, carrying
-//! whether it was fullscreen there, whether a layout or a client's fullscreen commit moved it. An
-//! unchanged rect, or one changed by less, starts no spring, and a spring already under way hands
-//! over from wherever it has got to.
+//! Until the buffer a layout asked for comes, the views of its surface keep showing what they
+//! showed, whatever Emacs does to their windows meanwhile.
 
 use ewm_core::LayoutEntry;
-use ewm_core::resize_fade::{RESIZE_FADE_THRESHOLD, rect_change};
+use ewm_core::resize_fade::{RESIZE_FADE_THRESHOLD, size_change};
 use ewm_core::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
 use proptest::prelude::*;
@@ -54,16 +52,6 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     ]
 }
 
-/// Whether `x` lies between `a` and `b` on every side, give or take rounding.
-fn between(a: Rect, b: Rect, x: Rect) -> bool {
-    let sides = |r: Rect| [r.loc.x, r.loc.y, r.size.w, r.size.h];
-    sides(a)
-        .into_iter()
-        .zip(sides(b))
-        .zip(sides(x))
-        .all(|((a, b), x)| a.min(b) - 1 <= x && x <= a.max(b) + 1)
-}
-
 struct Harness {
     fix: Fixture,
     client: TestClient,
@@ -86,23 +74,19 @@ impl Harness {
         }
     }
 
-    /// Each view's rect with its fullscreen flag, while shown.
-    fn rects(&self) -> [Option<(Rect, bool)>; 2] {
+    /// Each view's contents' rect, while shown.
+    fn rects(&self) -> [Option<Rect>; 2] {
         let views = self.fix.ewm_ref().view_rects();
         ENTRIES.map(|entry| {
             views
                 .iter()
                 .find(|view| view.surface == self.sid && view.entry == nz(entry))
-                .map(|view| (view.rect, view.fullscreen))
+                .map(|view| view.rect)
         })
     }
 
-    fn moves(&self) -> [Option<(Rect, bool)>; 2] {
-        ENTRIES.map(|entry| {
-            self.fix.ewm_ref().surfaces[&self.sid]
-                .view_move(nz(entry))
-                .map(|view| (view.from, view.from_fullscreen))
-        })
+    fn owes(&self) -> bool {
+        self.fix.ewm_ref().surfaces[&self.sid].owes_buffer()
     }
 
     fn apply(&mut self, op: &Op) {
@@ -144,46 +128,28 @@ proptest! {
     })]
 
     #[test]
-    fn views_spring_from_where_they_sat(ops in prop::collection::vec(op_strategy(), 1..30)) {
+    fn views_hold_until_the_buffer_comes(ops in prop::collection::vec(op_strategy(), 1..30)) {
         let mut h = Harness::new();
         for op in &ops {
             let before = h.rects();
-            let moving = h.moves();
             h.apply(op);
             let after = h.rects();
-            let moves = h.moves();
+            // A layout or a request that leaves a buffer owed changes no view's contents' size.
+            if matches!(op, Op::Answer) || !h.owes() {
+                continue;
+            }
             for i in 0..2 {
-                match (before[i], after[i]) {
-                    (Some((was, was_fullscreen)), Some((now, _)))
-                        if rect_change(was, now) > RESIZE_FADE_THRESHOLD =>
-                    {
-                        let Some((from, from_fullscreen)) = moves[i] else {
-                            return Err(TestCaseError::fail(format!(
-                                "view {} went {:?} -> {:?} on {:?} without a spring",
-                                ENTRIES[i], was, now, op
-                            )));
-                        };
-                        prop_assert_eq!(from_fullscreen, was_fullscreen, "view {} on {:?}", ENTRIES[i], op);
-                        // A spring under way hands over from wherever it has got to.
-                        let origin = moving[i].map_or(was, |(origin, _)| origin);
-                        prop_assert!(
-                            between(origin, was, from),
-                            "view {} springs from {:?}, not between {:?} and {:?}, on {:?}",
-                            ENTRIES[i],
-                            from,
-                            origin,
-                            was,
-                            op
-                        );
-                    }
-                    (Some(_), Some(_)) => prop_assert!(
-                        moves[i].is_none() || moves[i] == moving[i],
-                        "view {} sprang without a rect change on {:?}",
-                        ENTRIES[i],
-                        op
-                    ),
-                    _ => {}
-                }
+                let (Some(was), Some(now)) = (before[i], after[i]) else {
+                    continue;
+                };
+                prop_assert!(
+                    size_change(was.size, now.size) <= RESIZE_FADE_THRESHOLD,
+                    "view {} owed a buffer yet went from {:?} to {:?} on {:?}",
+                    ENTRIES[i],
+                    was,
+                    now,
+                    op
+                );
             }
         }
     }

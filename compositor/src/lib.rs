@@ -2669,8 +2669,8 @@ impl Ewm {
             state.frame_clock.next_presentation_time()
         };
 
-        // Freeze the clock at the target time.
-        self.animations_clock.set(target_presentation_time);
+        self.animations_clock
+            .set_presentation_time(target_presentation_time);
 
         // Sweep finished animations so render-path flag reflects live ones.
         self.advance_animations(output);
@@ -5756,7 +5756,7 @@ impl State {
             ModuleCommand::Layout { frames } => {
                 let dropped = strip::dropped_frame_ids(self.ewm.layout.placed_frames(), &frames);
                 self.store_close_snapshots(&dropped);
-                self.ewm.apply_layout(frames);
+                self.apply_layout(frames);
                 self.refresh_pointer_after_layout();
             }
             ModuleCommand::MoveFrame { id, delta } => {

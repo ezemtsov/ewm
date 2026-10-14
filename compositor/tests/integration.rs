@@ -1082,20 +1082,24 @@ fn disabling_and_reenabling_output_updates_surface_membership() {
     ));
 }
 
-/// Views jump into place on the first layout after an output's working area changed, and the
-/// pointer waits while they spring afterwards.
+/// Views jump into place on the first layout after an output's working area changed, and fade
+/// afterwards.
 #[test]
 fn views_jump_after_an_output_change() {
+    let sized = |surface_id, w, h| {
+        let mut frame = frame_with_entry_at(100, nz(1), surface_id, 0, 0);
+        frame.entries[0].w = w;
+        frame.entries[0].h = h;
+        frame
+    };
     let mut fixture = Fixture::new().unwrap();
     fixture.add_output("Virtual-1", 1920, 1080);
     fixture.freeze_clock();
     let mut client = fixture.new_client().unwrap();
     fixture.roundtrip(&mut client);
-    let surface_id = fixture.open_toplevel_id(&mut client, "app", Size::from((400, 300)));
-    fixture.tile(
-        "Virtual-1",
-        vec![frame_with_entry_at(100, nz(1), surface_id, 0, 0)],
-    );
+    let (toplevel, surface_id) =
+        fixture.open_toplevel_with_id(&mut client, "app", Size::from((400, 300)));
+    fixture.tile("Virtual-1", vec![sized(surface_id, 400, 300)]);
     fixture.ewm().output_config.insert(
         "Virtual-1".to_string(),
         OutputConfig {
@@ -1104,37 +1108,24 @@ fn views_jump_after_an_output_change() {
         },
     );
     fixture.apply_output_config("Virtual-1");
-    fixture.tile(
-        "Virtual-1",
-        vec![frame_with_entry_at(100, nz(1), surface_id, 200, 150)],
-    );
+    fixture.tile("Virtual-1", vec![sized(surface_id, 600, 450)]);
     assert!(
-        fixture.ewm_ref().surfaces[&surface_id]
-            .view_move(nz(1))
-            .is_none(),
-        "sprang after the output change"
+        !fixture.ewm_ref().surfaces[&surface_id].owes_buffer(),
+        "a fade waits after the output change"
     );
-    fixture.tile(
-        "Virtual-1",
-        vec![frame_with_entry_at(100, nz(1), surface_id, 0, 0)],
-    );
+    fixture.answer_configure(&mut client, &toplevel);
+    fixture.tile("Virtual-1", vec![sized(surface_id, 400, 300)]);
     assert!(
-        fixture.ewm_ref().surfaces[&surface_id]
-            .view_move(nz(1))
-            .is_some(),
-        "no spring on a plain layout"
-    );
-    assert!(
-        fixture.ewm_ref().is_animating_at(Point::from((50., 50.))),
-        "pointer focus would retarget mid-spring"
+        fixture.ewm_ref().surfaces[&surface_id].owes_buffer(),
+        "no fade waits on a plain layout"
     );
 }
 
-/// A float resized by hand follows the pointer: nothing in it springs on the way.
+/// A float resized by hand follows the pointer: nothing in it fades on the way.
 #[test]
-fn views_of_a_frame_resized_by_hand_do_not_spring() {
+fn views_of_a_frame_resized_by_hand_do_not_fade() {
     const FRAME: u64 = 500;
-    let float = |x: i32, sid: u64| {
+    let float = |w: u32, sid: u64| {
         let mut frame = Frame::new(FRAME);
         frame.width = 800.0;
         frame.height = 600.0;
@@ -1142,9 +1133,9 @@ fn views_of_a_frame_resized_by_hand_do_not_spring() {
             nz(7),
             "view".into(),
             sid,
-            x,
             0,
-            400,
+            0,
+            w,
             300,
         )];
         frame.floating_pos = Some(SizeFracPoint { x: 0.1, y: 0.1 });
@@ -1155,22 +1146,23 @@ fn views_of_a_frame_resized_by_hand_do_not_spring() {
     fix.freeze_clock();
     let mut client = fix.new_client().unwrap();
     fix.roundtrip(&mut client);
-    let sid = fix.open_toplevel_id(&mut client, "app", Size::from((400, 300)));
-    fix.float("Virtual-1", vec![float(0, sid)]);
+    let (toplevel, sid) = fix.open_toplevel_with_id(&mut client, "app", Size::from((400, 300)));
+    fix.float("Virtual-1", vec![float(400, sid)]);
 
     assert!(
         fix.ewm()
             .interactive_resize_floating_frame_begin(FRAME, ResizeEdge::BOTTOM_RIGHT)
     );
-    fix.float("Virtual-1", vec![float(100, sid)]);
+    fix.float("Virtual-1", vec![float(500, sid)]);
     assert!(
-        fix.ewm_ref().surfaces[&sid].view_move(nz(7)).is_none(),
-        "sprang under the grab"
+        !fix.ewm_ref().surfaces[&sid].owes_buffer(),
+        "a fade waits under the grab"
     );
+    fix.answer_configure(&mut client, &toplevel);
     fix.ewm().interactive_resize_floating_frame_end(FRAME);
-    fix.float("Virtual-1", vec![float(200, sid)]);
+    fix.float("Virtual-1", vec![float(600, sid)]);
     assert!(
-        fix.ewm_ref().surfaces[&sid].view_move(nz(7)).is_some(),
-        "no spring after the grab"
+        fix.ewm_ref().surfaces[&sid].owes_buffer(),
+        "no fade waits after the grab"
     );
 }

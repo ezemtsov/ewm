@@ -417,7 +417,7 @@ impl Ewm {
                     output_scale,
                     constrain,
                     None,
-                    None,
+                    Vec::new(),
                     self.blur_config,
                 );
             }
