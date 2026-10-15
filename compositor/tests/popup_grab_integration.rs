@@ -4,19 +4,15 @@
 //! routes hover/click to the popup, survives a click inside it, and is
 //! dismissed by a click outside (on empty space / another client).
 
+use ewm_core::LayoutEntry;
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture};
-use ewm_core::{LayoutEntry, LayoutEntryId};
+use ewm_core::testing::{ClientEvent, Fixture, nz};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use wayland_client::Proxy as _;
 
 const HEAD: &str = "HEAD-A";
 const BTN_LEFT: u32 = 0x110;
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
 
 /// Wide enough to cover the output for `collect_popup_placements`.
 fn world_rect() -> Rectangle<i32, Logical> {

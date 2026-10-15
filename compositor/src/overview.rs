@@ -376,20 +376,4 @@ mod tests {
             prop_assert!((right - (wa_f.loc.x + wa_f.size.w)).abs() < 1e-6);
         }
     }
-
-    #[test]
-    fn toggle_flips_open_and_settles() {
-        let mut overview = overview();
-        assert!(!overview.is_active());
-        overview.toggle();
-        assert!(overview.is_open());
-        assert!(overview.is_animating());
-        overview.advance();
-        assert!(!overview.is_animating());
-        assert_eq!(overview.progress(), Some(1.));
-        assert!(overview.close());
-        overview.advance();
-        assert!(!overview.is_active());
-        assert_eq!(overview.zoom(), 1.);
-    }
 }

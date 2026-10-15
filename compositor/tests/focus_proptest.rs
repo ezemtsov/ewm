@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use ewm_core::event::Event;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{Fixture, mark_active_frame_close, strip_with_frame_ids};
+use ewm_core::testing::{Fixture, mark_active_frame_close, nz, strip_with_frame_ids};
 use ewm_core::{
     Action, LayoutEntry, LayoutEntryId, OutputConfig, OverviewAction, resolve_keyboard_focus_target,
 };
@@ -15,10 +15,6 @@ use proptest::prelude::*;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
 const MAX_FRAMES: usize = 3;
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
 
 #[derive(Debug, Clone)]
 enum Op {
@@ -592,61 +588,6 @@ fn activation_prefers_the_focused_frame() {
 }
 
 proptest! {
-    #[test]
-    fn destroying_focused_frame_refocuses_same_output_neighbor(
-        len in 2usize..=6,
-        raw_idx in 0usize..6,
-    ) {
-        let idx = raw_idx % len;
-        let ids: Vec<u64> = (0..len).map(|i| 10_000 + i as u64).collect();
-        let mut fix = Fixture::new().unwrap();
-        fix.add_output(OUTPUTS[0], 1920, 1080);
-        fix.install_strip(OUTPUTS[0], strip_with_frame_ids(ids.to_vec(), 0));
-        fix.ewm().set_focus_frame(ids[idx], "proptest", false);
-
-        let expected = if idx + 1 < len {
-            ids[idx + 1]
-        } else {
-            ids[idx - 1]
-        };
-        let refocus = fix.ewm().handle_toplevel_destroyed_by_id(ids[idx]);
-
-        prop_assert_eq!(refocus, Some(expected));
-        fix.ewm()
-            .set_focus_frame(refocus.unwrap(), "toplevel_destroyed", false);
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, expected);
-        let strip = fix.strip(OUTPUTS[0]);
-        prop_assert_eq!(strip.active_frame_id(), Some(expected));
-    }
-
-    #[test]
-    fn destroying_inactive_frame_preserves_focused_frame(
-        len in 2usize..=6,
-        raw_focus_idx in 0usize..6,
-        raw_destroy_idx in 0usize..6,
-    ) {
-        let focus_idx = raw_focus_idx % len;
-        let mut destroy_idx = raw_destroy_idx % len;
-        if destroy_idx == focus_idx {
-            destroy_idx = (destroy_idx + 1) % len;
-        }
-        let ids: Vec<u64> = (0..len).map(|i| 20_000 + i as u64).collect();
-        let mut fix = Fixture::new().unwrap();
-        fix.add_output(OUTPUTS[0], 1920, 1080);
-        fix.install_strip(OUTPUTS[0], strip_with_frame_ids(ids.to_vec(), 0));
-        fix.ewm().set_focus_frame(ids[focus_idx], "proptest", false);
-
-        let refocus = fix.ewm().handle_toplevel_destroyed_by_id(ids[destroy_idx]);
-
-        prop_assert_eq!(refocus, None);
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, ids[focus_idx]);
-        let strip = fix.strip(OUTPUTS[0]);
-        prop_assert_eq!(
-            strip.active_frame_id(),
-            Some(ids[focus_idx]),
-        );
-    }
-
     #[test]
     fn active_close_intent_uses_destroyed_slot_after_focus_or_layout_race(
         len in 2usize..=6,

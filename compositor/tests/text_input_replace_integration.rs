@@ -1,15 +1,11 @@
 //! A whole-field replace must reach the client over zwp_text_input_v3.
 
 use ewm_core::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, TestClient};
+use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::Size;
 
 const HEAD: &str = "Virtual-1";
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
 
 fn pump(fix: &mut Fixture, emacs: &mut TestClient, app: &mut TestClient) {
     fix.roundtrip(emacs);

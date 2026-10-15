@@ -5,16 +5,12 @@
 
 use ewm_core::im::TextInputProvider;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, TestClient};
+use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::Size;
 use smithay::wayland::input_method::InputMethodSeat;
 
 const HEAD: &str = "Virtual-1";
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
 
 fn pump(fix: &mut Fixture, emacs: &mut TestClient, app: &mut TestClient, ime: &mut TestClient) {
     for _ in 0..2 {

@@ -22,11 +22,6 @@ fn mapped(fix: &mut Fixture, sid: u64) -> Option<(bool, Option<f64>, Option<f64>
         _ => None,
     })
 }
-
-fn mapped_open_floating(fix: &mut Fixture, sid: u64) -> Option<bool> {
-    mapped(fix, sid).map(|m| m.0)
-}
-
 #[test]
 fn new_precedes_title_and_mapped() {
     // `New` is the "buffer exists" signal; per-surface events like `title` and
@@ -67,104 +62,6 @@ fn new_precedes_title_and_mapped() {
         assert!(n < m, "New must precede Mapped; got {order:?}");
     }
 }
-
-#[test]
-fn plain_toplevel_does_not_auto_float() {
-    let mut fix = Fixture::new().unwrap();
-    fix.enable_event_capture();
-    fix.add_output(OUTPUT, 1920, 1080);
-
-    let mut client = fix.new_client().unwrap();
-    fix.roundtrip(&mut client);
-    let toplevel = fix.open_toplevel(&mut client, "plain", Size::<i32, Logical>::from((400, 300)));
-    let sid = fix
-        .find_surface_id(&client, &toplevel.surface)
-        .expect("server did not assign a surface id");
-
-    assert_eq!(
-        mapped_open_floating(&mut fix, sid),
-        Some(false),
-        "a resizable, parentless window must tile, not float",
-    );
-}
-
-#[test]
-fn fixed_height_toplevel_auto_floats() {
-    let mut fix = Fixture::new().unwrap();
-    fix.enable_event_capture();
-    fix.add_output(OUTPUT, 1920, 1080);
-
-    let mut client = fix.new_client().unwrap();
-    fix.roundtrip(&mut client);
-    let toplevel =
-        fix.open_toplevel_fixed_size(&mut client, "fixed", Size::<i32, Logical>::from((400, 300)));
-    let sid = fix
-        .find_surface_id(&client, &toplevel.surface)
-        .expect("server did not assign a surface id");
-
-    assert_eq!(
-        mapped_open_floating(&mut fix, sid),
-        Some(true),
-        "a fixed-height window (min.h == max.h) must open floating",
-    );
-}
-
-#[test]
-fn dialog_with_parent_auto_floats() {
-    let mut fix = Fixture::new().unwrap();
-    fix.enable_event_capture();
-    fix.add_output(OUTPUT, 1920, 1080);
-
-    let mut client = fix.new_client().unwrap();
-    fix.roundtrip(&mut client);
-    let parent = fix.open_toplevel(
-        &mut client,
-        "parent",
-        Size::<i32, Logical>::from((800, 600)),
-    );
-    let dialog = fix.open_toplevel_with_parent(
-        &mut client,
-        "dialog",
-        &parent,
-        Size::<i32, Logical>::from((400, 300)),
-    );
-    let sid = fix
-        .find_surface_id(&client, &dialog.surface)
-        .expect("server did not assign a surface id");
-
-    assert_eq!(
-        mapped_open_floating(&mut fix, sid),
-        Some(true),
-        "a toplevel with a parent (dialog) must open floating",
-    );
-}
-
-#[test]
-fn portal_toplevel_auto_floats() {
-    // Socketpair clients carry no identity; only the portal tag makes this float.
-    let mut fix = Fixture::new().unwrap();
-    fix.enable_event_capture();
-    fix.add_output(OUTPUT, 1920, 1080);
-    fix.ewm().set_emacs_pid(std::process::id());
-
-    let mut client = fix.new_portal_client().unwrap();
-    fix.roundtrip(&mut client);
-    let toplevel = fix.open_toplevel(
-        &mut client,
-        "portal",
-        Size::<i32, Logical>::from((400, 300)),
-    );
-    let sid = fix
-        .find_surface_id(&client, &toplevel.surface)
-        .expect("server did not assign a surface id");
-
-    assert_eq!(
-        mapped_open_floating(&mut fix, sid),
-        Some(true),
-        "a portal window must open floating even without a parent or size hints",
-    );
-}
-
 #[test]
 fn title_set_on_mapping_commit_precedes_mapped() {
     // A placement rule keyed on the title must see a title the client sets

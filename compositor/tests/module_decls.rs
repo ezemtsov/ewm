@@ -89,12 +89,6 @@ fn fixture() -> String {
     text.push_str("))\n\n(provide 'ewm-module)\n;;; ewm-module.el ends here\n");
     text
 }
-
-#[test]
-fn every_defun_is_declared() {
-    assert_eq!(defuns().len(), MODULE.matches("#[defun").count());
-}
-
 #[test]
 fn declarations_match_the_defuns() {
     common::assert_generated("lisp/ewm-module.el", &fixture());

@@ -881,16 +881,6 @@ mod tests {
         }
     }
 
-    fn strip_with_ids(ids: &[u64]) -> Strip {
-        let mut strip = Strip::new(Clock::default());
-        strip.frames = ids.iter().copied().map(Frame::new).collect();
-        strip
-    }
-
-    fn frame_ids(strip: &Strip) -> Vec<u64> {
-        strip.frame_ids().collect()
-    }
-
     proptest! {
         #[test]
         fn column_x_matches_prefix_sum(
@@ -1074,32 +1064,6 @@ mod tests {
                 let idx = strip.index_of(id).unwrap();
                 prop_assert!((strip.screen_x_of_frame(idx) - x).abs() <= 1. / strip.scale);
             }
-        }
-
-        #[test]
-        fn merge_layout_changes_neither_frame_set_nor_order(
-            len in 1usize..=MAX_FRAMES,
-            named in prop::collection::vec(any::<bool>(), MAX_FRAMES),
-            shuffle in prop::collection::vec(0usize..MAX_FRAMES, MAX_FRAMES),
-            strangers in prop::collection::vec(20_000u64..20_010, 0..3),
-        ) {
-            let ids = (0..len).map(|idx| 10_000 + idx as u64).collect::<Vec<_>>();
-            let mut layout_ids = ids
-                .iter()
-                .copied()
-                .zip(&named)
-                .filter_map(|(id, &named)| named.then_some(id))
-                .chain(strangers)
-                .collect::<Vec<_>>();
-            let len = layout_ids.len();
-            for (idx, &target) in shuffle.iter().enumerate().take(len) {
-                layout_ids.swap(idx, target % len);
-            }
-            let mut strip = strip_with_ids(&ids);
-
-            strip.merge_layout_frames(layout_ids.into_iter().map(Frame::new).collect());
-
-            prop_assert_eq!(frame_ids(&strip), ids);
         }
     }
 

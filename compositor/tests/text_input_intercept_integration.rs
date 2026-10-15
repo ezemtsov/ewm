@@ -4,16 +4,12 @@
 
 use ewm_core::input::KeyboardAction;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{Fixture, TestClient};
+use ewm_core::testing::{Fixture, TestClient, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::Size;
 
 const HEAD: &str = "Virtual-1";
 const KEY_A: u32 = 30 + 8;
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
 
 fn pump(fix: &mut Fixture, emacs: &mut TestClient, app: &mut TestClient) {
     fix.roundtrip(emacs);

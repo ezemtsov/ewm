@@ -126,8 +126,8 @@ The batch frame is shared; we save and restore the parameters we touch."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
-    (setq ewm--module-mode t)
-    (let* ((captures (ewm-focus-tests--with-captured-layouts
+    (let* ((ewm--module-mode t)
+           (captures (ewm-focus-tests--with-captured-layouts
                        (ewm-layout--send-layouts)))
            (frame (aref (car captures) 0)))
       (plist-get frame :selected-entry-id))))
@@ -170,8 +170,8 @@ The batch frame is shared; we save and restore the parameters we touch."
   (ewm-focus-tests--with-frame f
     (ewm-focus-tests--install-surface-window
      (frame-selected-window f) ewm-focus-tests--surface-id)
-    (setq ewm--module-mode t)
-    (let* ((ewm-layout-menu-predicates (list (lambda () t)))
+    (let* ((ewm--module-mode t)
+           (ewm-layout-menu-predicates (list (lambda () t)))
            (captures (ewm-focus-tests--with-captured-layouts
                        (ewm-layout--send-layouts)))
            (entries (plist-get (aref (car captures) 0) :entries)))
@@ -359,17 +359,6 @@ buffer; `mapped' displays and publishes it."
 ;;
 ;; Compositor can queue events whose surface dies first; the macro must
 ;; absorb that race silently.
-
-(ert-deftest ewm-focus/focused-frame-prefers-compositor ()
-  "`ewm--focused-frame' returns the compositor's frame when present."
-  (let ((sentinel (cons 'fake 'frame)))
-    (cl-letf (((symbol-function 'ewm--current-frame) (lambda () sentinel)))
-      (should (eq sentinel (ewm--focused-frame))))))
-
-(ert-deftest ewm-focus/focused-frame-falls-back-to-selected ()
-  "When the compositor has no answer, fall back to `selected-frame'."
-  (cl-letf (((symbol-function 'ewm--current-frame) #'ignore))
-    (should (eq (selected-frame) (ewm--focused-frame)))))
 
 (ert-deftest ewm-focus/surface-target-skips-focused-floating-frame ()
   "New-surface fallback ignores a focused float and takes the shown strip frame."

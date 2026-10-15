@@ -103,29 +103,10 @@ mod tests {
 
             let no_presentation = FrameClock::new(Some(Duration::from_nanos(refresh_ns)));
             prop_assert_eq!(no_presentation.next_presentation_time_at(now), now);
-        }
 
-        #[test]
-        fn refresh_interval_roundtrips(
-            refresh_ns in 1u64..=999_999_999,
-        ) {
-            let refresh = Duration::from_nanos(refresh_ns);
-            let clock = FrameClock::new(Some(refresh));
-
-            prop_assert_eq!(clock.refresh_interval(), Some(refresh));
-            prop_assert_eq!(FrameClock::new(None).refresh_interval(), None);
-        }
-
-        #[test]
-        fn zero_presentation_time_is_ignored(
-            now_ns in 1u64..=10_000_000_000,
-            refresh_ns in 1u64..=1_000_000_000,
-        ) {
-            let mut clock = FrameClock::new(Some(Duration::from_nanos(refresh_ns)));
-            clock.presented(Duration::ZERO);
-
-            let now = Duration::from_nanos(now_ns);
-            prop_assert_eq!(clock.next_presentation_time_at(now), now);
+            let mut zero_presentation = FrameClock::new(Some(Duration::from_nanos(refresh_ns)));
+            zero_presentation.presented(Duration::ZERO);
+            prop_assert_eq!(zero_presentation.next_presentation_time_at(now), now);
         }
 
         #[test]

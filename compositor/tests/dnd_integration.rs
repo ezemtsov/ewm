@@ -1,8 +1,9 @@
-//! DnD grabs follow the pointer instead of pinning to their source, and the
-//! drop focuses its target.
+//! DnD grabs follow the pointer instead of pinning to their source, and the drop focuses its
+//! target. While Emacs tracks a drag source, a click grab on a frame's own surface hands the
+//! cross-program drag off to the DnD grab and leaves app-owned click grabs alone.
 
 use ewm_core::strip::Frame;
-use ewm_core::testing::Fixture;
+use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::{Event, LayoutEntry, LayoutEntryId};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Size;
@@ -12,10 +13,18 @@ const BTN_LEFT: u32 = 0x110;
 const APP_ENTRY: LayoutEntryId = LayoutEntryId::new(1).unwrap();
 const TEXT_ENTRY: LayoutEntryId = LayoutEntryId::new(2).unwrap();
 
-/// An Emacs frame filling the output: an app view on the left, a plain
-/// Emacs window on the right. Returns the fixture, the two surface ids and
-/// a drag icon surface belonging to the app.
-fn scene() -> (Fixture, u64, u64, WlSurface) {
+struct Scene {
+    fix: Fixture,
+    frame_client: TestClient,
+    app_client: TestClient,
+    frame_sid: u64,
+    app_sid: u64,
+    /// A drag icon surface belonging to the app.
+    icon: WlSurface,
+}
+
+/// An Emacs frame filling the output: an app view on the left, a plain Emacs window on the right.
+fn scene() -> Scene {
     let mut fix = Fixture::new().unwrap();
     let mut frame_client = fix.new_client().unwrap();
     let mut app_client = fix.new_client().unwrap();
@@ -56,39 +65,60 @@ fn scene() -> (Fixture, u64, u64, WlSurface) {
     fix.tile(HEAD, vec![frame]);
     fix.roundtrip(&mut frame_client);
     fix.roundtrip(&mut app_client);
-    (fix, app_sid, frame_sid, icon)
+    frame_client.drain_events();
+    app_client.drain_events();
+    Scene {
+        fix,
+        frame_client,
+        app_client,
+        frame_sid,
+        app_sid,
+        icon,
+    }
+}
+
+fn motions(fix: &mut Fixture, client: &mut TestClient) -> Vec<(f64, f64)> {
+    fix.roundtrip(client);
+    client
+        .drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            ClientEvent::PointerMotion { x, y } => Some((x, y)),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
 fn dnd_grab_follows_pointer_and_drop_focuses_target() {
-    let (mut fix, app_sid, frame_sid, icon) = scene();
+    let mut s = scene();
 
-    fix.pointer_motion_to(400.0, 450.0);
-    fix.pointer_button(BTN_LEFT, true);
-    assert_eq!(fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
-    fix.start_pointer_dnd(app_sid, Some(icon));
-    assert!(fix.ewm_ref().pointer.is_grabbed());
-    assert!(fix.ewm_ref().dnd_icon.is_some());
+    s.fix.pointer_motion_to(400.0, 450.0);
+    s.fix.pointer_button(BTN_LEFT, true);
+    assert_eq!(s.fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
+    s.fix.start_pointer_dnd(s.app_sid, Some(s.icon.clone()));
+    assert!(s.fix.ewm_ref().pointer.is_grabbed());
+    assert!(s.fix.ewm_ref().dnd_icon.is_some());
     // Focus-follows-mouse must stay quiet for the whole drag.
-    fix.ewm().focus_follows_mouse_mode = true;
-    fix.enable_event_capture();
+    s.fix.ewm().focus_follows_mouse_mode = true;
+    s.fix.enable_event_capture();
 
-    fix.pointer_motion_to(1200.0, 450.0);
-    assert_eq!(fix.pointer_focus_surface_id(), Some(frame_sid));
-    assert!(fix.ewm_ref().pointer.is_grabbed());
-    assert_eq!(fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
-    let events = fix.drain_events();
+    s.fix.pointer_motion_to(1200.0, 450.0);
+    assert_eq!(s.fix.pointer_focus_surface_id(), Some(s.frame_sid));
+    assert!(s.fix.ewm_ref().pointer.is_grabbed());
+    assert_eq!(s.fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
+    let events = s.fix.drain_events();
     assert!(
         !events.iter().any(|e| matches!(e, Event::Focus { .. })),
         "no focus change mid-drag: {events:?}"
     );
 
-    fix.pointer_button(BTN_LEFT, false);
-    assert!(!fix.ewm_ref().pointer.is_grabbed());
-    assert!(fix.ewm_ref().pending_drop.is_none());
-    assert!(fix.ewm_ref().dnd_icon.is_none());
-    assert_eq!(fix.ewm_ref().focused_entry_id, Some(TEXT_ENTRY));
-    let events = fix.drain_events();
+    s.fix.pointer_button(BTN_LEFT, false);
+    assert!(!s.fix.ewm_ref().pointer.is_grabbed());
+    assert!(s.fix.ewm_ref().pending_drop.is_none());
+    assert!(s.fix.ewm_ref().dnd_icon.is_none());
+    assert_eq!(s.fix.ewm_ref().focused_entry_id, Some(TEXT_ENTRY));
+    let events = s.fix.drain_events();
     assert!(
         events.iter().any(|e| matches!(
             e,
@@ -100,28 +130,49 @@ fn dnd_grab_follows_pointer_and_drop_focuses_target() {
 
 #[test]
 fn restarted_drag_keeps_its_icon() {
-    let (mut fix, app_sid, _, icon) = scene();
+    let mut s = scene();
 
-    fix.pointer_motion_to(400.0, 450.0);
-    fix.pointer_button(BTN_LEFT, true);
-    fix.start_pointer_dnd(app_sid, Some(icon.clone()));
+    s.fix.pointer_motion_to(400.0, 450.0);
+    s.fix.pointer_button(BTN_LEFT, true);
+    s.fix.start_pointer_dnd(s.app_sid, Some(s.icon.clone()));
     // The second grab cancels the first, which must not clear the new icon.
-    fix.start_pointer_dnd(app_sid, Some(icon));
-    assert!(fix.ewm_ref().pointer.is_grabbed());
-    assert!(fix.ewm_ref().dnd_icon.is_some());
+    s.fix.start_pointer_dnd(s.app_sid, Some(s.icon.clone()));
+    assert!(s.fix.ewm_ref().pointer.is_grabbed());
+    assert!(s.fix.ewm_ref().dnd_icon.is_some());
 
-    fix.pointer_button(BTN_LEFT, false);
-    assert!(fix.ewm_ref().dnd_icon.is_none());
+    s.fix.pointer_button(BTN_LEFT, false);
+    assert!(s.fix.ewm_ref().dnd_icon.is_none());
 }
 
 #[test]
-fn click_drag_still_pins_pointer_focus() {
-    let (mut fix, app_sid, _, _) = scene();
+fn drag_source_hands_off_to_the_dnd_grab() {
+    let mut s = scene();
+    s.fix.pointer_motion_to(1200.0, 450.0);
+    s.fix.pointer_button(BTN_LEFT, true);
+    s.fix.ewm().emacs_drag_source = true;
+    s.fix.pointer_motion_to(400.0, 450.0);
+    assert_eq!(motions(&mut s.fix, &mut s.frame_client).len(), 1);
 
-    fix.pointer_motion_to(400.0, 450.0);
-    fix.pointer_button(BTN_LEFT, true);
-    fix.pointer_motion_to(1200.0, 450.0);
-    assert_eq!(fix.pointer_focus_surface_id(), Some(app_sid));
-    fix.pointer_button(BTN_LEFT, false);
-    assert_eq!(fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
+    s.fix.start_pointer_dnd(s.frame_sid, None);
+    s.fix.pointer_motion_to(410.0, 450.0);
+    assert_eq!(s.fix.pointer_focus_surface_id(), Some(s.app_sid));
+
+    s.fix.pointer_button(BTN_LEFT, false);
+    assert!(!s.fix.ewm_ref().pointer.is_grabbed());
+    assert_eq!(s.fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
+}
+
+#[test]
+fn drag_source_leaves_app_click_grabs_alone() {
+    let mut s = scene();
+    s.fix.pointer_motion_to(400.0, 450.0);
+    s.fix.pointer_button(BTN_LEFT, true);
+    s.fix.roundtrip(&mut s.app_client);
+    s.app_client.drain_events();
+    s.fix.ewm().emacs_drag_source = true;
+
+    s.fix.pointer_motion_to(1200.0, 450.0);
+    assert_eq!(motions(&mut s.fix, &mut s.app_client), [(1200.0, 450.0)]);
+    assert_eq!(s.fix.pointer_focus_surface_id(), Some(s.app_sid));
+    s.fix.pointer_button(BTN_LEFT, false);
 }

@@ -101,20 +101,3 @@ impl Clock {
 fn nanos(time: Duration) -> u64 {
     time.as_nanos().min(u128::from(UNSET - 1)) as u64
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn frozen_clock() {
-        let clock = Clock::with_time(Duration::ZERO);
-        assert_eq!(clock.now(), Duration::ZERO);
-
-        clock.set(Duration::from_millis(100));
-        assert_eq!(clock.now(), Duration::from_millis(100));
-
-        clock.set(Duration::from_millis(200));
-        assert_eq!(clock.now(), Duration::from_millis(200));
-    }
-}

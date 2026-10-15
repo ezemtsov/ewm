@@ -1,12 +1,11 @@
 //! Tests for the JSON shown by `ewm-show-state`.
 
 use std::collections::HashSet;
-use std::num::NonZeroU64;
 
 use ewm_core::LayoutEntry;
 use ewm_core::cursor::CursorConfig;
 use ewm_core::strip::Frame;
-use ewm_core::testing::Fixture;
+use ewm_core::testing::{Fixture, nz};
 use serde_json::{Value, json};
 use smithay::utils::Size;
 
@@ -17,10 +16,6 @@ fn frame(surface_id: u64) -> Frame {
     let mut frame = Frame::new(surface_id);
     frame.width = 800.0;
     frame
-}
-
-fn nz(value: u64) -> NonZeroU64 {
-    NonZeroU64::new(value).unwrap()
 }
 
 fn frame_with_surface_entry(frame_id: u64, entry_id: u64, surface_id: u64) -> Frame {

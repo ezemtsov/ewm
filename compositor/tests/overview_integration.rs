@@ -2,8 +2,8 @@
 //! click-to-activate.
 
 use ewm_core::strip::Frame;
-use ewm_core::testing::Fixture;
-use ewm_core::{Event, LayoutEntry, LayoutEntryId};
+use ewm_core::testing::{Fixture, nz};
+use ewm_core::{Event, LayoutEntry};
 use smithay::utils::{Logical, Point, Size};
 
 const OUTPUT: &str = "HEAD-A";
@@ -11,10 +11,6 @@ const WIDTH: i32 = 1920;
 const HEIGHT: i32 = 1080;
 /// `BTN_LEFT` from linux/input-event-codes.h.
 const BTN_LEFT: u32 = 0x110;
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
 
 fn frame(surface_id: u64, width: f64) -> Frame {
     let mut frame = Frame::new(surface_id);

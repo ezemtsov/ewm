@@ -2,7 +2,7 @@
 
 use ewm_core::input::KeyboardAction;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, TestClient, Toplevel};
+use ewm_core::testing::{ClientEvent, Fixture, TestClient, Toplevel, nz};
 use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId};
 use smithay::input::keyboard::keysyms;
 use smithay::utils::Size;
@@ -37,10 +37,6 @@ enum FocusMode {
 enum Target {
     App,
     Emacs,
-}
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
 }
 
 const fn wl_key(keycode: u32) -> u32 {

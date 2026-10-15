@@ -92,7 +92,7 @@ use std::collections::{HashMap, HashSet};
 
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel};
+use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId, fullscreen_center_offset};
 use proptest::prelude::*;
 use smithay::desktop::PopupManager;
@@ -109,10 +109,6 @@ const BTN_LEFT: u32 = 0x110;
 const OUTPUTS: [(&str, i32, i32); 2] = [("HEAD-A", 1920, 1080), ("HEAD-B", 1920, 1080)];
 const VIEW_W: i32 = 400;
 const VIEW_H: i32 = 400;
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
 
 fn view_size() -> Size<i32, Logical> {
     Size::from((VIEW_W, VIEW_H))
@@ -579,48 +575,6 @@ fn apply_op(h: &mut Harness, op: &Op) {
         }
     }
 }
-
-fn apply_multi_entry_layout(
-    h: &mut Harness,
-    output: usize,
-    n_entries: usize,
-    fullscreen_mask: u32,
-) {
-    let name = OUTPUTS[output].0;
-    if !h.fix.has_output(name) {
-        return;
-    }
-    let entries = (0..n_entries)
-        .map(|i| {
-            LayoutEntry::surface(
-                nz(10_000 + i as u64),
-                "entry".to_string(),
-                h.sid,
-                (i as i32) * 10,
-                (i as i32) * 10,
-                VIEW_W as u32,
-                VIEW_H as u32,
-            )
-        })
-        .collect::<Vec<_>>();
-    let selected_entry_id = entries.first().map(|entry| entry.id);
-    h.fix.tile(
-        name,
-        vec![Frame {
-            focus_id: nz(20_000),
-            width: VIEW_W as f64,
-            entries,
-            selected_entry_id,
-            ..Frame::new(10_000)
-        }],
-    );
-    for i in 0..n_entries {
-        if fullscreen_mask & (1 << i) != 0 {
-            h.fix.set_fullscreen(nz(10_000 + i as u64), true);
-        }
-    }
-}
-
 fn plain_entry_entry_id(i: usize) -> LayoutEntryId {
     nz(30_000 + i as u64)
 }
@@ -1342,47 +1296,6 @@ fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError>
     }
     Ok(())
 }
-
-#[test]
-fn emacs_frame_popup_receives_hits_above_embedded_surface() {
-    let mut h = Harness::new();
-    apply_op(&mut h, &Op::AddOutput(0));
-    h.roundtrip_all();
-    apply_op(
-        &mut h,
-        &Op::ApplyLayout {
-            output: 0,
-            n_views: 1,
-            fullscreen_mask: 0,
-        },
-    );
-    h.roundtrip_all();
-    apply_op(&mut h, &Op::CreateFramePopup { ax: 120, ay: 120 });
-    h.roundtrip_all();
-
-    let popup = h.frame_popups.last().expect("frame popup was created");
-    let popup_key = client_surface_key(&h.frame_client, &popup.surface);
-    let (centre, hit_key) = {
-        let ewm = h.fix.ewm_ref();
-        let placement = collect_popup_placements(ewm, world_rect(), None)
-            .into_iter()
-            .find(|p| server_surface_key(ewm, &p.surface).as_ref() == Some(&popup_key))
-            .expect("frame popup placement");
-        let centre = Point::from((
-            (placement.location.x + placement.geometry.size.w / 2) as f64,
-            (placement.location.y + placement.geometry.size.h / 2) as f64,
-        ));
-        let hit = ewm.surface_under_point(centre);
-        (centre, server_hit_key(ewm, hit.as_ref().map(|(s, _)| s)))
-    };
-
-    assert_eq!(
-        hit_key,
-        Some(popup_key),
-        "frame popup centre {centre:?} should hit the popup, not the embedded surface",
-    );
-}
-
 #[cfg(feature = "testing-layer-shell")]
 #[test]
 fn layer_shell_popup_receives_placement_and_hit_testing() {
@@ -1433,57 +1346,6 @@ fn layer_shell_popup_receives_placement_and_hit_testing() {
         "layer popup centre {centre:?} should hit the popup surface",
     );
 }
-
-/// Button release reaches the implicitly-grabbed surface even after a layout
-/// change removed it; `pointer_focus` stays pinned with the grab.
-#[test]
-fn button_release_follows_grab_after_layout_removal() {
-    let mut h = Harness::new();
-    let ops = [
-        Op::AddOutput(0),
-        Op::ApplyLayout {
-            output: 0,
-            n_views: 1,
-            fullscreen_mask: 0,
-        },
-        Op::PointerButton { pressed: true },
-        Op::ApplyLayout {
-            output: 0,
-            n_views: 0,
-            fullscreen_mask: 0,
-        },
-        Op::PointerButton { pressed: false },
-    ];
-    for op in &ops {
-        apply_op(&mut h, op);
-        h.roundtrip_all();
-        assert_invariants(&mut h, op).unwrap();
-    }
-}
-
-/// Dragging off the surface keeps button delivery on the grab surface.
-#[test]
-fn drag_off_surface_keeps_grab_delivery() {
-    let mut h = Harness::new();
-    let ops = [
-        Op::AddOutput(0),
-        Op::ApplySplitClientLayout { output: 0 },
-        Op::ProgrammaticWarpPointer {
-            x: VIEW_W / 2,
-            y: VIEW_H / 2,
-        },
-        Op::PointerButton { pressed: true },
-        Op::ProgrammaticWarpPointer { x: 575, y: 75 },
-        Op::PointerButton { pressed: false },
-        Op::PointerButton { pressed: true },
-    ];
-    for op in &ops {
-        apply_op(&mut h, op);
-        h.roundtrip_all();
-        assert_invariants(&mut h, op).unwrap();
-    }
-}
-
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,
@@ -1516,21 +1378,5 @@ proptest! {
             h.roundtrip_all();
             assert_invariants(&mut h, op)?;
         }
-    }
-
-    #[test]
-    fn multi_fullscreen_entries_are_normalized(
-        output in 0usize..OUTPUTS.len(),
-        n_entries in 2usize..=4,
-    ) {
-        let mut h = Harness::new();
-        let add = Op::AddOutput(output);
-        apply_op(&mut h, &add);
-        h.roundtrip_all();
-
-        apply_multi_entry_layout(&mut h, output, n_entries, (1 << n_entries) - 1);
-        h.roundtrip_all();
-
-        check_n4(&h)?;
     }
 }

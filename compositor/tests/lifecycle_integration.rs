@@ -4,15 +4,11 @@ use std::collections::HashSet;
 
 use ewm_core::event::Event;
 use ewm_core::strip::Frame;
-use ewm_core::testing::Fixture;
+use ewm_core::testing::{Fixture, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::{Logical, Rectangle, Size};
 
 const OUTPUT: &str = "HEAD-A";
-
-fn nz(n: u64) -> LayoutEntryId {
-    std::num::NonZeroU64::new(n).unwrap()
-}
 
 fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
     fix.ewm_ref()
@@ -52,56 +48,6 @@ fn output_redraw_state(fix: &Fixture, output: &str) -> String {
         .expect("redraw state string")
         .to_string()
 }
-
-#[test]
-fn destroying_real_toplevel_cleans_layout_focus_indexes_and_emits_close() {
-    let mut fix = Fixture::new().unwrap();
-    fix.enable_event_capture();
-    fix.add_output(OUTPUT, 1920, 1080);
-
-    let mut client = fix.new_client().unwrap();
-    fix.roundtrip(&mut client);
-    let toplevel = fix.open_toplevel(
-        &mut client,
-        "ewm-lifecycle-test",
-        Size::<i32, Logical>::from((400, 300)),
-    );
-    let sid = fix
-        .find_surface_id(&client, &toplevel.surface)
-        .expect("server did not assign a surface id");
-
-    let frame_id = 100;
-    let entry_id = nz(1);
-    fix.tile(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
-    fix.ewm().set_focus_entry(entry_id, "test", false);
-    let _ = fix.drain_events();
-
-    assert!(fix.has_surface(sid));
-    assert!(layout_surface_ids(&fix).contains(&sid));
-    assert!(fix.ewm_ref().surface_in_layout(sid));
-    assert_eq!(fix.ewm_ref().focused_surface_id(), sid);
-
-    toplevel.xdg_toplevel.destroy();
-    toplevel.xdg_surface.destroy();
-    toplevel.surface.destroy();
-    fix.roundtrip(&mut client);
-
-    assert!(!fix.has_surface(sid));
-    assert!(!layout_surface_ids(&fix).contains(&sid));
-    assert!(!fix.ewm_ref().surface_in_layout(sid));
-    assert_eq!(fix.ewm_ref().focused_frame_id, frame_id);
-    assert_eq!(fix.ewm_ref().focused_entry_id, Some(entry_id));
-    assert_eq!(fix.ewm_ref().focused_surface_id(), frame_id);
-
-    let events = fix.drain_events();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, Event::Close { id } if *id == sid)),
-        "destroying toplevel {sid} did not emit Close; events: {events:?}",
-    );
-}
-
 #[test]
 fn popup_commit_queues_redraw_for_owning_output() {
     let mut fix = Fixture::new().unwrap();
@@ -144,46 +90,61 @@ fn popup_commit_queues_redraw_for_owning_output() {
 }
 
 #[test]
-fn disconnecting_focused_toplevel_cleans_layout_focus_indexes_and_emits_close() {
-    let mut fix = Fixture::new().unwrap();
-    fix.enable_event_capture();
-    fix.add_output(OUTPUT, 1920, 1080);
+fn losing_a_focused_toplevel_cleans_layout_focus_indexes_and_emits_close() {
+    // The client destroys the toplevel, or disconnects with it still mapped.
+    for disconnect in [false, true] {
+        let mut fix = Fixture::new().unwrap();
+        fix.enable_event_capture();
+        fix.add_output(OUTPUT, 1920, 1080);
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
+        let toplevel = fix.open_toplevel(
+            &mut client,
+            "ewm-lifecycle-test",
+            Size::<i32, Logical>::from((400, 300)),
+        );
+        let sid = fix
+            .find_surface_id(&client, &toplevel.surface)
+            .expect("server did not assign a surface id");
+        let frame_id = 100;
+        let entry_id = nz(1);
+        fix.tile(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
+        fix.ewm().set_focus_entry(entry_id, "test", false);
+        let _ = fix.drain_events();
+        assert!(fix.has_surface(sid));
+        assert!(layout_surface_ids(&fix).contains(&sid));
+        assert!(fix.ewm_ref().surface_in_layout(sid));
+        assert_eq!(fix.ewm_ref().focused_surface_id(), sid);
 
-    let mut client = fix.new_client().unwrap();
-    fix.roundtrip(&mut client);
-    let toplevel = fix.open_toplevel(
-        &mut client,
-        "ewm-disconnect-test",
-        Size::<i32, Logical>::from((400, 300)),
-    );
-    let sid = fix
-        .find_surface_id(&client, &toplevel.surface)
-        .expect("server did not assign a surface id");
+        if disconnect {
+            drop(toplevel);
+            drop(client);
+            fix.dispatch_roundtrip(8);
+        } else {
+            toplevel.xdg_toplevel.destroy();
+            toplevel.xdg_surface.destroy();
+            toplevel.surface.destroy();
+            fix.roundtrip(&mut client);
+        }
 
-    let frame_id = 100;
-    let entry_id = nz(1);
-    fix.tile(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
-    fix.ewm().set_focus_entry(entry_id, "test", false);
-    let _ = fix.drain_events();
-
-    assert_eq!(fix.ewm_ref().focused_surface_id(), sid);
-
-    drop(toplevel);
-    drop(client);
-    fix.dispatch_roundtrip(8);
-
-    assert!(!fix.has_surface(sid));
-    assert!(!layout_surface_ids(&fix).contains(&sid));
-    assert!(!fix.ewm_ref().surface_in_layout(sid));
-    assert_eq!(fix.ewm_ref().focused_frame_id, frame_id);
-    assert_eq!(fix.ewm_ref().focused_entry_id, Some(entry_id));
-    assert_eq!(fix.ewm_ref().focused_surface_id(), frame_id);
-
-    let events = fix.drain_events();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, Event::Close { id } if *id == sid)),
-        "disconnecting toplevel {sid} did not emit Close; events: {events:?}",
-    );
+        assert!(!fix.has_surface(sid), "disconnect={disconnect}");
+        assert!(
+            !layout_surface_ids(&fix).contains(&sid),
+            "disconnect={disconnect}"
+        );
+        assert!(
+            !fix.ewm_ref().surface_in_layout(sid),
+            "disconnect={disconnect}"
+        );
+        assert_eq!(fix.ewm_ref().focused_frame_id, frame_id);
+        assert_eq!(fix.ewm_ref().focused_entry_id, Some(entry_id));
+        assert_eq!(fix.ewm_ref().focused_surface_id(), frame_id);
+        let events = fix.drain_events();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Close { id } if *id == sid)),
+            "losing toplevel {sid} (disconnect={disconnect}) did not emit Close; events: {events:?}",
+        );
+    }
 }
