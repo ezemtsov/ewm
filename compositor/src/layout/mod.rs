@@ -478,7 +478,7 @@ impl Layout {
     }
 
     /// Hold `frames` until an output maps.
-    fn park(&mut self, frames: Frames) {
+    fn park(&mut self, mut frames: Frames) {
         // A parked frame has no floating space, so its drag is over.
         self.interactive_move = self.interactive_move.filter(|move_| {
             !frames
@@ -486,6 +486,11 @@ impl Layout {
                 .iter()
                 .any(|frame| frame.surface_id == move_.frame_id)
         });
+        // Parked frames show nothing.
+        for frame in frames.tiled.iter_mut().chain(frames.floating.iter_mut()) {
+            frame.mark_fullscreen(&|_| false);
+            frame.pinned_to = None;
+        }
         self.homeless.tiled.extend(frames.tiled);
         self.homeless.floating.extend(frames.floating);
     }
@@ -2136,6 +2141,8 @@ impl Ewm {
         if let Some(dst) = &moved.dst {
             self.reconcile_active_for_output(dst, moved.dst_prev_active);
         }
+        // Marks and pins follow the frames to their new strips.
+        self.reconcile_fullscreen();
     }
 
     fn move_frame_ids_between_outputs(&mut self, src: &Output, dst: &Output, ids: &[u64]) {
