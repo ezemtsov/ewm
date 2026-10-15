@@ -8,6 +8,7 @@ use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
 use ewm_core::{Event, LayoutEntry};
 use proptest::prelude::*;
 use smithay::utils::Size;
+use smithay::wayland::xdg_activation::XdgActivationToken;
 
 // The intercept list is process-wide, so tests run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -110,14 +111,15 @@ fn a_key_toggles_the_focused_view_fullscreen() {
 }
 
 #[test]
-fn a_key_spawns_a_command() {
+fn a_key_spawns_a_command_with_an_activation_token() {
     let _serial = SERIAL.lock().unwrap();
     let mut fix = fixture(1);
     let marker = std::env::temp_dir().join(format!("ewm-spawn-{}", std::process::id()));
     let _ = std::fs::remove_file(&marker);
+    let path = marker.to_str().unwrap();
     fix.set_intercepted_keys_from_lisp(&format!(
-        "[(:key \"F9\" :description \"<f9>\" :action (spawn :command (\"touch\" {:?})))]",
-        marker.to_str().unwrap()
+        "[(:key \"F9\" :description \"<f9>\" :action (spawn :command \
+         (\"sh\" \"-c\" \"printf %s $XDG_ACTIVATION_TOKEN > {path}.tmp && mv {path}.tmp {path}\")))]"
     ));
 
     tap(&mut fix, KEY_F9);
@@ -125,8 +127,14 @@ fn a_key_spawns_a_command() {
     while !marker.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(marker.exists(), "the spawned command never ran");
+    let token = XdgActivationToken::from(
+        std::fs::read_to_string(&marker).expect("the spawned command never ran"),
+    );
     let _ = std::fs::remove_file(&marker);
+    assert!(
+        fix.ewm().activation_state.data_for_token(&token).is_some(),
+        "compositor does not know the child's token {token:?}"
+    );
 }
 
 #[test]

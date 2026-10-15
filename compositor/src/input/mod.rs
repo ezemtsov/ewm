@@ -453,7 +453,10 @@ impl State {
                 self.ewm.hide_toggle();
                 self.refresh_pointer_after_scene_change(false);
             }
-            Action::Spawn { command } => crate::utils::spawning::spawn(command),
+            Action::Spawn { command } => {
+                let (token, _) = self.ewm.activation_state.create_external_token(None);
+                crate::utils::spawning::spawn(command, Some(token.clone()));
+            }
         }
     }
 

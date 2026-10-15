@@ -4,10 +4,14 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::{io, thread};
 
+use smithay::wayland::xdg_activation::XdgActivationToken;
 use tracing::warn;
 
 /// Spawns the command to run independently of the compositor.
-pub(crate) fn spawn<T: AsRef<OsStr> + Send + 'static>(command: Vec<T>) {
+pub(crate) fn spawn<T: AsRef<OsStr> + Send + 'static>(
+    command: Vec<T>,
+    token: Option<XdgActivationToken>,
+) {
     if command.is_empty() {
         return;
     }
@@ -17,7 +21,7 @@ pub(crate) fn spawn<T: AsRef<OsStr> + Send + 'static>(command: Vec<T>) {
         .name("Command Spawner".to_owned())
         .spawn(move || {
             let (command, args) = command.split_first().unwrap();
-            spawn_sync(command, args);
+            spawn_sync(command, args, token);
         });
 
     if let Err(err) = res {
@@ -25,7 +29,11 @@ pub(crate) fn spawn<T: AsRef<OsStr> + Send + 'static>(command: Vec<T>) {
     }
 }
 
-fn spawn_sync(command: impl AsRef<OsStr>, args: impl IntoIterator<Item = impl AsRef<OsStr>>) {
+fn spawn_sync(
+    command: impl AsRef<OsStr>,
+    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    token: Option<XdgActivationToken>,
+) {
     let command = command.as_ref();
     let mut process = Command::new(command);
     process
@@ -33,6 +41,11 @@ fn spawn_sync(command: impl AsRef<OsStr>, args: impl IntoIterator<Item = impl As
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
+    if let Some(token) = token.as_ref() {
+        process.env("XDG_ACTIVATION_TOKEN", token.as_str());
+        process.env("DESKTOP_STARTUP_ID", token.as_str());
+    }
 
     unsafe {
         // Double-fork to avoid having to waitpid the child.
