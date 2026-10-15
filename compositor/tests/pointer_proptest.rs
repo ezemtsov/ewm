@@ -352,7 +352,7 @@ impl Harness {
         let toplevel_id = self.toplevel.surface.id().protocol_id();
         for ev in events {
             match ev {
-                ClientEvent::ToplevelConfigure { width, height } => {
+                ClientEvent::ToplevelConfigure { width, height, .. } => {
                     self.last_configure = Some((*width, *height));
                 }
                 ClientEvent::SurfaceEnter { surface, output }

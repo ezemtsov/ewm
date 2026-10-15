@@ -74,8 +74,10 @@ pub enum ClientEvent {
         group: u32,
     },
     ToplevelConfigure {
+        toplevel: xdg_toplevel::XdgToplevel,
         width: i32,
         height: i32,
+        fullscreen: bool,
     },
     SurfaceEnter {
         surface: wl_surface::WlSurface,
@@ -196,7 +198,7 @@ impl TestClient {
         self.drain_events()
             .into_iter()
             .filter_map(|event| match event {
-                ClientEvent::ToplevelConfigure { width, height } => Some((width, height)),
+                ClientEvent::ToplevelConfigure { width, height, .. } => Some((width, height)),
                 _ => None,
             })
             .collect()
@@ -717,16 +719,28 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for ClientState {
 impl Dispatch<xdg_toplevel::XdgToplevel, ()> for ClientState {
     fn event(
         state: &mut Self,
-        _: &xdg_toplevel::XdgToplevel,
+        toplevel: &xdg_toplevel::XdgToplevel,
         event: xdg_toplevel::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let xdg_toplevel::Event::Configure { width, height, .. } = event {
-            state
-                .events
-                .push(ClientEvent::ToplevelConfigure { width, height });
+        if let xdg_toplevel::Event::Configure {
+            width,
+            height,
+            states,
+        } = event
+        {
+            let fullscreen = states
+                .chunks_exact(4)
+                .map(|state| u32::from_ne_bytes(state.try_into().unwrap()))
+                .any(|state| state == xdg_toplevel::State::Fullscreen as u32);
+            state.events.push(ClientEvent::ToplevelConfigure {
+                toplevel: toplevel.clone(),
+                width,
+                height,
+                fullscreen,
+            });
         }
     }
 }
