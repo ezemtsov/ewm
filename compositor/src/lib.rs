@@ -4726,17 +4726,19 @@ impl Ewm {
         });
         // A new emacs frame joins its strip inactive. Tell lisp so it can
         // freeze it, after Event::New so ewm-surface-id is already bound on
-        // the lisp side.
+        // the lisp side. The overview shows every frame, a new one too.
         if is_emacs {
             let is_active = target_output
                 .as_ref()
                 .and_then(|output| self.layout.active_frame_id(output))
                 == Some(id);
-            self.queue_event(if frame_is_floating || is_active {
-                Event::FrameShown { id }
-            } else {
-                Event::FrameHidden { id }
-            });
+            self.queue_event(
+                if frame_is_floating || is_active || self.overview.is_active() {
+                    Event::FrameShown { id }
+                } else {
+                    Event::FrameHidden { id }
+                },
+            );
         }
         // Sent after New so the lisp side has assigned ewm-surface-id by the
         // time the Focus event is processed.

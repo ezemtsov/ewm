@@ -2116,9 +2116,19 @@ impl Ewm {
         }
         self.refresh_primary_assignments();
         if let Some(src) = &moved.src {
-            if let Some(id) = moved.src_prev_active
-                && moved.ids.contains(&id)
-            {
+            // The overview keeps a moved frame visible. A parked one has no output to show it.
+            let hidden: Vec<u64> = if !self.overview.is_active() {
+                moved
+                    .src_prev_active
+                    .filter(|id| moved.ids.contains(id))
+                    .into_iter()
+                    .collect()
+            } else if moved.dst.is_none() {
+                moved.ids.iter().copied().collect()
+            } else {
+                Vec::new()
+            };
+            for id in hidden {
                 self.queue_event(Event::FrameHidden { id });
             }
             self.reconcile_active_for_output(src, moved.src_prev_active);
