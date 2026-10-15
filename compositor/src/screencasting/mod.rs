@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use crate::cursor::CursorTextureCache;
 use crate::dbus::{self, CastTarget, ScreenCastToCompositor};
 use crate::render::{EwmRenderElement, render_cursor_elements};
+use crate::utils::fill_scale;
 use crate::{Ewm, LayoutEntry, LayoutEntryId, State};
 
 fn output_cast_cursor_location(
@@ -405,9 +406,7 @@ impl Ewm {
                 .to_physical_precise_round(output_scale);
             let constrain = Rectangle::from_size(entry_size);
             let mut elements = Vec::new();
-            if let Some(element_scale) =
-                crate::render::view_scale(geometry.entry, source_size, constrain.size)
-            {
+            if let Some(element_scale) = view_scale(geometry.entry, source_size, constrain.size) {
                 crate::render::push_view_elements(
                     &mut elements,
                     window,
@@ -685,6 +684,19 @@ impl Ewm {
         }
 
         self.casting.casts = casts;
+    }
+}
+
+/// A view's scale in `constrain`: native when `entry` is primary, else filling it.
+fn view_scale(
+    entry: &LayoutEntry,
+    source: Size<i32, Physical>,
+    constrain: Size<i32, Physical>,
+) -> Option<Scale<f64>> {
+    if entry.primary() {
+        Some(Scale::from(1.))
+    } else {
+        fill_scale(source, constrain)
     }
 }
 

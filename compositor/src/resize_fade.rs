@@ -242,14 +242,14 @@ impl Ewm {
             let was = before
                 .iter()
                 .find(|was| was.entry == now.entry && was.output == now.output)?;
-            (size_change(was.rect.size, now.rect.size) > RESIZE_FADE_THRESHOLD).then(|| {
+            (size_change(was.rect.size, now.rect.size) > RESIZE_FADE_THRESHOLD).then_some(
                 FadingView {
                     entry: now.entry,
                     window: now.window,
                     scale: was.scale,
                     at: Some(was.rect),
-                }
-            })
+                },
+            )
         })
     }
 }

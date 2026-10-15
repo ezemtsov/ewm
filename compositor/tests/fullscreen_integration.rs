@@ -9,7 +9,7 @@ use ewm_core::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
 use ewm_core::{Event, LayoutEntry};
 use smithay::output::Output;
-use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::utils::{Logical, Point, Size};
 
 const OUTPUT: &str = "HEAD-A";
 const CLIENT_W: u32 = 400;

@@ -61,7 +61,6 @@ use crate::shadow_style::{BackgroundEffect, Blur, CornerRadius};
 use crate::snapshot::Snapshot;
 use crate::surface::SurfaceState;
 use crate::texture::TextureRenderElement;
-use crate::utils::fill_scale;
 use crate::{Ewm, LayoutEntry, State, tracy_span};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
@@ -547,19 +546,6 @@ fn frame_bounds(
                 .to_physical_precise_round(scale)
         });
     Rectangle::new(slot.loc, size)
-}
-
-/// A view's scale in `constrain`: native when `entry` is primary, else filling it.
-pub(crate) fn view_scale(
-    entry: &LayoutEntry,
-    source: Size<i32, Physical>,
-    constrain: Size<i32, Physical>,
-) -> Option<Scale<f64>> {
-    if entry.primary() {
-        Some(Scale::from(1.))
-    } else {
-        fill_scale(source, constrain)
-    }
 }
 
 /// A view's elements, scaled and cropped, over the old contents `under`, over the blur.
