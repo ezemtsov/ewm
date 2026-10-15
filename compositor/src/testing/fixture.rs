@@ -31,11 +31,20 @@ use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 pub struct Fixture {
     event_loop: EventLoop<'static, State>,
     state: State,
+    /// Server ends of the client sockets, hung up on drop.
+    client_ends: Vec<UnixStream>,
     owns_event_channel: bool,
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        // Hang up the clients so their objects are destroyed, not leaked with the display.
+        for end in &self.client_ends {
+            let _ = end.shutdown(std::net::Shutdown::Both);
+        }
+        self.event_loop
+            .dispatch(Some(Duration::ZERO), &mut self.state)
+            .ok();
         if self.owns_event_channel {
             crate::module::clear_event_channel();
         }
@@ -76,6 +85,7 @@ impl Fixture {
         Ok(Self {
             event_loop,
             state,
+            client_ends: Vec::new(),
             owns_event_channel: false,
         })
     }
@@ -84,6 +94,7 @@ impl Fixture {
     /// returning a `TestClient` on the other end. Roundtrip after to bind globals.
     pub fn new_client(&mut self) -> Result<TestClient, Box<dyn std::error::Error>> {
         let (server_end, client_end) = UnixStream::pair()?;
+        self.client_ends.push(server_end.try_clone()?);
         let server_client = ClientState::insert(&mut self.state.ewm.display_handle, server_end)?;
         TestClient::new(client_end, server_client.id())
     }
@@ -91,6 +102,7 @@ impl Fixture {
     /// Like `new_client`, but tagged as the portal backend from the service channel.
     pub fn new_portal_client(&mut self) -> Result<TestClient, Box<dyn std::error::Error>> {
         let (server_end, client_end) = UnixStream::pair()?;
+        self.client_ends.push(server_end.try_clone()?);
         let server_client = self
             .state
             .ewm
