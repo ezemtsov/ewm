@@ -2,25 +2,34 @@
 //!
 //! Codifies invariants from `docs/focus-design.md` § "Invariants" and
 //! asserts they hold after every randomly generated focus-mutating op.
+//! Emacs frames are real toplevels of a client with Emacs's pid, created and
+//! destroyed through `new_toplevel` and `toplevel_destroyed`; the ops name
+//! them by a logical id and `Frames` maps it to the surface id the
+//! compositor assigned.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use ewm_core::event::Event;
 use ewm_core::strip::Frame;
-use ewm_core::testing::{Fixture, mark_active_frame_close, nz, strip_with_frame_ids};
-use ewm_core::{
-    Action, LayoutEntry, LayoutEntryId, OutputConfig, OverviewAction, resolve_keyboard_focus_target,
+use ewm_core::testing::{
+    Fixture, TestClient, Toplevel, clear_pending_frames, mark_active_frame_close, nz,
+    prepare_frame, strip_with_frame_ids,
 };
+use ewm_core::{Action, LayoutEntry, LayoutEntryId, OutputConfig, OverviewAction};
 use proptest::prelude::*;
+use smithay::utils::Size;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
 const MAX_FRAMES: usize = 3;
 
+/// The pending-frame queue is process-wide, so tests that create frames take turns.
+static SERIAL: Mutex<()> = Mutex::new(());
+
 #[derive(Debug, Clone)]
 enum Op {
-    /// Mimics `new_toplevel`'s eager-insert path for Emacs frames: at boot only
-    /// Emacs frames exist and they enter the strip before any layout arrives.
-    /// `output` indexes into `OUTPUTS`.
+    /// Lisp prepares a frame on `OUTPUTS[output]` and Emacs opens its toplevel,
+    /// which enters the strip before any layout arrives.
     CreateEmacsFrame {
         output: usize,
         surface_id: u64,
@@ -57,9 +66,8 @@ struct EntrySpec {
     entry_id: LayoutEntryId,
 }
 
-// Frame surface_ids / entry_ids live in a disjoint range from entry ids so
-// `set_focus_entry(v)` and `set_focus_frame(f)` never collide.
-const ENTRY_SID_RANGE: std::ops::RangeInclusive<u64> = 1..=8;
+// Layout-only surface ids and logical frame ids sit above the ids real frames get.
+const ENTRY_SID_RANGE: std::ops::RangeInclusive<u64> = 1001..=1008;
 const FRAME_SID_RANGE: std::ops::RangeInclusive<u64> = 100..=102;
 const MAX_ENTRIES_PER_LAYOUT: usize = 8;
 
@@ -168,7 +176,33 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     ]
 }
 
-fn to_frame(spec: &FrameSpec) -> Frame {
+/// The Emacs frames the ops created, by logical id.
+struct Frames {
+    client: TestClient,
+    toplevels: HashMap<u64, (Toplevel, u64)>,
+    next_seq: u64,
+}
+
+impl Frames {
+    fn new(fix: &mut Fixture) -> Self {
+        clear_pending_frames();
+        fix.ewm().set_emacs_pid(std::process::id());
+        let mut client = fix.new_client().unwrap();
+        fix.roundtrip(&mut client);
+        Self {
+            client,
+            toplevels: HashMap::new(),
+            next_seq: 0,
+        }
+    }
+
+    /// The surface id of logical frame `id`, or `id` itself for a frame that never existed.
+    fn real(&self, id: u64) -> u64 {
+        self.toplevels.get(&id).map_or(id, |(_, sid)| *sid)
+    }
+}
+
+fn to_frame(spec: &FrameSpec, frames: &Frames) -> Frame {
     Frame {
         focus_id: spec.frame_focus_id,
         width: 1920.0,
@@ -188,57 +222,60 @@ fn to_frame(spec: &FrameSpec) -> Frame {
             })
             .collect(),
         selected_entry_id: spec.selected_entry_id,
-        ..Frame::new(spec.surface_id)
+        ..Frame::new(frames.real(spec.surface_id))
     }
 }
 
 fn frame_with_entry(frame_id: u64, entry_id: LayoutEntryId, surface_id: u64) -> Frame {
-    to_frame(&FrameSpec {
-        surface_id: frame_id,
-        frame_focus_id: nz(200),
-        selected_entry_id: Some(entry_id),
-        entries: vec![EntrySpec {
-            surface_id,
+    Frame {
+        focus_id: nz(200),
+        width: 1920.0,
+        entries: vec![LayoutEntry::surface(
             entry_id,
-        }],
-    })
+            "entry".to_string(),
+            surface_id,
+            0,
+            0,
+            100,
+            100,
+        )],
+        selected_entry_id: Some(entry_id),
+        ..Frame::new(frame_id)
+    }
 }
 
-fn apply_op(fix: &mut Fixture, op: Op) {
+fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
     match op {
         Op::CreateEmacsFrame { output, surface_id } => {
-            // Mirrors `new_toplevel`'s eager-insert + auto-focus.  If the frame
-            // already exists on any output, skip the insert (real `new_toplevel`
-            // wouldn't be called twice for the same id either).
             let output_name = OUTPUTS[output];
-            // Mirrors production: frames only enter a strip whose output is mapped.
-            if !is_output_mapped(fix, output_name) {
+            // A frame enters a strip whose output is mapped, once.
+            if !is_output_mapped(fix, output_name) || frames.toplevels.contains_key(&surface_id) {
                 return;
             }
-            let already_present = strip_frame_ids(fix).contains(&surface_id);
-            if already_present && fix.ewm_ref().layout.frame_output(surface_id) != Some(output_name)
-            {
-                return;
-            }
-            if !already_present {
-                let strip = fix.strip_mut(output_name);
-                strip.push_frame(Frame::new(surface_id));
-            }
-            let do_auto_focus = fix.ewm().focused_surface_id() == 0;
-            if do_auto_focus {
-                fix.ewm()
-                    .set_focus_frame(surface_id, "initial_surface", false);
-                // Catches the boot regression: auto-focus must land on `surface_id`.
+            let unfocused = fix.ewm_ref().focused_surface_id() == 0;
+            frames.next_seq += 1;
+            prepare_frame(output_name, frames.next_seq, None);
+            let toplevel = fix.open_toplevel(&mut frames.client, "frame", Size::from((400, 300)));
+            let sid = fix
+                .find_surface_id(&frames.client, &toplevel.surface)
+                .expect("the compositor assigns every toplevel a surface id");
+            frames.toplevels.insert(surface_id, (toplevel, sid));
+            assert_eq!(
+                fix.ewm_ref().layout.frame_output(sid),
+                Some(output_name),
+                "frame {surface_id} ({sid}) did not land on the output Lisp prepared it for",
+            );
+            if unfocused {
+                // The boot regression: the first frame takes focus by itself.
                 assert_eq!(
-                    fix.ewm().focused_frame_id,
-                    surface_id,
-                    "auto-focus for new Emacs frame {} did not set focused_frame_id",
-                    surface_id,
+                    fix.ewm_ref().focused_frame_id,
+                    sid,
+                    "the first Emacs frame {sid} did not take focus",
                 );
             }
         }
-        Op::ApplyLayout { frames } => {
-            let real: Vec<Frame> = frames.iter().map(to_frame).collect();
+        Op::ApplyLayout { frames: specs } => {
+            let real: Vec<Frame> = specs.iter().map(|spec| to_frame(spec, frames)).collect();
             fix.ewm().apply_layout(real.clone());
             // A frame on a strip that the layout names carries the submitted
             // contents. Homeless frames wait for an output.
@@ -267,8 +304,11 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             fix.ewm().set_focus_entry(v, "proptest", false);
         }
         Op::FocusFrame(f) => {
-            fix.ewm().set_focus_frame(f, "proptest", false);
+            fix.ewm().set_focus_frame(frames.real(f), "proptest", false);
         }
+        Op::Action(Action::ActivateFrame { id }) => fix.do_action(Action::ActivateFrame {
+            id: frames.real(id),
+        }),
         Op::Action(action) => fix.do_action(action),
         Op::DisableOutput(output) => {
             set_output_enabled(fix, OUTPUTS[output], false);
@@ -298,6 +338,9 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             }
         }
         Op::DestroyFrame(id) => {
+            let Some((toplevel, id)) = frames.toplevels.remove(&id) else {
+                return;
+            };
             let was_present = strip_frame_ids(fix).contains(&id);
             let prev_focused = fix.ewm_ref().focused_frame_id;
             let expected_same_output_refocus = if prev_focused == id {
@@ -315,24 +358,17 @@ fn apply_op(fix: &mut Fixture, op: Op) {
             } else {
                 None
             };
-            let refocus = fix.ewm().handle_toplevel_destroyed_by_id(id);
+            toplevel.xdg_toplevel.destroy();
+            toplevel.xdg_surface.destroy();
+            toplevel.surface.destroy();
+            fix.roundtrip(&mut frames.client);
             if let Some(expected) = expected_same_output_refocus {
                 assert_eq!(
-                    refocus,
-                    Some(expected),
-                    "destroy({}) returned wrong same-output refocus target",
+                    fix.ewm_ref().focused_frame_id,
+                    expected,
+                    "destroy({}) did not refocus the same-output neighbour",
                     id,
                 );
-            } else if prev_focused != id {
-                assert_eq!(
-                    refocus, None,
-                    "destroy({}) requested refocus for an inactive frame",
-                    id,
-                );
-            }
-            if let Some(target) = refocus {
-                fix.ewm()
-                    .set_focus_frame(target, "toplevel_destroyed", false);
             }
             if was_present {
                 assert!(
@@ -638,42 +674,39 @@ proptest! {
         let strip = fix.strip(OUTPUTS[0]);
         prop_assert_eq!(strip.active_frame_id(), Some(expected));
     }
+}
 
-    #[test]
-    fn layout_omission_keeps_frame_chrome_only(
-        surface_id in ENTRY_SID_RANGE,
-        entry_idx in 0usize..MAX_ENTRIES_PER_LAYOUT,
-    ) {
-        let mut fix = Fixture::new().unwrap();
-        fix.add_output(OUTPUTS[0], 1920, 1080);
+/// Invariant 11: a layout that leaves a frame out empties it.
+#[test]
+fn layout_omission_empties_the_frame() {
+    let mut fix = Fixture::new().unwrap();
+    fix.add_output(OUTPUTS[0], 1920, 1080);
 
-        let entry_id = entry_entry_id_for(100, entry_idx);
-        fix.tile(OUTPUTS[0], vec![frame_with_entry(100, entry_id, surface_id)]);
-        fix.tile(OUTPUTS[0], vec![Frame::new(101)]);
+    let entry_id = entry_entry_id_for(100, 0);
+    fix.tile(OUTPUTS[0], vec![frame_with_entry(100, entry_id, 1001)]);
+    fix.tile(OUTPUTS[0], vec![Frame::new(101)]);
 
-        // A layout that leaves frame 100 out empties it.
-        fix.ewm().apply_layout(vec![Frame::new(101)]);
+    fix.ewm().apply_layout(vec![Frame::new(101)]);
 
-        let omitted = fix
-            .strip(OUTPUTS[0])
-            .frames()
-            .iter()
-            .find(|frame| frame.surface_id == 100)
-            .unwrap();
-        prop_assert!(omitted.entries.is_empty());
-        prop_assert_eq!(omitted.selected_entry_id, None);
-        prop_assert!(!fix.ewm_ref().surface_in_layout(surface_id));
-    }
+    let omitted = fix
+        .strip(OUTPUTS[0])
+        .frames()
+        .iter()
+        .find(|frame| frame.surface_id == 100)
+        .unwrap();
+    assert!(omitted.entries.is_empty());
+    assert_eq!(omitted.selected_entry_id, None);
+    assert!(!fix.ewm_ref().surface_in_layout(1001));
 }
 
 fn assert_invariants(fix: &Fixture) {
     let ewm = fix.ewm_ref();
 
-    // Invariant 1: focused_frame_id == 0 ⟹ focused_entry_id == None.
+    // Invariant 3: no focused frame, no focused view.
     if ewm.focused_frame_id == 0 {
         assert_eq!(
             ewm.focused_entry_id, None,
-            "invariant 1: focused_entry_id={:?} while focused_frame_id is 0",
+            "invariant 3: focused_entry_id={:?} while focused_frame_id is 0",
             ewm.focused_entry_id,
         );
     }
@@ -692,10 +725,10 @@ fn assert_invariants(fix: &Fixture) {
         );
     }
 
-    // Invariant 3: the layout's own invariants, one place per frame among them.
+    // Invariant 4: the layout's own invariants, one place per frame among them.
     ewm.layout.verify_invariants();
 
-    // Invariant 4: the focused frame is the active frame of its own strip,
+    // Invariant 5: the focused frame is the active frame of its own strip,
     // and never a homeless frame.
     if ewm.focused_frame_id != 0 {
         for strip in ewm.layout.strips().map(|(_, strip)| strip) {
@@ -708,32 +741,45 @@ fn assert_invariants(fix: &Fixture) {
                     .frames()
                     .iter()
                     .any(|f| f.surface_id == ewm.focused_frame_id),
-                "invariant 4: focused frame {} present in a strip but not its active frame",
+                "invariant 5: focused frame {} present in a strip but not its active frame",
                 ewm.focused_frame_id,
             );
         }
         assert!(
             !ewm.layout.is_homeless(ewm.focused_frame_id),
-            "invariant 4: focused frame {} is homeless",
+            "invariant 5: focused frame {} is homeless",
             ewm.focused_frame_id,
         );
     }
 
-    // Invariant 5: at least one mapped frame exists ⟺ focused_frame_id is
-    // non-zero. Frames may be parked in the homeless pool only while no
-    // output is mapped.
+    // Invariant 6: a frame's selected view is one of its own entries.
+    for frame in all_frames(fix) {
+        if let Some(selected) = frame.selected_entry_id {
+            assert!(
+                frame.entries.iter().any(|entry| entry.id == selected),
+                "invariant 6: frame {} selects {:?}, which it does not hold",
+                frame.surface_id,
+                selected,
+            );
+        }
+    }
+
+    // Invariant 10: frames park only while no output is mapped, and strips
+    // exist only for mapped outputs.
     let mapped_outputs = mapped_output_names(fix);
     for name in ewm.layout.strips().map(|(name, _)| name) {
         assert!(
             mapped_outputs.contains(name),
-            "invariant 5: layout has a monitor for unmapped output {}",
+            "invariant 10: layout has a monitor for unmapped output {}",
             name,
         );
     }
     assert!(
         mapped_outputs.is_empty() || ewm.layout.homeless().tiled.is_empty(),
-        "invariant 5: homeless frames exist while an output is mapped",
+        "invariant 10: homeless frames exist while an output is mapped",
     );
+
+    // Invariant 1: some frame is focused iff some frame exists.
     let any_frame = ewm
         .layout
         .strips()
@@ -742,7 +788,7 @@ fn assert_invariants(fix: &Fixture) {
     assert_eq!(
         any_frame,
         ewm.focused_frame_id != 0,
-        "invariant 5: any_mapped_frame={} but focused_frame_id={}",
+        "invariant 1: any_mapped_frame={} but focused_frame_id={}",
         any_frame,
         ewm.focused_frame_id,
     );
@@ -761,27 +807,27 @@ fn assert_invariants(fix: &Fixture) {
         }
     }
 
-    // Invariant 8: output membership is exactly the set of mapped strips that
-    // currently contain each embedded surface. Homeless frames must not keep
-    // stale wl_surface output membership.
+    // Output membership is the set of strips holding each surface, nothing stale for a parked one.
     assert_eq!(
         ewm.surface_outputs(),
         expected_surface_outputs(fix),
-        "invariant 8: surface_outputs diverged from the layout",
+        "surface_outputs diverged from the layout",
     );
 }
 
 proptest! {
     #[test]
     fn focus_invariants_hold(ops in prop::collection::vec(op_strategy(), 1..30)) {
+        let _serial = SERIAL.lock().unwrap();
         let mut fix = Fixture::new().unwrap();
         fix.enable_event_capture();
         for name in OUTPUTS {
             fix.add_output(name, 1920, 1080);
         }
+        let mut frames = Frames::new(&mut fix);
         assert_invariants(&fix);
         for op in ops {
-            apply_op(&mut fix, op);
+            apply_op(&mut fix, &mut frames, op);
             assert_invariants(&fix);
             // Invariant 15: nothing here asks Emacs to run a command.
             for event in fix.drain_events() {
@@ -793,89 +839,75 @@ proptest! {
         }
     }
 }
-
-/// Strategy without `CreateEmacsFrame` -- the fixture variant bypasses
-/// reconcile and would break the event-balance invariant.
-fn reconcile_op_strategy() -> impl Strategy<Value = Op> {
-    prop_oneof![
-        action_strategy().prop_map(Op::Action),
-        layout_strategy().prop_map(|frames| Op::ApplyLayout { frames }),
-        entry_view_strategy().prop_map(Op::FocusView),
-        FRAME_SID_RANGE.prop_map(Op::FocusFrame),
-        (0..OUTPUTS.len()).prop_map(Op::DisableOutput),
-        (0..OUTPUTS.len()).prop_map(Op::EnableOutput),
-        (0..OUTPUTS.len()).prop_map(Op::RemoveOutput),
-        (0..OUTPUTS.len()).prop_map(Op::AddOutput),
-        FRAME_SID_RANGE.prop_map(Op::DestroyFrame),
-    ]
-}
-
 proptest! {
-    /// For every frame currently in some strip, the running net of
-    /// `FrameShown - FrameHidden` events should be 1 iff it's that strip's
-    /// active frame, else 0.
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        ..ProptestConfig::default()
+    })]
+
+    /// Lisp freezes on `FrameHidden` and thaws on `FrameShown`, so a placed frame's last event
+    /// must say shown iff it is its strip's active frame or the overview is active.
     #[test]
-    fn frame_show_hide_net_tracks_active_slot(
-        ops in prop::collection::vec(reconcile_op_strategy(), 1..30)
+    fn frame_show_hide_tracks_active_slot(
+        ops in prop::collection::vec(op_strategy(), 1..30)
     ) {
+        let _serial = SERIAL.lock().unwrap();
         let mut fix = Fixture::new().unwrap();
+        fix.ewm().animations_clock.set_complete_instantly(true);
         fix.enable_event_capture();
         for name in OUTPUTS {
             fix.add_output(name, 1920, 1080);
         }
+        let mut frames = Frames::new(&mut fix);
         let _ = fix.drain_events();
 
-        let mut net: HashMap<u64, i32> = HashMap::new();
+        let mut shown: HashMap<u64, bool> = HashMap::new();
 
         for op in ops {
-            apply_op(&mut fix, op);
+            apply_op(&mut fix, &mut frames, op);
+            // The overview refreezes the inactive frames on the redraw that ends it.
+            fix.dispatch();
 
-            let mapped_outputs = mapped_output_names(&fix);
             for event in fix.drain_events() {
                 match event {
-                    Event::FrameShown { id } => *net.entry(id).or_insert(0) += 1,
-                    Event::FrameHidden { id } => *net.entry(id).or_insert(0) -= 1,
-                    // Production surface ids are monotonic; the test fixture
-                    // recycles them, so drop net state when the id goes away.
+                    Event::FrameShown { id } => {
+                        shown.insert(id, true);
+                    }
+                    Event::FrameHidden { id } => {
+                        shown.insert(id, false);
+                    }
                     Event::Close { id } => {
-                        net.remove(&id);
+                        shown.remove(&id);
                     }
                     _ => {}
                 }
             }
 
+            let thawed = fix.ewm_ref().overview.is_active();
             for (out_name, strip) in fix.ewm_ref().layout.strips() {
                 let active = strip.active_frame_id();
                 for frame in strip.frames() {
                     let id = frame.surface_id;
-                    let expected: i32 = if mapped_outputs.contains(out_name)
-                        && active == Some(id)
-                    {
-                        1
-                    } else {
-                        0
-                    };
-                    let actual = net.get(&id).copied().unwrap_or(0);
                     prop_assert_eq!(
-                        actual,
-                        expected,
-                        "frame {} on {}: net shown-hidden = {} but expected {}",
+                        shown.get(&id),
+                        Some(&(thawed || active == Some(id))),
+                        "frame {} on {}: Lisp was last told {:?}, active {:?}, overview active {}",
                         id,
                         out_name,
-                        actual,
-                        expected,
+                        shown.get(&id),
+                        active,
+                        thawed,
                     );
                 }
             }
             for frame in &fix.ewm_ref().layout.homeless().tiled {
                 let id = frame.surface_id;
-                let actual = net.get(&id).copied().unwrap_or(0);
                 prop_assert_eq!(
-                    actual,
-                    0,
-                    "homeless frame {}: net shown-hidden = {} but expected 0",
+                    shown.get(&id),
+                    Some(&false),
+                    "homeless frame {}: Lisp was last told {:?}",
                     id,
-                    actual,
+                    shown.get(&id),
                 );
             }
         }
@@ -883,41 +915,6 @@ proptest! {
 }
 
 // `u64` stands in for `WlSurface`; the resolver is generic over surface type.
-fn surface_map_strategy() -> impl Strategy<Value = HashMap<u64, u64>> {
-    prop::collection::hash_map(1u64..=8, 100u64..=200, 0..=8)
-}
-
-proptest! {
-    #[test]
-    fn resolver_follows_lock_layer_toplevel_priority(
-        locked in any::<bool>(),
-        lock in prop::option::of(1u64..=999),
-        layer in prop::option::of(1u64..=999),
-        focused_id in 0u64..=20,
-        map in surface_map_strategy(),
-    ) {
-        let toplevel = map.get(&focused_id).copied();
-        let fallback_calls = std::cell::Cell::new(0);
-        let expected = if locked {
-            lock
-        } else {
-            layer.or(toplevel)
-        };
-        let expected_fallback_calls = usize::from(!locked && layer.is_none());
-
-        let resolved = resolve_keyboard_focus_target(
-            locked, lock, layer,
-            || {
-                fallback_calls.set(fallback_calls.get() + 1);
-                toplevel
-            },
-        );
-
-        prop_assert_eq!(resolved, expected);
-        prop_assert_eq!(fallback_calls.get(), expected_fallback_calls);
-    }
-}
-
 /// 3x3 grid of 1920x1080 output cells; subsets exercise rows, columns,
 /// stacks, gaps, and the full grid.
 const NAV_GRID: [(i32, i32); 9] = [

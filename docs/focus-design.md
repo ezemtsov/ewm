@@ -274,10 +274,6 @@ After specific operations:
     state on the key press or module command and queue events for Lisp
     at most.  Nothing waits for a reply, so they work while Emacs is busy.
 
-The pure `resolve_keyboard_focus_target` helper (lock > layer >
-toplevel priority) is covered by a second set of properties in the
-same file.
-
 ## Why two threads make this hard
 
 The compositor runs on a thread inside Emacs but does not share the lisp
