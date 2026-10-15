@@ -2,39 +2,30 @@
 //!
 //! Each numbered invariant is checked by `assert_invariants` after every op
 //! in a random `Op` sequence. New invariants are appended; old numbers are
-//! never reused. Mirrors `focus_proptest`'s shape.
+//! never reused. Mirrors `focus_proptest`'s shape. The oracles are what the
+//! two clients see on the wire, the layout the harness applied and where the
+//! strip draws a frame. L1, L2, L3, N1, N4, P1, P5 and PP1 are retired.
 //!
-//! L1  - Surface-index parity. `ewm.surface_outputs()` equals the set of
-//!       `(surface_id, output_name)` pairs derived from
-//!       the `surface_entries()` of every strip in `layout.strips()`.
+//! E1  - Pointer focus is what the clients see. After every op, the surface a
+//!       client holds pointer focus on, per its enter/leave stream, is the
+//!       hit-test target under the pointer, and at most one client holds it.
+//!       A click grab pins it where it was. A DnD grab speaks data_device,
+//!       not wl_pointer, so E1 waits for the drop.
 //!
-//! L2  - View origin formula. `surface_view_origins(S)` lists exactly one
-//!       origin per layout entry of `S`, computed from the frame-owned
-//!       fullscreen selection: fullscreen primary entries land at the output
-//!       origin offset by `fullscreen_center_offset`, fullscreen non-primaries
-//!       pin to `output_geo.loc`, and non-fullscreen entries use
-//!       `output_geo.loc + working_area.loc + frame_dx + entry.{x,y}`.
+//! E2  - Coordinates come from the drawn view. When the app toplevel holds
+//!       pointer focus, the surface-local position it was last told puts the
+//!       pointer where the drawn view says: `p - origin` for a primary view,
+//!       which shows its buffer at native size, and inside the committed
+//!       buffer for a scaled one.
 //!
-//! L3  - Pointer focus matches hit-test. Outside a pointer grab and during
-//!       a DnD grab, `ewm.pointer_focus.map(|(s, _)| s)` equals
-//!       `ewm.surface_under_point(pointer_location).map(|(s, _)| s)`.
-//!       During a click grab, `pointer_focus` stays pinned to the grab surface.
+//! E3  - No hit-test masking. When exactly one drawn view contains `p` on its
+//!       own output and no popup covers it, the hit is that view's surface.
+//!       A frame draws at the strip's screen x and a view at its entry offset
+//!       within it; a fullscreen view hides its frame's other views, and an
+//!       inactive frame's fullscreen view is not drawn at all.
 //!
 //! D1  - No focus change mid-drag. A `WarpPointer` during a DnD grab leaves
 //!       `focused_entry_id` untouched, whatever focus-follows-mouse says.
-//!
-//! P1  - Enter target. After every `WarpPointer(p)` op followed by a
-//!       roundtrip, the client's most recent enter/leave transition matches
-//!       `surface_under_point(p)`: a trailing `PointerEnter` names that
-//!       surface, a trailing `PointerLeave` matches no hit (focus-follows-
-//!       mouse can retarget mid-warp). No transition means focus didn't
-//!       change -- nothing to compare.
-//!
-//! PP1 - Single popup placement per popup. For every popup parented to a
-//!       toplevel S currently tracked, `collect_popup_placements`
-//!       emits exactly one placement before output culling, anchored to S's
-//!       focused-or-primary view origin. S may sit off-screen, e.g. a frame
-//!       the strip scrolled away from.
 //!
 //! PP2 - Popup placement/render-order parity. The centre of every visible
 //!       popup placement, whether parented to an embedded app surface or an
@@ -42,15 +33,13 @@
 //!       underlying layout surface. Strict "hits its own surface" doesn't hold
 //!       when popups overlap; the topmost rendered popup wins.
 //!
+//!
 //! P3  - Button delivery. After a `PointerButton(pressed)` op + roundtrip,
 //!       the client receives a `PointerButton` event with the same
 //!       `pressed` value iff `ewm.pointer_focus` at button time was on a
 //!       surface owned by this client. A release ending a grab may retarget
 //!       focus afterwards; delivery follows the focus at button time.
 //!
-//! P5  - Button release ending a grab refreshes immediately. Before the next
-//!       dispatch/roundtrip, if the button op leaves no active grab,
-//!       `pointer_focus` already matches the current hit-test target.
 //!
 //! P6  - Drag-source coordinates. After a `WarpPointer(p)` op while a click
 //!       grab pins the frame's toplevel, the frame client receives motion at
@@ -58,49 +47,39 @@
 //!       belongs to another client: then it receives `-(p - origin) - 1`,
 //!       both coordinates negative.
 //!
+//!
 //! C1  - Configure tracks primary. If the toplevel has a primary entry,
 //!       the most recent `xdg_toplevel.configure` the client received
 //!       carries `(width, height)` equal to that entry's output size when
 //!       the surface is requested fullscreen, else `(entry.w, entry.h)`.
 //!
+//!
 //! C2  - Output-membership parity. The set of output names the client
 //!       believes the toplevel is on (running `wl_surface.enter` minus
-//!       `leave`) equals the outputs on the toplevel's record.
+//!       `leave`) equals the outputs whose strips hold a frame or view of it.
 //!
-//! N1  - No hit-test masking. When `surface_under_point` returns the
-//!       toplevel, the point lies inside some entry's visible rect:
-//!       active-frame fullscreen primary covers the whole output,
-//!       active-frame non-primary fullscreen pins to output.loc at its
-//!       own size, and ordinary entries use their working-area rect at
-//!       the frame's screen position. Inactive-frame fullscreens render
-//!       off-screen so they don't capture hits.
-//!
-//! N4  - One fullscreen per frame. After every layout, a frame has at most
-//!       one fullscreen selection, and that selection points to a live
-//!       `(entry_id, surface_id)` view in the same frame.
-//!
-//! F1  - FFM sees plain entries. A pointer move inside an Emacs frame whose
-//!       layout entries have no attached Wayland surfaces still resolves the
-//!       entry entry id and focuses that entry, while keyboard routing remains
-//!       on the frame surface.
+//! F1  - FFM sees plain entries. With focus-follows-mouse on and no grab, a
+//!       warp that puts the frame client's pointer at frame-local `(fx, fy)`
+//!       while the frame holds a plain layout lands on the entry whose rect
+//!       spans it. When that entry or the focused surface changes, the entry
+//!       and its frame take focus and keyboard routing stays on the frame
+//!       surface.
 //!
 //! T1  - A press focuses what is under it. After a `Tap` or a button press at
 //!       `p`, the layout entry under `p` when it landed becomes
 //!       `focused_entry_id`. A press on nothing leaves focus untouched.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use ewm_core::render::collect_popup_placements;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel, nz};
-use ewm_core::{LayoutEntry, LayoutEntryId, fullscreen_center_offset};
+use ewm_core::{LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;
-use smithay::desktop::PopupManager;
 use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface as ServerWlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
-use smithay::wayland::seat::WaylandFocus;
 use wayland_client::Proxy as _;
 
 /// `BTN_LEFT` from linux/input-event-codes.h.
@@ -119,15 +98,6 @@ fn view_size() -> Size<i32, Logical> {
 fn world_rect() -> Rectangle<i32, Logical> {
     Rectangle::new(Point::from((-100, -100)), Size::from((5000, 5000)))
 }
-
-/// Culls nothing: placements of popups on scrolled-off parents still count.
-fn everywhere() -> Rectangle<i32, Logical> {
-    Rectangle::new(
-        Point::from((-1_000_000, -1_000_000)),
-        Size::from((2_000_000, 2_000_000)),
-    )
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SurfaceKey {
     client: ClientId,
@@ -238,6 +208,36 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     ]
 }
 
+/// What one client has been told about the pointer.
+#[derive(Default)]
+struct ClientPointer {
+    focus: Option<SurfaceKey>,
+    local: (f64, f64),
+    /// Whether an enter or motion arrived in the last drain window.
+    fresh: bool,
+}
+
+impl ClientPointer {
+    fn fold(&mut self, client: &TestClient, events: &[ClientEvent]) {
+        self.fresh = false;
+        for event in events {
+            match event {
+                ClientEvent::PointerEnter { surface, x, y } => {
+                    self.focus = Some(client_surface_key(client, surface));
+                    self.local = (*x, *y);
+                    self.fresh = true;
+                }
+                ClientEvent::PointerLeave { .. } => self.focus = None,
+                ClientEvent::PointerMotion { x, y } => {
+                    self.local = (*x, *y);
+                    self.fresh = true;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 struct Harness {
     fix: Fixture,
     client: TestClient,
@@ -250,6 +250,8 @@ struct Harness {
     frame_popups: Vec<Popup>,
     /// Frame client events from the last `roundtrip_all`.
     frame_events: Vec<ClientEvent>,
+    app: ClientPointer,
+    frame: ClientPointer,
     /// Latest `xdg_toplevel.configure` size the client has been told, accumulated
     /// across drain windows. `None` until the first configure arrives.
     last_configure: Option<(i32, i32)>,
@@ -258,14 +260,8 @@ struct Harness {
     /// Output names the client believes the toplevel is on, accumulated from
     /// `wl_surface.enter` / `leave` events.
     toplevel_on_outputs: HashSet<String>,
-    pointer_entry_id_before_warp: Option<LayoutEntryId>,
-    pointer_surface_id_before_warp: Option<u64>,
-    /// `pointer_focus` when the last button was sent: the delivery target,
-    /// even when the grab ends and focus retargets within the same op.
-    pointer_focus_at_button: Option<SurfaceKey>,
-    pointer_focus_after_button: Option<SurfaceKey>,
-    pointer_hit_after_button: Option<SurfaceKey>,
-    pointer_grabbed_after_button: bool,
+    /// Pointer focus as the clients saw it before the last op.
+    focus_before_op: Option<SurfaceKey>,
     dnd_active: bool,
     /// `focused_entry_id` before the last op.
     focused_entry_before_op: Option<LayoutEntryId>,
@@ -273,6 +269,8 @@ struct Harness {
     entry_under_press: Option<LayoutEntryId>,
     /// Whether any surface was under the last press.
     hit_under_press: bool,
+    /// The plain entry under the frame's pointer after the last op.
+    plain_entry_under_pointer: Option<LayoutEntryId>,
 }
 
 impl Harness {
@@ -303,20 +301,20 @@ impl Harness {
             frame_sid,
             frame_popups: Vec::new(),
             frame_events: Vec::new(),
+            app: ClientPointer::default(),
+            frame: ClientPointer::default(),
             last_configure: None,
             answered_configure: None,
             toplevel_on_outputs: HashSet::new(),
-            pointer_entry_id_before_warp: None,
-            pointer_surface_id_before_warp: None,
-            pointer_focus_at_button: None,
-            pointer_focus_after_button: None,
-            pointer_hit_after_button: None,
-            pointer_grabbed_after_button: false,
+            focus_before_op: None,
             dnd_active: false,
             focused_entry_before_op: None,
             entry_under_press: None,
             hit_under_press: false,
+            plain_entry_under_pointer: None,
         };
+        // Animations land at once.
+        h.fix.ewm().animations_clock.set_complete_instantly(true);
         // Drain setup events into the harness so the first op starts clean.
         let setup_events = h.client.drain_events();
         h.fold_events(&setup_events);
@@ -325,9 +323,28 @@ impl Harness {
     }
 
     fn roundtrip_all(&mut self) {
+        settle_strip_animations(self);
         self.fix.roundtrip(&mut self.client);
         self.fix.roundtrip(&mut self.frame_client);
         self.frame_events = self.frame_client.drain_events();
+        self.frame.fold(&self.frame_client, &self.frame_events);
+    }
+
+    /// The surface holding pointer focus, as the clients see it.
+    fn union_focus(&self) -> Option<SurfaceKey> {
+        self.app.focus.clone().or_else(|| self.frame.focus.clone())
+    }
+
+    fn pointer(&self) -> Point<f64, Logical> {
+        Point::from(self.fix.ewm_ref().pointer_location())
+    }
+
+    fn toplevel_key(&self) -> SurfaceKey {
+        client_surface_key(&self.client, &self.toplevel.surface)
+    }
+
+    fn frame_key(&self) -> SurfaceKey {
+        client_surface_key(&self.frame_client, &self.frame_toplevel.surface)
     }
 
     /// Apply enter/leave/configure events from a drain window to harness state.
@@ -417,6 +434,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
         h.answered_configure = h.last_configure;
     }
     h.focused_entry_before_op = h.fix.ewm_ref().focused_entry_id;
+    h.focus_before_op = h.union_focus();
     match *op {
         Op::AddOutput(i) => {
             let (name, w, height) = OUTPUTS[i];
@@ -483,56 +501,17 @@ fn apply_op(h: &mut Harness, op: &Op) {
             h.fix.ewm().emacs_drag_source = on;
         }
         Op::WarpPointer { x, y } => {
-            let (entry_id, surface_id) = {
-                let ewm = h.fix.ewm_ref();
-                let surface_id = ewm
-                    .pointer_focus
-                    .as_ref()
-                    .and_then(|(surface, _)| ewm.surface_id(surface));
-                (ewm.pointer_entry_id, surface_id)
-            };
-            h.pointer_entry_id_before_warp = entry_id;
-            h.pointer_surface_id_before_warp = surface_id;
             h.fix.pointer_motion_to(x as f64, y as f64);
         }
         Op::ProgrammaticWarpPointer { x, y } => {
-            let (entry_id, surface_id) = {
-                let ewm = h.fix.ewm_ref();
-                let surface_id = ewm
-                    .pointer_focus
-                    .as_ref()
-                    .and_then(|(surface, _)| ewm.surface_id(surface));
-                (ewm.pointer_entry_id, surface_id)
-            };
-            h.pointer_entry_id_before_warp = entry_id;
-            h.pointer_surface_id_before_warp = surface_id;
             h.fix.warp_pointer(x as f64, y as f64);
         }
         Op::PointerButton { pressed } => {
             if pressed {
-                note_press(h, Point::from(h.fix.ewm_ref().pointer_location()));
+                note_press(h, h.pointer());
             }
-            h.pointer_focus_at_button = {
-                let ewm = h.fix.ewm_ref();
-                ewm.pointer_focus
-                    .as_ref()
-                    .and_then(|(s, _)| server_surface_key(ewm, s))
-            };
             h.fix.pointer_button(BTN_LEFT, pressed);
-            let (focus, hit, grabbed) = {
-                let ewm = h.fix.ewm_ref();
-                let p = Point::from(ewm.pointer_location());
-                let focus = ewm
-                    .pointer_focus
-                    .as_ref()
-                    .and_then(|(s, _)| server_surface_key(ewm, s));
-                let hit = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
-                (focus, hit, ewm.pointer.is_grabbed())
-            };
-            h.pointer_focus_after_button = focus;
-            h.pointer_hit_after_button = hit;
-            h.pointer_grabbed_after_button = grabbed;
-            h.dnd_active &= grabbed;
+            h.dnd_active &= h.fix.ewm_ref().pointer.is_grabbed();
         }
         Op::Tap { fx, fy } => {
             if let Some(p) = tap_point(h, fx, fy) {
@@ -650,29 +629,256 @@ fn settle_strip_animations(h: &mut Harness) {
         strip.advance();
     }
 }
+/// A view where the strip draws it, or the compositor's rect for an active frame's fullscreen.
+struct DrawnView {
+    surface: u64,
+    rect: Rectangle<i32, Logical>,
+    output_geo: Rectangle<i32, Logical>,
+    /// Shows its buffer at native size, so pointer coordinates are `p - rect.loc`.
+    native: bool,
+}
 
-fn check_l1(h: &Harness) -> Result<(), TestCaseError> {
+fn drawn_views(h: &Harness) -> Vec<DrawnView> {
     let ewm = h.fix.ewm_ref();
-    let mut from_strips: HashMap<u64, HashSet<String>> = HashMap::new();
-    for monitor in ewm.layout.monitors() {
-        for surface_id in monitor
-            .frames()
-            .flat_map(|frame| {
-                std::iter::once(frame.surface_id)
-                    .chain(frame.entries.iter().filter_map(LayoutEntry::surface_id))
-            })
-            .filter(|id| ewm.surfaces.contains_key(id))
-        {
-            from_strips
-                .entry(surface_id)
-                .or_default()
-                .insert(monitor.name().to_string());
+    let fullscreen_views = ewm.view_rects();
+    let mut views = Vec::new();
+    for (out_name, strip) in ewm.layout.strips() {
+        let Some(output) = ewm.space.outputs().find(|o| o.name() == *out_name) else {
+            continue;
+        };
+        let Some(output_geo) = ewm.space.output_geometry(output) else {
+            continue;
+        };
+        let working_area = ewm.get_working_area(output);
+        for (frame_idx, frame) in strip.frames().iter().enumerate() {
+            let origin = Point::from((
+                output_geo.loc.x
+                    + working_area.loc.x
+                    + strip.screen_x_of_frame(frame_idx).round() as i32,
+                output_geo.loc.y + working_area.loc.y,
+            ));
+            match frame.fullscreen_entry() {
+                Some(fullscreen) => {
+                    if strip.active_idx() != frame_idx {
+                        continue;
+                    }
+                    let Some(view) = fullscreen_views
+                        .iter()
+                        .find(|view| view.frame == frame.surface_id && view.entry == fullscreen.id)
+                    else {
+                        continue;
+                    };
+                    let mut rect = view.rect;
+                    rect.loc += output_geo.loc;
+                    views.push(DrawnView {
+                        surface: view.surface,
+                        rect,
+                        output_geo,
+                        native: fullscreen.primary(),
+                    });
+                }
+                None => {
+                    for entry in &frame.entries {
+                        let Some(surface) = entry.surface_id() else {
+                            continue;
+                        };
+                        views.push(DrawnView {
+                            surface,
+                            rect: Rectangle::new(
+                                origin + Point::from((entry.x, entry.y)),
+                                Size::from((entry.w as i32, entry.h as i32)),
+                            ),
+                            output_geo,
+                            native: entry.primary(),
+                        });
+                    }
+                }
+            }
         }
     }
+    views
+}
+
+/// The one drawn view under `p` on its own output, if exactly one is.
+fn drawn_view_under(views: &[DrawnView], p: Point<f64, Logical>) -> Option<&DrawnView> {
+    let mut under = views
+        .iter()
+        .filter(|view| rect_contains_f64(view.output_geo, p) && rect_contains_f64(view.rect, p));
+    match (under.next(), under.next()) {
+        (Some(view), None) => Some(view),
+        _ => None,
+    }
+}
+
+fn popup_covers(h: &Harness, p: Point<f64, Logical>) -> bool {
+    collect_popup_placements(h.fix.ewm_ref(), world_rect(), None)
+        .iter()
+        .any(|placement| {
+            rect_contains_f64(
+                Rectangle::new(placement.location, placement.geometry.size),
+                p,
+            )
+        })
+}
+
+fn check_e1(h: &Harness) -> Result<(), TestCaseError> {
+    if h.dnd_active {
+        return Ok(());
+    }
+    prop_assert!(
+        h.app.focus.is_none() || h.frame.focus.is_none(),
+        "E1: both clients hold pointer focus: app {:?}, frame {:?}",
+        h.app.focus,
+        h.frame.focus,
+    );
+    let focus = h.union_focus();
+    let ewm = h.fix.ewm_ref();
+    if ewm.pointer.is_grabbed() {
+        prop_assert_eq!(
+            focus.as_ref(),
+            h.focus_before_op.as_ref(),
+            "E1: a click grab must keep pointer focus where it was",
+        );
+        return Ok(());
+    }
+    let p = h.pointer();
+    let hit = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
     prop_assert_eq!(
-        from_strips,
-        ewm.surface_outputs(),
-        "L1: surface_outputs out of sync with the layout",
+        focus.as_ref(),
+        hit.as_ref(),
+        "E1: clients see pointer focus {:?} at {:?}, hit-test says {:?}",
+        focus,
+        p,
+        hit,
+    );
+    Ok(())
+}
+
+fn check_e2(h: &Harness) -> Result<(), TestCaseError> {
+    if !h.app.fresh || h.app.focus.as_ref() != Some(&h.toplevel_key()) {
+        return Ok(());
+    }
+    let p = h.pointer();
+    let views = drawn_views(h);
+    let Some(view) = drawn_view_under(&views, p).filter(|view| view.surface == h.sid) else {
+        return Ok(());
+    };
+    let (lx, ly) = h.app.local;
+    if view.native {
+        let expected = (p.x - view.rect.loc.x as f64, p.y - view.rect.loc.y as f64);
+        prop_assert!(
+            (lx - expected.0).abs() < 0.01 && (ly - expected.1).abs() < 0.01,
+            "E2: pointer at {:?} over the view drawn at {:?} reached the client at ({}, {}), expected {:?}",
+            p,
+            view.rect,
+            lx,
+            ly,
+            expected,
+        );
+    } else {
+        let (w, height) = h.answered_configure.unwrap_or((VIEW_W, VIEW_H));
+        prop_assert!(
+            lx >= 0.0 && ly >= 0.0 && lx < w as f64 && ly < height as f64,
+            "E2: pointer at {:?} over a scaled view reached the client at ({}, {}), outside its {}x{} buffer",
+            p,
+            lx,
+            ly,
+            w,
+            height,
+        );
+    }
+    Ok(())
+}
+
+fn check_e3(h: &Harness) -> Result<(), TestCaseError> {
+    let p = h.pointer();
+    let views = drawn_views(h);
+    let Some(view) = drawn_view_under(&views, p) else {
+        return Ok(());
+    };
+    if popup_covers(h, p) {
+        return Ok(());
+    }
+    let expected = if view.surface == h.sid {
+        h.toplevel_key()
+    } else if view.surface == h.frame_sid {
+        h.frame_key()
+    } else {
+        return Ok(());
+    };
+    let ewm = h.fix.ewm_ref();
+    let hit = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
+    prop_assert_eq!(
+        hit.as_ref(),
+        Some(&expected),
+        "E3: {:?} lies in the view of {} drawn at {:?}, but the hit-test found {:?}",
+        p,
+        view.surface,
+        view.rect,
+        hit,
+    );
+    Ok(())
+}
+
+/// The plain entry under the frame client's pointer, from the layout the harness applied.
+fn plain_entry_under_frame_pointer(h: &Harness) -> Option<LayoutEntryId> {
+    if h.frame.focus.as_ref() != Some(&h.frame_key()) {
+        return None;
+    }
+    let (fx, fy) = h.frame.local;
+    let ewm = h.fix.ewm_ref();
+    let frame = ewm
+        .layout
+        .monitors()
+        .iter()
+        .flat_map(|monitor| monitor.frames())
+        .find(|frame| frame.surface_id == h.frame_sid)?;
+    if frame
+        .entries
+        .iter()
+        .any(|entry| entry.surface_id().is_some())
+    {
+        return None;
+    }
+    frame
+        .entries
+        .iter()
+        .find(|entry| {
+            fx >= entry.x as f64
+                && fy >= entry.y as f64
+                && fx < (entry.x + entry.w as i32) as f64
+                && fy < (entry.y + entry.h as i32) as f64
+        })
+        .map(|entry| entry.id)
+}
+
+fn check_f1(h: &Harness) -> Result<(), TestCaseError> {
+    let ewm = h.fix.ewm_ref();
+    if !ewm.focus_follows_mouse_mode || ewm.pointer.is_grabbed() {
+        return Ok(());
+    }
+    let Some(entry_id) = plain_entry_under_frame_pointer(h) else {
+        return Ok(());
+    };
+    // FFM acts on a change under the pointer, so the same entry proves nothing.
+    if h.plain_entry_under_pointer == Some(entry_id) && h.focus_before_op == Some(h.frame_key()) {
+        return Ok(());
+    }
+    prop_assert_eq!(
+        ewm.focused_entry_id,
+        Some(entry_id),
+        "F1: FFM should focus the plain entry under the frame pointer at {:?}",
+        h.frame.local,
+    );
+    prop_assert_eq!(
+        ewm.focused_frame_id,
+        h.frame_sid,
+        "F1: focused frame should own the plain entry",
+    );
+    prop_assert_eq!(
+        ewm.focused_surface_id(),
+        h.frame_sid,
+        "F1: keyboard routing should stay on the Emacs frame surface",
     );
     Ok(())
 }
@@ -725,102 +931,30 @@ fn check_c1(h: &Harness) -> Result<(), TestCaseError> {
 
 fn check_c2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
-    let server: HashSet<String> = ewm
-        .surfaces
-        .get(&h.sid)
-        .map(|surface| surface.outputs.clone())
-        .unwrap_or_default();
+    let placed: HashSet<String> = ewm
+        .layout
+        .monitors()
+        .iter()
+        .filter(|monitor| {
+            monitor.frames().any(|frame| {
+                frame.surface_id == h.sid
+                    || frame
+                        .entries
+                        .iter()
+                        .any(|entry| entry.surface_id() == Some(h.sid))
+            })
+        })
+        .map(|monitor| monitor.name().to_string())
+        .collect();
     prop_assert_eq!(
         h.toplevel_on_outputs.clone(),
-        server.clone(),
-        "C2: client output set {:?} != surface_outputs {:?}",
+        placed.clone(),
+        "C2: client output set {:?} != outputs holding the toplevel {:?}",
         h.toplevel_on_outputs,
-        server,
+        placed,
     );
     Ok(())
 }
-
-fn check_l2(h: &Harness) -> Result<(), TestCaseError> {
-    let ewm = h.fix.ewm_ref();
-    let sid = h.sid;
-    let mut expected: Vec<Point<i32, Logical>> = Vec::new();
-    // Mirror production order: `surface_view_origins` walks `sorted_outputs`.
-    for output in &ewm.sorted_outputs {
-        let Some(strip) = ewm.layout.strip(output) else {
-            continue;
-        };
-        let Some(output_geo) = ewm.space.output_geometry(output) else {
-            continue;
-        };
-        let working_area = ewm.get_working_area(output);
-        for (frame_idx, entry) in strip.surface_entries_with_frame() {
-            if entry.surface_id() != Some(sid) {
-                continue;
-            }
-            let entry_fullscreen = strip
-                .frames()
-                .get(frame_idx)
-                .and_then(|frame| frame.fullscreen_entry())
-                .is_some_and(|fullscreen| fullscreen.id == entry.id);
-            // Geometry follows the view's mark, which the client's commit sets. A fullscreen
-            // view fills the frame's output-sized slot, which slides with the frame.
-            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            let origin = if entry_fullscreen && entry.primary() {
-                let window_size = ewm
-                    .window(entry.surface_id().expect("surface-backed entry"))
-                    .map(|w| w.geometry().size)
-                    .unwrap_or_default();
-                let (ox, oy) = fullscreen_center_offset(window_size, output_geo.size);
-                Point::from((output_geo.loc.x + frame_dx + ox, output_geo.loc.y + oy))
-            } else if entry_fullscreen {
-                Point::from((output_geo.loc.x + frame_dx, output_geo.loc.y))
-            } else {
-                Point::from((
-                    output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                    output_geo.loc.y + working_area.loc.y + entry.y,
-                ))
-            };
-            expected.push(origin);
-        }
-    }
-    let actual = ewm.surface_view_origins(sid);
-    prop_assert_eq!(
-        actual.clone(),
-        expected.clone(),
-        "L2 surface_view_origins mismatch for sid {}: expected {:?}, got {:?}",
-        sid,
-        expected,
-        actual,
-    );
-    Ok(())
-}
-
-fn check_l3(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
-    let ewm = h.fix.ewm_ref();
-    // A click grab pins pointer_focus to its surface; a DnD grab hit-tests.
-    if ewm.pointer.is_grabbed() && !h.dnd_active {
-        return Ok(());
-    }
-    let hit = ewm.surface_under_point(p);
-    let focus = ewm.pointer_focus.as_ref();
-    let hit_id = server_hit_key(ewm, hit.as_ref().map(|(s, _)| s));
-    let focus_id = server_hit_key(ewm, focus.map(|(s, _)| s));
-    prop_assert_eq!(
-        focus_id.as_ref(),
-        hit_id.as_ref(),
-        "L3 pointer_focus mismatch at {:?}: focus={:?}, hit={:?}",
-        p,
-        focus_id,
-        hit_id,
-    );
-    Ok(())
-}
-
-fn check_l3_current(h: &Harness) -> Result<(), TestCaseError> {
-    let p = Point::from(h.fix.ewm_ref().pointer_location());
-    check_l3(h, p)
-}
-
 fn check_d1(h: &Harness) -> Result<(), TestCaseError> {
     if !h.dnd_active {
         return Ok(());
@@ -839,137 +973,6 @@ fn rect_contains_f64(rect: Rectangle<i32, Logical>, p: Point<f64, Logical>) -> b
         && p.x < (rect.loc.x + rect.size.w) as f64
         && p.y < (rect.loc.y + rect.size.h) as f64
 }
-
-fn plain_entry_under(h: &Harness, p: Point<f64, Logical>) -> Option<(u64, LayoutEntryId)> {
-    let ewm = h.fix.ewm_ref();
-    for output in ewm.space.outputs() {
-        let Some(output_geo) = ewm.space.output_geometry(output) else {
-            continue;
-        };
-        if !rect_contains_f64(output_geo, p) {
-            continue;
-        }
-
-        let Some(strip) = ewm.layout.strip(output) else {
-            continue;
-        };
-        let working_area = ewm.get_working_area(output);
-        for (frame_idx, frame) in strip.frames().iter().enumerate() {
-            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            for entry in &frame.entries {
-                if entry.surface_id().is_some() {
-                    continue;
-                }
-                let rect = Rectangle::new(
-                    Point::from((
-                        output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                        output_geo.loc.y + working_area.loc.y + entry.y,
-                    )),
-                    Size::from((entry.w as i32, entry.h as i32)),
-                );
-                if rect_contains_f64(rect, p) {
-                    return Some((frame.surface_id, entry.id));
-                }
-            }
-        }
-    }
-    None
-}
-
-fn check_f1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
-    let ewm = h.fix.ewm_ref();
-    if !ewm.focus_follows_mouse_mode || ewm.is_animating_at(p) || ewm.pointer.is_grabbed() {
-        return Ok(());
-    }
-
-    let Some((frame_surface_id, entry_id)) = plain_entry_under(h, p) else {
-        return Ok(());
-    };
-    let pointer_focus_id = ewm
-        .pointer_focus
-        .as_ref()
-        .and_then(|(surface, _)| ewm.surface_id(surface));
-    let entry_changed = h.pointer_entry_id_before_warp != Some(entry_id);
-    let surface_changed = h.pointer_surface_id_before_warp != Some(frame_surface_id);
-
-    prop_assert_eq!(
-        ewm.layout_entry_id_under(p),
-        Some(entry_id),
-        "F1: plain entry under {:?} must resolve through layout_entry_id_under",
-        p,
-    );
-    prop_assert_eq!(
-        ewm.pointer_entry_id,
-        Some(entry_id),
-        "F1: pointer_entry_id should track the plain entry under {:?}",
-        p,
-    );
-    prop_assert_eq!(
-        pointer_focus_id,
-        Some(frame_surface_id),
-        "F1: pointer focus should remain on the Emacs frame surface",
-    );
-    if !entry_changed && !surface_changed {
-        return Ok(());
-    }
-
-    prop_assert_eq!(
-        ewm.focused_frame_id,
-        frame_surface_id,
-        "F1: focused frame should own the plain entry",
-    );
-    prop_assert_eq!(
-        ewm.focused_entry_id,
-        Some(entry_id),
-        "F1: FFM should focus the plain entry entry id",
-    );
-    prop_assert_eq!(
-        ewm.focused_surface_id(),
-        frame_surface_id,
-        "F1: keyboard routing should stay on the Emacs frame surface",
-    );
-    Ok(())
-}
-
-fn check_p1(
-    h: &Harness,
-    events: &[ClientEvent],
-    p: Point<f64, Logical>,
-) -> Result<(), TestCaseError> {
-    let ewm = h.fix.ewm_ref();
-    if ewm.is_animating_at(p) {
-        return Ok(());
-    }
-
-    let hit = server_hit_key(ewm, ewm.surface_under_point(p).as_ref().map(|(s, _)| s));
-    let ours = h.our_surface_keys();
-    let expected = hit.filter(|id| ours.contains(id));
-    // The net focus target is the most recent Enter/Leave transition. A warp
-    // under focus-follows-mouse can deliver motion to the pre-FFM layout
-    // (Enter), then retarget the active frame so the point hits nothing
-    // (Leave); the trailing Leave is what the client ends on. Smithay
-    // suppresses re-enter on the same surface, so no transition in the drain
-    // window means focus didn't change -- nothing to compare.
-    let last_transition = events.iter().rev().find_map(|e| match e {
-        ClientEvent::PointerEnter { surface, .. } => {
-            Some(Some(client_surface_key(&h.client, surface)))
-        }
-        ClientEvent::PointerLeave { .. } => Some(None),
-        _ => None,
-    });
-    if let Some(actual) = last_transition {
-        prop_assert_eq!(
-            actual.as_ref(),
-            expected.as_ref(),
-            "P1 enter target mismatch at {:?}: client got {:?}, hit-test {:?}",
-            p,
-            actual,
-            expected,
-        );
-    }
-    Ok(())
-}
-
 fn check_pp2(h: &Harness) -> Result<(), TestCaseError> {
     let ewm = h.fix.ewm_ref();
     let placements = collect_popup_placements(ewm, world_rect(), None);
@@ -1045,7 +1048,7 @@ fn check_p6(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
 }
 
 fn check_p3(h: &Harness, events: &[ClientEvent], pressed: bool) -> Result<(), TestCaseError> {
-    let focus_id = h.pointer_focus_at_button.clone();
+    let focus_id = h.focus_before_op.clone();
     let ours = h.our_surface_keys();
     let focused_on_ours = focus_id.as_ref().is_some_and(|id| ours.contains(id));
     let saw_button = events
@@ -1068,148 +1071,6 @@ fn check_p3(h: &Harness, events: &[ClientEvent], pressed: bool) -> Result<(), Te
     }
     Ok(())
 }
-
-fn check_p5(h: &Harness, pressed: bool) -> Result<(), TestCaseError> {
-    if pressed || h.pointer_grabbed_after_button {
-        return Ok(());
-    }
-    prop_assert_eq!(
-        h.pointer_focus_after_button.as_ref(),
-        h.pointer_hit_after_button.as_ref(),
-        "P5: release ended grab with stale pointer_focus {:?}, hit-test {:?}",
-        h.pointer_focus_after_button,
-        h.pointer_hit_after_button,
-    );
-    Ok(())
-}
-
-/// Visible rect for one entry. Returns `None` for inactive-frame fullscreen
-/// entries, which render off-screen and can't be hit. Fullscreen primary
-/// centers the window inside the output, so its hit rect is the centered
-/// window rect — clicks in the letterbox fall through to other entries. An active frame's
-/// fullscreen view covers its other entries (`covered`).
-#[allow(clippy::too_many_arguments)]
-fn visible_entry_rect(
-    ewm: &ewm_core::Ewm,
-    output_geo: Rectangle<i32, Logical>,
-    working_area: Rectangle<i32, Logical>,
-    frame_dx: i32,
-    frame: Option<&Frame>,
-    entry: &LayoutEntry,
-) -> Option<Rectangle<i32, Logical>> {
-    let covered = frame.and_then(|frame| frame.fullscreen_entry());
-    let fullscreen = covered.is_some_and(|fullscreen| fullscreen.id == entry.id);
-    let covered = covered.is_some();
-    if covered && !fullscreen {
-        return None;
-    }
-    if fullscreen {
-        // The view fills the frame's output-sized slot, which slides with the frame.
-        let slot = Rectangle::new(
-            Point::from((output_geo.loc.x + frame_dx, output_geo.loc.y)),
-            output_geo.size,
-        );
-        if entry.primary() {
-            let window_size = ewm
-                .window(entry.surface_id()?)
-                .map(|w| w.geometry().size)
-                .unwrap_or_default();
-            let (cx, cy) = fullscreen_center_offset(window_size, slot.size);
-            Some(Rectangle::new(
-                slot.loc + Point::from((cx, cy)),
-                window_size,
-            ))
-        } else {
-            Some(slot)
-        }
-    } else {
-        Some(Rectangle::new(
-            Point::from((
-                output_geo.loc.x + working_area.loc.x + frame_dx + entry.x,
-                output_geo.loc.y + working_area.loc.y + entry.y,
-            )),
-            Size::from((entry.w as i32, entry.h as i32)),
-        ))
-    }
-}
-
-fn check_n1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
-    let ewm = h.fix.ewm_ref();
-    let Some((surf, _)) = ewm.surface_under_point(p) else {
-        return Ok(());
-    };
-    let our_key = client_surface_key(&h.client, &h.toplevel.surface);
-    if server_surface_key(ewm, &surf).as_ref() != Some(&our_key) {
-        return Ok(());
-    }
-    let p_int = Point::from((p.x as i32, p.y as i32));
-    for (out_name, strip) in ewm.layout.strips() {
-        let Some(output) = ewm.space.outputs().find(|o| o.name() == *out_name) else {
-            continue;
-        };
-        let Some(output_geo) = ewm.space.output_geometry(output) else {
-            continue;
-        };
-        let working_area = ewm.get_working_area(output);
-        for (frame_idx, entry) in strip.surface_entries_with_frame() {
-            if entry.surface_id() != Some(h.sid) {
-                continue;
-            }
-            let frame_dx = strip.screen_x_of_frame(frame_idx) as i32;
-            let frame = strip.frames().get(frame_idx);
-            let Some(rect) =
-                visible_entry_rect(ewm, output_geo, working_area, frame_dx, frame, entry)
-            else {
-                continue;
-            };
-            if rect.contains(p_int) {
-                return Ok(());
-            }
-        }
-    }
-    Err(TestCaseError::fail(format!(
-        "N1: surface_under_point({p:?}) returned our toplevel but no visible entry covers p",
-    )))
-}
-
-fn check_n4(h: &Harness) -> Result<(), TestCaseError> {
-    h.fix.ewm_ref().layout.verify_invariants();
-    Ok(())
-}
-
-fn check_pp1(h: &Harness) -> Result<(), TestCaseError> {
-    let ewm = h.fix.ewm_ref();
-    for (sid, window) in ewm.windows() {
-        let Some(parent_surface) = window.wl_surface() else {
-            continue;
-        };
-        let popups: Vec<_> = PopupManager::popups_for_surface(&parent_surface).collect();
-        if popups.is_empty() {
-            continue;
-        }
-        let has_anchor = ewm.window_global_position(window).is_some();
-        let placements = collect_popup_placements(ewm, everywhere(), None);
-        for (popup, _) in &popups {
-            let popup_key = server_surface_key(ewm, popup.wl_surface());
-            let matching = placements
-                .iter()
-                .filter(|p| server_surface_key(ewm, &p.surface) == popup_key)
-                .count();
-            let expected = if has_anchor { 1 } else { 0 };
-            prop_assert_eq!(
-                matching,
-                expected,
-                "PP1 popup {} (parent sid={}): expected {} placement(s), got {}",
-                popup.wl_surface().id().protocol_id(),
-                sid,
-                expected,
-                matching,
-            );
-        }
-    }
-    Ok(())
-}
-
 /// Where a tap at fractions of the touchscreen lands: the first output, untransformed.
 fn tap_point(h: &Harness, fx: f64, fy: f64) -> Option<Point<f64, Logical>> {
     let ewm = h.fix.ewm_ref();
@@ -1254,46 +1115,34 @@ fn check_t1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
 fn assert_invariants(h: &mut Harness, last_op: &Op) -> Result<(), TestCaseError> {
     let events = h.client.drain_events();
     h.fold_events(&events);
-    check_l1(h)?;
-    check_l2(h)?;
-    check_n4(h)?;
-    check_pp1(h)?;
+    h.app.fold(&h.client, &events);
     check_pp2(h)?;
     check_c1(h)?;
     check_c2(h)?;
+    check_e1(h)?;
+    check_e2(h)?;
+    check_e3(h)?;
     match *last_op {
         Op::WarpPointer { x, y } => {
             let p = Point::from((x as f64, y as f64));
-            check_l3(h, p)?;
-            check_p1(h, &events, p)?;
             check_p6(h, p)?;
-            check_f1(h, p)?;
-            check_n1(h, p)?;
+            check_f1(h)?;
             check_d1(h)?;
-        }
-        Op::ProgrammaticWarpPointer { x, y } => {
-            let p = Point::from((x as f64, y as f64));
-            // A grab ignores the warp, so check where the pointer actually is.
-            check_l3_current(h)?;
-            check_p1(h, &events, p)?;
-            check_n1(h, p)?;
         }
         Op::PointerButton { pressed } => {
             check_p3(h, &events, pressed)?;
-            check_p5(h, pressed)?;
-            check_l3_current(h)?;
             if pressed {
-                check_t1(h, Point::from(h.fix.ewm_ref().pointer_location()))?;
+                check_t1(h, h.pointer())?;
             }
         }
         Op::Tap { fx, fy } => {
             if let Some(p) = tap_point(h, fx, fy) {
                 check_t1(h, p)?;
-                check_n1(h, p)?;
             }
         }
         _ => {}
     }
+    h.plain_entry_under_pointer = plain_entry_under_frame_pointer(h);
     Ok(())
 }
 #[cfg(feature = "testing-layer-shell")]
