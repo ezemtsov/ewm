@@ -375,8 +375,8 @@ package:
   Transient, isearch, hydra, and `set-transient-map` install one
   directly; `universal-argument` reaches it via `set-transient-map`.
 - `ewm-layout--command-popup-p` -- a popup menu shown by a command.  A
-  click's own popup is left out: dismissing it runs no command, so no
-  hook would see it end.
+  click's own popup is left out because dismissing it runs no command
+  that a hook could see.
 
 `post-command-hook` runs `ewm-layout--on-post-command`, which refreshes
 the layout only when the predicate's boolean result flips since the

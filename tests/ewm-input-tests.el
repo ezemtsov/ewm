@@ -17,6 +17,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'ert-x)
 (require 'cl-lib)
 
 ;; A stale .elc next to a newer .el would otherwise mask the source we're
@@ -211,6 +212,23 @@
         (should (equal (plist-get spec :dispatch) "command"))
         (should (eq (plist-get spec :fullscreen) t))
         (should (eq (plist-get spec :repeat) t))))))
+
+(ert-deftest ewm-input-tests/mode-map-edit-resends-once-idle ()
+  "Binding keys in `ewm-mode-map' resends the list once, when Emacs is idle."
+  (let ((ewm-mode-map (make-sparse-keymap)) (sent 0))
+    (cl-letf (((symbol-function 'ewm-intercept-keys-module)
+               (lambda (_) (cl-incf sent))))
+      (unwind-protect
+          (progn
+            (advice-add 'define-key :after #'ewm-input--on-define-key)
+            (define-key ewm-mode-map (kbd "s-q") #'kill-buffer)
+            (define-key ewm-mode-map (kbd "s-z") #'kill-buffer)
+            (should (= sent 0))
+            (ert-run-idle-timers)
+            (should (= sent 1)))
+        (advice-remove 'define-key #'ewm-input--on-define-key)
+        (cancel-function-timers #'ewm--send-intercept-keys)
+        (setq ewm-input--resend-timer nil)))))
 
 ;;;; ewm--parse-intercept-entry
 

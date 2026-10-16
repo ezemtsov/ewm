@@ -169,6 +169,15 @@ Example:
 
 ;;; Key interception
 
+(defvar ewm-input--resend-timer nil
+  "Idle timer resending the intercept list after an `ewm-mode-map' change.")
+
+(defun ewm-input--cancel-resend ()
+  "Cancel a pending resend of the intercept list."
+  (when ewm-input--resend-timer
+    (cancel-timer ewm-input--resend-timer)
+    (setq ewm-input--resend-timer nil)))
+
 (define-widget 'ewm-key 'lazy
   "A single key, as an integer event or a key description."
   :tag "Key"
@@ -486,7 +495,8 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   (define-key special-event-map [switch-frame] #'ignore)
   (setq-default input-method-function
                 (apply-partially #'ewm-input--in-selected-window #'list))
-  (advice-add 'quail-input-method :around #'ewm-input--in-selected-window))
+  (advice-add 'quail-input-method :around #'ewm-input--in-selected-window)
+  (advice-add 'define-key :after #'ewm-input--on-define-key))
 
 (defun ewm-input--disable ()
   "Disable EWM input handling."
@@ -502,7 +512,9 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   (ewm-input--set-keyboard-capture nil t)
   (define-key special-event-map [switch-frame] nil)
   (setq-default input-method-function #'list)
-  (advice-remove 'quail-input-method #'ewm-input--in-selected-window))
+  (advice-remove 'quail-input-method #'ewm-input--in-selected-window)
+  (advice-remove 'define-key #'ewm-input--on-define-key)
+  (ewm-input--cancel-resend))
 
 ;;; Key scanning and interception
 
@@ -628,6 +640,7 @@ Every entry also runs as `ewm-surface-emulate' in surface buffers."
 (defun ewm--send-intercept-keys ()
   "Send emulations, prefix and `ewm-mode-map' keys to the compositor.
 Emulations go first, since the compositor takes the first match."
+  (ewm-input--cancel-resend)
   (ewm-input--install-xf86-key-aliases)
   (let* ((prefixes (seq-keep #'ewm--parse-intercept-entry ewm-intercept-prefixes))
          (fullscreen-events (mapcar #'car (cl-remove-if-not #'cdr prefixes)))
@@ -643,6 +656,12 @@ Emulations go first, since the compositor takes the first match."
      (vconcat (cl-loop for (surface . table) in (ewm--emulation-tables)
                        nconc (ewm--emulation-specs table surface))
               (nreverse specs)))))
+
+(defun ewm-input--on-define-key (keymap &optional _key _def _remove)
+  "Resend the intercept list once idle after a change to `ewm-mode-map'."
+  (when (and (eq keymap ewm-mode-map) (null ewm-input--resend-timer))
+    (setq ewm-input--resend-timer
+          (run-with-idle-timer 0 nil #'ewm--send-intercept-keys))))
 
 (defun ewm--handle-intercepted-command (event)
   "Queue intercepted EVENT for normal Emacs command processing."
