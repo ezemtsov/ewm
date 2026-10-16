@@ -25,16 +25,30 @@
 A plain prompt stays unpinned so its value can come from another window."
   (and (active-minibuffer-window) minibuffer-completion-table))
 
+(defun ewm-layout--command-popup-p ()
+  "Non-nil while a command shows a popup menu."
+  (and this-command (menu-or-popup-active-p)))
+
+(defun ewm-layout--click-popup-p ()
+  "Non-nil while a click shows a popup menu, read with no command to end it."
+  (and (null this-command) (menu-or-popup-active-p)))
+
 (defvar ewm-layout-menu-predicates
   '(ewm-layout--minibuffer-menu-p
-    ewm-layout--reading-key-p)
+    ewm-layout--reading-key-p
+    ewm-layout--command-popup-p)
   "Predicates that signal Emacs is reading keys for itself.
 If any returns non-nil, the next layout's `:selected-entry-id' is
 suppressed for every frame.")
 
+(defvar ewm-layout--last-menu-active nil
+  "Cached previous `ewm-layout--menu-active-p' for edge detection.")
+
 (defun ewm-layout--menu-active-p ()
   "Non-nil if any `ewm-layout-menu-predicates' entry says so."
-  (and (run-hook-with-args-until-success 'ewm-layout-menu-predicates) t))
+  (and (run-hook-with-args-until-success 'ewm-layout-menu-predicates)
+       ;; Latched, a command's popup is gone by `post-command-hook'.
+       (setq ewm-layout--last-menu-active t)))
 
 (defconst ewm-layout--frame-focus-id-marker (ash 1 32)
   "Bit 32 marks the focus id of a frame's own surface.
@@ -129,16 +143,14 @@ FRAMES is a vector of `ewm-layout--build-frame-plist' plists."
         (ewm-layout--send-layouts)
       (error (message "EWM: layout sync error: %s" (error-message-string err))))))
 
-(defvar ewm-layout--last-menu-active nil
-  "Cached previous `ewm-layout--menu-active-p' for edge detection.")
-
 (defvar ewm-layout-menu-deactivated-hook nil
   "Edge-triggered when a menu/minibuffer stops being active.")
 
 (defun ewm-layout--on-post-command ()
   "Refresh layout on a modal-state transition."
-  (let ((now (ewm-layout--menu-active-p)))
-    (unless (eq now ewm-layout--last-menu-active)
+  (let* ((was ewm-layout--last-menu-active)
+         (now (ewm-layout--menu-active-p)))
+    (unless (eq now was)
       (setq ewm-layout--last-menu-active now)
       (unless now (run-hooks 'ewm-layout-menu-deactivated-hook))
       (ewm-layout--refresh))))

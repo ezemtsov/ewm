@@ -366,7 +366,7 @@ suppressing `:selected-view-id` for every frame whenever
 to the focused frame's own surface.
 
 The predicate is a hook (`ewm-layout-menu-predicates`).  Its defaults
-catch the two Emacs-internal mechanisms without naming any third-party
+catch the three Emacs-internal mechanisms without naming any third-party
 package:
 
 - `active-minibuffer-window` -- an active minibuffer read.
@@ -374,6 +374,9 @@ package:
   `overriding-terminal-local-map` or `overriding-local-map`.
   Transient, isearch, hydra, and `set-transient-map` install one
   directly; `universal-argument` reaches it via `set-transient-map`.
+- `ewm-layout--command-popup-p` -- a popup menu shown by a command.  A
+  click's own popup is left out: dismissing it runs no command, so no
+  hook would see it end.
 
 `post-command-hook` runs `ewm-layout--on-post-command`, which refreshes
 the layout only when the predicate's boolean result flips since the

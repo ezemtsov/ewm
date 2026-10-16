@@ -160,6 +160,15 @@ The batch frame is shared; we save and restore the parameters we touch."
   (let ((overriding-terminal-local-map (make-sparse-keymap)))
     (should (null (ewm-focus-tests--capture-selected-entry-id)))))
 
+(ert-deftest ewm-focus/popup-suppresses-within-command-only ()
+  "A popup menu suppresses only while a command shows it."
+  (cl-letf (((symbol-function 'menu-or-popup-active-p) (lambda () t)))
+    (let ((this-command 'menu-bar-open))
+      (should (null (ewm-focus-tests--capture-selected-entry-id))))
+    (let ((this-command nil))
+      (should (eql ewm-focus-tests--surface-entry-id
+                   (ewm-focus-tests--capture-selected-entry-id))))))
+
 (ert-deftest ewm-focus/custom-predicate-suppresses ()
   "A user predicate added to `ewm-layout-menu-predicates' suppresses."
   (let ((ewm-layout-menu-predicates (list (lambda () t))))
@@ -206,6 +215,18 @@ The batch frame is shared; we save and restore the parameters we touch."
         (should (= 1 refresh-count)))
       (ewm-layout--on-post-command)
       (should (= 2 refresh-count)))))
+
+(ert-deftest ewm-focus/command-popup-ends-in-deactivation ()
+  "A popup that opens and closes within a command still fires the deactivation hook."
+  (let* ((ewm-layout--last-menu-active nil)
+         (deactivations 0)
+         (ewm-layout-menu-deactivated-hook (list (lambda () (cl-incf deactivations)))))
+    (cl-letf (((symbol-function 'ewm-layout--refresh) #'ignore))
+      (cl-letf (((symbol-function 'menu-or-popup-active-p) (lambda () t)))
+        (let ((this-command 'menu-bar-open))
+          (should (ewm-layout--menu-active-p))))
+      (ewm-layout--on-post-command)
+      (should (= 1 deactivations)))))
 
 (ert-deftest ewm-focus/selected-entry-id-always-in-entries ()
   "Lisp-side invariant 6: a non-nil `:selected-entry-id' is in `:entries'."

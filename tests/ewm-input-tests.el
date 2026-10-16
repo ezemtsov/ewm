@@ -377,6 +377,13 @@
     (should (equal calls '((:begin "command-loop"))))
     (should (equal ewm-input--keyboard-capture-token 42))))
 
+(ert-deftest ewm-input-tests/keyboard-capture-leaves-click-popup-alone ()
+  "A click's popup menu neither begins nor ends capture."
+  (ewm-input-tests--with-capture-state (42 nil)
+    (cl-letf (((symbol-function 'menu-or-popup-active-p) (lambda () t)))
+      (ewm-input--with-keyboard-capture #'ignore))
+    (should-not calls)))
+
 (ert-deftest ewm-input-tests/keyboard-capture-sync-ends-current-token ()
   "Leaving command-loop input ends exactly the active capture token."
   (ewm-input-tests--with-capture-state (42 'ignore)

@@ -434,10 +434,13 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
 
 (defun ewm-input--with-keyboard-capture (orig-fun &rest args)
   "Run ORIG-FUN while Emacs owns compositor keyboard focus."
-  (ewm-input--keyboard-capture-on)
-  (unwind-protect
+  (if (ewm-layout--click-popup-p)
+      ;; A click's popup is dismissed without a command to end a lease.
       (apply orig-fun args)
-    (ewm-input--sync-keyboard-capture)))
+    (ewm-input--keyboard-capture-on)
+    (unwind-protect
+        (apply orig-fun args)
+      (ewm-input--sync-keyboard-capture))))
 
 (defconst ewm-input--keyboard-capture-read-functions
   '(read-key read-event read-key-sequence read-key-sequence-vector
