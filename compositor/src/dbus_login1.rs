@@ -50,17 +50,28 @@ impl Login1 {
         }
     }
 
-    /// Ask logind to suspend the system.
-    pub fn suspend(&self) {
-        if let Err(e) = self.conn.call_method(
-            Some("org.freedesktop.login1"),
-            "/org/freedesktop/login1",
-            Some("org.freedesktop.login1.Manager"),
-            "Suspend",
-            &(false,),
-        ) {
-            warn!("Failed to suspend via logind: {e}");
-        }
+    /// Ask logind to suspend the system, false when it refuses.
+    pub fn suspend(&self) -> bool {
+        self.conn
+            .call_method(
+                Some("org.freedesktop.login1"),
+                "/org/freedesktop/login1",
+                Some("org.freedesktop.login1.Manager"),
+                "Suspend",
+                &(false,),
+            )
+            .map(drop)
+            // A sleep someone else asked for is already on its way.
+            .or_else(|e| match e {
+                zbus::Error::MethodError(name, ..)
+                    if name.as_str() == "org.freedesktop.login1.OperationInProgress" =>
+                {
+                    Ok(())
+                }
+                e => Err(e),
+            })
+            .inspect_err(|e| warn!("Failed to suspend via logind: {e}"))
+            .is_ok()
     }
 }
 

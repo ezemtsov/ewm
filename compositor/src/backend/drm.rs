@@ -2431,11 +2431,11 @@ impl DrmBackendState {
         self.apply_lid_policy(ewm, LidPolicyReason::SettlingTimeout);
     }
 
-    /// Logind refuses others' sleep requests while unattended.
+    /// Unattended by choice, not for a refused suspend, logind refuses others' sleep.
     fn set_unattended(&mut self, ewm: &mut Ewm, unattended: bool) {
         ewm.set_unattended(unattended);
         if let Some(logind) = &mut self.logind {
-            logind.set_sleep_inhibited(unattended);
+            logind.set_sleep_inhibited(unattended && !ewm.closed_lid_suspends);
         }
     }
 
@@ -2445,10 +2445,10 @@ impl DrmBackendState {
             info!("Lid closed with no external display after {reason:?}, suspending");
             self.set_unattended(ewm, false);
             ewm.activate_monitors();
-            if let Some(logind) = &self.logind {
-                logind.suspend();
+            if self.logind.as_ref().is_some_and(Login1::suspend) {
+                return;
             }
-            return;
+            // Refused: dark until the lid opens.
         }
         info!("Lid closed with no external display after {reason:?}, staying awake");
         self.set_unattended(ewm, true);
