@@ -240,6 +240,36 @@ The batch frame is shared; we save and restore the parameters we touch."
       (should sel)
       (should (member sel entry-ids)))))
 
+(ert-deftest ewm-focus/frame-scale-is-emacs-pixels-per-logical-pixel ()
+  "`ewm--frame-scale' divides the monitor's scale by the frame's."
+  (cl-flet ((scale (monitor frame)
+              (cl-letf (((symbol-function 'frame-monitor-attributes)
+                         (lambda (&optional _frame)
+                           (and monitor `((scale-factor . ,monitor)))))
+                        ((symbol-function 'frame-scale-factor)
+                         (lambda (&optional _frame) frame)))
+                (ewm--frame-scale nil))))
+    ;; Frames measured in device pixels on a 1.5 monitor.
+    (should (= (scale 1.5 1.0) 1.5))
+    ;; Frames measured in logical pixels on a GDK-scaled monitor.
+    (should (= (scale 2.0 2.0) 1.0))
+    ;; No monitor scale reported.
+    (should (= (scale nil 1.0) 1.0))))
+
+(ert-deftest ewm-focus/build-frame-plist-speaks-logical-pixels ()
+  "Entry rectangles and the frame size reach the compositor in logical pixels."
+  (ewm-focus-tests--with-frame f
+    (cl-letf (((symbol-function 'ewm--frame-scale) (lambda (&rest _) 1.5))
+              ((symbol-function 'ewm--window-body-pixel-rect)
+               (lambda (&optional _window) '(12 41 456 815))))
+      (let* ((plist (ewm-layout--build-frame-plist f nil))
+             (entry (aref (plist-get plist :entries) 0)))
+        (should (equal (list (plist-get entry :x) (plist-get entry :y)
+                             (plist-get entry :w) (plist-get entry :h))
+                       '(8 27 304 543)))
+        (should (= (plist-get plist :width) (/ (frame-pixel-width f) 1.5)))
+        (should (= (plist-get plist :height) (/ (frame-pixel-height f) 1.5)))))))
+
 (ert-deftest ewm-focus/plain-emacs-windows-are-layout-entries ()
   "Plain Emacs windows publish entries without `:surface-id'."
   (ewm-focus-tests--with-frame f

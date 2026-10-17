@@ -269,17 +269,18 @@ When non-nil, warps the pointer to the center of the focused window."
 
 (defun ewm-input--pointer-in-window-p (window origin)
   "Non-nil if the pointer is inside WINDOW, whose frame sits at ORIGIN."
-  (let ((pointer (ewm-get-pointer-location)))
-    (eq window (window-at-x-y (- (car pointer) (car origin))
-                              (- (cdr pointer) (cdr origin))
-                              (window-frame window)))))
+  (let* ((frame (window-frame window))
+         (pointer (ewm-get-pointer-location)))
+    (eq window (ewm--window-at-logical frame
+                                       (- (car pointer) (car origin))
+                                       (- (cdr pointer) (cdr origin))))))
 
 (defun ewm-input--warp-pointer-to-window (window)
   "Warp the pointer to WINDOW's center unless it is already there."
   (unless (window-minibuffer-p window)
     (let ((origin (ewm--get-frame-origin (window-frame window))))
       (unless (ewm-input--pointer-in-window-p window origin)
-        (pcase-let ((`(,x ,y ,width ,height) (ewm--window-body-pixel-rect window)))
+        (pcase-let ((`(,x ,y ,width ,height) (ewm--window-body-logical-rect window)))
           (ewm-warp-pointer (float (+ (car origin) x (/ width 2)))
                             (float (+ (cdr origin) y (/ height 2)))))))))
 

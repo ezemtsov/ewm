@@ -76,6 +76,19 @@ derive the same id from the surface id without coordination.")
   (when-let* ((sid (frame-parameter frame 'ewm-surface-id)))
     (logior ewm-layout--frame-focus-id-marker sid)))
 
+(defun ewm--frame-scale (frame &optional monitors)
+  "Emacs pixels per logical pixel on FRAME's monitor, 1.0 when it has no scale.
+MONITORS, as `display-monitor-attributes-list' returns, saves listing them."
+  (let ((monitor (alist-get 'scale-factor
+                            (if monitors
+                                (seq-find (lambda (m) (memq frame (alist-get 'frames m)))
+                                          monitors)
+                              (frame-monitor-attributes frame))))
+        (frame-scale (frame-scale-factor frame)))
+    (if (and (numberp monitor) (> monitor 0) (> frame-scale 0))
+        (/ monitor frame-scale)
+      1.0)))
+
 (defun ewm--window-body-pixel-rect (window)
   "Return WINDOW's text area as frame-relative (X Y WIDTH HEIGHT) pixels."
   (pcase-let ((`(,left ,top ,right ,bottom) (window-inside-pixel-edges window)))
@@ -84,6 +97,18 @@ derive the same id from the surface id without coordination.")
           (+ top (if (< emacs-major-version 31) (window-tab-line-height window) 0))
           (- right left)
           (- bottom top))))
+
+(defun ewm--window-at-logical (frame x y)
+  "The window of FRAME at frame-relative logical X, Y."
+  (let ((scale (ewm--frame-scale frame)))
+    (window-at-x-y (round (* x scale)) (round (* y scale)) frame)))
+
+(defun ewm--window-body-logical-rect (window &optional scale)
+  "WINDOW's text area as frame-relative (X Y WIDTH HEIGHT) logical pixels.
+SCALE is the frame's `ewm--frame-scale', computed when nil."
+  (let ((scale (or scale (ewm--frame-scale (window-frame window)))))
+    (mapcar (lambda (px) (round (/ px scale)))
+            (ewm--window-body-pixel-rect window))))
 
 (defun ewm-layout--filler-p (frame)
   "Non-nil while FRAME is EWM's filler nobody used.
@@ -95,13 +120,15 @@ A used one becomes the user's for good."
         (set-frame-parameter frame 'ewm-owner 'user)))
     (eq (frame-parameter frame 'ewm-owner) 'compositor)))
 
-(defun ewm-layout--build-frame-plist (frame menu-active)
+(defun ewm-layout--build-frame-plist (frame menu-active &optional monitors)
   "Plist describing FRAME for `ewm-layout'.
 When MENU-ACTIVE is non-nil, `:selected-entry-id' is nil so the
-compositor parks keyboard focus on the frame itself."
-  (let (entries)
+compositor parks keyboard focus on the frame itself.  MONITORS are
+passed to `ewm--frame-scale'."
+  (let ((scale (ewm--frame-scale frame monitors))
+        entries)
     (dolist (window (window-list frame 'no-minibuf))
-      (pcase-let ((`(,x ,y ,w ,h) (ewm--window-body-pixel-rect window))
+      (pcase-let ((`(,x ,y ,w ,h) (ewm--window-body-logical-rect window scale))
                   (surface-id (ewm-surface-buffer-p (window-buffer window))))
         (push `(,@(when surface-id `(:surface-id ,surface-id))
                 :entry-id ,(ewm-layout--ensure-entry-id window)
@@ -118,8 +145,8 @@ compositor parks keyboard focus on the frame itself."
         ,@(when (ewm-layout--filler-p frame) '(:owner compositor))
         :focus-id ,(ewm-layout--ensure-frame-focus-id frame)
         :selected-entry-id ,selected-entry-id
-        :width ,(float (frame-pixel-width frame))
-        :height ,(float (frame-pixel-height frame))
+        :width ,(float (/ (frame-pixel-width frame) scale))
+        :height ,(float (/ (frame-pixel-height frame) scale))
         :entries ,(vconcat (nreverse entries))))))
 
 (defun ewm-layout (frames)
@@ -129,10 +156,12 @@ FRAMES is a vector of `ewm-layout--build-frame-plist' plists."
 
 (defun ewm-layout--send-layouts ()
   "Declare every placed frame, suppressing `:selected-entry-id' while modal."
-  (let ((menu-active (ewm-layout--menu-active-p)))
+  (let ((menu-active (ewm-layout--menu-active-p))
+        (monitors (display-monitor-attributes-list)))
     (ewm-layout (vconcat (seq-keep (lambda (frame)
                                      (and (frame-parameter frame 'ewm-surface-id)
-                                          (ewm-layout--build-frame-plist frame menu-active)))
+                                          (ewm-layout--build-frame-plist
+                                           frame menu-active monitors)))
                                    (frame-list))))))
 
 (defun ewm-layout--refresh ()

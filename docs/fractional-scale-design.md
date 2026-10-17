@@ -95,6 +95,24 @@ Used in cursor positioning (replaces cast-to-i32), lock buffer sizing, and worki
 area calculations. Without `to_physical_precise_round`, the cursor renders with
 sub-pixel misalignment at non-integer scales.
 
+### Emacs Pixels and Logical Pixels
+
+Emacs reports frame and window geometry in its own pixel units, which an Emacs build
+may or may not tie to the output's logical pixels.  EWM does not assume which: Emacs
+says how many device pixels its unit is (`frame-scale-factor`) and how many device
+pixels the monitor packs per logical pixel (the `scale-factor` monitor attribute), and
+their quotient, `ewm--frame-scale`, is the number of Emacs pixels per logical pixel,
+1.0 on a GTK host where both are the GDK scale.  The lisp converts at the boundary in
+both directions:
+
+- layout entries and the frame `:width`/`:height` in `ewm-layout--build-frame-plist`,
+  the pointer warp target and floating pop-out sizes use
+  `ewm--window-body-logical-rect`.
+- pointer coordinates from the compositor (`focus` events, `ewm-get-pointer-location`)
+  go through `ewm--window-at-logical`.
+- `ewm--fit-floating-frame` converts the wanted logical client size to Emacs pixels
+  before `set-frame-size`.
+
 ## Scale Notification
 
 ### The Two-Protocol Problem
@@ -364,6 +382,7 @@ emacsclient --socket-name=vt2 -e '(ewm-configure-output "DP-1" :scale 1.5)'
 | Cursor offset at fractional scale | Integer truncation in cursor position | Use `to_physical_precise_round(scale)` |
 | Window loses output after hide/show | `space.refresh()` calls `output.leave()` for off-screen windows | Use `cleanup_dead_windows()` instead |
 | GTK4 popup blurry | No `send_scale_transform` before initial configure | `output_for_popup` -> `send_scale_transform` in `commit()` |
+| Client views too large or offset inside Emacs frames | Emacs pixel units sent as logical pixels | `ewm--frame-scale` converts at the lisp boundary |
 | Working area wrong after scale change | `check_working_area_change` not called | Ensure `apply_output_config` calls it after state change |
 
 ### Key Code Locations

@@ -265,9 +265,10 @@ EXTRA-PARAMS win over the defaults, so a caller can override `visibility'."
 (defun ewm--fit-floating-frame (frame width height)
   "Size FRAME so its client window body is WIDTH×HEIGHT logical pixels."
   (let ((rect (ewm--window-body-pixel-rect (frame-selected-window frame)))
-        (area (frame-monitor-workarea frame)))
+        (area (frame-monitor-workarea frame))
+        (scale (ewm--frame-scale frame)))
     (cl-flet ((axis (want limit text body)
-                (round (+ (min want limit) (- text body)))))
+                (round (+ (min (* want scale) limit) (- text body)))))
       (set-frame-size frame
                       (axis width (nth 2 area) (frame-text-width frame) (nth 2 rect))
                       (axis height (nth 3 area) (frame-text-height frame) (nth 3 rect))
@@ -321,7 +322,7 @@ own placements add `ewm-output' and `ewm-position' (top-left X . Y)."
 (defun ewm--floating-detach-selected-buffer (frame)
   "Detach FRAME's selected buffer into a floating frame centered over its tile."
   (let* ((source-window (frame-selected-window frame))
-         (rect (ewm--window-body-pixel-rect source-window))
+         (rect (ewm--window-body-logical-rect source-window))
          (w (nth 2 rect))
          (h (nth 3 rect))
          (fw (round (* w ewm-floating-popout-scale)))
