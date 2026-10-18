@@ -406,6 +406,82 @@ buffer; `mapped' displays and publishes it."
           (should-not (ewm--handle-focus event))
           (should (eq (selected-window) initially-selected)))))))
 
+;;;; Focus changes are command boundaries
+;;
+;; telega restores point in `post-command-hook' once the buffer changes. A
+;; selection made from the event filter must reach a boundary before the
+;; first typed key, or that key lands behind the restored point.
+
+(defmacro ewm-focus-tests--with-two-windows (&rest body)
+  "Run BODY beside `surface-window', with `event' focusing it."
+  (declare (indent 0))
+  `(ewm-focus-tests--with-frame f
+     (let ((surface-window (split-window (frame-selected-window f) nil t))
+           (event `((focus_id . ,ewm-focus-tests--surface-entry-id)))
+           (unread-command-events nil)
+           (this-command nil)
+           (defining-kbd-macro nil)
+           (post-command-hook nil))
+       (ewm-focus-tests--install-surface-window
+        surface-window ewm-focus-tests--surface-id)
+       (unwind-protect (progn ,@body)
+         (when (window-live-p surface-window) (delete-window surface-window))))))
+
+(ert-deftest ewm-focus/selection-change-queues-focus-change ()
+  "A focus that moves the selection queues one boundary for the selected frame."
+  (ewm-focus-tests--with-two-windows
+    (setq unread-command-events (list ?a '(ewm-focus-change stale)))
+    (ewm--handle-focus event)
+    (should (eq (selected-window) surface-window))
+    (should (equal unread-command-events
+                   (list ?a (list 'ewm-focus-change (selected-frame)))))))
+
+(ert-deftest ewm-focus/unchanged-selection-queues-nothing ()
+  "A focus on the selected window is no boundary."
+  (ewm-focus-tests--with-two-windows
+    (select-window surface-window)
+    (ewm--handle-focus event)
+    (should-not unread-command-events)
+    (should-not post-command-hook)))
+
+(ert-deftest ewm-focus/selection-change-during-command-waits-for-its-end ()
+  "A running command never reads the boundary, it is queued once it ends."
+  (ewm-focus-tests--with-two-windows
+    (setq this-command 'some-command)
+    (ewm--handle-focus event)
+    (should-not unread-command-events)
+    (run-hooks 'post-command-hook)
+    (should (equal unread-command-events
+                   (list (list 'ewm-focus-change (selected-frame)))))
+    (should-not post-command-hook)))
+
+(ert-deftest ewm-focus/focus-change-is-held-back-like-a-frame-switch ()
+  "The event waits for the key sequence in progress, as `switch-frame' does."
+  (should (eq (get 'ewm-focus-change 'event-kind) 'switch-frame))
+  (let* ((event (list 'ewm-focus-change (selected-frame)))
+         (unread-command-events (list ?\C-x event ?b)))
+    (should (equal (read-key-sequence-vector nil nil nil t) [?\C-x ?b]))
+    (should (equal (read-key-sequence-vector nil nil nil t) (vector event)))))
+
+(ert-deftest ewm-focus/selection-change-while-defining-macro-queues-nothing ()
+  "Events unread from the filter are recorded, so a macro would keep the boundary."
+  (ewm-focus-tests--with-two-windows
+    (setq defining-kbd-macro t)
+    (ewm--handle-focus event)
+    (should (eq (selected-window) surface-window))
+    (should-not unread-command-events)
+    (should-not post-command-hook)))
+
+(ert-deftest ewm-focus/focus-change-keeps-last-command ()
+  "The command after a focus change sees the one before it as `last-command'."
+  (let ((last-command 'undo)
+        (pre-command-hook nil))
+    (ewm--focus-change)
+    (setq last-command 'ewm--focus-change)
+    (run-hooks 'pre-command-hook)
+    (should (eq last-command 'undo))
+    (should-not pre-command-hook)))
+
 ;;;; Handler-boilerplate contracts
 ;;
 ;; Compositor can queue events whose surface dies first; the macro must

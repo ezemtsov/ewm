@@ -50,6 +50,40 @@ window switching is handled by `ewm--handle-focus' from those events."
     (ewm--frame-by-surface-id
      (logand focus-id (1- ewm-layout--frame-focus-id-marker)))))
 
+;; Held back like a frame switch until the key sequence in progress ends.
+(put 'ewm-focus-change 'event-kind 'switch-frame)
+(add-to-list 'selection-inhibit-update-commands 'ewm--focus-change)
+
+(defvar ewm--focus-change-last-command nil
+  "`last-command' before the latest `ewm--focus-change'.")
+
+(defun ewm--focus-change ()
+  "Do nothing, so a compositor focus change ends in a command boundary."
+  (interactive)
+  (setq ewm--focus-change-last-command last-command)
+  (add-hook 'pre-command-hook #'ewm--restore-last-command)
+  (setq prefix-arg current-prefix-arg))
+
+(defun ewm--restore-last-command ()
+  "Give the next command the `last-command' from before the focus change."
+  (remove-hook 'pre-command-hook #'ewm--restore-last-command)
+  (setq last-command ewm--focus-change-last-command))
+
+(defun ewm--unread-focus-change ()
+  "Queue an `ewm-focus-change' event, dropping older ones."
+  (remove-hook 'post-command-hook #'ewm--unread-focus-change)
+  (setq unread-command-events
+        (append (seq-remove (lambda (event) (eq (car-safe event) 'ewm-focus-change))
+                            unread-command-events)
+                (list (list 'ewm-focus-change (selected-frame))))))
+
+(defun ewm--queue-focus-change ()
+  "Make the selection change a command boundary, as a frame switch is."
+  ;; A macro would record the event, `read-event' would return it.
+  (cond (defining-kbd-macro)
+        (this-command (add-hook 'post-command-hook #'ewm--unread-focus-change 90))
+        (t (ewm--unread-focus-change))))
+
 (defun ewm--handle-focus (event)
   "Mirror compositor focus EVENT into Emacs selection."
   (unless (ewm-layout--menu-active-p)
@@ -57,7 +91,8 @@ window switching is handled by `ewm--handle-focus' from those events."
            (x (alist-get 'x event))
            (y (alist-get 'y event))
            (pointer (and (alist-get 'pointer event) x y))
-           (ffm (and ewm-focus-follows-mouse pointer)))
+           (ffm (and ewm-focus-follows-mouse pointer))
+           (window (selected-window)))
       (cond
        ((when-let* ((win (ewm--find-window-by-entry-id focus-id)))
           (select-frame (window-frame win))
@@ -73,7 +108,9 @@ window switching is handled by `ewm--handle-focus' from those events."
           ;; Anchor only on pointer focus; keyboard events must leave it stale so MFF warps.
           (when pointer
             (setq ewm--mff-last-window (selected-window)))
-          t))))))
+          t)))
+      (unless (eq window (selected-window))
+        (ewm--queue-focus-change)))))
 
 (provide 'ewm-focus)
 ;;; ewm-focus.el ends here

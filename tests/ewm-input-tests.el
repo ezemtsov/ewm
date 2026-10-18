@@ -316,6 +316,12 @@
     (should (equal calls '(:clear-redirect)))
     (should-not ewm-input--keyboard-capture-token)))
 
+(ert-deftest ewm-input-tests/keyboard-capture-sync-skips-focus-change ()
+  "A focus boundary may run ahead of a redirected key, so it keeps capture."
+  (ewm-input-tests--with-capture-state (nil 'ewm--focus-change)
+    (ewm-input--sync-keyboard-capture)
+    (should-not calls)))
+
 (ert-deftest ewm-input-tests/keyboard-capture-sync-begins-prefix-token ()
   "A keymap prefix command begins compositor keyboard capture."
   (ewm-input-tests--with-capture-state (nil nil)

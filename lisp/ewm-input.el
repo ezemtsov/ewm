@@ -403,11 +403,13 @@ redirect capture."
 
 (defun ewm-input--sync-keyboard-capture ()
   "Synchronize compositor keyboard capture with current Emacs input state."
-  (let ((capture-active
-         (and (ewm-input--modal-input-active-p)
-              (or ewm-input--keyboard-capture-token
-                  (ewm-input--keyboard-capture-start-allowed-p)))))
-    (ewm-input--set-keyboard-capture capture-active (not capture-active))))
+  ;; A focus change ends no modal input, and may precede a redirected key.
+  (unless (eq this-command 'ewm--focus-change)
+    (let ((capture-active
+           (and (ewm-input--modal-input-active-p)
+                (or ewm-input--keyboard-capture-token
+                    (ewm-input--keyboard-capture-start-allowed-p)))))
+      (ewm-input--set-keyboard-capture capture-active (not capture-active)))))
 
 (defun ewm-send-key (key &optional surface-id)
   "Send KEY, a key description, to SURFACE-ID or the current surface buffer's.
@@ -494,6 +496,7 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   ;; PGTK reports GDK focus changes as `switch-frame' events. Kept out of the
   ;; command loop, they cannot fire `post-command-hook' mid-prefix.
   (define-key special-event-map [switch-frame] #'ignore)
+  (define-key global-map [ewm-focus-change] #'ewm--focus-change)
   (setq-default input-method-function
                 (apply-partially #'ewm-input--in-selected-window #'list))
   (advice-add 'quail-input-method :around #'ewm-input--in-selected-window)
@@ -512,6 +515,7 @@ Nil for both means the focused surface. Waits while Emacs holds the keyboard."
   (ewm-input--set-read-function-capture nil)
   (ewm-input--set-keyboard-capture nil t)
   (define-key special-event-map [switch-frame] nil)
+  (define-key global-map [ewm-focus-change] nil)
   (setq-default input-method-function #'list)
   (advice-remove 'quail-input-method #'ewm-input--in-selected-window)
   (advice-remove 'define-key #'ewm-input--on-define-key)
