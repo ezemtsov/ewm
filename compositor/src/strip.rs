@@ -221,6 +221,12 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// The frame's own surface and those its views show.
+    pub fn surface_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        std::iter::once(self.surface_id)
+            .chain(self.entries.iter().filter_map(LayoutEntry::surface_id))
+    }
+
     /// EWM made this frame to fill an output and nobody has used or named it.
     pub fn is_filler(&self) -> bool {
         self.owner == Owner::Compositor && self.workspace_name.is_none()

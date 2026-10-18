@@ -31,11 +31,7 @@ pub(crate) struct LayoutEntryLocation<'a> {
 impl<'a> LayoutEntryLocation<'a> {
     /// Whether the entry is on screen: in a shown float, or in the strip's active frame.
     pub(crate) fn shown(&self) -> bool {
-        if self.floating {
-            self.monitor.float_shown(self.frame)
-        } else {
-            self.monitor.strip.active_idx() == self.frame_idx
-        }
+        self.frame_location().shown()
     }
 
     pub(crate) fn frame_location(&self) -> FrameLocation<'a> {
@@ -66,6 +62,15 @@ pub struct FrameLocation<'a> {
 }
 
 impl<'a> FrameLocation<'a> {
+    /// Whether the frame is on screen: a shown float, or the strip's active frame.
+    pub(crate) fn shown(&self) -> bool {
+        if self.floating {
+            self.monitor.float_shown(self.frame)
+        } else {
+            self.monitor.strip.active_idx() == self.frame_idx
+        }
+    }
+
     /// Screen x of the strip slot the frame rides in.
     pub(crate) fn slot_x(&self) -> f64 {
         if self.floating {
@@ -832,6 +837,17 @@ impl Layout {
             .collect()
     }
 
+    /// Each monitor's active frame, or every frame when `every_frame`, its floats on screen,
+    /// and the surfaces their views show.
+    pub(crate) fn shown_surface_ids(&self, every_frame: bool) -> HashSet<u64> {
+        self.monitors
+            .iter()
+            .flat_map(Monitor::frame_locations)
+            .filter(|location| every_frame || location.shown())
+            .flat_map(|location| location.frame.surface_ids())
+            .collect()
+    }
+
     /// Floats on screen, `active` being each monitor's active strip frame.
     pub(crate) fn shown_floats(&self, active: impl Fn(&Monitor) -> Option<u64>) -> HashSet<u64> {
         self.monitors
@@ -933,12 +949,6 @@ impl Layout {
         })
     }
 
-    /// Frames no monitor shows: inactive strip frames and parked ones.
-    pub(crate) fn unshown_frame_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.inactive_frame_ids()
-            .chain(self.homeless.iter().map(|frame| frame.surface_id))
-    }
-
     /// Every entry with the output showing it.
     pub fn entry_outputs(&self) -> impl Iterator<Item = (LayoutEntryId, &Output)> {
         self.entry_locations()
@@ -972,10 +982,7 @@ impl Layout {
         self.monitor_of(output)
             .into_iter()
             .flat_map(Monitor::frames)
-            .flat_map(|frame| {
-                std::iter::once(frame.surface_id)
-                    .chain(frame.entries.iter().filter_map(LayoutEntry::surface_id))
-            })
+            .flat_map(strip::Frame::surface_ids)
             .collect()
     }
 

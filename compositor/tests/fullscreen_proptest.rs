@@ -181,6 +181,7 @@ fn drain(fix: &mut Fixture, clients: &mut Clients) {
             width,
             height,
             fullscreen,
+            ..
         } = event
         else {
             continue;

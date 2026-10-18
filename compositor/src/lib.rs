@@ -2313,6 +2313,38 @@ impl Ewm {
         }
     }
 
+    /// Surfaces some output shows, none with the frames hidden.
+    fn shown_surface_ids(&self) -> HashSet<u64> {
+        if self.frames_hidden() {
+            return HashSet::new();
+        }
+        self.layout.shown_surface_ids(self.overview.is_active())
+    }
+
+    /// Tell each placed toplevel whether some output shows it. Unplaced ones keep drawing
+    /// their first buffer.
+    pub fn refresh_suspended(&mut self) {
+        let shown = self.shown_surface_ids();
+        for (id, surface) in &mut self.surfaces {
+            let suspended = surface.placed && !shown.contains(id);
+            if surface.suspended == suspended {
+                continue;
+            }
+            surface.suspended = suspended;
+            let Some(toplevel) = surface.window.toplevel() else {
+                continue;
+            };
+            toplevel.with_pending_state(|state| {
+                if suspended {
+                    state.states.set(XdgToplevelState::Suspended);
+                } else {
+                    state.states.unset(XdgToplevelState::Suspended);
+                }
+            });
+            toplevel.send_pending_configure();
+        }
+    }
+
     /// Configure the native idle timeout.
     /// Passing `None` for timeout disables it.
     pub fn configure_idle(&mut self, timeout: Option<Duration>, action: IdleAction) {
@@ -3195,15 +3227,12 @@ impl Ewm {
     /// prevents busy-looping since it won't re-send if a callback was already
     /// sent recently through the normal path.
     fn fallback_hidden_emacs_ids(&self) -> HashSet<u64> {
-        if self.frames_hidden() {
-            // Hidden frames have slid off their outputs too.
-            return self
-                .layout
-                .all_frames()
-                .map(|frame| frame.surface_id)
-                .collect();
-        }
-        self.layout.unshown_frame_ids().collect()
+        let shown = self.shown_surface_ids();
+        self.layout
+            .all_frames()
+            .map(|frame| frame.surface_id)
+            .filter(|id| !shown.contains(id))
+            .collect()
     }
 
     pub fn send_frame_callbacks_on_fallback_timer(&self) {
@@ -5485,6 +5514,7 @@ impl State {
 
         self.ewm.refresh_idle_inhibit();
         self.ewm.refresh_cursor_outputs();
+        self.ewm.refresh_suspended();
 
         // Refresh workspace protocol state (pull model: diff source of truth vs mirrors).
         crate::protocols::workspace::refresh::<State>(

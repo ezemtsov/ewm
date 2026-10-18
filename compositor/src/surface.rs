@@ -54,6 +54,8 @@ pub struct SurfaceState {
     pub pending_title: Option<PendingTitle>,
     /// Outputs showing it.
     pub outputs: HashSet<String>,
+    /// Told no output shows it.
+    pub suspended: bool,
     /// Fullscreen as a client or Emacs asked, what the configure says.
     pub pending_fullscreen: bool,
     /// Fullscreen as the client last committed it, what its views show.
@@ -94,6 +96,7 @@ impl SurfaceState {
             pending_activation: None,
             pending_title: None,
             outputs: HashSet::new(),
+            suspended: false,
             pending_fullscreen: false,
             fullscreen: false,
             open: None,

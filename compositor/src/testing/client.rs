@@ -78,6 +78,7 @@ pub enum ClientEvent {
         width: i32,
         height: i32,
         fullscreen: bool,
+        suspended: bool,
     },
     SurfaceEnter {
         surface: wl_surface::WlSurface,
@@ -731,15 +732,18 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for ClientState {
             states,
         } = event
         {
-            let fullscreen = states
-                .chunks_exact(4)
-                .map(|state| u32::from_ne_bytes(state.try_into().unwrap()))
-                .any(|state| state == xdg_toplevel::State::Fullscreen as u32);
+            let has = |wanted: xdg_toplevel::State| {
+                states
+                    .chunks_exact(4)
+                    .map(|state| u32::from_ne_bytes(state.try_into().unwrap()))
+                    .any(|state| state == wanted as u32)
+            };
             state.events.push(ClientEvent::ToplevelConfigure {
                 toplevel: toplevel.clone(),
                 width,
                 height,
-                fullscreen,
+                fullscreen: has(xdg_toplevel::State::Fullscreen),
+                suspended: has(xdg_toplevel::State::Suspended),
             });
         }
     }

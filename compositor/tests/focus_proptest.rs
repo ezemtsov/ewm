@@ -13,12 +13,13 @@ use std::sync::Mutex;
 use ewm_core::event::Event;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{
-    Fixture, TestClient, Toplevel, clear_pending_frames, mark_active_frame_close, nz,
+    ClientEvent, Fixture, TestClient, Toplevel, clear_pending_frames, mark_active_frame_close, nz,
     prepare_frame, strip_with_frame_ids,
 };
 use ewm_core::{Action, LayoutEntry, LayoutEntryId, OutputConfig, OverviewAction};
 use proptest::prelude::*;
 use smithay::utils::Size;
+use wayland_client::Proxy as _;
 
 const OUTPUTS: [&str; 2] = ["HEAD-A", "HEAD-B"];
 const MAX_FRAMES: usize = 3;
@@ -909,6 +910,113 @@ proptest! {
                     id,
                     shown.get(&id),
                 );
+            }
+        }
+    }
+}
+
+/// The layout entries that show real app windows.
+const APP_ENTRY_SIDS: [u64; 2] = [1001, 1002];
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
+    /// A placed toplevel is told it is suspended iff no shown frame holds it, a frame showing
+    /// when Lisp was last told so, and none while the frames are hidden.
+    #[test]
+    fn suspended_tracks_shown(ops in prop::collection::vec(op_strategy(), 1..30)) {
+        let _serial = SERIAL.lock().unwrap();
+        let mut fix = Fixture::new().unwrap();
+        fix.ewm().animations_clock.set_complete_instantly(true);
+        for name in OUTPUTS {
+            fix.add_output(name, 1920, 1080);
+        }
+        // Opened before Emacs's pid is known, so these are app windows.
+        let mut apps = fix.new_client().unwrap();
+        fix.roundtrip(&mut apps);
+        let app_windows: Vec<(Toplevel, u64)> = APP_ENTRY_SIDS
+            .iter()
+            .map(|_| fix.open_toplevel_with_id(&mut apps, "app", Size::from((400, 300))))
+            .collect();
+        let mut frames = Frames::new(&mut fix);
+        fix.enable_event_capture();
+        let mut told: HashMap<u64, bool> = HashMap::new();
+        let mut frame_shown: HashMap<u64, bool> = HashMap::new();
+        let mut hidden = false;
+
+        for op in ops {
+            match op {
+                Op::ApplyLayout { frames: mut specs } => {
+                    for entry in specs.iter_mut().flat_map(|spec| &mut spec.entries) {
+                        if let Some(index) =
+                            APP_ENTRY_SIDS.iter().position(|&sid| sid == entry.surface_id)
+                        {
+                            entry.surface_id = app_windows[index].1;
+                        }
+                    }
+                    apply_op(&mut fix, &mut frames, Op::ApplyLayout { frames: specs });
+                }
+                op => apply_op(&mut fix, &mut frames, op),
+            }
+            fix.dispatch();
+            fix.roundtrip(&mut frames.client);
+            fix.roundtrip(&mut apps);
+            // Proxies of different clients can share an id, so match each client's own.
+            let frame_sids = frames.toplevels.values();
+            for (client, toplevels) in [
+                (&mut frames.client, frame_sids.collect::<Vec<_>>()),
+                (&mut apps, app_windows.iter().collect()),
+            ] {
+                for event in client.drain_events() {
+                    if let ClientEvent::ToplevelConfigure { toplevel, suspended, .. } = event
+                        && let Some((_, sid)) =
+                            toplevels.iter().find(|(top, _)| top.xdg_toplevel.id() == toplevel.id())
+                    {
+                        told.insert(*sid, suspended);
+                    }
+                }
+            }
+
+            for event in fix.drain_events() {
+                match event {
+                    Event::FrameShown { id } => {
+                        frame_shown.insert(id, true);
+                    }
+                    Event::FrameHidden { id } => {
+                        frame_shown.insert(id, false);
+                    }
+                    Event::Hide { hidden: now } => hidden = now,
+                    _ => {}
+                }
+            }
+
+            let ewm = fix.ewm_ref();
+            let mut shown = HashSet::new();
+            if !hidden {
+                for monitor in ewm.layout.monitors() {
+                    let frames = monitor.strip.frames().iter().chain(monitor.floating.frames());
+                    for frame in frames {
+                        if frame_shown.get(&frame.surface_id) == Some(&true) {
+                            shown.insert(frame.surface_id);
+                            shown.extend(frame.entries.iter().filter_map(LayoutEntry::surface_id));
+                        }
+                    }
+                }
+            }
+            for (&sid, surface) in &ewm.surfaces {
+                if surface.placed {
+                    prop_assert_eq!(
+                        told.get(&sid).copied().unwrap_or(false),
+                        !shown.contains(&sid),
+                        "surface {} (emacs {})",
+                        sid,
+                        surface.emacs,
+                    );
+                }
             }
         }
     }
