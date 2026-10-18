@@ -740,7 +740,7 @@ Return a report string."
                             (foreground-color . "black"))
                           1000 5 20)
               (wl-skia-smoke--settle 2)
-              (let ((tip pwayl-tip-frame))
+              (let ((tip pwayl--tip-frame))
                 (check "tooltip frame created"
                        (and (framep tip) (frame-live-p tip))
                        (format "%S" tip))
@@ -756,13 +756,13 @@ Return a report string."
                     (check "tooltip frame marked internal"
                            (not (memq tip (frame-list)))
                            (format "frame-list=%S" (frame-list))))))
-              (let ((first-tip pwayl-tip-frame))
+              (let ((first-tip pwayl--tip-frame))
                 (check "tooltip frame hidden" (x-hide-tip) "x-hide-tip")
                 (check "tooltip frame cached invisible"
-                       (and (framep pwayl-tip-frame)
-                            (frame-live-p pwayl-tip-frame)
-                            (not (frame-visible-p pwayl-tip-frame)))
-                       (format "%S" pwayl-tip-frame))
+                       (and (framep pwayl--tip-frame)
+                            (frame-live-p pwayl--tip-frame)
+                            (not (frame-visible-p pwayl--tip-frame)))
+                       (format "%S" pwayl--tip-frame))
                 ;; Same parent and parameters: the cached frame must be
                 ;; reused instead of created from scratch (P6w).
                 (x-show-tip "Wayland tooltip smoke again" f
@@ -773,11 +773,11 @@ Return a report string."
                             1000 5 20)
                 (wl-skia-smoke--settle 2)
                 (check "tooltip frame reused"
-                       (and (framep pwayl-tip-frame)
-                            (frame-live-p pwayl-tip-frame)
-                            (eq pwayl-tip-frame first-tip)
-                            (frame-visible-p pwayl-tip-frame))
-                       (format "first=%S now=%S" first-tip pwayl-tip-frame))
+                       (and (framep pwayl--tip-frame)
+                            (frame-live-p pwayl--tip-frame)
+                            (eq pwayl--tip-frame first-tip)
+                            (frame-visible-p pwayl--tip-frame))
+                       (format "first=%S now=%S" first-tip pwayl--tip-frame))
                 (check "tooltip frame hidden again" (x-hide-tip)
                        "x-hide-tip")))
           (error
