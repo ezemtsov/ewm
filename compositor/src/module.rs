@@ -550,6 +550,10 @@ pub enum ModuleCommand {
     SetIdleInhibited {
         inhibited: bool,
     },
+    /// Closed-lid suspend
+    ConfigurePower {
+        closed_lid_suspends: bool,
+    },
     /// Monitors off until a waking input, unlock or `PowerOnMonitors`
     PowerOffMonitors,
     /// Monitors back on
@@ -1832,6 +1836,15 @@ fn configure_background_module(red: f64, green: f64, blue: f64) -> Result<()> {
 fn set_idle_inhibited(inhibited: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::SetIdleInhibited {
         inhibited: inhibited.is_not_nil(),
+    });
+    Ok(())
+}
+
+/// Configure closed-lid suspend (module mode).
+#[defun]
+fn configure_power_module(closed_lid_suspends: Value<'_>) -> Result<()> {
+    push_command(ModuleCommand::ConfigurePower {
+        closed_lid_suspends: closed_lid_suspends.is_not_nil(),
     });
     Ok(())
 }

@@ -38,6 +38,7 @@
 (ewm-test--stub ewm-prepare-frame-close-module (_surface-id) nil)
 (ewm-test--stub ewm-intercept-keys-module (_keys) nil)
 (ewm-test--stub ewm-configure-idle-module (_secs _cmd) nil)
+(ewm-test--stub ewm-configure-power-module (_closed-lid-suspends) nil)
 (ewm-test--stub ewm-configure-cursor-module (_theme _size) nil)
 (ewm-test--stub ewm-configure-cursor-hide-module (_timeout _when-typing) nil)
 (ewm-test--stub ewm-set-focus-follows-mouse (_enabled) nil)

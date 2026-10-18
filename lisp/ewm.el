@@ -234,6 +234,21 @@ of inactivity.  Useful for video playback or presentations."
   (when ewm--module-mode
     (ewm-set-idle-inhibited ewm-idle-inhibited)))
 
+(define-minor-mode ewm-insomnia-mode
+  "Keep the system awake with the lid closed.
+The panel turns off, windows are asked to stop drawing and other sleep
+requests are refused."
+  :global t
+  :group 'ewm
+  (when ewm--module-mode
+    (ewm--send-power-config))
+  (when (called-interactively-p 'any)
+    (message "Insomnia mode: %s" (if ewm-insomnia-mode "on" "off"))))
+
+(defun ewm--send-power-config ()
+  "Send `ewm-insomnia-mode' to the compositor."
+  (ewm-configure-power-module (not ewm-insomnia-mode)))
+
 (defcustom ewm-cursor-theme nil
   "Xcursor theme used by EWM and clients launched from it.
 When nil, EWM picks a loadable theme from the session environment."
@@ -770,6 +785,7 @@ The compositor runs as a thread within the Emacs process."
     (add-hook 'after-init-hook #'ewm--send-intercept-keys))
   (ewm--apply-user-config "ewm-input-config" #'ewm--send-input-config)
   (ewm--send-idle-config)
+  (ewm--send-power-config)
   (ewm--send-cursor-config)
   (ewm--send-cursor-hide-config)
   (ewm-text-input--send-provider)

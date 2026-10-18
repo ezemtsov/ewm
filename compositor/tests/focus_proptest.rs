@@ -915,6 +915,12 @@ proptest! {
     }
 }
 
+#[derive(Debug, Clone)]
+enum SuspendOp {
+    Op(Op),
+    Unattended(bool),
+}
+
 /// The layout entries that show real app windows.
 const APP_ENTRY_SIDS: [u64; 2] = [1001, 1002];
 
@@ -926,9 +932,18 @@ proptest! {
     })]
 
     /// A placed toplevel is told it is suspended iff no shown frame holds it, a frame showing
-    /// when Lisp was last told so, and none while the frames are hidden.
+    /// when Lisp was last told so, and none while the frames are hidden or the system is kept
+    /// awake behind a closed lid.
     #[test]
-    fn suspended_tracks_shown(ops in prop::collection::vec(op_strategy(), 1..30)) {
+    fn suspended_tracks_shown(
+        ops in prop::collection::vec(
+            prop_oneof![
+                4 => op_strategy().prop_map(SuspendOp::Op),
+                1 => any::<bool>().prop_map(SuspendOp::Unattended),
+            ],
+            1..30,
+        )
+    ) {
         let _serial = SERIAL.lock().unwrap();
         let mut fix = Fixture::new().unwrap();
         fix.ewm().animations_clock.set_complete_instantly(true);
@@ -947,10 +962,15 @@ proptest! {
         let mut told: HashMap<u64, bool> = HashMap::new();
         let mut frame_shown: HashMap<u64, bool> = HashMap::new();
         let mut hidden = false;
+        let mut unattended = false;
 
         for op in ops {
             match op {
-                Op::ApplyLayout { frames: mut specs } => {
+                SuspendOp::Unattended(on) => {
+                    unattended = on;
+                    fix.ewm().set_unattended(on);
+                }
+                SuspendOp::Op(Op::ApplyLayout { frames: mut specs }) => {
                     for entry in specs.iter_mut().flat_map(|spec| &mut spec.entries) {
                         if let Some(index) =
                             APP_ENTRY_SIDS.iter().position(|&sid| sid == entry.surface_id)
@@ -960,7 +980,7 @@ proptest! {
                     }
                     apply_op(&mut fix, &mut frames, Op::ApplyLayout { frames: specs });
                 }
-                op => apply_op(&mut fix, &mut frames, op),
+                SuspendOp::Op(op) => apply_op(&mut fix, &mut frames, op),
             }
             fix.dispatch();
             fix.roundtrip(&mut frames.client);
@@ -996,7 +1016,7 @@ proptest! {
 
             let ewm = fix.ewm_ref();
             let mut shown = HashSet::new();
-            if !hidden {
+            if !unattended && !hidden {
                 for monitor in ewm.layout.monitors() {
                     let frames = monitor.strip.frames().iter().chain(monitor.floating.frames());
                     for frame in frames {

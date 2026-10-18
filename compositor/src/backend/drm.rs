@@ -111,13 +111,14 @@ const WAKE_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MODE_REFRESH_TOLERANCE_MILLIHERTZ: u32 = 1000;
 
 #[derive(Clone, Copy, Debug)]
-enum LidPolicyReason {
+pub(crate) enum LidPolicyReason {
     Startup,
     Resume,
     Wake,
     Hotplug,
     LidEvent,
     SettlingTimeout,
+    Config,
 }
 
 impl LidPolicyReason {
@@ -2260,6 +2261,13 @@ impl DrmBackendState {
         }
     }
 
+    /// Re-run the policy behind a closed lid, as after a setting or a GPU changes.
+    pub(crate) fn reapply_lid_policy(&mut self, ewm: &mut Ewm, reason: LidPolicyReason) {
+        if self.session_active() && self.lid_closed {
+            self.apply_lid_policy(ewm, reason);
+        }
+    }
+
     /// Handle lid open/close by reconciling the current connector topology.
     pub fn on_lid_state_changed(&mut self, ewm: &mut Ewm) {
         self.lid_supported = true;
@@ -2272,6 +2280,9 @@ impl DrmBackendState {
             return false;
         }
 
+        if !self.lid_closed || self.has_external_connector() {
+            self.set_unattended(ewm, false);
+        }
         ewm.activate_monitors();
         if self.laptop_panels_suppressed() {
             self.cancel_closed_lid_settle_timer();
@@ -2293,7 +2304,7 @@ impl DrmBackendState {
                 return true;
             }
         } else {
-            self.suspend_closed_lid_without_external(ewm, reason);
+            self.closed_lid_without_external(ewm, reason);
         }
         ewm.queue_event(crate::event::Event::OutputsComplete);
         true
@@ -2387,7 +2398,7 @@ impl DrmBackendState {
         info!("Lid closed with no external display; settling for {timeout:?}");
 
         let Some(handle) = self.loop_handle.clone() else {
-            self.suspend_closed_lid_without_external(ewm, reason);
+            self.closed_lid_without_external(ewm, reason);
             return;
         };
 
@@ -2401,7 +2412,7 @@ impl DrmBackendState {
             Ok(token) => self.closed_lid_settle_timer = Some(token),
             Err(err) => {
                 warn!("Failed to start closed-lid settle timer: {:?}", err);
-                self.suspend_closed_lid_without_external(ewm, reason);
+                self.closed_lid_without_external(ewm, reason);
             }
         }
     }
@@ -2420,18 +2431,29 @@ impl DrmBackendState {
         self.apply_lid_policy(ewm, LidPolicyReason::SettlingTimeout);
     }
 
-    /// Suspend with the panel lit so the kernel restores it, or blank it without logind.
-    fn suspend_closed_lid_without_external(&self, ewm: &mut Ewm, reason: LidPolicyReason) {
-        match &self.logind {
-            Some(logind) => {
-                info!(
-                    "Lid closed with no external display after {:?}, suspending",
-                    reason
-                );
+    /// Logind refuses others' sleep requests while unattended.
+    fn set_unattended(&mut self, ewm: &mut Ewm, unattended: bool) {
+        ewm.set_unattended(unattended);
+        if let Some(logind) = &mut self.logind {
+            logind.set_sleep_inhibited(unattended);
+        }
+    }
+
+    /// Suspend with the panel lit so the kernel restores it, else stay awake with it dark.
+    fn closed_lid_without_external(&mut self, ewm: &mut Ewm, reason: LidPolicyReason) {
+        if ewm.closed_lid_suspends && self.logind.is_some() {
+            info!("Lid closed with no external display after {reason:?}, suspending");
+            self.set_unattended(ewm, false);
+            ewm.activate_monitors();
+            if let Some(logind) = &self.logind {
                 logind.suspend();
             }
-            None => ewm.deactivate_monitors(),
+            return;
         }
+        info!("Lid closed with no external display after {reason:?}, staying awake");
+        self.set_unattended(ewm, true);
+        ewm.deactivate_monitors();
+        self.clear_all_surfaces();
     }
 
     fn device_added(
@@ -3097,16 +3119,18 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
             }
             UdevEvent::Added { device_id, path } => {
                 debug!("UDev device added: {:?} at {:?}", device_id, path);
-                if let Some(drm) = state.backend.as_drm_mut()
-                    && let Err(err) = drm.device_added(device_id, &path, &mut state.ewm)
-                {
-                    warn!("Failed to add DRM device from udev: {:?}", err);
+                if let Some(drm) = state.backend.as_drm_mut() {
+                    if let Err(err) = drm.device_added(device_id, &path, &mut state.ewm) {
+                        warn!("Failed to add DRM device from udev: {:?}", err);
+                    }
+                    drm.reapply_lid_policy(&mut state.ewm, LidPolicyReason::Hotplug);
                 }
             }
             UdevEvent::Removed { device_id } => {
                 debug!("UDev device removed: {:?}", device_id);
                 if let Some(drm) = state.backend.as_drm_mut() {
                     drm.device_removed(device_id, &mut state.ewm);
+                    drm.reapply_lid_policy(&mut state.ewm, LidPolicyReason::Hotplug);
                 }
             }
         })?;

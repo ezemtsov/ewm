@@ -1,4 +1,4 @@
-//! The logind session: the lid-switch inhibitor, suspend, and the end of sleep.
+//! The logind session: the lid-switch and sleep inhibitors, suspend, and the end of sleep.
 
 use std::os::fd::OwnedFd;
 
@@ -15,6 +15,7 @@ pub enum Login1ToEwm {
 pub struct Login1 {
     conn: Connection,
     _lid_inhibitor: OwnedFd,
+    sleep_inhibitor: Option<OwnedFd>,
     _wake_watcher: zbus::Task<()>,
 }
 
@@ -32,8 +33,21 @@ impl Login1 {
         Some(Self {
             conn,
             _lid_inhibitor: lid_inhibitor,
+            sleep_inhibitor: None,
             _wake_watcher: wake_watcher,
         })
+    }
+
+    /// Refuse sleep requests from others, as while kept awake behind a closed lid.
+    pub fn set_sleep_inhibited(&mut self, inhibited: bool) {
+        if !inhibited {
+            self.sleep_inhibitor = None;
+        } else if self.sleep_inhibitor.is_none() {
+            self.sleep_inhibitor =
+                inhibit(&self.conn, "sleep", "Insomnia mode keeps the system awake")
+                    .inspect_err(|e| warn!("Failed to acquire sleep inhibitor: {e}"))
+                    .ok();
+        }
     }
 
     /// Ask logind to suspend the system.

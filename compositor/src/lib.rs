@@ -957,6 +957,12 @@ pub struct Ewm {
     /// Manually inhibited from Emacs (e.g., `ewm-idle-inhibit-mode').
     pub manual_idle_inhibited: bool,
 
+    /// Whether a closed lid without an external display suspends, else it turns the panel off.
+    pub closed_lid_suspends: bool,
+
+    /// Kept awake behind a closed lid: panel off, clients suspended.
+    pub unattended: bool,
+
     // D-Bus ScreenSaver connection (must be kept alive for the interface to work)
     pub dbus_screensaver_conn: Option<zbus::blocking::Connection>,
 
@@ -1321,6 +1327,8 @@ impl Ewm {
             is_fdo_idle_inhibited: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             idle_is_inhibited: false,
             manual_idle_inhibited: false,
+            closed_lid_suspends: true,
+            unattended: false,
             dbus_screensaver_conn: None,
             gamma_control_state,
             fractional_scale_state,
@@ -2306,6 +2314,10 @@ impl Ewm {
 
     /// Monitors on. The next queued frame re-enables each CRTC.
     pub fn activate_monitors(&mut self) {
+        // Dark until the lid opens or an external display appears.
+        if self.unattended {
+            return;
+        }
         if !self.monitors_active {
             info!("Monitors activated");
             self.monitors_active = true;
@@ -2313,9 +2325,17 @@ impl Ewm {
         }
     }
 
-    /// Surfaces some output shows, none with the frames hidden.
+    /// Kept awake behind a closed lid, nothing shows any window.
+    pub fn set_unattended(&mut self, unattended: bool) {
+        if self.unattended != unattended {
+            info!("Unattended: {unattended}");
+            self.unattended = unattended;
+        }
+    }
+
+    /// Surfaces some output shows, none while unattended or with the frames hidden.
     fn shown_surface_ids(&self) -> HashSet<u64> {
-        if self.frames_hidden() {
+        if self.unattended || self.frames_hidden() {
             return HashSet::new();
         }
         self.layout.shown_surface_ids(self.overview.is_active())
@@ -3135,6 +3155,11 @@ impl Ewm {
     /// not visible on this output, and frame callback sequence numbers to prevent
     /// duplicate callbacks within the same VBlank cycle.
     pub fn send_frame_callbacks(&self, output: &Output) {
+        // Unattended, the fallback timer alone paces every surface.
+        if self.unattended {
+            return;
+        }
+
         let sequence = self
             .output_state
             .get(output)
@@ -5999,6 +6024,19 @@ impl State {
             }
             ModuleCommand::SetIdleInhibited { inhibited } => {
                 self.ewm.manual_idle_inhibited = inhibited;
+            }
+            ModuleCommand::ConfigurePower {
+                closed_lid_suspends,
+            } => {
+                let lid_changed =
+                    std::mem::replace(&mut self.ewm.closed_lid_suspends, closed_lid_suspends)
+                        != closed_lid_suspends;
+                if lid_changed && let Some(drm) = self.backend.as_drm_mut() {
+                    drm.reapply_lid_policy(
+                        &mut self.ewm,
+                        crate::backend::drm::LidPolicyReason::Config,
+                    );
+                }
             }
             ModuleCommand::PowerOffMonitors => {
                 self.ewm.deactivate_monitors();
