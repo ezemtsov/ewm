@@ -109,6 +109,11 @@ const CLOSED_LID_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Like logind's HoldoffTimeoutSec: a dock that woke the system needs time to show its display.
 const WAKE_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MODE_REFRESH_TOLERANCE_MILLIHERTZ: u32 = 1000;
+/// How far full sepia blends toward the tinted luma.
+const SEPIA_STRENGTH: f64 = 0.9;
+const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
+/// What white becomes under full sepia.
+const SEPIA_WHITE: [f64; 3] = [1.0, 0.89, 0.69];
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum LidPolicyReason {
@@ -548,6 +553,7 @@ struct OutputSurface {
     gamma_props: Option<GammaProps>,
     /// Pending gamma change to apply when session becomes active
     pending_gamma_change: Option<Option<Vec<u16>>>,
+    ctm_props: Option<CtmProps>,
 }
 
 /// Per-surface DMA-BUF feedback: render path vs direct scanout path.
@@ -768,6 +774,75 @@ fn set_gamma_for_crtc(
     Ok(())
 }
 
+/// The CRTC colour transform matrix, applied after the planes are blended.
+struct CtmProps {
+    crtc: crtc::Handle,
+    ctm: property::Handle,
+    /// The sepia amount last written, none to write it anew.
+    amount: Option<f64>,
+}
+
+impl CtmProps {
+    fn new(device: &DrmDevice, crtc: crtc::Handle) -> Option<Self> {
+        let props = device.get_properties(crtc).ok()?;
+        let ctm = props.into_iter().find_map(|(prop, _)| {
+            let info = device.get_property(prop).ok()?;
+            (info.name().to_str() == Ok("CTM")
+                && matches!(info.value_type(), property::ValueType::Blob))
+            .then_some(prop)
+        })?;
+        Some(Self {
+            crtc,
+            ctm,
+            amount: None,
+        })
+    }
+
+    /// Tint `amount` of the way toward full sepia, unless already written.
+    fn set_sepia(&mut self, device: &DrmDevice, amount: f64) -> anyhow::Result<()> {
+        if self.amount == Some(amount) {
+            return Ok(());
+        }
+        let blob = if amount > 0. {
+            let mut matrix = sepia_ctm(amount * SEPIA_STRENGTH);
+            drm_ffi::mode::create_property_blob(device.as_fd(), cast_slice_mut(&mut matrix))
+                .context("error creating CTM blob")?
+                .blob_id
+        } else {
+            0
+        };
+        let result = device.set_property(
+            self.crtc,
+            self.ctm,
+            property::Value::Blob(blob.into()).into(),
+        );
+        // The CRTC keeps its own reference to a blob it shows.
+        if blob != 0
+            && let Err(err) = device.destroy_property_blob(blob.into())
+        {
+            warn!("error destroying CTM blob: {err:?}");
+        }
+        result.context("error setting CTM")?;
+        self.amount = Some(amount);
+        Ok(())
+    }
+}
+
+/// S31.32 sign-magnitude, row-major, rows are output channels.
+fn sepia_ctm(amount: f64) -> [u64; 9] {
+    std::array::from_fn(|i| {
+        let (row, col) = (i / 3, i % 3);
+        let identity = if row == col { 1.0 - amount } else { 0.0 };
+        let value = identity + amount * SEPIA_WHITE[row] * LUMA[col];
+        let magnitude = (value.abs() * (1u64 << 32) as f64).round() as u64;
+        if value < 0.0 {
+            magnitude | 1 << 63
+        } else {
+            magnitude
+        }
+    })
+}
+
 /// Messages handled by the DRM backend on the event loop.
 pub enum DrmMessage {
     InitializeDrm,
@@ -853,6 +928,8 @@ pub struct DrmBackendState {
 
 impl Drop for DrmBackendState {
     fn drop(&mut self) {
+        // The console would inherit the tint.
+        self.clear_sepia();
         // CRITICAL: Remove session notifier from event loop BEFORE session is dropped.
         // The notifier holds references to session internals that become invalid after
         // session drop. This is essential for embedded mode where process exit doesn't
@@ -1066,6 +1143,11 @@ impl DrmBackendState {
                         );
                     }
                 }
+
+                // The next frame overwrites another master's matrix.
+                if let Some(ctm_props) = &mut surface.ctm_props {
+                    ctm_props.amount = None;
+                }
             }
         }
 
@@ -1130,6 +1212,8 @@ impl DrmBackendState {
             vt,
             self.session.is_some()
         );
+        // The next master would inherit the tint.
+        self.clear_sepia();
         if let Some(ref mut session) = self.session {
             info!("Switching to VT {}", vt);
             if let Err(err) = session.change_vt(vt) {
@@ -1409,6 +1493,12 @@ impl DrmBackendState {
         let Some(surface) = device.surfaces.get_mut(&crtc) else {
             return super::RenderResult::Skipped;
         };
+        // One fade step per redraw.
+        if let Some(ctm_props) = &mut surface.ctm_props
+            && let Err(err) = ctm_props.set_sepia(&device.drm, ewm.sepia_amount())
+        {
+            warn!("error setting CTM for {}: {err:?}", output.name());
+        }
 
         let render_result = surface.compositor.render_frame::<_, _>(
             renderer.as_mut(),
@@ -2109,6 +2199,9 @@ impl DrmBackendState {
             debug!("failed to reset legacy gamma for {connector_name}: {err:?}");
         }
 
+        // The first frame writes it, clearing a previous master's matrix.
+        let ctm_props = CtmProps::new(&device.drm, crtc);
+
         device.surfaces.insert(
             crtc,
             OutputSurface {
@@ -2120,6 +2213,7 @@ impl DrmBackendState {
                 dmabuf_feedback,
                 gamma_props,
                 pending_gamma_change: None,
+                ctm_props,
             },
         );
 
@@ -2258,6 +2352,23 @@ impl DrmBackendState {
         }
         if self.refresh_lid_state_from_acpi() || self.lid_closed {
             self.apply_lid_policy(ewm, LidPolicyReason::Wake);
+        }
+    }
+
+    /// Untint the outputs that are tinted.
+    fn clear_sepia(&mut self) {
+        if !self.session_active() {
+            return;
+        }
+        for device in self.devices.values_mut() {
+            for surface in device.surfaces.values_mut() {
+                if let Some(ctm_props) = &mut surface.ctm_props
+                    && ctm_props.amount.is_some_and(|amount| amount > 0.)
+                    && let Err(err) = ctm_props.set_sepia(&device.drm, 0.)
+                {
+                    warn!("error clearing CTM for {}: {err:?}", surface.output.name());
+                }
+            }
         }
     }
 
@@ -3226,8 +3337,9 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
 #[cfg(test)]
 mod tests {
     use super::{
-        ModeFlags, ModeTypeFlags, calculate_drm_mode_from_modeline, calculate_mode_cvt,
-        drm_mode_modeinfo, mode_refresh_millihertz, parse_acpi_lid_state, pick_advertised_mode,
+        LUMA, ModeFlags, ModeTypeFlags, SEPIA_WHITE, calculate_drm_mode_from_modeline,
+        calculate_mode_cvt, drm_mode_modeinfo, mode_refresh_millihertz, parse_acpi_lid_state,
+        pick_advertised_mode, sepia_ctm,
     };
     use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
 
@@ -3390,5 +3502,23 @@ mod tests {
         assert_eq!(parse_acpi_lid_state("state:      closed\n"), Some(true));
         assert_eq!(parse_acpi_lid_state("state:      open\n"), Some(false));
         assert_eq!(parse_acpi_lid_state("state:      unknown\n"), None);
+    }
+
+    proptest::proptest! {
+        /// Every channel moves `amount` of the way to its luma tinted by sepia white.
+        #[test]
+        fn sepia_ctm_blends_toward_tinted_luma(amount in 0.0..=1.0f64, rgb in proptest::array::uniform3(0.0..=1.0f64)) {
+            let ctm = sepia_ctm(amount);
+            let decode = |raw: u64| {
+                let magnitude = (raw & !(1 << 63)) as f64 / (1u64 << 32) as f64;
+                if raw >> 63 == 1 { -magnitude } else { magnitude }
+            };
+            let luma: f64 = (0..3).map(|col| LUMA[col] * rgb[col]).sum();
+            for row in 0..3 {
+                let out: f64 = (0..3).map(|col| decode(ctm[row * 3 + col]) * rgb[col]).sum();
+                let expected = rgb[row] + amount * (SEPIA_WHITE[row] * luma - rgb[row]);
+                proptest::prop_assert!((out - expected).abs() < 1e-8, "row {row}: {out} vs {expected}");
+            }
+        }
     }
 }

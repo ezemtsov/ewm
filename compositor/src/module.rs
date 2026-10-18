@@ -550,9 +550,10 @@ pub enum ModuleCommand {
     SetIdleInhibited {
         inhibited: bool,
     },
-    /// Closed-lid suspend
+    /// Closed-lid suspend and sepia tint
     ConfigurePower {
         closed_lid_suspends: bool,
+        sepia: bool,
     },
     /// Monitors off until a waking input, unlock or `PowerOnMonitors`
     PowerOffMonitors,
@@ -1840,11 +1841,12 @@ fn set_idle_inhibited(inhibited: Value<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Configure closed-lid suspend (module mode).
+/// Configure closed-lid suspend and the sepia tint (module mode).
 #[defun]
-fn configure_power_module(closed_lid_suspends: Value<'_>) -> Result<()> {
+fn configure_power_module(closed_lid_suspends: Value<'_>, sepia: Value<'_>) -> Result<()> {
     push_command(ModuleCommand::ConfigurePower {
         closed_lid_suspends: closed_lid_suspends.is_not_nil(),
+        sepia: sepia.is_not_nil(),
     });
     Ok(())
 }

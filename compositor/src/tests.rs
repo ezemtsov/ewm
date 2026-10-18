@@ -667,3 +667,40 @@ fn close_flushes_pending_title_before_close_event() {
             if *titled == id && app == "app" && title == "final"));
     assert!(matches!(&events[1], Event::Close { id: closed } if *closed == id));
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// The sepia tint fades from wherever it is toward the latest target, never past it, and
+    /// rests on it once the fade has had its full duration.
+    #[test]
+    fn sepia_fades_to_its_target(steps in prop::collection::vec((any::<bool>(), 0u64..200), 1..20)) {
+        let mut fix = testing::Fixture::new().unwrap();
+        let clock = fix.ewm().animations_clock.clone();
+        let mut now = Duration::from_secs(1);
+        clock.freeze(now);
+        let mut since_change = Duration::MAX;
+        let mut tinted = false;
+        for (sepia, wait_ms) in steps {
+            let before = fix.ewm_ref().sepia_amount();
+            if tinted != sepia {
+                tinted = sepia;
+                since_change = Duration::ZERO;
+            }
+            fix.ewm().set_sepia(sepia);
+            prop_assert_eq!(fix.ewm_ref().sepia_amount(), before);
+
+            let wait = Duration::from_millis(wait_ms);
+            now += wait;
+            clock.set(now);
+            since_change = since_change.saturating_add(wait);
+            let target = if sepia { 1. } else { 0. };
+            let amount = fix.ewm_ref().sepia_amount();
+            prop_assert!((0.0..=1.0).contains(&amount));
+            prop_assert!((target - amount).abs() <= (target - before).abs() + 1e-9);
+            if since_change >= SEPIA_FADE_DURATION {
+                prop_assert_eq!(amount, target);
+            }
+        }
+    }
+}

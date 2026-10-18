@@ -77,7 +77,7 @@
      (declare-function ewm-configure-overview-module "ewm-core" (zoom red green blue))
      (declare-function ewm-configure-background-module "ewm-core" (red green blue))
      (declare-function ewm-set-idle-inhibited "ewm-core" (inhibited))
-     (declare-function ewm-configure-power-module "ewm-core" (closed-lid-suspends))
+     (declare-function ewm-configure-power-module "ewm-core" (closed-lid-suspends sepia))
      (declare-function ewm-power-off-monitors-module "ewm-core" ())
      (declare-function ewm-power-on-monitors-module "ewm-core" ())
      (declare-function ewm-configure-input-module "ewm-core" (configs))

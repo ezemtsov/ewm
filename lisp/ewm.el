@@ -237,7 +237,7 @@ of inactivity.  Useful for video playback or presentations."
 (define-minor-mode ewm-insomnia-mode
   "Keep the system awake with the lid closed.
 The panel turns off, windows are asked to stop drawing and other sleep
-requests are refused."
+requests are refused.  The screen turns sepia as a reminder."
   :global t
   :group 'ewm
   (when ewm--module-mode
@@ -247,7 +247,7 @@ requests are refused."
 
 (defun ewm--send-power-config ()
   "Send `ewm-insomnia-mode' to the compositor."
-  (ewm-configure-power-module (not ewm-insomnia-mode)))
+  (ewm-configure-power-module (not ewm-insomnia-mode) ewm-insomnia-mode))
 
 (defcustom ewm-cursor-theme nil
   "Xcursor theme used by EWM and clients launched from it.

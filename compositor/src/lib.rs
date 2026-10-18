@@ -770,6 +770,7 @@ pub struct DndIcon {
 
 const TITLE_EVENT_IDLE_FLUSH_DELAY: Duration = Duration::from_millis(500);
 const TITLE_EVENT_MAX_STALE: Duration = Duration::from_millis(1000);
+const SEPIA_FADE_DURATION: Duration = Duration::from_millis(600);
 /// Critically damped and brisk, the one spring every slide runs on.
 pub fn slide_spring() -> animation::SpringParams {
     animation::SpringParams::new(1., 800., 0.0001)
@@ -959,6 +960,9 @@ pub struct Ewm {
 
     /// Whether a closed lid without an external display suspends, else it turns the panel off.
     pub closed_lid_suspends: bool,
+
+    /// How far toward sepia the outputs are, fading to its target.
+    sepia: animation::Animation,
 
     /// Kept awake behind a closed lid: panel off, clients suspended.
     pub unattended: bool,
@@ -1241,6 +1245,7 @@ impl Ewm {
             .expect("failed to register activation token timer");
 
         let animations_clock = animation::Clock::default();
+        let sepia = animation::Animation::ease(animations_clock.clone(), 0., 0., Duration::ZERO);
 
         Self {
             stop_signal: None,
@@ -1328,6 +1333,7 @@ impl Ewm {
             idle_is_inhibited: false,
             manual_idle_inhibited: false,
             closed_lid_suspends: true,
+            sepia,
             unattended: false,
             dbus_screensaver_conn: None,
             gamma_control_state,
@@ -2325,6 +2331,27 @@ impl Ewm {
         }
     }
 
+    /// Fade the sepia tint in or out.
+    pub fn set_sepia(&mut self, sepia: bool) {
+        let to = if sepia { 1. } else { 0. };
+        if self.sepia.to() == to {
+            return;
+        }
+        let from = self.sepia.value();
+        self.sepia = animation::Animation::ease(
+            self.animations_clock.clone(),
+            from,
+            to,
+            SEPIA_FADE_DURATION,
+        );
+        self.queue_redraw_all();
+    }
+
+    /// How far toward sepia the outputs are, 0 to 1.
+    pub fn sepia_amount(&self) -> f64 {
+        self.sepia.value()
+    }
+
     /// Kept awake behind a closed lid, nothing shows any window.
     pub fn set_unattended(&mut self, unattended: bool) {
         if self.unattended != unattended {
@@ -2819,8 +2846,9 @@ impl Ewm {
             // Compute whether animations need another frame on this output.
             // When true, VBlank handlers queue another redraw to keep animations pumping.
             // Done animations are already cleared by advance_animations() above.
-            state.unfinished_animations_remain =
-                self.overview.is_animating() || self.hide.is_animation_ongoing();
+            state.unfinished_animations_remain = self.overview.is_animating()
+                || self.hide.is_animation_ongoing()
+                || !self.sepia.is_done();
         }
         let name = output.name();
         let any_fade = self
@@ -6027,10 +6055,12 @@ impl State {
             }
             ModuleCommand::ConfigurePower {
                 closed_lid_suspends,
+                sepia,
             } => {
                 let lid_changed =
                     std::mem::replace(&mut self.ewm.closed_lid_suspends, closed_lid_suspends)
                         != closed_lid_suspends;
+                self.ewm.set_sepia(sepia);
                 if lid_changed && let Some(drm) = self.backend.as_drm_mut() {
                     drm.reapply_lid_policy(
                         &mut self.ewm,
