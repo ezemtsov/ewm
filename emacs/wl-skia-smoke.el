@@ -25,6 +25,10 @@
     (redisplay t)
     (sit-for 0.05)))
 
+(defun wl-skia-smoke--half-up (x)
+  "Round X half up, as pwayl converts between logical and device pixels."
+  (floor (+ x 0.5)))
+
 (defun wl-skia-smoke--ratio (count w h)
   (if (and (integerp w) (integerp h) (> (* w h) 0))
       (/ (float count) (* w h))
@@ -64,21 +68,26 @@ Return a report string."
       (let* ((s (pwayl-skia-test-framebuffer-size f))
              (rw (nth 0 s)) (rh (nth 1 s))
              (tw (nth 2 s)) (th (nth 3 s))
-             (lw (nth 4 s)) (lh (nth 5 s))
              (scale (nth 6 s))
-             ;; Match the backend's pwayl_physical_size rounding (half-up,
-             ;; (int)(x + 0.5)), not Elisp `round' (half-to-even), so the
-             ;; check is exact at .5 boundaries.
-             (ew (floor (+ (* lw scale) 0.5)))
-             (eh (floor (+ (* lh scale) 0.5))))
+             (state (pwayl-surface-test-state f))
+             (aw (wl-skia-smoke--plist state :applied-width))
+             (ah (wl-skia-smoke--plist state :applied-height))
+             ;; Frames lay out in device pixels: the render target is the
+             ;; frame's pixel size, the applied logical size times the scale.
+             (ew (frame-pixel-width f))
+             (eh (frame-pixel-height f)))
         ;; The color attachment is allocated at grow-only capacity (256px
         ;; steps, kept across shrinks), so it must contain the render
         ;; size, not equal it.
         (check "texture>=render" (and (>= tw rw) (>= th rh))
                (format "render=%dx%d texture=%dx%d" rw rh tw th))
-        (check "render==round(logical*scale)" (and (= rw ew) (= rh eh))
-               (format "render=%dx%d logical=%dx%d scale=%s expected=%dx%d"
-                       rw rh lw lh scale ew eh)))
+        (check "render==frame-pixels" (and (= rw ew) (= rh eh))
+               (format "render=%dx%d frame=%dx%d" rw rh ew eh))
+        (check "render==applied*scale"
+               (and aw ah
+                    (= rw (wl-skia-smoke--half-up (* aw scale)))
+                    (= rh (wl-skia-smoke--half-up (* ah scale))))
+               (format "render=%dx%d applied=%Sx%S scale=%s" rw rh aw ah scale)))
       ;; --- 2. red text on green background -------------------------------
       (set-face-attribute 'default f :background "#00ff00" :foreground "#ff0000")
       (let ((buf (get-buffer-create "*pwayl-smoke*")))
@@ -121,21 +130,16 @@ Return a report string."
              (c (pwayl-skia-test-framebuffer-color-counts f (list rx ry rwd rht)))
              (red (nth 2 c)) (green (nth 3 c))
              (bounds (nth 5 c))
-             ;; device-pixel area of the sampled rect, matching the
-             ;; hook's per-edge round-half-up mapping exactly
-             (s (pwayl-skia-test-framebuffer-size f))
-             (scale (nth 6 s))
-             (dw (- (floor (+ (* (+ rx rwd) scale) 0.5))
-                    (floor (+ (* rx scale) 0.5))))
-             (dh (- (floor (+ (* (+ ry rht) scale) 0.5))
-                    (floor (+ (* ry scale) 0.5))))
+             ;; the sampled rect is in device pixels already
+             (dw rwd)
+             (dh rht)
              (total (* dw dh))
              (ratio (wl-skia-smoke--ratio green dw dh)))
         (when (and (< ratio 0.999)
                    (fboundp 'pwayl-skia-test-dump-png))
           (pwayl-skia-test-dump-png "/tmp/pwayl-smoke-solid-fail.png" f))
         (check "solid-green interior uniform (>=0.999)" (>= ratio 0.999)
-               (format "green=%d red=%d other=%d of %d device px = %.4f (logical rect %d,%d %dx%d red-bounds=%S)"
+               (format "green=%d red=%d other=%d of %d device px = %.4f (rect %d,%d %dx%d red-bounds=%S)"
                        green red (- total green red) total ratio rx ry rwd rht bounds)))
       ;; --- 4. alpha-background uses an ARGB render target ---------------
       (check "surface state hook present for alpha"
@@ -161,12 +165,8 @@ Return a report string."
                          f (list rx ry rwd rht)))
                      (green (nth 3 c))
                      (translucent (nth 4 c))
-                     (s (pwayl-skia-test-framebuffer-size f))
-                     (scale (nth 6 s))
-                     (dw (- (floor (+ (* (+ rx rwd) scale) 0.5))
-                            (floor (+ (* rx scale) 0.5))))
-                     (dh (- (floor (+ (* (+ ry rht) scale) 0.5))
-                            (floor (+ (* ry scale) 0.5))))
+                     (dw rwd)
+                     (dh rht)
                      (total (* dw dh))
                      (ratio (wl-skia-smoke--ratio translucent dw dh)))
                 (check "alpha-background switches render target to RGBA"
@@ -566,15 +566,19 @@ Return a report string."
                          (display-pixel-width f)
                          (display-pixel-height f)
                          monitors))
-          (check "display monitor uses logical geometry"
-                 (let ((geometry (cdr (assq 'geometry (car monitors)))))
+          (check "display monitor geometry is logical*scale-factor"
+                 (let ((geometry (cdr (assq 'geometry (car monitors))))
+                       (factor (cdr (assq 'scale-factor (car monitors)))))
                    (and (wl-skia-smoke--plist state :monitor-logical-size)
+                        (numberp factor)
                         (= (nth 2 geometry)
-                           (wl-skia-smoke--plist state
-                                                 :monitor-logical-width))
+                           (wl-skia-smoke--half-up
+                            (* factor (wl-skia-smoke--plist
+                                       state :monitor-logical-width))))
                         (= (nth 3 geometry)
-                           (wl-skia-smoke--plist state
-                                                 :monitor-logical-height))))
+                           (wl-skia-smoke--half-up
+                            (* factor (wl-skia-smoke--plist
+                                       state :monitor-logical-height))))))
                  (format "state=%S monitors=%S" state monitors)))
         (let ((state (pwayl-surface-test-state f)))
           (check "decoration manager present"
@@ -652,16 +656,24 @@ Return a report string."
                                 0.001)
                              (format "%S parent-scale=%S"
                                      state parent-scale))
+                      ;; Subsurface positions are logical; frame
+                      ;; positions are device pixels.
                       (check "child frame initial position"
-                             (and (= (wl-skia-smoke--plist state :x) 24)
-                                  (= (wl-skia-smoke--plist state :y) 32))
+                             (let ((sc (wl-skia-smoke--plist state :scale)))
+                               (and (= (wl-skia-smoke--plist state :x)
+                                       (wl-skia-smoke--half-up (/ 24 sc)))
+                                    (= (wl-skia-smoke--plist state :y)
+                                       (wl-skia-smoke--half-up (/ 32 sc)))))
                              (format "%S" state)))
                     (set-frame-position child 48 56)
                     (wl-skia-smoke--settle 2)
                     (let ((state (pwayl-surface-test-state child)))
                       (check "child frame moves subsurface"
-                             (and (= (wl-skia-smoke--plist state :x) 48)
-                                  (= (wl-skia-smoke--plist state :y) 56))
+                             (let ((sc (wl-skia-smoke--plist state :scale)))
+                               (and (= (wl-skia-smoke--plist state :x)
+                                       (wl-skia-smoke--half-up (/ 48 sc)))
+                                    (= (wl-skia-smoke--plist state :y)
+                                       (wl-skia-smoke--half-up (/ 56 sc)))))
                              (format "%S" state))))
                 (when (and child (frame-live-p child))
                   (delete-frame child t)))
