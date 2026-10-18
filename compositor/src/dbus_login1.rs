@@ -1,19 +1,26 @@
-//! The logind session: the lid-switch inhibitor and suspend.
+//! The logind session: the lid-switch inhibitor, suspend, and the end of sleep.
 
 use std::os::fd::OwnedFd;
 
+use futures_util::StreamExt;
+use smithay::reexports::calloop::channel::Sender;
 use tracing::{info, warn};
 use zbus::blocking::Connection;
+
+pub enum Login1ToEwm {
+    WakeFromSleep,
+}
 
 /// Logind connection holding the lid-switch inhibitor, released when dropped.
 pub struct Login1 {
     conn: Connection,
     _lid_inhibitor: OwnedFd,
+    _wake_watcher: zbus::Task<()>,
 }
 
 impl Login1 {
     /// Connect and take the `handle-lid-switch` inhibitor, none without logind.
-    pub fn new() -> Option<Self> {
+    pub fn new(to_ewm: Sender<Login1ToEwm>) -> Option<Self> {
         let conn = Connection::system()
             .inspect_err(|e| warn!("No system D-Bus, lid switch managed by system default: {e}"))
             .ok()?;
@@ -21,9 +28,11 @@ impl Login1 {
             .inspect_err(|e| warn!("Failed to acquire lid switch inhibitor: {e}"))
             .ok()?;
         info!("Acquired logind handle-lid-switch inhibitor");
+        let wake_watcher = watch_wake(&conn, to_ewm);
         Some(Self {
             conn,
             _lid_inhibitor: lid_inhibitor,
+            _wake_watcher: wake_watcher,
         })
     }
 
@@ -52,4 +61,34 @@ fn inhibit(conn: &Connection, what: &str, why: &str) -> zbus::Result<OwnedFd> {
     )?;
     let fd: zbus::zvariant::OwnedFd = reply.body().deserialize()?;
     Ok(fd.into())
+}
+
+/// Forward logind's end-of-sleep signal to the event loop.
+fn watch_wake(conn: &Connection, to_ewm: Sender<Login1ToEwm>) -> zbus::Task<()> {
+    let conn = conn.inner().clone();
+    conn.executor().clone().spawn(
+        async move {
+            if let Err(e) = forward_wake(conn, to_ewm).await {
+                warn!("Failed to watch logind PrepareForSleep: {e}");
+            }
+        },
+        "logind PrepareForSleep",
+    )
+}
+
+async fn forward_wake(conn: zbus::Connection, to_ewm: Sender<Login1ToEwm>) -> zbus::Result<()> {
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await?;
+    let mut signals = proxy.receive_signal("PrepareForSleep").await?;
+    while let Some(msg) = signals.next().await {
+        if matches!(msg.body().deserialize::<bool>(), Ok(false)) {
+            let _ = to_ewm.send(Login1ToEwm::WakeFromSleep);
+        }
+    }
+    Ok(())
 }

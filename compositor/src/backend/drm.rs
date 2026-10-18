@@ -26,7 +26,7 @@ use std::iter::zip;
 use std::num::NonZeroU64;
 use std::os::fd::AsFd;
 
-use crate::dbus_login1::Login1;
+use crate::dbus_login1::{Login1, Login1ToEwm};
 use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
 use crate::tracy_span;
 use anyhow::{Context as _, ensure};
@@ -106,12 +106,15 @@ const SUPPORTED_COLOR_FORMATS: [smithay::backend::allocator::Fourcc; 4] = [
 ];
 
 const CLOSED_LID_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Like logind's HoldoffTimeoutSec: a dock that woke the system needs time to show its display.
+const WAKE_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MODE_REFRESH_TOLERANCE_MILLIHERTZ: u32 = 1000;
 
 #[derive(Clone, Copy, Debug)]
 enum LidPolicyReason {
     Startup,
     Resume,
+    Wake,
     Hotplug,
     LidEvent,
     SettlingTimeout,
@@ -119,7 +122,14 @@ enum LidPolicyReason {
 
 impl LidPolicyReason {
     fn allows_closed_lid_settle(self) -> bool {
-        matches!(self, Self::Startup | Self::Resume)
+        matches!(self, Self::Startup | Self::Resume | Self::Wake)
+    }
+
+    fn closed_lid_settle_timeout(self) -> Duration {
+        match self {
+            Self::Wake => WAKE_SETTLE_TIMEOUT,
+            _ => CLOSED_LID_SETTLE_TIMEOUT,
+        }
     }
 }
 
@@ -757,7 +767,7 @@ fn set_gamma_for_crtc(
     Ok(())
 }
 
-/// Message to trigger deferred DRM initialization
+/// Messages handled by the DRM backend on the event loop.
 pub enum DrmMessage {
     InitializeDrm,
 }
@@ -802,8 +812,7 @@ pub struct DrmBackend;
 /// embedded mode where process exit doesn't clean up resources.
 #[allow(dead_code)]
 pub struct DrmBackendState {
-    /// Channel to trigger deferred initialization
-    init_sender: Option<Sender<DrmMessage>>,
+    messages: Sender<DrmMessage>,
     /// Event loop handle for scheduling timers
     loop_handle: Option<LoopHandle<'static, State>>,
     /// Cursor texture cache for rendering named cursor images.
@@ -1107,9 +1116,7 @@ impl DrmBackendState {
 
     /// Trigger deferred DRM initialization (called when session becomes active)
     pub(crate) fn trigger_init(&self) {
-        if let Some(sender) = &self.init_sender
-            && let Err(e) = sender.send(DrmMessage::InitializeDrm)
-        {
+        if let Err(e) = self.messages.send(DrmMessage::InitializeDrm) {
             warn!("Failed to send DRM init message: {:?}", e);
         }
     }
@@ -2243,6 +2250,16 @@ impl DrmBackendState {
         }
     }
 
+    /// Suspend again after a wake (charger, unplug) that left the lid closed.
+    pub(crate) fn on_wake_from_sleep(&mut self, ewm: &mut Ewm) {
+        if !self.session_active() {
+            return;
+        }
+        if self.refresh_lid_state_from_acpi() || self.lid_closed {
+            self.apply_lid_policy(ewm, LidPolicyReason::Wake);
+        }
+    }
+
     /// Handle lid open/close by reconciling the current connector topology.
     pub fn on_lid_state_changed(&mut self, ewm: &mut Ewm) {
         self.lid_supported = true;
@@ -2259,7 +2276,8 @@ impl DrmBackendState {
         if self.laptop_panels_suppressed() {
             self.cancel_closed_lid_settle_timer();
             self.disconnect_laptop_panels(ewm);
-            ewm.kill_idle_child();
+            // Monitors relit by a wake blank again after the idle timeout.
+            ewm.wake_from_idle();
             ewm.queue_event(crate::event::Event::OutputsComplete);
             return true;
         }
@@ -2270,7 +2288,7 @@ impl DrmBackendState {
             self.cancel_closed_lid_settle_timer();
             ewm.wake_from_idle();
         } else if self.closed_lid_settle_timer.is_some() || reason.allows_closed_lid_settle() {
-            self.start_closed_lid_settle_timer(ewm);
+            self.start_closed_lid_settle_timer(ewm, reason);
             if !reconnected {
                 return true;
             }
@@ -2360,35 +2378,30 @@ impl DrmBackendState {
         self.lid_closed && self.has_external_connector()
     }
 
-    fn start_closed_lid_settle_timer(&mut self, ewm: &mut Ewm) {
+    fn start_closed_lid_settle_timer(&mut self, ewm: &mut Ewm, reason: LidPolicyReason) {
         if self.closed_lid_settle_timer.is_some() {
             return;
         }
 
-        info!(
-            "Lid closed with no external display; settling for {:?}",
-            CLOSED_LID_SETTLE_TIMEOUT
-        );
+        let timeout = reason.closed_lid_settle_timeout();
+        info!("Lid closed with no external display; settling for {timeout:?}");
 
         let Some(handle) = self.loop_handle.clone() else {
-            self.suspend_closed_lid_without_external(ewm, LidPolicyReason::Startup);
+            self.suspend_closed_lid_without_external(ewm, reason);
             return;
         };
 
-        match handle.insert_source(
-            Timer::from_duration(CLOSED_LID_SETTLE_TIMEOUT),
-            move |_, _, state| {
-                if let Some(drm) = state.backend.as_drm_mut() {
-                    drm.closed_lid_settle_timer = None;
-                    drm.on_closed_lid_settle_timeout(&mut state.ewm);
-                }
-                TimeoutAction::Drop
-            },
-        ) {
+        match handle.insert_source(Timer::from_duration(timeout), move |_, _, state| {
+            if let Some(drm) = state.backend.as_drm_mut() {
+                drm.closed_lid_settle_timer = None;
+                drm.on_closed_lid_settle_timeout(&mut state.ewm);
+            }
+            TimeoutAction::Drop
+        }) {
             Ok(token) => self.closed_lid_settle_timer = Some(token),
             Err(err) => {
                 warn!("Failed to start closed-lid settle timer: {:?}", err);
-                self.suspend_closed_lid_without_external(ewm, LidPolicyReason::Startup);
+                self.suspend_closed_lid_without_external(ewm, reason);
             }
         }
     }
@@ -2891,8 +2904,8 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
         libinput.suspend();
     }
 
-    // Create channel for deferred DRM initialization
-    let (init_sender, init_receiver) = channel::<DrmMessage>();
+    let (messages, receiver) = channel::<DrmMessage>();
+    let (to_ewm, from_login1) = channel::<Login1ToEwm>();
 
     let initial_lid_state = current_lid_closed_from_acpi();
 
@@ -2909,9 +2922,9 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
         lid_supported: initial_lid_state.is_some(),
         lid_closed: initial_lid_state.unwrap_or(false),
         closed_lid_settle_timer: None,
-        logind: Login1::new(),
+        logind: Login1::new(to_ewm),
         session_notifier_token: None, // Set after registering notifier
-        init_sender: Some(init_sender),
+        messages,
         loop_handle: Some(event_loop.handle()),
         cursor_texture_cache: CursorTextureCache::default(),
         display_handle: None, // Set during initialize_drm
@@ -3098,22 +3111,34 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
             }
         })?;
 
-    // Register channel receiver for deferred DRM initialization
     let display_handle_for_init = display_handle.clone();
     let event_loop_handle = event_loop.handle();
     event_loop
         .handle()
-        .insert_source(init_receiver, move |event, _, state| {
-            if let smithay::reexports::calloop::channel::Event::Msg(DrmMessage::InitializeDrm) =
-                event
-            {
-                info!("Received DRM init message");
-                if let Err(e) = initialize_drm(state, &display_handle_for_init, &event_loop_handle)
-                {
-                    // Ready is already out, so nothing else reports this.
-                    error!("Failed to initialize DRM: {:?}", e);
-                    state.ewm.stop();
+        .insert_source(receiver, move |event, _, state| {
+            use smithay::reexports::calloop::channel::Event;
+            match event {
+                Event::Msg(DrmMessage::InitializeDrm) => {
+                    info!("Received DRM init message");
+                    if let Err(e) =
+                        initialize_drm(state, &display_handle_for_init, &event_loop_handle)
+                    {
+                        // Ready is already out, so nothing else reports this.
+                        error!("Failed to initialize DRM: {:?}", e);
+                        state.ewm.stop();
+                    }
                 }
+                Event::Closed => {}
+            }
+        })?;
+    event_loop
+        .handle()
+        .insert_source(from_login1, |event, _, state| {
+            use smithay::reexports::calloop::channel::Event;
+            if let Event::Msg(Login1ToEwm::WakeFromSleep) = event
+                && let Some(drm) = state.backend.as_drm_mut()
+            {
+                drm.on_wake_from_sleep(&mut state.ewm);
             }
         })?;
 
