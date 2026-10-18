@@ -26,6 +26,7 @@ use std::iter::zip;
 use std::num::NonZeroU64;
 use std::os::fd::AsFd;
 
+use crate::dbus_login1::Login1;
 use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
 use crate::tracy_span;
 use anyhow::{Context as _, ensure};
@@ -820,7 +821,7 @@ pub struct DrmBackendState {
     /// Logind session: inhibitor fd + D-Bus connection for suspend.
     /// When present, we manage lid-close policy (macOS-like: stay awake with
     /// external monitor, suspend via D-Bus when no display remains).
-    logind: Option<LogindState>,
+    logind: Option<Login1>,
     /// Token for session notifier - must be removed before session drops
     session_notifier_token: Option<RegistrationToken>,
     /// Primary KMS node and render node. Set once DRM initialization succeeds.
@@ -2676,76 +2677,6 @@ impl DrmBackendState {
     }
 }
 
-/// Logind connection with lid-switch inhibitor.
-/// Dropping this releases the inhibitor (fd closes).
-struct LogindState {
-    conn: zbus::blocking::Connection,
-    _inhibitor: std::os::fd::OwnedFd,
-}
-
-impl LogindState {
-    /// Connect to logind and acquire a `handle-lid-switch` inhibitor.
-    /// Returns None if logind is unavailable (non-systemd system).
-    fn new() -> Option<Self> {
-        use zbus::blocking::Connection;
-        use zbus::zvariant::OwnedFd as ZbusFd;
-
-        let conn = match Connection::system() {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("No system D-Bus, lid switch managed by system default: {e}");
-                return None;
-            }
-        };
-
-        let reply = conn.call_method(
-            Some("org.freedesktop.login1"),
-            "/org/freedesktop/login1",
-            Some("org.freedesktop.login1.Manager"),
-            "Inhibit",
-            &(
-                "handle-lid-switch",
-                "ewm",
-                "Compositor manages lid switch",
-                "block",
-            ),
-        );
-
-        match reply {
-            Ok(msg) => match msg.body().deserialize::<ZbusFd>() {
-                Ok(fd) => {
-                    info!("Acquired logind handle-lid-switch inhibitor");
-                    Some(Self {
-                        conn,
-                        _inhibitor: std::os::fd::OwnedFd::from(fd),
-                    })
-                }
-                Err(e) => {
-                    warn!("Failed to deserialize inhibitor fd: {e}");
-                    None
-                }
-            },
-            Err(e) => {
-                warn!("Failed to acquire lid switch inhibitor: {e}");
-                None
-            }
-        }
-    }
-
-    /// Ask logind to suspend the system.
-    fn suspend(&self) {
-        if let Err(e) = self.conn.call_method(
-            Some("org.freedesktop.login1"),
-            "/org/freedesktop/login1",
-            Some("org.freedesktop.login1.Manager"),
-            "Suspend",
-            &(false,),
-        ) {
-            warn!("Failed to suspend via logind: {e}");
-        }
-    }
-}
-
 /// Initialize DRM devices and set up outputs.
 fn initialize_drm(
     state: &mut State,
@@ -2978,7 +2909,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
         lid_supported: initial_lid_state.is_some(),
         lid_closed: initial_lid_state.unwrap_or(false),
         closed_lid_settle_timer: None,
-        logind: LogindState::new(),
+        logind: Login1::new(),
         session_notifier_token: None, // Set after registering notifier
         init_sender: Some(init_sender),
         loop_handle: Some(event_loop.handle()),

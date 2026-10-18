@@ -32,6 +32,7 @@ pub mod closing_frame;
 pub mod cursor;
 #[cfg(feature = "screencast")]
 pub mod dbus;
+pub mod dbus_login1;
 pub mod dbus_screensaver;
 pub mod event;
 pub mod floating;
