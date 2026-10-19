@@ -783,6 +783,8 @@ pub enum Action {
     FocusOutput { dx: i32, dy: i32 },
     /// Move the focused strip frame `delta` slots.
     MoveFrame { delta: i32 },
+    /// Move the focused frame to the next output in order, wrapping around.
+    MoveFrameToNextOutput,
     /// Fullscreen the focused view's surface, or bring it back.
     ToggleFullscreen,
     /// Open, close or toggle the overview.
@@ -4311,6 +4313,23 @@ impl Ewm {
             return;
         };
         self.set_focus_frame(id, "focus_output_direction", true);
+    }
+
+    /// The output after `current` in order, wrapping around.
+    fn output_next_of(&self, current: &Output) -> Option<Output> {
+        let outputs = &self.sorted_outputs;
+        let idx = outputs.iter().position(|output| output == current)?;
+        outputs.get((idx + 1) % outputs.len()).cloned()
+    }
+
+    /// Move the focused frame to the next output in order, wrapping around.
+    pub fn move_frame_to_next_output(&mut self) {
+        if let Some(next) = self
+            .focused_output()
+            .and_then(|cur| self.output_next_of(cur))
+        {
+            self.move_frame_to_output(self.focused_frame_id, &next);
+        }
     }
 
     /// Focus strip frame `pick(anchor)`, anchored at the focused frame, else at the shown one.

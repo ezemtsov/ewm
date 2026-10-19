@@ -488,6 +488,12 @@ impl Strip {
         self.active_frame().map(|frame| frame.surface_id)
     }
 
+    /// The slot right after frame `id`, else the end.
+    pub fn slot_after(&self, id: Option<u64>) -> usize {
+        id.and_then(|id| self.index_of(id))
+            .map_or(self.frames.len(), |idx| idx + 1)
+    }
+
     pub fn push_frame(&mut self, frame: Frame) {
         self.frames.push(frame);
     }
@@ -498,10 +504,16 @@ impl Strip {
 
     /// Insert at `idx`, keeping the active frame active.
     pub fn insert_frame(&mut self, idx: usize, frame: Frame) {
-        let was_empty = self.frames.is_empty();
-        self.frames.insert(idx, frame);
-        if !was_empty && idx <= self.active_idx {
-            self.set_active(self.active_idx + 1);
+        self.insert_frames(idx, [frame]);
+    }
+
+    /// Insert `frames` at `idx`, keeping the active frame active.
+    pub fn insert_frames(&mut self, idx: usize, frames: impl IntoIterator<Item = Frame>) {
+        let before = self.frames.len();
+        self.frames.splice(idx..idx, frames);
+        let added = self.frames.len() - before;
+        if before > 0 && added > 0 && idx <= self.active_idx {
+            self.set_active(self.active_idx + added);
         }
     }
 

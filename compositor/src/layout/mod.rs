@@ -464,7 +464,7 @@ impl Layout {
             .interactive_move
             .filter(|move_| !retired.contains(&move_.frame_id));
         let placed = match fallback.and_then(|dst| self.monitor_idx(dst)) {
-            Some(dst_idx) => self.place_frames(dst_idx, frames, focused),
+            Some(dst_idx) => self.place_frames(dst_idx, None, frames, focused),
             None => {
                 let ids = frames.ids();
                 self.park(frames);
@@ -522,10 +522,8 @@ impl Layout {
         let mut frame = strip::Frame::new(id);
         match placement {
             Placement::Tiled { after } => {
-                match after.and_then(|after| monitor.strip.index_of(after)) {
-                    Some(idx) => monitor.strip.insert_frame(idx + 1, frame),
-                    None => monitor.strip.push_frame(frame),
-                }
+                let at = monitor.strip.slot_after(after);
+                monitor.strip.insert_frame(at, frame);
             }
             Placement::Floating { pos } => {
                 frame.floating_pos = pos.map(|pos| {
@@ -620,21 +618,27 @@ impl Layout {
         )
     }
 
-    /// Put `frames` on monitor `idx`, keeping `focused` active if it is among them.
-    fn place_frames(&mut self, idx: usize, frames: Frames, focused: u64) -> Moved {
+    /// Put `frames` on monitor `idx`, tiled after frame `after` or last, keeping `focused` active.
+    fn place_frames(
+        &mut self,
+        idx: usize,
+        after: Option<u64>,
+        frames: Frames,
+        focused: u64,
+    ) -> Moved {
         let ids = frames.ids();
         let monitor = &mut self.monitors[idx];
         let dst_prev_active = monitor.strip.active_frame_id();
-        let insert_at = monitor.strip.frames().len();
+        let at = monitor.strip.slot_after(after);
         let focused_idx = frames
             .tiled
             .iter()
             .position(|frame| frame.surface_id == focused)
-            .map(|idx| insert_at + idx);
-        monitor.strip.append_frames(frames.tiled);
+            .map(|idx| at + idx);
+        monitor.strip.insert_frames(at, frames.tiled);
         if let Some(idx) = focused_idx {
             monitor.strip.set_active(idx);
-        } else if insert_at == 0 && !monitor.strip.frames().is_empty() {
+        } else if dst_prev_active.is_none() && !monitor.strip.frames().is_empty() {
             monitor.strip.set_active(0);
         }
         // `add_frame` stacks on top, so the topmost goes last.
@@ -649,13 +653,14 @@ impl Layout {
         }
     }
 
-    /// Move frames `ids` from `src` to `dst`, each kind into its own container.
+    /// Move frames `ids` from `src` to `dst`, each kind to its own container, tiled after `after`.
     pub(crate) fn move_frames(
         &mut self,
         src: &Output,
         dst: &Output,
         ids: &[u64],
         focused: u64,
+        after: Option<u64>,
     ) -> Moved {
         let (Some(src_idx), Some(dst_idx)) = (self.monitor_idx(src), self.monitor_idx(dst)) else {
             return Moved::default();
@@ -676,8 +681,24 @@ impl Layout {
         Moved {
             src: Some(src.output.clone()),
             src_prev_active,
-            ..self.place_frames(dst_idx, frames, focused)
+            ..self.place_frames(dst_idx, after, frames, focused)
         }
+    }
+
+    /// Move frame `id` to `dst` on purpose, after its active frame, and home it there.
+    pub(crate) fn move_frame_to_output(&mut self, id: u64, dst: &Output, focused: u64) -> Moved {
+        let src = self
+            .frame_location(id)
+            .map(|location| location.monitor.output().clone());
+        let Some(src) = src else {
+            return Moved::default();
+        };
+        let after = self.strip(dst).and_then(strip::Strip::active_frame_id);
+        let moved = self.move_frames(&src, dst, &[id], focused, after);
+        if !moved.ids.is_empty() {
+            self.set_home(id, dst);
+        }
+        moved
     }
 
     /// Put every parked frame on `dst`.
@@ -686,7 +707,7 @@ impl Layout {
             return Moved::default();
         };
         let frames = mem::take(&mut self.homeless);
-        self.place_frames(idx, frames, focused)
+        self.place_frames(idx, None, frames, focused)
     }
 
     /// Make `output`'s display the frame's home, so a replug brings it back there.
@@ -1168,29 +1189,19 @@ impl Layout {
     ) -> Option<Moved> {
         let move_ = self.interactive_move?;
         let id = move_.frame_id;
-        let src = self
+        if !self
             .frame_location(id)
-            .filter(|location| location.floating)
-            .map(|location| location.monitor.output().clone());
-        let Some(src) = src else {
+            .is_some_and(|location| location.floating)
+        {
             // The frame left its floating space, so the drag is over.
             self.interactive_move = None;
             return None;
-        };
+        }
         if self.monitor_idx(output).is_none() {
             // Nothing to drag onto, so the frame waits where it is.
             return Some(Moved::default());
         }
-        let moved = if src == *output {
-            Moved::default()
-        } else {
-            let moved = self.move_frames(&src, output, &[id], focused);
-            if !moved.ids.is_empty() {
-                // A deliberate drag rehomes the frame, an unplug does not.
-                self.set_home(id, output);
-            }
-            moved
-        };
+        let moved = self.move_frame_to_output(id, output, focused);
         if let Some(monitor) = self.monitor_of_mut(output) {
             let size = monitor
                 .floating
@@ -2155,7 +2166,7 @@ impl Ewm {
     fn move_frame_ids_between_outputs(&mut self, src: &Output, dst: &Output, ids: &[u64]) {
         let moved = self
             .layout
-            .move_frames(src, dst, ids, self.focused_frame_id);
+            .move_frames(src, dst, ids, self.focused_frame_id, None);
         self.settle_moved_frames(&moved);
     }
 
@@ -2226,6 +2237,16 @@ impl Ewm {
     pub fn move_frame(&mut self, id: u64, delta: i32) {
         if let Some(output) = self.layout.move_frame(id, delta).cloned() {
             self.queue_redraw(&output);
+        }
+    }
+
+    /// Move frame `id` to `dst` and show it there.
+    pub(crate) fn move_frame_to_output(&mut self, id: u64, dst: &Output) {
+        let moved = self
+            .layout
+            .move_frame_to_output(id, dst, self.focused_frame_id);
+        if !moved.ids.is_empty() {
+            self.settle_moved_frames(&moved);
         }
     }
 

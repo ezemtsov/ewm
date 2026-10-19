@@ -72,6 +72,9 @@ No-op if N is past the number of frames on this output."
 (ewm--define-action ewm-frame-move-right (move-frame :delta 1)
   "Move the selected frame one slot right in the strip.")
 
+(ewm--define-action ewm-frame-move-to-next-output move-frame-to-next-output
+  "Move the selected frame to the next output in order, wrapping around.")
+
 (ewm--define-action ewm-output-focus-left (focus-output :dx -1 :dy 0)
   "Focus the active frame on the output to the left of the current one.")
 

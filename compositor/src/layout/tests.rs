@@ -554,6 +554,10 @@ enum LayoutOp {
         dst: usize,
         ids: Vec<u64>,
     },
+    MoveFrameToOutput {
+        id: u64,
+        dst: usize,
+    },
     AdoptHomeless(usize),
     RestoreLastActive(usize),
     Activate(u64),
@@ -606,6 +610,8 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
             prop::collection::vec(id.clone(), 0..4)
         )
             .prop_map(|(src, dst, ids)| LayoutOp::MoveFrames { src, dst, ids }),
+        1 => (id.clone(), output.clone())
+            .prop_map(|(id, dst)| LayoutOp::MoveFrameToOutput { id, dst }),
         1 => output.clone().prop_map(LayoutOp::AdoptHomeless),
         1 => output.clone().prop_map(LayoutOp::RestoreLastActive),
         1 => id.clone().prop_map(LayoutOp::Activate),
@@ -712,9 +718,31 @@ fn apply_layout_op(
             prop_assert_eq!(layout.frame_output(id), before.as_deref());
         }
         LayoutOp::MoveFrames { src, dst, ref ids } => {
-            let moved = layout.move_frames(&outputs[src], &outputs[dst], ids, focused);
+            let moved = layout.move_frames(&outputs[src], &outputs[dst], ids, focused, None);
             if let Some(dst) = &moved.dst {
                 check_landed(layout, dst, &moved, focused)?;
+            }
+        }
+        LayoutOp::MoveFrameToOutput { id, dst } => {
+            let dst = &outputs[dst];
+            let moved = layout.move_frame_to_output(id, dst, focused);
+            if !moved.ids.is_empty() {
+                check_landed(layout, dst, &moved, focused)?;
+                prop_assert_eq!(
+                    layout.home_outputs.get(&id),
+                    Some(&crate::utils::output_identity(dst)),
+                    "a deliberate move rehomes the frame"
+                );
+                if let Some(strip) = layout.strip(dst)
+                    && let Some(idx) = strip.index_of(id)
+                {
+                    let prev = moved.dst_prev_active.and_then(|prev| strip.index_of(prev));
+                    prop_assert_eq!(
+                        idx,
+                        prev.map_or(0, |prev| prev + 1),
+                        "lands after the active frame"
+                    );
+                }
             }
         }
         LayoutOp::AdoptHomeless(i) => {

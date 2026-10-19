@@ -89,6 +89,38 @@ fn a_key_switches_the_strip_without_emacs() {
 }
 
 #[test]
+fn a_key_moves_the_focused_frame_round_the_outputs() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut fix = fixture(2);
+    fix.add_output("HEAD-B", 1920, 1080);
+    fix.tile_command("HEAD-B", vec![tile(3, Vec::new())]);
+    fix.ewm().set_focus_frame(1, "test", false);
+    fix.set_intercepted_keys_from_lisp(
+        "[(:key \"F5\" :description \"<f5>\" :action move-frame-to-next-output)]",
+    );
+    fix.enable_event_capture();
+
+    tap(&mut fix, KEY_F5);
+    assert_eq!(fix.strip("HEAD-B").frame_ids().collect::<Vec<_>>(), [3, 1]);
+    assert_eq!(fix.strip("HEAD-B").active_frame_id(), Some(1));
+    assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(2));
+    assert_eq!(fix.ewm_ref().focused_frame_id, 1);
+    let events = fix.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::FrameShown { id: 1 })),
+        "{events:?}"
+    );
+
+    // Past the last output it comes round, after the frame shown there.
+    tap(&mut fix, KEY_F5);
+    assert_eq!(fix.strip(OUTPUT).frame_ids().collect::<Vec<_>>(), [2, 1]);
+    assert_eq!(fix.strip("HEAD-B").frame_ids().collect::<Vec<_>>(), [3]);
+    assert_eq!(fix.ewm_ref().focused_frame_id, 1);
+}
+
+#[test]
 fn a_key_toggles_the_focused_view_fullscreen() {
     let _serial = SERIAL.lock().unwrap();
     let mut fix = fixture(1);

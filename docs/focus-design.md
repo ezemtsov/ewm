@@ -282,6 +282,10 @@ After specific operations:
     being defined gets none, since Emacs records events a filter unreads.
     The boundary leaves keyboard capture alone.  PGTK's own `switch-frame`
     events stay ignored, they may name a stale frame.
+17. **A frame sent to another output stays focused.**  The move lands it
+    after the destination's active frame, makes it that output's active
+    frame and keeps keyboard focus on it, and repeated moves carry it round
+    the outputs.
 
 ## Why two threads make this hard
 

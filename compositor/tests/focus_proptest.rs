@@ -148,6 +148,7 @@ fn action_strategy() -> impl Strategy<Value = Action> {
         FRAME_SID_RANGE.prop_map(|id| Action::ActivateFrame { id }),
         direction_strategy().prop_map(|(dx, dy)| Action::FocusOutput { dx, dy }),
         prop_oneof![Just(-1), Just(1)].prop_map(|delta| Action::MoveFrame { delta }),
+        Just(Action::MoveFrameToNextOutput),
         Just(Action::ToggleFullscreen),
         prop_oneof![
             Just(OverviewAction::Toggle),

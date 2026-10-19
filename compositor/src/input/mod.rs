@@ -542,6 +542,10 @@ impl State {
                 self.ewm.move_frame(id, delta);
                 self.refresh_pointer_after_layout();
             }
+            Action::MoveFrameToNextOutput => {
+                self.ewm.move_frame_to_next_output();
+                self.refresh_pointer_after_layout();
+            }
             Action::ToggleFullscreen => {
                 let focused = self.ewm.focused_entry_id;
                 if let Some(id) = focused.and_then(|entry| self.ewm.layout.entry_surface_id(entry))
