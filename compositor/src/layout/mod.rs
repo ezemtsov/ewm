@@ -1356,10 +1356,10 @@ impl Ewm {
 
     /// Move `output`'s frames to the next output in order, else park them, and unmap it.
     pub(crate) fn detach_output(&mut self, output: &Output) {
-        let fallback = self.sorted_outputs.iter().find(|other| *other != output);
+        let fallback = self.output_next_of(output).filter(|next| next != output);
         let moved = self
             .layout
-            .detach_output(output, fallback, self.focused_frame_id);
+            .detach_output(output, fallback.as_ref(), self.focused_frame_id);
         self.settle_moved_frames(&moved);
         for id in moved.retired {
             self.queue_event(Event::Close { id });

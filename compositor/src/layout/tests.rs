@@ -5,8 +5,8 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::testing::{
-    self, HEAD_A, HEAD_B, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width, nz,
-    order_from_keys, set_sorted_output_order, strip_with_frame_ids,
+    self, HEAD_A, HEAD_B, HEAD_C, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width,
+    nz, order_from_keys, set_sorted_output_order, strip_with_frame_ids,
 };
 
 #[test]
@@ -207,6 +207,27 @@ fn frames_survive_losing_every_output() {
     assert_eq!(strip_ids(&fix, HEAD_A), vec![1, 2]);
     assert_eq!(strip_ids(&fix, HEAD_B), vec![3, 4]);
     assert_eq!(fix.strip(HEAD_B).active_frame_id(), Some(4));
+}
+
+#[test]
+fn an_unplugged_middle_output_hands_its_frames_to_the_next_one() {
+    let mut fix = testing::Fixture::new().unwrap();
+    fix.add_output(HEAD_A, 1600, 900);
+    fix.add_output(HEAD_B, 1600, 900);
+    fix.add_output(HEAD_C, 1600, 900);
+    fix.install_strip(HEAD_A, strip_with_frame_ids(vec![1], 0));
+    fix.install_strip(HEAD_B, strip_with_frame_ids(vec![2, 3], 1));
+    fix.install_strip(HEAD_C, strip_with_frame_ids(vec![4], 0));
+    fix.ewm().set_focus_frame(3, "test", false);
+
+    fix.remove_output(HEAD_B);
+    assert_eq!(strip_ids(&fix, HEAD_A), vec![1]);
+    assert_eq!(strip_ids(&fix, HEAD_C), vec![4, 2, 3]);
+    assert_eq!(fix.ewm_ref().focused_frame_id, 3);
+
+    // The last output in order wraps round to the first.
+    fix.remove_output(HEAD_C);
+    assert_eq!(strip_ids(&fix, HEAD_A), vec![1, 4, 2, 3]);
 }
 
 #[test]
