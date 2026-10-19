@@ -28,6 +28,7 @@ This document outlines Wayland protocols to implement for broader application co
 | `zwp-primary-selection-v1` | Primary (middle-click) selection |
 | `wp-fractional-scale-v1` | Fractional output scaling (1.25x, 1.5x, etc.) |
 | `wp-viewporter` | Buffer scaling/cropping |
+| `zwp-pointer-gestures-v1` | Touchpad swipes, pinches and holds the compositor leaves to the client |
 | `wlr-gamma-control-unstable-v1` | Manage gamma tables of outputs |
 | `wlr-output-management-unstable-v1` | External display configuration (wlr-randr, wdisplays, DankMaterialShell) |
 | `ext-background-effect-v1` | Blur behind surfaces that request it |

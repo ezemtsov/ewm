@@ -9,7 +9,9 @@ mod input;
 
 #[cfg(feature = "testing-layer-shell")]
 pub use client::LayerSurface;
-pub use client::{ClientEvent, ClientState as TestClientState, Popup, TestClient, Toplevel};
+pub use client::{
+    ClientEvent, ClientState as TestClientState, Gesture, Popup, TestClient, Toplevel,
+};
 pub use fixture::Fixture;
 use smithay::utils::{Rectangle, Size};
 

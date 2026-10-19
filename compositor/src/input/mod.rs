@@ -51,6 +51,8 @@ use smithay::input::keyboard::{
 };
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, ClickGrab, CursorIcon, CursorImageStatus, Focus as PointerFocus,
+    GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
+    GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
     GrabStartData as PointerGrabStartData, MotionEvent, RelativeMotionEvent,
 };
 use smithay::input::tablet::{self, TabletDescriptor, TabletSeatTrait};
@@ -226,6 +228,11 @@ impl State {
             InputEvent::GestureSwipeBegin { event } => self.on_gesture_swipe_begin::<B>(event),
             InputEvent::GestureSwipeUpdate { event } => self.on_gesture_swipe_update::<B>(event),
             InputEvent::GestureSwipeEnd { event } => self.on_gesture_swipe_end::<B>(event),
+            InputEvent::GesturePinchBegin { event } => self.on_gesture_pinch_begin::<B>(event),
+            InputEvent::GesturePinchUpdate { event } => self.on_gesture_pinch_update::<B>(event),
+            InputEvent::GesturePinchEnd { event } => self.on_gesture_pinch_end::<B>(event),
+            InputEvent::GestureHoldBegin { event } => self.on_gesture_hold_begin::<B>(event),
+            InputEvent::GestureHoldEnd { event } => self.on_gesture_hold_end::<B>(event),
             InputEvent::TouchDown { event } => self.on_touch_down::<B>(event),
             InputEvent::TouchMotion { event } => self.on_touch_motion::<B>(event),
             InputEvent::TouchUp { event } => self.on_touch_up::<B>(event),
@@ -1241,10 +1248,10 @@ impl State {
             return;
         }
         let pointer = self.ewm.pointer.clone();
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let serial = SERIAL_COUNTER.next_serial();
         pointer.gesture_swipe_begin(
             self,
-            &smithay::input::pointer::GestureSwipeBeginEvent {
+            &GestureSwipeBeginEvent {
                 serial,
                 time: event.time(),
                 fingers: event.fingers(),
@@ -1260,7 +1267,7 @@ impl State {
         B::GestureSwipeUpdateEvent: 'static,
         B::Device: 'static,
     {
-        use smithay::backend::input::{Event, GestureSwipeUpdateEvent};
+        use smithay::backend::input::{Event, GestureSwipeUpdateEvent as _};
         let mut dx = event.delta_x();
         let mut dy = event.delta_y();
         // Use libinput's unaccelerated deltas; invert when natural-scroll is on
@@ -1328,7 +1335,7 @@ impl State {
         let pointer = self.ewm.pointer.clone();
         pointer.gesture_swipe_update(
             self,
-            &smithay::input::pointer::GestureSwipeUpdateEvent {
+            &GestureSwipeUpdateEvent {
                 time: event.time(),
                 delta: (dx, dy).into(),
             },
@@ -1350,10 +1357,90 @@ impl State {
             return;
         }
         let pointer = self.ewm.pointer.clone();
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let serial = SERIAL_COUNTER.next_serial();
         pointer.gesture_swipe_end(
             self,
-            &smithay::input::pointer::GestureSwipeEndEvent {
+            &GestureSwipeEndEvent {
+                serial,
+                time: event.time(),
+                cancelled: event.cancelled(),
+            },
+        );
+    }
+
+    /// Pinches and holds are the client's, nothing of ours listens for them.
+    pub(crate) fn on_gesture_pinch_begin<B: InputBackend>(
+        &mut self,
+        event: B::GesturePinchBeginEvent,
+    ) {
+        use smithay::backend::input::GestureBeginEvent;
+        let pointer = self.ewm.pointer.clone();
+        let serial = SERIAL_COUNTER.next_serial();
+        pointer.gesture_pinch_begin(
+            self,
+            &GesturePinchBeginEvent {
+                serial,
+                time: event.time(),
+                fingers: event.fingers(),
+            },
+        );
+    }
+
+    pub(crate) fn on_gesture_pinch_update<B: InputBackend>(
+        &mut self,
+        event: B::GesturePinchUpdateEvent,
+    ) {
+        use smithay::backend::input::GesturePinchUpdateEvent as _;
+        let pointer = self.ewm.pointer.clone();
+        pointer.gesture_pinch_update(
+            self,
+            &GesturePinchUpdateEvent {
+                time: event.time(),
+                delta: event.delta(),
+                scale: event.scale(),
+                rotation: event.rotation(),
+            },
+        );
+    }
+
+    pub(crate) fn on_gesture_pinch_end<B: InputBackend>(&mut self, event: B::GesturePinchEndEvent) {
+        use smithay::backend::input::GestureEndEvent;
+        let pointer = self.ewm.pointer.clone();
+        let serial = SERIAL_COUNTER.next_serial();
+        pointer.gesture_pinch_end(
+            self,
+            &GesturePinchEndEvent {
+                serial,
+                time: event.time(),
+                cancelled: event.cancelled(),
+            },
+        );
+    }
+
+    pub(crate) fn on_gesture_hold_begin<B: InputBackend>(
+        &mut self,
+        event: B::GestureHoldBeginEvent,
+    ) {
+        use smithay::backend::input::GestureBeginEvent;
+        let pointer = self.ewm.pointer.clone();
+        let serial = SERIAL_COUNTER.next_serial();
+        pointer.gesture_hold_begin(
+            self,
+            &GestureHoldBeginEvent {
+                serial,
+                time: event.time(),
+                fingers: event.fingers(),
+            },
+        );
+    }
+
+    pub(crate) fn on_gesture_hold_end<B: InputBackend>(&mut self, event: B::GestureHoldEndEvent) {
+        use smithay::backend::input::GestureEndEvent;
+        let pointer = self.ewm.pointer.clone();
+        let serial = SERIAL_COUNTER.next_serial();
+        pointer.gesture_hold_end(
+            self,
+            &GestureHoldEndEvent {
                 serial,
                 time: event.time(),
                 cancelled: event.cancelled(),

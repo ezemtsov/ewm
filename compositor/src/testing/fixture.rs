@@ -17,7 +17,7 @@ use crate::backend::{Backend, HeadlessBackend};
 use crate::cursor::CursorConfig;
 use crate::strip::Frame;
 use crate::testing::TestClient;
-use crate::testing::input::{TestAbsoluteEvent, TestDevice, TestInputBackend, TestSwipeEvent};
+use crate::testing::input::{TestAbsoluteEvent, TestDevice, TestGestureEvent, TestInputBackend};
 use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
 
 /// Test fixture for integration testing
@@ -809,19 +809,19 @@ impl Fixture {
 
     /// Put `fingers` down for a swipe.
     pub fn swipe_begin(&mut self, fingers: u32) {
-        let event = TestSwipeEvent {
+        let event = TestGestureEvent {
             fingers,
-            ..TestSwipeEvent::default()
+            ..TestGestureEvent::default()
         };
         self.state.on_gesture_swipe_begin::<TestInputBackend>(event);
     }
 
     /// Move the swiping fingers by (`dx`, `dy`).
     pub fn swipe_update(&mut self, dx: f64, dy: f64) {
-        let event = TestSwipeEvent {
+        let event = TestGestureEvent {
             dx,
             dy,
-            ..TestSwipeEvent::default()
+            ..TestGestureEvent::default()
         };
         self.state
             .on_gesture_swipe_update::<TestInputBackend>(event);
@@ -830,7 +830,50 @@ impl Fixture {
     /// Lift the swiping fingers.
     pub fn swipe_end(&mut self) {
         self.state
-            .on_gesture_swipe_end::<TestInputBackend>(TestSwipeEvent::default());
+            .on_gesture_swipe_end::<TestInputBackend>(TestGestureEvent::default());
+    }
+
+    /// Put `fingers` down for a pinch.
+    pub fn pinch_begin(&mut self, fingers: u32) {
+        let event = TestGestureEvent {
+            fingers,
+            ..TestGestureEvent::default()
+        };
+        self.state.on_gesture_pinch_begin::<TestInputBackend>(event);
+    }
+
+    /// Move the pinching fingers by (`dx`, `dy`), spread by `scale` and turned by `rotation`.
+    pub fn pinch_update(&mut self, dx: f64, dy: f64, scale: f64, rotation: f64) {
+        let event = TestGestureEvent {
+            dx,
+            dy,
+            scale,
+            rotation,
+            ..TestGestureEvent::default()
+        };
+        self.state
+            .on_gesture_pinch_update::<TestInputBackend>(event);
+    }
+
+    /// Lift the pinching fingers.
+    pub fn pinch_end(&mut self) {
+        self.state
+            .on_gesture_pinch_end::<TestInputBackend>(TestGestureEvent::default());
+    }
+
+    /// Rest `fingers` on the touchpad.
+    pub fn hold_begin(&mut self, fingers: u32) {
+        let event = TestGestureEvent {
+            fingers,
+            ..TestGestureEvent::default()
+        };
+        self.state.on_gesture_hold_begin::<TestInputBackend>(event);
+    }
+
+    /// Lift the resting fingers.
+    pub fn hold_end(&mut self) {
+        self.state
+            .on_gesture_hold_end::<TestInputBackend>(TestGestureEvent::default());
     }
 
     /// Start mirroring `queue_event` into a per-Ewm buffer.

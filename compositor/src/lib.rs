@@ -176,6 +176,7 @@ use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::{
     with_pointer_constraint, PointerConstraintsState,
 };
+use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::{
@@ -993,6 +994,10 @@ pub struct Ewm {
     #[allow(dead_code)]
     pub pointer_constraints_state: PointerConstraintsState,
 
+    // Pointer gestures protocol (zwp-pointer-gestures-v1)
+    #[allow(dead_code)]
+    pub pointer_gestures_state: PointerGesturesState,
+
     // Cursor shape protocol (wp-cursor-shape-v1)
     #[allow(dead_code)]
     pub cursor_shape_manager_state: CursorShapeManagerState,
@@ -1214,6 +1219,9 @@ impl Ewm {
         // Initialize pointer constraints protocol (zwp-pointer-constraints-v1)
         let pointer_constraints_state = PointerConstraintsState::new::<State>(&display_handle);
 
+        // Initialize pointer gestures protocol (zwp-pointer-gestures-v1)
+        let pointer_gestures_state = PointerGesturesState::new::<State>(&display_handle);
+
         // Initialize cursor shape protocol (wp-cursor-shape-v1)
         let cursor_shape_manager_state = CursorShapeManagerState::new::<State>(&display_handle);
 
@@ -1342,6 +1350,7 @@ impl Ewm {
             presentation_state,
             relative_pointer_state,
             pointer_constraints_state,
+            pointer_gestures_state,
             cursor_shape_manager_state,
             tablet_manager_state,
             #[cfg(feature = "screencast")]

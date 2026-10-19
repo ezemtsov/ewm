@@ -22,6 +22,10 @@ use wayland_protocols::ext::background_effect::v1::client::ext_background_effect
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1, ext_session_lock_v1,
 };
+use wayland_protocols::wp::pointer_gestures::zv1::client::{
+    zwp_pointer_gesture_hold_v1, zwp_pointer_gesture_pinch_v1, zwp_pointer_gesture_swipe_v1,
+    zwp_pointer_gestures_v1,
+};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
 };
@@ -39,9 +43,35 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
 #[cfg(feature = "testing-layer-shell")]
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
+/// A touchpad gesture kind of zwp_pointer_gestures_v1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gesture {
+    Swipe,
+    Pinch,
+    Hold,
+}
+
 /// Notable events the client received from the server.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    GestureBegin {
+        gesture: Gesture,
+        fingers: u32,
+    },
+    SwipeUpdate {
+        dx: f64,
+        dy: f64,
+    },
+    PinchUpdate {
+        dx: f64,
+        dy: f64,
+        scale: f64,
+        rotation: f64,
+    },
+    GestureEnd {
+        gesture: Gesture,
+        cancelled: bool,
+    },
     PointerEnter {
         surface: wl_surface::WlSurface,
         x: f64,
@@ -130,6 +160,7 @@ pub struct ClientState {
     pub pointer: Option<wl_pointer::WlPointer>,
     pub touch: Option<wl_touch::WlTouch>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub pointer_gestures: Option<zwp_pointer_gestures_v1::ZwpPointerGesturesV1>,
     pub text_input_manager: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3>,
     pub input_method_manager: Option<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>,
     pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
@@ -281,6 +312,20 @@ impl TestClient {
             xdg_surface,
             xdg_toplevel,
         }
+    }
+
+    /// Ask for swipe, pinch and hold gestures on the pointer.
+    pub fn listen_for_gestures(&mut self) {
+        let qh = self.qh();
+        let gestures = self
+            .state
+            .pointer_gestures
+            .as_ref()
+            .expect("zwp_pointer_gestures_v1 not bound");
+        let pointer = self.state.pointer.as_ref().expect("no wl_pointer yet");
+        gestures.get_swipe_gesture(pointer, &qh, ());
+        gestures.get_pinch_gesture(pointer, &qh, ());
+        gestures.get_hold_gesture(pointer, &qh, ());
     }
 
     pub fn create_text_input(&mut self) -> zwp_text_input_v3::ZwpTextInputV3 {
@@ -498,6 +543,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientState {
             state.seat = Some(registry.bind(name, version, qh, ()));
         } else if interface == wl_output::WlOutput::interface().name {
             let _: wl_output::WlOutput = registry.bind(name, version, qh, ());
+        } else if interface == zwp_pointer_gestures_v1::ZwpPointerGesturesV1::interface().name {
+            state.pointer_gestures = Some(registry.bind(name, version, qh, ()));
         } else if interface == zwp_text_input_manager_v3::ZwpTextInputManagerV3::interface().name {
             state.text_input_manager = Some(registry.bind(name, version, qh, ()));
         } else if interface
@@ -560,6 +607,85 @@ impl Dispatch<wl_seat::WlSeat, ()> for ClientState {
                 state.keyboard = Some(seat.get_keyboard(qh, ()));
             }
         }
+    }
+}
+
+impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1,
+        event: zwp_pointer_gesture_swipe_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwp_pointer_gesture_swipe_v1::Event;
+        let gesture = Gesture::Swipe;
+        state.events.push(match event {
+            Event::Begin { fingers, .. } => ClientEvent::GestureBegin { gesture, fingers },
+            Event::Update { dx, dy, .. } => ClientEvent::SwipeUpdate { dx, dy },
+            Event::End { cancelled, .. } => ClientEvent::GestureEnd {
+                gesture,
+                cancelled: cancelled != 0,
+            },
+            _ => return,
+        });
+    }
+}
+
+impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
+        event: zwp_pointer_gesture_pinch_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwp_pointer_gesture_pinch_v1::Event;
+        let gesture = Gesture::Pinch;
+        state.events.push(match event {
+            Event::Begin { fingers, .. } => ClientEvent::GestureBegin { gesture, fingers },
+            Event::Update {
+                dx,
+                dy,
+                scale,
+                rotation,
+                ..
+            } => ClientEvent::PinchUpdate {
+                dx,
+                dy,
+                scale,
+                rotation,
+            },
+            Event::End { cancelled, .. } => ClientEvent::GestureEnd {
+                gesture,
+                cancelled: cancelled != 0,
+            },
+            _ => return,
+        });
+    }
+}
+
+impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
+        event: zwp_pointer_gesture_hold_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwp_pointer_gesture_hold_v1::Event;
+        let gesture = Gesture::Hold;
+        state.events.push(match event {
+            Event::Begin { fingers, .. } => ClientEvent::GestureBegin { gesture, fingers },
+            Event::End { cancelled, .. } => ClientEvent::GestureEnd {
+                gesture,
+                cancelled: cancelled != 0,
+            },
+            _ => return,
+        });
     }
 }
 
@@ -828,6 +954,7 @@ wayland_client::delegate_noop!(ClientState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(ClientState: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
+wayland_client::delegate_noop!(ClientState: ignore zwp_pointer_gestures_v1::ZwpPointerGesturesV1);
 wayland_client::delegate_noop!(ClientState: ignore xdg_system_bell_v1::XdgSystemBellV1);
 wayland_client::delegate_noop!(ClientState: ignore wl_region::WlRegion);
 wayland_client::delegate_noop!(ClientState: ignore ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1);
