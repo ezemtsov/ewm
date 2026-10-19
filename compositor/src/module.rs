@@ -54,11 +54,12 @@ use smithay::reexports::calloop::LoopSignal;
 
 use crate::cursor::CursorConfig;
 use crate::im::TextInputProvider;
+use crate::input::SwipeDirection;
 use crate::layout::Placement;
 use crate::strip::Frame;
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
-use crate::{FocusId, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId};
+use crate::{FocusId, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Trigger};
 
 // Shared State (read by Emacs, written by compositor)
 
@@ -541,6 +542,9 @@ pub enum ModuleCommand {
     ConfigureOverview {
         zoom: f64,
         backdrop_color: [f32; 4],
+    },
+    ConfigureGestures {
+        gestures: crate::input::Gestures,
     },
     /// Fill colour behind the frames.
     ConfigureBackground {
@@ -1358,6 +1362,20 @@ fn resolve_keysym_from_name(name: &str) -> xkb::Keysym {
     no_symbol
 }
 
+/// `swipe-FINGERS-DIRECTION` as a trigger.
+fn swipe_trigger(name: &str) -> Option<Trigger> {
+    let (fingers, direction) = name.strip_prefix("swipe-")?.split_once('-')?;
+    let fingers = fingers.parse().ok()?;
+    let direction = match direction {
+        "up" => SwipeDirection::Up,
+        "down" => SwipeDirection::Down,
+        "left" => SwipeDirection::Left,
+        "right" => SwipeDirection::Right,
+        _ => return None,
+    };
+    Some(Trigger::Swipe { fingers, direction })
+}
+
 /// A key as Emacs names it: a character code or a key name like `left`.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -1374,6 +1392,16 @@ impl KeyName {
             KeyName::Name(name) => resolve_keysym_from_name(name),
         };
         (keysym != keysyms::KEY_NoSymbol.into()).then_some(keysym)
+    }
+
+    /// The trigger this names, a swipe before a keysym.
+    fn trigger(&self) -> Option<Trigger> {
+        if let KeyName::Name(name) = self
+            && let Some(swipe) = swipe_trigger(name)
+        {
+            return Some(swipe);
+        }
+        self.keysym().map(|keysym| Trigger::Keysym(keysym.raw()))
     }
 
     fn description(&self) -> String {
@@ -1432,11 +1460,11 @@ pub struct ChordSpec {
 }
 
 impl KeySpec {
-    /// Resolve the keysyms; `None` skips a key libxkbcommon cannot name.
+    /// Resolve the trigger; `None` skips a key neither a swipe nor libxkbcommon can name.
     fn resolve(self) -> Option<InterceptedKey> {
-        let Some(keysym) = self.key.keysym() else {
+        let Some(trigger) = self.key.trigger() else {
             let key = self.key.description();
-            tracing::warn!("Could not resolve keysym for key {key}, skipping");
+            tracing::warn!("Could not resolve key {key}, skipping");
             return None;
         };
         let dispatch = match (self.action, self.dispatch) {
@@ -1445,7 +1473,7 @@ impl KeySpec {
             (None, _) => InterceptDispatch::Keyboard,
         };
         Some(InterceptedKey {
-            keysym: keysym.raw(),
+            trigger,
             key: self.description.unwrap_or_else(|| self.key.description()),
             ctrl: self.ctrl,
             alt: self.alt,
@@ -1815,6 +1843,15 @@ fn configure_overview_module(zoom: f64, red: f64, green: f64, blue: f64) -> Resu
     push_command(ModuleCommand::ConfigureOverview {
         zoom,
         backdrop_color: rgb(red, green, blue),
+    });
+    Ok(())
+}
+
+/// Configure the touchpad gestures from GESTURES, a `Gestures` plist.
+#[defun]
+fn configure_gestures_module(gestures: Lisp<crate::input::Gestures>) -> Result<()> {
+    push_command(ModuleCommand::ConfigureGestures {
+        gestures: gestures.0,
     });
     Ok(())
 }

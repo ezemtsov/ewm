@@ -833,6 +833,15 @@ impl Fixture {
             .on_gesture_swipe_end::<TestInputBackend>(TestGestureEvent::default());
     }
 
+    /// End the swipe as libinput does when the fingers change, with nothing to run.
+    pub fn swipe_cancel(&mut self) {
+        self.state
+            .on_gesture_swipe_end::<TestInputBackend>(TestGestureEvent {
+                cancelled: true,
+                ..TestGestureEvent::default()
+            });
+    }
+
     /// Put `fingers` down for a pinch.
     pub fn pinch_begin(&mut self, fingers: u32) {
         let event = TestGestureEvent {

@@ -20,7 +20,7 @@
 //!       when flagged (`Action` dispatch -> `Action`, else `Forward`).
 
 use ewm_core::input::{KeyAction, KeyInput, KeyRouting, classify_key};
-use ewm_core::{Action, InterceptDispatch, InterceptedKey};
+use ewm_core::{Action, InterceptDispatch, InterceptedKey, Trigger};
 use proptest::prelude::*;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
@@ -46,7 +46,7 @@ fn ik_with_dispatch_and_repeat(
     repeat: bool,
 ) -> InterceptedKey {
     InterceptedKey {
-        keysym,
+        trigger: Trigger::Keysym(keysym),
         key: format!("key-{keysym}"),
         ctrl: false,
         alt: false,

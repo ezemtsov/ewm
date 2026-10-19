@@ -1,6 +1,6 @@
 //! Properties for key binding matching.
 
-use ewm_core::{InterceptDispatch, InterceptedKey};
+use ewm_core::{InterceptDispatch, InterceptedKey, Trigger};
 use proptest::prelude::*;
 use smithay::input::keyboard::{ModifiersState, keysyms};
 
@@ -35,7 +35,7 @@ fn mods(flags: Flags) -> ModifiersState {
 
 fn intercepted(keysym: u32, flags: Flags) -> InterceptedKey {
     InterceptedKey {
-        keysym,
+        trigger: Trigger::Keysym(keysym),
         key: format!("key-{keysym}"),
         ctrl: flags.ctrl,
         alt: flags.alt,

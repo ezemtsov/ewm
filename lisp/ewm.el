@@ -784,6 +784,7 @@ The compositor runs as a thread within the Emacs process."
       (ewm--send-intercept-keys)
     (add-hook 'after-init-hook #'ewm--send-intercept-keys))
   (ewm--apply-user-config "ewm-input-config" #'ewm--send-input-config)
+  (ewm--send-gestures-config)
   (ewm--send-idle-config)
   (ewm--send-power-config)
   (ewm--send-cursor-config)

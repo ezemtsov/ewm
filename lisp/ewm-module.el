@@ -75,6 +75,7 @@
      (declare-function ewm-hide-toggle-module "ewm-core" ())
      (declare-function ewm-action-module "ewm-core" (action))
      (declare-function ewm-configure-overview-module "ewm-core" (zoom red green blue))
+     (declare-function ewm-configure-gestures-module "ewm-core" (gestures))
      (declare-function ewm-configure-background-module "ewm-core" (red green blue))
      (declare-function ewm-set-idle-inhibited "ewm-core" (inhibited))
      (declare-function ewm-configure-power-module "ewm-core" (closed-lid-suspends sepia))

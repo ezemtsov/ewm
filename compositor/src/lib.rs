@@ -664,12 +664,21 @@ where
     toplevel_focus()
 }
 
-/// Intercepted key: resolved keysym + required modifiers.
-/// Keysyms are resolved from Emacs key descriptions at registration time
-/// using libxkbcommon (via Smithay's re-export).
+/// What a binding listens for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum Trigger {
+    Keysym(u32),
+    /// A touchpad swipe of `fingers`, told apart by the direction it sets off in.
+    Swipe {
+        fingers: u32,
+        direction: input::SwipeDirection,
+    },
+}
+
+/// A binding Emacs declared: a key or a swipe under given modifiers.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InterceptedKey {
-    pub keysym: u32,
+    pub trigger: Trigger,
     pub key: String,
     #[serde(default)]
     pub ctrl: bool,
@@ -691,6 +700,12 @@ pub struct InterceptedKey {
 }
 
 impl InterceptedKey {
+    /// Whether this binding applies while `focused_surface_id` has focus.
+    pub fn in_scope(&self, focused_surface_id: u64) -> bool {
+        self.surface
+            .is_none_or(|surface| surface == focused_surface_id)
+    }
+
     /// Check if this key matches the given keysym and modifiers.
     ///
     /// `raw_keysym` is the layout-independent keysym (physical key, no
@@ -702,23 +717,39 @@ impl InterceptedKey {
     /// etc.) where Emacs encodes the character directly rather than
     /// decomposing it into base-key + Shift.
     pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
-        let raw_match = self.keysym == raw_keysym
+        let Trigger::Keysym(keysym) = self.trigger else {
+            return false;
+        };
+        let raw_match = keysym == raw_keysym
             || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
-                && self.keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
+                && keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
 
         if raw_match {
-            return self.ctrl == mods.ctrl
-                && self.alt == mods.alt
-                && (self.shift == mods.shift
-                    || (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym))
-                && self.logo == mods.logo;
+            return self.mods_match(
+                mods,
+                (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym),
+            );
         }
 
-        if raw_keysym != modified_keysym && self.keysym == modified_keysym {
-            return self.ctrl == mods.ctrl && self.alt == mods.alt && self.logo == mods.logo;
-        }
+        raw_keysym != modified_keysym && keysym == modified_keysym && self.mods_match(mods, true)
+    }
 
-        false
+    /// Whether `mods` are this binding's, `shift` aside when `ignore_shift`.
+    fn mods_match(&self, mods: &ModifiersState, ignore_shift: bool) -> bool {
+        self.ctrl == mods.ctrl
+            && self.alt == mods.alt
+            && (ignore_shift || self.shift == mods.shift)
+            && self.logo == mods.logo
+    }
+
+    /// Whether a swipe of `fingers` setting off in `direction` under `mods` is this binding's.
+    pub fn matches_swipe(
+        &self,
+        fingers: u32,
+        direction: input::SwipeDirection,
+        mods: &ModifiersState,
+    ) -> bool {
+        self.trigger == Trigger::Swipe { fingers, direction } && self.mods_match(mods, false)
     }
 }
 
@@ -827,6 +858,8 @@ pub struct Ewm {
     // Input
     /// Surface under the pointer + its global origin, for constraint checks.
     pub pointer_focus: Option<SurfaceHit>,
+    /// The touchpad swipe in flight.
+    pub swipe: input::Swipe,
     /// Last output the cursor was drawn on, for per-output cursor redraw.
     pointer_output: Option<Output>,
     pub focused_frame_id: u64,
@@ -850,15 +883,13 @@ pub struct Ewm {
 
     // Libinput device configuration
     pub input_configs: Vec<input::InputConfigEntry>,
+    pub gestures: input::Gestures,
     /// Connected libinput devices, for re-applying configuration on change
     pub libinput_devices: std::collections::HashSet<smithay::reexports::input::Device>,
 
     // PID for matching Emacs-owned wl_surfaces in `new_toplevel` (vs external
     // applications); is-this-an-emacs-frame queries derive from strip membership.
     pub emacs_pid: Option<u32>,
-
-    /// In-flight 3-finger swipe gesture for strip scrolling.
-    pub gesture: input::GestureState,
 
     // Per-output state (redraw state machine)
     pub output_state: HashMap<Output, OutputState>,
@@ -1304,7 +1335,8 @@ impl Ewm {
             input_configs: Vec::new(),
             libinput_devices: std::collections::HashSet::new(),
             emacs_pid: None,
-            gesture: input::GestureState::default(),
+            swipe: input::Swipe::default(),
+            gestures: input::Gestures::default(),
             output_state: HashMap::new(),
             monitors_active: true,
             pending_early_imports: Vec::new(),
@@ -1648,6 +1680,15 @@ impl Ewm {
         self.focused_entry_id
             .and_then(|entry_id| self.layout.entry_surface_id(entry_id))
             .unwrap_or(self.focused_frame_id)
+    }
+
+    /// The focused entry and its surface when that entry is fullscreen.
+    pub fn focused_fullscreen_entry(&self) -> Option<(LayoutEntryId, u64)> {
+        self.layout
+            .frame_location(self.focused_frame_id)
+            .and_then(|location| location.frame.fullscreen_entry())
+            .filter(|entry| Some(entry.id) == self.focused_entry_id)
+            .and_then(|entry| Some((entry.id, entry.surface_id()?)))
     }
 
     pub fn set_surface_urgent(&mut self, surface_id: u64, urgent: bool) -> bool {
@@ -2016,6 +2057,19 @@ impl Ewm {
         );
         self.queue_event(Event::Hide { hidden });
         self.queue_redraw_all();
+    }
+
+    /// Start a strip swipe on the output under the pointer, none while the frames are hidden.
+    pub fn strip_gesture_begin(&mut self) -> Option<Output> {
+        // A hidden strip would scroll unseen.
+        if self.frames_hidden() {
+            return None;
+        }
+        let output = self.output_under_cursor().cloned()?;
+        if let Some(strip) = self.layout.strip_mut(&output) {
+            strip.gesture_begin();
+        }
+        Some(output)
     }
 
     /// End a strip swipe on `output`: snap to the nearest frame and focus it.
@@ -6055,6 +6109,7 @@ impl State {
                 self.ewm.overview.backdrop_color = backdrop_color;
                 self.ewm.queue_redraw_all();
             }
+            ModuleCommand::ConfigureGestures { gestures } => self.ewm.gestures = gestures,
             ModuleCommand::ConfigureBackground { color } => {
                 self.ewm.overview.background_color = color;
                 self.ewm.queue_redraw_all();

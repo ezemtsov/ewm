@@ -123,6 +123,18 @@
     (define-key ewm-mode-map (kbd "s-<f9>") nil)
     (define-key ewm-mode-map (kbd "s-C-7") nil)))
 
+(ert-deftest ewm-input-tests/spec-swipe-key ()
+  "A swipe bound in `ewm-mode-map' rides the list as the key its name spells."
+  (define-key ewm-mode-map (kbd "s-<swipe-4-left>") #'kill-buffer)
+  (unwind-protect
+      (let ((spec (ewm--event-to-intercept-spec 's-swipe-4-left)))
+        (should (equal (plist-get spec :key) "swipe-4-left"))
+        (should (eq (plist-get spec :super) t))
+        (should (equal (plist-get spec :description) "s-<swipe-4-left>"))
+        (should (equal (plist-get spec :dispatch) "command"))
+        (should (memq 's-swipe-4-left (ewm--mode-map-events))))
+    (define-key ewm-mode-map (kbd "s-<swipe-4-left>") nil)))
+
 (ert-deftest ewm-input-tests/spec-modifiers ()
   "Ctrl/Meta/Shift/Super are surfaced as boolean flags."
   (let ((spec (ewm--event-to-intercept-spec

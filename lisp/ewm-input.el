@@ -13,6 +13,8 @@
 ;; 1. `ewm-mode-map' - All bindings in this keymap are intercepted, those
 ;;    of commands with an `ewm-action' property run in the compositor.
 ;;    Override defaults with use-package :bind (:map ewm-mode-map ...).
+;;    Touchpad swipes bind as `<swipe-FINGERS-DIRECTION>' keys, with the
+;;    usual modifier prefixes.
 ;; 2. `ewm-intercept-prefixes' - Extra keys to intercept, plus keys that
 ;;    should also be intercepted while a client is fullscreen.
 ;; 3. `ewm-surface-emulate-keys' - Key entries are intercepted as commands
@@ -166,6 +168,28 @@ Example:
                           (list :device key))
                         props)))
             ewm-input-config))))
+
+;;; Touchpad gestures
+
+(defcustom ewm-strip-swipe-fingers 3
+  "Fingers of the touchpad swipe that scrolls the strip left and right.
+Nil disables the swipe."
+  :type '(choice (const :tag "None" nil) (integer :tag "Fingers"))
+  :set (ewm--send-on-set #'ewm--send-gestures-config)
+  :group 'ewm-input-devices)
+
+(defcustom ewm-overview-swipe-fingers 3
+  "Fingers of the touchpad swipe that opens and closes the overview.
+Nil disables the swipe."
+  :type '(choice (const :tag "None" nil) (integer :tag "Fingers"))
+  :set (ewm--send-on-set #'ewm--send-gestures-config)
+  :group 'ewm-input-devices)
+
+(defun ewm--send-gestures-config ()
+  "Send the gesture knobs to the compositor."
+  (ewm-configure-gestures-module
+   (list :strip-swipe-fingers ewm-strip-swipe-fingers
+         :overview-swipe-fingers ewm-overview-swipe-fingers)))
 
 ;;; Key interception
 

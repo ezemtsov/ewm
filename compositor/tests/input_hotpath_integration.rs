@@ -3,7 +3,7 @@
 use ewm_core::input::KeyboardAction;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, Toplevel, nz};
-use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId};
+use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Trigger};
 use smithay::input::keyboard::keysyms;
 use smithay::utils::Size;
 
@@ -76,7 +76,7 @@ fn frame_with_entry(
 
 fn intercepted((key, keysym, ctrl, alt, allow_fullscreen): Binding) -> InterceptedKey {
     InterceptedKey {
-        keysym,
+        trigger: Trigger::Keysym(keysym),
         key: key.to_string(),
         ctrl,
         alt,

@@ -4,6 +4,7 @@
 
 use ewm_core::backend::{closest_representable_scale, int_to_transform, transform_to_int};
 use ewm_core::floating::{ResizeEdge, SizeFracPoint};
+use ewm_core::input::Swipe;
 use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, nz};
 use ewm_core::utils::output_size;
@@ -398,15 +399,7 @@ fn strip_swipe_drives_the_output_under_the_pointer() {
 
     fixture.swipe_begin(3);
     fixture.swipe_update(700.0, 0.0);
-    assert_eq!(
-        fixture
-            .ewm_ref()
-            .gesture
-            .active_output
-            .as_ref()
-            .map(Output::name),
-        Some("Virtual-2".to_string())
-    );
+    assert!(matches!(&fixture.ewm_ref().swipe, Swipe::Strip(out) if out.name() == "Virtual-2"));
     assert!(fixture.strip("Virtual-1").view_is_static());
     assert!(!fixture.strip("Virtual-2").view_is_static());
     fixture.swipe_end();

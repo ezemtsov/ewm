@@ -26,6 +26,9 @@
 //!    Stale/global intercept state must not blackhole unrelated clients.
 //!
 //! 6. **VT switching**: Ctrl+Alt+F1-F12 arrive as XF86Switch_VT_N keysyms.
+//!
+//! 7. **Swipe bindings**: `<swipe-FINGERS-DIRECTION>` entries match by fingers, direction and
+//!    modifiers under the same first-match and surface-scope rules, and run when the fingers lift.
 
 mod backend_ext;
 mod config;
@@ -38,6 +41,7 @@ use std::any::Any;
 pub use backend_ext::*;
 pub use config::*;
 use frame_click_grab::FrameClickGrab;
+use serde::{Deserialize, Serialize};
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, DeviceCapability, Event,
     InputBackend, InputEvent, InputTime, KeyState, KeyboardKeyEvent, PointerAxisEvent,
@@ -161,11 +165,105 @@ pub(crate) enum ActiveConstraint {
     Confined(Option<RegionAttributes>),
 }
 
-/// In-flight 3-finger swipe: horizontal scrolls a strip, vertical drives the overview.
+/// The touchpad swipe in flight, from the client's through the deadzone to what it drives.
 #[derive(Default)]
-pub struct GestureState {
-    pub cumulative: Option<(f64, f64)>,
-    pub active_output: Option<Output>,
+pub enum Swipe {
+    /// No swipe, or a client has it.
+    #[default]
+    Client,
+    /// The compositor's, direction still undecided.
+    Deadzone {
+        fingers: u32,
+        mods: ModifiersState,
+        dx: f64,
+        dy: f64,
+    },
+    Strip(Output),
+    Overview,
+    /// Runs when the fingers lift.
+    Bound(Bound),
+    /// The compositor's, with nothing to drive.
+    Swallowed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SwipeDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl SwipeDirection {
+    pub const ALL: [SwipeDirection; 4] = [Self::Up, Self::Down, Self::Left, Self::Right];
+
+    /// The direction of a swipe that moved by `(dx, dy)` on the touchpad.
+    pub fn of(dx: f64, dy: f64) -> Self {
+        if dx.abs() > dy.abs() {
+            if dx > 0. { Self::Right } else { Self::Left }
+        } else if dy > 0. {
+            Self::Down
+        } else {
+            Self::Up
+        }
+    }
+
+    pub fn is_horizontal(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
+}
+
+/// What a bound swipe runs: a compositor action, or `key` as an Emacs command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Bound {
+    Command { key: String },
+    Action(Action),
+}
+
+/// What a touchpad swipe does, decided by the direction it sets off in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwipeAction {
+    /// Pass to the client under the pointer.
+    Forward,
+    /// Scroll the strip under the pointer.
+    Strip,
+    /// Drive the overview.
+    Overview,
+    Bound(Bound),
+}
+
+/// Pure classification of a swipe: a binding first, the built-in gesture of its finger count
+/// next, else the client's. A binding needs the flag under fullscreen, as a key does.
+pub fn classify_swipe(
+    bindings: &[InterceptedKey],
+    fullscreen_active: bool,
+    focused_surface_id: u64,
+    gestures: Gestures,
+    fingers: u32,
+    direction: SwipeDirection,
+    mods: &ModifiersState,
+) -> SwipeAction {
+    let binding = bindings
+        .iter()
+        .find(|ik| ik.in_scope(focused_surface_id) && ik.matches_swipe(fingers, direction, mods));
+    if let Some(ik) = binding
+        && (ik.allow_fullscreen || !fullscreen_active)
+    {
+        return SwipeAction::Bound(match &ik.dispatch {
+            InterceptDispatch::Action(action) => Bound::Action(action.clone()),
+            _ => Bound::Command {
+                key: ik.key.clone(),
+            },
+        });
+    }
+    if direction.is_horizontal() && gestures.strip_swipe_fingers == Some(fingers) {
+        SwipeAction::Strip
+    } else if !direction.is_horizontal() && gestures.overview_swipe_fingers == Some(fingers) {
+        SwipeAction::Overview
+    } else {
+        SwipeAction::Forward
+    }
 }
 
 const GESTURE_DEADZONE_SQ: f64 = 16.0 * 16.0;
@@ -562,15 +660,7 @@ impl State {
 
         // Look up the focused entry on the focused frame; if it's fullscreen,
         // make sure normal forwarded keys still go to that surface.
-        let focused_frame_id = self.ewm.focused_frame_id;
-        let focused_entry_id = self.ewm.focused_entry_id;
-        let fullscreen_entry = self
-            .ewm
-            .layout
-            .frame_location(focused_frame_id)
-            .and_then(|location| location.frame.fullscreen_entry())
-            .filter(|entry| Some(entry.id) == focused_entry_id)
-            .and_then(|entry| Some((entry.id, entry.surface_id()?)));
+        let fullscreen_entry = self.ewm.focused_fullscreen_entry();
         let fullscreen_active = fullscreen_entry.is_some();
 
         // Undo temporary redirects before forwarding into fullscreen surfaces.
@@ -1237,15 +1327,48 @@ impl State {
         self.ewm.get_working_area(output).size.w as f64
     }
 
-    /// Three-finger swipe begin: arm the deadzone; other finger counts pass through.
+    /// What a swipe of `fingers` under `mods` does once it sets off in `direction`.
+    fn classify_swipe(
+        &self,
+        bindings: &[InterceptedKey],
+        fingers: u32,
+        direction: SwipeDirection,
+        mods: &ModifiersState,
+    ) -> SwipeAction {
+        classify_swipe(
+            bindings,
+            self.ewm.focused_fullscreen_entry().is_some(),
+            self.ewm.focused_surface_id(),
+            self.ewm.gestures,
+            fingers,
+            direction,
+            mods,
+        )
+    }
+
+    /// Swipe begin: take the swipe when a binding or a built-in gesture listens for its fingers.
     pub(crate) fn on_gesture_swipe_begin<B: InputBackend>(
         &mut self,
         event: B::GestureSwipeBeginEvent,
     ) {
         use smithay::backend::input::GestureBeginEvent;
-        if event.fingers() == 3 {
-            self.ewm.gesture.cumulative = Some((0.0, 0.0));
-            return;
+        let fingers = event.fingers();
+        // Under the lock every swipe is the lock surface's, as every key is.
+        if !self.ewm.is_locked() {
+            let mods = self.ewm.keyboard.modifier_state();
+            let bindings = module::intercepted_keys().read().unwrap();
+            let taken = SwipeDirection::ALL.into_iter().any(|direction| {
+                self.classify_swipe(&bindings, fingers, direction, &mods) != SwipeAction::Forward
+            });
+            if taken {
+                self.ewm.swipe = Swipe::Deadzone {
+                    fingers,
+                    mods,
+                    dx: 0.,
+                    dy: 0.,
+                };
+                return;
+            }
         }
         let pointer = self.ewm.pointer.clone();
         let serial = SERIAL_COUNTER.next_serial();
@@ -1254,12 +1377,12 @@ impl State {
             &GestureSwipeBeginEvent {
                 serial,
                 time: event.time(),
-                fingers: event.fingers(),
+                fingers,
             },
         );
     }
 
-    /// Three-finger swipe update: accumulate to deadzone, then drive the strip under the pointer.
+    /// Swipe update: past the deadzone the first direction picks what the swipe does.
     pub(crate) fn on_gesture_swipe_update<B: InputBackend>(
         &mut self,
         event: B::GestureSwipeUpdateEvent,
@@ -1279,8 +1402,8 @@ impl State {
             dx = le.dx_unaccelerated();
             dy = le.dy_unaccelerated();
         }
-        // Swiping up always opens the overview, whatever the scroll direction setting.
-        let uninverted_dy = dy;
+        // The deadzone and the overview follow the fingers, whatever the scroll direction setting.
+        let (uninverted_dx, uninverted_dy) = (dx, dy);
         if let Some(dev) =
             (&event.device() as &dyn std::any::Any).downcast_ref::<libinput::Device>()
             && dev.config_scroll_natural_scroll_enabled()
@@ -1290,82 +1413,105 @@ impl State {
         }
         let timestamp = std::time::Duration::from_micros(event.time().micros());
 
-        if let Some((cx, cy)) = self.ewm.gesture.cumulative.as_mut() {
-            *cx += dx;
-            *cy += dy;
-            let (cx, cy) = (*cx, *cy);
-            if cx * cx + cy * cy >= GESTURE_DEADZONE_SQ {
-                self.ewm.gesture.cumulative = None;
-                if cx.abs() > cy.abs() {
-                    // A hidden strip would scroll unseen.
-                    if self.ewm.frames_hidden() {
-                        return;
-                    }
-                    if let Some(out) = self.ewm.output_under_cursor().cloned() {
-                        if let Some(strip) = self.ewm.layout.strip_mut(&out) {
-                            strip.gesture_begin();
-                        }
-                        self.ewm.gesture.active_output = Some(out);
-                    }
-                } else if !self.ewm.is_locked() {
+        if let Swipe::Deadzone {
+            fingers,
+            mods,
+            dx: cx,
+            dy: cy,
+        } = &mut self.ewm.swipe
+        {
+            *cx += uninverted_dx;
+            *cy += uninverted_dy;
+            if *cx * *cx + *cy * *cy < GESTURE_DEADZONE_SQ {
+                return;
+            }
+            let (fingers, mods, direction) = (*fingers, *mods, SwipeDirection::of(*cx, *cy));
+            let action = {
+                let bindings = module::intercepted_keys().read().unwrap();
+                self.classify_swipe(&bindings, fingers, direction, &mods)
+            };
+            self.ewm.swipe = match action {
+                SwipeAction::Strip => self
+                    .ewm
+                    .strip_gesture_begin()
+                    .map_or(Swipe::Swallowed, Swipe::Strip),
+                SwipeAction::Overview => {
                     self.ewm.overview_gesture_begin();
+                    Swipe::Overview
+                }
+                SwipeAction::Bound(bound) => Swipe::Bound(bound),
+                SwipeAction::Forward => Swipe::Swallowed,
+            };
+            return;
+        }
+
+        match &self.ewm.swipe {
+            Swipe::Client => {
+                let pointer = self.ewm.pointer.clone();
+                pointer.gesture_swipe_update(
+                    self,
+                    &GestureSwipeUpdateEvent {
+                        time: event.time(),
+                        delta: (dx, dy).into(),
+                    },
+                );
+            }
+            Swipe::Overview => {
+                if self.ewm.overview.gesture_update(-uninverted_dy, timestamp) == Some(true) {
+                    self.ewm.queue_redraw_all();
                 }
             }
-            return;
-        }
-
-        if let Some(changed) = self.ewm.overview.gesture_update(-uninverted_dy, timestamp) {
-            if changed {
-                self.ewm.queue_redraw_all();
+            Swipe::Strip(out) => {
+                let out = out.clone();
+                let w = self.working_area_width(&out);
+                // Zoomed-out content still follows the fingers on screen.
+                let dx = dx / self.ewm.overview.zoom();
+                if let Some(strip) = self.ewm.layout.strip_mut(&out) {
+                    strip.gesture_update(dx, timestamp, w);
+                }
+                self.ewm.queue_redraw(&out);
             }
-            return;
+            Swipe::Deadzone { .. } | Swipe::Bound(_) | Swipe::Swallowed => {}
         }
-
-        if let Some(out) = self.ewm.gesture.active_output.clone() {
-            let w = self.working_area_width(&out);
-            // Zoomed-out content still follows the fingers on screen.
-            let dx = dx / self.ewm.overview.zoom();
-            if let Some(strip) = self.ewm.layout.strip_mut(&out) {
-                strip.gesture_update(dx, timestamp, w);
-            }
-            self.ewm.queue_redraw(&out);
-            return;
-        }
-
-        let pointer = self.ewm.pointer.clone();
-        pointer.gesture_swipe_update(
-            self,
-            &GestureSwipeUpdateEvent {
-                time: event.time(),
-                delta: (dx, dy).into(),
-            },
-        );
     }
 
-    /// Three-finger swipe end: snap to the nearest column (no-op if deadzone wasn't crossed).
+    /// Swipe end: run the binding, or snap the strip or the overview to its nearest rest.
     pub(crate) fn on_gesture_swipe_end<B: InputBackend>(&mut self, event: B::GestureSwipeEndEvent) {
         use smithay::backend::input::{Event, GestureEndEvent};
-        self.ewm.gesture.cumulative = None;
-        if self.ewm.overview_gesture_end() {
-            self.ewm.queue_redraw_all();
-            self.refresh_pointer_after_scene_change(false);
-            return;
+        match std::mem::take(&mut self.ewm.swipe) {
+            Swipe::Client => {
+                let pointer = self.ewm.pointer.clone();
+                let serial = SERIAL_COUNTER.next_serial();
+                pointer.gesture_swipe_end(
+                    self,
+                    &GestureSwipeEndEvent {
+                        serial,
+                        time: event.time(),
+                        cancelled: event.cancelled(),
+                    },
+                );
+            }
+            Swipe::Bound(bound) if !event.cancelled() => {
+                match bound {
+                    Bound::Action(action) => self.do_action(action),
+                    Bound::Command { key } => self
+                        .ewm
+                        .queue_event(crate::Event::InterceptedCommand { key }),
+                }
+                self.notify_activity();
+            }
+            Swipe::Overview => {
+                if self.ewm.overview_gesture_end() {
+                    self.ewm.queue_redraw_all();
+                    self.refresh_pointer_after_scene_change(false);
+                }
+            }
+            Swipe::Strip(out) => {
+                let w = self.working_area_width(&out);
+                self.ewm.strip_gesture_end(&out, w);
+            }
+            Swipe::Deadzone { .. } | Swipe::Bound(_) | Swipe::Swallowed => {}
         }
-        if let Some(out) = self.ewm.gesture.active_output.take() {
-            let w = self.working_area_width(&out);
-            self.ewm.strip_gesture_end(&out, w);
-            return;
-        }
-        let pointer = self.ewm.pointer.clone();
-        let serial = SERIAL_COUNTER.next_serial();
-        pointer.gesture_swipe_end(
-            self,
-            &GestureSwipeEndEvent {
-                serial,
-                time: event.time(),
-                cancelled: event.cancelled(),
-            },
-        );
     }
 
     /// Pinches and holds are the client's, nothing of ours listens for them.
@@ -1917,10 +2063,10 @@ pub fn classify_key(
         return KeyAction::VtSwitch(vt);
     }
 
-    if let Some(ik) = intercepted_keys.iter().find(|ik| {
-        ik.surface.is_none_or(|s| s == focused_surface_id)
-            && ik.matches(keysym_raw, modified_raw, mods)
-    }) {
+    if let Some(ik) = intercepted_keys
+        .iter()
+        .find(|ik| ik.in_scope(focused_surface_id) && ik.matches(keysym_raw, modified_raw, mods))
+    {
         if fullscreen_active && !ik.allow_fullscreen {
             return KeyAction::Forward;
         }
