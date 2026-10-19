@@ -123,6 +123,8 @@ pub struct Monitor {
     pub working_area: Rectangle<i32, Logical>,
     /// The working area changed since the last layout, whose views then jump into place.
     pub resized: bool,
+    /// The frame this display showed last, active again as it returns.
+    last_active: Option<u64>,
 }
 
 impl Monitor {
@@ -157,6 +159,33 @@ impl Monitor {
 
     fn frame_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.frames().map(|frame| frame.surface_id)
+    }
+
+    /// Keep each float pinned while its frame lasts, a fullscreen float falling back to the active
+    /// frame and a float with plain views dropping its pin.
+    fn settle_pins(&mut self) {
+        let strip = &self.strip;
+        for float in self.floating.frames_mut() {
+            float.pinned_to = if float.fullscreen_entry().is_some() {
+                strip.frame_of_float(float)
+            } else if float.has_views() {
+                None
+            } else {
+                float.pinned_to.filter(|&id| strip.index_of(id).is_some())
+            };
+        }
+    }
+
+    /// Pull out the frames `take` selects, a strip frame with the floats pinned to it.
+    fn drain_frames(&mut self, mut take: impl FnMut(&strip::Frame) -> bool) -> Frames {
+        let tiled = self.strip.drain_frames(&mut take);
+        let floating = self.floating.drain_frames(|frame| {
+            take(frame)
+                || frame
+                    .pinned_to
+                    .is_some_and(|pin| tiled.iter().any(|tile| tile.surface_id == pin))
+        });
+        Frames { tiled, floating }
     }
 
     /// Whether `frame`, a float, is on screen: unpinned or pinned to the active frame.
@@ -310,7 +339,7 @@ pub struct Layout {
     homeless: Frames,
     /// Home display identity per frame, so a replugged display reclaims its frames.
     home_outputs: HashMap<u64, String>,
-    /// Last active frame per display identity.
+    /// Last active frame per unplugged display, handed to its monitor when it returns.
     last_active: HashMap<String, u64>,
     /// Floating frame the pointer is dragging.
     interactive_move: Option<InteractiveMove>,
@@ -403,6 +432,9 @@ impl Layout {
         if self.monitor_of(&output).is_some() {
             return;
         }
+        let last_active = self
+            .last_active
+            .remove(&crate::utils::output_identity(&output));
         let mut strip = strip::Strip::new(self.clock.clone());
         strip.update_config(output.current_scale().fractional_scale());
         let floating = floating::FloatingSpace::new(working_area.to_f64(), self.clock.clone());
@@ -413,6 +445,7 @@ impl Layout {
             floating,
             working_area,
             resized: false,
+            last_active,
         };
         monitor.set_view(working_area);
         self.monitors.push(monitor);
@@ -440,10 +473,7 @@ impl Layout {
                 self.last_active.remove(&identity);
             }
         }
-        let mut frames = Frames {
-            tiled: monitor.strip.take_frames(),
-            floating: monitor.floating.take_frames(),
-        };
+        let mut frames = monitor.drain_frames(|_| true);
         // A filler nobody used or named dies with its output, except Emacs's last frame.
         let last_frames =
             self.all_frames().next().is_none() && frames.iter().all(strip::Frame::is_filler);
@@ -483,7 +513,7 @@ impl Layout {
     }
 
     /// Hold `frames` until an output maps.
-    fn park(&mut self, mut frames: Frames) {
+    fn park(&mut self, frames: Frames) {
         // A parked frame has no floating space, so its drag is over.
         self.interactive_move = self.interactive_move.filter(|move_| {
             !frames
@@ -491,11 +521,6 @@ impl Layout {
                 .iter()
                 .any(|frame| frame.surface_id == move_.frame_id)
         });
-        // Parked frames show nothing.
-        for frame in frames.tiled.iter_mut().chain(frames.floating.iter_mut()) {
-            frame.mark_fullscreen(&|_| false);
-            frame.pinned_to = None;
-        }
         self.homeless.tiled.extend(frames.tiled);
         self.homeless.floating.extend(frames.floating);
     }
@@ -578,13 +603,13 @@ impl Layout {
     fn with_frame_container(
         &mut self,
         id: u64,
-        tiled: impl FnOnce(&mut strip::Strip, usize),
+        tiled: impl FnOnce(&mut Monitor, usize),
         floating: impl FnOnce(&mut Monitor),
     ) -> Option<(Output, Option<u64>)> {
         let monitor = self.monitor_of_frame_mut(id)?;
         let prev_active = monitor.strip.active_frame_id();
         match monitor.strip.index_of(id) {
-            Some(idx) => tiled(&mut monitor.strip, idx),
+            Some(idx) => tiled(monitor, idx),
             None => floating(monitor),
         }
         Some((monitor.output.clone(), prev_active))
@@ -605,12 +630,13 @@ impl Layout {
             .retain(|frame| frame.surface_id != id);
         self.with_frame_container(
             id,
-            |strip, idx| {
+            |monitor, idx| {
                 if active_close {
-                    strip.close_active_frame_at(idx);
+                    monitor.strip.close_active_frame_at(idx);
                 } else {
-                    strip.close_frame_at(idx);
+                    monitor.strip.close_frame_at(idx);
                 }
+                monitor.settle_pins();
             },
             |monitor| {
                 monitor.floating.close_frame(id);
@@ -618,7 +644,8 @@ impl Layout {
         )
     }
 
-    /// Put `frames` on monitor `idx`, tiled after frame `after` or last, keeping `focused` active.
+    /// Put `frames` on monitor `idx`, tiled after frame `after` or last. `focused` stays active,
+    /// else the remembered frame of a returning display, else the first on an empty strip.
     fn place_frames(
         &mut self,
         idx: usize,
@@ -630,21 +657,24 @@ impl Layout {
         let monitor = &mut self.monitors[idx];
         let dst_prev_active = monitor.strip.active_frame_id();
         let at = monitor.strip.slot_after(after);
-        let focused_idx = frames
-            .tiled
-            .iter()
-            .position(|frame| frame.surface_id == focused)
-            .map(|idx| at + idx);
         monitor.strip.insert_frames(at, frames.tiled);
-        if let Some(idx) = focused_idx {
-            monitor.strip.set_active(idx);
-        } else if dst_prev_active.is_none() && !monitor.strip.frames().is_empty() {
-            monitor.strip.set_active(0);
+        let remembered = monitor.last_active.take_if(|id| ids.contains(id));
+        let strip = &mut monitor.strip;
+        // The focused frame wins over the remembered one.
+        let wake = match strip.index_of(focused) {
+            Some(idx) => ids.contains(&focused).then_some(idx),
+            None => remembered.and_then(|id| strip.index_of(id)),
+        };
+        if let Some(idx) = wake {
+            strip.set_active(idx);
+        } else if dst_prev_active.is_none() && !strip.frames().is_empty() {
+            strip.set_active(0);
         }
         // `add_frame` stacks on top, so the topmost goes last.
         for frame in frames.floating.into_iter().rev() {
             monitor.floating.add_frame(frame);
         }
+        monitor.settle_pins();
         Moved {
             ids,
             dst: Some(monitor.output.clone()),
@@ -670,14 +700,7 @@ impl Layout {
         }
         let src = &mut self.monitors[src_idx];
         let src_prev_active = src.strip.active_frame_id();
-        let frames = Frames {
-            tiled: src
-                .strip
-                .drain_frames(|frame| ids.contains(&frame.surface_id)),
-            floating: src
-                .floating
-                .drain_frames(|frame| ids.contains(&frame.surface_id)),
-        };
+        let frames = src.drain_frames(|frame| ids.contains(&frame.surface_id));
         Moved {
             src: Some(src.output.clone()),
             src_prev_active,
@@ -685,7 +708,7 @@ impl Layout {
         }
     }
 
-    /// Move frame `id` to `dst` on purpose, after its active frame, and home it there.
+    /// Move frame `id` to `dst` on purpose, after its active frame, homing it and its floats.
     pub(crate) fn move_frame_to_output(&mut self, id: u64, dst: &Output, focused: u64) -> Moved {
         let src = self
             .frame_location(id)
@@ -695,8 +718,9 @@ impl Layout {
         };
         let after = self.strip(dst).and_then(strip::Strip::active_frame_id);
         let moved = self.move_frames(&src, dst, &[id], focused, after);
-        if !moved.ids.is_empty() {
-            self.set_home(id, dst);
+        let home = crate::utils::output_identity(dst);
+        for id in &moved.ids {
+            self.home_outputs.insert(*id, home.clone());
         }
         moved
     }
@@ -710,19 +734,13 @@ impl Layout {
         self.place_frames(idx, None, frames, focused)
     }
 
-    /// Make `output`'s display the frame's home, so a replug brings it back there.
-    fn set_home(&mut self, frame_id: u64, output: &Output) {
-        self.home_outputs
-            .insert(frame_id, crate::utils::output_identity(output));
-    }
-
     fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
         self.home_outputs
             .entry(frame_id)
             .or_insert_with(|| home.to_string());
     }
 
-    /// Frames homed at `dst`'s display, grouped by the other output holding them.
+    /// Unpinned frames homed at `dst`'s display, grouped by the other output holding them.
     pub(crate) fn homed_elsewhere(&self, dst: &Output) -> Vec<(Output, Vec<u64>)> {
         let identity = crate::utils::output_identity(dst);
         self.monitors
@@ -730,30 +748,23 @@ impl Layout {
             .filter(|monitor| &monitor.output != dst)
             .filter_map(|monitor| {
                 let ids: Vec<u64> = monitor
-                    .frame_ids()
-                    .filter(|id| self.home_outputs.get(id) == Some(&identity))
+                    .frames()
+                    .filter(|frame| {
+                        frame.pinned_to.is_none()
+                            && self.home_outputs.get(&frame.surface_id) == Some(&identity)
+                    })
+                    .map(|frame| frame.surface_id)
                     .collect();
                 (!ids.is_empty()).then(|| (monitor.output.clone(), ids))
             })
             .collect()
     }
 
-    /// Re-activate `output`'s remembered frame unless the focused frame sits on
-    /// its strip. Returns the frame active before.
-    pub(crate) fn restore_last_active(&mut self, output: &Output, focused: u64) -> Option<u64> {
-        let remembered = self
-            .last_active
-            .remove(&crate::utils::output_identity(output));
-        let strip = self.strip_mut(output)?;
-        let prev_active = strip.active_frame_id();
-        // The focused frame stays active. Focus continuity wins.
-        if let Some(frame_id) = remembered
-            && strip.index_of(focused).is_none()
-            && let Some(to) = strip.index_of(frame_id)
-        {
-            strip.set_active(to);
+    /// Forget the remembered frame of `output` once every frame it gets back has landed.
+    pub(crate) fn forget_last_active(&mut self, output: &Output) {
+        if let Some(monitor) = self.monitor_of_mut(output) {
+            monitor.last_active = None;
         }
-        prev_active
     }
 
     /// Make `id` active in its container, a pinned float its strip frame too. Returns its output
@@ -761,7 +772,7 @@ impl Layout {
     pub(crate) fn activate_frame(&mut self, id: u64) -> Option<(Output, Option<u64>)> {
         self.with_frame_container(
             id,
-            |strip, idx| strip.set_active(idx),
+            |monitor, idx| monitor.strip.set_active(idx),
             |monitor| {
                 monitor.floating.activate_frame(id);
                 if let Some(idx) = monitor
@@ -800,29 +811,13 @@ impl Layout {
             .is_some_and(|location| location.entry.fullscreen())
     }
 
-    /// Mark the views of `committed` surfaces and pin fullscreen floats to their strip frame.
+    /// Mark the views of `committed` surfaces and settle every float on its frame.
     pub(crate) fn reconcile_fullscreen(&mut self, committed: impl Fn(u64) -> bool) {
-        for monitor in &mut self.monitors {
-            for frame in monitor.strip.frames_mut() {
-                frame.mark_fullscreen(&committed);
-            }
-            let strip = &monitor.strip;
-            for frame in monitor.floating.frames_mut() {
-                frame.mark_fullscreen(&committed);
-                frame.pinned_to = if frame.fullscreen_entry().is_some() {
-                    strip.frame_of_float(frame)
-                } else if frame.has_views() {
-                    None
-                } else {
-                    // A viewless float stays with its frame while that lasts.
-                    frame.pinned_to.filter(|&id| strip.index_of(id).is_some())
-                };
-            }
+        for frame in self.all_frames_mut() {
+            frame.mark_fullscreen(&committed);
         }
-        // Parked frames show nothing.
-        for frame in self.homeless.iter_mut() {
-            frame.mark_fullscreen(&|_| false);
-            frame.pinned_to = None;
+        for monitor in &mut self.monitors {
+            monitor.settle_pins();
         }
     }
 
@@ -2179,11 +2174,7 @@ impl Ewm {
         for (src, ids) in self.layout.homed_elsewhere(output) {
             self.move_frame_ids_between_outputs(&src, output, &ids);
         }
-        self.reconcile_fullscreen();
-        let prev_active = self
-            .layout
-            .restore_last_active(output, self.focused_frame_id);
-        self.reconcile_active_for_output(output, prev_active);
+        self.layout.forget_last_active(output);
         // Frames coming back may hold a surface whose activation waited for them.
         self.focus_pending_activation_surfaces();
         if self.focused_frame_id == 0

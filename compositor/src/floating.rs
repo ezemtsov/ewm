@@ -395,11 +395,6 @@ impl FloatingSpace {
             .collect()
     }
 
-    /// Take every frame out, keeping their positions in `floating_pos`.
-    pub fn take_frames(&mut self) -> Vec<Frame> {
-        self.drain_frames(|_| true)
-    }
-
     /// Drop frame `id`, fading it out where it stood.
     pub fn close_frame(&mut self, id: u64) -> Option<Frame> {
         let (mut frame, data) = self.remove_frame_with_data(id)?;

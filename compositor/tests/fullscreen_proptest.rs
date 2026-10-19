@@ -1,7 +1,7 @@
 //! Fullscreen is a per-surface bit set by requests and commands alone, shown once its client has
 //! committed it. Layouts, output changes and migrations place the bit but never change it. Each
 //! strip frame shows one fullscreen view, a float counting for the frame it is over, and a float
-//! showing fullscreen pins to that frame.
+//! showing fullscreen pins to that frame and keeps the pin while parked.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -347,11 +347,23 @@ fn check(fix: &Fixture, model: &mut Model, clients: &Clients) -> Result<(), Test
     }
     let homeless = ewm.layout.homeless();
     for frame in homeless.tiled.iter().chain(&homeless.floating) {
-        prop_assert!(
-            frame.fullscreen_entry().is_none() && frame.pinned_to.is_none(),
-            "parked frame {} shows fullscreen or stays pinned",
+        prop_assert_eq!(
+            frame.fullscreen_entry().map(|entry| entry.id),
+            expected_mark(frame, &model.committed),
+            "parked frame {} marks the wrong view",
             frame.surface_id
         );
+    }
+    for float in &homeless.floating {
+        prop_assert_eq!(
+            float.pinned_to,
+            model.pins.get(&float.surface_id).copied(),
+            "parked float {} lost its pin",
+            float.surface_id
+        );
+        if let Some(id) = float.pinned_to {
+            pins.insert(float.surface_id, id);
+        }
     }
     model.pins = pins;
 

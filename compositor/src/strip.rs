@@ -210,7 +210,7 @@ pub struct Frame {
     pub move_anim: Option<Animation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floating_pos: Option<SizeFracPoint>,
-    /// The strip frame a float is pinned to, showing and sliding with it.
+    /// The strip frame a fullscreen float belongs to, showing, sliding and moving with it.
     #[serde(skip)]
     pub pinned_to: Option<u64>,
     #[serde(skip)]
@@ -275,7 +275,7 @@ impl Frame {
             .and_then(LayoutEntry::surface_id)
     }
 
-    /// The view shown fullscreen, if any.
+    /// The view marked fullscreen, if any.
     pub fn fullscreen_entry(&self) -> Option<&LayoutEntry> {
         self.entries.iter().find(|entry| entry.fullscreen())
     }
@@ -553,13 +553,6 @@ impl Strip {
         }
         let active = active_id.and_then(|id| self.index_of(id)).unwrap_or(0);
         self.set_active_from_view_pos(active, view_pos, 0.);
-    }
-
-    /// Take every frame out, leaving an empty strip.
-    pub fn take_frames(&mut self) -> Vec<Frame> {
-        let frames = mem::take(&mut self.frames);
-        self.set_active(0);
-        frames
     }
 
     /// Pull out the frames `take` selects; the active frame stays active when it stays.

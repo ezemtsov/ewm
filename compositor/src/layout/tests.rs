@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use proptest::prelude::*;
@@ -580,7 +580,11 @@ enum LayoutOp {
         dst: usize,
     },
     AdoptHomeless(usize),
-    RestoreLastActive(usize),
+    /// A viewless float joins a strip frame of its monitor and stays while that frame lasts.
+    Pin {
+        float: u64,
+        frame: u64,
+    },
     Activate(u64),
     Merge(Vec<u64>),
     DragBegin {
@@ -634,7 +638,7 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
         1 => (id.clone(), output.clone())
             .prop_map(|(id, dst)| LayoutOp::MoveFrameToOutput { id, dst }),
         1 => output.clone().prop_map(LayoutOp::AdoptHomeless),
-        1 => output.clone().prop_map(LayoutOp::RestoreLastActive),
+        1 => (id.clone(), id.clone()).prop_map(|(float, frame)| LayoutOp::Pin { float, frame }),
         1 => id.clone().prop_map(LayoutOp::Activate),
         1 => prop::collection::vec(id.clone(), 0..6).prop_map(LayoutOp::Merge),
         1 => (id.clone(), output.clone(), DRAG_COORD, DRAG_COORD)
@@ -645,23 +649,31 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
     ]
 }
 
-/// `moved` sits on `dst`, with `focused` active when it came along tiled.
+/// `moved` sits on `dst`, `focused` active when it came along tiled, else the remembered frame.
 fn check_landed(
     layout: &Layout,
     dst: &Output,
     moved: &Moved,
     focused: u64,
+    remembered: &mut BTreeMap<String, Option<u64>>,
 ) -> Result<(), TestCaseError> {
     let dst_name = dst.name();
     for &id in &moved.ids {
         prop_assert_eq!(layout.frame_output(id), Some(dst_name.as_str()));
     }
-    if moved.ids.contains(&focused)
-        && layout
-            .strip(dst)
-            .is_some_and(|strip| strip.index_of(focused).is_some())
-    {
+    let strip = layout.strip(dst);
+    let on_strip = |id: u64| strip.is_some_and(|strip| strip.index_of(id).is_some());
+    let returned = remembered
+        .get_mut(&dst_name)
+        .and_then(|slot| slot.take_if(|id| moved.ids.contains(id)));
+    if moved.ids.contains(&focused) && on_strip(focused) {
         prop_assert_eq!(layout.active_frame_id(dst), Some(focused));
+    } else if let Some(id) = returned.filter(|&id| on_strip(id) && !on_strip(focused)) {
+        prop_assert_eq!(
+            layout.active_frame_id(dst),
+            Some(id),
+            "the remembered frame returns"
+        );
     }
     Ok(())
 }
@@ -671,6 +683,7 @@ fn apply_layout_op(
     outputs: &[Output],
     live: &mut BTreeSet<u64>,
     focused: u64,
+    remembered: &mut BTreeMap<String, Option<u64>>,
     op: &LayoutOp,
 ) -> Result<(), TestCaseError> {
     match *op {
@@ -698,13 +711,16 @@ fn apply_layout_op(
             let expected = if last_frames { Vec::new() } else { fillers };
             let moved = layout.detach_output(output, fallback.as_ref(), focused);
             prop_assert!(layout.monitor_of(output).is_none());
+            if moved.src.is_some() {
+                remembered.insert(output.name(), moved.src_prev_active);
+            }
             prop_assert_eq!(&moved.retired, &expected);
             for id in &moved.retired {
                 live.remove(id);
                 prop_assert!(!layout.has_frame(*id));
             }
             if let Some(dst) = &moved.dst {
-                check_landed(layout, dst, &moved, focused)?;
+                check_landed(layout, dst, &moved, focused, remembered)?;
             }
         }
         LayoutOp::AddFrame {
@@ -741,14 +757,14 @@ fn apply_layout_op(
         LayoutOp::MoveFrames { src, dst, ref ids } => {
             let moved = layout.move_frames(&outputs[src], &outputs[dst], ids, focused, None);
             if let Some(dst) = &moved.dst {
-                check_landed(layout, dst, &moved, focused)?;
+                check_landed(layout, dst, &moved, focused, remembered)?;
             }
         }
         LayoutOp::MoveFrameToOutput { id, dst } => {
             let dst = &outputs[dst];
             let moved = layout.move_frame_to_output(id, dst, focused);
             if !moved.ids.is_empty() {
-                check_landed(layout, dst, &moved, focused)?;
+                check_landed(layout, dst, &moved, focused, remembered)?;
                 prop_assert_eq!(
                     layout.home_outputs.get(&id),
                     Some(&crate::utils::output_identity(dst)),
@@ -770,11 +786,18 @@ fn apply_layout_op(
             let moved = layout.adopt_homeless(&outputs[i], focused);
             if let Some(dst) = &moved.dst {
                 prop_assert!(layout.homeless().ids().is_empty());
-                check_landed(layout, dst, &moved, focused)?;
+                check_landed(layout, dst, &moved, focused, remembered)?;
             }
         }
-        LayoutOp::RestoreLastActive(i) => {
-            layout.restore_last_active(&outputs[i], focused);
+        LayoutOp::Pin { float, frame } => {
+            if let Some(float) = layout
+                .monitors
+                .iter_mut()
+                .filter(|monitor| monitor.strip.index_of(frame).is_some())
+                .find_map(|monitor| monitor.floating.frame_mut(float))
+            {
+                float.pinned_to = Some(frame);
+            }
         }
         LayoutOp::Activate(id) => {
             if let Some((output, _)) = layout.activate_frame(id)
@@ -809,7 +832,7 @@ fn apply_layout_op(
                 // The drag carries the frame onto the output under the pointer.
                 prop_assert_eq!(layout.frame_output(id), Some(PROP_HEADS[output]));
                 if !moved.ids.is_empty() {
-                    check_landed(layout, dst, moved, focused)?;
+                    check_landed(layout, dst, moved, focused, remembered)?;
                 }
             }
             prop_assert_eq!(moved.is_none(), layout.interactive_move.is_none());
@@ -861,8 +884,9 @@ proptest! {
         );
         let outputs: Vec<Output> = layout.outputs().cloned().collect();
         let mut live = BTreeSet::new();
+        let mut remembered = BTreeMap::new();
         for op in &ops {
-            apply_layout_op(&mut layout, &outputs, &mut live, focused, op)?;
+            apply_layout_op(&mut layout, &outputs, &mut live, focused, &mut remembered, op)?;
             verify_live_frames(&layout, &live)?;
         }
     }
