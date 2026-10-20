@@ -1174,7 +1174,7 @@ fn start(cursor_theme: Option<String>, cursor_size: i64) -> Result<bool> {
                 tracing::info!("Compositor thread exiting normally");
             }
             Ok(Err(e)) => {
-                tracing::error!("Compositor error: {}", e);
+                tracing::error!("Compositor error: {:#}", e);
             }
             Err(panic) => {
                 let msg = if let Some(s) = panic.downcast_ref::<&str>() {

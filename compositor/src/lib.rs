@@ -2518,7 +2518,7 @@ impl Ewm {
     pub fn init_wayland_listener(
         display: Display<State>,
         event_loop: &LoopHandle<State>,
-    ) -> Result<std::ffi::OsString, Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<std::ffi::OsString> {
         // Automatically derive socket name from current VT for multi-instance support
         let socket_name = format!("wayland-ewm{}", crate::vt_suffix());
         info!("Creating Wayland socket with name: {}", socket_name);

@@ -29,7 +29,7 @@ use std::os::fd::AsFd;
 use crate::dbus_login1::{Login1, Login1ToEwm};
 use crate::output_mode::{ConfiguredMode, HSyncPolarity, Modeline, VSyncPolarity};
 use crate::tracy_span;
-use anyhow::{Context as _, ensure};
+use anyhow::{Context as _, anyhow, bail, ensure};
 use bytemuck::cast_slice_mut;
 use drm_ffi::drm_mode_modeinfo;
 use std::path::{Path, PathBuf};
@@ -1978,13 +1978,13 @@ impl DrmBackendState {
         connector: connector::Info,
         crtc: crtc::Handle,
         ewm: &mut Ewm,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<()> {
         let Some(device) = self.devices.get_mut(&node) else {
-            return Err("DRM device not initialized".into());
+            bail!("DRM device not initialized");
         };
 
         let Some(display_handle) = &self.display_handle else {
-            return Err("Display handle not available".into());
+            bail!("Display handle not available");
         };
 
         let connector_name = format_connector_name(&connector);
@@ -2005,7 +2005,7 @@ impl DrmBackendState {
         let (mode, fallback) = match mode {
             Some(x) => (x, false),
             None => pick_mode(&connector, config.as_ref().and_then(|c| c.mode))
-                .ok_or("No mode available")?,
+                .context("No mode available")?,
         };
         if fallback {
             let t = config.as_ref().and_then(|c| c.mode).unwrap();
@@ -2036,7 +2036,7 @@ impl DrmBackendState {
         let gpu_manager = self
             .gpu_manager
             .as_mut()
-            .ok_or("GPU manager not initialized")?;
+            .context("GPU manager not initialized")?;
         let render_formats: FormatSet = {
             let renderer = gpu_manager.single_renderer(&device.render_node)?;
             let raw_render_formats = renderer.as_ref().egl_context().dmabuf_render_formats();
@@ -2057,7 +2057,7 @@ impl DrmBackendState {
         };
         let primary_render_node = self
             .primary_render_node
-            .ok_or("Primary render node not initialized")?;
+            .context("Primary render node not initialized")?;
         let primary_formats = if primary_render_node == device.render_node {
             render_formats.clone()
         } else {
@@ -2560,7 +2560,7 @@ impl DrmBackendState {
         device_id: libc::dev_t,
         path: &Path,
         ewm: &mut Ewm,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<()> {
         if !self.session_active() {
             return Ok(());
         }
@@ -2578,7 +2578,7 @@ impl DrmBackendState {
         info!("Adding DRM device {:?} at {:?}", node, path);
 
         let open_flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
-        let session = self.session.as_mut().ok_or("Session not available")?;
+        let session = self.session.as_mut().context("Session not available")?;
         let fd = session.open(path, open_flags)?;
         let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
@@ -2592,7 +2592,7 @@ impl DrmBackendState {
         let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
         let egl_device = EGLDevice::device_for_display(&egl_display)?;
         if egl_device.is_software() {
-            return Err("software EGL renderers are skipped".into());
+            bail!("software EGL renderers are skipped");
         }
         let render_node = egl_device.try_get_render_node()?.unwrap_or(node);
         info!("DRM device {:?} uses render node {:?}", node, render_node);
@@ -2606,7 +2606,7 @@ impl DrmBackendState {
         let gpu_manager = self
             .gpu_manager
             .as_mut()
-            .ok_or("GPU manager not initialized")?;
+            .context("GPU manager not initialized")?;
         let render_node_already_added = self
             .devices
             .values()
@@ -2619,7 +2619,7 @@ impl DrmBackendState {
             let display_handle = self
                 .display_handle
                 .as_ref()
-                .ok_or("Display handle not available")?;
+                .context("Display handle not available")?;
             let mut renderer = gpu_manager.single_renderer(&render_node)?;
             if let Err(err) = renderer.bind_wl_display(display_handle) {
                 // wl_drm is on its way out so this is expected on most modern distros.
@@ -2646,7 +2646,7 @@ impl DrmBackendState {
         let handle = self
             .loop_handle
             .clone()
-            .ok_or("event loop handle unavailable")?;
+            .context("event loop handle unavailable")?;
         let token =
             handle.insert_source(drm_notifier, move |event, metadata, state| match event {
                 DrmEvent::VBlank(crtc) => {
@@ -2816,13 +2816,13 @@ fn initialize_drm(
     state: &mut State,
     display_handle: &smithay::reexports::wayland_server::DisplayHandle,
     _event_loop_handle: &LoopHandle<'static, State>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let pending = {
-        let drm_backend = state.backend.as_drm_mut().ok_or("Not a DRM backend")?;
+        let drm_backend = state.backend.as_drm_mut().context("Not a DRM backend")?;
         drm_backend
             .pending
             .take()
-            .ok_or("DRM already initialized")?
+            .context("DRM already initialized")?
     };
 
     info!(
@@ -2943,17 +2943,13 @@ pub(crate) fn import_activation_environment(env_vars: &HashMap<String, String>) 
 }
 
 /// Run EWM with DRM/libinput backend (module mode only)
-pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_drm(cursor_config: CursorConfig) -> anyhow::Result<()> {
     info!("Starting EWM with DRM backend (module mode)");
     cursor_config.apply_env();
 
     // Initialize libseat session
-    let (session, notifier) = LibSeatSession::new().map_err(|e| {
-        format!(
-            "Failed to create libseat session: {}. Are you running from a TTY?",
-            e
-        )
-    })?;
+    let (session, notifier) = LibSeatSession::new()
+        .context("Failed to create libseat session. Are you running from a TTY?")?;
     let seat_name = session.seat();
     info!("libseat session opened, seat: {}", seat_name);
 
@@ -2991,9 +2987,9 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                 "EWM_RENDER_DEVICE {:?} not found, falling back to auto-detection",
                 p
             );
-            primary_gpu(&seat_name)?.ok_or("No GPU found")?
+            primary_gpu(&seat_name)?.context("No GPU found")?
         }
-        Err(_) => primary_gpu(&seat_name)?.ok_or("No GPU found")?,
+        Err(_) => primary_gpu(&seat_name)?.context("No GPU found")?,
     };
     let configured_node = DrmNode::from_path(&gpu_path)?;
     let primary_node = if configured_node.ty() == NodeType::Primary {
@@ -3002,7 +2998,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
         configured_node
             .node_with_type(NodeType::Primary)
             .and_then(Result::ok)
-            .ok_or("Configured DRM node has no primary node")?
+            .context("Configured DRM node has no primary node")?
     };
     let primary_path = primary_node.dev_path().unwrap_or_else(|| gpu_path.clone());
     let primary_render_node = primary_node
@@ -3018,7 +3014,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
     libinput
         .udev_assign_seat(&seat_name)
-        .map_err(|()| "Failed to assign seat to libinput")?;
+        .map_err(|()| anyhow!("Failed to assign seat to libinput"))?;
     if !session_active {
         // logind revokes the evdev fds of an inactive session, and only a
         // suspended context re-enumerates them when libinput is resumed.
@@ -3166,46 +3162,49 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     }
 
     // Register session notifier and store token for cleanup in Drop
-    let session_notifier_token =
-        event_loop
-            .handle()
-            .insert_source(notifier, |event, _, state| match event {
-                SessionEvent::PauseSession => {
-                    info!("Session paused (VT switch away)");
-                    state.backend.pause(&mut state.ewm);
-                }
-                SessionEvent::ActivateSession => {
-                    info!("Session activated");
-                    if state
-                        .backend
-                        .as_drm()
-                        .map(|d| !d.is_initialized())
-                        .unwrap_or(false)
-                    {
-                        info!("First session activation - triggering DRM init");
-                        state.backend.trigger_init();
-                        // trigger_init() covers DRM only.
-                        if let Some(drm) = state.backend.as_drm_mut() {
-                            drm.resume_input();
-                        }
-                    } else {
-                        state.backend.resume(&mut state.ewm);
+    let session_notifier_token = event_loop
+        .handle()
+        .insert_source(notifier, |event, _, state| match event {
+            SessionEvent::PauseSession => {
+                info!("Session paused (VT switch away)");
+                state.backend.pause(&mut state.ewm);
+            }
+            SessionEvent::ActivateSession => {
+                info!("Session activated");
+                if state
+                    .backend
+                    .as_drm()
+                    .map(|d| !d.is_initialized())
+                    .unwrap_or(false)
+                {
+                    info!("First session activation - triggering DRM init");
+                    state.backend.trigger_init();
+                    // trigger_init() covers DRM only.
+                    if let Some(drm) = state.backend.as_drm_mut() {
+                        drm.resume_input();
                     }
+                } else {
+                    state.backend.resume(&mut state.ewm);
                 }
-            })?;
+            }
+        })
+        .map_err(|err| err.error)?;
     state.backend.as_drm_mut().unwrap().session_notifier_token = Some(session_notifier_token);
 
     // Fallback frame callback timer for surfaces that somehow
     // didn't receive frame callbacks through the normal render path.
     // Fires every second and sends callbacks to all surfaces unconditionally,
     // relying on FRAME_CALLBACK_THROTTLE (995ms) to prevent busy-looping.
-    event_loop.handle().insert_source(
-        Timer::from_duration(Duration::from_secs(1)),
-        |_, _, state| {
-            state.ewm.send_frame_callbacks_on_fallback_timer();
-            TimeoutAction::ToDuration(Duration::from_secs(1))
-        },
-    )?;
+    event_loop
+        .handle()
+        .insert_source(
+            Timer::from_duration(Duration::from_secs(1)),
+            |_, _, state| {
+                state.ewm.send_frame_callbacks_on_fallback_timer();
+                TimeoutAction::ToDuration(Duration::from_secs(1))
+            },
+        )
+        .map_err(|err| err.error)?;
 
     // Register UdevBackend for hotplug detection
     let udev_backend = UdevBackend::new(&seat_name)?;
@@ -3232,7 +3231,8 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                     drm.reapply_lid_policy(&mut state.ewm, LidPolicyReason::Hotplug);
                 }
             }
-        })?;
+        })
+        .map_err(|err| err.error)?;
 
     let display_handle_for_init = display_handle.clone();
     let event_loop_handle = event_loop.handle();
@@ -3253,7 +3253,8 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
                 }
                 Event::Closed => {}
             }
-        })?;
+        })
+        .map_err(|err| err.error)?;
     event_loop
         .handle()
         .insert_source(from_login1, |event, _, state| {
@@ -3263,7 +3264,8 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
             {
                 drm.on_wake_from_sleep(&mut state.ewm);
             }
-        })?;
+        })
+        .map_err(|err| err.error)?;
 
     // Get loop signal early so input handlers and module can trigger shutdown
     let loop_signal = event_loop.get_signal();
@@ -3275,13 +3277,13 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     // Register libinput with event loop (using shared input handlers)
     let libinput_backend = LibinputInputBackend::new(libinput);
     info!("Registering libinput backend with event loop...");
-    let _libinput_token =
-        event_loop
-            .handle()
-            .insert_source(libinput_backend, move |mut event, _, state| {
-                state.process_libinput_event(&mut event);
-                state.process_input_event(event);
-            })?;
+    let _libinput_token = event_loop
+        .handle()
+        .insert_source(libinput_backend, move |mut event, _, state| {
+            state.process_libinput_event(&mut event);
+            state.process_input_event(event);
+        })
+        .map_err(|err| err.error)?;
 
     info!("EWM DRM backend started (waiting for session activation)");
     info!("VT switching: Ctrl+Alt+F1-F7");
@@ -3290,9 +3292,8 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
     // If session is already active, initialize DRM immediately
     if session_active {
         info!("Session already active, initializing DRM now");
-        if let Err(e) = initialize_drm(&mut state, &display_handle, &event_loop.handle()) {
-            return Err(format!("Failed to initialize DRM: {:?}", e).into());
-        }
+        initialize_drm(&mut state, &display_handle, &event_loop.handle())
+            .context("Failed to initialize DRM")?;
     }
 
     // Ready means the socket is up, not that DRM is initialised: an inactive
@@ -3312,7 +3313,7 @@ pub fn run_drm(cursor_config: CursorConfig) -> Result<(), Box<dyn std::error::Er
         .run(None, &mut state, |state| {
             state.refresh_and_flush_clients();
         })
-        .map_err(|e| format!("Event loop error: {:?}", e))?;
+        .context("Event loop error")?;
 
     info!("EWM DRM backend shutting down");
 
