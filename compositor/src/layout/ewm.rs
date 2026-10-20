@@ -884,6 +884,13 @@ impl Ewm {
             self.reconcile_active_for_output(src, moved.src_prev_active);
         }
         if let Some(dst) = &moved.dst {
+            // Frames back from parking under the overview show with the rest of their strip.
+            if moved.src.is_none() && self.overview.is_active() {
+                let active = self.layout.active_frame_id(dst);
+                for id in moved.ids.iter().copied().filter(|id| Some(*id) != active) {
+                    self.queue_event(Event::FrameShown { id });
+                }
+            }
             self.reconcile_active_for_output(dst, moved.dst_prev_active);
         }
         // Marks and pins follow the frames to their new strips.
