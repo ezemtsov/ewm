@@ -640,7 +640,7 @@ impl ViewCommon<'_> {
 
 /// One output's render pass: its geometry and zoom, and the elements collected so far.
 struct OutputRender<'a> {
-    ewm: &'a mut Ewm,
+    ewm: &'a Ewm,
     renderer: &'a mut GlesRenderer,
     output: &'a Output,
     include_cursor: bool,
@@ -659,7 +659,7 @@ struct OutputRender<'a> {
 
 impl<'a> OutputRender<'a> {
     fn new(
-        ewm: &'a mut Ewm,
+        ewm: &'a Ewm,
         renderer: &'a mut GlesRenderer,
         output: &'a Output,
         include_cursor: bool,
@@ -863,7 +863,6 @@ impl<'a> OutputRender<'a> {
                     .map(|(frame, slot)| (frame.surface_id, slot, monitor.pin_offset(frame)))
                     .collect()
             });
-        let focused_frame_id = self.ewm.focused_frame_id();
         let views = ViewCommon {
             surfaces: &self.ewm.surfaces,
             backdrop: self
@@ -877,7 +876,7 @@ impl<'a> OutputRender<'a> {
             scale,
             blur: self.blur,
         };
-        let Some(floating) = self.ewm.layout.floating_mut(self.output) else {
+        let Some(floating) = self.ewm.layout.floating(self.output) else {
             return;
         };
 
@@ -887,7 +886,7 @@ impl<'a> OutputRender<'a> {
                 .push(ContentRenderElement::Texture(closing.render(*pos)));
         }
 
-        for (frame, data) in floating.frames_with_data_mut() {
+        for (frame, data) in floating.frames_with_data() {
             let Some(&(_, frame_rect, dx)) =
                 floats.iter().find(|(id, _, _)| *id == frame.surface_id)
             else {
@@ -949,17 +948,10 @@ impl<'a> OutputRender<'a> {
                 self.blur,
             );
 
-            let shadow = data.shadow_mut();
-            shadow.update_render_elements(
-                frame_rect.size,
-                focused_frame_id == frame.surface_id,
-                CornerRadius::default(),
-                scale.x,
-                frame_alpha,
-            );
-            shadow.render(self.renderer, frame_rect.loc, &mut |shadow| {
-                self.content.push(ContentRenderElement::Shadow(shadow));
-            });
+            data.shadow()
+                .render(self.renderer, frame_rect.loc, &mut |shadow| {
+                    self.content.push(ContentRenderElement::Shadow(shadow));
+                });
         }
     }
 
@@ -1061,40 +1053,27 @@ impl<'a> OutputRender<'a> {
         let scale = self.scale;
         let output_size = self.rect.size;
         let mut backdrop = None;
-        if let Some(state) = self.ewm.output_state.get_mut(self.output) {
-            let background_color = self.ewm.overview.background_color;
-            let zones = Rectangle::from_size(output_size).subtract_rect(geo.working_area);
-            for (buffer, zone) in state.bands.iter_mut().zip(zones) {
-                buffer.update(zone.size, background_color);
+        if let Some(state) = self.ewm.output_state.get(self.output) {
+            let zones = panel_zones(output_size, geo.working_area);
+            for (buffer, zone) in state.bands.iter().zip(zones) {
                 let loc = zone.loc.to_physical_precise_round(scale);
                 self.content
                     .push(ContentRenderElement::SolidColor(solid(buffer, loc, scale)));
             }
             self.content.append(&mut layers.bottom);
             self.content.append(&mut layers.background);
-            state.background.set_color(background_color);
             self.content.push(ContentRenderElement::SolidColor(solid(
                 &state.background,
                 (0, 0),
                 scale,
             )));
 
-            if let Some(progress) = self.ewm.overview.progress() {
-                state.overview_shadow.update_render_elements(
-                    output_size.to_f64(),
-                    true,
-                    CornerRadius::default(),
-                    scale.x,
-                    progress.clamp(0., 1.) as f32,
-                );
+            if self.ewm.overview.progress().is_some() {
                 state
                     .overview_shadow
                     .render(self.renderer, Point::from((0., 0.)), &mut |shadow| {
                         self.content.push(ContentRenderElement::Shadow(shadow));
                     });
-                state
-                    .overview_backdrop
-                    .set_color(self.ewm.overview.backdrop_color);
                 backdrop = Some(EwmRenderElement::SolidColor(solid(
                     &state.overview_backdrop,
                     (0, 0),
@@ -1131,11 +1110,84 @@ impl<'a> OutputRender<'a> {
     }
 }
 
+/// The panel exclusive zones of an output, the parts outside its working area.
+fn panel_zones(
+    output_size: Size<i32, Logical>,
+    working_area: Rectangle<i32, Logical>,
+) -> Vec<Rectangle<i32, Logical>> {
+    Rectangle::from_size(output_size).subtract_rect(working_area)
+}
+
+impl Ewm {
+    /// Bring the shadows and fill buffers of `output` up to date for the render pass, which only
+    /// reads them.
+    pub fn update_render_elements(&mut self, output: &Output) {
+        let scale = output.current_scale().fractional_scale();
+        let focused_frame_id = self.focused_frame_id();
+        let floats: Vec<(u64, Size<f64, Logical>, f32)> =
+            self.layout
+                .monitor_of(output)
+                .map_or(Vec::new(), |monitor| {
+                    self.visible_floats(monitor)
+                        .map(|(frame, slot)| {
+                            let alpha = self
+                                .surfaces
+                                .get(&frame.surface_id)
+                                .map_or(1., SurfaceState::open_alpha);
+                            (frame.surface_id, slot.size, alpha)
+                        })
+                        .collect()
+                });
+        if let Some(floating) = self.layout.floating_mut(output) {
+            for (id, size, alpha) in floats {
+                if let Some((_, data)) = floating.frame_with_data_mut(id) {
+                    data.shadow_mut().update_render_elements(
+                        size,
+                        focused_frame_id == id,
+                        CornerRadius::default(),
+                        scale,
+                        alpha,
+                    );
+                }
+            }
+        }
+
+        let output_size = self.layout.output_rect(output).unwrap_or_default().size;
+        let working_area = self.get_working_area(output);
+        let background_color = self.overview.background_color;
+        let backdrop_color = self.overview.backdrop_color;
+        let progress = self.overview.progress();
+        let Some(state) = self.output_state.get_mut(output) else {
+            return;
+        };
+        for (buffer, zone) in state
+            .bands
+            .iter_mut()
+            .zip(panel_zones(output_size, working_area))
+        {
+            buffer.update(zone.size, background_color);
+        }
+        state.background.set_color(background_color);
+        if let Some(progress) = progress {
+            state.overview_shadow.update_render_elements(
+                output_size.to_f64(),
+                true,
+                CornerRadius::default(),
+                scale,
+                progress.clamp(0., 1.) as f32,
+            );
+            state.overview_backdrop.set_color(backdrop_color);
+        }
+    }
+}
+
 /// Collect the render elements of `output`, filtering during collection so nothing from another
 /// output damages this one.
 ///
 /// Returns `(content_elements, cursor_elements)`, the cursor apart so a screencast skips a full
 /// re-render when only the cursor moved.
+///
+/// `Ewm::update_render_elements` has run for the output, the pass only reads.
 ///
 /// Rendering order (front to back):
 /// 1. Cursor
@@ -1146,7 +1198,7 @@ impl<'a> OutputRender<'a> {
 ///    output fill and the overview shadow
 /// 5. Overview backdrop
 pub fn collect_render_elements_for_output(
-    ewm: &mut Ewm,
+    ewm: &Ewm,
     renderer: &mut GlesRenderer,
     cursor_texture_cache: &CursorTextureCache,
     output: &Output,
@@ -1509,7 +1561,7 @@ pub fn layer_popup_placements(
 }
 
 fn collect_screencopy_elements_for_output(
-    ewm: &mut Ewm,
+    ewm: &Ewm,
     renderer: &mut GlesRenderer,
     output: &Output,
     cursor_texture_cache: &CursorTextureCache,
@@ -1736,6 +1788,7 @@ pub fn render_screencopy_immediate(
     event_loop: &LoopHandle<'static, State>,
 ) {
     let output = screencopy.output().clone();
+    ewm.update_render_elements(&output);
     let output_scale = Scale::from(output.current_scale().fractional_scale());
     let output_transform = output.current_transform();
 

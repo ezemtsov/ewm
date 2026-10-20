@@ -1456,6 +1456,7 @@ impl DrmBackendState {
         };
 
         // Collect render elements for this specific output
+        ewm.update_render_elements(output);
         let (mut content, cursor) = collect_render_elements_for_output(
             ewm,
             renderer.as_mut(),

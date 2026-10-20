@@ -225,6 +225,10 @@ impl Data {
         Rectangle::new(self.logical_pos, self.size)
     }
 
+    pub fn shadow(&self) -> &crate::render_helpers::floating_shadow::Shadow {
+        &self.shadow
+    }
+
     pub fn shadow_mut(&mut self) -> &mut crate::render_helpers::floating_shadow::Shadow {
         &mut self.shadow
     }
@@ -688,6 +692,10 @@ impl FloatingSpace {
             .iter()
             .zip(self.data.iter())
             .map(|(frame, data)| (frame, Self::slot(self.output, frame, data)))
+    }
+
+    pub fn frames_with_data(&self) -> impl Iterator<Item = (&Frame, &Data)> {
+        self.frames.iter().zip(self.data.iter())
     }
 
     pub fn frames_with_data_mut(&mut self) -> impl Iterator<Item = (&Frame, &mut Data)> {
