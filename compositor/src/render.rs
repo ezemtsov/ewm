@@ -840,9 +840,9 @@ pub fn collect_render_elements_for_output(
                 .map(|(frame, slot)| (frame.surface_id, slot, monitor.pin_offset(frame)))
                 .collect()
         });
+    let focused_entry_id = ewm.focused_entry_id();
+    let focused_frame_id = ewm.focused_frame_id();
     if let Some(floating) = ewm.layout.floating_mut(output) {
-        let focused_entry_id = ewm.focused_entry_id;
-        let focused_frame_id = ewm.focused_frame_id;
         let unfocused_alpha = ewm.unfocused_alpha;
         let surfaces = &ewm.surfaces;
 
@@ -993,7 +993,7 @@ pub fn collect_render_elements_for_output(
                     continue;
                 };
                 // Fullscreen forced opaque so the backdrop doesn't bleed through.
-                let focused = entry.fullscreen() || ewm.focused_entry_id == Some(entry.id);
+                let focused = entry.fullscreen() || focused_entry_id == Some(entry.id);
                 let alpha = if focused { 1.0 } else { ewm.unfocused_alpha } * surface.open_alpha();
                 if let Some(place) =
                     ViewPlace::new(surface, entry, alpha, space, output_size, scale)
@@ -1188,7 +1188,7 @@ fn push_frame_view(
         off: true,
         ..Blur::default()
     };
-    let focused = entry.fullscreen() || ewm.focused_entry_id == Some(entry.id);
+    let focused = entry.fullscreen() || ewm.focused_entry_id() == Some(entry.id);
     let alpha = if focused { 1.0 } else { ewm.unfocused_alpha };
     if let Some(place) = ViewPlace::new(surface, entry, alpha, space, bake.output_size, bake.scale)
     {
@@ -1240,12 +1240,12 @@ pub fn render_frame_snapshot(
         let elements =
             render_window_without_popups(&surface.window, renderer, Point::from((0, 0)), scale, 1.);
         content.extend(elements.into_iter().map(ContentRenderElement::Surface));
+        let focused = ewm.focused_frame_id() == id;
         if let Some((_, data)) = ewm
             .layout
             .floating_mut(&output)
             .and_then(|space| space.frame_with_data_mut(id))
         {
-            let focused = ewm.focused_frame_id == id;
             let size = data.size();
             let shadow = data.shadow_mut();
             shadow.update_render_elements(size, focused, CornerRadius::default(), scale.x, 1.);

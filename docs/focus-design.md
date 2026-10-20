@@ -72,8 +72,9 @@ snapshot queries (`ewm-get-strip-frame-ids`, `ewm-get-active-frame-id`,
 The compositor decides keyboard focus.  This is forced: Wayland's keyboard
 state lives in the compositor, and intercepted keys (like `C-x`) need to
 be re-routed *atomically with the key forwarding* -- there's no time to
-defer it.  So the compositor holds two ids: which Emacs frame is focused,
-and which view inside that frame is the keyboard target.
+defer it.  The compositor stores no focus of its own: the focused frame is
+the active frame of the active output, on its strip or its floating space,
+and the keyboard target is that frame's selected view.
 
 These authorities are not symmetric.  Contents flow one way (lisp ->
 compositor).  Placement and focus are interactive and flow both ways:
@@ -88,7 +89,7 @@ compositor makes the call and tells lisp what happened.
  │                          │   FocusOutputDir   │                          │
  │   contents authority     │                    │    focus authority       │
  │   frame / window tree    │                    │    Wayland keyboard      │
- │   buffer ↔ view ↔        │      pipe          │    stored focus pair     │
+ │   buffer ↔ view ↔        │      pipe          │    focus from layout     │
  │   surface mapping        │ ◄───────────────── │    + overlay state       │
  │                          │   Focus, New,      │                          │
  │                          │   Close, Title, …  │                          │
@@ -154,19 +155,22 @@ async section below).
 
 ## The focus state, as the compositor sees it
 
-The compositor's stored window focus is a pair: a focused frame's
-surface id, and optionally a focused view id inside that frame.  At
-keyboard-focus resolve time, override modes sit on top of this pair:
+The compositor's window focus is read off the layout: the active output,
+whether its strip or its floating space holds the keyboard, that
+container's active frame, and that frame's selected view.  Focusing a
+frame activates it in its container and makes its output the active one,
+so the focused frame is on screen by construction.  At keyboard-focus
+resolve time, override modes sit on top of this:
 
 - **Lock**: when a session lock surface is present, keyboard focus is
-  forced to it.  The underlying pair is preserved for restore on unlock.
+  forced to it.  The window focus underneath returns on unlock.
 - **Layer shell**: panels that request exclusive or on-demand keyboard
-  interactivity steal focus while present.  Again, the underlying pair is
-  preserved.
+  interactivity steal focus while present.  Again, the window focus
+  underneath is untouched.
 - **Emacs keyboard capture**: incomplete key sequences, minibuffers,
   transient maps, and read-key/read-event commands hold tokened leases that
-  route Wayland keyboard focus to Emacs without changing the stored
-  window-focus pair.  Stale token cleanup cannot clear another live capture.
+  route Wayland keyboard focus to Emacs without changing the window focus.
+  Stale token cleanup cannot clear another live capture.
 
 Collapsed to discrete states, this gives:
 
@@ -205,7 +209,7 @@ Collapsed to discrete states, this gives:
 Transitions between them are driven by clicks, gestures, lisp-initiated
 focus commands, layout refreshes that change the active frame's selected
 view, fullscreen correction, and unlock/relock.  Keyboard capture is an
-overlay on top of those states, not a transition of the stored pair.
+overlay on top of those states, not a transition of the window focus.
 
 The state machine itself is small.  What makes the focus subsystem look
 complicated is not the states but the synchronization across the
@@ -221,17 +225,23 @@ Always:
 
 1. **Some frame is focused if and only if some frame exists.**  No
    orphaned focus when there are no frames; no missing focus when
-   there is at least one.
+   there is at least one.  Kept by the layout, which moves its active
+   output to the first monitor in output order with a frame whenever it
+   loses one, and checked by `Layout::verify_invariants`.
 2. **A focused view, if any, lives on the focused frame.**  The
    compositor never points at a view that belongs to a different
-   frame than the focused one.
+   frame than the focused one.  Structural: the focused view is the
+   focused frame's selected view.
 3. **If no frame is focused, no view is focused either.**  The
-   "nothing is focused" state is consistent at both levels.
+   "nothing is focused" state is consistent at both levels.  Structural,
+   from 2.
 4. **Each frame sits in exactly one place.**  One output's strip or
    floating space, or the parked pool.  A move takes the frame along, it
    does not duplicate it (`Layout::verify_invariants`).
 5. **The focused frame is the active frame of its strip.**  Strip
-   navigation and focus stay in lockstep.
+   navigation and focus stay in lockstep.  Structural: the focused frame is
+   defined as the active frame of the active output's strip or floating
+   space, and a parked frame is on no output.
 6. **A frame's selected view, when set, is one of that frame's own
    entries.**  Lisp can name a view as selected only if the view
    belongs to the frame it's naming it on.
@@ -244,8 +254,8 @@ After specific operations:
 8. **Keyboard capture itself does not change window focus.**  When Lisp
    asks the compositor to capture keyboard focus for a key sequence,
    minibuffer, transient, or read-key state, the Wayland keyboard target
-   may move to Emacs but the capture command preserves the stored
-   focused frame/view pair.
+   may move to Emacs but the capture command leaves the window focus
+   alone.
 9. **Applying a layout never removes a frame.**  Frames go away only
    through `handle_toplevel_destroyed_by_id`.
 10. **Detaching an output moves its frames whole.**  After
@@ -407,7 +417,7 @@ triggers them, rather than deferred to a later tick:
 - **Keyboard-capturing input.**  When a real keymap prefix like `C-x` is
   pressed while an external app has window focus, the compositor must
   route Wayland keyboard focus to Emacs and keep it there for the rest of
-  the sequence without changing the stored focused frame/view pair.  This
+  the sequence without changing the window focus.  This
   has to happen synchronously in the same key handler, because the next
   key is already coming.  Ordinary command bindings are delivered to Lisp
   without moving Wayland focus; if they open a minibuffer, transient, or
@@ -422,17 +432,17 @@ triggers them, rather than deferred to a later tick:
   back.
 
 Everything else -- clicks, gestures, layout-driven focus changes -- can
-use the slower, deferred path: set the stored focus pair, sync the
-Wayland keyboard state on the next tick.  Only the two cases above need
+use the slower, deferred path: activate the frame, sync the Wayland
+keyboard state on the next tick.  Only the two cases above need
 the fast path.
 
 ## Multi-monitor and multi-view
 
 Each output has its own strip.  Cross-output navigation (directional
-keybinds, clicks on the other monitor) updates the focused frame to the
-destination output's active frame, and the focused view follows from
-that frame's selected view.  The compositor doesn't need a special
-"current monitor" concept -- it falls out of "which frame is focused".
+keybinds, clicks on the other monitor) makes the destination the active
+output, so its active frame is the focused one and the focused view
+follows from that frame's selected view.  The active output is layout
+state, and the focused frame falls out of it.
 
 Multi-view -- one surface in multiple Emacs windows -- works because
 focus events carry view ids, not surface ids.  When the user clicks the
@@ -466,6 +476,12 @@ separate `emacs_frame_ids` set that duplicated strip membership,
 multiple focus mutator paths that bypassed each other.  Each of these
 had a reason at the time it was added.  Each became wrong as the
 surrounding code grew up around it.
+
+The **derived-focus** step removed the stored focused frame and view pair.
+Focus is a position in the layout, the active output and the active frame
+of the container holding the keyboard there, so a moving frame keeps the
+keyboard by being activated where it lands, invariants 2, 3 and 5 hold by
+construction, and invariant 1 is one rule the layout checks.
 
 The current architecture is what's left after those cleanups.  The
 remaining complexity is, as best we can tell, intrinsic to the problem:

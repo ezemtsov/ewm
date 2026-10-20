@@ -193,14 +193,14 @@ fn frames_survive_losing_every_output() {
     fix.remove_output(HEAD_B);
     assert!(fix.ewm_ref().layout.monitors().is_empty());
     assert_eq!(fix.ewm_ref().layout.homeless().ids(), vec![3, 4, 1, 2]);
-    assert_eq!(fix.ewm_ref().focused_frame_id, 0);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 0);
 
     // Lid open: the first output to map adopts every homeless frame.
     fix.add_output(HEAD_A, 1600, 900);
     assert_eq!(strip_ids(&fix, HEAD_A), vec![3, 4, 1, 2]);
     assert!(fix.ewm_ref().layout.homeless().tiled.is_empty());
     assert_eq!(fix.strip(HEAD_A).active_frame_id(), Some(2));
-    assert_eq!(fix.ewm_ref().focused_frame_id, 2);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 2);
 
     // Dock again: HEAD_B's frames return home with their active restored.
     fix.add_output(HEAD_B, 1280, 720);
@@ -223,7 +223,7 @@ fn an_unplugged_middle_output_hands_its_frames_to_the_next_one() {
     fix.remove_output(HEAD_B);
     assert_eq!(strip_ids(&fix, HEAD_A), vec![1]);
     assert_eq!(strip_ids(&fix, HEAD_C), vec![4, 2, 3]);
-    assert_eq!(fix.ewm_ref().focused_frame_id, 3);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 3);
 
     // The last output in order wraps round to the first.
     fix.remove_output(HEAD_C);
@@ -268,7 +268,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
-    fn frame_fallbacks_follow_sorted_output_order(
+    fn keyboard_fallback_follows_sorted_output_order(
         order_keys in any::<[u8; 4]>(),
         frame_counts in any::<[u8; 4]>(),
         active_indices in any::<[u8; 4]>(),
@@ -308,41 +308,22 @@ proptest! {
             fix.install_strip(name, strip);
         }
 
-        let first_output = order
-            .iter()
-            .copied()
+        // The keyboard sits on the first installed strip. Unplugging that output with nowhere to
+        // send its frames drops it onto the first frame in output order.
+        let installed = (0..PROP_HEADS.len())
             .find(|idx| frame_counts[*idx] % 4 != 0)
             .unwrap();
-        let first_frame_id = 1_000 + first_output as u64 * 100;
-        let first_active_id = first_frame_id
-            + u64::from(active_indices[first_output] % (frame_counts[first_output] % 4));
-
-        prop_assert_eq!(
-            fix.ewm_ref().first_active_frame_surface_id(),
-            Some(first_active_id)
-        );
-
-        fix.ewm().focused_frame_id = 0;
-        fix.ewm().focus_any_frame_if_unfocused("test");
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, first_frame_id);
-
-        let disabled_name = PROP_HEADS[first_output];
-        fix.ewm()
-            .sorted_outputs
-            .retain(|output| output.name() != disabled_name);
-        let fallback_output = order
+        let fallback = order
             .iter()
             .copied()
-            .find(|idx| *idx != first_output && frame_counts[*idx] % 4 != 0)
+            .find(|idx| *idx != installed && frame_counts[*idx] % 4 != 0)
             .unwrap();
         let fallback_active_id = 1_000
-            + fallback_output as u64 * 100
-            + u64::from(active_indices[fallback_output] % (frame_counts[fallback_output] % 4));
-
-        let disabled = fix.output(disabled_name);
-        fix.ewm().layout.detach_output(&disabled, None, 0);
-        fix.ewm().refocus_if_focused_frame_unplaced();
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, fallback_active_id);
+            + fallback as u64 * 100
+            + u64::from(active_indices[fallback] % (frame_counts[fallback] % 4));
+        let disabled = fix.output(PROP_HEADS[installed]);
+        fix.ewm().layout.detach_output(&disabled, None);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), fallback_active_id);
     }
 
     #[test]
@@ -546,7 +527,7 @@ proptest! {
         let order: Vec<u64> = strip.frame_ids().collect();
         prop_assert_eq!(order, expected);
         prop_assert_eq!(strip.active_frame_id(), Some(focused));
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, focused);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), focused);
     }
 }
 
@@ -649,7 +630,8 @@ fn layout_op() -> impl Strategy<Value = LayoutOp> {
     ]
 }
 
-/// `moved` sits on `dst`, `focused` active when it came along tiled, else the remembered frame.
+/// `moved` sits on `dst`. A moved `focused` keeps the keyboard, active when tiled, else the
+/// remembered frame returns.
 fn check_landed(
     layout: &Layout,
     dst: &Output,
@@ -666,8 +648,15 @@ fn check_landed(
     let returned = remembered
         .get_mut(&dst_name)
         .and_then(|slot| slot.take_if(|id| moved.ids.contains(id)));
-    if moved.ids.contains(&focused) && on_strip(focused) {
-        prop_assert_eq!(layout.active_frame_id(dst), Some(focused));
+    if moved.ids.contains(&focused) {
+        prop_assert_eq!(
+            layout.focused_frame_id(),
+            focused,
+            "the keyboard follows its frame"
+        );
+        if on_strip(focused) {
+            prop_assert_eq!(layout.active_frame_id(dst), Some(focused));
+        }
     } else if let Some(id) = returned.filter(|&id| on_strip(id) && !on_strip(focused)) {
         prop_assert_eq!(
             layout.active_frame_id(dst),
@@ -682,10 +671,10 @@ fn apply_layout_op(
     layout: &mut Layout,
     outputs: &[Output],
     live: &mut BTreeSet<u64>,
-    focused: u64,
     remembered: &mut BTreeMap<String, Option<u64>>,
     op: &LayoutOp,
 ) -> Result<(), TestCaseError> {
+    let focused = layout.focused_frame_id();
     match *op {
         LayoutOp::AddOutput(i) => layout.add_output(
             outputs[i].clone(),
@@ -709,7 +698,7 @@ fn apply_layout_op(
             let last_frames =
                 fillers.len() == on_output.len() && layout.all_frames().count() == on_output.len();
             let expected = if last_frames { Vec::new() } else { fillers };
-            let moved = layout.detach_output(output, fallback.as_ref(), focused);
+            let moved = layout.detach_output(output, fallback.as_ref());
             prop_assert!(layout.monitor_of(output).is_none());
             if moved.src.is_some() {
                 remembered.insert(output.name(), moved.src_prev_active);
@@ -755,14 +744,14 @@ fn apply_layout_op(
             prop_assert_eq!(layout.frame_output(id), before.as_deref());
         }
         LayoutOp::MoveFrames { src, dst, ref ids } => {
-            let moved = layout.move_frames(&outputs[src], &outputs[dst], ids, focused, None);
+            let moved = layout.move_frames(&outputs[src], &outputs[dst], ids, None);
             if let Some(dst) = &moved.dst {
                 check_landed(layout, dst, &moved, focused, remembered)?;
             }
         }
         LayoutOp::MoveFrameToOutput { id, dst } => {
             let dst = &outputs[dst];
-            let moved = layout.move_frame_to_output(id, dst, focused);
+            let moved = layout.move_frame_to_output(id, dst);
             if !moved.ids.is_empty() {
                 check_landed(layout, dst, &moved, focused, remembered)?;
                 prop_assert_eq!(
@@ -783,7 +772,7 @@ fn apply_layout_op(
             }
         }
         LayoutOp::AdoptHomeless(i) => {
-            let moved = layout.adopt_homeless(&outputs[i], focused);
+            let moved = layout.adopt_homeless(&outputs[i]);
             if let Some(dst) = &moved.dst {
                 prop_assert!(layout.homeless().ids().is_empty());
                 check_landed(layout, dst, &moved, focused, remembered)?;
@@ -800,7 +789,7 @@ fn apply_layout_op(
             }
         }
         LayoutOp::Activate(id) => {
-            if let Some((output, _)) = layout.activate_frame(id)
+            if let Some((output, _)) = layout.activate_frame(id, None)
                 && layout
                     .strip(&output)
                     .is_some_and(|strip| strip.index_of(id).is_some())
@@ -825,7 +814,7 @@ fn apply_layout_op(
         LayoutOp::DragUpdate { output, px, py } => {
             let dst = &outputs[output];
             let dragged = layout.interactive_move.map(|move_| move_.frame_id);
-            let moved = layout.interactive_move_update(dst, Point::from((px, py)), focused);
+            let moved = layout.interactive_move_update(dst, Point::from((px, py)));
             if let (Some(moved), Some(id)) = (&moved, dragged)
                 && layout.monitor_of(dst).is_some()
             {
@@ -874,7 +863,6 @@ proptest! {
     #[test]
     fn layout_invariants_hold_under_any_op_sequence(
         ops in prop::collection::vec(layout_op(), 1..40),
-        focused in LAYOUT_FRAME_IDS,
     ) {
         let mut layout = testing::layout_with(
             PROP_HEADS
@@ -886,7 +874,7 @@ proptest! {
         let mut live = BTreeSet::new();
         let mut remembered = BTreeMap::new();
         for op in &ops {
-            apply_layout_op(&mut layout, &outputs, &mut live, focused, &mut remembered, op)?;
+            apply_layout_op(&mut layout, &outputs, &mut live, &mut remembered, op)?;
             verify_live_frames(&layout, &live)?;
         }
     }

@@ -42,8 +42,8 @@ fn new_toplevel_skips_focused_floating_frame_for_tiled_host() {
     fix.ewm()
         .set_focus_entry(floating_entry_id, "test_floating_entry", false);
 
-    assert_eq!(fix.ewm_ref().focused_frame_id, 200);
-    assert_eq!(fix.ewm_ref().focused_entry_id, Some(floating_entry_id));
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 200);
+    assert_eq!(fix.ewm_ref().focused_entry_id(), Some(floating_entry_id));
     assert_eq!(
         fix.ewm_ref().focused_surface_id(),
         floating_entry_surface_id
@@ -151,7 +151,7 @@ fn removing_an_output_retires_its_unused_fillers() {
     assert_eq!(fix.ewm_ref().layout.frame_output(102), Some(HEAD_A));
     assert!(!fix.ewm_ref().layout.has_frame(101));
     // Focus left the dropped filler for the frame that did move.
-    assert_eq!(fix.ewm_ref().focused_frame_id, 100);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 100);
 
     // A redock adopts nothing it was asked to delete.
     fix.add_output(HEAD_B, 1280, 720);
@@ -313,21 +313,22 @@ proptest! {
             None
         };
         if focused.is_some() {
-            fix.ewm().focused_entry_id = Some(nz(3_000 + focused_idx as u64));
-            fix.ewm().focused_frame_id = 2_000 + focused_idx as u64;
+            fix.ewm()
+                .set_focus_frame(2_000 + focused_idx as u64, "test", false);
         }
+        // The first installed strip holds the keyboard until a frame is focused.
+        let focused = focused.or_else(|| selected.first().copied());
 
         let ordered = order
             .iter()
             .map(|idx| PROP_HEADS[*idx])
             .find(|name| selected.contains(name));
-        let expected = focused.or(ordered);
 
         prop_assert_eq!(
             fix.ewm_ref()
                 .surface_monitor(surface_id)
                 .map(|monitor| monitor.name()),
-            expected
+            focused
         );
         prop_assert_eq!(
             fix.ewm_ref()
@@ -339,7 +340,7 @@ proptest! {
             fix.ewm_ref()
                 .frame_entry_for_surface(surface_id)
                 .map(|(id, _)| id),
-            focused.or(ordered).map(|name| {
+            focused.map(|name| {
                 2_000 + PROP_HEADS.iter().position(|candidate| candidate == &name).unwrap() as u64
             }),
         );
@@ -606,8 +607,6 @@ fn focused_title_update_is_immediate() {
     let mut strip = strip::Strip::new(animation::Clock::default());
     strip.push_frame(frame_with_entry(100, entry_id, surface_id));
     fix.install_strip(HEAD_A, strip);
-    fix.ewm().focused_frame_id = 100;
-    fix.ewm().focused_entry_id = Some(entry_id);
     fix.enable_event_capture();
 
     fix.ewm().queue_title_update(

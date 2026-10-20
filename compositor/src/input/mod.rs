@@ -538,7 +538,7 @@ impl State {
             }
             Action::FocusOutput { dx, dy } => self.ewm.focus_output_direction(dx, dy),
             Action::MoveFrame { delta } => {
-                let id = self.ewm.focused_frame_id;
+                let id = self.ewm.focused_frame_id();
                 self.ewm.move_frame(id, delta);
                 self.refresh_pointer_after_layout();
             }
@@ -547,7 +547,7 @@ impl State {
                 self.refresh_pointer_after_layout();
             }
             Action::ToggleFullscreen => {
-                let focused = self.ewm.focused_entry_id;
+                let focused = self.ewm.focused_entry_id();
                 if let Some(id) = focused.and_then(|entry| self.ewm.layout.entry_surface_id(entry))
                 {
                     let on = !self.ewm.pending_fullscreen(id);

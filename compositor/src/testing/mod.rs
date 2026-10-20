@@ -127,6 +127,8 @@ pub fn set_sorted_output_order(fix: &mut Fixture, order: &[usize]) {
             .position(|&idx| PROP_HEADS[idx] == output.name())
             .unwrap_or(usize::MAX)
     });
+    let order = fix.ewm().sorted_outputs.clone();
+    fix.ewm().layout.sort_monitors(&order);
 }
 
 pub fn strip_with_frame_ids(ids: Vec<u64>, active_idx: usize) -> strip::Strip {

@@ -161,6 +161,15 @@ impl Monitor {
         self.frames().map(|frame| frame.surface_id)
     }
 
+    /// The frame holding the keyboard while this is the active output.
+    fn focused_frame(&self) -> Option<&strip::Frame> {
+        if self.floating.is_focused() {
+            self.floating.active_frame()
+        } else {
+            self.strip.active_frame()
+        }
+    }
+
     /// Keep each float pinned while its frame lasts, a fullscreen float falling back to the active
     /// frame and a float with plain views dropping its pin.
     fn settle_pins(&mut self) {
@@ -335,6 +344,8 @@ pub(crate) struct Moved {
 pub struct Layout {
     /// One per mapped output.
     monitors: Vec<Monitor>,
+    /// The output whose active frame holds the keyboard.
+    active_output: Option<Output>,
     /// Frames of the last output to go, adopted by the next output to map.
     homeless: Frames,
     /// Home display identity per frame, so a replugged display reclaims its frames.
@@ -351,6 +362,7 @@ impl Layout {
     pub fn new(clock: animation::Clock) -> Self {
         Self {
             monitors: Vec::new(),
+            active_output: None,
             homeless: Frames::default(),
             home_outputs: HashMap::new(),
             last_active: HashMap::new(),
@@ -361,6 +373,52 @@ impl Layout {
 
     pub fn monitors(&self) -> &[Monitor] {
         &self.monitors
+    }
+
+    /// Order the monitors as `outputs` are, unknown ones last.
+    pub(crate) fn sort_monitors(&mut self, outputs: &[Output]) {
+        self.monitors.sort_by_key(|monitor| {
+            outputs
+                .iter()
+                .position(|output| output == &monitor.output)
+                .unwrap_or(usize::MAX)
+        });
+    }
+
+    /// The frame holding the keyboard: the focused frame of the active output.
+    pub fn focused_frame(&self) -> Option<&strip::Frame> {
+        self.active_output
+            .as_ref()
+            .and_then(|output| self.monitor_of(output))
+            .and_then(Monitor::focused_frame)
+    }
+
+    /// Surface id of the frame holding the keyboard, 0 without one.
+    pub fn focused_frame_id(&self) -> u64 {
+        self.focused_frame().map_or(0, |frame| frame.surface_id)
+    }
+
+    /// The output whose frame holds the keyboard.
+    pub fn focused_output(&self) -> Option<&Output> {
+        self.active_output.as_ref()
+    }
+
+    /// Keep the keyboard on a frame while a monitor has one, the first in output order otherwise.
+    fn settle_active_output(&mut self) {
+        if self.focused_frame().is_none() {
+            self.active_output = self
+                .monitors
+                .iter()
+                .find(|monitor| monitor.focused_frame().is_some())
+                .map(|monitor| monitor.output.clone());
+        }
+    }
+
+    /// A frame that moved keeps the keyboard.
+    fn follow_focus(&mut self, focused: u64, moved: &Moved) {
+        if moved.ids.contains(&focused) {
+            self.activate_frame(focused, None);
+        }
     }
 
     fn monitor_idx(&self, output: &Output) -> Option<usize> {
@@ -453,15 +511,11 @@ impl Layout {
 
     /// Drop `output`'s monitor, moving its frames to `fallback` or parking them,
     /// and remember its active frame for the display's return.
-    pub(crate) fn detach_output(
-        &mut self,
-        output: &Output,
-        fallback: Option<&Output>,
-        focused: u64,
-    ) -> Moved {
+    pub(crate) fn detach_output(&mut self, output: &Output, fallback: Option<&Output>) -> Moved {
         let Some(idx) = self.monitor_idx(output) else {
             return Moved::default();
         };
+        let focused = self.focused_frame_id();
         let mut monitor = self.monitors.remove(idx);
         let src_prev_active = monitor.strip.active_frame_id();
         let identity = crate::utils::output_identity(output);
@@ -494,7 +548,7 @@ impl Layout {
             .interactive_move
             .filter(|move_| !retired.contains(&move_.frame_id));
         let placed = match fallback.and_then(|dst| self.monitor_idx(dst)) {
-            Some(dst_idx) => self.place_frames(dst_idx, None, frames, focused),
+            Some(dst_idx) => self.place_frames(dst_idx, None, frames),
             None => {
                 let ids = frames.ids();
                 self.park(frames);
@@ -504,6 +558,7 @@ impl Layout {
                 }
             }
         };
+        self.follow_focus(focused, &placed);
         Moved {
             src: Some(monitor.output),
             src_prev_active,
@@ -523,6 +578,7 @@ impl Layout {
         });
         self.homeless.tiled.extend(frames.tiled);
         self.homeless.floating.extend(frames.floating);
+        self.settle_active_output();
     }
 
     /// Replace `output`'s strip wholesale, homing its frames there.
@@ -536,6 +592,7 @@ impl Layout {
         for id in ids {
             self.remember_home_if_missing(id, &home);
         }
+        self.settle_active_output();
     }
 
     /// Put new frame `id` on `output` as `placement` says.
@@ -561,6 +618,10 @@ impl Layout {
             }
         }
         self.remember_home_if_missing(id, &home);
+        // The first frame takes the keyboard.
+        if self.focused_frame().is_none() {
+            self.activate_frame(id, None);
+        }
     }
 
     /// Frames on monitors, each strip then its floating space.
@@ -628,7 +689,7 @@ impl Layout {
         self.homeless
             .floating
             .retain(|frame| frame.surface_id != id);
-        self.with_frame_container(
+        let removed = self.with_frame_container(
             id,
             |monitor, idx| {
                 if active_close {
@@ -641,30 +702,25 @@ impl Layout {
             |monitor| {
                 monitor.floating.close_frame(id);
             },
-        )
+        );
+        self.settle_active_output();
+        removed
     }
 
-    /// Put `frames` on monitor `idx`, tiled after frame `after` or last. `focused` stays active,
-    /// else the remembered frame of a returning display, else the first on an empty strip.
-    fn place_frames(
-        &mut self,
-        idx: usize,
-        after: Option<u64>,
-        frames: Frames,
-        focused: u64,
-    ) -> Moved {
+    /// Put `frames` on monitor `idx`, tiled after `after` or last. A returning display wakes its
+    /// remembered frame unless the keyboard is on this strip, an empty strip wakes its first.
+    fn place_frames(&mut self, idx: usize, after: Option<u64>, frames: Frames) -> Moved {
         let ids = frames.ids();
+        let keyboard_here = self.active_output.as_ref() == Some(&self.monitors[idx].output);
         let monitor = &mut self.monitors[idx];
         let dst_prev_active = monitor.strip.active_frame_id();
         let at = monitor.strip.slot_after(after);
         monitor.strip.insert_frames(at, frames.tiled);
         let remembered = monitor.last_active.take_if(|id| ids.contains(id));
         let strip = &mut monitor.strip;
-        // The focused frame wins over the remembered one.
-        let wake = match strip.index_of(focused) {
-            Some(idx) => ids.contains(&focused).then_some(idx),
-            None => remembered.and_then(|id| strip.index_of(id)),
-        };
+        let wake = remembered
+            .filter(|_| !keyboard_here || monitor.floating.is_focused())
+            .and_then(|id| strip.index_of(id));
         if let Some(idx) = wake {
             strip.set_active(idx);
         } else if dst_prev_active.is_none() && !strip.frames().is_empty() {
@@ -675,12 +731,14 @@ impl Layout {
             monitor.floating.add_frame(frame);
         }
         monitor.settle_pins();
-        Moved {
+        let moved = Moved {
             ids,
             dst: Some(monitor.output.clone()),
             dst_prev_active,
             ..Moved::default()
-        }
+        };
+        self.settle_active_output();
+        moved
     }
 
     /// Move frames `ids` from `src` to `dst`, each kind to its own container, tiled after `after`.
@@ -689,7 +747,6 @@ impl Layout {
         src: &Output,
         dst: &Output,
         ids: &[u64],
-        focused: u64,
         after: Option<u64>,
     ) -> Moved {
         let (Some(src_idx), Some(dst_idx)) = (self.monitor_idx(src), self.monitor_idx(dst)) else {
@@ -698,18 +755,21 @@ impl Layout {
         if src_idx == dst_idx {
             return Moved::default();
         }
+        let focused = self.focused_frame_id();
         let src = &mut self.monitors[src_idx];
         let src_prev_active = src.strip.active_frame_id();
         let frames = src.drain_frames(|frame| ids.contains(&frame.surface_id));
-        Moved {
+        let moved = Moved {
             src: Some(src.output.clone()),
             src_prev_active,
-            ..self.place_frames(dst_idx, after, frames, focused)
-        }
+            ..self.place_frames(dst_idx, after, frames)
+        };
+        self.follow_focus(focused, &moved);
+        moved
     }
 
     /// Move frame `id` to `dst` on purpose, after its active frame, homing it and its floats.
-    pub(crate) fn move_frame_to_output(&mut self, id: u64, dst: &Output, focused: u64) -> Moved {
+    pub(crate) fn move_frame_to_output(&mut self, id: u64, dst: &Output) -> Moved {
         let src = self
             .frame_location(id)
             .map(|location| location.monitor.output().clone());
@@ -717,7 +777,7 @@ impl Layout {
             return Moved::default();
         };
         let after = self.strip(dst).and_then(strip::Strip::active_frame_id);
-        let moved = self.move_frames(&src, dst, &[id], focused, after);
+        let moved = self.move_frames(&src, dst, &[id], after);
         let home = crate::utils::output_identity(dst);
         for id in &moved.ids {
             self.home_outputs.insert(*id, home.clone());
@@ -726,12 +786,12 @@ impl Layout {
     }
 
     /// Put every parked frame on `dst`.
-    pub(crate) fn adopt_homeless(&mut self, dst: &Output, focused: u64) -> Moved {
+    pub(crate) fn adopt_homeless(&mut self, dst: &Output) -> Moved {
         let Some(idx) = self.monitor_idx(dst) else {
             return Moved::default();
         };
         let frames = mem::take(&mut self.homeless);
-        self.place_frames(idx, None, frames, focused)
+        self.place_frames(idx, None, frames)
     }
 
     fn remember_home_if_missing(&mut self, frame_id: u64, home: &str) {
@@ -767,12 +827,26 @@ impl Layout {
         }
     }
 
-    /// Make `id` active in its container, a pinned float its strip frame too. Returns its output
-    /// and the strip frame that was active.
-    pub(crate) fn activate_frame(&mut self, id: u64) -> Option<(Output, Option<u64>)> {
-        self.with_frame_container(
+    /// Give `id` the keyboard, on view `entry` when given: its output becomes the active one and
+    /// it the active frame of its container, a pinned float its strip frame too. Returns the
+    /// output and its old active frame.
+    pub(crate) fn activate_frame(
+        &mut self,
+        id: u64,
+        entry: Option<LayoutEntryId>,
+    ) -> Option<(Output, Option<u64>)> {
+        // The view is the frame's selection until the next layout confirms it.
+        if let Some(entry) = entry
+            && let Some(frame) = self.frame_mut(id)
+        {
+            frame.selected_entry_id = Some(entry);
+        }
+        let activated = self.with_frame_container(
             id,
-            |monitor, idx| monitor.strip.set_active(idx),
+            |monitor, idx| {
+                monitor.strip.set_active(idx);
+                monitor.floating.unfocus();
+            },
             |monitor| {
                 monitor.floating.activate_frame(id);
                 if let Some(idx) = monitor
@@ -784,7 +858,9 @@ impl Layout {
                     monitor.strip.set_active(idx);
                 }
             },
-        )
+        )?;
+        self.active_output = Some(activated.0.clone());
+        Some(activated)
     }
 
     /// A layout has laid every output out anew.
@@ -1125,6 +1201,25 @@ impl Layout {
         for &id in self.home_outputs.keys() {
             assert!(self.has_frame(id), "home remembered for gone frame {id}");
         }
+        assert_eq!(
+            self.active_output.is_some(),
+            self.focused_frame().is_some(),
+            "the active output holds no frame"
+        );
+        assert_eq!(
+            self.focused_frame().is_some(),
+            self.monitors
+                .iter()
+                .any(|monitor| monitor.focused_frame().is_some()),
+            "the keyboard is off every frame while a monitor has one"
+        );
+        for monitor in &self.monitors {
+            assert!(
+                !monitor.floating.is_focused() || monitor.floating.active_frame().is_some(),
+                "floating space on {} holds the keyboard with no active float",
+                monitor.name
+            );
+        }
         if let Some(move_) = self.interactive_move {
             assert!(
                 self.frame_location(move_.frame_id)
@@ -1180,7 +1275,6 @@ impl Layout {
         &mut self,
         output: &Output,
         pos_within_output: Point<f64, Logical>,
-        focused: u64,
     ) -> Option<Moved> {
         let move_ = self.interactive_move?;
         let id = move_.frame_id;
@@ -1196,7 +1290,7 @@ impl Layout {
             // Nothing to drag onto, so the frame waits where it is.
             return Some(Moved::default());
         }
-        let moved = self.move_frame_to_output(id, output, focused);
+        let moved = self.move_frame_to_output(id, output);
         if let Some(monitor) = self.monitor_of_mut(output) {
             let size = monitor
                 .floating
@@ -1269,32 +1363,6 @@ fn leave_output_for_window(window: &Window, output: &Output) {
 }
 
 impl Ewm {
-    /// If no frame is focused but some frame exists, use canonical output order.
-    pub(crate) fn focus_any_frame_if_unfocused(&mut self, reason: &'static str) {
-        if self.focused_frame_id != 0 {
-            return;
-        }
-        let first = self
-            .mapped_monitors()
-            .find_map(|monitor| monitor.strip.frame_ids().next());
-        if let Some(id) = first {
-            self.set_focus_frame(id, reason, false);
-        }
-    }
-
-    /// Refocus when the focused frame left with its output.
-    pub(crate) fn refocus_if_focused_frame_unplaced(&mut self) {
-        if self.focused_frame_id == 0 || self.layout.frame_output(self.focused_frame_id).is_some() {
-            return;
-        }
-        match self.first_active_frame_surface_id() {
-            Some(id) => {
-                self.set_focus_frame(id, "output_disabled", false);
-            }
-            None => self.set_focus_state(0, None),
-        }
-    }
-
     /// Bake frame `id`'s close snapshot.
     /// Bake `id` for its close animation: a frame into its record, a surface into every frame
     /// showing it.
@@ -1327,7 +1395,7 @@ impl Ewm {
         }
     }
 
-    /// Drop Emacs frame `id` from wherever it is, unfocusing it. Returns the output it left.
+    /// Drop Emacs frame `id` from wherever it is. Returns the output it left.
     pub(crate) fn remove_emacs_frame(&mut self, id: u64, active_close: bool) -> Option<Output> {
         // A float off screen or hidden under a fullscreen view leaves without a fade.
         let hidden = self.layout.frame_location(id).is_some_and(|location| {
@@ -1343,18 +1411,13 @@ impl Ewm {
             self.reconcile_output_entries(output);
             self.reconcile_active_for_output(output, *prev_active);
         }
-        if self.focused_frame_id == id {
-            self.set_focus_state(0, None);
-        }
         removed.map(|(output, _)| output)
     }
 
     /// Move `output`'s frames to the next output in order, else park them, and unmap it.
     pub(crate) fn detach_output(&mut self, output: &Output) {
         let fallback = self.output_next_of(output).filter(|next| next != output);
-        let moved = self
-            .layout
-            .detach_output(output, fallback.as_ref(), self.focused_frame_id);
+        let moved = self.layout.detach_output(output, fallback.as_ref());
         self.settle_moved_frames(&moved);
         for id in moved.retired {
             self.queue_event(Event::Close { id });
@@ -1364,7 +1427,6 @@ impl Ewm {
         self.refresh_cursor_outputs();
         self.recalculate_output_size();
         self.output_management_state.output_heads_changed = true;
-        self.refocus_if_focused_frame_unplaced();
     }
 
     /// Global origin of every floating frame, for Emacs's own geometry.
@@ -1402,19 +1464,14 @@ impl Ewm {
 
     fn focused_frame_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
         self.layout
-            .frame_location(self.focused_frame_id)?
+            .frame_location(self.focused_frame_id())?
             .entries()
             .find(|location| location.entry.surface_id() == Some(id))
     }
 
-    pub(crate) fn first_active_frame_surface_id(&self) -> Option<u64> {
-        self.mapped_monitors()
-            .find_map(|monitor| monitor.strip.active_frame_id())
-    }
-
-    /// Make frame `id` the active one in its container.
-    pub(crate) fn activate_frame(&mut self, id: u64) {
-        let Some((output, prev_active)) = self.layout.activate_frame(id) else {
+    /// Give frame `id` the keyboard, on view `entry` when given, and show it active.
+    pub(crate) fn activate_frame(&mut self, id: u64, entry: Option<LayoutEntryId>) {
+        let Some((output, prev_active)) = self.layout.activate_frame(id, entry) else {
             return;
         };
         // An active flip may shift a surface's largest visible entry to or from
@@ -1488,7 +1545,7 @@ impl Ewm {
 
     /// The focused layout entry when it shows surface `id`.
     pub(crate) fn focused_entry_for_surface(&self, id: u64) -> Option<LayoutEntryLocation<'_>> {
-        let location = self.layout.entry_location(self.focused_entry_id?)?;
+        let location = self.layout.entry_location(self.focused_entry_id()?)?;
         (location.entry.surface_id() == Some(id)).then_some(location)
     }
 
@@ -2022,8 +2079,8 @@ impl Ewm {
         self.layout.reconcile_fullscreen(committed);
         self.report_float_visibility(&shown);
         // A float going fullscreen takes the focus from its frame.
-        if let Some((_, entry_id)) = self.layout.fullscreen_float_over(self.focused_frame_id)
-            && self.focused_entry_id != Some(entry_id)
+        if let Some((_, entry_id)) = self.layout.fullscreen_float_over(self.focused_frame_id())
+            && self.focused_entry_id() != Some(entry_id)
         {
             self.set_focus_entry(entry_id, "fullscreen_over", true);
         }
@@ -2057,7 +2114,7 @@ impl Ewm {
             .strip
             .frame_of_float(frame)
             .and_then(|id| monitor.fullscreen_on(id))
-            .is_none_or(|id| id == frame.surface_id || frame.surface_id == self.focused_frame_id)
+            .is_none_or(|id| id == frame.surface_id || frame.surface_id == self.focused_frame_id())
     }
 
     /// `monitor`'s visible floats with their output-local slots, topmost first.
@@ -2159,15 +2216,13 @@ impl Ewm {
     }
 
     fn move_frame_ids_between_outputs(&mut self, src: &Output, dst: &Output, ids: &[u64]) {
-        let moved = self
-            .layout
-            .move_frames(src, dst, ids, self.focused_frame_id, None);
+        let moved = self.layout.move_frames(src, dst, ids, None);
         self.settle_moved_frames(&moved);
     }
 
     /// Adopt parked frames and reclaim homed ones onto `output`, which just mapped.
-    pub(crate) fn attach_output(&mut self, output: &Output, focus_reason: &'static str) {
-        let adopted = self.layout.adopt_homeless(output, self.focused_frame_id);
+    pub(crate) fn attach_output(&mut self, output: &Output) {
+        let adopted = self.layout.adopt_homeless(output);
         if !adopted.ids.is_empty() {
             self.settle_moved_frames(&adopted);
         }
@@ -2177,27 +2232,15 @@ impl Ewm {
         self.layout.forget_last_active(output);
         // Frames coming back may hold a surface whose activation waited for them.
         self.focus_pending_activation_surfaces();
-        if self.focused_frame_id == 0
-            && let Some(id) = self.layout.active_frame_id(output)
-        {
-            self.set_focus_frame(id, focus_reason, false);
-        }
-        self.focus_any_frame_if_unfocused(focus_reason);
     }
 
-    /// Follow the focused frame's selected window after a merge, even if only its surface changed.
-    fn sync_focus_after_merge(&mut self, focused_surface: u64) {
-        let frame_id = self.focused_frame_id;
-        let Some(location) = self.layout.frame_location(frame_id) else {
-            return;
-        };
-        let selected = location.frame.selected_entry_id;
-        let entry_changed = selected != self.focused_entry_id;
-        self.set_focus_state(frame_id, selected);
-        if entry_changed || self.focused_surface_id() != focused_surface {
+    /// Settle on the focused frame's selected window once a merge changed it.
+    fn sync_focus_after_merge(&mut self, before: (u64, Option<LayoutEntryId>)) {
+        let after = (self.focused_surface_id(), self.focused_entry_id());
+        if after != before {
             self.clear_focused_urgency();
-            self.flush_pending_title_event(self.focused_surface_id());
-            module::record_focus(self.focused_surface_id(), "layout_selected", None);
+            self.flush_pending_title_event(after.0);
+            module::record_focus(after.0, "layout_selected", None);
         }
     }
 
@@ -2205,13 +2248,13 @@ impl Ewm {
     /// keep their output and slot, and a frame the layout leaves out stays empty
     /// until its destroy arrives.
     pub fn apply_layout(&mut self, frames: Vec<strip::Frame>) {
-        let focused_surface = self.focused_surface_id();
+        let before = (self.focused_surface_id(), self.focused_entry_id());
         let outputs: Vec<Output> = self.layout.outputs().cloned().collect();
 
         self.layout.merge_frames(frames);
         self.reconcile_fullscreen();
 
-        self.sync_focus_after_merge(focused_surface);
+        self.sync_focus_after_merge(before);
         for output in &outputs {
             self.reconcile_output_entries(output);
             self.queue_redraw(output);
@@ -2219,8 +2262,6 @@ impl Ewm {
         self.refresh_primary_assignments();
         self.fit_views(false);
         self.layout.settle_resized();
-        // Covers the race where the layout runs before `new_toplevel`'s auto-focus.
-        self.focus_any_frame_if_unfocused("auto_focus_on_layout");
         self.focus_pending_activation_surfaces();
     }
 
@@ -2233,9 +2274,7 @@ impl Ewm {
 
     /// Move frame `id` to `dst` and show it there.
     pub(crate) fn move_frame_to_output(&mut self, id: u64, dst: &Output) {
-        let moved = self
-            .layout
-            .move_frame_to_output(id, dst, self.focused_frame_id);
+        let moved = self.layout.move_frame_to_output(id, dst);
         if !moved.ids.is_empty() {
             self.settle_moved_frames(&moved);
         }
@@ -2330,10 +2369,9 @@ impl Ewm {
             // Dead space between outputs leaves the frame where it is.
             return true;
         };
-        let focused = self.focused_frame_id;
         let Some(moved) = self
             .layout
-            .interactive_move_update(&output, pos_within_output, focused)
+            .interactive_move_update(&output, pos_within_output)
         else {
             return false;
         };

@@ -274,6 +274,8 @@ pub struct FloatingSpace {
     #[serde(skip)]
     data: Vec<Data>,
     active_frame_id: Option<u64>,
+    /// Holds the keyboard over the strip.
+    focused: bool,
     #[serde(skip)]
     interactive_resize: Option<InteractiveResize>,
     #[serde(skip)]
@@ -294,6 +296,7 @@ impl FloatingSpace {
             frames: Vec::new(),
             data: Vec::new(),
             active_frame_id: None,
+            focused: false,
             interactive_resize: None,
             working_area,
             output: Rectangle::default(),
@@ -371,6 +374,8 @@ impl FloatingSpace {
         let frame = self.frames.remove(idx);
         if self.active_frame_id == Some(id) {
             self.active_frame_id = self.frames.first().map(|frame| frame.surface_id);
+            // The keyboard leaves with its frame.
+            self.focused = false;
         }
         Some((frame, data))
     }
@@ -440,7 +445,25 @@ impl FloatingSpace {
         };
         self.raise_frame(idx, 0);
         self.active_frame_id = Some(id);
+        self.focused = true;
         true
+    }
+
+    pub fn active_frame_id(&self) -> Option<u64> {
+        self.active_frame_id
+    }
+
+    pub fn active_frame(&self) -> Option<&Frame> {
+        self.active_frame_id.and_then(|id| self.frame(id))
+    }
+
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// The strip takes the keyboard back.
+    pub fn unfocus(&mut self) {
+        self.focused = false;
     }
 
     fn raise_frame(&mut self, from_idx: usize, to_idx: usize) {

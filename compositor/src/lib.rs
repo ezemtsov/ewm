@@ -864,8 +864,6 @@ pub struct Ewm {
     pub swipe: input::Swipe,
     /// Last output the cursor was drawn on, for per-output cursor redraw.
     pointer_output: Option<Output>,
-    pub focused_frame_id: u64,
-    pub focused_entry_id: Option<LayoutEntryId>,
     pub keyboard_focus: Option<WlSurface>,
     /// Keys for Emacs waiting until it reads the Focus they followed.
     pub(crate) deferred_keys: VecDeque<input::DeferredKey>,
@@ -1320,8 +1318,6 @@ impl Ewm {
             output_config: HashMap::new(),
             pointer_focus: None,
             pointer_output: None,
-            focused_frame_id: 0,
-            focused_entry_id: None,
             keyboard_focus: None,
             deferred_keys: VecDeque::new(),
             im_repeat: InterceptRepeatState::new(
@@ -1677,20 +1673,35 @@ impl Ewm {
         }
     }
 
+    /// The frame holding the keyboard, 0 without one.
+    pub fn focused_frame_id(&self) -> u64 {
+        self.layout.focused_frame_id()
+    }
+
+    /// The selected view of the frame holding the keyboard.
+    pub fn focused_entry_id(&self) -> Option<LayoutEntryId> {
+        self.layout
+            .focused_frame()
+            .and_then(|frame| frame.selected_entry_id)
+    }
+
     /// Surface id receiving keyboard input.
     pub fn focused_surface_id(&self) -> u64 {
-        self.focused_entry_id
-            .and_then(|entry_id| self.layout.entry_surface_id(entry_id))
-            .unwrap_or(self.focused_frame_id)
+        self.layout.focused_frame().map_or(0, |frame| {
+            frame
+                .selected_entry_id
+                .and_then(|entry_id| frame.entry_surface_id(entry_id))
+                .unwrap_or(frame.surface_id)
+        })
     }
 
     /// The focused entry and its surface when that entry is fullscreen.
     pub fn focused_fullscreen_entry(&self) -> Option<(LayoutEntryId, u64)> {
-        self.layout
-            .frame_location(self.focused_frame_id)
-            .and_then(|location| location.frame.fullscreen_entry())
-            .filter(|entry| Some(entry.id) == self.focused_entry_id)
-            .and_then(|entry| Some((entry.id, entry.surface_id()?)))
+        let frame = self.layout.focused_frame()?;
+        let entry = frame
+            .fullscreen_entry()
+            .filter(|entry| Some(entry.id) == frame.selected_entry_id)?;
+        Some((entry.id, entry.surface_id()?))
     }
 
     pub fn set_surface_urgent(&mut self, surface_id: u64, urgent: bool) -> bool {
@@ -1707,7 +1718,7 @@ impl Ewm {
     }
 
     fn clear_focused_urgency(&mut self) {
-        for id in [self.focused_surface_id(), self.focused_frame_id] {
+        for id in [self.focused_surface_id(), self.focused_frame_id()] {
             if let Some(surface) = self.surfaces.get_mut(&id) {
                 surface.urgent = false;
             }
@@ -1715,22 +1726,17 @@ impl Ewm {
     }
 
     pub fn mark_workspace_urgent(&mut self, frame_surface_id: Option<u64>) -> bool {
-        let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id);
+        let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id());
         if frame_surface_id == 0 || !self.layout.has_frame(frame_surface_id) {
             return false;
         }
-        if self.focused_frame_id == frame_surface_id {
+        if self.focused_frame_id() == frame_surface_id {
             return false;
         }
 
         self.surfaces
             .get_mut(&frame_surface_id)
             .is_some_and(|frame| !std::mem::replace(&mut frame.urgent, true))
-    }
-
-    fn set_focus_state(&mut self, frame_id: u64, entry_id: Option<LayoutEntryId>) {
-        self.focused_frame_id = frame_id;
-        self.focused_entry_id = entry_id;
     }
 
     /// Focus the layout entry identified by `entry_id`. Returns the frame focused.
@@ -1748,7 +1754,7 @@ impl Ewm {
             None,
         );
         self.commit_focus(frame_id, Some(entry_id), entry_id, notify_emacs);
-        Some(self.focused_frame_id)
+        Some(self.focused_frame_id())
     }
 
     /// Focus an Emacs frame, routing keyboard to its selected entry's surface if one exists.
@@ -1785,9 +1791,8 @@ impl Ewm {
         {
             self.flush_pending_title_event(surface_id);
         }
-        self.set_focus_state(frame_id, entry_id);
+        self.activate_frame(frame_id, entry_id);
         self.clear_focused_urgency();
-        self.activate_frame(frame_id);
         if notify_emacs {
             self.queue_event(Event::Focus {
                 focus_id,
@@ -1818,7 +1823,7 @@ impl Ewm {
     /// Rename a workspace. Empty names clear the name. If `frame_surface_id`
     /// is absent, the currently focused frame is renamed.
     pub fn rename_workspace(&mut self, frame_surface_id: Option<u64>, name: String) -> bool {
-        let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id);
+        let frame_surface_id = frame_surface_id.unwrap_or(self.focused_frame_id());
         if frame_surface_id == 0 {
             return false;
         }
@@ -3557,7 +3562,7 @@ impl Ewm {
 
     /// The focused Emacs frame's surface, for keyboard redirects.
     pub(crate) fn focused_emacs_frame_surface(&self) -> Option<WlSurface> {
-        let id = self.focused_frame_id;
+        let id = self.focused_frame_id();
         if id == 0 || !self.layout.has_frame(id) {
             return None;
         }
@@ -4236,9 +4241,7 @@ impl Ewm {
 
     /// The output showing the focused frame.
     pub(crate) fn focused_output(&self) -> Option<&Output> {
-        self.layout
-            .frame_location(self.focused_frame_id)
-            .map(|location| location.monitor.output())
+        self.layout.focused_output()
     }
 
     pub(crate) fn output_under_cursor(&self) -> Option<&Output> {
@@ -4328,13 +4331,13 @@ impl Ewm {
             .focused_output()
             .and_then(|cur| self.output_next_of(cur))
         {
-            self.move_frame_to_output(self.focused_frame_id, &next);
+            self.move_frame_to_output(self.focused_frame_id(), &next);
         }
     }
 
     /// Focus strip frame `pick(anchor)`, anchored at the focused frame, else at the shown one.
     pub(crate) fn focus_strip_frame(&mut self, pick: impl FnOnce(usize) -> Option<usize>) {
-        let focused = self.focused_frame_id;
+        let focused = self.focused_frame_id();
         let target = self.layout.frame_location(focused).and_then(|location| {
             let strip = &location.monitor.strip;
             let anchor = if location.floating {
@@ -4396,6 +4399,7 @@ impl Ewm {
             (a_geo.loc.x, a_geo.loc.y, a.name()).cmp(&(b_geo.loc.x, b_geo.loc.y, b.name()))
         });
         self.sorted_outputs = outputs;
+        self.layout.sort_monitors(&self.sorted_outputs);
     }
 
     /// Register a newly connected output.
@@ -4424,7 +4428,7 @@ impl Ewm {
         });
 
         if self.space.output_geometry(output).is_some() {
-            self.attach_output(output, "output_added");
+            self.attach_output(output);
             self.introspect_windows_dirty = true;
         }
         self.output_management_state.output_heads_changed = true;
@@ -4496,7 +4500,7 @@ impl Ewm {
         self.refresh_primary_assignments();
         self.queue_redraw_all();
         if became_mapped {
-            self.attach_output(output, "output_enabled");
+            self.attach_output(output);
         }
 
         // Notify Emacs of the applied config
@@ -4724,8 +4728,8 @@ impl Ewm {
                 .collect::<HashMap<_, _>>(),
             "surface_outputs": self.surface_outputs(),
             "focused_surface_id": self.focused_surface_id(),
-            "focused_frame_id": self.focused_frame_id,
-            "focused_entry_id": self.focused_entry_id,
+            "focused_frame_id": self.focused_frame_id(),
+            "focused_entry_id": self.focused_entry_id(),
             "urgent_surfaces": urgent_surfaces,
             "urgent_workspaces": urgent_workspaces,
             "outputs": output_infos,
@@ -4783,7 +4787,7 @@ impl Ewm {
         parent_id
             .and_then(|pid| self.frame_entry_for_surface(pid))
             .and_then(|(id, _)| tiled_frame_on(id, None))
-            .or_else(|| output.and_then(|o| tiled_frame_on(self.focused_frame_id, Some(o))))
+            .or_else(|| output.and_then(|o| tiled_frame_on(self.focused_frame_id(), Some(o))))
             .or_else(|| output.and_then(|o| self.layout.active_frame_id(o)))
     }
 
@@ -4874,14 +4878,6 @@ impl Ewm {
             t.send_configure();
         }
 
-        // Auto-focus the first Emacs surface so keyboard input works without
-        // a pointer event. Keyboard.enter is replayed on Initialized command;
-        // PGTK drops enters sent before its surface's first roundtrip.
-        let auto_focus = is_emacs && self.focused_surface_id() == 0;
-        if auto_focus {
-            self.set_focus_frame(id, "initial_surface", false);
-        }
-
         // App surfaces resolve their host frame at map. `New` only creates the buffer.
         self.queue_event(Event::New {
             id,
@@ -4905,10 +4901,10 @@ impl Ewm {
                 },
             );
         }
-        // Sent after New so the lisp side has assigned ewm-surface-id by the
-        // time the Focus event is processed.
-        if auto_focus {
-            info!("Auto-focusing initial Emacs surface {}", id);
+        // The first Emacs frame took the keyboard at placement. Sent after New so the lisp side
+        // has assigned ewm-surface-id by the time the Focus event is processed.
+        if is_emacs && self.focused_frame_id() == id {
+            info!("Initial Emacs frame {} holds the keyboard", id);
             if let Some(focus_id) = self.layout.focus_id_of_frame(id) {
                 self.queue_event(Event::Focus {
                     focus_id,
@@ -4928,7 +4924,7 @@ impl Ewm {
 
     /// Drop toplevel `id`, returning the frame to refocus.
     pub fn handle_toplevel_destroyed_by_id(&mut self, id: u64) -> Option<u64> {
-        let was_focused = self.focused_frame_id == id;
+        let was_focused = self.focused_frame_id() == id;
         let close_was_active = module::take_pending_active_frame_close(id);
         let active_close = was_focused || close_was_active;
 
@@ -4962,7 +4958,7 @@ impl Ewm {
                         .as_ref()
                         .and_then(|output| self.layout.active_frame_id(output))
                 })
-                .or_else(|| self.first_active_frame_surface_id());
+                .or_else(|| Some(self.focused_frame_id()).filter(|&id| id != 0));
             debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
             return refocus;
         }
@@ -5716,7 +5712,7 @@ impl State {
         {
             let mut shared = module::shared_state().lock().unwrap();
             shared.focused_surface_id = self.ewm.focused_surface_id();
-            shared.focused_frame_id = self.ewm.focused_frame_id;
+            shared.focused_frame_id = self.ewm.focused_frame_id();
             shared.pointer_location = self.ewm.pointer_location();
             shared.active_outputs = self.ewm.active_outputs_snapshot();
             shared.frame_origins = self.ewm.frame_origins_snapshot();

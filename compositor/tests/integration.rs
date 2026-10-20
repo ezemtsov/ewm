@@ -621,7 +621,7 @@ fn disabling_output_migrates_entries_to_mapped_output() {
     fixture.ewm().set_focus_entry(nz(1), "test", false);
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), surface_id);
-    assert_eq!(fixture.ewm_ref().focused_entry_id, Some(nz(1)));
+    assert_eq!(fixture.ewm_ref().focused_entry_id(), Some(nz(1)));
     assert_eq!(
         fixture.ewm_ref().layout.frame_with_focus_id(nz(1_100)),
         Some(100)

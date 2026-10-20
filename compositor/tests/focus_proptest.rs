@@ -270,7 +270,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             if unfocused {
                 // The boot regression: the first frame takes focus by itself.
                 assert_eq!(
-                    fix.ewm_ref().focused_frame_id,
+                    fix.ewm_ref().focused_frame_id(),
                     sid,
                     "the first Emacs frame {sid} did not take focus",
                 );
@@ -344,7 +344,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 return;
             };
             let was_present = strip_frame_ids(fix).contains(&id);
-            let prev_focused = fix.ewm_ref().focused_frame_id;
+            let prev_focused = fix.ewm_ref().focused_frame_id();
             let expected_same_output_refocus = if prev_focused == id {
                 fix.ewm_ref()
                     .layout
@@ -366,7 +366,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             fix.roundtrip(&mut frames.client);
             if let Some(expected) = expected_same_output_refocus {
                 assert_eq!(
-                    fix.ewm_ref().focused_frame_id,
+                    fix.ewm_ref().focused_frame_id(),
                     expected,
                     "destroy({}) did not refocus the same-output neighbour",
                     id,
@@ -380,7 +380,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 );
                 if prev_focused != id {
                     assert_eq!(
-                        fix.ewm_ref().focused_frame_id,
+                        fix.ewm_ref().focused_frame_id(),
                         prev_focused,
                         "destroy({}) changed focus away from inactive frame {}",
                         id,
@@ -391,8 +391,8 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
         }
         Op::ActivateSurface(id) => {
             let prev = (
-                fix.ewm_ref().focused_frame_id,
-                fix.ewm_ref().focused_entry_id,
+                fix.ewm_ref().focused_frame_id(),
+                fix.ewm_ref().focused_entry_id(),
             );
             fix.ewm().activate_or_defer_surface(id, "proptest");
             let ewm = fix.ewm_ref();
@@ -409,7 +409,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             );
             if pending {
                 assert_eq!(
-                    (ewm.focused_frame_id, ewm.focused_entry_id),
+                    (ewm.focused_frame_id(), ewm.focused_entry_id()),
                     prev,
                     "activate({}) of a hidden surface moved focus",
                     id,
@@ -423,8 +423,8 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
         Op::DestroySurface(id) => {
             let was_present = layout_surface_ids(fix).contains(&id);
             let was_focused = fix.ewm_ref().focused_surface_id() == id;
-            let prev_focused_frame = fix.ewm_ref().focused_frame_id;
-            let prev_focused_entry = fix.ewm_ref().focused_entry_id;
+            let prev_focused_frame = fix.ewm_ref().focused_frame_id();
+            let prev_focused_entry = fix.ewm_ref().focused_entry_id();
             let destroyed_entry_ids: HashSet<LayoutEntryId> = all_frames(fix)
                 .flat_map(|frame| frame.entries.iter())
                 .filter(|entry| entry.surface_id() == Some(id))
@@ -472,13 +472,13 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 );
                 if was_focused {
                     assert_eq!(
-                        fix.ewm_ref().focused_frame_id,
+                        fix.ewm_ref().focused_frame_id(),
                         prev_focused_frame,
                         "destroy({}) changed host frame focus",
                         id,
                     );
                     assert_eq!(
-                        fix.ewm_ref().focused_entry_id,
+                        fix.ewm_ref().focused_entry_id(),
                         prev_focused_entry,
                         "destroy({}) moved focus off the window",
                         id,
@@ -505,7 +505,7 @@ fn assert_focused_frame_view(fix: &Fixture, surface: u64, frame: u64) {
     if views.is_empty() {
         return;
     }
-    let chosen = fix.ewm_ref().focused_entry_id;
+    let chosen = fix.ewm_ref().focused_entry_id();
     assert!(
         chosen.is_some_and(|entry| views.contains(&entry)),
         "invariant 13: activate({surface}) left focused frame {frame} which shows it",
@@ -671,7 +671,7 @@ proptest! {
         prop_assert_eq!(refocus, Some(expected));
         fix.ewm()
             .set_focus_frame(refocus.unwrap(), "toplevel_destroyed", false);
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, expected);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), expected);
         prop_assert!(!strip_frame_ids(&fix).contains(&closing_id));
         let strip = fix.strip(OUTPUTS[0]);
         prop_assert_eq!(strip.active_frame_id(), Some(expected));
@@ -704,55 +704,10 @@ fn layout_omission_empties_the_frame() {
 fn assert_invariants(fix: &Fixture) {
     let ewm = fix.ewm_ref();
 
-    // Invariant 3: no focused frame, no focused view.
-    if ewm.focused_frame_id == 0 {
-        assert_eq!(
-            ewm.focused_entry_id, None,
-            "invariant 3: focused_entry_id={:?} while focused_frame_id is 0",
-            ewm.focused_entry_id,
-        );
-    }
-
-    // Invariant 2: focused_entry_id == Some(v) ⟹ v is the entry_id of some entry
-    // on the focused frame.
-    if let Some(v) = ewm.focused_entry_id {
-        let in_focused_frame = all_frames(fix)
-            .find(|f| f.surface_id == ewm.focused_frame_id)
-            .map(|f| f.entries.iter().any(|e| e.id == v))
-            .unwrap_or(false);
-        assert!(
-            in_focused_frame,
-            "invariant 2: focused_entry_id={:?} not in focused frame {}",
-            v, ewm.focused_frame_id,
-        );
-    }
-
-    // Invariant 4: the layout's own invariants, one place per frame among them.
+    // Invariants 2, 3 and 5 hold by construction: the focused frame is the active frame of the
+    // active output and the focused view its selected entry. Invariant 1 is kept by
+    // `Layout::settle_active_output` and checked below with invariant 4, the layout's own.
     ewm.layout.verify_invariants();
-
-    // Invariant 5: the focused frame is the active frame of its own strip,
-    // and never a homeless frame.
-    if ewm.focused_frame_id != 0 {
-        for strip in ewm.layout.strips().map(|(_, strip)| strip) {
-            let active_id = strip.active_frame_id();
-            if active_id == Some(ewm.focused_frame_id) {
-                continue;
-            }
-            assert!(
-                !strip
-                    .frames()
-                    .iter()
-                    .any(|f| f.surface_id == ewm.focused_frame_id),
-                "invariant 5: focused frame {} present in a strip but not its active frame",
-                ewm.focused_frame_id,
-            );
-        }
-        assert!(
-            !ewm.layout.is_homeless(ewm.focused_frame_id),
-            "invariant 5: focused frame {} is homeless",
-            ewm.focused_frame_id,
-        );
-    }
 
     // Invariant 6: a frame's selected view is one of its own entries.
     for frame in all_frames(fix) {
@@ -779,20 +734,6 @@ fn assert_invariants(fix: &Fixture) {
     assert!(
         mapped_outputs.is_empty() || ewm.layout.homeless().tiled.is_empty(),
         "invariant 10: homeless frames exist while an output is mapped",
-    );
-
-    // Invariant 1: some frame is focused iff some frame exists.
-    let any_frame = ewm
-        .layout
-        .strips()
-        .map(|(_, strip)| strip)
-        .any(|strip| !strip.frames().is_empty());
-    assert_eq!(
-        any_frame,
-        ewm.focused_frame_id != 0,
-        "invariant 1: any_mapped_frame={} but focused_frame_id={}",
-        any_frame,
-        ewm.focused_frame_id,
     );
 
     // Invariant 7: every live entry entry_id identifies exactly one layout occurrence.
@@ -1154,7 +1095,7 @@ fn nav_run(setup: &NavSetup, dx: i32, dy: i32, cx: f64, cy: f64) -> NavResult {
     fix.warp_pointer(cx, cy);
     fix.ewm().focus_output_direction(dx, dy);
     NavResult {
-        focused: fix.ewm_ref().focused_frame_id,
+        focused: fix.ewm_ref().focused_frame_id(),
         pointer: fix.ewm_ref().pointer_location(),
     }
 }
@@ -1162,9 +1103,9 @@ fn nav_run(setup: &NavSetup, dx: i32, dy: i32, cx: f64, cy: f64) -> NavResult {
 fn nav_round_trip(setup: &NavSetup, dx: i32, dy: i32) -> (u64, u64) {
     let mut fix = nav_build(setup);
     fix.ewm().focus_output_direction(dx, dy);
-    let after_a = fix.ewm_ref().focused_frame_id;
+    let after_a = fix.ewm_ref().focused_frame_id();
     fix.ewm().focus_output_direction(-dx, -dy);
-    let after_b = fix.ewm_ref().focused_frame_id;
+    let after_b = fix.ewm_ref().focused_frame_id();
     (after_a, after_b)
 }
 

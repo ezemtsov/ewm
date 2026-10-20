@@ -95,7 +95,7 @@ fn dnd_grab_follows_pointer_and_drop_focuses_target() {
 
     s.fix.pointer_motion_to(400.0, 450.0);
     s.fix.pointer_button(BTN_LEFT, true);
-    assert_eq!(s.fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
+    assert_eq!(s.fix.ewm_ref().focused_entry_id(), Some(APP_ENTRY));
     s.fix.start_pointer_dnd(s.app_sid, Some(s.icon.clone()));
     assert!(s.fix.ewm_ref().pointer.is_grabbed());
     assert!(s.fix.ewm_ref().dnd_icon.is_some());
@@ -106,7 +106,7 @@ fn dnd_grab_follows_pointer_and_drop_focuses_target() {
     s.fix.pointer_motion_to(1200.0, 450.0);
     assert_eq!(s.fix.pointer_focus_surface_id(), Some(s.frame_sid));
     assert!(s.fix.ewm_ref().pointer.is_grabbed());
-    assert_eq!(s.fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
+    assert_eq!(s.fix.ewm_ref().focused_entry_id(), Some(APP_ENTRY));
     let events = s.fix.drain_events();
     assert!(
         !events.iter().any(|e| matches!(e, Event::Focus { .. })),
@@ -117,7 +117,7 @@ fn dnd_grab_follows_pointer_and_drop_focuses_target() {
     assert!(!s.fix.ewm_ref().pointer.is_grabbed());
     assert!(s.fix.ewm_ref().pending_drop.is_none());
     assert!(s.fix.ewm_ref().dnd_icon.is_none());
-    assert_eq!(s.fix.ewm_ref().focused_entry_id, Some(TEXT_ENTRY));
+    assert_eq!(s.fix.ewm_ref().focused_entry_id(), Some(TEXT_ENTRY));
     let events = s.fix.drain_events();
     assert!(
         events.iter().any(|e| matches!(
@@ -159,7 +159,7 @@ fn drag_source_hands_off_to_the_dnd_grab() {
 
     s.fix.pointer_button(BTN_LEFT, false);
     assert!(!s.fix.ewm_ref().pointer.is_grabbed());
-    assert_eq!(s.fix.ewm_ref().focused_entry_id, Some(APP_ENTRY));
+    assert_eq!(s.fix.ewm_ref().focused_entry_id(), Some(APP_ENTRY));
 }
 
 #[test]

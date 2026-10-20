@@ -65,10 +65,10 @@ fn a_key_switches_the_strip_without_emacs() {
     fix.enable_event_capture();
 
     tap(&mut fix, KEY_F5);
-    assert_eq!(fix.ewm_ref().focused_frame_id, 2);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 2);
     assert_eq!(fix.ewm_ref().layout.active_frame_id(&output), Some(2));
     tap(&mut fix, KEY_F6);
-    assert_eq!(fix.ewm_ref().focused_frame_id, 1);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 1);
     tap(&mut fix, KEY_F8);
     assert!(fix.ewm_ref().overview.is_open());
     tap(&mut fix, KEY_F8);
@@ -104,7 +104,7 @@ fn a_key_moves_the_focused_frame_round_the_outputs() {
     assert_eq!(fix.strip("HEAD-B").frame_ids().collect::<Vec<_>>(), [3, 1]);
     assert_eq!(fix.strip("HEAD-B").active_frame_id(), Some(1));
     assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(2));
-    assert_eq!(fix.ewm_ref().focused_frame_id, 1);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 1);
     let events = fix.drain_events();
     assert!(
         events
@@ -117,7 +117,7 @@ fn a_key_moves_the_focused_frame_round_the_outputs() {
     tap(&mut fix, KEY_F5);
     assert_eq!(fix.strip(OUTPUT).frame_ids().collect::<Vec<_>>(), [2, 1]);
     assert_eq!(fix.strip("HEAD-B").frame_ids().collect::<Vec<_>>(), [3]);
-    assert_eq!(fix.ewm_ref().focused_frame_id, 1);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 1);
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn a_workspace_activation_focuses_the_frame_in_the_compositor() {
     fix.enable_event_capture();
 
     fix.activate_workspace(2);
-    assert_eq!(fix.ewm_ref().focused_frame_id, 2);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), 2);
     let events = fix.drain_events();
     assert!(
         events
@@ -207,7 +207,7 @@ proptest! {
         tap(&mut fix, KEY_F5);
         let target = focused as i32 + delta;
         let expected = if (1..=frames as i32).contains(&target) { target as u64 } else { focused };
-        prop_assert_eq!(fix.ewm_ref().focused_frame_id, expected);
+        prop_assert_eq!(fix.ewm_ref().focused_frame_id(), expected);
     }
 }
 
@@ -274,11 +274,11 @@ fn keys_for_emacs_wait_until_emacs_reads_the_focus() {
     // Actions never wait, however far behind Emacs is, typed keys do.
     tap(&mut fix, KEY_F5);
     tap(&mut fix, KEY_F5);
-    assert_eq!(fix.ewm_ref().focused_frame_id, ids[2]);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), ids[2]);
     assert_eq!(fix.keyboard_key(KEY_A, true), KeyboardAction::Deferred);
     assert_eq!(fix.keyboard_key(KEY_A, false), KeyboardAction::Deferred);
     tap(&mut fix, KEY_F5);
-    assert_eq!(fix.ewm_ref().focused_frame_id, ids[3]);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), ids[3]);
     assert_eq!(fix.keyboard_key(KEY_A, true), KeyboardAction::Deferred);
     assert_eq!(fix.keyboard_key(KEY_A, false), KeyboardAction::Deferred);
     tick(&mut fix, &mut emacs);
@@ -361,7 +361,7 @@ fn modifier_only_keys_do_not_make_actions_wait() {
         assert_eq!(fix.deferred_key_count(), 0);
     }
     tap(&mut fix, KEY_F5);
-    assert_eq!(fix.ewm_ref().focused_frame_id, ids[2]);
+    assert_eq!(fix.ewm_ref().focused_frame_id(), ids[2]);
 }
 
 #[test]

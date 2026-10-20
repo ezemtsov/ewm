@@ -433,7 +433,7 @@ fn apply_op(h: &mut Harness, op: &Op) {
             .map_toplevel(&mut h.client, &h.toplevel, Size::from((w, height)));
         h.answered_configure = h.last_configure;
     }
-    h.focused_entry_before_op = h.fix.ewm_ref().focused_entry_id;
+    h.focused_entry_before_op = h.fix.ewm_ref().focused_entry_id();
     h.focus_before_op = h.union_focus();
     match *op {
         Op::AddOutput(i) => {
@@ -865,13 +865,13 @@ fn check_f1(h: &Harness) -> Result<(), TestCaseError> {
         return Ok(());
     }
     prop_assert_eq!(
-        ewm.focused_entry_id,
+        ewm.focused_entry_id(),
         Some(entry_id),
         "F1: FFM should focus the plain entry under the frame pointer at {:?}",
         h.frame.local,
     );
     prop_assert_eq!(
-        ewm.focused_frame_id,
+        ewm.focused_frame_id(),
         h.frame_sid,
         "F1: focused frame should own the plain entry",
     );
@@ -960,7 +960,7 @@ fn check_d1(h: &Harness) -> Result<(), TestCaseError> {
         return Ok(());
     }
     prop_assert_eq!(
-        h.fix.ewm_ref().focused_entry_id,
+        h.fix.ewm_ref().focused_entry_id(),
         h.focused_entry_before_op,
         "D1: a drag must not move focus",
     );
@@ -1093,7 +1093,7 @@ fn note_press(h: &mut Harness, p: Point<f64, Logical>) {
 
 /// T1 after a tap or a button press at `p`.
 fn check_t1(h: &Harness, p: Point<f64, Logical>) -> Result<(), TestCaseError> {
-    let focused = h.fix.ewm_ref().focused_entry_id;
+    let focused = h.fix.ewm_ref().focused_entry_id();
     match h.entry_under_press {
         Some(entry_id) => prop_assert_eq!(
             focused,
