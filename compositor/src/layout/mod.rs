@@ -929,12 +929,6 @@ impl Layout {
         self.entry_location(entry_id)?.entry.surface_id()
     }
 
-    /// Whether entry `entry_id` shows fullscreen.
-    pub fn entry_fullscreen(&self, entry_id: LayoutEntryId) -> bool {
-        self.entry_location(entry_id)
-            .is_some_and(|location| location.entry.fullscreen())
-    }
-
     /// Mark the views of `committed` surfaces and settle every float on its frame.
     pub(crate) fn reconcile_fullscreen(&mut self, committed: impl Fn(u64) -> bool) {
         for frame in self.all_frames_mut() {

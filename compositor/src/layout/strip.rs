@@ -701,20 +701,6 @@ impl Strip {
         }
     }
 
-    /// Iterator yielding `(frame_idx, &LayoutEntry)` pairs.
-    pub fn entries_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
-        self.frames
-            .iter()
-            .enumerate()
-            .flat_map(|(i, f)| f.entries.iter().map(move |s| (i, s)))
-    }
-
-    /// Surface-backed entries with their frame indexes.
-    pub fn surface_entries_with_frame(&self) -> impl Iterator<Item = (usize, &LayoutEntry)> {
-        self.entries_with_frame()
-            .filter(|(_, entry)| entry.surface.is_some())
-    }
-
     /// Seed `move_anim` on neighbours of `frames[idx]` so they slide in to fill the gap.
     fn seed_remove_animation_from(&mut self, idx: usize, anchor_idx: usize) -> Option<Animation> {
         if idx >= self.frames.len() || self.clock.should_complete_instantly() {

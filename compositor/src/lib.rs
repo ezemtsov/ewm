@@ -523,7 +523,6 @@ pub struct Ewm {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
-    #[allow(dead_code)]
     pub xdg_decoration_state: XdgDecorationState,
     pub kde_decoration_state: KdeDecorationState,
     pub background_effect_state: BackgroundEffectState,
@@ -612,19 +611,15 @@ pub struct Ewm {
     pub screencopy_state: ScreencopyManagerState,
 
     // Output manager state (provides xdg-output protocol)
-    #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
 
     // Text input state (provides zwp_text_input_v3 protocol)
-    #[allow(dead_code)]
     pub text_input_state: TextInputManagerState,
 
     // Input method state (provides zwp_input_method_v2 protocol)
-    #[allow(dead_code)]
     pub input_method_state: InputMethodManagerState,
 
     // Virtual keyboard state (zwp-virtual-keyboard-v1 protocol)
-    #[allow(dead_code)]
     pub virtual_keyboard_state: VirtualKeyboardManagerState,
 
     // Virtual pointer state (zwlr-virtual-pointer-v1 protocol)
@@ -713,35 +708,27 @@ pub struct Ewm {
     pub gamma_control_state: crate::protocols::gamma_control::GammaControlManagerState,
 
     // Fractional scale protocol (wp-fractional-scale-v1)
-    #[allow(dead_code)]
     pub fractional_scale_state: FractionalScaleManagerState,
 
     // Viewporter protocol (wp-viewporter, required for fractional scale clients)
-    #[allow(dead_code)]
     pub viewporter_state: ViewporterState,
 
     // Presentation time protocol (wp-presentation-time)
-    #[allow(dead_code)]
     pub presentation_state: smithay::wayland::presentation::PresentationState,
 
     // Relative pointer protocol (zwp-relative-pointer-v1)
-    #[allow(dead_code)]
     pub relative_pointer_state: RelativePointerManagerState,
 
     // Pointer constraints protocol (zwp-pointer-constraints-v1)
-    #[allow(dead_code)]
     pub pointer_constraints_state: PointerConstraintsState,
 
     // Pointer gestures protocol (zwp-pointer-gestures-v1)
-    #[allow(dead_code)]
     pub pointer_gestures_state: PointerGesturesState,
 
     // Cursor shape protocol (wp-cursor-shape-v1)
-    #[allow(dead_code)]
     pub cursor_shape_manager_state: CursorShapeManagerState,
 
     // Tablet protocol (zwp-tablet-v2)
-    #[allow(dead_code)]
     pub tablet_manager_state: TabletManagerState,
 
     // Screencasting state: PipeWire connection, active casts,

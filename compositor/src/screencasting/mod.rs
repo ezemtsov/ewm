@@ -621,9 +621,7 @@ impl Ewm {
                     renderer,
                     cursor_texture_cache,
                     output,
-                    crate::render::RenderFor::Cast {
-                        cursor: include_cursor,
-                    },
+                    include_cursor,
                 )
             });
 

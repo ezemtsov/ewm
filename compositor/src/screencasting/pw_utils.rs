@@ -220,8 +220,6 @@ enum CastState {
     Ready {
         size: Size<u32, Physical>,
         modifier: Modifier,
-        #[allow(dead_code)]
-        plane_count: i32,
         /// Damage tracker for content elements (skip-if-no-damage optimization)
         damage_tracker: Option<OutputDamageTracker>,
         /// Separate damage tracker for cursor elements
@@ -577,7 +575,6 @@ impl PipeWire {
                     inner.state = CastState::Ready {
                         size: format_size,
                         modifier,
-                        plane_count,
                         damage_tracker: None,
                         cursor_damage_tracker: None,
                         last_cursor_location: None,

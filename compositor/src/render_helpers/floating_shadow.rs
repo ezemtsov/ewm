@@ -26,12 +26,6 @@ impl Shadow {
         self.config = config;
     }
 
-    pub fn update_shaders(&mut self) {
-        for elem in &mut self.shaders {
-            elem.damage_all();
-        }
-    }
-
     pub fn update_render_elements(
         &mut self,
         win_size: Size<f64, Logical>,

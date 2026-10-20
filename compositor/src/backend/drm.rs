@@ -94,7 +94,7 @@ use crate::{
         map_initial_output,
     },
     cursor::{CursorConfig, CursorTextureCache},
-    render::{RenderFor, collect_render_elements_for_output, process_screencopies_for_output},
+    render::{collect_render_elements_for_output, process_screencopies_for_output},
     vblank_throttle::VBlankThrottle,
 };
 
@@ -849,7 +849,6 @@ pub enum DrmMessage {
 }
 
 /// State needed to initialize DRM (kept until session becomes active)
-#[allow(dead_code)]
 struct DrmPendingInit {
     primary_path: PathBuf,
     primary_node: DrmNode,
@@ -861,7 +860,6 @@ struct DrmPendingInit {
 ///
 /// Field order is critical for safe Drop: surfaces must be dropped before drm/gbm.
 /// See https://github.com/Smithay/smithay/issues/1102
-#[allow(dead_code)]
 struct DrmDeviceState {
     node: DrmNode,
     render_node: DrmNode,
@@ -874,7 +872,6 @@ struct DrmDeviceState {
 }
 
 /// Marker type for DRM backend (used in Backend enum)
-#[allow(dead_code)]
 pub struct DrmBackend;
 
 /// Shared DRM backend state
@@ -886,7 +883,6 @@ pub struct DrmBackend;
 /// loop BEFORE the session is dropped. The notifier holds references to session
 /// internals that become invalid after session drop. This is critical for
 /// embedded mode where process exit doesn't clean up resources.
-#[allow(dead_code)]
 pub struct DrmBackendState {
     messages: Sender<DrmMessage>,
     /// Event loop handle for scheduling timers
@@ -1465,7 +1461,7 @@ impl DrmBackendState {
             renderer.as_mut(),
             &self.cursor_texture_cache,
             output,
-            RenderFor::Display,
+            true,
         );
         // DRM render needs all elements merged (cursor in front)
         content.splice(0..0, cursor);

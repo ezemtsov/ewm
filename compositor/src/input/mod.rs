@@ -878,33 +878,6 @@ impl State {
         KeyboardAction::Forward
     }
 
-    /// Release all pressed keys (used when window loses focus)
-    pub fn release_all_keys(&mut self) {
-        let keyboard = self.ewm.keyboard.clone();
-        let pressed = keyboard.pressed_keys();
-        if pressed.is_empty() {
-            return;
-        }
-
-        let serial = SERIAL_COUNTER.next_serial();
-        let time = InputTime::now();
-
-        for keycode in pressed {
-            keyboard.input::<(), _>(
-                self,
-                keycode,
-                KeyState::Released,
-                serial,
-                time,
-                |_, _, _| FilterResult::Forward,
-            );
-        }
-
-        // Clear focus (focus_changed handles text_input)
-        keyboard.set_focus(self, None, serial);
-        self.ewm.keyboard_focus = None;
-    }
-
     pub(crate) fn active_constraint_for_focus(
         &self,
         pointer: &smithay::input::pointer::PointerHandle<State>,

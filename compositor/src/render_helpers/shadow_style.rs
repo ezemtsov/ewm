@@ -18,27 +18,8 @@ impl Color {
         Self::from_array_unpremul([r, g, b, a].map(|x| x as f32 / 255.))
     }
 
-    pub fn from_array_premul([r, g, b, a]: [f32; 4]) -> Self {
-        let a = a.clamp(0., 1.);
-
-        if a == 0. {
-            Self::new_unpremul(0., 0., 0., 0.)
-        } else {
-            Self {
-                r: (r / a).clamp(0., 1.),
-                g: (g / a).clamp(0., 1.),
-                b: (b / a).clamp(0., 1.),
-                a,
-            }
-        }
-    }
-
     pub const fn from_array_unpremul([r, g, b, a]: [f32; 4]) -> Self {
         Self { r, g, b, a }
-    }
-
-    pub fn to_array_unpremul(self) -> [f32; 4] {
-        [self.r, self.g, self.b, self.a]
     }
 
     pub fn to_array_premul(self) -> [f32; 4] {

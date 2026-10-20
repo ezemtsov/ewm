@@ -570,27 +570,6 @@ pub(crate) fn push_view_elements<
     push_view_background_effect(elements, ns, window, view, blur_config);
 }
 
-/// What an output is rendered for, which decides whether the cursor and the layers come along.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderFor {
-    /// The live display, with everything.
-    Display,
-    /// A screen copy or cast, the cursor as the client asked.
-    Cast { cursor: bool },
-    /// A transition snapshot, without the cursor, layers and DnD icon that stay live over it.
-    Snapshot,
-}
-
-impl RenderFor {
-    fn cursor(self) -> bool {
-        matches!(self, Self::Display | Self::Cast { cursor: true })
-    }
-
-    fn layers(self) -> bool {
-        self != Self::Snapshot
-    }
-}
-
 /// The layer-shell layers of one pass, the top two above the zoomed content, the rest within it.
 #[derive(Default)]
 struct Layers {
@@ -679,7 +658,7 @@ struct OutputRender<'a> {
     ewm: &'a mut Ewm,
     renderer: &'a mut GlesRenderer,
     output: &'a Output,
-    purpose: RenderFor,
+    include_cursor: bool,
     scale: Scale<f64>,
     rect: Rectangle<i32, Logical>,
     blur: Blur,
@@ -698,7 +677,7 @@ impl<'a> OutputRender<'a> {
         ewm: &'a mut Ewm,
         renderer: &'a mut GlesRenderer,
         output: &'a Output,
-        purpose: RenderFor,
+        include_cursor: bool,
     ) -> Self {
         let scale = Scale::from(output.current_scale().fractional_scale());
         let rect = ewm.space.output_geometry(output).unwrap_or_default();
@@ -714,7 +693,7 @@ impl<'a> OutputRender<'a> {
             ewm,
             renderer,
             output,
-            purpose,
+            include_cursor,
             scale,
             rect,
             blur,
@@ -729,7 +708,7 @@ impl<'a> OutputRender<'a> {
 
     /// The cursor goes on top, kept apart from the content.
     fn cursor(&mut self, cache: &CursorTextureCache) {
-        if !self.purpose.cursor() || self.ewm.cursor_hide.is_hidden {
+        if !self.include_cursor || self.ewm.cursor_hide.is_hidden {
             return;
         }
         let (pointer_x, pointer_y) = self.ewm.cursor_location();
@@ -752,9 +731,6 @@ impl<'a> OutputRender<'a> {
 
     /// The DnD icon rides under the cursor, above everything else.
     fn dnd_icon(&mut self) {
-        if !self.purpose.layers() {
-            return;
-        }
         let Some(dnd_icon) = self.ewm.dnd_icon.as_ref() else {
             return;
         };
@@ -803,12 +779,9 @@ impl<'a> OutputRender<'a> {
         true
     }
 
-    /// The four layer-shell layers, each in stacking order, all empty for a snapshot.
+    /// The four layer-shell layers, each in stacking order.
     fn layers(&mut self) -> Layers {
         let mut layers = Layers::default();
-        if !self.purpose.layers() {
-            return layers;
-        }
         // The RefMut lives for this scope only. Taking the layer map again meanwhile, as
         // get_working_area does, would panic.
         let layer_map = layer_map_for_output(self.output);
@@ -829,9 +802,6 @@ impl<'a> OutputRender<'a> {
 
     /// Popups of `layers` at unit scale, straight into the elements.
     fn layer_popups(&mut self, layers: &[Layer]) {
-        if !self.purpose.layers() {
-            return;
-        }
         for placement in layer_popup_placements(self.output, self.rect, layers) {
             push_popup(
                 &mut self.elements,
@@ -846,9 +816,6 @@ impl<'a> OutputRender<'a> {
 
     /// Popups of the zoomed `layers`, zooming with them.
     fn zoomed_layer_popups(&mut self, layers: &[Layer]) {
-        if !self.purpose.layers() {
-            return;
-        }
         for placement in layer_popup_placements(self.output, self.rect, layers) {
             push_popup(
                 &mut self.content,
@@ -1198,11 +1165,11 @@ pub fn collect_render_elements_for_output(
     renderer: &mut GlesRenderer,
     cursor_texture_cache: &CursorTextureCache,
     output: &Output,
-    purpose: RenderFor,
+    include_cursor: bool,
 ) -> (Vec<EwmRenderElement>, Vec<EwmRenderElement>) {
     tracy_span!("collect_render_elements");
     crate::render_helpers::init(renderer);
-    let mut pass = OutputRender::new(ewm, renderer, output, purpose);
+    let mut pass = OutputRender::new(ewm, renderer, output, include_cursor);
     pass.cursor(cursor_texture_cache);
     pass.dnd_icon();
     if pass.lock() {
@@ -1731,9 +1698,7 @@ fn collect_screencopy_elements_for_output(
         renderer,
         cursor_texture_cache,
         output,
-        RenderFor::Cast {
-            cursor: include_cursor,
-        },
+        include_cursor,
     );
 
     content.splice(0..0, cursor);
@@ -1996,59 +1961,4 @@ pub fn render_screencopy_immediate(
             warn!("Error rendering for screencopy: {:?}", err);
         }
     }
-}
-
-/// Capture an output's content (windows + popups + fullscreen) into a
-/// fresh `GlesTexture`, in `Abgr8888`.
-///
-/// Skips cursor, DnD icon, and layer surfaces so the snapshot can be
-/// composed over the live layer surfaces during a workspace transition
-/// without doubling up panels like DankMaterialShell.
-pub fn capture_output_to_texture(
-    ewm: &mut Ewm,
-    renderer: &mut GlesRenderer,
-    cursor_texture_cache: &CursorTextureCache,
-    output: &Output,
-) -> anyhow::Result<crate::render_helpers::texture::TextureBuffer<GlesTexture>> {
-    let output_transform = output.current_transform();
-    let output_geo = ewm
-        .space
-        .output_geometry(output)
-        .context("output not mapped in space")?;
-
-    // Render at the output's actual fractional scale. Wrapping the texture
-    // in our fractional-scale-aware TextureBuffer (with Scale<f64>) keeps
-    // buffer_scale and texture_size in lock-step, so the snapshot samples
-    // pixel-for-pixel correctly without oversampling.
-    let output_scale = Scale::from(output.current_scale().fractional_scale());
-    let texture_size: Size<i32, Physical> = output_geo
-        .size
-        .to_f64()
-        .to_physical(output_scale)
-        .to_i32_round();
-
-    let (content, _cursor) = collect_render_elements_for_output(
-        ewm,
-        renderer,
-        cursor_texture_cache,
-        output,
-        RenderFor::Snapshot,
-    );
-
-    let (texture, _sync) = render_to_texture(
-        renderer,
-        texture_size,
-        output_scale,
-        output_transform,
-        Fourcc::Abgr8888,
-        content.iter().rev(),
-    )?;
-
-    Ok(crate::render_helpers::texture::TextureBuffer::from_texture(
-        renderer,
-        texture,
-        output_scale,
-        output_transform,
-        Vec::new(),
-    ))
 }
