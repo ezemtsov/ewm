@@ -2,12 +2,15 @@ use smithay::backend::renderer::gles::GlesRenderer;
 
 pub mod background_effect;
 pub mod blur;
+pub mod floating_shadow;
 pub mod framebuffer_effect;
 pub mod renderer;
 pub mod resources;
 pub mod shader_element;
 pub mod shaders;
 pub mod shadow;
+pub mod shadow_style;
+pub mod texture;
 pub mod zoom;
 
 pub fn init(renderer: &mut GlesRenderer) {

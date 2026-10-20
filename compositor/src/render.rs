@@ -49,18 +49,18 @@ use smithay::wayland::shell::wlr_layer::Layer;
 use smithay::wayland::shm;
 use tracing::warn;
 
-use crate::closing_frame::Closing;
 use crate::cursor::{CursorTextureCache, RenderCursor, XCursor};
+use crate::layout::closing_frame::Closing;
+use crate::layout::resize_fade::{Fit, ResizeFade, contents_rect};
+use crate::layout::snapshot::Snapshot;
 use crate::layout::{FrameLocation, LayoutEntryLocation};
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
 use crate::render_helpers::background_effect;
 use crate::render_helpers::framebuffer_effect::FramebufferEffectElement;
+use crate::render_helpers::shadow_style::{BackgroundEffect, Blur, CornerRadius};
+use crate::render_helpers::texture::TextureRenderElement;
 use crate::render_helpers::zoom::ZoomRenderElement;
-use crate::resize_fade::{Fit, ResizeFade, contents_rect};
-use crate::shadow_style::{BackgroundEffect, Blur, CornerRadius};
-use crate::snapshot::Snapshot;
 use crate::surface::SurfaceState;
-use crate::texture::TextureRenderElement;
 use crate::{Ewm, LayoutEntry, State, tracy_span};
 
 /// Render a window's surface tree without its popups. Popups are emitted once
@@ -933,7 +933,7 @@ pub fn collect_render_elements_for_output(
             shadow.update_render_elements(
                 frame_rect.size,
                 focused_frame_id == frame.surface_id,
-                crate::shadow_style::CornerRadius::default(),
+                crate::render_helpers::shadow_style::CornerRadius::default(),
                 scale.x,
                 frame_alpha,
             );
@@ -1072,7 +1072,7 @@ pub fn collect_render_elements_for_output(
             state.overview_shadow.update_render_elements(
                 output_size.to_f64(),
                 true,
-                crate::shadow_style::CornerRadius::default(),
+                crate::render_helpers::shadow_style::CornerRadius::default(),
                 scale.x,
                 progress.clamp(0., 1.) as f32,
             );
@@ -1102,7 +1102,7 @@ fn render_frame_views(
     content: &mut Vec<ContentRenderElement>,
     renderer: &mut GlesRenderer,
     ewm: &Ewm,
-    frame: &crate::strip::Frame,
+    frame: &crate::layout::strip::Frame,
     bake: &Bake<'_>,
 ) {
     push_closing_views(content, &frame.closing_views, Point::from((0., 0.)));
@@ -1159,7 +1159,7 @@ fn bake_env<'a>(ewm: &'a Ewm, location: FrameLocation<'_>) -> Bake<'a> {
 }
 
 /// `frame`'s space about its own origin: its bounds and the output-sized slot around it.
-fn frame_own_space(ewm: &Ewm, frame: &crate::strip::Frame, bake: &Bake<'_>) -> FrameSpace {
+fn frame_own_space(ewm: &Ewm, frame: &crate::layout::strip::Frame, bake: &Bake<'_>) -> FrameSpace {
     let frame_box = Rectangle::<f64, Logical>::from_size(Size::from((frame.width, frame.height)))
         .to_physical_precise_round(bake.scale);
     FrameSpace {
@@ -1879,7 +1879,7 @@ pub fn capture_output_to_texture(
     renderer: &mut GlesRenderer,
     cursor_texture_cache: &CursorTextureCache,
     output: &Output,
-) -> anyhow::Result<crate::texture::TextureBuffer<GlesTexture>> {
+) -> anyhow::Result<crate::render_helpers::texture::TextureBuffer<GlesTexture>> {
     let output_transform = output.current_transform();
     let output_geo = ewm
         .space
@@ -1918,7 +1918,7 @@ pub fn capture_output_to_texture(
         content.iter().rev(),
     )?;
 
-    Ok(crate::texture::TextureBuffer::from_texture(
+    Ok(crate::render_helpers::texture::TextureBuffer::from_texture(
         renderer,
         texture,
         output_scale,

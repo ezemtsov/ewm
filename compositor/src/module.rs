@@ -56,7 +56,7 @@ use crate::cursor::CursorConfig;
 use crate::im::TextInputProvider;
 use crate::input::SwipeDirection;
 use crate::layout::Placement;
-use crate::strip::Frame;
+use crate::layout::strip::Frame;
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
 use crate::{FocusId, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Trigger};
@@ -532,7 +532,7 @@ pub enum ModuleCommand {
     },
     /// Blur settings for surfaces that request background blur.
     ConfigureBlur {
-        config: crate::shadow_style::Blur,
+        config: crate::render_helpers::shadow_style::Blur,
     },
     /// Flip the animation `Clock` shared by every `Animation`.
     ConfigureAnimations {
@@ -1046,7 +1046,7 @@ struct FrameSpec {
     name: String,
     surface_id: u64,
     #[serde(default)]
-    owner: crate::strip::Owner,
+    owner: crate::layout::strip::Owner,
     focus_id: Option<FocusId>,
     selected_entry_id: Option<LayoutEntryId>,
     width: f64,
@@ -1776,7 +1776,7 @@ fn configure_blur_module(
     saturation: f64,
 ) -> Result<()> {
     push_command(ModuleCommand::ConfigureBlur {
-        config: crate::shadow_style::Blur {
+        config: crate::render_helpers::shadow_style::Blur {
             off: !on.is_not_nil(),
             passes: passes.clamp(1, 31) as u8,
             offset: offset.clamp(0., 100.),

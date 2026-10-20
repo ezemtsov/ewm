@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use ewm_core::floating::SizeFracPoint;
-use ewm_core::strip::Frame;
+use ewm_core::layout::floating::SizeFracPoint;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
 use ewm_core::{Event, LayoutEntry};
 use smithay::output::Output;

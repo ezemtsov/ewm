@@ -11,8 +11,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::layout::Layout;
+use crate::layout::strip::Frame;
 use crate::protocols::EmptyData;
-use crate::strip::Frame;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},

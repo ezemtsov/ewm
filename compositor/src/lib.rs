@@ -28,15 +28,12 @@
 
 pub mod animation;
 pub mod backend;
-pub mod closing_frame;
 pub mod cursor;
 #[cfg(feature = "screencast")]
 pub mod dbus;
 pub mod dbus_login1;
 pub mod dbus_screensaver;
 pub mod event;
-pub mod floating;
-mod floating_shadow;
 pub mod frame_clock;
 pub mod gtk;
 pub mod handlers;
@@ -45,18 +42,12 @@ pub mod input;
 pub mod layout;
 mod module;
 pub mod output_mode;
-pub mod overview;
 pub mod protocols;
 pub mod render;
 mod render_helpers;
-pub mod resize_fade;
 #[cfg(feature = "screencast")]
 pub mod screencasting;
-mod shadow_style;
-pub mod snapshot;
-pub mod strip;
 pub mod surface;
-pub mod texture;
 pub mod tracy;
 pub mod utils;
 pub mod vblank_throttle;
@@ -117,9 +108,13 @@ use std::time::{Duration, Instant};
 
 pub use backend::{Backend, DrmBackendState, HeadlessBackend};
 pub use event::{Event, OutputInfo, OutputMode};
+use layout::{overview, strip};
+use render_helpers::{floating_shadow, shadow_style};
+
+pub use input::binding::{Action, InterceptDispatch, InterceptedKey, Trigger};
+pub use layout::entry::{FocusId, LayoutEntry, LayoutEntryId, LayoutEntrySurface, fullscreen_center_offset};
 pub use layout::{Layout, Monitor, Placement};
 use im::repeat::{HeldKeyOwner, InterceptRepeat, InterceptRepeatState};
-use serde::{Deserialize, Serialize};
 use smithay::backend::input::{InputTime, KeyState};
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
 use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
@@ -137,8 +132,7 @@ use smithay::desktop::{
     LayerSurface as DesktopLayerSurface, PopupGrab, PopupManager,
     PopupPointerGrab, Space, Window, WindowSurfaceType,
 };
-use smithay::input::keyboard::xkb::keysyms;
-use smithay::input::keyboard::{KeyboardHandle, ModifiersState};
+use smithay::input::keyboard::KeyboardHandle;
 use smithay::input::pointer::{
     ClickGrab, CursorImageStatus, CursorImageSurfaceData, PointerHandle,
 };
@@ -480,110 +474,6 @@ impl Default for SurfaceFrameThrottlingState {
     }
 }
 
-/// An entry in a per-output declarative layout.
-/// Coordinates are relative to the output's working area (frame-relative).
-pub type LayoutEntryId = std::num::NonZeroU64;
-pub type FocusId = std::num::NonZeroU64;
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct LayoutEntry {
-    /// Entry identity assigned by lisp; names one Emacs window in a frame.
-    pub id: LayoutEntryId,
-    /// Buffer name shown in this Emacs window.
-    #[serde(default)]
-    pub name: String,
-    pub x: i32,
-    pub y: i32,
-    pub w: u32,
-    pub h: u32,
-    /// Surface-specific attachment when this Emacs window displays a Wayland surface.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub surface: Option<LayoutEntrySurface>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct LayoutEntrySurface {
-    /// Which Wayland surface this entry displays (analogous to an Emacs buffer).
-    pub surface_id: u64,
-    /// Largest view per surface, computed by compositor from entry dimensions.
-    /// Drives send_configure() size + scale and native-size rendering.
-    pub primary: bool,
-    /// The view its frame shows fullscreen, marked by `Layout::reconcile_fullscreen`.
-    #[serde(default)]
-    pub fullscreen: bool,
-}
-
-impl LayoutEntry {
-    pub fn emacs_window(id: LayoutEntryId, name: String, x: i32, y: i32, w: u32, h: u32) -> Self {
-        Self {
-            id,
-            name,
-            x,
-            y,
-            w,
-            h,
-            surface: None,
-        }
-    }
-
-    pub fn surface(
-        id: LayoutEntryId,
-        name: String,
-        surface_id: u64,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
-    ) -> Self {
-        Self {
-            id,
-            name,
-            x,
-            y,
-            w,
-            h,
-            surface: Some(LayoutEntrySurface {
-                surface_id,
-                primary: false,
-                fullscreen: false,
-            }),
-        }
-    }
-
-    pub fn surface_id(&self) -> Option<u64> {
-        self.surface.as_ref().map(|surface| surface.surface_id)
-    }
-
-    pub fn rect(&self) -> Rectangle<i32, Logical> {
-        Rectangle::new(
-            (self.x, self.y).into(),
-            (self.w as i32, self.h as i32).into(),
-        )
-    }
-
-    pub fn primary(&self) -> bool {
-        self.surface.as_ref().is_some_and(|surface| surface.primary)
-    }
-
-    pub fn set_primary(&mut self, primary: bool) {
-        if let Some(surface) = &mut self.surface {
-            surface.primary = primary;
-        }
-    }
-
-    pub fn fullscreen(&self) -> bool {
-        self.surface
-            .as_ref()
-            .is_some_and(|surface| surface.fullscreen)
-    }
-
-    pub fn set_fullscreen(&mut self, fullscreen: bool) {
-        if let Some(surface) = &mut self.surface {
-            surface.fullscreen = fullscreen;
-        }
-    }
-}
-
 struct LayoutEntryHit<'a> {
     entry: &'a LayoutEntry,
     rect: Rectangle<i32, Logical>,
@@ -591,26 +481,6 @@ struct LayoutEntryHit<'a> {
 }
 
 pub(crate) type SurfaceHit = (WlSurface, Point<f64, Logical>);
-
-/// Centering offset for a fullscreen surface within an output.
-/// Returns (0, 0) when the surface is at least as large as the output.
-pub fn fullscreen_center_offset(
-    window_size: Size<i32, Logical>,
-    output_size: Size<i32, Logical>,
-) -> (i32, i32) {
-    (
-        if window_size.w < output_size.w {
-            (output_size.w - window_size.w) / 2
-        } else {
-            0
-        },
-        if window_size.h < output_size.h {
-            (output_size.h - window_size.h) / 2
-        } else {
-            0
-        },
-    )
-}
 
 #[cfg(feature = "screencast")]
 fn window_properties(surface: &surface::SurfaceState) -> dbus::WindowProperties {
@@ -663,140 +533,6 @@ where
         return layer_focus;
     }
     toplevel_focus()
-}
-
-/// What a binding listens for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub enum Trigger {
-    Keysym(u32),
-    /// A touchpad swipe of `fingers`, told apart by the direction it sets off in.
-    Swipe {
-        fingers: u32,
-        direction: input::SwipeDirection,
-    },
-}
-
-/// A binding Emacs declared: a key or a swipe under given modifiers.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct InterceptedKey {
-    pub trigger: Trigger,
-    pub key: String,
-    #[serde(default)]
-    pub ctrl: bool,
-    #[serde(default)]
-    pub alt: bool,
-    #[serde(default)]
-    pub shift: bool,
-    #[serde(rename = "super", default)]
-    pub logo: bool,
-    /// If true, this key is redirected to Emacs even during fullscreen
-    #[serde(default)]
-    pub allow_fullscreen: bool,
-    #[serde(default)]
-    pub dispatch: InterceptDispatch,
-    #[serde(default)]
-    pub repeat: bool,
-    /// Applies only while this surface has focus, or everywhere when `None`.
-    pub surface: Option<u64>,
-}
-
-impl InterceptedKey {
-    /// Whether this binding applies while `focused_surface_id` has focus.
-    pub fn in_scope(&self, focused_surface_id: u64) -> bool {
-        self.surface
-            .is_none_or(|surface| surface == focused_surface_id)
-    }
-
-    /// Check if this key matches the given keysym and modifiers.
-    ///
-    /// `raw_keysym` is the layout-independent keysym (physical key, no
-    /// modifiers).  `modified_keysym` is the keysym after XKB applies
-    /// modifiers (e.g. Shift+`;` -> `colon`).
-    ///
-    /// We try `raw_keysym` first for layout-independent matching, then
-    /// fall back to `modified_keysym` for shifted punctuation (`:`, `&`,
-    /// etc.) where Emacs encodes the character directly rather than
-    /// decomposing it into base-key + Shift.
-    pub fn matches(&self, raw_keysym: u32, modified_keysym: u32, mods: &ModifiersState) -> bool {
-        let Trigger::Keysym(keysym) = self.trigger else {
-            return false;
-        };
-        let raw_match = keysym == raw_keysym
-            || ((keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym)
-                && keysym == raw_keysym - keysyms::KEY_A + keysyms::KEY_a);
-
-        if raw_match {
-            return self.mods_match(
-                mods,
-                (keysyms::KEY_A..=keysyms::KEY_Z).contains(&raw_keysym),
-            );
-        }
-
-        raw_keysym != modified_keysym && keysym == modified_keysym && self.mods_match(mods, true)
-    }
-
-    /// Whether `mods` are this binding's, `shift` aside when `ignore_shift`.
-    fn mods_match(&self, mods: &ModifiersState, ignore_shift: bool) -> bool {
-        self.ctrl == mods.ctrl
-            && self.alt == mods.alt
-            && (ignore_shift || self.shift == mods.shift)
-            && self.logo == mods.logo
-    }
-
-    /// Whether a swipe of `fingers` setting off in `direction` under `mods` is this binding's.
-    pub fn matches_swipe(
-        &self,
-        fingers: u32,
-        direction: input::SwipeDirection,
-        mods: &ModifiersState,
-    ) -> bool {
-        self.trigger == Trigger::Swipe { fingers, direction } && self.mods_match(mods, false)
-    }
-}
-
-/// How an intercepted key is delivered to Emacs.
-///
-/// Keyboard delivery temporarily gives Emacs Wayland keyboard focus and lets
-/// Emacs's command loop read the following key sequence. Command delivery
-/// executes the resolved Emacs binding through the event pipe, so Wayland
-/// keyboard focus stays on the client surface.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InterceptDispatch {
-    #[default]
-    Keyboard,
-    Command,
-    /// Run in the compositor, Emacs told afterwards.
-    Action(Action),
-}
-
-/// What a key or a module call changes in the compositor alone, Emacs told by events.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Action {
-    /// Show the strip frame `delta` slots away, counting from the shown frame under a float. The
-    /// keyboard follows unless a float keeps it on screen.
-    FocusFrame { delta: i32 },
-    /// Show the `n`th strip frame, counting from 1, the keyboard following likewise.
-    FocusNthFrame { n: usize },
-    /// Focus frame `id`, as a workspace client asks.
-    ActivateFrame { id: u64 },
-    /// Focus the frame holding the keyboard on the output in direction `(dx, dy)`.
-    FocusOutput { dx: i32, dy: i32 },
-    /// Move the keyboard between the strip and the floats of the current output.
-    FloatFocusToggle,
-    /// Move the focused strip frame `delta` slots.
-    MoveFrame { delta: i32 },
-    /// Move the focused frame to the next output in order, wrapping around.
-    MoveFrameToNextOutput,
-    /// Fullscreen the focused view's surface, or bring it back.
-    ToggleFullscreen,
-    /// Open, close or toggle the overview.
-    Overview(module::OverviewAction),
-    /// Slide every frame off its output, or back.
-    HideToggle,
-    /// Run `command` detached from the compositor.
-    Spawn { command: Vec<String> },
 }
 
 /// DnD icon surface attached to the pointer during a drag operation.

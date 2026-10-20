@@ -31,8 +31,8 @@ pub struct BlurOptions {
     pub offset: f64,
 }
 
-impl From<crate::shadow_style::Blur> for BlurOptions {
-    fn from(config: crate::shadow_style::Blur) -> Self {
+impl From<crate::render_helpers::shadow_style::Blur> for BlurOptions {
+    fn from(config: crate::render_helpers::shadow_style::Blur) -> Self {
         Self {
             passes: config.passes,
             offset: config.offset,

@@ -7,7 +7,7 @@ use smithay::utils::{Logical, Point, Scale, Size, Transform};
 use tracing::warn;
 
 use crate::render::render_to_encompassing_texture;
-use crate::texture::{TextureBuffer, TextureRenderElement};
+use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 
 #[derive(Debug, Clone)]
 pub struct Snapshot {

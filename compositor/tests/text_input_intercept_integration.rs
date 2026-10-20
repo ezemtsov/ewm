@@ -3,7 +3,7 @@
 //! that keys off smithay's synchronous active-text-input state).
 
 use ewm_core::input::KeyboardAction;
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::Size;

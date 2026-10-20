@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use ewm_core::event::Event;
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{
     ClientEvent, Fixture, TestClient, Toplevel, clear_pending_frames, mark_active_frame_close, nz,
     prepare_frame, strip_with_frame_ids,
@@ -526,7 +526,7 @@ fn layout_surface_ids(fix: &Fixture) -> HashSet<u64> {
         .collect()
 }
 
-fn all_frames(fix: &Fixture) -> impl Iterator<Item = &ewm_core::strip::Frame> {
+fn all_frames(fix: &Fixture) -> impl Iterator<Item = &ewm_core::layout::strip::Frame> {
     fix.ewm_ref().layout.all_frames()
 }
 

@@ -8,7 +8,7 @@ use std::sync::{Mutex, MutexGuard};
 use Wire::{Key, Mods};
 use ewm_core::event::Event;
 use ewm_core::input::KeyboardAction::{self, CommandIntercepted, Forward};
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::Size;

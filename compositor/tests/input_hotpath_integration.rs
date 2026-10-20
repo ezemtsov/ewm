@@ -1,7 +1,7 @@
 //! Production-path tests for keyboard delivery through EWM-managed surfaces.
 
 use ewm_core::input::KeyboardAction;
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, Toplevel, nz};
 use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Trigger};
 use smithay::input::keyboard::keysyms;

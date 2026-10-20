@@ -1,6 +1,6 @@
 //! A whole-field replace must reach the client over zwp_text_input_v3.
 
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::Size;

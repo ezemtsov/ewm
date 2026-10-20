@@ -4,7 +4,7 @@
 //! such as fcitx5 binds and is activated, and Emacs frames get `enter` too.
 
 use ewm_core::im::TextInputProvider;
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::Size;

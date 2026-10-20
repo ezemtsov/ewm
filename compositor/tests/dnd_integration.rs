@@ -2,7 +2,7 @@
 //! target. While Emacs tracks a drag source, a click grab on a frame's own surface hands the
 //! cross-program drag off to the DnD grab and leaves app-owned click grabs alone.
 
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
 use ewm_core::{Event, LayoutEntry, LayoutEntryId};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;

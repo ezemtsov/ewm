@@ -6,11 +6,12 @@ use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, SpringParams};
+use crate::layout::snapshot::Snapshot;
+use crate::layout::strip;
 use crate::render::render_view_snapshot;
-use crate::snapshot::Snapshot;
-use crate::texture::TextureRenderElement;
+use crate::render_helpers::texture::TextureRenderElement;
 use crate::utils::fill_scale;
-use crate::{Ewm, LayoutEntry, LayoutEntryId, State, strip};
+use crate::{Ewm, LayoutEntry, LayoutEntryId, State};
 
 /// The crossfade's curve. Brisk, as Emacs's borders already sit where the view is going.
 fn fade_spring() -> SpringParams {

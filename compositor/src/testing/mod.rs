@@ -15,7 +15,8 @@ pub use client::{
 pub use fixture::Fixture;
 use smithay::utils::{Rectangle, Size};
 
-use crate::{Layout, LayoutEntry, LayoutEntryId, animation, strip};
+use crate::layout::strip;
+use crate::{Layout, LayoutEntry, LayoutEntryId, animation};
 
 /// Two wl_fixed steps of 1/256 px.
 pub const WL_FIXED_TOLERANCE: f64 = 1.0 / 128.0;

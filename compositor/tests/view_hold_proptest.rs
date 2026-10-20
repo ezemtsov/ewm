@@ -2,8 +2,8 @@
 //! showed, whatever Emacs does to their windows meanwhile.
 
 use ewm_core::LayoutEntry;
-use ewm_core::resize_fade::{RESIZE_FADE_THRESHOLD, size_change};
-use ewm_core::strip::Frame;
+use ewm_core::layout::resize_fade::{RESIZE_FADE_THRESHOLD, size_change};
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
 use proptest::prelude::*;
 use smithay::utils::{Logical, Rectangle, Size};

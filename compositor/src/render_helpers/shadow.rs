@@ -12,7 +12,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, T
 use super::renderer::EwmRenderer;
 use super::shader_element::ShaderRenderElement;
 use super::shaders::{ProgramType, Shaders, mat3_uniform};
-use crate::shadow_style::{Color, CornerRadius};
+use crate::render_helpers::shadow_style::{Color, CornerRadius};
 
 /// Renders a rounded rectangle shadow.
 #[derive(Debug, Clone)]

@@ -10,9 +10,9 @@ use std::time::Duration;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
-use crate::closing_frame::Closing;
-use crate::floating::SizeFracPoint;
-use crate::snapshot::Snapshot;
+use crate::layout::closing_frame::Closing;
+use crate::layout::floating::SizeFracPoint;
+use crate::layout::snapshot::Snapshot;
 use crate::{FocusId, LayoutEntry, LayoutEntryId, slide_spring};
 
 /// Touchpad swipe distance mapping to one working-area-width of strip movement.

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use proptest::prelude::*;
+use smithay::utils::Size;
 
 use super::*;
 use crate::Action;

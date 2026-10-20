@@ -14,7 +14,7 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::animation::Animation;
-use crate::resize_fade::{Fit, PendingResize, ResizeFade, ViewRect};
+use crate::layout::resize_fade::{Fit, PendingResize, ResizeFade, ViewRect};
 use crate::{Ewm, LayoutEntry, LayoutEntryId, handlers};
 
 const OPEN_ANIM_DURATION: Duration = Duration::from_millis(150);

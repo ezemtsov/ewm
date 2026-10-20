@@ -1,7 +1,7 @@
 //! Overview through the headless fixture: zoom state, hit-testing and
 //! click-to-activate.
 
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, nz};
 use ewm_core::{Event, LayoutEntry};
 use smithay::utils::{Logical, Point, Size};

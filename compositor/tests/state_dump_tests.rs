@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use ewm_core::LayoutEntry;
 use ewm_core::cursor::CursorConfig;
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, nz};
 use serde_json::{Value, json};
 use smithay::utils::Size;

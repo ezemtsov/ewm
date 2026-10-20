@@ -3,7 +3,7 @@
 use std::sync::Mutex;
 
 use ewm_core::input::KeyboardAction;
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
 use ewm_core::{Event, LayoutEntry};
 use proptest::prelude::*;

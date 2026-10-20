@@ -6,8 +6,8 @@ use smithay::input::pointer::CursorIcon;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
-use crate::closing_frame::Closing;
-use crate::strip::Frame;
+use crate::layout::closing_frame::Closing;
+use crate::layout::strip::Frame;
 use crate::{LayoutEntry, slide_spring};
 
 /// By how many logical pixels command-driven floating frame moves nudge frames.
@@ -104,7 +104,7 @@ pub struct Data {
     /// Offset the frame slides in from, and its 1 to 0 progress along it.
     move_anim: Option<(Point<f64, Logical>, Animation)>,
 
-    shadow: crate::floating_shadow::Shadow,
+    shadow: crate::render_helpers::floating_shadow::Shadow,
 }
 
 impl Data {
@@ -119,8 +119,8 @@ impl Data {
             size: Self::frame_size(frame, working_area),
             working_area,
             move_anim: None,
-            shadow: crate::floating_shadow::Shadow::new(
-                crate::shadow_style::Shadow::floating_default(),
+            shadow: crate::render_helpers::floating_shadow::Shadow::new(
+                crate::render_helpers::shadow_style::Shadow::floating_default(),
             ),
         };
         rv.set_logical_pos(logical_pos);
@@ -225,7 +225,7 @@ impl Data {
         Rectangle::new(self.logical_pos, self.size)
     }
 
-    pub fn shadow_mut(&mut self) -> &mut crate::floating_shadow::Shadow {
+    pub fn shadow_mut(&mut self) -> &mut crate::render_helpers::floating_shadow::Shadow {
         &mut self.shadow
     }
 

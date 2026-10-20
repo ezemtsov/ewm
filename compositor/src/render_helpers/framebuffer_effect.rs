@@ -18,7 +18,7 @@ use tracing::{trace, warn};
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::{Blur, BlurOptions};
 use crate::render_helpers::shaders::{Shaders, mat3_uniform};
-use crate::shadow_style::CornerRadius;
+use crate::render_helpers::shadow_style::CornerRadius;
 use crate::utils::region::TransformedRegion;
 
 #[derive(Debug)]

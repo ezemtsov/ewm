@@ -3,9 +3,9 @@
 //! These tests verify compositor behavior using the headless backend and test fixture.
 
 use ewm_core::backend::{closest_representable_scale, int_to_transform, transform_to_int};
-use ewm_core::floating::{ResizeEdge, SizeFracPoint};
 use ewm_core::input::Swipe;
-use ewm_core::strip::Frame;
+use ewm_core::layout::floating::{ResizeEdge, SizeFracPoint};
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, nz};
 use ewm_core::utils::output_size;
 use ewm_core::{Event, LayoutEntry, LayoutEntryId, OutputConfig};

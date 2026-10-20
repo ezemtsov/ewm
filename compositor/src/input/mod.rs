@@ -31,6 +31,7 @@
 //!    modifiers under the same first-match and surface-scope rules, and run when the fingers lift.
 
 mod backend_ext;
+pub(crate) mod binding;
 mod config;
 pub(crate) mod floating_move_grab;
 pub(crate) mod floating_resize_grab;

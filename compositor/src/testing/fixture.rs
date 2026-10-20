@@ -15,7 +15,7 @@ use tracing::info;
 
 use crate::backend::{Backend, HeadlessBackend};
 use crate::cursor::CursorConfig;
-use crate::strip::Frame;
+use crate::layout::strip::Frame;
 use crate::testing::TestClient;
 use crate::testing::input::{TestAbsoluteEvent, TestDevice, TestGestureEvent, TestInputBackend};
 use crate::{ClientState, Ewm, OutputInfo, State, register_display_source};
@@ -539,16 +539,16 @@ impl Fixture {
             .unwrap_or_else(|| panic!("output {name} is not mapped"))
     }
 
-    pub fn strip(&self, name: &str) -> &crate::strip::Strip {
+    pub fn strip(&self, name: &str) -> &crate::layout::strip::Strip {
         self.ewm_ref().layout.strip(&self.output(name)).unwrap()
     }
 
-    pub fn strip_mut(&mut self, name: &str) -> &mut crate::strip::Strip {
+    pub fn strip_mut(&mut self, name: &str) -> &mut crate::layout::strip::Strip {
         let output = self.output(name);
         self.ewm().layout.strip_mut(&output).unwrap()
     }
 
-    pub fn install_strip(&mut self, name: &str, strip: crate::strip::Strip) {
+    pub fn install_strip(&mut self, name: &str, strip: crate::layout::strip::Strip) {
         let output = self.output(name);
         self.ewm().layout.install_strip(&output, strip);
     }
@@ -706,7 +706,9 @@ impl Fixture {
                 let placement = if floating {
                     let pos = frame.floating_pos.and_then(|pos| {
                         let area = ewm.layout.floating(&output)?.working_area();
-                        Some(crate::floating::Data::scale_by_working_area(area, pos))
+                        Some(crate::layout::floating::Data::scale_by_working_area(
+                            area, pos,
+                        ))
                     });
                     crate::layout::Placement::Floating { pos }
                 } else {

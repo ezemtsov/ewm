@@ -4,7 +4,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::render_helpers::renderer::EwmRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
-use crate::shadow_style::{CornerRadius, Shadow as ShadowConfig};
+use crate::render_helpers::shadow_style::{CornerRadius, Shadow as ShadowConfig};
 
 #[derive(Debug)]
 pub struct Shadow {

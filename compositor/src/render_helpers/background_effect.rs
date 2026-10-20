@@ -9,7 +9,7 @@ use smithay::wayland::compositor::{SurfaceData, with_states};
 use crate::handlers::background_effect::get_cached_blur_region;
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
-use crate::shadow_style::{self, Blur, CornerRadius};
+use crate::render_helpers::shadow_style::{self, Blur, CornerRadius};
 use crate::utils::region::TransformedRegion;
 use crate::utils::surface_geo;
 

@@ -71,8 +71,8 @@
 
 use std::collections::HashSet;
 
+use ewm_core::layout::strip::Frame;
 use ewm_core::render::collect_popup_placements;
-use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, Popup, TestClient, Toplevel, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;

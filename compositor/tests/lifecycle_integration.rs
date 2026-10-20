@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use ewm_core::event::Event;
-use ewm_core::strip::Frame;
+use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use smithay::utils::{Logical, Rectangle, Size};

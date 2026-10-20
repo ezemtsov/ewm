@@ -5,8 +5,8 @@
 //! dismissed by a click outside (on empty space / another client).
 
 use ewm_core::LayoutEntry;
+use ewm_core::layout::strip::Frame;
 use ewm_core::render::collect_popup_placements;
-use ewm_core::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, nz};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use wayland_client::Proxy as _;

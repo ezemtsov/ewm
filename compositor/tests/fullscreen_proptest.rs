@@ -5,8 +5,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ewm_core::floating::SizeFracPoint;
-use ewm_core::strip::{Frame, Strip};
+use ewm_core::layout::floating::SizeFracPoint;
+use ewm_core::layout::strip::{Frame, Strip};
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, Toplevel, nz};
 use ewm_core::{LayoutEntry, LayoutEntryId};
 use proptest::prelude::*;

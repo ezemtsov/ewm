@@ -12,9 +12,9 @@ use std::time::Duration;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::animation::{Animation, Clock};
-use crate::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
+use crate::layout::strip::SwipeTracker;
+use crate::render_helpers::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
 use crate::slide_spring;
-use crate::strip::SwipeTracker;
 
 /// Touchpad travel in unaccelerated units for a full open or close.
 const GESTURE_MOVEMENT: f64 = 300.;

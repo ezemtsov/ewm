@@ -8,8 +8,8 @@ use smithay::utils::{Logical, Point};
 
 use crate::State;
 use crate::animation::{Animation, Clock};
-use crate::snapshot::Snapshot;
-use crate::texture::TextureRenderElement;
+use crate::layout::snapshot::Snapshot;
+use crate::render_helpers::texture::TextureRenderElement;
 
 pub const CLOSE_ANIM_DURATION: Duration = Duration::from_millis(150);
 

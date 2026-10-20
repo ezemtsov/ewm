@@ -1,8 +1,8 @@
 //! Popups on an Emacs frame's own surface unconstrain against the working
 //! area at the frame's screen position, not a screen-sized box at its origin.
 
+use ewm_core::layout::strip::Frame;
 use ewm_core::render::collect_popup_placements;
-use ewm_core::strip::Frame;
 use ewm_core::testing::{Fixture, Popup, TestClient, Toplevel};
 use smithay::reexports::wayland_server::Resource as _;
 use smithay::utils::{Point, Rectangle, Size};
