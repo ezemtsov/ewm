@@ -1098,7 +1098,7 @@ impl Cast {
             drop(inner);
 
             // Chain cursor elements (front) onto content elements for rendering
-            match crate::render::render_to_dmabuf(
+            match crate::render_helpers::render_to_dmabuf(
                 renderer,
                 dmabuf,
                 size,

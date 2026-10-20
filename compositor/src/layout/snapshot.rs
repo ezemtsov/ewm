@@ -6,7 +6,7 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::utils::{Logical, Point, Scale, Size, Transform};
 use tracing::warn;
 
-use crate::render::render_to_encompassing_texture;
+use crate::render_helpers::render_to_encompassing_texture;
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 
 #[derive(Debug, Clone)]
