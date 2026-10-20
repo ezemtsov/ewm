@@ -1163,3 +1163,48 @@ impl Ewm {
             .is_some_and(|s| s.animations_ongoing())
     }
 }
+
+impl Ewm {
+    /// Start a strip swipe on the output under the pointer, none while the frames are hidden.
+    pub fn strip_gesture_begin(&mut self) -> Option<Output> {
+        // A hidden strip would scroll unseen.
+        if self.frames_hidden() {
+            return None;
+        }
+        let output = self.output_under_cursor().cloned()?;
+        if let Some(strip) = self.layout.strip_mut(&output) {
+            strip.gesture_begin();
+        }
+        Some(output)
+    }
+
+    /// End a strip swipe on `output`: snap to the nearest frame, the keyboard following unless a
+    /// float keeps it on screen.
+    pub fn strip_gesture_end(&mut self, output: &Output, working_w: f64) {
+        let before = self.focused_frame_id();
+        let shown = self.layout.strip_gesture_end(output, working_w);
+        self.settle_shown(shown);
+        // The swiped output takes the keyboard on the frame holding it there, unless it has it.
+        let target = self
+            .layout
+            .focused_frame_on(output)
+            .filter(|&id| id != before);
+        if let Some(id) = target {
+            if self.pointer_is_on_output(output) {
+                // The frame settles flush with the working area.
+                let output_loc = self
+                    .space
+                    .output_geometry(output)
+                    .map_or(Point::default(), |geo| geo.loc);
+                let (px, py) = self.pointer_location();
+                let in_content = self
+                    .overview_geometry(output)
+                    .to_content(Point::from((px, py)) - output_loc.to_f64());
+                let pos_in_frame = in_content - self.get_working_area(output).loc.to_f64();
+                self.set_focus_frame_from_pointer(id, "gesture", pos_in_frame);
+            } else {
+                self.set_focus_frame(id, "gesture", true);
+            }
+        }
+    }
+}
