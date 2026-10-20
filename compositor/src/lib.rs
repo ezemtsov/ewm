@@ -115,6 +115,7 @@ pub use event::{Event, OutputInfo, OutputMode};
 use layout::{overview, strip};
 use render_helpers::{floating_shadow, shadow_style};
 
+pub use focus::{FocusSource, Notify};
 pub use idle::{CursorHideState, IdleAction, IdleTimeoutState};
 pub use input::binding::{Action, InterceptDispatch, InterceptedKey, Trigger};
 pub use layout::entry::{FocusId, LayoutEntry, LayoutEntryId, LayoutEntrySurface, fullscreen_center_offset};
@@ -1173,7 +1174,7 @@ impl Ewm {
         let removed_any = !dead_ids.is_empty();
         for id in dead_ids {
             if let Some(refocus_id) = self.handle_toplevel_destroyed_by_id(id) {
-                self.set_focus_frame(refocus_id, "cleanup_dead_windows", true);
+                self.set_focus_frame(refocus_id, FocusSource::CleanupDeadWindows, Notify::Emacs);
             }
         }
 
@@ -3616,9 +3617,11 @@ impl State {
             }
             ModuleCommand::FocusTarget { focus_id } => {
                 if self.ewm.layout.entry_location(focus_id).is_some() {
-                    self.ewm.set_focus_entry(focus_id, "lisp_request", false);
+                    self.ewm
+                        .set_focus_entry(focus_id, FocusSource::LispRequest, Notify::None);
                 } else if let Some(frame_id) = self.ewm.layout.frame_with_focus_id(focus_id) {
-                    self.ewm.set_focus_frame(frame_id, "lisp_request", false);
+                    self.ewm
+                        .set_focus_frame(frame_id, FocusSource::LispRequest, Notify::None);
                 }
             }
             ModuleCommand::WarpPointer { x, y } => {

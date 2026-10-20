@@ -7,7 +7,7 @@ use std::time::Duration;
 use ewm_core::layout::floating::SizeFracPoint;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, Toplevel, nz};
-use ewm_core::{Event, LayoutEntry};
+use ewm_core::{Event, FocusSource, LayoutEntry, Notify};
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Size};
 
@@ -185,7 +185,8 @@ fn float_fullscreens_in_place_over_the_active_frame() {
     let output = fix.output(OUTPUT);
     let strip_ids = |fix: &Fixture| fix.strip(OUTPUT).frame_ids().collect::<Vec<_>>();
     let before = float_rect(&fix, &output, 500);
-    fix.ewm().set_focus_frame(400, "test", false);
+    fix.ewm()
+        .set_focus_frame(400, FocusSource::Test, Notify::None);
     fix.enable_event_capture();
 
     top.xdg_toplevel.set_fullscreen(None);
@@ -265,7 +266,8 @@ fn fullscreen_float_stays_with_its_frame() {
     let (mut client, top, sid) = client(&mut fix);
     fix.tile(OUTPUT, vec![tile(400, vec![]), tile(401, vec![])]);
     fix.float(OUTPUT, vec![frame(500, vec![entry(7, sid)], Some(AT))]);
-    fix.ewm().set_focus_frame(500, "test", false);
+    fix.ewm()
+        .set_focus_frame(500, FocusSource::Test, Notify::None);
     top.xdg_toplevel.set_fullscreen(None);
     fix.answer_configure(&mut client, &top);
     let output = fix.output(OUTPUT);
@@ -279,7 +281,8 @@ fn fullscreen_float_stays_with_its_frame() {
     assert_eq!(fix.ewm_ref().layout_entry_id_under(center), Some(nz(7)));
     fix.enable_event_capture();
 
-    fix.ewm().set_focus_frame(401, "test", false);
+    fix.ewm()
+        .set_focus_frame(401, FocusSource::Test, Notify::None);
     assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(401));
     assert!(!shown(&fix), "travelled with the strip");
     assert_eq!(presenting(&fix, &output), None);
@@ -292,7 +295,8 @@ fn fullscreen_float_stays_with_its_frame() {
         "no frame_hidden for the float"
     );
 
-    fix.ewm().set_focus_frame(400, "test", true);
+    fix.ewm()
+        .set_focus_frame(400, FocusSource::Test, Notify::Emacs);
     assert!(shown(&fix));
     assert_eq!(presenting(&fix, &output), Some(500));
     {
@@ -309,14 +313,17 @@ fn fullscreen_float_stays_with_its_frame() {
             .any(|event| matches!(event, Event::Focus { focus_id, .. } if *focus_id == nz(7))),
         "Emacs was not told the view took the focus"
     );
-    fix.ewm().set_focus_frame(401, "test", false);
-    fix.ewm().set_focus_frame(500, "test", false);
+    fix.ewm()
+        .set_focus_frame(401, FocusSource::Test, Notify::None);
+    fix.ewm()
+        .set_focus_frame(500, FocusSource::Test, Notify::None);
     assert_eq!(
         fix.strip(OUTPUT).active_frame_id(),
         Some(400),
         "focusing the float left its frame behind"
     );
-    fix.ewm().set_focus_frame(401, "test", false);
+    fix.ewm()
+        .set_focus_frame(401, FocusSource::Test, Notify::None);
     fix.drain_events();
 
     // Its view dying there leaves it with its frame, off screen.
@@ -333,7 +340,8 @@ fn fullscreen_float_stays_with_its_frame() {
         "frame_shown for a float that stays off screen"
     );
 
-    fix.ewm().set_focus_frame(400, "test", false);
+    fix.ewm()
+        .set_focus_frame(400, FocusSource::Test, Notify::None);
     assert!(shown(&fix));
     assert_eq!(presenting(&fix, &output), None);
     assert!(
@@ -352,7 +360,8 @@ fn pinned_float_slides_with_its_frame() {
     let (mut client, top, sid) = client(&mut fix);
     fix.tile(OUTPUT, vec![tile(400, vec![]), tile(401, vec![])]);
     fix.float(OUTPUT, vec![frame(500, vec![entry(7, sid)], Some(AT))]);
-    fix.ewm().set_focus_frame(400, "test", false);
+    fix.ewm()
+        .set_focus_frame(400, FocusSource::Test, Notify::None);
     top.xdg_toplevel.set_fullscreen(None);
     fix.answer_configure(&mut client, &top);
     let center: Point<f64, Logical> = Point::from((960., 540.));
@@ -365,7 +374,8 @@ fn pinned_float_slides_with_its_frame() {
     // With the clock held, the slide has not begun.
     let now = fix.ewm_ref().animations_clock.now();
     fix.ewm().animations_clock.set(now);
-    fix.ewm().set_focus_frame(401, "test", false);
+    fix.ewm()
+        .set_focus_frame(401, FocusSource::Test, Notify::None);
     assert_eq!(fix.strip(OUTPUT).active_frame_id(), Some(401));
     assert_eq!(fix.strip(OUTPUT).screen_x_of_frame(0), 0.);
     assert_eq!(view_x(&fix), 0, "popped off with the switch");
@@ -380,7 +390,8 @@ fn pinned_float_slides_with_its_frame() {
     assert!(!hit(&fix));
 
     // And back in with it.
-    fix.ewm().set_focus_frame(400, "test", false);
+    fix.ewm()
+        .set_focus_frame(400, FocusSource::Test, Notify::None);
     assert_eq!(
         view_x(&fix),
         gone.round() as i32,
@@ -405,7 +416,8 @@ fn dragging_a_fullscreen_float_unfullscreens_and_moves_it() {
     fix.tile(OUTPUT, vec![tile(400, vec![])]);
     fix.float(OUTPUT, vec![frame(500, vec![entry(7, sid)], Some(AT))]);
     fix.roundtrip(&mut client);
-    fix.ewm().set_focus_frame(500, "test", false);
+    fix.ewm()
+        .set_focus_frame(500, FocusSource::Test, Notify::None);
     top.xdg_toplevel.set_fullscreen(None);
     settle(&mut fix, &mut client);
     fix.map_toplevel(&mut client, &top, Size::from((1920, 1080)));
@@ -465,7 +477,8 @@ fn floats_hide_under_a_fullscreen_view_unless_focused() {
     let output = fix.output(OUTPUT);
     // Inside the float and inside the 400x300 window a fullscreen view centers.
     let pos = float_rect(&fix, &output, 600).0 + Point::from((40.0, 20.0));
-    fix.ewm().set_focus_entry(nz(7), "test", false);
+    fix.ewm()
+        .set_focus_entry(nz(7), FocusSource::Test, Notify::None);
     assert_eq!(fix.ewm_ref().layout_entry_id_under(pos), Some(nz(8)));
 
     fix.set_fullscreen(nz(7), true);
@@ -473,7 +486,8 @@ fn floats_hide_under_a_fullscreen_view_unless_focused() {
     settle(&mut fix, &mut float_client);
     assert_eq!(fix.ewm_ref().layout_entry_id_under(pos), Some(nz(7)));
 
-    fix.ewm().set_focus_entry(nz(8), "test", false);
+    fix.ewm()
+        .set_focus_entry(nz(8), FocusSource::Test, Notify::None);
     assert_eq!(fix.ewm_ref().layout_entry_id_under(pos), Some(nz(8)));
 }
 
@@ -533,11 +547,13 @@ fn one_fullscreen_per_frame() {
     );
     let output = fix.output(OUTPUT);
     // The other float goes fullscreen over frame 401 first.
-    fix.ewm().set_focus_frame(401, "test", false);
+    fix.ewm()
+        .set_focus_frame(401, FocusSource::Test, Notify::None);
     other_top.xdg_toplevel.set_fullscreen(None);
     fix.answer_configure(&mut other_client, &other_top);
     assert_eq!(presenting(&fix, &output), Some(600));
-    fix.ewm().set_focus_frame(400, "test", false);
+    fix.ewm()
+        .set_focus_frame(400, FocusSource::Test, Notify::None);
     assert_eq!(presenting(&fix, &output), None);
 
     float_top.xdg_toplevel.set_fullscreen(None);

@@ -12,7 +12,9 @@ use tracing::info;
 use tracing::warn;
 
 use crate::handlers::configure_lock_surface;
-use crate::{Event, Ewm, Monitor, OutputInfo, RedrawState, backend, module, protocols};
+use crate::{
+    Event, Ewm, FocusSource, Monitor, Notify, OutputInfo, RedrawState, backend, module, protocols,
+};
 #[cfg(feature = "screencast")]
 use crate::{dbus, screencasting};
 
@@ -321,7 +323,7 @@ impl Ewm {
         let Some(id) = self.layout.focused_frame_on(&target) else {
             return;
         };
-        self.set_focus_frame(id, "focus_output_direction", true);
+        self.set_focus_frame(id, FocusSource::FocusOutputDirection, Notify::Emacs);
     }
 
     /// The output after `current` in order, wrapping around.

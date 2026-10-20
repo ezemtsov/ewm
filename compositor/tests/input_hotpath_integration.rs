@@ -3,7 +3,9 @@
 use ewm_core::input::KeyboardAction;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, Toplevel, nz};
-use ewm_core::{InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Trigger};
+use ewm_core::{
+    FocusSource, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Notify, Trigger,
+};
 use smithay::input::keyboard::keysyms;
 use smithay::utils::Size;
 
@@ -178,10 +180,12 @@ impl Harness {
             FocusMode::EmbeddedApp | FocusMode::FullscreenApp => {
                 self.fix
                     .ewm()
-                    .set_focus_entry(self.app_entry_id, "test", false);
+                    .set_focus_entry(self.app_entry_id, FocusSource::Test, Notify::None);
             }
             FocusMode::EmacsBuffer => {
-                self.fix.ewm().set_focus_frame(self.emacs_id, "test", false);
+                self.fix
+                    .ewm()
+                    .set_focus_frame(self.emacs_id, FocusSource::Test, Notify::None);
             }
         }
         self.fix.sync_keyboard_focus();

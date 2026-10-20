@@ -12,6 +12,49 @@ use tracing::debug;
 
 use crate::{Event, Ewm, FocusId, LayoutEntryId, SurfaceHit, module};
 
+/// Where a focus change came from, kept in the focus history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusSource {
+    Action,
+    Gesture,
+    Overview,
+    /// Emacs asked for it and hears nothing back.
+    LispRequest,
+    /// A merge changed the focused frame's selected window.
+    LayoutSelected,
+    ToplevelDestroyed,
+    CleanupDeadWindows,
+    FullscreenOver,
+    FullscreenFocusRedirect,
+    FocusOutputDirection,
+    Unlock,
+    XdgActivation,
+    XdgActivationPending,
+    ForeignToplevel,
+    PointerMotion,
+    Click,
+    Scroll,
+    Touch,
+    Tablet,
+    Drop,
+    FloatingMoveGrab,
+    FloatingResizeGrab,
+    Test,
+}
+
+/// What Emacs hears of a focus change.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Notify {
+    /// Nothing, the change came from Emacs or must stay quiet.
+    None,
+    /// A Focus event.
+    Emacs,
+    /// A Focus event with the pointer's position in the focused surface, which anchors
+    /// mouse-follows-focus.
+    Pointer(Point<f64, Logical>),
+}
+
 impl Ewm {
     /// The frame holding the keyboard, 0 without one.
     pub fn focused_frame_id(&self) -> u64 {
@@ -83,17 +126,13 @@ impl Ewm {
     pub fn set_focus_entry(
         &mut self,
         entry_id: LayoutEntryId,
-        source: &str,
-        notify_emacs: bool,
+        source: FocusSource,
+        notify: Notify,
     ) -> Option<u64> {
         let location = self.layout.entry_location(entry_id)?;
         let frame_id = location.frame.surface_id;
-        module::record_focus(
-            location.entry.surface_id().unwrap_or(frame_id),
-            source,
-            None,
-        );
-        self.commit_focus(frame_id, Some(entry_id), entry_id, notify_emacs);
+        module::record_focus(location.entry.surface_id().unwrap_or(frame_id), source);
+        self.commit_focus(frame_id, Some(entry_id), entry_id, notify);
         Some(self.focused_frame_id())
     }
 
@@ -101,16 +140,16 @@ impl Ewm {
     pub fn set_focus_frame(
         &mut self,
         frame_surface_id: u64,
-        source: &str,
-        notify_emacs: bool,
+        source: FocusSource,
+        notify: Notify,
     ) -> Option<FocusId> {
         let Some(location) = self.layout.frame_location(frame_surface_id) else {
-            debug!("set_focus_frame({source}): unknown frame {frame_surface_id}");
+            debug!("set_focus_frame({source:?}): unknown frame {frame_surface_id}");
             return None;
         };
         let (focus_id, selected) = (location.frame.focus_id, location.frame.selected_entry_id);
-        module::record_focus(frame_surface_id, source, None);
-        Some(self.commit_focus(frame_surface_id, selected, focus_id, notify_emacs))
+        module::record_focus(frame_surface_id, source);
+        Some(self.commit_focus(frame_surface_id, selected, focus_id, notify))
     }
 
     /// Focus `frame_id` with `entry_id` selected, then tell Emacs about `focus_id`.
@@ -119,7 +158,7 @@ impl Ewm {
         frame_id: u64,
         entry_id: Option<LayoutEntryId>,
         focus_id: FocusId,
-        notify_emacs: bool,
+        notify: Notify,
     ) -> FocusId {
         // A fullscreen float takes the focus meant for its frame.
         let (frame_id, entry_id, focus_id) = match self.layout.fullscreen_float_over(frame_id) {
@@ -134,32 +173,18 @@ impl Ewm {
         let shown = self.layout.activate_frame(frame_id, entry_id);
         self.settle_shown(shown);
         self.clear_focused_urgency();
-        if notify_emacs {
-            self.queue_event(Event::Focus {
-                focus_id,
-                x: None,
-                y: None,
-                pointer: false,
-            });
-        }
+        let (x, y, pointer) = match notify {
+            Notify::None => return focus_id,
+            Notify::Emacs => (None, None, false),
+            Notify::Pointer(pos) => (Some(pos.x), Some(pos.y), true),
+        };
+        self.queue_event(Event::Focus {
+            focus_id,
+            x,
+            y,
+            pointer,
+        });
         focus_id
-    }
-
-    /// Focus a frame reached with the pointer. Emacs then anchors mouse-follows-focus.
-    pub(crate) fn set_focus_frame_from_pointer(
-        &mut self,
-        frame_surface_id: u64,
-        source: &str,
-        pos_in_frame: Point<f64, Logical>,
-    ) {
-        if let Some(focus_id) = self.set_focus_frame(frame_surface_id, source, false) {
-            self.queue_event(Event::Focus {
-                focus_id,
-                x: Some(pos_in_frame.x),
-                y: Some(pos_in_frame.y),
-                pointer: true,
-            });
-        }
     }
 
     /// Check if focus is on an Emacs surface (for key interception decisions)
@@ -198,14 +223,14 @@ impl Ewm {
     }
 
     /// Focus surface `id` as the layout entry or Emacs frame it is, via the mutator for that kind.
-    pub fn set_focus(&mut self, id: u64, notify_emacs: bool, source: &str) -> bool {
+    pub fn set_focus(&mut self, id: u64, source: FocusSource, notify: Notify) -> bool {
         let (frame_id, entry_id) = self.resolve_focus_target(id);
         if let Some(entry_id) = entry_id {
-            self.set_focus_entry(entry_id, source, notify_emacs);
+            self.set_focus_entry(entry_id, source, notify);
             true
         } else if frame_id != 0 {
             if self.layout.has_frame(frame_id) {
-                self.set_focus_frame(frame_id, source, notify_emacs);
+                self.set_focus_frame(frame_id, source, notify);
                 true
             } else {
                 false
@@ -232,8 +257,8 @@ impl Ewm {
     }
 
     /// Focus the surface, or ask Emacs to show it again when no window does.
-    pub fn activate_or_defer_surface(&mut self, id: u64, source: &str) {
-        let focused = self.set_focus(id, true, source);
+    pub fn activate_or_defer_surface(&mut self, id: u64, source: FocusSource) {
+        let focused = self.set_focus(id, source, Notify::Emacs);
         if focused {
             self.layer_shell_on_demand_focus = None;
         }
@@ -263,50 +288,32 @@ impl Ewm {
             if let Some(surface) = self.surfaces.get_mut(&id) {
                 surface.pending_activation = None;
             }
-            self.set_focus(id, true, "xdg_activation_pending");
+            self.set_focus(id, FocusSource::XdgActivationPending, Notify::Emacs);
             self.layer_shell_on_demand_focus = None;
         }
     }
 
-    /// Focus the layout entry or frame under `pos`, returning `(frame_id, entry_id)`. The caller
-    /// sends the Focus event itself, with the pointer coordinates mouse-follows-focus needs.
-    pub fn focus_under(
-        &mut self,
-        pos: Point<f64, Logical>,
-        source: &str,
-    ) -> Option<(u64, Option<LayoutEntryId>)> {
-        let (frame_id, entry_id) = if let Some(entry_id) = self.layout_entry_id_under(pos) {
-            let frame_id = self.set_focus_entry(entry_id, source, false)?;
-            (frame_id, Some(entry_id))
-        } else {
-            let (surface, _) = self.surface_under_point(pos)?;
-            let sid = self.surface_id(&surface)?;
-            let (fid, resolved_entry_id) = self.resolve_focus_target(sid);
-            if let Some(entry_id) = resolved_entry_id {
-                self.set_focus_entry(entry_id, source, false);
-            } else if fid != 0 {
-                self.set_focus_frame(fid, source, false);
-            } else {
-                return None;
-            }
-            (fid, resolved_entry_id)
+    /// Focus the layout entry or frame under `pos`.
+    pub fn focus_under(&mut self, pos: Point<f64, Logical>, source: FocusSource, notify: Notify) {
+        if let Some(entry_id) = self.layout_entry_id_under(pos) {
+            self.set_focus_entry(entry_id, source, notify);
+            return;
+        }
+        let Some((surface, _)) = self.surface_under_point(pos) else {
+            return;
         };
-        Some((frame_id, entry_id))
+        if let Some(id) = self.surface_id(&surface) {
+            self.set_focus(id, source, notify);
+        }
     }
 
     pub fn focus_follows_mouse(&mut self, under: &Option<SurfaceHit>, pos: Point<f64, Logical>) {
         let Some((_, origin)) = under else { return };
-        let Some((frame_id, entry_id)) = self.focus_under(pos, "pointer_motion") else {
-            return;
-        };
-        if let Some(focus_id) = entry_id.or_else(|| self.layout.focus_id_of_frame(frame_id)) {
-            self.queue_event(Event::Focus {
-                focus_id,
-                x: Some(pos.x - origin.x),
-                y: Some(pos.y - origin.y),
-                pointer: true,
-            });
-        }
+        self.focus_under(
+            pos,
+            FocusSource::PointerMotion,
+            Notify::Pointer(pos - *origin),
+        );
     }
 
     /// Update on-demand layer shell keyboard focus.
@@ -413,7 +420,7 @@ impl Ewm {
             // The change hid the frame holding the keyboard, Emacs follows it.
             let after = self.focused_frame_id();
             if after != before {
-                self.set_focus_frame(after, "action", true);
+                self.set_focus_frame(after, FocusSource::Action, Notify::Emacs);
             }
         }
     }
@@ -435,7 +442,7 @@ impl Ewm {
             }
         });
         if let Some(id) = target {
-            self.set_focus_frame(id, "action", true);
+            self.set_focus_frame(id, FocusSource::Action, Notify::Emacs);
         }
     }
 }

@@ -3,9 +3,9 @@
 //! swipes keep the finger counts the gesture knobs give them.
 use std::sync::Mutex;
 
-use ewm_core::Event;
 use ewm_core::input::{Gestures, Swipe};
 use ewm_core::testing::{Fixture, frame_with_width};
+use ewm_core::{Event, FocusSource, Notify};
 
 // The intercept list is process-wide, so tests run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -22,7 +22,8 @@ fn fixture(keys: &str) -> Fixture {
         OUTPUT,
         (1..=3).map(|id| frame_with_width(id, 1920.0)).collect(),
     );
-    fix.ewm().set_focus_frame(1, "test", false);
+    fix.ewm()
+        .set_focus_frame(1, FocusSource::Test, Notify::None);
     fix.pointer_motion_to(960.0, 540.0);
     fix.set_intercepted_keys_from_lisp(keys);
     fix

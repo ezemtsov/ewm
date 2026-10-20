@@ -22,7 +22,7 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use tracing::warn;
 
-use crate::{Ewm, State, im};
+use crate::{Ewm, FocusSource, Notify, State, im};
 
 /// Snapshot an unmapping frame or view, fade a resize answer, note where views sat before they
 /// move.
@@ -106,7 +106,7 @@ impl XdgShellHandler for State {
         self.ewm.loop_handle.insert_idle(move |state| {
             let ewm = &mut state.ewm;
             if let Some(refocus_id) = ewm.handle_toplevel_destroyed_by_id(id) {
-                ewm.set_focus_frame(refocus_id, "toplevel_destroyed", true);
+                ewm.set_focus_frame(refocus_id, FocusSource::ToplevelDestroyed, Notify::Emacs);
             }
         });
     }

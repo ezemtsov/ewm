@@ -15,7 +15,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use crate::animation::{Animation, Clock};
 use crate::layout::strip::{self, SwipeTracker};
 use crate::render_helpers::shadow_style::{Color, FloatOrInt, Shadow, ShadowOffset};
-use crate::{Event, Ewm, module, slide_spring};
+use crate::{Event, Ewm, FocusSource, Notify, module, slide_spring};
 
 /// Touchpad travel in unaccelerated units for a full open or close.
 const GESTURE_MOVEMENT: f64 = 300.;
@@ -349,7 +349,11 @@ impl Ewm {
                 .map(|(frame, rect)| (frame.surface_id, rect))
         });
         if let Some((frame_id, rect)) = floating_frame {
-            self.set_focus_frame_from_pointer(frame_id, "overview", in_content - rect.loc);
+            self.set_focus_frame(
+                frame_id,
+                FocusSource::Overview,
+                Notify::Pointer(in_content - rect.loc),
+            );
             self.overview_close();
         } else if let Some((idx, pos_in_frame)) =
             self.overview_frame_under(&output, &geometry, in_content)
@@ -377,7 +381,7 @@ impl Ewm {
         let prev_view_pos = strip.view_pos();
         let zoom = self.overview.zoom();
         let progress = self.overview.progress().unwrap_or(0.0);
-        self.set_focus_frame_from_pointer(target, "overview", pos_in_frame);
+        self.set_focus_frame(target, FocusSource::Overview, Notify::Pointer(pos_in_frame));
         if progress > 0.01
             && let Some(strip) = self.layout.strip_mut(output)
         {

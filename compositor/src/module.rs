@@ -59,7 +59,9 @@ use crate::layout::Placement;
 use crate::layout::strip::Frame;
 pub use crate::utils::reply::Reply;
 use crate::utils::reply::{ReplyError, reply_channel};
-use crate::{FocusId, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Trigger};
+use crate::{
+    FocusId, FocusSource, InterceptDispatch, InterceptedKey, LayoutEntry, LayoutEntryId, Trigger,
+};
 
 // Shared State (read by Emacs, written by compositor)
 
@@ -673,9 +675,7 @@ pub struct FocusEvent {
     /// Surface ID that received focus
     pub surface_id: u64,
     /// Source of the focus change
-    pub source: String,
-    /// Additional context
-    pub context: Option<String>,
+    pub source: FocusSource,
 }
 
 /// Focus history shared between compositor and Emacs
@@ -687,17 +687,16 @@ fn focus_history() -> &'static Mutex<VecDeque<FocusEvent>> {
 }
 
 /// Record a focus change (called by compositor)
-pub fn record_focus(surface_id: u64, source: &str, context: Option<&str>) {
+pub fn record_focus(surface_id: u64, source: FocusSource) {
     let seq = FOCUS_SEQ.fetch_add(1, Ordering::Relaxed);
     let event = FocusEvent {
         seq,
         surface_id,
-        source: source.to_string(),
-        context: context.map(|s| s.to_string()),
+        source,
     };
 
     if DEBUG_MODE.load(Ordering::Relaxed) {
-        tracing::debug!("Focus #{}: {} -> {} {:?}", seq, source, surface_id, context);
+        tracing::debug!("Focus #{}: {:?} -> {}", seq, source, surface_id);
     }
 
     let mut history = focus_history().lock().unwrap();

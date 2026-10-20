@@ -2,10 +2,10 @@
 
 use std::collections::HashSet;
 
-use ewm_core::LayoutEntry;
 use ewm_core::cursor::CursorConfig;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, nz};
+use ewm_core::{FocusSource, LayoutEntry, Notify};
 use serde_json::{Value, json};
 use smithay::utils::Size;
 
@@ -114,7 +114,8 @@ fn ewm_state_reports_workspace_protocol_from_frame_strips() {
     fix.add_output(HEAD_B, 1600, 900);
 
     fix.tile(HEAD_A, vec![frame(100), frame(101), frame(102)]);
-    fix.ewm().set_focus_frame(101, "test", false);
+    fix.ewm()
+        .set_focus_frame(101, FocusSource::Test, Notify::None);
     fix.dispatch();
 
     let state = fix.debug_state();
@@ -197,7 +198,8 @@ fn workspace_protocol_reports_urgent_workspace_from_surface_attention() {
             frame_with_surface_entry(101, 1002, focused_id),
         ],
     );
-    fix.ewm().set_focus_entry(nz(1002), "test", false);
+    fix.ewm()
+        .set_focus_entry(nz(1002), FocusSource::Test, Notify::None);
     fix.ewm().set_surface_urgent(urgent_id, true);
     fix.dispatch();
 
@@ -208,7 +210,8 @@ fn workspace_protocol_reports_urgent_workspace_from_surface_attention() {
     assert_eq!(urgent["urgent"], true);
     assert_eq!(inactive["urgent"], false);
 
-    fix.ewm().set_focus_entry(nz(1001), "test", false);
+    fix.ewm()
+        .set_focus_entry(nz(1001), FocusSource::Test, Notify::None);
     fix.dispatch();
 
     let state = fix.debug_state();
@@ -227,7 +230,8 @@ fn workspace_protocol_reports_urgent_workspace_from_explicit_mark() {
     let urgent_id = fix.open_toplevel_id(&mut client, "urgent", Size::from((400, 400)));
 
     fix.tile(HEAD_A, vec![frame(focused_id), frame(urgent_id)]);
-    fix.ewm().set_focus_frame(focused_id, "test", false);
+    fix.ewm()
+        .set_focus_frame(focused_id, FocusSource::Test, Notify::None);
     assert!(fix.ewm().mark_workspace_urgent(Some(urgent_id)));
     assert!(!fix.ewm().mark_workspace_urgent(Some(focused_id)));
     fix.dispatch();
@@ -239,7 +243,8 @@ fn workspace_protocol_reports_urgent_workspace_from_explicit_mark() {
     assert_eq!(focused["urgent"], false);
     assert_eq!(urgent["urgent"], true);
 
-    fix.ewm().set_focus_frame(urgent_id, "test", false);
+    fix.ewm()
+        .set_focus_frame(urgent_id, FocusSource::Test, Notify::None);
     fix.dispatch();
 
     let state = fix.debug_state();

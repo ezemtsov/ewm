@@ -16,7 +16,9 @@ use ewm_core::testing::{
     ClientEvent, Fixture, TestClient, Toplevel, clear_pending_frames, mark_active_frame_close, nz,
     prepare_frame, strip_with_frame_ids,
 };
-use ewm_core::{Action, LayoutEntry, LayoutEntryId, OutputConfig, OverviewAction};
+use ewm_core::{
+    Action, FocusSource, LayoutEntry, LayoutEntryId, Notify, OutputConfig, OverviewAction,
+};
 use proptest::prelude::*;
 use smithay::utils::Size;
 use wayland_client::Proxy as _;
@@ -304,10 +306,12 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
             }
         }
         Op::FocusView(v) => {
-            fix.ewm().set_focus_entry(v, "proptest", false);
+            fix.ewm()
+                .set_focus_entry(v, FocusSource::Test, Notify::None);
         }
         Op::FocusFrame(f) => {
-            fix.ewm().set_focus_frame(frames.real(f), "proptest", false);
+            fix.ewm()
+                .set_focus_frame(frames.real(f), FocusSource::Test, Notify::None);
         }
         Op::Action(Action::ActivateFrame { id }) => fix.do_action(Action::ActivateFrame {
             id: frames.real(id),
@@ -395,7 +399,7 @@ fn apply_op(fix: &mut Fixture, frames: &mut Frames, op: Op) {
                 fix.ewm_ref().focused_frame_id(),
                 fix.ewm_ref().focused_entry_id(),
             );
-            fix.ewm().activate_or_defer_surface(id, "proptest");
+            fix.ewm().activate_or_defer_surface(id, FocusSource::Test);
             let ewm = fix.ewm_ref();
             let focused = ewm.focused_surface_id() == id;
             let pending = ewm.pending_activations().any(|pending| pending == id);
@@ -612,8 +616,10 @@ fn activation_prefers_the_focused_frame() {
                     .collect();
                 fix.tile(name, frames);
             }
-            fix.ewm().set_focus_frame(focused_frame, "test", false);
-            fix.ewm().activate_or_defer_surface(SURFACE, "test");
+            fix.ewm()
+                .set_focus_frame(focused_frame, FocusSource::Test, Notify::None);
+            fix.ewm()
+                .activate_or_defer_surface(SURFACE, FocusSource::Test);
 
             let ewm = fix.ewm_ref();
             assert_eq!(
@@ -649,10 +655,10 @@ proptest! {
         let mut fix = Fixture::new().unwrap();
         fix.add_output(OUTPUTS[0], 1920, 1080);
         fix.install_strip(OUTPUTS[0], strip_with_frame_ids(ids.to_vec(), 0));
-        fix.ewm().set_focus_frame(closing_id, "proptest", false);
+        fix.ewm().set_focus_frame(closing_id, FocusSource::Test, Notify::None);
 
         mark_active_frame_close(closing_id);
-        fix.ewm().set_focus_frame(ids[mru_idx], "pgtk_mru", false);
+        fix.ewm().set_focus_frame(ids[mru_idx], FocusSource::Test, Notify::None);
         if omit_closing_frame_from_layout {
             fix.ewm().apply_layout(
                 ids.iter()
@@ -671,7 +677,7 @@ proptest! {
 
         prop_assert_eq!(refocus, Some(expected));
         fix.ewm()
-            .set_focus_frame(refocus.unwrap(), "toplevel_destroyed", false);
+            .set_focus_frame(refocus.unwrap(), FocusSource::ToplevelDestroyed, Notify::None);
         prop_assert_eq!(fix.ewm_ref().focused_frame_id(), expected);
         prop_assert!(!strip_frame_ids(&fix).contains(&closing_id));
         let strip = fix.strip(OUTPUTS[0]);
@@ -1084,10 +1090,13 @@ fn nav_build(setup: &NavSetup) -> Fixture {
     // focused_output last so its frame wins keyboard focus for navigation.
     for i in (0..setup.n()).filter(|&i| i != setup.focused_output) {
         fix.ewm()
-            .set_focus_frame(setup.active_frame(i), "nav_setup", false);
+            .set_focus_frame(setup.active_frame(i), FocusSource::Test, Notify::None);
     }
-    fix.ewm()
-        .set_focus_frame(setup.initial_focused_frame(), "nav_setup", false);
+    fix.ewm().set_focus_frame(
+        setup.initial_focused_frame(),
+        FocusSource::Test,
+        Notify::None,
+    );
     fix
 }
 

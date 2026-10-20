@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use ewm_core::input::KeyboardAction;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
-use ewm_core::{Event, LayoutEntry};
+use ewm_core::{Event, FocusSource, LayoutEntry, Notify};
 use proptest::prelude::*;
 use smithay::utils::Size;
 use smithay::wayland::xdg_activation::XdgActivationToken;
@@ -61,7 +61,8 @@ fn a_key_switches_the_strip_without_emacs() {
     let _serial = SERIAL.lock().unwrap();
     let mut fix = fixture(3);
     let output = fix.output(OUTPUT);
-    fix.ewm().set_focus_frame(1, "test", false);
+    fix.ewm()
+        .set_focus_frame(1, FocusSource::Test, Notify::None);
     fix.enable_event_capture();
 
     tap(&mut fix, KEY_F5);
@@ -94,7 +95,8 @@ fn a_key_moves_the_focused_frame_round_the_outputs() {
     let mut fix = fixture(2);
     fix.add_output("HEAD-B", 1920, 1080);
     fix.tile_command("HEAD-B", vec![tile(3, Vec::new())]);
-    fix.ewm().set_focus_frame(1, "test", false);
+    fix.ewm()
+        .set_focus_frame(1, FocusSource::Test, Notify::None);
     fix.set_intercepted_keys_from_lisp(
         "[(:key \"F5\" :description \"<f5>\" :action move-frame-to-next-output)]",
     );
@@ -131,7 +133,8 @@ fn a_key_toggles_the_focused_view_fullscreen() {
     let sid = fix.find_surface_id(&client, &top.surface).unwrap();
     let view = LayoutEntry::surface(nz(7), "view".into(), sid, 0, 0, 400, 300);
     fix.tile_command(OUTPUT, vec![tile(1, vec![view])]);
-    fix.ewm().set_focus_entry(nz(7), "test", false);
+    fix.ewm()
+        .set_focus_entry(nz(7), FocusSource::Test, Notify::None);
     fix.set_intercepted_keys_from_lisp(
         "[(:key \"F7\" :description \"<f7>\" :action toggle-fullscreen :fullscreen t)]",
     );
@@ -173,7 +176,8 @@ fn a_key_spawns_a_command_with_an_activation_token() {
 fn a_workspace_activation_focuses_the_frame_in_the_compositor() {
     let _serial = SERIAL.lock().unwrap();
     let mut fix = fixture(2);
-    fix.ewm().set_focus_frame(1, "test", false);
+    fix.ewm()
+        .set_focus_frame(1, FocusSource::Test, Notify::None);
     fix.enable_event_capture();
 
     fix.activate_workspace(2);
@@ -200,7 +204,7 @@ proptest! {
         let _serial = SERIAL.lock().unwrap();
         let focused = focused % frames + 1;
         let mut fix = fixture(frames);
-        fix.ewm().set_focus_frame(focused, "test", false);
+        fix.ewm().set_focus_frame(focused, FocusSource::Test, Notify::None);
         fix.set_intercepted_keys_from_lisp(&format!(
             "[(:key \"F5\" :description \"<f5>\" :action (focus-frame :delta {delta}))]"
         ));
@@ -251,7 +255,8 @@ fn emacs_fixture(frames: usize) -> (Fixture, TestClient, Vec<u64>) {
         .collect();
     fix.roundtrip(&mut emacs);
     strip(&mut fix, &ids);
-    fix.ewm().set_focus_frame(ids[0], "test", false);
+    fix.ewm()
+        .set_focus_frame(ids[0], FocusSource::Test, Notify::None);
     fix.sync_keyboard_focus();
     fix.roundtrip(&mut emacs);
     assert_eq!(fix.keyboard_focus_surface_id(), Some(ids[0]));
@@ -390,7 +395,8 @@ fn deferred_keys_reach_emacs_before_focus_leaves_it() {
     fix.roundtrip(&mut app);
     let app_id = fix.open_toplevel_id(&mut app, "app", Size::from((400, 300)));
     fix.roundtrip(&mut app);
-    fix.ewm().set_focus_frame(ids[0], "test", false);
+    fix.ewm()
+        .set_focus_frame(ids[0], FocusSource::Test, Notify::None);
     fix.sync_keyboard_focus();
     tick(&mut fix, &mut emacs);
     fix.drain_channel();
@@ -414,7 +420,8 @@ fn deferred_keys_reach_emacs_before_focus_leaves_it() {
         300,
     )];
     fix.tile_command(OUTPUT, frames);
-    fix.ewm().set_focus_entry(nz(7), "test", false);
+    fix.ewm()
+        .set_focus_entry(nz(7), FocusSource::Test, Notify::None);
     fix.sync_keyboard_focus();
     assert_eq!(fix.keyboard_focus_surface_id(), Some(app_id));
     assert_eq!(fix.deferred_key_count(), 0);

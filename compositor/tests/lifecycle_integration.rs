@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use ewm_core::event::Event;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, nz};
-use ewm_core::{LayoutEntry, LayoutEntryId};
+use ewm_core::{FocusSource, LayoutEntry, LayoutEntryId, Notify};
 use smithay::utils::{Logical, Rectangle, Size};
 
 const OUTPUT: &str = "HEAD-A";
@@ -109,7 +109,8 @@ fn losing_a_focused_toplevel_cleans_layout_focus_indexes_and_emits_close() {
         let frame_id = 100;
         let entry_id = nz(1);
         fix.tile(OUTPUT, vec![frame_with_entry(frame_id, entry_id, sid)]);
-        fix.ewm().set_focus_entry(entry_id, "test", false);
+        fix.ewm()
+            .set_focus_entry(entry_id, FocusSource::Test, Notify::None);
         let _ = fix.drain_events();
         assert!(fix.has_surface(sid));
         assert!(layout_surface_ids(&fix).contains(&sid));

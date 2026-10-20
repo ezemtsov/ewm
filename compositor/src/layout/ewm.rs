@@ -15,8 +15,8 @@ use super::resize_fade::{Fit, ViewRect, contents_rect};
 use super::snapshot::Snapshot;
 use super::{FrameLocation, LayoutEntryLocation, Monitor, Moved, floating, strip};
 use crate::{
-    Event, Ewm, LayoutEntry, LayoutEntryHit, LayoutEntryId, SurfaceHit, fullscreen_center_offset,
-    module,
+    Event, Ewm, FocusSource, LayoutEntry, LayoutEntryHit, LayoutEntryId, Notify, SurfaceHit,
+    fullscreen_center_offset, module,
 };
 
 pub(crate) fn enter_output_for_window(window: &Window, output: &Output) {
@@ -751,7 +751,7 @@ impl Ewm {
         if let Some((_, entry_id)) = self.layout.fullscreen_float_over(self.focused_frame_id())
             && self.focused_entry_id() != Some(entry_id)
         {
-            self.set_focus_entry(entry_id, "fullscreen_over", true);
+            self.set_focus_entry(entry_id, FocusSource::FullscreenOver, Notify::Emacs);
         }
         self.queue_redraw_all();
     }
@@ -909,7 +909,7 @@ impl Ewm {
         if after != before {
             self.clear_focused_urgency();
             self.flush_pending_title_event(after.0);
-            module::record_focus(after.0, "layout_selected", None);
+            module::record_focus(after.0, FocusSource::LayoutSelected);
         }
     }
 
@@ -1201,9 +1201,9 @@ impl Ewm {
                     .overview_geometry(output)
                     .to_content(Point::from((px, py)) - output_loc.to_f64());
                 let pos_in_frame = in_content - self.get_working_area(output).loc.to_f64();
-                self.set_focus_frame_from_pointer(id, "gesture", pos_in_frame);
+                self.set_focus_frame(id, FocusSource::Gesture, Notify::Pointer(pos_in_frame));
             } else {
-                self.set_focus_frame(id, "gesture", true);
+                self.set_focus_frame(id, FocusSource::Gesture, Notify::Emacs);
             }
         }
     }

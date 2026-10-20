@@ -5,11 +5,11 @@ use proptest::prelude::*;
 use smithay::utils::Size;
 
 use super::*;
-use crate::Action;
 use crate::testing::{
     self, HEAD_A, HEAD_B, HEAD_C, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width,
     nz, order_from_keys, set_sorted_output_order, strip_with_frame_ids,
 };
+use crate::{Action, FocusSource, Notify};
 
 #[test]
 fn dragging_a_float_to_another_output_carries_and_rehomes_it() {
@@ -185,7 +185,8 @@ fn frames_survive_losing_every_output() {
     fix.add_output(HEAD_B, 1280, 720);
     fix.install_strip(HEAD_A, strip_with_frame_ids(vec![1, 2], 1));
     fix.install_strip(HEAD_B, strip_with_frame_ids(vec![3, 4], 1));
-    fix.ewm().set_focus_frame(4, "test", false);
+    fix.ewm()
+        .set_focus_frame(4, FocusSource::Test, Notify::None);
 
     // Lid close: HEAD_A's frames migrate to HEAD_B.
     fix.remove_output(HEAD_A);
@@ -220,7 +221,8 @@ fn an_unplugged_middle_output_hands_its_frames_to_the_next_one() {
     fix.install_strip(HEAD_A, strip_with_frame_ids(vec![1], 0));
     fix.install_strip(HEAD_B, strip_with_frame_ids(vec![2, 3], 1));
     fix.install_strip(HEAD_C, strip_with_frame_ids(vec![4], 0));
-    fix.ewm().set_focus_frame(3, "test", false);
+    fix.ewm()
+        .set_focus_frame(3, FocusSource::Test, Notify::None);
 
     fix.remove_output(HEAD_B);
     assert_eq!(strip_ids(&fix, HEAD_A), vec![1]);
@@ -450,7 +452,8 @@ fn emacs_frame_origin_uses_screen_relative_strip_position() {
     );
     fix.ewm().animations_clock.set_complete_instantly(true);
 
-    fix.ewm().set_focus_frame(101, "test", false);
+    fix.ewm()
+        .set_focus_frame(101, FocusSource::Test, Notify::None);
 
     assert_eq!(
         fix.ewm_ref().emacs_frame_origin(101),
@@ -514,7 +517,7 @@ proptest! {
         let ids: Vec<u64> = (0..len).map(|idx| 100 + idx as u64).collect();
         fix.tile(HEAD_A, ids.iter().map(|&id| frame_with_width(id, 800.0)).collect());
         let focused = ids[raw_focus % len];
-        fix.ewm().set_focus_frame(focused, "test", false);
+        fix.ewm().set_focus_frame(focused, FocusSource::Test, Notify::None);
         let from = raw_from % len;
         let delta = if left { -1 } else { 1 };
 
@@ -547,12 +550,12 @@ proptest! {
         fix.tile(HEAD_A, ids.iter().map(|&id| frame_with_width(id, 800.0)).collect());
         let active_idx = raw_active % len;
         let active = ids[active_idx];
-        fix.ewm().set_focus_frame(active, "test", false);
+        fix.ewm().set_focus_frame(active, FocusSource::Test, Notify::None);
         fix.float(HEAD_A, vec![frame_with_width(200, 640.0)]);
         if pinned {
             fix.ewm().layout.frame_mut(200).unwrap().pinned_to = Some(active);
         }
-        fix.ewm().set_focus_frame(200, "test", false);
+        fix.ewm().set_focus_frame(200, FocusSource::Test, Notify::None);
 
         fix.do_action(Action::FocusFrame { delta });
 
@@ -574,7 +577,7 @@ proptest! {
         let mut fix = testing::Fixture::new().unwrap();
         fix.add_output(HEAD_A, 1600, 900);
         fix.tile(HEAD_A, vec![frame_with_width(100, 800.0), frame_with_width(101, 800.0)]);
-        fix.ewm().set_focus_frame(100, "test", false);
+        fix.ewm().set_focus_frame(100, FocusSource::Test, Notify::None);
         let ids: Vec<u64> = (0..len).map(|idx| 200 + idx as u64).collect();
         fix.float(HEAD_A, ids.iter().map(|&id| frame_with_width(id, 640.0)).collect());
         for (idx, &id) in ids.iter().enumerate() {
@@ -584,7 +587,7 @@ proptest! {
             }
         }
         let focused = ids[raw_focused % len];
-        fix.ewm().set_focus_frame(focused, "test", false);
+        fix.ewm().set_focus_frame(focused, FocusSource::Test, Notify::None);
         let output = fix.output(HEAD_A);
         let (active, next) = {
             let monitor = fix.ewm_ref().layout.monitor_of(&output).unwrap();

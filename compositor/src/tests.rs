@@ -6,6 +6,7 @@ use crate::testing::{
     HEAD_A, HEAD_B, PROP_HEADS, add_prop_outputs, frame_with_entry, frame_with_width, nz,
     order_from_keys, set_sorted_output_order, strip_with_frame_ids,
 };
+use crate::{FocusSource, Notify};
 
 #[cfg(feature = "screencast")]
 #[test]
@@ -41,7 +42,7 @@ fn new_toplevel_skips_focused_floating_frame_for_tiled_host() {
         )],
     );
     fix.ewm()
-        .set_focus_entry(floating_entry_id, "test_floating_entry", false);
+        .set_focus_entry(floating_entry_id, FocusSource::Test, Notify::None);
 
     assert_eq!(fix.ewm_ref().focused_frame_id(), 200);
     assert_eq!(fix.ewm_ref().focused_entry_id(), Some(floating_entry_id));
@@ -127,7 +128,8 @@ fn removing_an_output_retires_its_unused_fillers() {
         HEAD_B,
         vec![frame_with_width(100, 800.0), filler(101), named],
     );
-    fix.ewm().set_focus_frame(101, "test", false);
+    fix.ewm()
+        .set_focus_frame(101, FocusSource::Test, Notify::None);
 
     fix.enable_event_capture();
     fix.remove_output(HEAD_B);
@@ -315,7 +317,7 @@ proptest! {
         };
         if focused.is_some() {
             fix.ewm()
-                .set_focus_frame(2_000 + focused_idx as u64, "test", false);
+                .set_focus_frame(2_000 + focused_idx as u64, FocusSource::Test, Notify::None);
         }
         // The first installed strip holds the keyboard until a frame is focused.
         let focused = focused.or_else(|| selected.first().copied());
@@ -430,7 +432,7 @@ proptest! {
                     }
                 }
                 Step::Activate => {
-                    fix.ewm().activate_or_defer_surface(id, "test");
+                    fix.ewm().activate_or_defer_surface(id, FocusSource::Test);
                     if shown {
                         prop_assert_eq!(fix.focused_surface_id(), id);
                     }
@@ -477,7 +479,8 @@ fn mapped_asks_to_select_for_a_token_or_a_focused_parent() {
                         ],
                     );
                     let focused = if parent_focused { nz(3001) } else { nz(3003) };
-                    fix.ewm().set_focus_entry(focused, "test", false);
+                    fix.ewm()
+                        .set_focus_entry(focused, FocusSource::Test, Notify::None);
                     if fullscreen {
                         fix.set_fullscreen(focused, true);
                     }
@@ -489,7 +492,7 @@ fn mapped_asks_to_select_for_a_token_or_a_focused_parent() {
                     );
                     let id = fix.find_surface_id(&client, &dialog.surface).unwrap();
                     if token {
-                        fix.ewm().activate_or_defer_surface(id, "test");
+                        fix.ewm().activate_or_defer_surface(id, FocusSource::Test);
                     }
                     fix.enable_event_capture();
                     fix.map_toplevel(&mut client, &dialog, Size::from((200, 100)));

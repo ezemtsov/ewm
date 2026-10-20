@@ -10,7 +10,7 @@ use ewm_core::event::Event;
 use ewm_core::input::KeyboardAction::{self, CommandIntercepted, Forward};
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient};
-use ewm_core::{LayoutEntry, LayoutEntryId};
+use ewm_core::{FocusSource, LayoutEntry, LayoutEntryId, Notify};
 use smithay::utils::Size;
 
 const HEAD: &str = "Virtual-1";
@@ -186,10 +186,12 @@ impl Harness {
             None => {
                 self.fix
                     .ewm()
-                    .set_focus_frame(self.ids[EMACS], "test", false);
+                    .set_focus_frame(self.ids[EMACS], FocusSource::Test, Notify::None);
             }
             Some(e) => {
-                self.fix.ewm().set_focus_entry(e, "test", false);
+                self.fix
+                    .ewm()
+                    .set_focus_entry(e, FocusSource::Test, Notify::None);
             }
         }
         self.fix.sync_keyboard_focus();

@@ -6,7 +6,7 @@
 use ewm_core::im::TextInputProvider;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
-use ewm_core::{LayoutEntry, LayoutEntryId};
+use ewm_core::{FocusSource, LayoutEntry, LayoutEntryId, Notify};
 use smithay::utils::Size;
 use smithay::wayland::input_method::InputMethodSeat;
 
@@ -77,7 +77,8 @@ fn external_provider_yields_the_seat_to_an_input_method_client() {
     fix.set_text_input_provider(TextInputProvider::Emacs);
     wait_instance(&mut fix, true);
     let _emacs_ti = emacs.create_text_input();
-    fix.ewm().set_focus_frame(emacs_id, "test", true);
+    fix.ewm()
+        .set_focus_frame(emacs_id, FocusSource::Test, Notify::Emacs);
     fix.sync_keyboard_focus();
     pump(&mut fix, &mut emacs, &mut app, &mut ime);
     assert_eq!(fix.keyboard_focus_surface_id(), Some(emacs_id));
@@ -104,7 +105,8 @@ fn external_provider_yields_the_seat_to_an_input_method_client() {
         ClientEvent::InputMethodUnavailable
     )));
 
-    fix.ewm().set_focus_entry(app_entry, "test", false);
+    fix.ewm()
+        .set_focus_entry(app_entry, FocusSource::Test, Notify::None);
     fix.sync_keyboard_focus();
     pump(&mut fix, &mut emacs, &mut app, &mut ime);
     assert_eq!(fix.keyboard_focus_surface_id(), Some(app_id));

@@ -8,7 +8,7 @@ use ewm_core::layout::floating::{ResizeEdge, SizeFracPoint};
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, WL_FIXED_TOLERANCE, nz};
 use ewm_core::utils::output_size;
-use ewm_core::{Event, LayoutEntry, LayoutEntryId, OutputConfig};
+use ewm_core::{Event, FocusSource, LayoutEntry, LayoutEntryId, Notify, OutputConfig};
 use proptest::prelude::*;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
@@ -357,7 +357,9 @@ fn frame_focus_switch_refreshes_stationary_pointer_after_transition() {
     assert_eq!(fixture.pointer_focus_surface_id(), Some(first_surface_id));
 
     fixture.ewm().animations_clock.set_complete_instantly(true);
-    fixture.ewm().set_focus_frame(200, "test", false);
+    fixture
+        .ewm()
+        .set_focus_frame(200, FocusSource::Test, Notify::None);
     assert_eq!(fixture.pointer_focus_surface_id(), Some(first_surface_id));
 
     fixture.dispatch();
@@ -391,7 +393,9 @@ fn strip_swipe_drives_the_output_under_the_pointer() {
     let virtual_2 = fixture.output("Virtual-2");
     let geo = fixture.ewm_ref().space.output_geometry(&virtual_2).unwrap();
     fixture.pointer_motion_to(f64::from(geo.loc.x) + 640.0, f64::from(geo.loc.y) + 360.0);
-    fixture.ewm().set_focus_frame(10, "test", false);
+    fixture
+        .ewm()
+        .set_focus_frame(10, FocusSource::Test, Notify::None);
     assert_eq!(
         fixture.ewm_ref().active_output().map(Output::name),
         Some("Virtual-1".to_string())
@@ -606,7 +610,9 @@ fn disabling_output_migrates_entries_to_mapped_output() {
     fixture.tile("Virtual-1", vec![disabled_frame]);
     fixture.set_fullscreen(nz(1), true);
     fixture.tile("Virtual-2", vec![Frame::new(200)]);
-    fixture.ewm().set_focus_frame(200, "test", false);
+    fixture
+        .ewm()
+        .set_focus_frame(200, FocusSource::Test, Notify::None);
 
     fixture.ewm().output_config.insert(
         "Virtual-1".to_string(),
@@ -618,7 +624,9 @@ fn disabling_output_migrates_entries_to_mapped_output() {
     fixture.apply_output_config("Virtual-1");
 
     assert!(fixture.ewm_ref().pending_fullscreen(surface_id));
-    fixture.ewm().set_focus_entry(nz(1), "test", false);
+    fixture
+        .ewm()
+        .set_focus_entry(nz(1), FocusSource::Test, Notify::None);
 
     assert_eq!(fixture.ewm_ref().focused_surface_id(), surface_id);
     assert_eq!(fixture.ewm_ref().focused_entry_id(), Some(nz(1)));

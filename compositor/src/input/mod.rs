@@ -75,7 +75,10 @@ use tracing::{info, warn};
 use crate::event::TextInputKey;
 use crate::im::TextInputProvider;
 use crate::im::repeat::{HeldKeyOwner, InterceptRepeat};
-use crate::{Action, InterceptDispatch, InterceptedKey, State, SurfaceHit, module, tracy_span};
+use crate::{
+    Action, FocusSource, InterceptDispatch, InterceptedKey, Notify, State, SurfaceHit, module,
+    tracy_span,
+};
 
 /// Where a key goes, as `classify_key` decides it. The caller forwards accordingly.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -534,7 +537,8 @@ impl State {
                 .focus_strip_frame(|anchor| anchor.checked_add_signed(delta as isize)),
             Action::FocusNthFrame { n } => self.ewm.focus_strip_frame(|_| n.checked_sub(1)),
             Action::ActivateFrame { id } => {
-                self.ewm.set_focus_frame(id, "action", true);
+                self.ewm
+                    .set_focus_frame(id, FocusSource::Action, Notify::Emacs);
             }
             Action::FocusOutput { dx, dy } => self.ewm.focus_output_direction(dx, dy),
             Action::MoveFrame { delta } => {
@@ -672,8 +676,11 @@ impl State {
         if let Some((entry_id, surface_id)) = fullscreen_entry
             && self.ewm.focused_surface_id() != surface_id
         {
-            self.ewm
-                .set_focus_entry(entry_id, "fullscreen_focus_redirect", true);
+            self.ewm.set_focus_entry(
+                entry_id,
+                FocusSource::FullscreenFocusRedirect,
+                Notify::Emacs,
+            );
         }
 
         self.sync_keyboard_focus();
@@ -1096,7 +1103,7 @@ impl State {
         true // needs redraw
     }
 
-    fn focus_pointer_target(&mut self, source: &str) {
+    fn focus_pointer_target(&mut self, source: FocusSource) {
         let pos = self.ewm.pointer_location().into();
         self.focus_target_at(pos, source);
     }
@@ -1104,14 +1111,14 @@ impl State {
     /// Focus a drop's target like a click. A torn-off tab's window then opens there.
     fn focus_pending_drop(&mut self) {
         if let Some(pos) = self.ewm.pending_drop.take() {
-            self.focus_target_at(pos, "drop");
+            self.focus_target_at(pos, FocusSource::Drop);
             self.sync_keyboard_focus();
             self.maybe_activate_pointer_constraint();
         }
     }
 
     /// Click-to-focus at `pos`: layer surfaces get on-demand focus, else the frame under.
-    fn focus_target_at(&mut self, pos: Point<f64, Logical>, source: &str) {
+    fn focus_target_at(&mut self, pos: Point<f64, Logical>, source: FocusSource) {
         // Under a popup grab an outside press dismisses the popup instead
         if self.ewm.is_locked() || self.ewm.popup_grab.is_some() {
             return;
@@ -1124,25 +1131,11 @@ impl State {
             return;
         }
 
-        let Some((frame_id, entry_id)) = self.ewm.focus_under(pos, source) else {
-            return;
-        };
-        if let Some(focus_id) = entry_id.or_else(|| self.ewm.layout.focus_id_of_frame(frame_id)) {
-            let (x, y) = self
-                .ewm
-                .pointer_target_at(pos)
-                .map(|(_, origin)| {
-                    let d = pos - origin;
-                    (Some(d.x), Some(d.y))
-                })
-                .unwrap_or((None, None));
-            self.ewm.queue_event(crate::Event::Focus {
-                focus_id,
-                x,
-                y,
-                pointer: x.is_some() && y.is_some(),
-            });
-        }
+        let notify = self
+            .ewm
+            .pointer_target_at(pos)
+            .map_or(Notify::Emacs, |(_, origin)| Notify::Pointer(pos - origin));
+        self.ewm.focus_under(pos, source, notify);
     }
 
     /// A click on moved-away content picks an overview frame and brings hidden frames back.
@@ -1192,7 +1185,7 @@ impl State {
                 return false;
             };
 
-            self.focus_pointer_target("floating_move_grab");
+            self.focus_pointer_target(FocusSource::FloatingMoveGrab);
             // A float leaves fullscreen to be dragged.
             let asked: Vec<u64> = self
                 .ewm
@@ -1235,7 +1228,7 @@ impl State {
                 return false;
             };
 
-            self.focus_pointer_target("floating_resize_grab");
+            self.focus_pointer_target(FocusSource::FloatingResizeGrab);
 
             if self
                 .ewm
@@ -1300,7 +1293,7 @@ impl State {
             if button_code == BTN_LEFT {
                 self.content_click_at(pos);
             }
-            self.focus_target_at(pos, "click");
+            self.focus_target_at(pos, FocusSource::Click);
         }
         // Sync keyboard focus before forwarding
         self.sync_keyboard_focus();
@@ -1606,7 +1599,7 @@ impl State {
         let pointer = self.ewm.pointer.clone();
 
         // Scroll-to-focus: focus the surface under pointer on scroll
-        self.focus_pointer_target("scroll");
+        self.focus_pointer_target(FocusSource::Scroll);
 
         // Sync keyboard focus before forwarding the scroll event.
         self.sync_keyboard_focus();
@@ -1702,7 +1695,7 @@ impl State {
             // Only the first finger presses
             if !touch.is_grabbed() {
                 self.content_click_at(pos);
-                self.focus_target_at(pos, "touch");
+                self.focus_target_at(pos, FocusSource::Touch);
                 self.sync_keyboard_focus();
             }
             self.ewm.surface_under_point(pos)
@@ -1907,7 +1900,7 @@ impl State {
                 tool.down(self, &tablet::tool::DownEvent { serial, time });
 
                 if let Some(pos) = self.ewm.tablet_cursor_location {
-                    self.focus_target_at(pos, "tablet");
+                    self.focus_target_at(pos, FocusSource::Tablet);
                     self.sync_keyboard_focus();
                 }
             }

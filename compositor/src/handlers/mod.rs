@@ -58,7 +58,9 @@ use crate::protocols::virtual_pointer::{
     VirtualPointerMotionEvent,
 };
 use crate::protocols::workspace::{WorkspaceHandler, WorkspaceManagerState};
-use crate::{Action, DndIcon, Event, LockRenderState, LockState, OutputConfig, State};
+use crate::{
+    Action, DndIcon, Event, FocusSource, LockRenderState, LockState, Notify, OutputConfig, State,
+};
 
 // DMA-BUF
 impl DmabufHandler for State {
@@ -390,7 +392,8 @@ impl XdgActivationHandler for State {
                 } else if self.ewm.layout.has_frame(id) {
                     debug!("xdg_activation: ignored for Emacs frame {}", id);
                 } else {
-                    self.ewm.activate_or_defer_surface(id, "xdg_activation");
+                    self.ewm
+                        .activate_or_defer_surface(id, FocusSource::XdgActivation);
                     info!("xdg_activation: granted for surface {}", id);
                 }
             } else {
@@ -431,7 +434,8 @@ impl ForeignToplevelHandler for State {
 
     fn activate(&mut self, wl_surface: WlSurface) {
         if let Some(id) = self.ewm.surface_id(&wl_surface) {
-            self.ewm.activate_or_defer_surface(id, "foreign_toplevel");
+            self.ewm
+                .activate_or_defer_surface(id, FocusSource::ForeignToplevel);
             info!("Foreign toplevel: activated surface {}", id);
         }
     }
@@ -597,7 +601,7 @@ impl SessionLockHandler for State {
             && self.ewm.surfaces.contains_key(&id)
         {
             info!("Restoring focus to surface {} after unlock", id);
-            self.ewm.set_focus(id, false, "unlock");
+            self.ewm.set_focus(id, FocusSource::Unlock, Notify::None);
         }
         self.sync_keyboard_focus();
 

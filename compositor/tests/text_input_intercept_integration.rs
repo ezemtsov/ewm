@@ -5,7 +5,7 @@
 use ewm_core::input::KeyboardAction;
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{Fixture, TestClient, nz};
-use ewm_core::{LayoutEntry, LayoutEntryId};
+use ewm_core::{FocusSource, LayoutEntry, LayoutEntryId, Notify};
 use smithay::utils::Size;
 
 const HEAD: &str = "Virtual-1";
@@ -60,7 +60,8 @@ fn first_key_after_text_input_activation_is_intercepted() {
     // Focus the app surface, embedded in the emacs frame.
     let app_entry = nz(3001);
     fix.tile_command(HEAD, vec![frame_with_app(emacs_id, app_entry, app_id)]);
-    fix.ewm().set_focus_entry(app_entry, "test", false);
+    fix.ewm()
+        .set_focus_entry(app_entry, FocusSource::Test, Notify::None);
     fix.sync_keyboard_focus();
     pump(&mut fix, &mut emacs, &mut app);
     assert_eq!(fix.keyboard_focus_surface_id(), Some(app_id));

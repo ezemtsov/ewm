@@ -2,7 +2,7 @@
 
 use ewm_core::layout::strip::Frame;
 use ewm_core::testing::{ClientEvent, Fixture, TestClient, nz};
-use ewm_core::{LayoutEntry, LayoutEntryId};
+use ewm_core::{FocusSource, LayoutEntry, LayoutEntryId, Notify};
 use smithay::utils::Size;
 
 const HEAD: &str = "Virtual-1";
@@ -55,7 +55,8 @@ fn replace_reaches_client_as_delete_then_commit_then_done() {
     // Focus the app surface, embedded in the emacs frame.
     let app_entry = nz(3001);
     fix.tile_command(HEAD, vec![frame_with_app(emacs_id, app_entry, app_id)]);
-    fix.ewm().set_focus_entry(app_entry, "test", false);
+    fix.ewm()
+        .set_focus_entry(app_entry, FocusSource::Test, Notify::None);
     fix.sync_keyboard_focus();
     pump(&mut fix, &mut emacs, &mut app);
 
