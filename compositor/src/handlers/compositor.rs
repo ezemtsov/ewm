@@ -1,13 +1,17 @@
+use smithay::desktop::Window;
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
+use smithay::output::Output;
 use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Size};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    CompositorClientState, CompositorHandler, CompositorState, is_sync_subsurface,
+    CompositorClientState, CompositorHandler, CompositorState, is_sync_subsurface, with_states,
 };
+use smithay::wayland::shell::xdg::{SurfaceCachedState, ToplevelSurface};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
-use crate::{Event, State, client_state, compute_open_floating, natural_open_size, surface_root};
+use crate::{Event, Ewm, State, client_state, is_portal_surface, surface_root};
 
 // Buffer handling
 impl BufferHandler for State {
@@ -173,7 +177,7 @@ impl CompositorHandler for State {
                 let frame_surface_id = self.ewm.resolve_app_host_frame(parent_id, output);
                 // Size hint for floating placement, dropped when it fills the working area.
                 let working_area = output.map(|o| self.ewm.get_working_area(o));
-                let output = output.map(smithay::output::Output::name);
+                let output = output.map(Output::name);
                 let (width, height) = self
                     .ewm
                     .window(id)
@@ -220,5 +224,68 @@ impl CompositorHandler for State {
 impl ShmHandler for State {
     fn shm_state(&self) -> &ShmState {
         &self.ewm.shm_state
+    }
+}
+
+/// Whether a toplevel opens floating: parented (dialog), portal or fixed-height.
+fn compute_open_floating(toplevel: &ToplevelSurface) -> bool {
+    // Windows with a parent (usually dialogs) open as floating by default.
+    if toplevel.parent().is_some() {
+        return true;
+    }
+
+    // Portal dialogs float even when the requester passed no parent_window.
+    if is_portal_surface(toplevel.wl_surface()) {
+        return true;
+    }
+
+    let (min_size, max_size) = with_states(toplevel.wl_surface(), |state| {
+        let mut guard = state.cached_state.get::<SurfaceCachedState>();
+        let current = guard.current();
+        (current.min_size, current.max_size)
+    });
+
+    // We open fixed-height windows as floating.
+    min_size.h > 0 && min_size.h == max_size.h
+}
+
+fn ensure_min_max_size(x: i32, min: i32, max: i32) -> i32 {
+    let x = if max > 0 { x.min(max) } else { x };
+    if min > 0 { x.max(min) } else { x }
+}
+
+/// The window's geometry clamped to its min/max size hints.
+fn natural_open_size(window: &Window) -> Option<Size<i32, Logical>> {
+    let toplevel = window.toplevel()?;
+    let geo = window.geometry().size;
+    let (min, max) = with_states(toplevel.wl_surface(), |state| {
+        let mut guard = state.cached_state.get::<SurfaceCachedState>();
+        let current = guard.current();
+        (current.min_size, current.max_size)
+    });
+    let w = ensure_min_max_size(geo.w, min.w, max.w);
+    let h = ensure_min_max_size(geo.h, min.h, max.h);
+    (w > 0 && h > 0).then(|| Size::from((w, h)))
+}
+
+impl Ewm {
+    /// Tiled host for an app surface: parent's frame, else focused, else active, never a float.
+    fn resolve_app_host_frame(
+        &self,
+        parent_id: Option<u64>,
+        output: Option<&Output>,
+    ) -> Option<u64> {
+        let tiled_frame_on = |id: u64, output: Option<&Output>| {
+            self.layout
+                .frame_location(id)
+                .filter(|location| !location.floating)
+                .filter(|location| output.is_none_or(|o| location.monitor.output() == o))
+                .map(|_| id)
+        };
+        parent_id
+            .and_then(|pid| self.frame_entry_for_surface(pid))
+            .and_then(|(id, _)| tiled_frame_on(id, None))
+            .or_else(|| output.and_then(|o| tiled_frame_on(self.focused_frame_id(), Some(o))))
+            .or_else(|| output.and_then(|o| self.layout.active_frame_id(o)))
     }
 }

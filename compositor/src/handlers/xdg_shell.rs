@@ -20,9 +20,11 @@ use smithay::wayland::shell::xdg::{
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
-use tracing::warn;
+use tracing::{debug, info, warn};
 
-use crate::{Ewm, FocusSource, Notify, State, im};
+use crate::layout::enter_output_for_window;
+use crate::surface::SurfaceState;
+use crate::{Event, Ewm, FocusSource, Notify, Placement, State, client_identity, im, module};
 
 /// Snapshot an unmapping frame or view, fade a resize answer, note where views sat before they
 /// move.
@@ -307,6 +309,176 @@ fn unconstrain_with_padding(
 }
 
 impl Ewm {
+    /// Register a toplevel, configure it and place an Emacs frame right away.
+    fn handle_new_toplevel(&mut self, surface: ToplevelSurface) {
+        let id = self.next_surface_id;
+        self.next_surface_id += 1;
+
+        let identity = client_identity(surface.wl_surface());
+        let client_pid = identity.as_ref().map_or(0, |i| i.credentials.pid);
+        // Only Emacs connects to the listening socket from this process.
+        let is_emacs = self.emacs_pid.is_some_and(|pid| client_pid == pid as i32);
+        if is_emacs {
+            info!("Surface {} is an Emacs surface", id);
+        }
+
+        let app = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().unwrap().app_id.clone())
+        })
+        .or_else(|| identity.and_then(|i| i.comm))
+        .unwrap_or_else(|| "unknown".to_string());
+
+        // Determine target output before the initial configure so floating
+        // Emacs frames don't get the normal maximized/working-area configure.
+        let pending_frame = is_emacs.then(module::take_pending_frame).flatten();
+        let target_output = pending_frame
+            .as_ref()
+            .and_then(|pending| self.layout.output(&pending.output))
+            .or_else(|| self.active_output())
+            .cloned();
+        let frame_seq = pending_frame.as_ref().map(|pending| pending.seq);
+        let placement = pending_frame.map_or(Placement::Tiled { after: None }, |pending| {
+            pending.placement
+        });
+        let frame_is_floating = matches!(placement, Placement::Floating { .. });
+
+        surface.with_pending_state(|state| {
+            if is_emacs && frame_is_floating {
+                // Let Emacs drive the size. The frame fits itself to its content.
+                state.size = None;
+            } else {
+                state.size = Some(self.output_size);
+                state.states.set(XdgToplevelState::Maximized);
+            }
+            state.states.set(XdgToplevelState::Activated);
+        });
+        surface.send_configure();
+
+        let record = SurfaceState::new(id, surface, is_emacs, app.clone());
+        let window = record.window.clone();
+        self.surfaces.insert(id, record);
+
+        debug!(
+            "new_toplevel id={} is_emacs={} seq={:?} floating={} target_output={:?} pending_queue_after_take={:?}",
+            id,
+            is_emacs,
+            frame_seq,
+            frame_is_floating,
+            target_output,
+            module::peek_pending_frame_outputs()
+        );
+
+        // Place the frame now so `layout.has_frame(id)`, `set_focus_frame(id)`,
+        // etc. work before Emacs's first layout arrives. That layout only
+        // fills in contents (name, width, entries, selected_entry_id).
+        if is_emacs && let Some(output) = &target_output {
+            self.layout.add_frame(id, output, placement);
+            self.reconcile_output_entries(output);
+        } else if let Some(output) = target_output.as_ref().or_else(|| self.first_output()) {
+            // Scale and enter before the first commit, bypassing SpaceElement::output_enter
+            // which would leave uncommitted surfaces.
+            enter_output_for_window(&window, output);
+        }
+
+        // Resize Emacs frames to fill their working area
+        if is_emacs
+            && !frame_is_floating
+            && let Some(output) = &target_output
+            && let Some(t) = window.toplevel()
+        {
+            let working_area = self.get_working_area(output);
+            t.with_pending_state(|state| {
+                state.size = Some(working_area.size);
+            });
+            t.send_configure();
+        }
+
+        // App surfaces resolve their host frame at map. `New` only creates the buffer.
+        self.queue_event(Event::New {
+            id,
+            app: app.clone(),
+            seq: frame_seq,
+            pid: client_pid,
+        });
+        // A new emacs frame joins its strip inactive. Tell lisp so it can
+        // freeze it, after Event::New so ewm-surface-id is already bound on
+        // the lisp side. The overview shows every frame, a new one too.
+        if is_emacs {
+            let is_active = target_output
+                .as_ref()
+                .and_then(|output| self.layout.active_frame_id(output))
+                == Some(id);
+            self.queue_event(
+                if frame_is_floating || is_active || self.overview.is_active() {
+                    Event::FrameShown { id }
+                } else {
+                    Event::FrameHidden { id }
+                },
+            );
+        }
+        // The first Emacs frame took the keyboard at placement. Sent after New so the lisp side
+        // has assigned ewm-surface-id by the time the Focus event is processed.
+        if is_emacs && self.focused_frame_id() == id {
+            info!("Initial Emacs frame {} holds the keyboard", id);
+            if let Some(focus_id) = self.layout.focus_id_of_frame(id) {
+                self.queue_event(Event::Focus {
+                    focus_id,
+                    x: None,
+                    y: None,
+                    pointer: false,
+                });
+            }
+        }
+        info!(
+            "New toplevel {} ({}) -> {:?}",
+            id,
+            app,
+            target_output.as_ref().map(Output::name)
+        );
+    }
+
+    /// Drop toplevel `id`, returning the frame to refocus.
+    pub fn handle_toplevel_destroyed_by_id(&mut self, id: u64) -> Option<u64> {
+        let was_focused = self.focused_frame_id() == id;
+        let close_was_active = module::take_pending_active_frame_close(id);
+        let active_close = was_focused || close_was_active;
+
+        self.flush_pending_title_event(id);
+        self.surfaces.remove(&id);
+        let was_emacs = self.layout.has_frame(id);
+        self.layout.detach_surface(id);
+        self.reconcile_fullscreen();
+        let output = self.remove_emacs_frame(id, active_close);
+        self.queue_event(Event::Close { id });
+        debug!(
+            "Toplevel {} destroyed was_focused={} close_was_active={} was_emacs={} output={:?}",
+            id,
+            was_focused,
+            close_was_active,
+            was_emacs,
+            output.as_ref().map(Output::name)
+        );
+
+        if was_emacs {
+            self.refresh_mapped_cast_outputs();
+        }
+
+        if active_close {
+            // Output may be unknown if lisp pruned the frame before destroy fired.
+            let refocus = [output.as_ref(), self.pointer_output.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|output| self.layout.focused_frame_on(output))
+                .or_else(|| Some(self.focused_frame_id()).filter(|&id| id != 0));
+            debug!("Toplevel {} destroyed: refocus -> {:?}", id, refocus);
+            return refocus;
+        }
+        None
+    }
+
     pub(crate) fn layer_for_root(&self, root: &WlSurface) -> Option<(Output, DesktopLayerSurface)> {
         self.space.outputs().find_map(|output| {
             let map = layer_map_for_output(output);
